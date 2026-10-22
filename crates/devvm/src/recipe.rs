@@ -36,6 +36,13 @@ pub struct Flattened {
     pub steps: Vec<FlatStep>,
 }
 
+/// The identity of a recipe file in a `from:` chain: its canonical path.
+fn chain_key(path: &Path) -> Result<String> {
+    std::fs::canonicalize(path)
+        .map(|canonical| canonical.display().to_string())
+        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot resolve {}", path.display()), e))
+}
+
 impl Recipe {
     /// The embedded base recipe called `name`; `NotFound` lists the known names.
     pub fn embedded(name: &str) -> Result<Recipe> {
@@ -77,10 +84,7 @@ impl Recipe {
                         );
                         Error::new(e.kind(), message)
                     })?;
-                    let key = std::fs::canonicalize(path)
-                        .unwrap_or_else(|_| path.clone())
-                        .display()
-                        .to_string();
+                    let key = chain_key(path)?;
                     (parent, key, path.display().to_string())
                 }
                 Source::Embedded(name) => (Recipe::embedded(name)?, format!("embedded:{name}"), name.clone()),

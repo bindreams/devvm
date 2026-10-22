@@ -196,3 +196,11 @@ fn flattened_and_recipe_are_send_and_sync() {
     assert_bounds::<Recipe>();
     assert_bounds::<crate::recipe::Flattened>();
 }
+
+#[skuld::test]
+fn a_recipe_path_that_cannot_be_canonicalized_is_an_error_not_a_fallback(#[fixture(anna_home)] home: &Path) {
+    // Falling back to the spelled path would let two spellings of one file defeat cycle detection.
+    let error = crate::recipe::chain_key(&home.join("gone.devvm.yaml")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(error.message().contains("gone.devvm.yaml"), "{error}");
+}
