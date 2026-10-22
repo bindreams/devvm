@@ -232,6 +232,43 @@ fn modifier_on_the_wrong_action_is_an_error() {
 }
 
 #[skuld::test]
+fn warm_is_rejected_naming_it() {
+    for value in ["true", "false"] {
+        let error = parse_err(&format!("from: u\nwarm: {value}"));
+        assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+        assert!(error.message().contains("`warm`"), "{error}");
+        assert!(error.message().contains("not supported in devvm 0.1.0"), "{error}");
+        assert!(error.message().contains("x.devvm.yaml"), "{error}");
+    }
+}
+
+#[skuld::test]
+fn arch_list_is_rejected_naming_it() {
+    let error = parse_err("from: u\narch: [amd64, arm64]");
+    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+    assert!(
+        error.message().contains("`arch`") && error.message().contains("multi-arch"),
+        "{error}"
+    );
+    assert!(error.message().contains("not supported in devvm 0.1.0"), "{error}");
+    assert!(error.message().contains("x.devvm.yaml"), "{error}");
+}
+
+#[skuld::test]
+fn scalar_arch_is_an_unknown_field_error() {
+    let error = parse_err("from: u\narch: amd64");
+    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
+    assert!(error.message().contains("arch"), "{error}");
+}
+
+#[skuld::test]
+fn out_of_scope_keys_win_over_other_errors() {
+    // The file is also missing `from`; the unsupported feature is still what gets named.
+    let error = parse_err("warm: true");
+    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+}
+
+#[skuld::test]
 fn bad_values_are_errors() {
     let cases = [
         "from: { url: 'https://h/a', sha256: abc }".to_owned(),

@@ -266,6 +266,7 @@ impl Recipe {
     /// resolve against, and gives the default name.
     pub fn parse(text: &str, origin: &Path) -> Result<Recipe> {
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        reject_out_of_scope(text, origin)?;
         let raw: RawRecipe = yaml_serde::from_str(text).map_err(|e| invalid(origin, &e).with_source(e))?;
         let dir = origin.parent().map(Path::to_path_buf).unwrap_or_default();
         let name = raw.name.unwrap_or_else(|| default_name(origin));
@@ -301,6 +302,27 @@ impl Recipe {
         };
         Recipe::parse(&text, path)
     }
+}
+
+/// Features the 0.1.0 scope leaves out are named in an error instead of falling through to "unknown field" (or, worse,
+/// being ignored). A scalar `arch:` is not the multi-arch list and stays an unknown field.
+fn reject_out_of_scope(text: &str, origin: &Path) -> Result<()> {
+    let Ok(yaml_serde::Value::Mapping(top)) = yaml_serde::from_str::<yaml_serde::Value>(text) else {
+        return Ok(());
+    };
+    let not_supported = |what: &str| {
+        Error::new(
+            ErrorKind::NotSupported,
+            format!("{what} is not supported in devvm 0.1.0 (in {})", origin.display()),
+        )
+    };
+    if top.contains_key("warm") {
+        return Err(not_supported("`warm`"));
+    }
+    if matches!(top.get("arch"), Some(yaml_serde::Value::Sequence(_))) {
+        return Err(not_supported("`arch` as a list (multi-arch recipes)"));
+    }
+    Ok(())
 }
 
 fn default_name(origin: &Path) -> String {
