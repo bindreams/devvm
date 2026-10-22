@@ -20,6 +20,7 @@ thiserror = "2"
 tempfile = "3"
 yaml_serde = "0.10"
 bytesize = "2.7.0"
+sha2 = "0.11.1"
 
 [dev-dependencies]
 skuld = { workspace = true }

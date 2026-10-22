@@ -7,6 +7,7 @@ use crate::{Error, ErrorKind, GuestKind, Result};
 
 pub mod embedded;
 pub mod file;
+pub mod hash;
 pub mod model;
 
 pub use model::{CopyFrom, PerArch, Pin, Recipe, Resources, Setting, Shell, Source, Step, UacMode};
