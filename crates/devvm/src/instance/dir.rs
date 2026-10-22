@@ -6,9 +6,13 @@ use std::sync::Arc;
 use crate::exit::Progress;
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
-use crate::instance::record::{InstanceId, InstanceRecord, RecordRead};
+use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead};
 use crate::store::lock::FileLock;
 use crate::{Error, ErrorKind, Result};
+
+#[cfg(test)]
+#[path = "dir_tests.rs"]
+mod dir_tests;
 
 /// A handle on the instance `instances/<name>`, remembering which instance (by id) that name was when it was opened.
 ///
@@ -69,7 +73,7 @@ impl InstanceDir {
 
     /// The record on disk. `NotFound` unless it is this handle's instance.
     pub(crate) fn record(&self) -> Result<InstanceRecord> {
-        match InstanceRecord::read(&self.path)? {
+        match self.locks.read_record(&self.path)? {
             RecordRead::Valid(record) if record.id == self.id => Ok(*record),
             RecordRead::Valid(_) | RecordRead::Absent => Err(self.gone()),
             RecordRead::Corrupt(why) => Err(Error::new(
@@ -81,6 +85,11 @@ impl InstanceDir {
                 ),
             )),
         }
+    }
+
+    /// The owner marker on disk, whichever instance it names.
+    pub(crate) fn marker(&self) -> Result<MarkerRead> {
+        self.locks.read_marker(&self.path)
     }
 
     fn what(&self) -> String {
@@ -141,10 +150,15 @@ impl InstanceDir {
 
     /// Removes the instance: the name vanishes at once (a rename), then the files and the lock files go.
     ///
-    /// A rename that fails (Windows refuses while another process has a file inside open) deletes nothing and is an
-    /// error naming the instance; a retry may succeed. Failing to delete the renamed directory is only a warning: the
-    /// reaper finishes it.
+    /// A rename that fails deletes nothing and is an error naming the instance; a retry may succeed. devvm's own
+    /// readers cannot cause it (the rename excludes them); Windows refuses it while another program has a file inside
+    /// open. Failing to delete the renamed directory is only a warning: the reaper finishes it.
     pub(crate) fn destroy(&self, op: OpExclusive) -> Result<()> {
+        self.destroy_with(op, &mut || {})
+    }
+
+    /// `destroy` with `before_wait` run just before it waits for the readers of instance files to finish.
+    pub(crate) fn destroy_with(&self, op: OpExclusive, before_wait: &mut dyn FnMut()) -> Result<()> {
         self.check(&op)?;
         self.record()?;
         let dead = self
@@ -152,17 +166,20 @@ impl InstanceDir {
             .parent()
             .expect("an instance path has a parent")
             .join(format!(".dead-{}", self.id));
-        std::fs::rename(&self.path, &dead).map_err(|e| {
-            Error::io(
-                ErrorKind::Io,
-                format!(
-                    "cannot remove instance {}: cannot rename {} (is another devvm command reading it? retry)",
-                    self.name,
-                    self.path.display()
-                ),
-                e,
-            )
-        })?;
+        self.locks
+            .renaming(before_wait, || std::fs::rename(&self.path, &dead))?
+            .map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!(
+                        "cannot remove instance {}: cannot rename {} (does a program have a file inside open? \
+                         close it and retry)",
+                        self.name,
+                        self.path.display()
+                    ),
+                    e,
+                )
+            })?;
         if let Err(e) = std::fs::remove_dir_all(&dead) {
             self.progress.message(&format!(
                 "instance {} is removed, but {} could not be deleted ({e}); the next devvm command retries",

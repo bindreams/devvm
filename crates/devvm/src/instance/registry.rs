@@ -92,7 +92,7 @@ impl Registry {
     /// The instance called `name`. `NotFound` if there is none.
     pub(crate) fn open(&self, name: &InstanceName) -> Result<InstanceDir> {
         let path = self.root.join(name.as_str());
-        match InstanceRecord::read(&path)? {
+        match self.locks.read_record(&path)? {
             RecordRead::Valid(record) => Ok(self.handle(record.id, record.name)),
             RecordRead::Absent => Err(Error::new(ErrorKind::NotFound, format!("no instance called {name}"))),
             RecordRead::Corrupt(why) => Err(Error::new(

@@ -195,3 +195,55 @@ fn remove_deletes_both_files_and_ids_lists_only_present_ones(#[fixture(anna_home
     assert_eq!(locks.ids().unwrap(), vec![second]);
     locks.remove(&first);
 }
+
+#[skuld::test]
+fn renaming_waits_for_a_reader_and_the_reader_never_waits_for_another_reader(#[fixture(anna_home)] home: &Path) {
+    let locks = locks(home);
+    drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
+    let path = home.join("locks").join("instances.dir");
+    let log = std::sync::Mutex::new(Vec::new());
+    let (contended, contention) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let renamer = locks
+            .reading(|| {
+                let mut other = FileLock::open(&path).unwrap();
+                assert!(other.try_lock(Mode::Shared).unwrap(), "readers share");
+                other.unlock().unwrap();
+                let renamer = scope.spawn(|| {
+                    locks
+                        .renaming(&mut || contended.send(()).unwrap(), || {
+                            log.lock().unwrap().push("rename")
+                        })
+                        .unwrap();
+                });
+                // The renamer found the readers' lock taken: it waits until this closure returns.
+                contention.recv().unwrap();
+                log.lock().unwrap().push("reader done");
+                renamer
+            })
+            .unwrap();
+        renamer.join().unwrap();
+    });
+    assert_eq!(*log.lock().unwrap(), ["reader done", "rename"]);
+}
+
+#[skuld::test]
+fn a_reader_cannot_start_while_a_directory_is_renamed(#[fixture(anna_home)] home: &Path) {
+    let locks = locks(home);
+    drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
+    let path = home.join("locks").join("instances.dir");
+    locks
+        .renaming(&mut || {}, || {
+            let mut reader = FileLock::open(&path).unwrap();
+            assert!(!reader.try_lock(Mode::Shared).unwrap());
+        })
+        .unwrap();
+}
+
+#[skuld::test]
+fn reading_with_no_lock_file_runs_and_creates_nothing(#[fixture(anna_home)] home: &Path) {
+    let locks = locks(home);
+    assert_eq!(locks.reading(|| 7).unwrap(), 7);
+    assert!(!home.join("locks").exists());
+}

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::contain::VmProcess;
 use crate::instance::locks::Probe;
 use crate::instance::name::InstanceName;
-use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
+use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead};
 use crate::instance::registry::Registry;
 use crate::store::lock::FileLock;
 use crate::{Error, ErrorKind};
@@ -135,7 +135,7 @@ impl Registry {
     // Placed instances ------------------------------------------------------------------------------------------------
 
     fn reap_placed(&self, name: &str, path: &Path, report: &mut ReapReport) {
-        let (record, marker) = (InstanceRecord::read(path), read_marker(path));
+        let (record, marker) = (self.locks().read_record(path), self.locks().read_marker(path));
         // A newer devvm's instance, or a file we cannot read for another reason, is never trusted and never touched.
         if let Some(error) = record.as_ref().err().or(marker.as_ref().err()) {
             report.warn(self, format!("leaving instance {name} alone: {}", error.message()));
@@ -182,7 +182,7 @@ impl Registry {
             }
         };
         // The marker is read under the lock: an ownerless instance may have been flipped since the first read.
-        match read_marker(path) {
+        match self.locks().read_marker(path) {
             Ok(MarkerRead::Valid(marker)) if marker.owner == Owner::Process && marker.id == id => {}
             Ok(_) => return,
             Err(e) => {
@@ -272,7 +272,11 @@ impl Registry {
         getrandom::fill(&mut suffix).expect("the OS random number generator is available");
         let parent = self.quarantine_root().join("instances");
         let target = parent.join(format!("{name}-{}", hex::encode(suffix)));
-        let moved = std::fs::create_dir_all(&parent).and_then(|()| std::fs::rename(path, &target));
+        let moved = std::fs::create_dir_all(&parent).and_then(|()| {
+            self.locks()
+                .renaming(&mut || {}, || std::fs::rename(path, &target))
+                .map_err(|e| std::io::Error::other(e.message().to_owned()))?
+        });
         match moved {
             Ok(()) => {
                 self.progress().message(&format!(
@@ -309,11 +313,11 @@ impl Registry {
                     Err(_) => unattributed = true,
                 }
             } else if !name.starts_with('.') {
-                let from_record = match InstanceRecord::read(&path) {
+                let from_record = match self.locks().read_record(&path) {
                     Ok(RecordRead::Valid(record)) => Some(record.id),
                     _ => None,
                 };
-                let from_marker = match read_marker(&path) {
+                let from_marker = match self.locks().read_marker(&path) {
                     Ok(MarkerRead::Valid(marker)) => Some(marker.id),
                     _ => None,
                 };
