@@ -1,6 +1,7 @@
 //! devvm: disposable virtual machines for tests.
 
 pub mod config;
+pub(crate) mod contain;
 pub mod dirs;
 pub mod error;
 pub mod exit;
@@ -33,6 +34,7 @@ mod test_helpers {
 
     const HELPERS: &[(&str, HelperFn)] = &[
         ("hold-lock", crate::store::lock::lock_tests::hold_lock),
+        ("sleeper", crate::contain::contain_tests::sleeper),
         ("layer-builder", crate::store::layers::cross_tests::layer_builder),
         ("lease-holder", crate::store::layers::gc_tests::lease_holder),
         ("fetch-artifact", crate::store::fetch::http_tests::fetch_artifact),
