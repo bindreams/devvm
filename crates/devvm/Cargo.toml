@@ -13,6 +13,7 @@ harness = false
 
 [dependencies]
 hex = "0.4"
+home = "0.5"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
