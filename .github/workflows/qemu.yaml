@@ -172,7 +172,8 @@ jobs:
           set -euo pipefail
           source qemu/pin.env
           zip="${RUNNER_TEMP}/zip/qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
-          actual="$(sha256sum "$zip")"
+          # Hash stdin: RUNNER_TEMP has backslashes, and sha256sum escapes such a name and prefixes the hash with `\`.
+          actual="$(sha256sum < "$zip")"
           if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
             echo "::error::the downloaded zip is not the one the build produced: ${actual%% *} != ${EXPECTED_SHA256}"
             exit 1
@@ -264,7 +265,7 @@ jobs:
         run: |
           set -euo pipefail
           source qemu/pin.env
-          actual="$(sha256sum "${RUNNER_TEMP}/release/qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip")"
+          actual="$(sha256sum < "${RUNNER_TEMP}/release/qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip")"
           if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
             echo "::error::the zip to publish is not the one the tests ran on: ${actual%% *} != ${EXPECTED_SHA256}"
             exit 1
@@ -328,7 +329,7 @@ jobs:
             curl -fsSL -o "${RUNNER_TEMP}/${asset}" "${base}/${asset}"
             gh attestation verify "${RUNNER_TEMP}/${asset}" -R "$GITHUB_REPOSITORY" --signer-workflow "$signer"
           done
-          actual="$(sha256sum "${RUNNER_TEMP}/${zip}")"
+          actual="$(sha256sum < "${RUNNER_TEMP}/${zip}")"
           if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
             echo "::error::the published zip is not the tested one: ${actual%% *} != ${EXPECTED_SHA256}"
             exit 1

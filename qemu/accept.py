@@ -112,15 +112,16 @@ class Qmp:
             [str(a) for a in argv], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, env=env
         )
 
+    def stderr_text(self) -> str:
+        return self.stderr_path.read_text(encoding="utf-8", errors="replace")  # QEMU writes UTF-8 (activeCodePage)
+
     def receive(self) -> dict:
         # Blocks until QEMU speaks or exits; EOF means it exited, usually because a path did not open.
         line = self.proc.stdout.readline()
         if not line:
             code = self.proc.wait()
             self.stderr.flush()
-            raise AssertionError(
-                f"QEMU exited {code} before replying; stderr: {self.stderr_path.read_text(errors='replace')}"
-            )
+            raise AssertionError(f"QEMU exited {code} before replying; stderr: {self.stderr_text()}")
         return json.loads(line)
 
     def command(self, name: str) -> dict:
@@ -131,11 +132,15 @@ class Qmp:
             if "return" in message or "error" in message:
                 return message
 
-    def close(self) -> int:
+    def close(self, quit_acknowledged: bool) -> int:
+        """Reap QEMU. After an acknowledged `quit` it exits by itself; otherwise it would idle on its closed stdin."""
+        if not quit_acknowledged:
+            self.proc.kill()
         try:
             self.proc.stdin.close()
         except OSError:
             pass  # QEMU already exited; its exit code is checked by the caller
+        self.proc.stdout.read()  # to EOF, so QEMU never writes (its SHUTDOWN event) into a closed pipe
         self.proc.stdout.close()
         code = self.proc.wait()
         self.stderr.close()
@@ -160,6 +165,7 @@ def firmware_and_drive_open(z: Zip, system: str, machine: list, code: str, vars_
         "-serial", f"file:{log}",
     ]  # fmt: skip
     session = Qmp(argv, z.env, z.user_dir / f"stderr {system}.txt")
+    quit_acknowledged = False
     try:
         greeting = session.receive()
         assert "QMP" in greeting, f"first message is not a QMP greeting: {greeting}"
@@ -167,9 +173,10 @@ def firmware_and_drive_open(z: Zip, system: str, machine: list, code: str, vars_
         status = session.command("query-status")["return"]
         assert status["running"] is False, f"query-status: {status}"
         assert "return" in session.command("quit")
+        quit_acknowledged = True
     finally:
-        code_ = session.close()
-    assert code_ == 0, f"{system} exited {code_}; stderr: {session.stderr_path.read_text(errors='replace')}"
+        code_ = session.close(quit_acknowledged)
+    assert code_ == 0, f"{system} exited {code_}; stderr: {session.stderr_text()}"
     assert log.exists(), f"{log} was not created"
 
 

@@ -44,7 +44,7 @@ download() {
 verify_sha256() {
     stage "b: sha256"
     local actual
-    actual="$(sha256sum "$WORK/$tarball")"
+    actual="$(sha256sum < "$WORK/$tarball")"
     actual="${actual%% *}"
     if [[ "$actual" != "$QEMU_SHA256" ]]; then
         fail "sha256 mismatch for ${tarball_url}: expected ${QEMU_SHA256}, got ${actual}"
