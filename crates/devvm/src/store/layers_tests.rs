@@ -186,6 +186,19 @@ fn failed_publish_after_the_rename_does_not_report_a_missing_staging_dir(#[fixtu
 }
 
 #[skuld::test]
+fn sweep_reports_a_directory_it_cannot_list(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let not_a_dir = home.join("plain-file");
+    std::fs::write(&not_a_dir, b"x").unwrap();
+    assert_eq!(env.store.sweep_leftovers(&not_a_dir), 0);
+    let messages = env.progress.messages();
+    assert!(
+        messages.iter().any(|m| m.contains("cannot list") && m.contains("plain-file")),
+        "{messages:?}"
+    );
+}
+
+#[skuld::test]
 fn build_sweeps_leftover_current_temp_files(#[fixture(anna_home)] home: &Path) {
     let env = env(home);
     let key_dir = env.dirs.layers().join(key(1).to_string());

@@ -317,3 +317,102 @@ fn generation_dirs_and_noise_are_told_apart(#[fixture(anna_home)] home: &Path) {
         "gc touches only generation directories"
     );
 }
+
+/// A child of `key(1)`'s first generation, whose parent has since been rebuilt: the old parent is kept only through
+/// the child's record. Returns (old parent, child).
+fn child_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
+    let parent = build_expiring(env, key(1), None, Some(t0() + days(90)));
+    let old_parent = parent.tip().layer_ref();
+    let child = build_expiring(env, key(2), Some(&parent), Some(t0() + days(120)));
+    let child_ref = child.tip().layer_ref();
+    drop((parent, child));
+    env.clock.set(t0() + days(85));
+    drop(build_expiring(env, key(1), None, Some(t0() + days(85) + days(90))));
+    (old_parent, child_ref)
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancestors(
+    #[fixture(anna_home)] home: &Path,
+) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    std::fs::write(env.store.generation_dir(&child).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(error.message().contains(&child.generation.to_string()), "{error}");
+    assert!(exists(&env, &old_parent), "the unreadable child may still need its parent");
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    std::fs::remove_file(env.store.generation_dir(&child).join("meta.json")).unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(exists(&env, &old_parent));
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, newest] = three_generations(&env, 1);
+    std::fs::write(env.dirs.layers().join(key(1).to_string()).join("current"), b"not a generation").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(error.message().contains(&key(1).to_string()), "{error}");
+    assert!(exists(&env, &oldest) && exists(&env, &newest));
+}
+
+#[skuld::test]
+fn gc_ignores_a_current_that_names_a_generation_that_is_gone(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, newest] = three_generations(&env, 1);
+    std::fs::remove_dir_all(env.store.generation_dir(&newest)).unwrap();
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert!(report.deleted.contains(&oldest), "{report:?}");
+}
+
+#[skuld::test]
+fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting_it(
+    #[fixture(anna_home)] home: &Path,
+) {
+    let env = env(home);
+    let [oldest, middle, newest] = three_generations(&env, 1);
+    std::fs::write(env.store.generation_dir(&oldest).join("meta.json"), b"{ torn").unwrap();
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert_eq!(report.deleted, vec![middle]);
+    assert!(exists(&env, &newest));
+    assert!(!env.store.generation_dir(&oldest).exists());
+    let quarantine = env.dirs.quarantine();
+    let [moved] = names(&quarantine).try_into().unwrap();
+    assert_eq!(std::fs::read(quarantine.join(moved).join("disk.qcow2")).unwrap(), b"disk");
+    assert!(
+        env.progress
+            .messages()
+            .iter()
+            .any(|m| m.contains("unreadable") && m.contains(&oldest.generation.to_string())),
+        "{:?}",
+        env.progress.messages()
+    );
+}
+
+#[skuld::test]
+fn gc_skips_directories_whose_names_are_not_canonical_lowercase_hex(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [_oldest, _middle, _newest] = three_generations(&env, 1);
+    // An uppercase generation directory inside a real key, and an uppercase key directory: neither is devvm's.
+    let key_dir = env.dirs.layers().join(key(1).to_string());
+    let shouting_generation = key_dir.join(Generation::from_bytes([0xab; 16]).to_string().to_uppercase());
+    std::fs::create_dir(&shouting_generation).unwrap();
+    std::fs::write(shouting_generation.join("disk.qcow2"), b"disk").unwrap();
+    let shouting_key = env.dirs.layers().join(key(0xcd).to_string().to_uppercase());
+    let inner = shouting_key.join(Generation::from_bytes([0xef; 16]).to_string());
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::write(inner.join("disk.qcow2"), b"disk").unwrap();
+
+    env.store.gc(&Fixed(vec![])).unwrap();
+    assert!(shouting_generation.join("disk.qcow2").is_file());
+    assert!(inner.join("disk.qcow2").is_file());
+}

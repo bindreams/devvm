@@ -188,10 +188,17 @@ impl LayerStore {
     /// Moves a generation whose record is unreadable to quarantine, unless someone holds a lease on it: then the
     /// directory stays where it is and only a copy of its record is kept. Never deletes anything.
     fn quarantine_generation(&self, layer: &LayerRef) -> Result<()> {
+        let mut lock = self.generation_lock(layer)?;
+        let exclusive = lock.try_lock(Mode::Exclusive)?;
+        self.quarantine_record(layer, exclusive)
+    }
+
+    /// `quarantine_generation` for a caller that already tried the generation's exclusive lock: `exclusive` says
+    /// whether it holds it.
+    pub(super) fn quarantine_record(&self, layer: &LayerRef, exclusive: bool) -> Result<()> {
         let source = self.generation_dir(layer);
         let dir = self.quarantine_path(&format!("{}-{}", layer.key, layer.generation))?;
-        let mut lock = self.generation_lock(layer)?;
-        if lock.try_lock(Mode::Exclusive)? {
+        if exclusive {
             match std::fs::rename(&source, &dir) {
                 Ok(()) => {
                     self.progress.message(&format!(
@@ -332,15 +339,10 @@ impl LayerStore {
 
     /// The generation `<key>/current` names; `None` when there is none or it is unusable.
     fn read_current(&self, key: &LayerKey, repair: bool) -> Result<Option<Generation>> {
-        let path = self.key_dir(key).join("current");
-        let text = match std::fs::read(&path) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(Error::io(ErrorKind::Io, format!("cannot read {}", path.display()), e)),
-        };
-        match text.trim().parse::<Generation>() {
-            Ok(generation) => Ok(Some(generation)),
-            Err(_) => {
+        match self.read_current_file(key)? {
+            CurrentFile::Absent => Ok(None),
+            CurrentFile::Generation(generation) => Ok(Some(generation)),
+            CurrentFile::Unreadable(path) => {
                 self.progress.message(&format!(
                     "{} is unreadable; treating the layer as missing",
                     path.display()
@@ -351,6 +353,19 @@ impl LayerStore {
                 Ok(None)
             }
         }
+    }
+
+    pub(super) fn read_current_file(&self, key: &LayerKey) -> Result<CurrentFile> {
+        let path = self.key_dir(key).join("current");
+        let text = match std::fs::read(&path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CurrentFile::Absent),
+            Err(e) => return Err(Error::io(ErrorKind::Io, format!("cannot read {}", path.display()), e)),
+        };
+        Ok(match text.trim().parse::<Generation>() {
+            Ok(generation) => CurrentFile::Generation(generation),
+            Err(_) => CurrentFile::Unreadable(path),
+        })
     }
 
     // Build -----------------------------------------------------------------------------------------------------------
@@ -461,11 +476,24 @@ impl LayerStore {
     /// holds the key's build lock, and a live builder holds it for its whole build, so every such entry is dead.
     /// Returns how many staging directories it removed.
     pub(super) fn sweep_leftovers(&self, key_dir: &Path) -> usize {
-        let Ok(entries) = std::fs::read_dir(key_dir) else {
-            return 0;
+        let entries = match std::fs::read_dir(key_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                self.progress
+                    .message(&format!("cannot list {} for leftovers: {e}", key_dir.display()));
+                return 0;
+            }
         };
         let mut staging_removed = 0;
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    self.progress
+                        .message(&format!("cannot list an entry of {}: {e}", key_dir.display()));
+                    continue;
+                }
+            };
             let name = entry.file_name().to_string_lossy().into_owned();
             let result = if name.starts_with(".staging-") {
                 std::fs::remove_dir_all(entry.path()).inspect(|()| staging_removed += 1)
@@ -524,6 +552,14 @@ fn date_text(time: SystemTime) -> String {
         Ok(timestamp) => timestamp.to_zoned(jiff::tz::TimeZone::UTC).date().to_string(),
         Err(_) => "an unrepresentable date".to_owned(),
     }
+}
+
+/// What `<key>/current` holds.
+pub(super) enum CurrentFile {
+    Absent,
+    Generation(Generation),
+    /// Present but not a generation id; the file's path.
+    Unreadable(PathBuf),
 }
 
 /// Writes `bytes` to a new file and flushes it to disk.

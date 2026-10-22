@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 
 use super::meta::{self, MetaRead};
-use super::{ChainLease, Generation, LayerLease, LayerRef, LayerStore};
+use super::{ChainLease, CurrentFile, Generation, LayerLease, LayerRef, LayerStore};
 use crate::recipe::hash::LayerKey;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
@@ -80,7 +80,9 @@ impl LayerStore {
     /// Deletes every generation that is neither a key's `current`, nor in `reachable`'s chains, nor an ancestor of
     /// one of those, and that nobody holds a lease on. Removes staging directories of keys nobody is building.
     ///
-    /// A `reachable` error aborts the pass before anything is deleted.
+    /// A `reachable` error, or a kept layer whose record or `current` file is unreadable (so its ancestors cannot be
+    /// known), aborts the pass before anything is deleted. An unkept generation whose own record is unreadable is
+    /// moved to quarantine, not deleted.
     pub fn gc(&self, reachable: &dyn Reachability) -> Result<GcReport> {
         let mut gc = self.gc_lock()?;
         gc.lock(
@@ -93,17 +95,50 @@ impl LayerStore {
 
         let mut keep: HashSet<LayerRef> = chains.into_iter().flatten().collect();
         for key in &keys {
-            if let Some(generation) = self.read_current(key, false)? {
-                keep.insert(LayerRef { key: *key, generation });
+            match self.read_current_file(key)? {
+                CurrentFile::Absent => {}
+                CurrentFile::Generation(generation) => {
+                    keep.insert(LayerRef { key: *key, generation });
+                }
+                CurrentFile::Unreadable(path) => {
+                    return Err(Error::new(
+                        ErrorKind::Store,
+                        format!(
+                            "cannot collect: {} is unreadable, so the layer it keeps and that layer's ancestors \
+                             are unknown; nothing was deleted",
+                            path.display()
+                        ),
+                    ));
+                }
             }
         }
         let mut pending: Vec<LayerRef> = keep.iter().copied().collect();
         while let Some(layer) = pending.pop() {
-            if let MetaRead::Valid(meta) = meta::read(&self.generation_dir(&layer))?
-                && let Some(parent) = meta.parent
-                && keep.insert(parent)
-            {
-                pending.push(parent);
+            let dir = self.generation_dir(&layer);
+            // A kept layer that is gone has no ancestors to protect.
+            if !dir.is_dir() {
+                continue;
+            }
+            match meta::read(&dir)? {
+                MetaRead::Valid(meta) => {
+                    if let Some(parent) = meta.parent
+                        && keep.insert(parent)
+                    {
+                        pending.push(parent);
+                    }
+                }
+                MetaRead::Absent | MetaRead::Corrupt(_) => {
+                    return Err(Error::new(
+                        ErrorKind::Store,
+                        format!(
+                            "cannot collect: the record of kept layer {} generation {} ({}) is unreadable, so its \
+                             ancestors are unknown; nothing was deleted",
+                            layer.key,
+                            layer.generation,
+                            dir.display()
+                        ),
+                    ));
+                }
             }
         }
 
@@ -121,7 +156,11 @@ impl LayerStore {
         let mut keys = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|e| Error::io(ErrorKind::Io, "cannot list the layer store", e))?;
-            if let Ok(key) = entry.file_name().to_string_lossy().parse::<LayerKey>() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Only the canonical lowercase spelling is devvm's; another spelling maps to a path that may not exist.
+            if let Ok(key) = name.parse::<LayerKey>()
+                && key.to_string() == name
+            {
                 keys.push(key);
             }
         }
@@ -134,9 +173,13 @@ impl LayerStore {
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", key_dir.display()), e))?;
         for entry in entries {
             let entry = entry.map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", key_dir.display()), e))?;
-            let Ok(generation) = entry.file_name().to_string_lossy().parse::<Generation>() else {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(generation) = name.parse::<Generation>() else {
                 continue;
             };
+            if generation.to_string() != name {
+                continue;
+            }
             let layer = LayerRef { key: *key, generation };
             if keep.contains(&layer) {
                 continue;
@@ -146,11 +189,20 @@ impl LayerStore {
                 report.held.push(layer);
                 continue;
             }
+            if let MetaRead::Corrupt(why) = meta::read(&entry.path())? {
+                self.progress.message(&format!(
+                    "layer record {} is unreadable ({why}); moving the layer to quarantine instead of deleting it",
+                    entry.path().display()
+                ));
+                self.quarantine_record(&layer, true)?;
+                continue;
+            }
             match std::fs::remove_dir_all(entry.path()) {
                 Ok(()) => {
                     report.deleted.push(layer);
                     drop(lock);
-                    let _ = std::fs::remove_file(self.lock_path(&format!("{key}-{generation}.gen")));
+                    // Best effort: a lock file left behind is reused by the next holder of that generation.
+                    let _ =std::fs::remove_file(self.lock_path(&format!("{key}-{generation}.gen")));
                 }
                 Err(e) => {
                     self.progress.message(&format!(
