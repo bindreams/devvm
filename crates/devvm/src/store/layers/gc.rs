@@ -1,8 +1,10 @@
 //! Garbage collection and the record guard instance records are written under.
 //!
-//! Lock order, everywhere: `gc.lock`, then `<key>.build`, then a `.gen` lock. Collection holds `gc.lock` exclusively
-//! so it cannot interleave with a lookup, a publish or the writing of an instance record, all of which hold it
-//! shared.
+//! Collection holds `gc.lock` exclusively, so it cannot interleave with a lookup, a publish or the writing of an
+//! instance record, all of which hold it shared.
+//!
+//! Deadlock freedom: a build takes `<key>.build` and then, shared, `gc.lock`; collection takes `gc.lock` and then only
+//! `try_lock`s `<key>.build` and `.gen` locks, never waiting on them. Nothing waits in a cycle.
 
 use std::collections::HashSet;
 
