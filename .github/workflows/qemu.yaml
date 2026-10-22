@@ -93,6 +93,9 @@ jobs:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: uv run --script qemu/pe_deps.py bundle --stage "$STAGE" --search "${MSYS2_LOCATION}\ucrt64\bin"
 
+      - name: Test the licence tooling
+        run: uv run --with pytest pytest qemu/test_third_party.py
+
       # Licence texts, THIRD-PARTY.txt, SOURCE.txt and the source archives of the bundled copyleft libraries. After
       # `bundle`, so the list matches the DLLs shipped; before `zip`, so the files are in the zip.
       - name: Document and mirror the bundled libraries

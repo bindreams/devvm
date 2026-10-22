@@ -72,10 +72,17 @@ def pacman(*args: str) -> str:
 
 
 def msys_prefix() -> tuple[str, Path]:
-    """The MSYSTEM prefix as the MSYS2 shell writes it ("/ucrt64") and as Windows writes it."""
-    prefix = os.environ["MSYSTEM_PREFIX"]
-    native = subprocess.run(["cygpath", "-w", prefix], capture_output=True, text=True, check=True).stdout.strip()
-    return prefix, Path(native)
+    """The MSYSTEM prefix as `pacman` prints paths ("/ucrt64") and as Windows writes it.
+
+    The MSYS2 shell converts POSIX paths in the environment of a native program (this python), so MSYSTEM_PREFIX can
+    arrive as "D:/a/_temp/msys64/ucrt64"; `cygpath -u` maps either form back.
+    """
+
+    def cygpath(flag: str, path: str) -> str:
+        return subprocess.run(["cygpath", flag, path], capture_output=True, text=True, check=True).stdout.strip()
+
+    posix = cygpath("-u", os.environ["MSYSTEM_PREFIX"])
+    return posix, Path(cygpath("-w", posix))
 
 
 def package_base(name: str, version: str) -> str:
@@ -175,23 +182,34 @@ def collect(stage: Path) -> list[Package]:
     return list(packages.values())
 
 
+def licence_files(listing: str, prefix: str) -> list[tuple[str, Path]]:
+    """The licence files in a `pacman -Ql` listing (`<package> <absolute path>` per line), as (path under `prefix`,
+    path under `licenses/<package>/`). The package's own directory under share/licenses is dropped from the second."""
+    root = f"{prefix}/share/licenses/"
+    found = []
+    for line in listing.splitlines():
+        path = line.split(" ", 1)[1] if " " in line else ""
+        if not path.startswith(root) or path.endswith("/"):
+            continue
+        inner = Path(path[len(root) :])
+        found.append((path[len(prefix) + 1 :], Path(*inner.parts[1:] or inner.parts[-1:])))
+    return found
+
+
 def copy_licenses(stage: Path, packages: list[Package]) -> None:
     prefix, native = msys_prefix()
-    root = f"{prefix}/share/licenses/"
     for package in packages:
-        count = 0
-        for line in pacman("-Ql", package.name).splitlines():
-            path = line.split(" ", 1)[1] if " " in line else ""
-            if not path.startswith(root) or path.endswith("/"):
-                continue
-            relative = path[len(prefix) + 1 :]
-            inner = Path(path[len(root) :])
-            target = stage / "licenses" / package.short / Path(*inner.parts[1:] or inner.parts[-1:])
+        listing = pacman("-Ql", package.name)
+        files = licence_files(listing, prefix)
+        if not files:
+            raise Failure(
+                f"{package.name}: the package installs no licence file under {prefix}/share/licenses; "
+                f"pacman -Ql began: {listing.splitlines()[:5]}"
+            )
+        for relative, inner in files:
+            target = stage / "licenses" / package.short / inner
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(native / relative, target)
-            count += 1
-        if count == 0:
-            raise Failure(f"{package.name}: the package installs no licence file under share/licenses")
 
 
 def mirror_sources(sources: Path, packages: list[Package]) -> None:
