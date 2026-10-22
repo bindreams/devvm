@@ -45,3 +45,194 @@ fn content_range_headers_parse() {
         assert_eq!(parse_content_range(bad), None, "{bad:?}");
     }
 }
+
+// Over real HTTP ======================================================================================================
+
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+use std::process::{Child, ChildStderr, ChildStdout, Stdio};
+use std::sync::Arc;
+use std::sync::mpsc;
+
+use sha2::{Digest, Sha256 as Sha2};
+
+use super::{Artifact, Fetcher, HttpTransport};
+use crate::exit::{NullProgress, StderrProgress};
+use crate::test_support::fixtures::anna_home;
+use crate::test_support::helper;
+use crate::test_support::http::{Behavior, TestServer};
+use crate::{Dirs, ErrorKind, Sha256};
+
+const ETAG: &str = "\"etag-1\"";
+
+fn data(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8).collect()
+}
+
+fn artifact_for(server: &TestServer, data: &[u8]) -> Artifact {
+    Artifact {
+        url: server.url("/files/disk.img"),
+        sha256: Sha256::from_bytes(Sha2::digest(data).into()),
+    }
+}
+
+/// Helper process: fetches `args[1]` (pinned to sha256 `args[2]`) into downloads dir `args[0]` over real HTTP,
+/// narrating on stderr, then prints `done <path>`.
+pub fn fetch_artifact(args: &[String]) {
+    let artifact = Artifact {
+        url: args[1].clone(),
+        sha256: args[2].parse().unwrap(),
+    };
+    let transport = Arc::new(HttpTransport::new().unwrap());
+    let fetcher = Fetcher::new(args[0].clone().into(), transport, Arc::new(StderrProgress));
+    let path = fetcher.fetch(&artifact).unwrap();
+    println!("done {}", path.display());
+}
+
+struct Child2 {
+    child: Child,
+    stdout: BufReader<ChildStdout>,
+    stderr: BufReader<ChildStderr>,
+}
+
+impl Child2 {
+    fn start(downloads: &Path, artifact: &Artifact) -> Child2 {
+        let mut child = helper::command(
+            "fetch-artifact",
+            &[downloads.to_str().unwrap(), &artifact.url, &artifact.sha256.to_string()],
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+        Child2 {
+            stdout: BufReader::new(child.stdout.take().unwrap()),
+            stderr: BufReader::new(child.stderr.take().unwrap()),
+            child,
+        }
+    }
+
+    /// Reads stderr until a line containing `needle`; returns that line.
+    fn expect_stderr(&mut self, needle: &str) -> String {
+        loop {
+            let mut line = String::new();
+            assert!(
+                self.stderr.read_line(&mut line).unwrap() > 0,
+                "the child exited before printing `{needle}`"
+            );
+            if line.contains(needle) {
+                return line;
+            }
+        }
+    }
+
+    fn expect_done(&mut self) -> String {
+        loop {
+            let mut line = String::new();
+            assert!(
+                self.stdout.read_line(&mut line).unwrap() > 0,
+                "the child exited without `done`"
+            );
+            if let Some(path) = line.trim_end().strip_prefix("done ") {
+                return path.to_owned();
+            }
+        }
+    }
+}
+
+#[skuld::test]
+fn http_transport_resumes_with_range_and_if_range(#[fixture(anna_home)] home: &Path) {
+    let body = data(300_000);
+    let server = TestServer::start(body.clone(), ETAG);
+    server.script(vec![Behavior::AbortAfter(81_920)]);
+    let artifact = artifact_for(&server, &body);
+    let downloads = Dirs::under(home).downloads();
+    let fetcher = Fetcher::new(
+        downloads.clone(),
+        Arc::new(HttpTransport::new().unwrap()),
+        Arc::new(NullProgress),
+    );
+
+    let error = fetcher.fetch(&artifact).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Download, "{error}");
+    let part = downloads.join(format!("{}.part", artifact.sha256));
+    let kept = std::fs::metadata(&part).unwrap().len();
+    assert!(kept > 0 && kept <= 81_920, "{kept}");
+
+    let path = fetcher.fetch(&artifact).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), body);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].range.as_deref(), Some(format!("bytes={kept}-").as_str()));
+    assert_eq!(requests[1].if_range.as_deref(), Some(ETAG));
+}
+
+#[skuld::test]
+fn concurrent_first_fetch_downloads_once(#[fixture(anna_home)] home: &Path) {
+    let body = data(1_000_000);
+    let server = TestServer::start(body.clone(), ETAG);
+    let (paused_tx, paused_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    server.script(vec![Behavior::PauseAfter {
+        after: 65_536,
+        paused: paused_tx,
+        release: release_rx,
+    }]);
+    let artifact = artifact_for(&server, &body);
+    let downloads = Dirs::under(home).downloads();
+
+    let mut a = Child2::start(&downloads, &artifact);
+    a.expect_stderr("downloading");
+    paused_rx.recv().unwrap();
+    let mut b = Child2::start(&downloads, &artifact);
+    b.expect_stderr("waiting for another devvm process");
+
+    release_tx.send(()).unwrap();
+    let (a_path, b_path) = (a.expect_done(), b.expect_done());
+    assert_eq!(a_path, b_path);
+    assert_eq!(std::fs::read(&a_path).unwrap(), body);
+    assert!(a.child.wait().unwrap().success() && b.child.wait().unwrap().success());
+    assert_eq!(server.requests().iter().filter(|r| r.method == "GET").count(), 1);
+}
+
+#[skuld::test]
+fn ctrl_c_mid_download_resumes(#[fixture(anna_home)] home: &Path) {
+    const MIB: usize = 1024 * 1024;
+    let body = data(4 * MIB + 123);
+    let server = TestServer::start(body.clone(), ETAG);
+    let (paused_tx, paused_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    server.script(vec![Behavior::PauseAfter {
+        after: 3 * MIB,
+        paused: paused_tx,
+        release: release_rx,
+    }]);
+    let artifact = artifact_for(&server, &body);
+    let downloads = Dirs::under(home).downloads();
+
+    let mut a = Child2::start(&downloads, &artifact);
+    a.expect_stderr("3145728");
+    paused_rx.recv().unwrap();
+    // Process death is the Ctrl-C equivalent on every OS; a console handler is the CLI's business.
+    a.child.kill().unwrap();
+    a.child.wait().unwrap();
+
+    let part = downloads.join(format!("{}.part", artifact.sha256));
+    let kept = std::fs::metadata(&part).unwrap().len();
+    assert!(kept >= (3 * MIB) as u64, "{kept}");
+
+    let fetcher = Fetcher::new(
+        downloads.clone(),
+        Arc::new(HttpTransport::new().unwrap()),
+        Arc::new(NullProgress),
+    );
+    // The dead downloader's lock died with it: this fetch does not wait.
+    let path = fetcher.fetch(&artifact).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), body);
+    let requests = server.requests();
+    assert_eq!(
+        requests.last().unwrap().range.as_deref(),
+        Some(format!("bytes={kept}-").as_str())
+    );
+    drop(release_tx);
+}

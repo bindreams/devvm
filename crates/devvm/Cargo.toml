@@ -29,4 +29,3 @@ percent-encoding = "2.3.2"
 
 [dev-dependencies]
 skuld = { workspace = true }
-tiny_http = "0.12.0"
