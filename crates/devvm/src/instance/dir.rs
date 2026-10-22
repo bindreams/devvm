@@ -70,7 +70,7 @@ impl InstanceDir {
     /// The record on disk. `NotFound` unless it is this handle's instance.
     pub(crate) fn record(&self) -> Result<InstanceRecord> {
         match InstanceRecord::read(&self.path)? {
-            RecordRead::Valid(record) if record.id == self.id => Ok(record),
+            RecordRead::Valid(record) if record.id == self.id => Ok(*record),
             RecordRead::Valid(_) | RecordRead::Absent => Err(self.gone()),
             RecordRead::Corrupt(why) => Err(Error::new(
                 ErrorKind::Store,

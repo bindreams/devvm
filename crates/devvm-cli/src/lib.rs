@@ -26,7 +26,7 @@ fn main() {
     skuld::run_all();
 }
 
-// Command line ====================================================================================================
+// Command line ========================================================================================================
 
 /// What the entry point's collaborators are, injected so a test can place a fault in a real code path.
 pub struct Deps {

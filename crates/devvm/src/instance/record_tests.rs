@@ -102,7 +102,7 @@ const GOLDEN: &str = r#"{
 
 fn read_valid(dir: &Path) -> InstanceRecord {
     match InstanceRecord::read(dir).unwrap() {
-        RecordRead::Valid(record) => record,
+        RecordRead::Valid(record) => *record,
         RecordRead::Absent => panic!("no record"),
         RecordRead::Corrupt(why) => panic!("corrupt: {why}"),
     }

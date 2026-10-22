@@ -1,15 +1,43 @@
 //! devvm: disposable virtual machines for tests.
 
+#[allow(
+    dead_code,
+    reason = "used by the launch path, which needs a cosca that can spawn a process suspended"
+)]
 pub(crate) mod access;
+#[allow(
+    dead_code,
+    reason = "used by the launch path, which needs a cosca that can spawn a process suspended"
+)]
 pub(crate) mod backend;
 pub mod config;
+#[allow(
+    dead_code,
+    reason = "used by the launch path, which needs a cosca that can spawn a process suspended"
+)]
 pub(crate) mod contain;
 pub mod dirs;
+#[allow(
+    dead_code,
+    reason = "used by the launch path, which needs a cosca that can spawn a process suspended"
+)]
 pub mod engine;
 pub mod error;
 pub mod exit;
+#[allow(
+    dead_code,
+    reason = "used by the launch path, which needs a cosca that can spawn a process suspended"
+)]
 pub(crate) mod guest;
+#[allow(
+    dead_code,
+    reason = "used by the launch path, which needs a cosca that can spawn a process suspended"
+)]
 pub(crate) mod host;
+#[allow(
+    dead_code,
+    reason = "used by the launch path, which needs a cosca that can spawn a process suspended"
+)]
 pub(crate) mod instance;
 pub mod recipe;
 pub mod store;

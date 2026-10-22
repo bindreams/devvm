@@ -146,15 +146,22 @@ impl Registry {
         };
         match (record, marker) {
             (RecordRead::Valid(record), MarkerRead::Valid(marker)) if record.id == marker.id => {
-                self.reap_owned(name, path, record, report);
+                self.reap_owned(name, path, *record, report);
             }
             (record, marker) => {
+                let why = match (&record, &marker) {
+                    (RecordRead::Corrupt(why), _) => format!("record.json: {why}"),
+                    (RecordRead::Absent, _) => "record.json is missing".to_owned(),
+                    (_, MarkerRead::Corrupt(why)) => format!("owner.json: {why}"),
+                    (_, MarkerRead::Absent) => "owner.json is missing".to_owned(),
+                    _ => "record.json and owner.json name different instances".to_owned(),
+                };
                 let id = match (&record, &marker) {
                     (RecordRead::Valid(record), _) => Some(record.id),
                     (_, MarkerRead::Valid(marker)) => Some(marker.id),
                     _ => None,
                 };
-                self.quarantine(name, path, id, report);
+                self.quarantine(name, path, id, &why, report);
             }
         }
     }
@@ -244,7 +251,7 @@ impl Registry {
 
     /// Moves an unreadable instance directory to `<state>/quarantine/instances/<name>-<random>`; never deletes it.
     /// When the id is known the move happens under both locks, so a live owner or a running command stops it.
-    fn quarantine(&self, name: &str, path: &Path, id: Option<InstanceId>, report: &mut ReapReport) {
+    fn quarantine(&self, name: &str, path: &Path, id: Option<InstanceId>, why: &str, report: &mut ReapReport) {
         let mut held: Vec<FileLock> = Vec::new();
         if let Some(id) = id {
             let probes = [self.locks().try_owner(&id), self.locks().try_op_exclusive(&id)];
@@ -269,7 +276,7 @@ impl Registry {
         match moved {
             Ok(()) => {
                 self.progress().message(&format!(
-                    "instance {name} is unreadable; moved it to {} (nothing was deleted)",
+                    "instance {name} is unreadable ({why}); moved it to {} (nothing was deleted)",
                     target.display()
                 ));
                 report.quarantined.push(target);
