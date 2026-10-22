@@ -18,7 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from third_party import (  # noqa: E402
     Failure,
     Package,
+    FIRMWARE_LICENCES,
     classify,
+    copy_firmware_licences,
     licence_files,
     msys_prefix,
     share_inventory,
@@ -257,3 +259,67 @@ def test_a_source_directory_missing_from_the_tarball_fails(tmp_path):
     (src / "roms/seabios").rmdir()
     with pytest.raises(Failure, match="roms/seabios"):
         share_inventory(share, src)
+
+
+def test_a_source_directory_with_no_file_in_it_fails(tmp_path):
+    # An unpopulated submodule directory exists but holds nothing to build from.
+    share = tree(tmp_path / "share", "bios-256k.bin")
+    src = source_tree(tmp_path / "src", "pc-bios/bios-256k.bin")
+    (src / "roms/seabios/README").unlink()
+    with pytest.raises(Failure, match="roms/seabios"):
+        share_inventory(share, src)
+
+
+def test_the_third_party_text_says_each_source_directory_holds_its_own_recipe(tmp_path):
+    write_third_party(tmp_path, [], "qemu-1.2.3-1", "o/r", [])
+    text = (tmp_path / "THIRD-PARTY.txt").read_text(encoding="utf-8")
+    assert "roms/Makefile" in text and "roms/edk2-build.config" in text
+    assert "pc-bios/optionrom/Makefile" in text
+    assert "its own build recipe" in text
+
+
+# The licence texts of the firmware projects ---------------------------------------------------------------------------
+
+
+def firmware_source(root: Path) -> Path:
+    for project, (directory, names) in FIRMWARE_LICENCES.items():
+        for name in names:
+            tree(root, f"{directory}/{name}")
+            (root / directory / name).write_text(f"{project}/{name}")
+    return root
+
+
+def test_the_firmware_licences_are_the_ones_the_review_named():
+    listed = {project: set(names) for project, (_, names) in FIRMWARE_LICENCES.items()}
+    assert listed == {
+        "seabios": {"COPYING", "COPYING.LESSER"},
+        "ipxe": {"COPYING", "COPYING.GPLv2", "COPYING.UBDL"},
+        "vbootrom": {"LICENSE"},
+        "qboot": {"LICENSE"},
+    }
+    assert FIRMWARE_LICENCES["seabios"][0] == "roms/seabios"
+
+
+def test_the_firmware_licence_texts_are_copied_under_licenses_qemu_firmware(tmp_path):
+    src = firmware_source(tmp_path / "src")
+    stage = tmp_path / "stage"
+    copy_firmware_licences(stage, src)
+    assert (stage / "licenses/qemu-firmware/seabios/COPYING.LESSER").read_text() == "seabios/COPYING.LESSER"
+    assert (stage / "licenses/qemu-firmware/ipxe/COPYING.UBDL").read_text() == "ipxe/COPYING.UBDL"
+    assert (stage / "licenses/qemu-firmware/vbootrom/LICENSE").read_text() == "vbootrom/LICENSE"
+    assert (stage / "licenses/qemu-firmware/qboot/LICENSE").read_text() == "qboot/LICENSE"
+
+
+def test_a_missing_firmware_licence_file_fails_and_names_it(tmp_path):
+    src = firmware_source(tmp_path / "src")
+    (src / "roms/ipxe/COPYING.UBDL").unlink()
+    with pytest.raises(Failure, match=r"roms/ipxe/COPYING\.UBDL"):
+        copy_firmware_licences(tmp_path / "stage", src)
+
+
+def test_the_third_party_text_names_the_firmware_licence_directory(tmp_path):
+    write_third_party(tmp_path, [], "qemu-1.2.3-1", "o/r", [])
+    text = (tmp_path / "THIRD-PARTY.txt").read_text(encoding="utf-8")
+    assert "licenses/qemu-firmware/<project>/" in text
+    for project in FIRMWARE_LICENCES:
+        assert project in text

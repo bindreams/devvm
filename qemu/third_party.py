@@ -51,7 +51,16 @@ BLOB_SOURCES = (
     ("pvh.bin", "pc-bios/optionrom"),
     ("keymaps/*", "pc-bios/keymaps"),
 )
-# How the prebuilt files are produced from roms/; named in THIRD-PARTY.txt.
+# Licence texts of the projects whose prebuilt firmware ships in share/, by the tarball directory that holds them.
+# Copied to licenses/qemu-firmware/<project>/; the build fails if one is missing. edk2 is in edk2-licenses.txt.
+FIRMWARE_LICENCES = {
+    "seabios": ("roms/seabios", ("COPYING", "COPYING.LESSER")),
+    "ipxe": ("roms/ipxe", ("COPYING", "COPYING.GPLv2", "COPYING.UBDL")),
+    "vbootrom": ("roms/vbootrom", ("LICENSE",)),
+    "qboot": ("roms/qboot", ("LICENSE",)),
+}
+# The top-level recipes that produce the prebuilt files from roms/; named in THIRD-PARTY.txt. Each source directory
+# also holds its own build recipe (option ROMs: pc-bios/optionrom/Makefile; vbootrom: a Makefile per chip directory).
 BLOB_RECIPES = ("roms/Makefile", "roms/edk2-build.config")
 
 
@@ -249,6 +258,19 @@ def mirror_sources(sources: Path, packages: list[Package]) -> None:
             fetch(f"{SOURCES_URL}/{package.source_asset}", target)
 
 
+def copy_firmware_licences(stage: Path, qemu_source: Path) -> None:
+    """Copy the licence texts of FIRMWARE_LICENCES from the extracted tarball to `<stage>/licenses/qemu-firmware/`."""
+    missing = [f"{directory}/{name}" for directory, names in FIRMWARE_LICENCES.values() for name in names
+               if not (qemu_source / directory / name).is_file()]  # fmt: skip
+    if missing:
+        raise Failure(f"licence files not in the QEMU tarball: {', '.join(missing)}")
+    for project, (directory, names) in FIRMWARE_LICENCES.items():
+        target = stage / "licenses" / "qemu-firmware" / project
+        target.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            shutil.copyfile(qemu_source / directory / name, target / name)
+
+
 def share_inventory(share: Path, qemu_source: Path) -> list[str]:
     """One line per entry of `share`: the prebuilt file in the tarball and the directory holding its source (a
     directory is one line, its files copied from the same directory of the tarball). Fails for a file with no entry
@@ -270,7 +292,7 @@ def share_inventory(share: Path, qemu_source: Path) -> list[str]:
             found = next((c for c in candidates if (qemu_source / c).is_file()), None)
             if found is None:
                 missing.append(candidates[0])
-            if not (qemu_source / sources[0]).is_dir():
+            if not (qemu_source / sources[0]).is_dir() or not any((qemu_source / sources[0]).iterdir()):
                 missing.append(sources[0])
             prebuilt.append(found)
         if entry.is_dir():
@@ -278,7 +300,7 @@ def share_inventory(share: Path, qemu_source: Path) -> list[str]:
         else:
             lines.append(f"  share/{entry.name}: {prebuilt[0]}, source {sources[0]}")
     if missing:
-        raise Failure(f"not in the QEMU tarball: {', '.join(dict.fromkeys(missing))}")
+        raise Failure(f"not in the QEMU tarball, or an empty directory: {', '.join(dict.fromkeys(missing))}")
     return lines
 
 
@@ -292,9 +314,10 @@ def write_third_party(stage: Path, packages: list[Package], tag: str, repo: str,
         f"  Source: {release}/qemu-{QEMU_VERSION}.tar.xz, the exact tarball this build was made from.",
         "",
         "Firmware, ROMs and keymaps (share/): prebuilt files that ship inside the QEMU tarball, not rebuilt here.",
-        "Each line names the file in the tarball and the directory of the tarball that holds its source. The recipes",
-        f"are {' and '.join(BLOB_RECIPES)}. Provenance and licences: licenses/qemu/pc-bios-README and",
-        "licenses/qemu/edk2-licenses.txt.",
+        "Each line names the file in the tarball and the tarball directory that holds its source. That directory",
+        f"holds its own build recipe (option ROMs: pc-bios/optionrom/Makefile); {' and '.join(BLOB_RECIPES)}",
+        "drive the builds. Provenance and licences: licenses/qemu/pc-bios-README, licenses/qemu/edk2-licenses.txt, and",
+        f"licenses/qemu-firmware/<project>/ for {', '.join(FIRMWARE_LICENCES)}.",
         *inventory,
         "",
         "Libraries from MSYS2 (bin/*.dll), each built from the MSYS2 recipe and source archive named below.",
@@ -348,6 +371,7 @@ def generate(stage: Path, sources: Path, qemu_source: Path, tag: str, repo: str)
     packages = collect(stage)
     inventory = share_inventory(stage / "share", qemu_source)
     copy_licenses(stage, packages)
+    copy_firmware_licences(stage, qemu_source)
     mirror_sources(sources, packages)
     write_third_party(stage, packages, tag, repo, inventory)
     write_source_offer(stage, packages, tag, repo)
