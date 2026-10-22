@@ -2,6 +2,7 @@
 
 pub mod dirs;
 pub mod error;
+pub mod exit;
 pub mod types;
 
 pub use dirs::Dirs;

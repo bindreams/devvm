@@ -145,6 +145,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skuld",
+ "tempfile",
  "thiserror",
 ]
 
