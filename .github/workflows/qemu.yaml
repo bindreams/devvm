@@ -1,0 +1,81 @@
+name: QEMU
+
+# Builds the pinned QEMU in qemu/pin.env for Windows x64, proves it on a runner whose ANSI code page is not UTF-8, and
+# publishes it on a manual dispatch from main. A pull request builds and tests without publishing.
+
+on:
+  pull_request:
+    paths:
+      - "qemu/**"
+      - ".github/workflows/qemu.yaml"
+      - "crates/devvm/qemu-manifest.toml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the release (main only; the owner approves each dispatch)"
+        type: boolean
+        default: false
+
+# No workflow-level `concurrency`: runs of different commits of one branch must be able to coexist.
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build (windows)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      tag: ${{ steps.pin.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read the pin
+        id: pin
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          echo "tag=qemu-${QEMU_VERSION}-${QEMU_REVISION}" >> "$GITHUB_OUTPUT"
+          echo "STAGE=${RUNNER_TEMP}/qemu-stage" >> "$GITHUB_ENV"
+          echo "WORK=${RUNNER_TEMP}/qemu-work" >> "$GITHUB_ENV"
+
+      # MSYS2 is a rolling repository: the package versions are recorded in BUILD-INFO.txt, not pinned.
+      - name: Set up MSYS2 UCRT64
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          update: true
+          # python-pip, -setuptools and -wheel: configure's mkvenv tooling group, since downloads are disabled.
+          pacboy: >-
+            gcc:p
+            binutils:p
+            pkgconf:p
+            meson:p
+            ninja:p
+            python:p
+            python-pip:p
+            python-setuptools:p
+            python-wheel:p
+            glib2:p
+            pixman:p
+            libslirp:p
+            dtc:p
+            zlib:p
+          install: >-
+            make
+            curl
+            gnupg
+            xz
+            bzip2
+            diffutils
+
+      - name: Build QEMU
+        shell: msys2 {0}
+        run: ./qemu/build.sh
