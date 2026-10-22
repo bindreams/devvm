@@ -277,15 +277,43 @@ fn an_op_lock_held_defers_the_reap_without_a_warning(#[fixture(anna_home)] home:
 }
 
 #[skuld::test]
-fn an_instance_with_no_lock_file_is_left_alone(#[fixture(anna_home)] home: &Path) {
+fn an_owned_instance_whose_lock_files_are_gone_is_still_reaped(#[fixture(anna_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let id = *owned.dir().id();
     drop(owned);
     fx.registry.locks().remove(&id);
     let report = fx.registry.reap();
-    assert!(report.reaped.is_empty() && report.warnings.is_empty(), "{report:?}");
-    assert!(root(&fx).join("foo").is_dir());
+    assert_eq!(report.reaped, ["foo"], "{report:?}");
+    assert!(report.warnings.is_empty(), "{report:?}");
+    assert!(names(&root(&fx)).is_empty());
+    assert!(lock_files(&fx).is_empty());
+}
+
+#[skuld::test]
+fn an_ownerless_instance_whose_lock_files_are_gone_gets_them_back(#[fixture(anna_home)] home: &Path) {
+    for (case, gone) in [("owner", 1), ("op", 2), ("both", 3)] {
+        let fx = fixture(&home.join(case));
+        let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+        let locks = fx.registry.locks();
+        if gone & 1 != 0 {
+            std::fs::remove_file(locks.owner_path(dir.id())).unwrap();
+        }
+        if gone & 2 != 0 {
+            std::fs::remove_file(locks.op_path(dir.id())).unwrap();
+        }
+
+        let report = fx.registry.reap();
+        assert!(
+            report.reaped.is_empty() && report.warnings.is_empty(),
+            "{case}: {report:?}"
+        );
+        assert_eq!(lock_files(&fx).len(), 2, "{case}: both lock files are back");
+        let op = dir.op_exclusive().unwrap();
+        dir.destroy(op).unwrap();
+        assert!(names(&root(&fx)).is_empty(), "{case}");
+        assert!(lock_files(&fx).is_empty(), "{case}");
+    }
 }
 
 #[skuld::test]

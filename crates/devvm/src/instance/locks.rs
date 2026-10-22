@@ -112,6 +112,25 @@ impl Locks {
         }
     }
 
+    /// Tries the owner lock like [`Locks::try_owner`], but first puts back a missing lock file. For an instance whose
+    /// directory exists and whose record names this id: its lock files can only have been deleted from outside.
+    ///
+    /// A holder of an old, unlinked owner file is not seen. Like `acquire_owner_new_with`, it retries until the locked
+    /// file is still linked, and it never waits for a held lock.
+    pub(crate) fn try_owner_recreating(&self, id: &InstanceId) -> Result<Probe> {
+        let path = self.owner_path(id);
+        loop {
+            let mut owner = FileLock::open(&path)?;
+            if !owner.try_lock(Mode::Exclusive)? {
+                return Ok(Probe::Held);
+            }
+            if path.exists() {
+                drop(FileLock::open(&self.op_path(id))?);
+                return Ok(Probe::Free(owner));
+            }
+        }
+    }
+
     /// Tries the owner lock without creating anything.
     pub(crate) fn try_owner(&self, id: &InstanceId) -> Result<Probe> {
         self.try_owner_with(id, &mut || {})
