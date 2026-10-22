@@ -174,6 +174,24 @@ fn an_orphan_lock_file_is_swept_but_an_ownerless_instances_locks_are_not(#[fixtu
 }
 
 #[skuld::test]
+fn the_lock_sweep_lists_the_instance_directories_once_however_many_locks_there_are(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let orphans: Vec<InstanceId> = (0..10).map(|_| InstanceId::random()).collect();
+    for id in &orphans {
+        drop(fx.registry.locks().acquire_owner_new(id).unwrap());
+    }
+    let kept = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+
+    let mut listings = 0;
+    fx.registry
+        .sweep_locks_with(&mut ReapReport::default(), &mut || listings += 1);
+
+    assert_eq!(listings, 1);
+    assert_eq!(lock_files(&fx).len(), 2, "only the instance's lock files are left");
+    assert!(fx.registry.locks().owner_path(kept.id()).exists());
+}
+
+#[skuld::test]
 fn a_dead_dir_is_deleted(#[fixture(anna_home)] home: &Path) {
     let fx = fixture(home);
     let dead = root(&fx).join(format!(".dead-{}", InstanceId::random()));
