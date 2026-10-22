@@ -48,6 +48,7 @@ jobs:
           echo "tag=qemu-${QEMU_VERSION}-${QEMU_REVISION}" >> "$GITHUB_OUTPUT"
           echo "STAGE=${RUNNER_TEMP}/qemu-stage" >> "$GITHUB_ENV"
           echo "WORK=${RUNNER_TEMP}/qemu-work" >> "$GITHUB_ENV"
+          echo "SOURCES=${RUNNER_TEMP}/qemu-sources" >> "$GITHUB_ENV"
 
       # MSYS2 is a rolling repository: the package versions are recorded in BUILD-INFO.txt, not pinned.
       - name: Set up MSYS2 UCRT64
@@ -92,6 +93,14 @@ jobs:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: uv run --script qemu/pe_deps.py bundle --stage "$STAGE" --search "${MSYS2_LOCATION}\ucrt64\bin"
 
+      # Licence texts, THIRD-PARTY.txt, SOURCE.txt and the source archives of the bundled copyleft libraries. After
+      # `bundle`, so the list matches the DLLs shipped; before `zip`, so the files are in the zip.
+      - name: Document and mirror the bundled libraries
+        shell: msys2 {0}
+        env:
+          TAG: ${{ steps.pin.outputs.tag }}
+        run: python qemu/third_party.py --stage "$STAGE" --sources "$SOURCES" --tag "$TAG" --repo "$GITHUB_REPOSITORY"
+
       - name: Zip
         id: zip
         run: |
@@ -108,6 +117,28 @@ jobs:
         with:
           name: qemu-zip
           path: ${{ runner.temp }}/zip
+          if-no-files-found: error
+
+      # Everything else a release carries. The zip travels in its own artifact so `test` need not download these.
+      - name: Collect the other release assets
+        id: assets
+        env:
+          TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          assets="${RUNNER_TEMP}/assets"
+          mkdir -p "${assets}/sources"
+          cp "${WORK}/qemu-${QEMU_VERSION}.tar.xz" "${WORK}/qemu-${QEMU_VERSION}.tar.xz.sig" "${assets}/"
+          cp "${SOURCES}"/* "${assets}/sources/"
+          uv run --script qemu/assets.py qapi --source "${WORK}/src/qemu-${QEMU_VERSION}" --out "${assets}/${TAG}-qapi.zip"
+          git archive --format=tar.gz --output="${assets}/${TAG}-build-scripts.tar.gz" "$GITHUB_SHA" qemu .github/workflows/qemu.yaml
+
+      - name: Upload the other release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qemu-assets
+          path: ${{ runner.temp }}/assets
           if-no-files-found: error
 
   # A plain windows-latest job: its ANSI code page is whatever the image ships, which accept.py records and refuses to
@@ -144,3 +175,159 @@ jobs:
             exit 1
           fi
           uv run --script qemu/accept.py "$zip" "${RUNNER_TEMP}/accept"
+
+  # The committed qemu-manifest.toml names a release and its hash; both must be real. Absent until the first release.
+  manifest:
+    name: Manifest matches its release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Check
+        run: uv run --script qemu/assets.py check-manifest crates/devvm/qemu-manifest.toml
+
+  # Only on a dispatch from main with `publish` set. Each dispatch is the owner's approval of one release; there is no
+  # GitHub environment to click through.
+  publish:
+    name: Publish
+    needs: [build, test]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: release-${{ needs.build.outputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      # `write`: the release API shows draft releases only to callers with push access.
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # `gh release view` exits non-zero for a missing release and for every transient failure; only "not found" may
+      # pass, or an outage would read as "no such release".
+      - name: Fail if the release exists
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(gh release view "$TAG" --json tagName 2>&1)"
+          status=$?
+          set -e
+          if [[ "$status" -eq 0 ]]; then
+            echo "::error::Release ${TAG} already exists (draft or published). Bump QEMU_REVISION in qemu/pin.env."
+            exit 1
+          fi
+          if ! grep -qi 'release not found' <<<"$output"; then
+            echo "::error::Cannot confirm whether ${TAG} exists: ${output}"
+            exit 1
+          fi
+
+      # An existing tag silently captures `gh release create --target` and binds the release to that tag's commit.
+      - name: Fail if the tag exists
+        run: |
+          set -euo pipefail
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1 || status=$?
+          case "$status" in
+            0) echo "::error::Tag ${TAG} already exists on origin. Delete it first."; exit 1 ;;
+            2) echo "no existing tag ${TAG}" ;;
+            *) echo "::error::git ls-remote failed (exit ${status}); cannot confirm ${TAG} is absent"; exit 1 ;;
+          esac
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Download the tested zip and the other assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: qemu-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+
+      - name: Check that these are the tested bytes
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.zip_sha256 }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          actual="$(sha256sum "${RUNNER_TEMP}/release/qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip")"
+          if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::the zip to publish is not the one the tests ran on: ${actual%% *} != ${EXPECTED_SHA256}"
+            exit 1
+          fi
+
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/*.zip
+            ${{ runner.temp }}/release/*-build-scripts.tar.gz
+
+      # If `gh release create` fails after it created the tag: delete the release if one exists and the tag
+      # (`git push --delete origin <tag>`), then dispatch again. Attestations of the failed run are harmless.
+      - name: Create the release
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          zip="qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
+          scripts="${GITHUB_WORKSPACE}/qemu/assets.py"
+          cd "${RUNNER_TEMP}/release"
+          uv run --script "$scripts" notes --tag "$TAG" --repo "$GH_REPO" > "${RUNNER_TEMP}/notes.md"
+          uv run --script "$scripts" stanza --zip "$zip" --tag "$TAG" --repo "$GH_REPO" > qemu-manifest.toml
+          mapfile -d '' -t files < <(find . -type f -print0)
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "QEMU ${QEMU_VERSION} (build ${QEMU_REVISION})" \
+            --notes-file "${RUNNER_TEMP}/notes.md" "${files[@]}"
+          {
+            echo "Commit this as crates/devvm/qemu-manifest.toml:"
+            echo '```toml'
+            cat qemu-manifest.toml
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Downloads what was published, not the artifact, and checks it against the tested hash and its attestation.
+  verify:
+    name: Verify the release
+    needs: [build, publish]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Verify
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.zip_sha256 }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          signer="${GITHUB_REPOSITORY}/.github/workflows/qemu.yaml"
+          zip="qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
+          for asset in "$zip" "${TAG}-qapi.zip" "${TAG}-build-scripts.tar.gz"; do
+            curl -fsSL -o "${RUNNER_TEMP}/${asset}" "${base}/${asset}"
+            gh attestation verify "${RUNNER_TEMP}/${asset}" -R "$GITHUB_REPOSITORY" --signer-workflow "$signer"
+          done
+          actual="$(sha256sum "${RUNNER_TEMP}/${zip}")"
+          if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::the published zip is not the tested one: ${actual%% *} != ${EXPECTED_SHA256}"
+            exit 1
+          fi
+          uv run --script qemu/assets.py check-manifest crates/devvm/qemu-manifest.toml
