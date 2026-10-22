@@ -80,10 +80,10 @@ impl FileLock {
             return Ok(());
         }
         progress.message(&format!("waiting for {what}"));
-        let result = match mode {
+        let result = retry_interrupted(|| match mode {
             Mode::Shared => self.file.lock_shared(),
             Mode::Exclusive => self.file.lock(),
-        };
+        });
         result.map_err(|source| self.failure("lock", source))?;
         self.held = true;
         Ok(())
@@ -111,5 +111,16 @@ impl FileLock {
             format!("cannot {action} {}", self.path.display()),
             source,
         )
+    }
+}
+
+/// Runs a blocking call again for as long as a signal interrupts it (`EINTR`); no cap, since the call only fails that
+/// way without having done anything.
+fn retry_interrupted<T>(mut call: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    loop {
+        match call() {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
     }
 }

@@ -115,3 +115,28 @@ fn locking_requires_exclusive_access_to_the_value() {
     let _: fn(&mut FileLock, Mode, &str, &dyn Progress) -> crate::Result<()> = FileLock::lock;
     let _: fn(&mut FileLock) -> crate::Result<()> = FileLock::unlock;
 }
+
+#[skuld::test]
+fn a_blocking_lock_call_interrupted_by_a_signal_is_retried_until_it_succeeds() {
+    let mut interruptions = 5;
+    let result = super::retry_interrupted(|| {
+        if interruptions > 0 {
+            interruptions -= 1;
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+        }
+        Ok(())
+    });
+    assert!(result.is_ok());
+    assert_eq!(interruptions, 0);
+}
+
+#[skuld::test]
+fn other_errors_are_not_retried() {
+    let mut calls = 0;
+    let result = super::retry_interrupted::<()>(|| {
+        calls += 1;
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    });
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(calls, 1);
+}
