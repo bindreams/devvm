@@ -22,6 +22,7 @@ fn main() {
             Some("panic-on-worker") => panic_on_workers(&args, 1),
             Some("panic-on-two-workers") => panic_on_workers(&args, 2),
             Some("panic-in-builder") => panic_in_builder(&args),
+            Some("panic-on-drop") => panic_on_drop(&args),
             other => panic!("unknown helper {other:?}"),
         };
         std::process::exit(code);
@@ -84,6 +85,31 @@ fn panic_in_builder(args: &[String]) -> i32 {
         })?;
         Ok(ExitStatus::Code(0))
     })
+}
+
+/// A transport whose drop panics on another thread and waits for it, as the drop of a client that joins a runtime
+/// thread can.
+struct PanicOnDrop;
+
+impl Transport for PanicOnDrop {
+    fn get(&self, _url: &str, _resume: Option<Resume>) -> Result<Response> {
+        unreachable!("the action never fetches")
+    }
+}
+
+impl Drop for PanicOnDrop {
+    fn drop(&mut self) {
+        let _ = std::thread::spawn(|| panic!("injected drop fault")).join();
+    }
+}
+
+/// Runs the real entry point with dependencies whose drop panics. `args` are the CLI arguments.
+fn panic_on_drop(args: &[String]) -> i32 {
+    let cli_args: Vec<OsString> = args.iter().map(OsString::from).collect();
+    let deps = Deps {
+        transport: Arc::new(PanicOnDrop),
+    };
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|_, _| Ok(ExitStatus::Code(0)))
 }
 
 fn request() -> BuildRequest {
@@ -296,4 +322,33 @@ fn a_builder_panic_leaves_its_staging_dir_for_the_next_build_to_sweep() {
     let store = LayerStore::open(&dirs, Arc::new(SystemClock), Arc::new(NullProgress)).unwrap();
     store.build(&request(), None, |_| Ok(Built::default())).unwrap();
     assert_eq!(staging(&key_dir), 0, "the next build sweeps what the dead one left");
+}
+
+/// The drop of the dependencies runs before the panic hook's lock is taken: a panic in it must still reach the hook,
+/// whichever way the command line ends.
+fn assert_panic_in_drop_exits_125(cli_args: &[&str]) {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .env(HELPER_VAR, "panic-on-drop")
+        .args(cli_args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    let line = one_error_line(&output, "panic");
+    assert!(line.contains("injected drop fault"), "{line}");
+}
+
+#[skuld::test]
+fn a_panic_in_the_drop_of_the_dependencies_after_a_command_exits_125() {
+    assert_panic_in_drop_exits_125(&["build", "ubuntu-24.04"]);
+}
+
+#[skuld::test]
+fn a_panic_in_the_drop_of_the_dependencies_after_help_exits_125() {
+    assert_panic_in_drop_exits_125(&["--help"]);
+}
+
+#[skuld::test]
+fn a_panic_in_the_drop_of_the_dependencies_after_a_usage_error_exits_125() {
+    assert_panic_in_drop_exits_125(&["build", "--bogus"]);
 }

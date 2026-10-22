@@ -186,8 +186,8 @@ struct Exit {
     _only_one_ending: MutexGuard<'static, ()>,
 }
 
-/// The command line from status-file setup to `finish`. The lock is taken once the action is over, not before: a
-/// panic inside the action must still reach the hook.
+/// The command line from status-file setup to `finish`. The lock is taken once the action is over and `deps` is
+/// dropped, not before: a panic in either must still reach the hook, and a drop may wait on the thread that panics.
 fn run_locked(
     width: ExitWidth,
     args: Vec<OsString>,
@@ -202,6 +202,7 @@ fn run_locked(
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() => {
             // `--help` and `--version`: printed on stdout, not a failure.
+            drop(deps);
             let guard = ending();
             let _ = e.print();
             return Exit {
@@ -210,6 +211,7 @@ fn run_locked(
             };
         }
         Err(e) => {
+            drop(deps);
             let guard = ending();
             let code = finish(
                 status_file.as_deref(),
@@ -224,6 +226,7 @@ fn run_locked(
         }
     };
     let outcome = action(&deps, cli.command);
+    drop(deps);
     let guard = ending();
     let code = finish(status_file.as_deref(), outcome, width, &mut std::io::stderr());
     let _ = std::io::stdout().flush();
