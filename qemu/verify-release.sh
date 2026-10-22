@@ -19,7 +19,7 @@ main() {
     # shellcheck source=pin.env
     source "$here/pin.env"
 
-    # The tag names the pin it was built from; the checks below read that pin.
+    # The tag must match the pin at its commit.
     if [[ "$TAG" != "qemu-${QEMU_VERSION}-${QEMU_REVISION}" ]]; then
         echo "::error::the tag ${TAG} is not the pin at its commit: qemu-${QEMU_VERSION}-${QEMU_REVISION}"
         exit 1
@@ -29,10 +29,13 @@ main() {
     check_urls "$assets"
 }
 
-# The attached source tarball is the pinned one.
 check_tarball() {
-    local assets="$1" actual
-    actual="$(sha256sum < "${assets}/qemu-${QEMU_VERSION}.tar.xz")"
+    local assets="$1" actual tarball="${1}/qemu-${QEMU_VERSION}.tar.xz"
+    if [[ ! -f "$tarball" ]]; then
+        echo "::error::the release has no ${tarball##*/}"
+        exit 1
+    fi
+    actual="$(sha256sum < "$tarball")"
     actual="${actual%% *}"
     if [[ "$actual" != "$QEMU_SHA256" ]]; then
         echo "::error::the published QEMU tarball is not the pinned one: ${actual} != ${QEMU_SHA256}"
@@ -40,8 +43,7 @@ check_tarball() {
     fi
 }
 
-# Every URL the zip's THIRD-PARTY.txt and SOURCE.txt name, and every fixed asset of the release, must be an asset of
-# this release (or the release page).
+# Exactly one non-qapi zip, then assets.py check-urls.
 check_urls() {
     local assets="$1" file zip="" names=()
     for file in "${assets}/${TAG}-"*.zip; do

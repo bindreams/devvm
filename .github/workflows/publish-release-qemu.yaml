@@ -1,8 +1,7 @@
 name: Publish Release (qemu)
 
 # Step 2 of the qemu track: verify the draft that draft-release-qemu.yaml created, again, then make it public. Each
-# dispatch is the owner's approval of one release; there is no GitHub environment to click through.
-# The qemu track never takes the repository's "Latest" badge.
+# dispatch is the owner's approval of one release.
 
 on:
   workflow_dispatch:
@@ -63,4 +62,5 @@ jobs:
       tag: ${{ inputs.tag }}
       commit: ${{ needs.verify.outputs.commit }}
       release-id: ${{ needs.verify.outputs.release-id }}
+      assets: ${{ needs.verify.outputs.assets }}
       latest: false

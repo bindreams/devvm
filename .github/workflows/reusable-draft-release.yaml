@@ -1,8 +1,7 @@
 name: Reusable Draft Release
 
 # Step 1 of a track's two-step release (draft, then publish-release-<track>.yaml): turns the artifacts a caller built
-# and tested into a draft release. The caller builds and tests first, runs reusable-verify-release.yaml on the draft
-# afterwards, and passes this job `contents: write`, `id-token: write` and `attestations: write`.
+# and tested into a draft release. The caller must grant `contents: write`, `id-token: write` and `attestations: write`.
 #
 # Nothing is public: the release is a draft, and the "Latest" badge is pinned here and again at publish, so GitHub's
 # date-and-version heuristic never picks a release of one track as the repository's Latest.
@@ -19,7 +18,7 @@ on:
         required: true
         type: string
       title:
-        description: "Release title"
+        description: "GitHub release title"
         required: true
         type: string
       latest:
@@ -45,7 +44,6 @@ on:
         type: string
         default: ""
       summary-intro:
-        description: "The sentence before the summary file"
         required: false
         type: string
         default: ""
@@ -167,14 +165,18 @@ jobs:
           set -euo pipefail
           git push origin "${GITHUB_SHA}:refs/tags/${TAG}"
           cd "${RUNNER_TEMP}/release"
-          mapfile -d '' -t files < <(find . -type f ! -path "./${NOTES_FILE}" -print0)
+          find . -type f ! -path "./${NOTES_FILE}" -print0 > "${RUNNER_TEMP}/assets.list"
+          mapfile -d '' -t files < "${RUNNER_TEMP}/assets.list"
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "::error::there are no assets to release"
+            exit 1
+          fi
           url="$(gh release create "$TAG" --draft --latest="$LATEST" --verify-tag --title "$TITLE" \
             --notes-file "$NOTES_FILE" "${files[@]}")"
           {
             echo "Draft release: ${url}"
             echo
-            echo "The next job verifies the draft's assets. After that job succeeds, review the draft and dispatch \"Publish Release (${TRACK})\"" \
-              "from main with the tag \`${TAG}\`."
+            echo "After the Verify job succeeds, review the draft and dispatch \"Publish Release (${TRACK})\" from main with the tag \`${TAG}\`."
             if [[ -n "$SUMMARY_FILE" ]]; then
               echo
               echo "$SUMMARY_INTRO"

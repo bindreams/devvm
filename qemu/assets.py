@@ -16,11 +16,11 @@
 
 import argparse
 import hashlib
+import http.client
 import re
 import subprocess
 import sys
 import tomllib
-import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -226,12 +226,17 @@ def cmd_check_manifest(args: argparse.Namespace) -> int:
         return 1
     failed = False
     for triple, entry in targets.items():
+        missing = [key for key in ("url", "qemu_version", "sha256") if key not in entry]
+        if missing:
+            print(f"FAIL: {triple}: missing {', '.join(missing)}")
+            failed = True
+            continue
         digest = hashlib.sha256()
         try:
             with urllib.request.urlopen(entry["url"]) as response:
                 for block in iter(lambda: response.read(1 << 20), b""):
                     digest.update(block)
-        except urllib.error.URLError as error:
+        except (OSError, http.client.HTTPException) as error:  # URLError is an OSError
             print(f"FAIL: {triple}: cannot download {entry['url']}: {error}")
             failed = True
             continue

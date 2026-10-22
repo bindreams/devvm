@@ -2,7 +2,6 @@ name: Draft Release (qemu)
 
 # Step 1 of the qemu track: build and test the QEMU pinned in qemu/pin.env, create a draft release from the tested
 # bytes, and verify the draft's assets. The owner reviews the draft, then dispatches publish-release-qemu.yaml.
-# The qemu track never takes the repository's "Latest" badge.
 
 on:
   workflow_dispatch:
@@ -16,7 +15,7 @@ permissions:
   contents: read
 
 jobs:
-  # A dispatch accepts any ref; the build takes two hours, so refuse early.
+  # A dispatch accepts any ref; refuse before the long build.
   main-only:
     name: Dispatched from main
     runs-on: ubuntu-latest

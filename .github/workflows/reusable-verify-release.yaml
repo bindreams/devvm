@@ -1,8 +1,7 @@
 name: Reusable Verify Release
 
 # Downloads every asset of a release through the API and checks it: the attestations, the source commit, and the
-# track's own checks. The draft workflow runs it on the fresh draft; the publish workflow runs it again before the draft
-# goes public. The caller passes this job `contents: write`.
+# track's own checks. The caller passes this job `contents: write`.
 #
 # The API is the source because it serves drafts (the public download URLs do not) and published releases alike.
 
@@ -46,6 +45,9 @@ on:
       draft:
         description: "Whether the release is still a draft"
         value: ${{ jobs.verify.outputs.draft }}
+      assets:
+        description: "The verified assets, as `<asset id> sha256:<hex>` lines"
+        value: ${{ jobs.verify.outputs.assets }}
 
 permissions:
   contents: read
@@ -66,6 +68,7 @@ jobs:
       commit: ${{ steps.commit.outputs.commit }}
       release-id: ${{ steps.release.outputs.id }}
       draft: ${{ steps.release.outputs.draft }}
+      assets: ${{ steps.download.outputs.assets }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -101,7 +104,6 @@ jobs:
           REQUIRE_DRAFT: ${{ inputs.require-draft }}
         run: |
           set -euo pipefail
-          # "<id> <draft>" per release with the tag.
           found="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" \
             --jq '.[] | select(.tag_name == env.TAG) | "\(.id) \(.draft)"' | tr -d '\r')"
           if [[ -z "$found" || "$found" == *$'\n'* ]]; then
@@ -116,14 +118,18 @@ jobs:
           echo "id=${id}" >> "$GITHUB_OUTPUT"
           echo "draft=${draft}" >> "$GITHUB_OUTPUT"
 
-          # The assets as "<id> <name>" lines; the names are the ones GitHub stored.
+          # Asset names as GitHub stored them.
           gh api -X GET --paginate "repos/${GH_REPO}/releases/${id}/assets" -f per_page=100 \
             --jq '.[] | "\(.id) \(.name)"' | tr -d '\r' > "${RUNNER_TEMP}/assets.txt"
 
+      # The output is the verified set that the publish job compares with the published one.
       - name: Download the assets
+        id: download
         run: |
           set -euo pipefail
           published="${RUNNER_TEMP}/published"
+          verified="${RUNNER_TEMP}/verified.txt"
+          : > "$verified"
           mkdir -p "$published"
           mapfile -t lines < "${RUNNER_TEMP}/assets.txt"
           if [[ "${#lines[@]}" -eq 0 ]]; then
@@ -134,7 +140,14 @@ jobs:
             read -r id name <<< "$line"
             gh api -X GET "repos/${GH_REPO}/releases/assets/${id}" -H "Accept: application/octet-stream" \
               > "${published}/${name}"
+            digest="$(sha256sum < "${published}/${name}")"
+            echo "${id} sha256:${digest%% *}" >> "$verified"
           done
+          {
+            echo "assets<<VERIFIED_ASSETS_EOF"
+            cat "$verified"
+            echo "VERIFIED_ASSETS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Check that these are the tested bytes
         if: inputs.sha256sums != ''
@@ -160,7 +173,6 @@ jobs:
             fi
           done <<< "$SHA256SUMS"
 
-      # Signed by the reusable draft workflow, at the commit the tag points at.
       - name: Verify the attestations
         env:
           ATTESTED: ${{ inputs.attested }}
