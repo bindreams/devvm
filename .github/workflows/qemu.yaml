@@ -366,23 +366,9 @@ jobs:
           fi
 
           # Every URL the zip's THIRD-PARTY.txt and SOURCE.txt name, and every other asset of the release, must be an
-          # asset of this release.
-          uv run --script qemu/assets.py urls --zip "${published}/${zip}" --tag "$TAG" --repo "$GITHUB_REPOSITORY" \
-            > "${RUNNER_TEMP}/urls.txt"
-          prefix="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/"
-          failed=0
-          while IFS= read -r url; do
-            name="${url#"$prefix"}"
-            if [[ "$name" != "$url" && -n "${asset_id[$name]:-}" ]]; then
-              echo "ok: $url"
-            else
-              echo "::error::${url} is not an asset of the release ${TAG}"
-              failed=1
-            fi
-          done < "${RUNNER_TEMP}/urls.txt"
-          if [[ "$failed" -ne 0 ]]; then
-            exit 1
-          fi
+          # asset of this release (or the release page).
+          uv run --script qemu/assets.py check-urls --zip "${published}/${zip}" --tag "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --assets "${!asset_id[@]}"
 
   # The last step: the draft becomes public only after `verify` passed.
   finalize:
@@ -400,9 +386,22 @@ jobs:
       - name: Publish
         run: |
           set -euo pipefail
-          id="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" --jq '.[] | select(.draft and .tag_name == env.TAG) | .id')"
-          if [[ -z "$id" || "$id" == *$'\n'* ]]; then
-            echo "::error::expected one draft release ${TAG}, found: ${id:-none}"
+          # "<id> <draft>" per release with the tag.
+          found="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" \
+            --jq '.[] | select(.tag_name == env.TAG) | "\(.id) \(.draft)"' | tr -d '\r')"
+          if [[ -z "$found" || "$found" == *$'\n'* ]]; then
+            echo "::error::expected one release ${TAG}, found: ${found:-none}"
             exit 1
           fi
-          gh api -X PATCH "repos/${GH_REPO}/releases/${id}" -F draft=false
+          read -r id draft <<< "$found"
+          if [[ "$draft" == "true" ]]; then
+            gh api -X PATCH "repos/${GH_REPO}/releases/${id}" -F draft=false
+            exit 0
+          fi
+          # A re-run after a PATCH whose response was lost: the release is public already; check it is this commit's.
+          tagged="$(gh api -X GET "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha)"
+          if [[ "$tagged" != "$GITHUB_SHA" ]]; then
+            echo "::error::the published release ${TAG} is at ${tagged}, not the tested commit ${GITHUB_SHA}"
+            exit 1
+          fi
+          echo "the release ${TAG} is already published at ${GITHUB_SHA}"

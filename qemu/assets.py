@@ -10,7 +10,7 @@
     assets.py qapi   --source <extracted qemu source> --out <zip>
     assets.py stanza --zip <zip> --tag <tag> --repo <owner/repo>
     assets.py notes  --tag <tag> --repo <owner/repo>
-    assets.py urls   --zip <zip> --tag <tag> --repo <owner/repo>
+    assets.py check-urls --zip <zip> --tag <tag> --repo <owner/repo> --assets <name>...
     assets.py check-manifest <qemu-manifest.toml> --repo <owner/repo>
 """
 
@@ -159,16 +159,15 @@ attached source (LGPL section 6). Should an asset become unavailable, request th
     return 0
 
 
-def cmd_urls(args: argparse.Namespace) -> int:
-    """Print every release URL a published release must serve: those named in the zip's THIRD-PARTY.txt and SOURCE.txt
-    (URLs, and the bare names of the mirrored source archives) plus the fixed assets of the release."""
-    tag, repo = args.tag, args.repo
+def zip_urls(zip_path: Path, tag: str, repo: str) -> list[str]:
+    """Every release URL a published release must serve: those named in the zip's THIRD-PARTY.txt and SOURCE.txt (URLs,
+    and the bare names of the mirrored source archives) plus the fixed assets of the release."""
     version = tag_version(tag)
     urls = {
         release_url(repo, tag, name)
         for name in (
-            args.zip.name,
-            f"{args.zip.name}.sha256",
+            zip_path.name,
+            f"{zip_path.name}.sha256",
             f"qemu-{version}.tar.xz",
             f"qemu-{version}.tar.xz.sig",
             f"{tag}-qapi.zip",
@@ -176,15 +175,28 @@ def cmd_urls(args: argparse.Namespace) -> int:
             "qemu-manifest.toml",
         )
     }
-    with zipfile.ZipFile(args.zip) as archive:
+    with zipfile.ZipFile(zip_path) as archive:
         texts = [archive.read(name).decode("utf-8") for name in ("THIRD-PARTY.txt", "SOURCE.txt")]
     for text in texts:
         urls.update(u.rstrip(".") for u in re.findall(rf"https://github\.com/{re.escape(repo)}/releases/[^\s,]+", text))
         mirrored = re.findall(r"^\s+(\S+\.src\.tar\.zst)$", text, re.MULTILINE)
         urls.update(release_url(repo, tag, name) for name in mirrored)
-    # Bytes: a text-mode stdout writes CRLF on Windows and the workflow reads the lines in bash.
-    sys.stdout.buffer.write("".join(f"{url}\n" for url in sorted(urls)).encode())
-    return 0
+    return sorted(urls)
+
+
+def cmd_check_urls(args: argparse.Namespace) -> int:
+    """Fail unless every URL from `zip_urls` is a download URL of an asset in `args.assets` or the release page itself (SOURCE.txt names it)."""
+    prefix = release_url(args.repo, args.tag, "")
+    page = f"https://github.com/{args.repo}/releases/tag/{args.tag}"
+    assets = set(args.assets)
+    failed = False
+    for url in zip_urls(args.zip, args.tag, args.repo):
+        if url == page or (url.startswith(prefix) and url.removeprefix(prefix) in assets):
+            print(f"ok: {url}")
+        else:
+            print(f"FAIL: {url} is not an asset of the release {args.tag}")
+            failed = True
+    return 1 if failed else 0
 
 
 def published_qemu_tags(repo: str) -> list[str]:
@@ -260,11 +272,12 @@ def main() -> int:
     notes.add_argument("--repo", required=True)
     notes.set_defaults(func=cmd_notes)
 
-    urls = sub.add_parser("urls", help="print the release URLs named by the zip's THIRD-PARTY.txt and SOURCE.txt")
-    urls.add_argument("--zip", type=Path, required=True)
-    urls.add_argument("--tag", required=True)
-    urls.add_argument("--repo", required=True)
-    urls.set_defaults(func=cmd_urls)
+    check_urls = sub.add_parser("check-urls", help="check that every release URL the zip names is served by the release")
+    check_urls.add_argument("--zip", type=Path, required=True)
+    check_urls.add_argument("--tag", required=True)
+    check_urls.add_argument("--repo", required=True)
+    check_urls.add_argument("--assets", nargs="+", required=True, help="the asset names of the release")
+    check_urls.set_defaults(func=cmd_check_urls)
 
     manifest = sub.add_parser("check-manifest", help="download each url in the manifest and compare sha256")
     manifest.add_argument("manifest", type=Path)
