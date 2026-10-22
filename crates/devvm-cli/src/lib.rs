@@ -7,43 +7,26 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser};
 use devvm::exit::{ExitStatus, ExitWidth, finish};
 use devvm::recipe::Recipe;
 use devvm::store::fetch::{HttpTransport, Response, Resume, Transport};
-use devvm::{Error, ErrorKind, Result};
+use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
 
+mod args;
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod lib_tests;
+
+use args::Cli;
+pub use args::{Cmd, CpSide, VmFlags, parse_cp_side};
 
 #[cfg(test)]
 fn main() {
     skuld::run_all();
 }
 
-// Command line ========================================================================================================
-
-#[derive(Parser)]
-#[command(name = "devvm", version, about = "Disposable virtual machines for tests")]
-struct Cli {
-    /// Write a JSON description of how the command ended to this file (also: DEVVM_STATUS_FILE).
-    #[arg(long, global = true, value_name = "PATH", env = "DEVVM_STATUS_FILE")]
-    status_file: Option<PathBuf>,
-
-    #[command(subcommand)]
-    command: Cmd,
-}
-
-/// The commands this build understands.
-#[derive(Clone, Debug, PartialEq, Eq, Subcommand)]
-pub enum Cmd {
-    /// Build the image a recipe describes.
-    Build {
-        /// A recipe file (`*.devvm.yaml`) or the name of an embedded base recipe.
-        reference: String,
-    },
-}
+// Command line ====================================================================================================
 
 /// What the entry point's collaborators are, injected so a test can place a fault in a real code path.
 pub struct Deps {
@@ -140,17 +123,84 @@ pub fn install_panic_hook() {
 // Entry points ========================================================================================================
 
 fn dispatch(_deps: &Deps, command: Cmd) -> Result<ExitStatus> {
+    // Every command first reaps what dead devvm processes left behind. Failing to do so never fails the command.
+    let engine = Engine::from_env_stderr();
+    if let Ok(engine) = &engine {
+        engine.reap();
+    }
     match command {
-        Cmd::Build { reference } => {
+        Cmd::Ls { all, json } => list(&engine?, all, json),
+        Cmd::Rm { name } => {
+            engine?.instance(&name)?.remove()?;
+            Ok(ExitStatus::Code(0))
+        }
+        Cmd::Build { reference, .. } => {
             let cwd = std::env::current_dir()
                 .map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))?;
             Recipe::from_ref(&reference, &cwd)?.flatten()?;
-            Err(Error::new(
-                ErrorKind::NotSupported,
-                "build is not wired yet in this build of devvm",
-            ))
+            Err(needs_a_backend("build"))
+        }
+        Cmd::Run { .. } => Err(needs_a_backend("run")),
+        Cmd::Up { .. } => Err(needs_a_backend("up")),
+        Cmd::Ssh { .. } => Err(needs_a_backend("ssh")),
+        Cmd::Cp { .. } => Err(needs_a_backend("cp")),
+        Cmd::Start { .. } => Err(needs_a_backend("start")),
+        Cmd::Stop { .. } => Err(needs_a_backend("stop")),
+        Cmd::Doctor => Err(needs_a_backend("doctor")),
+    }
+}
+
+fn needs_a_backend(command: &str) -> Error {
+    Error::new(
+        ErrorKind::NotSupported,
+        format!("`devvm {command}` needs the VM backend, which this build of devvm does not have yet"),
+    )
+}
+
+/// `ls`: the instances created from this directory, or all of them.
+fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
+    let filter = if all {
+        ListFilter::All
+    } else {
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))?;
+        ListFilter::CreatedIn(cwd)
+    };
+    let infos = engine.list(filter)?;
+    let mut out = std::io::stdout().lock();
+    let write = |out: &mut std::io::StdoutLock<'_>, text: &str| {
+        writeln!(out, "{text}").map_err(|e| Error::io(ErrorKind::Io, "cannot write to stdout", e))
+    };
+    if json {
+        for info in &infos {
+            write(&mut out, &info.to_json_line())?;
+        }
+    } else if !infos.is_empty() {
+        let width = infos
+            .iter()
+            .map(|info| info.name.len())
+            .max()
+            .unwrap_or(0)
+            .max("NAME".len());
+        write(
+            &mut out,
+            &format!("{:width$}  {:8}  {:7}  {:6}  OWNER", "NAME", "STATE", "GUEST", "ARCH"),
+        )?;
+        for info in &infos {
+            write(
+                &mut out,
+                &format!(
+                    "{:width$}  {:8}  {:7}  {:6}  {}",
+                    info.name,
+                    info.state.as_str(),
+                    info.guest.as_str(),
+                    info.arch.as_str(),
+                    if info.ownerless { "none" } else { "process" },
+                ),
+            )?;
         }
     }
+    Ok(ExitStatus::Code(0))
 }
 
 /// Runs the command line `args` (without the program name) and returns the process exit code.
