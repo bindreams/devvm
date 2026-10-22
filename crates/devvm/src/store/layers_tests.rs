@@ -426,6 +426,35 @@ fn failed_expiry_triggered_rebuild_is_an_error_not_the_old_generation(#[fixture(
     );
 }
 
+/// Reads one hour later every time it is asked.
+struct StepClock(std::sync::Mutex<SystemTime>);
+
+impl Clock for StepClock {
+    fn now(&self) -> SystemTime {
+        let mut now = self.0.lock().unwrap();
+        let read = *now;
+        *now += Duration::from_secs(3600);
+        read
+    }
+}
+
+#[skuld::test]
+fn a_layer_expiring_between_the_stamp_and_the_read_back_is_still_returned(#[fixture(anna_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let store = LayerStore::open(
+        &dirs,
+        Arc::new(StepClock(std::sync::Mutex::new(t0()))),
+        Arc::new(crate::exit::NullProgress),
+    )
+    .unwrap();
+    // The stamp is the third clock read (t0 + 2h); the read-back after publishing would be a fourth (t0 + 3h).
+    let expires = t0() + EXPIRY_MARGIN + Duration::from_secs(2 * 3600 + 1800);
+    let lease = store
+        .build(&request(key(1)), None, |_| Ok(Built { expires: Some(expires) }))
+        .unwrap();
+    assert_eq!(lease.tip().meta().expires, Some(expires));
+}
+
 struct ChannelProgress(std::sync::Mutex<std::sync::mpsc::Sender<String>>);
 
 impl Progress for ChannelProgress {
@@ -496,16 +525,49 @@ fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(anna_home)] home: &Pat
 
 #[skuld::test]
 fn waiter_whose_layer_was_built_meanwhile_does_not_build_again(#[fixture(anna_home)] home: &Path) {
-    let env = env(home);
-    drop(build(&env, key(1), None));
-    let calls = std::sync::atomic::AtomicUsize::new(0);
-    drop(
-        env.store
-            .build(&request(key(1)), None, |_| {
-                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(Built { expires: None })
-            })
-            .unwrap(),
-    );
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let dirs = Dirs::under(home);
+    let (messages, waiting) = std::sync::mpsc::channel();
+    let store = LayerStore::open(
+        &dirs,
+        Arc::new(FakeClock::new(t0())),
+        Arc::new(ChannelProgress(std::sync::Mutex::new(messages))),
+    )
+    .unwrap();
+    let (building_tx, building_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let waiter_builds = std::sync::atomic::AtomicUsize::new(0);
+
+    let (a_generation, b_generation) = std::thread::scope(|scope| {
+        let store = &store;
+        let a = scope.spawn(move || {
+            let lease = store
+                .build(&request(key(1)), None, |_| {
+                    building_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(Built { expires: None })
+                })
+                .unwrap();
+            lease.tip().meta().generation
+        });
+        building_rx.recv().unwrap();
+        let waiter_builds = &waiter_builds;
+        let b = scope.spawn(move || {
+            let lease = store
+                .build(&request(key(1)), None, |_| {
+                    waiter_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Built { expires: None })
+                })
+                .unwrap();
+            lease.tip().meta().generation
+        });
+        let message = waiting.recv().unwrap();
+        assert!(
+            message.starts_with("waiting for another devvm process building layer"),
+            "{message}"
+        );
+        release_tx.send(()).unwrap();
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!(waiter_builds.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(a_generation, b_generation);
 }

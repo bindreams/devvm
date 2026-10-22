@@ -254,21 +254,21 @@ impl LayerStore {
 
     /// Leases the chain published under `key`, or `None` on a miss.
     pub fn lookup(&self, key: &LayerKey) -> Result<Option<ChainLease>> {
-        self.lookup_with(key, false)
+        self.lookup_with(key, false, None)
     }
 
     /// `lookup`; with `repair` it also moves `key`'s own unreadable records to quarantine. Only a caller holding the
-    /// key's build lock may repair.
-    fn lookup_with(&self, key: &LayerKey, repair: bool) -> Result<Option<ChainLease>> {
+    /// key's build lock may repair. `now` is the time to judge expiry by; `None` reads the clock after the locks are
+    /// held, so a waiter that gets the build lock never judges by a stale time.
+    fn lookup_with(&self, key: &LayerKey, repair: bool, now: Option<SystemTime>) -> Result<Option<ChainLease>> {
         let mut gc = self.gc_lock()?;
         gc.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
-        self.lookup_locked(key, repair)
+        let now = now.unwrap_or_else(|| self.clock.now());
+        self.lookup_locked(key, repair, now)
     }
 
     /// `lookup_with` with the shared `gc.lock` already held by the caller.
-    fn lookup_locked(&self, key: &LayerKey, repair: bool) -> Result<Option<ChainLease>> {
-        // Read afresh by every lookup: a waiter that gets the build lock must not judge expiry by a stale time.
-        let now = self.clock.now();
+    fn lookup_locked(&self, key: &LayerKey, repair: bool, now: SystemTime) -> Result<Option<ChainLease>> {
         let Some(generation) = self.read_current(key, repair)? else {
             return Ok(None);
         };
@@ -373,7 +373,7 @@ impl LayerStore {
             &format!("another devvm process building layer {}", req.key),
             &*self.progress,
         )?;
-        if let Some(hit) = self.lookup_with(&req.key, true)? {
+        if let Some(hit) = self.lookup_with(&req.key, true, None)? {
             return Ok(hit);
         }
         if let Some(parent) = parent {
@@ -429,7 +429,8 @@ impl LayerStore {
         self.write_meta(&staging_path, &meta)?;
         self.publish(&req.key, &staging_path, &generation, &mut cleanup)?;
 
-        match self.lookup(&req.key)? {
+        // Judged at the stamped time: the published layer is valid by construction, however long publishing took.
+        match self.lookup_with(&req.key, false, Some(created))? {
             Some(lease) => Ok(lease),
             None => Err(Error::new(
                 ErrorKind::Internal,
