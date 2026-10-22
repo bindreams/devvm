@@ -40,14 +40,14 @@ pub fn layer_builder(args: &[String]) {
     println!("done {}", lease.tip().meta().generation);
 }
 
-struct Builder {
-    child: Child,
+pub(crate) struct Builder {
+    pub(crate) child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr: BufReader<ChildStderr>,
 }
 
-fn start(home: &Path, key_hex: &str, markers: &Path) -> Builder {
+pub(crate) fn start(home: &Path, key_hex: &str, markers: &Path) -> Builder {
     let mut child = helper::command(
         "layer-builder",
         &[home.to_str().unwrap(), key_hex, markers.to_str().unwrap()],
@@ -67,7 +67,7 @@ fn start(home: &Path, key_hex: &str, markers: &Path) -> Builder {
 
 impl Builder {
     /// Reads stdout until a line starting with `prefix`; returns the rest of it.
-    fn expect_stdout(&mut self, prefix: &str) -> String {
+    pub(crate) fn expect_stdout(&mut self, prefix: &str) -> String {
         loop {
             let mut line = String::new();
             let n = self.stdout.read_line(&mut line).unwrap();
@@ -79,7 +79,7 @@ impl Builder {
     }
 
     /// Reads stderr until a line containing `needle`.
-    fn expect_stderr(&mut self, needle: &str) {
+    pub(crate) fn expect_stderr(&mut self, needle: &str) {
         loop {
             let mut line = String::new();
             let n = self.stderr.read_line(&mut line).unwrap();
@@ -90,7 +90,7 @@ impl Builder {
         }
     }
 
-    fn go(&mut self) {
+    pub(crate) fn go(&mut self) {
         writeln!(self.stdin, "go").unwrap();
         self.stdin.flush().unwrap();
     }

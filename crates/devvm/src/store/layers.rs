@@ -18,9 +18,11 @@ use crate::recipe::hash::LayerKey;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Dirs, Error, ErrorKind, Result};
 
+mod gc;
 mod lease;
 mod meta;
 
+pub use gc::{GcReport, Reachability, RecordGuard};
 pub use lease::{ChainLease, LayerLease};
 pub use meta::{Generation, LayerMeta, LayerRef};
 
@@ -33,6 +35,10 @@ pub(crate) mod layers_tests;
 #[cfg(test)]
 #[path = "layers/cross_tests.rs"]
 pub(crate) mod cross_tests;
+
+#[cfg(test)]
+#[path = "layers/gc_tests.rs"]
+pub(crate) mod gc_tests;
 
 /// A lookup within this long of a layer's expiry is a miss, so a layer is never handed out just before it expires.
 pub const EXPIRY_MARGIN: Duration = Duration::from_secs(10 * 24 * 3600);
@@ -166,7 +172,7 @@ impl LayerStore {
         FileLock::open(&self.lock_path(&format!("{key}.build")))
     }
 
-    fn generation_lock(&self, layer: &LayerRef) -> Result<FileLock> {
+    pub(crate) fn generation_lock(&self, layer: &LayerRef) -> Result<FileLock> {
         FileLock::open(&self.lock_path(&format!("{}-{}.gen", layer.key, layer.generation)))
     }
 
@@ -197,7 +203,7 @@ impl LayerStore {
                 ));
                 return Ok(None);
             }
-            let Some(lease) = self.lease(&wanted, now)? else {
+            let Some(lease) = self.lease(&wanted, Some(now))? else {
                 return Ok(None);
             };
             let parent = lease.meta().parent;
@@ -211,8 +217,9 @@ impl LayerStore {
         Ok(Some(ChainLease::new(leases)))
     }
 
-    /// Takes the shared lock on one generation and reads its record; `None` when it is missing or unusable.
-    fn lease(&self, layer: &LayerRef, now: SystemTime) -> Result<Option<LayerLease>> {
+    /// Takes the shared lock on one generation and reads its record; `None` when it is missing or unusable, or (when
+    /// `now` is given) within the expiry margin.
+    fn lease(&self, layer: &LayerRef, now: Option<SystemTime>) -> Result<Option<LayerLease>> {
         let lock = self.generation_lock(layer)?;
         lock.lock(Mode::Shared, "a layer being replaced", &*self.progress)?;
         let dir = self.generation_dir(layer);
@@ -232,7 +239,9 @@ impl LayerStore {
                 ));
                 Ok(None)
             }
-            MetaRead::Valid(meta) if meta.expires.is_some_and(|expires| now + EXPIRY_MARGIN >= expires) => Ok(None),
+            MetaRead::Valid(meta) if now.is_some_and(|now| meta.expires.is_some_and(|e| now + EXPIRY_MARGIN >= e)) => {
+                Ok(None)
+            }
             MetaRead::Valid(meta) => Ok(Some(LayerLease::new(meta, LayerDir(dir), lock))),
         }
     }

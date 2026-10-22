@@ -36,6 +36,7 @@ mod test_helpers {
     const HELPERS: &[(&str, HelperFn)] = &[
         ("hold-lock", crate::store::lock::lock_tests::hold_lock),
         ("layer-builder", crate::store::layers::cross_tests::layer_builder),
+        ("lease-holder", crate::store::layers::gc_tests::lease_holder),
     ];
 
     pub fn run_if_requested() {

@@ -1,0 +1,181 @@
+//! Garbage collection and the record guard instance records are written under.
+//!
+//! Lock order, everywhere: `gc.lock`, then `<key>.build`, then a `.gen` lock. Collection holds `gc.lock` exclusively
+//! so it cannot interleave with a lookup, a publish or the writing of an instance record, all of which hold it
+//! shared.
+
+use std::collections::HashSet;
+
+use super::meta::{self, MetaRead};
+use super::{ChainLease, Generation, LayerLease, LayerRef, LayerStore};
+use crate::recipe::hash::LayerKey;
+use crate::store::lock::{FileLock, Mode};
+use crate::{Error, ErrorKind, Result};
+
+/// What is still needed by something outside the store.
+pub trait Reachability {
+    /// The full ancestor chain of every instance record, running or stopped.
+    fn chains(&self) -> Result<Vec<Vec<LayerRef>>>;
+}
+
+/// The shared `gc.lock`: while it is held, collection cannot start, so a chain looked up before it is leased is not
+/// collected from under the writer of an instance record.
+pub struct RecordGuard {
+    _lock: FileLock,
+}
+
+/// What a collection did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GcReport {
+    pub deleted: Vec<LayerRef>,
+    /// Unreachable generations someone still holds a lease on; left for the next collection.
+    pub held: Vec<LayerRef>,
+    pub staging_removed: usize,
+}
+
+impl LayerStore {
+    /// Takes the shared `gc.lock` for as long as the guard lives.
+    pub fn begin_record(&self) -> Result<RecordGuard> {
+        let lock = self.gc_lock()?;
+        lock.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
+        Ok(RecordGuard { _lock: lock })
+    }
+
+    /// Leases `tip` and its recorded ancestors, root first. Unlike a lookup it ignores expiry: an instance may keep
+    /// using a layer past it. A link that is gone or unreadable is `Err(Store)`.
+    pub fn lease_chain(&self, tip: &LayerRef, _guard: &RecordGuard) -> Result<ChainLease> {
+        let mut wanted = *tip;
+        let mut leases: Vec<LayerLease> = Vec::new();
+        let mut seen = HashSet::new();
+        loop {
+            let missing = || {
+                Error::new(
+                    ErrorKind::Store,
+                    format!(
+                        "layer {} generation {} is missing or unreadable",
+                        wanted.key, wanted.generation
+                    ),
+                )
+            };
+            if !seen.insert(wanted) {
+                return Err(missing());
+            }
+            let lease = self.lease(&wanted, None)?.ok_or_else(missing)?;
+            let parent = lease.meta().parent;
+            leases.push(lease);
+            match parent {
+                Some(parent) => wanted = parent,
+                None => break,
+            }
+        }
+        leases.reverse();
+        Ok(ChainLease::new(leases))
+    }
+
+    /// Deletes every generation that is neither a key's `current`, nor in `reachable`'s chains, nor an ancestor of
+    /// one of those, and that nobody holds a lease on. Removes staging directories of keys nobody is building.
+    ///
+    /// A `reachable` error aborts the pass before anything is deleted.
+    pub fn gc(&self, reachable: &dyn Reachability) -> Result<GcReport> {
+        let gc = self.gc_lock()?;
+        gc.lock(
+            Mode::Exclusive,
+            "other devvm processes to finish with the layer store",
+            &*self.progress,
+        )?;
+        let chains = reachable.chains()?;
+        let keys = self.key_dirs()?;
+
+        let mut keep: HashSet<LayerRef> = chains.into_iter().flatten().collect();
+        for key in &keys {
+            if let Some(generation) = self.read_current(key)? {
+                keep.insert(LayerRef { key: *key, generation });
+            }
+        }
+        let mut pending: Vec<LayerRef> = keep.iter().copied().collect();
+        while let Some(layer) = pending.pop() {
+            if let MetaRead::Valid(meta) = meta::read(&self.generation_dir(&layer))?
+                && let Some(parent) = meta.parent
+                && keep.insert(parent)
+            {
+                pending.push(parent);
+            }
+        }
+
+        let mut report = GcReport::default();
+        for key in &keys {
+            self.collect_key(key, &keep, &mut report)?;
+        }
+        Ok(report)
+    }
+
+    /// The keys that have a directory in the store.
+    fn key_dirs(&self) -> Result<Vec<LayerKey>> {
+        let entries = std::fs::read_dir(&self.layers)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", self.layers.display()), e))?;
+        let mut keys = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| Error::io(ErrorKind::Io, "cannot list the layer store", e))?;
+            if let Ok(key) = entry.file_name().to_string_lossy().parse::<LayerKey>() {
+                keys.push(key);
+            }
+        }
+        Ok(keys)
+    }
+
+    fn collect_key(&self, key: &LayerKey, keep: &HashSet<LayerRef>, report: &mut GcReport) -> Result<()> {
+        let key_dir = self.key_dir(key);
+        let entries = std::fs::read_dir(&key_dir)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", key_dir.display()), e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", key_dir.display()), e))?;
+            let Ok(generation) = entry.file_name().to_string_lossy().parse::<Generation>() else {
+                continue;
+            };
+            let layer = LayerRef { key: *key, generation };
+            if keep.contains(&layer) {
+                continue;
+            }
+            let lock = self.generation_lock(&layer)?;
+            if !lock.try_lock(Mode::Exclusive)? {
+                report.held.push(layer);
+                continue;
+            }
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {
+                    report.deleted.push(layer);
+                    drop(lock);
+                    let _ = std::fs::remove_file(self.lock_path(&format!("{key}-{generation}.gen")));
+                }
+                Err(e) => {
+                    self.progress.message(&format!(
+                        "cannot delete layer {}: {e}; leaving it for the next collection",
+                        entry.path().display()
+                    ));
+                    report.held.push(layer);
+                }
+            }
+        }
+
+        // Staging directories belong to a live builder exactly when it holds the key's build lock.
+        let build = self.build_lock(key)?;
+        if !build.try_lock(Mode::Exclusive)? {
+            return Ok(());
+        }
+        let entries = std::fs::read_dir(&key_dir)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", key_dir.display()), e))?;
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(".staging-") {
+                match std::fs::remove_dir_all(entry.path()) {
+                    Ok(()) => report.staging_removed += 1,
+                    Err(e) => self
+                        .progress
+                        .message(&format!("cannot remove {}: {e}", entry.path().display())),
+                }
+            }
+        }
+        // Fails while the directory still holds anything, which is the point.
+        let _ = std::fs::remove_dir(&key_dir);
+        Ok(())
+    }
+}
