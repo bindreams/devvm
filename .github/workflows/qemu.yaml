@@ -25,6 +25,9 @@ defaults:
   run:
     shell: bash
 
+env:
+  TRIPLE: x86_64-pc-windows-msvc
+
 jobs:
   build:
     name: Build (windows)
@@ -32,6 +35,7 @@ jobs:
     timeout-minutes: 120
     outputs:
       tag: ${{ steps.pin.outputs.tag }}
+      zip_sha256: ${{ steps.zip.outputs.zip_sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -79,3 +83,64 @@ jobs:
       - name: Build QEMU
         shell: msys2 {0}
         run: ./qemu/build.sh
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Bundle DLLs
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: uv run --script qemu/pe_deps.py bundle --stage "$STAGE" --search "${MSYS2_LOCATION}\ucrt64\bin"
+
+      - name: Zip
+        id: zip
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          zip="qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
+          mkdir -p "${RUNNER_TEMP}/zip"
+          uv run --script qemu/assets.py zip --stage "$STAGE" --out "${RUNNER_TEMP}/zip/${zip}"
+          sha256="$(uv run --script qemu/assets.py sha256 "${RUNNER_TEMP}/zip/${zip}")"
+          echo "zip_sha256=${sha256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qemu-zip
+          path: ${{ runner.temp }}/zip
+          if-no-files-found: error
+
+  # A plain windows-latest job: its ANSI code page is whatever the image ships, which accept.py records and refuses to
+  # accept if it is UTF-8. MSYS2 and the VC++ redistributables are installed on the image, so the isolation proof is
+  # the static dependency walk against the system-DLL allowlist, not the machine.
+  test:
+    name: Test (windows)
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Download the zip
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: qemu-zip
+          path: ${{ runner.temp }}/zip
+
+      - name: Accept
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.zip_sha256 }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          zip="${RUNNER_TEMP}/zip/qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
+          actual="$(sha256sum "$zip")"
+          if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::the downloaded zip is not the one the build produced: ${actual%% *} != ${EXPECTED_SHA256}"
+            exit 1
+          fi
+          uv run --script qemu/accept.py "$zip" "${RUNNER_TEMP}/accept"
