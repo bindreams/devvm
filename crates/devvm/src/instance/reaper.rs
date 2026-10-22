@@ -127,7 +127,10 @@ impl Registry {
             }
         };
         self.remove_leftover(name, path, report);
-        if !path.exists() {
+        // The creator may have placed the instance after the listing and let go of its owner lock: the lock files go
+        // only when, with the owner lock held, no placed, `.new` or `.dead` directory belongs to the id.
+        let (present, unattributed) = self.present_ids();
+        if !unattributed && !present.contains(&id) {
             self.locks().remove(&id);
         }
     }
