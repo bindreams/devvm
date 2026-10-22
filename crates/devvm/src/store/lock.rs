@@ -57,6 +57,23 @@ impl FileLock {
         })
     }
 
+    /// Opens an existing lock file without creating it or its directories; `None` if it is absent.
+    pub fn open_existing(path: &Path) -> Result<Option<FileLock>> {
+        match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(file) => Ok(Some(FileLock {
+                path: path.to_owned(),
+                file,
+                held: false,
+            })),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(Error::io(
+                ErrorKind::Io,
+                format!("cannot open lock file {}", path.display()),
+                source,
+            )),
+        }
+    }
+
     /// Takes the lock if nobody else holds a conflicting one. `Ok(false)` means someone else does.
     pub fn try_lock(&mut self, mode: Mode) -> Result<bool> {
         debug_assert!(!self.held, "{} is already locked", self.path.display());
@@ -94,11 +111,6 @@ impl FileLock {
         self.file.unlock().map_err(|source| self.failure("unlock", source))?;
         self.held = false;
         Ok(())
-    }
-
-    /// The open file, for handle inheritance by a child process.
-    pub fn file(&self) -> &File {
-        &self.file
     }
 
     pub fn path(&self) -> &Path {

@@ -77,4 +77,19 @@ impl Dirs {
     pub fn quarantine(&self) -> PathBuf {
         self.data.join("quarantine")
     }
+
+    /// One directory per instance, named by the instance.
+    pub fn instances(&self) -> PathBuf {
+        self.state.join("instances")
+    }
+
+    /// Owner and op lock files, keyed by instance id and kept outside the instance directories.
+    pub fn instance_locks(&self) -> PathBuf {
+        self.state.join("locks")
+    }
+
+    /// Where unreadable instance directories are moved instead of being deleted.
+    pub fn instance_quarantine(&self) -> PathBuf {
+        self.state.join("quarantine")
+    }
 }
