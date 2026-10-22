@@ -46,7 +46,7 @@ on:
         description: "Whether the release is still a draft"
         value: ${{ jobs.verify.outputs.draft }}
       assets:
-        description: "The verified assets, as `<asset id> sha256:<hex>` lines"
+        description: "The verified assets, as `<asset id> sha256:<hex> <name>` lines"
         value: ${{ jobs.verify.outputs.assets }}
 
 permissions:
@@ -141,7 +141,7 @@ jobs:
             gh api -X GET "repos/${GH_REPO}/releases/assets/${id}" -H "Accept: application/octet-stream" \
               > "${published}/${name}"
             digest="$(sha256sum < "${published}/${name}")"
-            echo "${id} sha256:${digest%% *}" >> "$verified"
+            echo "${id} sha256:${digest%% *} ${name}" >> "$verified"
           done
           {
             echo "assets<<VERIFIED_ASSETS_EOF"

@@ -21,7 +21,7 @@ on:
         required: true
         type: string
       assets:
-        description: "The verified assets, as `<asset id> sha256:<hex>` lines"
+        description: "The verified assets, as `<asset id> sha256:<hex> <name>` lines"
         required: true
         type: string
       latest:
@@ -76,7 +76,7 @@ jobs:
           # A draft stays editable until the PATCH: the assets must still be the verified ones.
           expected="$(LC_ALL=C sort <<< "$ASSETS")"
           actual="$(gh api -X GET --paginate "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" -f per_page=100 \
-            --jq '.[] | "\(.id) \(.digest)"' | LC_ALL=C sort)"
+            --jq '.[] | "\(.id) \(.digest) \(.name)"' | LC_ALL=C sort)"
           if [[ -z "$expected" || "$actual" != "$expected" ]]; then
             echo "::error::the assets of ${TAG} are not the verified ones"
             printf 'verified:\n%s\npublished:\n%s\n' "$expected" "$actual"
