@@ -38,7 +38,7 @@ pub struct GcReport {
 impl LayerStore {
     /// Takes the shared `gc.lock` for as long as the guard lives.
     pub fn begin_record(&self) -> Result<RecordGuard> {
-        let lock = self.gc_lock()?;
+        let mut lock = self.gc_lock()?;
         lock.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
         Ok(RecordGuard { _lock: lock })
     }
@@ -79,7 +79,7 @@ impl LayerStore {
     ///
     /// A `reachable` error aborts the pass before anything is deleted.
     pub fn gc(&self, reachable: &dyn Reachability) -> Result<GcReport> {
-        let gc = self.gc_lock()?;
+        let mut gc = self.gc_lock()?;
         gc.lock(
             Mode::Exclusive,
             "other devvm processes to finish with the layer store",
@@ -138,7 +138,7 @@ impl LayerStore {
             if keep.contains(&layer) {
                 continue;
             }
-            let lock = self.generation_lock(&layer)?;
+            let mut lock = self.generation_lock(&layer)?;
             if !lock.try_lock(Mode::Exclusive)? {
                 report.held.push(layer);
                 continue;
@@ -160,7 +160,7 @@ impl LayerStore {
         }
 
         // Staging directories belong to a live builder exactly when it holds the key's build lock.
-        let build = self.build_lock(key)?;
+        let mut build = self.build_lock(key)?;
         if !build.try_lock(Mode::Exclusive)? {
             return Ok(());
         }

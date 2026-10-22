@@ -249,7 +249,7 @@ struct ProbingIds {
 
 impl IdSource for ProbingIds {
     fn generation(&self) -> Generation {
-        let probe = FileLock::open(&self.lock_path).unwrap();
+        let mut probe = FileLock::open(&self.lock_path).unwrap();
         assert!(
             !probe.try_lock(Mode::Exclusive).unwrap(),
             "generation allocated without the build lock"

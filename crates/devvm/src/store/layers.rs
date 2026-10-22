@@ -190,7 +190,7 @@ impl LayerStore {
     fn quarantine_generation(&self, layer: &LayerRef) -> Result<()> {
         let source = self.generation_dir(layer);
         let dir = self.quarantine_path(&format!("{}-{}", layer.key, layer.generation))?;
-        let lock = self.generation_lock(layer)?;
+        let mut lock = self.generation_lock(layer)?;
         if lock.try_lock(Mode::Exclusive)? {
             match std::fs::rename(&source, &dir) {
                 Ok(()) => {
@@ -260,7 +260,7 @@ impl LayerStore {
     /// `lookup`; with `repair` it also moves `key`'s own unreadable records to quarantine. Only a caller holding the
     /// key's build lock may repair.
     fn lookup_with(&self, key: &LayerKey, repair: bool) -> Result<Option<ChainLease>> {
-        let gc = self.gc_lock()?;
+        let mut gc = self.gc_lock()?;
         gc.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
         self.lookup_locked(key, repair)
     }
@@ -300,7 +300,7 @@ impl LayerStore {
     /// Takes the shared lock on one generation and reads its record; `None` when it is missing or unusable, or (when
     /// `now` is given) within the expiry margin.
     fn lease(&self, layer: &LayerRef, now: Option<SystemTime>, repair: bool) -> Result<Option<LayerLease>> {
-        let lock = self.generation_lock(layer)?;
+        let mut lock = self.generation_lock(layer)?;
         lock.lock(Mode::Shared, "a layer being replaced", &*self.progress)?;
         let dir = self.generation_dir(layer);
         match meta::read(&dir)? {
@@ -367,7 +367,7 @@ impl LayerStore {
         if let Some(hit) = self.lookup(&req.key)? {
             return Ok(hit);
         }
-        let build_lock = self.build_lock(&req.key)?;
+        let mut build_lock = self.build_lock(&req.key)?;
         build_lock.lock(
             Mode::Exclusive,
             &format!("another devvm process building layer {}", req.key),
@@ -482,7 +482,7 @@ impl LayerStore {
 
     /// Renames staging to the generation directory and replaces `current`, under the shared `gc.lock`.
     fn publish(&self, key: &LayerKey, staging: &Path, generation: &Generation) -> Result<()> {
-        let gc = self.gc_lock()?;
+        let mut gc = self.gc_lock()?;
         gc.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
         let key_dir = self.key_dir(key);
         let target = key_dir.join(generation.to_string());

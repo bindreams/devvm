@@ -11,7 +11,7 @@ use crate::test_support::helper;
 
 /// Helper process: takes an exclusive lock on `args[0]`, prints `held`, then blocks until stdin closes.
 pub fn hold_lock(args: &[String]) {
-    let lock = FileLock::open(Path::new(&args[0])).unwrap();
+    let mut lock = FileLock::open(Path::new(&args[0])).unwrap();
     assert!(lock.try_lock(Mode::Exclusive).unwrap());
     println!("held");
     let mut sink = Vec::new();
@@ -21,8 +21,8 @@ pub fn hold_lock(args: &[String]) {
 #[skuld::test]
 fn exclusive_excludes_exclusive_and_shared_in_one_process(#[fixture(anna_home)] home: &Path) {
     let path = home.join("locks").join("a.lock");
-    let first = FileLock::open(&path).unwrap();
-    let second = FileLock::open(&path).unwrap();
+    let mut first = FileLock::open(&path).unwrap();
+    let mut second = FileLock::open(&path).unwrap();
     assert!(first.try_lock(Mode::Exclusive).unwrap());
     assert!(!second.try_lock(Mode::Exclusive).unwrap());
     assert!(!second.try_lock(Mode::Shared).unwrap());
@@ -34,8 +34,8 @@ fn exclusive_excludes_exclusive_and_shared_in_one_process(#[fixture(anna_home)] 
 #[skuld::test]
 fn shared_locks_coexist(#[fixture(anna_home)] home: &Path) {
     let path = home.join("a.lock");
-    let first = FileLock::open(&path).unwrap();
-    let second = FileLock::open(&path).unwrap();
+    let mut first = FileLock::open(&path).unwrap();
+    let mut second = FileLock::open(&path).unwrap();
     assert!(first.try_lock(Mode::Shared).unwrap());
     assert!(second.try_lock(Mode::Shared).unwrap());
 }
@@ -51,12 +51,12 @@ impl Progress for Capture {
 #[skuld::test]
 fn contention_message_is_emitted_before_blocking(#[fixture(anna_home)] home: &Path) {
     let path = home.join("a.lock");
-    let holder = FileLock::open(&path).unwrap();
+    let mut holder = FileLock::open(&path).unwrap();
     assert!(holder.try_lock(Mode::Exclusive).unwrap());
     let (sender, receiver) = mpsc::channel();
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
-            let lock = FileLock::open(&path).unwrap();
+            let mut lock = FileLock::open(&path).unwrap();
             lock.lock(Mode::Exclusive, "layer K", &Capture(Mutex::new(sender)))
                 .unwrap();
         });
@@ -93,7 +93,7 @@ fn lock_is_released_when_holder_process_is_killed(#[fixture(anna_home)] home: &P
         .unwrap();
     assert_eq!(line.trim(), "held");
 
-    let probe = FileLock::open(&path).unwrap();
+    let mut probe = FileLock::open(&path).unwrap();
     assert!(!probe.try_lock(Mode::Exclusive).unwrap());
     child.kill().unwrap();
     child.wait().unwrap();
@@ -105,4 +105,13 @@ fn lock_is_released_when_holder_process_is_killed(#[fixture(anna_home)] home: &P
 fn file_lock_is_send_and_sync() {
     fn assert_bounds<T: Send + Sync>() {}
     assert_bounds::<FileLock>();
+}
+
+/// Two threads sharing one `FileLock` could both "hold" it on Unix, where `flock` converts a lock the same open file
+/// already has. Locking and unlocking take `&mut self`, so a shared reference cannot do either.
+#[skuld::test]
+fn locking_requires_exclusive_access_to_the_value() {
+    let _: fn(&mut FileLock, Mode) -> crate::Result<bool> = FileLock::try_lock;
+    let _: fn(&mut FileLock, Mode, &str, &dyn Progress) -> crate::Result<()> = FileLock::lock;
+    let _: fn(&mut FileLock) -> crate::Result<()> = FileLock::unlock;
 }

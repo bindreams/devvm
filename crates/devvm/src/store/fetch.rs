@@ -183,7 +183,7 @@ impl Fetcher {
     pub fn fetch(&self, artifact: &Artifact) -> Result<PathBuf> {
         std::fs::create_dir_all(&self.downloads)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", self.downloads.display()), e))?;
-        let lock = FileLock::open(&self.downloads.join(format!("{}.lock", artifact.sha256)))?;
+        let mut lock = FileLock::open(&self.downloads.join(format!("{}.lock", artifact.sha256)))?;
         lock.lock(
             Mode::Exclusive,
             &format!("another devvm process to finish downloading {}", artifact.url),
