@@ -1,5 +1,6 @@
 //! devvm: disposable virtual machines for tests.
 
+pub mod config;
 pub mod dirs;
 pub mod error;
 pub mod exit;
