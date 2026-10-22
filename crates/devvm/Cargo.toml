@@ -21,6 +21,8 @@ tempfile = "3"
 yaml_serde = "0.10"
 bytesize = "2.7.0"
 sha2 = "0.11.1"
+getrandom = "0.4.3"
+jiff = "0.2.38"
 
 [dev-dependencies]
 skuld = { workspace = true }
