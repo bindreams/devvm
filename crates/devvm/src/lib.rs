@@ -1,10 +1,13 @@
 //! devvm: disposable virtual machines for tests.
 
+pub(crate) mod access;
+pub(crate) mod backend;
 pub mod config;
 pub(crate) mod contain;
 pub mod dirs;
 pub mod error;
 pub mod exit;
+pub(crate) mod guest;
 pub(crate) mod host;
 pub mod recipe;
 pub mod store;
