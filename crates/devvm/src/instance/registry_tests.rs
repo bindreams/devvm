@@ -165,7 +165,7 @@ fn concurrent_creates_of_one_name_have_exactly_one_winner(#[fixture(anna_home)] 
         });
         // A has built its `.new-` directory and is about to rename it. B takes the name first.
         at_rename.recv().unwrap();
-        let b = create(&fx, Some("foo"));
+        let b = create(fx, Some("foo"));
         go.send(()).unwrap();
         (a.join().unwrap(), b)
     });

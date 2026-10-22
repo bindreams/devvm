@@ -92,7 +92,7 @@ pub(crate) enum RecordRead {
     Absent,
     /// Present but unusable; the text says why.
     Corrupt(String),
-    Valid(InstanceRecord),
+    Valid(Box<InstanceRecord>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -271,7 +271,7 @@ impl InstanceRecord {
             from_wire(wire)
         };
         Ok(match read_file(dir, RECORD_FILE, parse)? {
-            Ok(Some(record)) => RecordRead::Valid(record),
+            Ok(Some(record)) => RecordRead::Valid(Box::new(record)),
             Ok(None) => RecordRead::Absent,
             Err(why) => RecordRead::Corrupt(why),
         })
