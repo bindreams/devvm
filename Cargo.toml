@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/devvm", "crates/devvm-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# `std::fs::File::lock` (stable since 1.89).
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/bindreams/devvm"
+authors = ["bindreams"]
+
+[workspace.dependencies]
+skuld = "0.6"
+
+# Panics must unwind: `devvm-cli`'s panic hook relies on it, and library users get a normal unwind with `Vm` drop.
+[profile.release]
+panic = "unwind"

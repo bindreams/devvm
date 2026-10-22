@@ -1,0 +1,36 @@
+[package]
+name = "devvm"
+description = "Disposable virtual machines for tests: recipes, a layer cache, and QEMU"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+harness = false
+
+[dependencies]
+hex = "0.4"
+home = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tempfile = "3"
+yaml_serde = "0.10"
+bytesize = "2.7.0"
+sha2 = "0.11.1"
+getrandom = "0.4.3"
+jiff = "0.2.38"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
+url = "2.5.8"
+percent-encoding = "2.3.2"
+
+[dev-dependencies]
+skuld = { workspace = true }
+
+[[test]]
+name = "vm_gate"
+path = "tests/vm_gate.rs"
+harness = false

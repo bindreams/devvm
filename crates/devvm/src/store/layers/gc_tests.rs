@@ -1,0 +1,497 @@
+use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::mpsc;
+
+use crate::exit::{NullProgress, Progress};
+use crate::recipe::hash::LayerKey;
+use crate::store::layers::{Clock, GcReport, Generation, LayerRef, LayerStore, Reachability, SystemClock};
+use crate::store::lock::Mode;
+use crate::test_support::fixtures::{FakeClock, anna_home};
+use crate::test_support::helper;
+use crate::{Dirs, Error, ErrorKind, Result};
+
+use super::cross_tests::start as start_builder;
+use super::layers_tests::{Env, build_expiring, days, env, key, names, t0};
+
+/// Helper process: leases generation `args[2]` of key `args[1]` in the store rooted at `args[0]`, prints `held`, and
+/// blocks until stdin closes.
+pub fn lease_holder(args: &[String]) {
+    let dirs = Dirs::under(Path::new(&args[0]));
+    let store = LayerStore::open(&dirs, Arc::new(SystemClock), Arc::new(NullProgress)).unwrap();
+    let layer = LayerRef {
+        key: args[1].parse().unwrap(),
+        generation: args[2].parse().unwrap(),
+    };
+    let guard = store.begin_record().unwrap();
+    let lease = store.lease_chain(&layer, &guard).unwrap();
+    drop(guard);
+    println!("held");
+    let mut sink = Vec::new();
+    std::io::stdin().read_to_end(&mut sink).unwrap();
+    drop(lease);
+}
+
+struct Fixed(Vec<Vec<LayerRef>>);
+
+impl Reachability for Fixed {
+    fn chains(&self) -> Result<Vec<Vec<LayerRef>>> {
+        Ok(self.0.clone())
+    }
+}
+
+struct Failing;
+
+impl Reachability for Failing {
+    fn chains(&self) -> Result<Vec<Vec<LayerRef>>> {
+        Err(Error::new(ErrorKind::Io, "cannot list the instance records"))
+    }
+}
+
+/// Builds key `n` three times, each time after the previous generation has aged into the expiry margin. Returns the
+/// generations oldest first; the clock ends well past the third build's start.
+fn three_generations(env: &Env, n: u8) -> [LayerRef; 3] {
+    let mut refs = Vec::new();
+    for round in 0..3 {
+        env.clock.set(t0() + days(round * 80 + 1));
+        let lease = build_expiring(env, key(n), None, Some(t0() + days(round * 80 + 1) + days(90)));
+        refs.push(lease.tip().layer_ref());
+    }
+    refs.try_into().unwrap()
+}
+
+fn exists(env: &Env, layer: &LayerRef) -> bool {
+    env.store.generation_dir(layer).join("disk.qcow2").is_file()
+}
+
+#[skuld::test]
+fn gc_deletes_only_unreachable_generations(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, middle, newest] = three_generations(&env, 1);
+    let report = env.store.gc(&Fixed(vec![vec![middle]])).unwrap();
+    assert_eq!(
+        report,
+        GcReport {
+            deleted: vec![oldest],
+            held: vec![],
+            staging_removed: 0
+        }
+    );
+    assert!(!exists(&env, &oldest));
+    assert!(exists(&env, &middle) && exists(&env, &newest));
+    assert!(
+        !env.dirs
+            .layers()
+            .join(".locks")
+            .join(format!("{}-{}.gen", oldest.key, oldest.generation))
+            .exists()
+    );
+}
+
+#[skuld::test]
+fn gc_never_deletes_a_generation_held_by_a_live_image_handle(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, _newest] = three_generations(&env, 1);
+    let guard = env.store.begin_record().unwrap();
+    let image = env.store.lease_chain(&oldest, &guard).unwrap();
+    drop(guard);
+
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert!(report.held.contains(&oldest), "{report:?}");
+    assert!(!report.deleted.contains(&oldest));
+    assert!(exists(&env, &oldest));
+
+    drop(image);
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert!(report.deleted.contains(&oldest), "{report:?}");
+    assert!(!exists(&env, &oldest));
+}
+
+#[skuld::test]
+fn gc_respects_a_lease_held_by_another_process(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, _newest] = three_generations(&env, 1);
+    let mut child = helper::command(
+        "lease-holder",
+        &[
+            home.to_str().unwrap(),
+            &oldest.key.to_string(),
+            &oldest.generation.to_string(),
+        ],
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .spawn()
+    .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "held");
+
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert!(report.held.contains(&oldest), "{report:?}");
+    assert!(exists(&env, &oldest));
+
+    child.kill().unwrap();
+    child.wait().unwrap();
+    // Block until the OS has released the dead holder's lock, then collect.
+    let mut probe = env.store.generation_lock(&oldest).unwrap();
+    probe.lock(Mode::Exclusive, "the killed holder", &NullProgress).unwrap();
+    probe.unlock().unwrap();
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert!(report.deleted.contains(&oldest), "{report:?}");
+    assert!(!exists(&env, &oldest));
+}
+
+#[skuld::test]
+fn gc_keeps_the_parent_chain_of_a_reachable_layer(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let parent_v1 = build_expiring(&env, key(1), None, Some(t0() + days(90)));
+    let parent_v1_ref = parent_v1.tip().layer_ref();
+    let child = build_expiring(&env, key(2), Some(&parent_v1), Some(t0() + days(120)));
+    let child_ref = child.tip().layer_ref();
+    drop((parent_v1, child));
+
+    // The parent expires and is rebuilt; the child's `current` still records the old parent generation.
+    env.clock.set(t0() + days(85));
+    let parent_v2 = build_expiring(&env, key(1), None, Some(t0() + days(85) + days(90)));
+    assert_ne!(parent_v2.tip().layer_ref(), parent_v1_ref);
+    drop(parent_v2);
+
+    let report = env.store.gc(&Fixed(vec![vec![child_ref]])).unwrap();
+    assert_eq!(report.deleted, vec![]);
+    assert!(exists(&env, &parent_v1_ref), "the child's recorded parent must survive");
+    // Without anything naming the child, `current` still keeps it (and so its parent) alive.
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert_eq!(report.deleted, vec![]);
+}
+
+#[skuld::test]
+fn gc_aborts_before_deleting_when_reachability_fails(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, _newest] = three_generations(&env, 1);
+    let error = env.store.gc(&Failing).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(
+        exists(&env, &oldest),
+        "nothing may be deleted when reachability is unknown"
+    );
+}
+
+#[skuld::test]
+fn gc_skips_a_key_with_a_live_builder_and_sweeps_a_dead_one(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let markers = home.join("markers");
+    std::fs::create_dir(&markers).unwrap();
+    let mut builder = start_builder(home, &key(1).to_string(), &markers);
+    let live_staging = builder.expect_stdout("building ");
+
+    // A dead builder's leftover, in a key nobody is building.
+    let dead = env.dirs.layers().join(key(2).to_string()).join(".staging-dead");
+    std::fs::create_dir_all(&dead).unwrap();
+    std::fs::write(dead.join("half"), b"x").unwrap();
+
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert_eq!(report.staging_removed, 1, "{report:?}");
+    assert!(
+        Path::new(&live_staging).is_dir(),
+        "a live builder's staging dir must survive"
+    );
+    assert!(!dead.exists());
+    assert!(
+        !env.dirs.layers().join(key(2).to_string()).exists(),
+        "an emptied key dir is removed"
+    );
+
+    builder.go();
+    builder.expect_stdout("done ");
+    assert!(builder.child.wait().unwrap().success());
+    assert!(env.store.lookup(&key(1)).unwrap().is_some());
+}
+
+#[skuld::test]
+fn gc_sweeps_leftover_current_temp_files_of_a_kept_key(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let layer = build_expiring(&env, key(1), None, None).tip().layer_ref();
+    let key_dir = env.dirs.layers().join(key(1).to_string());
+    std::fs::write(key_dir.join("current.tmp-0badc0de"), b"torn").unwrap();
+    env.store.gc(&Fixed(vec![vec![layer]])).unwrap();
+    let mut expected = vec!["current".to_owned(), layer.generation.to_string()];
+    expected.sort();
+    assert_eq!(names(&key_dir), expected);
+}
+
+#[skuld::test]
+fn lease_chain_refuses_a_chain_with_a_missing_link(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let parent = build_expiring(&env, key(1), None, None);
+    let child = build_expiring(&env, key(2), Some(&parent), None);
+    let child_ref = child.tip().layer_ref();
+    let parent_dir = parent.tip().dir().path().to_owned();
+    drop((parent, child));
+    std::fs::remove_dir_all(parent_dir).unwrap();
+
+    let guard = env.store.begin_record().unwrap();
+    let error = env.store.lease_chain(&child_ref, &guard).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(error.message().contains(&key(1).to_string()), "{error}");
+}
+
+#[skuld::test]
+fn lease_chain_works_for_an_expired_layer(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let layer = build_expiring(&env, key(1), None, Some(t0() + days(90)))
+        .tip()
+        .layer_ref();
+    env.clock.set(t0() + days(200));
+    let guard = env.store.begin_record().unwrap();
+    let chain = env.store.lease_chain(&layer, &guard).unwrap();
+    assert_eq!(
+        chain.refs(),
+        vec![layer],
+        "an instance record may name a layer past its expiry"
+    );
+}
+
+struct ChannelProgress(std::sync::Mutex<mpsc::Sender<String>>);
+
+impl Progress for ChannelProgress {
+    fn message(&self, text: &str) {
+        self.0.lock().unwrap().send(text.to_owned()).unwrap();
+    }
+}
+
+#[skuld::test]
+fn record_guard_blocks_gc_until_dropped(#[fixture(anna_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let clock = Arc::new(FakeClock::new(t0()));
+    let (messages, waiting) = mpsc::channel();
+    let store = LayerStore::open(
+        &dirs,
+        clock.clone() as Arc<dyn Clock>,
+        Arc::new(ChannelProgress(std::sync::Mutex::new(messages))),
+    )
+    .unwrap();
+    let probe_env = Env {
+        dirs: dirs.clone(),
+        store,
+        clock,
+        progress: Arc::new(crate::test_support::fixtures::MemoryProgress::default()),
+    };
+    let [oldest, _middle, _newest] = three_generations(&probe_env, 1);
+    while waiting.try_recv().is_ok() {}
+
+    let guard = probe_env.store.begin_record().unwrap();
+    std::thread::scope(|scope| {
+        let env = &probe_env;
+        let collector = scope.spawn(move || env.store.gc(&Fixed(vec![])).unwrap());
+        let message = waiting.recv().unwrap();
+        assert!(message.starts_with("waiting for"), "{message}");
+        assert!(
+            exists(env, &oldest),
+            "gc must not delete while a record is being written"
+        );
+        drop(guard);
+        let report = collector.join().unwrap();
+        assert!(report.deleted.contains(&oldest));
+    });
+    assert!(!exists(&probe_env, &oldest));
+}
+
+#[skuld::test]
+fn generation_dirs_and_noise_are_told_apart(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, middle, newest] = three_generations(&env, 1);
+    let key_dir = env.dirs.layers().join(oldest.key.to_string());
+    std::fs::create_dir(key_dir.join("not-a-generation")).unwrap();
+    let report = env.store.gc(&Fixed(vec![vec![middle]])).unwrap();
+    assert_eq!(report.deleted, vec![oldest]);
+    let mut left = names(&key_dir);
+    left.retain(|name| name.parse::<Generation>().is_ok());
+    let mut expected = vec![middle.generation.to_string(), newest.generation.to_string()];
+    expected.sort();
+    assert_eq!(left, expected);
+    assert!(
+        key_dir.join("not-a-generation").is_dir(),
+        "gc touches only generation directories"
+    );
+}
+
+/// A child of `key(1)`'s first generation, whose parent has since been rebuilt: the old parent is kept only through
+/// the child's record. Returns (old parent, child).
+fn child_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
+    let parent = build_expiring(env, key(1), None, Some(t0() + days(90)));
+    let old_parent = parent.tip().layer_ref();
+    let child = build_expiring(env, key(2), Some(&parent), Some(t0() + days(120)));
+    let child_ref = child.tip().layer_ref();
+    drop((parent, child));
+    env.clock.set(t0() + days(85));
+    drop(build_expiring(env, key(1), None, Some(t0() + days(85) + days(90))));
+    (old_parent, child_ref)
+}
+
+/// The abort message names the layer and the way out of an unreadable `current` file.
+fn assert_current_recovery(error: &Error, key: LayerKey, moved_aside: &Path) {
+    let message = error.message();
+    assert!(message.contains(&format!("layer {key}")), "{error}");
+    assert!(
+        message.contains(&format!(
+            "run `devvm build` for the recipe that produces layer {key} to replace it, or move {} aside",
+            moved_aside.display()
+        )),
+        "{error}"
+    );
+    assert!(!message.contains("instance"), "{error}");
+}
+
+/// The abort message names the layer, each thing that keeps it, and the ways out.
+fn assert_record_recovery(error: &Error, layer: &LayerRef, holders: &str, moved_aside: &Path) {
+    let message = error.message();
+    assert!(
+        message.contains(&format!("layer {} generation {}", layer.key, layer.generation)),
+        "{error}"
+    );
+    assert!(message.contains(&format!("it is kept as {holders}; ")), "{error}");
+    assert!(
+        message.contains(&format!(
+            "to recover, move {} aside or release every hold on it",
+            moved_aside.display()
+        )),
+        "{error}"
+    );
+}
+
+fn as_current(key: LayerKey) -> String {
+    format!("the current generation of layer {key} (run `devvm build` for the recipe that produces it)")
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancestors(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    std::fs::write(env.store.generation_dir(&child).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(error.message().contains(&child.generation.to_string()), "{error}");
+    assert_record_recovery(
+        &error,
+        &child,
+        &as_current(child.key),
+        &env.store.generation_dir(&child),
+    );
+    assert!(
+        exists(&env, &old_parent),
+        "the unreadable child may still need its parent"
+    );
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    std::fs::remove_file(env.store.generation_dir(&child).join("meta.json")).unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert_record_recovery(
+        &error,
+        &child,
+        &as_current(child.key),
+        &env.store.generation_dir(&child),
+    );
+    assert!(exists(&env, &old_parent));
+}
+
+#[skuld::test]
+fn gc_names_the_child_that_keeps_a_non_current_parent_with_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    std::fs::write(env.store.generation_dir(&old_parent).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    let holder = format!(
+        "the parent of layer {} generation {}, which is itself kept",
+        child.key, child.generation
+    );
+    assert_record_recovery(&error, &old_parent, &holder, &env.store.generation_dir(&old_parent));
+    assert!(!error.message().contains("devvm build"), "{error}");
+    assert!(!error.message().contains("instance"), "{error}");
+}
+
+#[skuld::test]
+fn gc_names_the_instance_that_keeps_a_non_current_generation_with_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, _newest] = three_generations(&env, 1);
+    std::fs::write(env.store.generation_dir(&oldest).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![vec![oldest]])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    let holder = "part of an instance's chain (remove that instance)";
+    assert_record_recovery(&error, &oldest, holder, &env.store.generation_dir(&oldest));
+    assert!(!error.message().contains("devvm build"), "{error}");
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, newest] = three_generations(&env, 1);
+    let current = env.dirs.layers().join(key(1).to_string()).join("current");
+    std::fs::write(&current, b"not a generation").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert_current_recovery(&error, key(1), &current);
+    assert!(exists(&env, &oldest) && exists(&env, &newest));
+}
+
+#[skuld::test]
+fn gc_ignores_a_current_that_names_a_generation_that_is_gone(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, newest] = three_generations(&env, 1);
+    std::fs::remove_dir_all(env.store.generation_dir(&newest)).unwrap();
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert!(report.deleted.contains(&oldest), "{report:?}");
+}
+
+#[skuld::test]
+fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting_it(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, middle, newest] = three_generations(&env, 1);
+    std::fs::write(env.store.generation_dir(&oldest).join("meta.json"), b"{ torn").unwrap();
+    let report = env.store.gc(&Fixed(vec![])).unwrap();
+    assert_eq!(report.deleted, vec![middle]);
+    assert!(exists(&env, &newest));
+    assert!(!env.store.generation_dir(&oldest).exists());
+    let quarantine = env.dirs.quarantine();
+    let [moved] = names(&quarantine).try_into().unwrap();
+    assert_eq!(
+        std::fs::read(quarantine.join(moved).join("disk.qcow2")).unwrap(),
+        b"disk"
+    );
+    assert!(
+        env.progress
+            .messages()
+            .iter()
+            .any(|m| m.contains("unreadable") && m.contains(&oldest.generation.to_string())),
+        "{:?}",
+        env.progress.messages()
+    );
+}
+
+#[skuld::test]
+fn gc_skips_directories_whose_names_are_not_canonical_lowercase_hex(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [_oldest, _middle, _newest] = three_generations(&env, 1);
+    // An uppercase generation directory inside a real key, and an uppercase key directory: neither is devvm's.
+    let key_dir = env.dirs.layers().join(key(1).to_string());
+    let shouting_generation = key_dir.join(Generation::from_bytes([0xab; 16]).to_string().to_uppercase());
+    std::fs::create_dir(&shouting_generation).unwrap();
+    std::fs::write(shouting_generation.join("disk.qcow2"), b"disk").unwrap();
+    let shouting_key = env.dirs.layers().join(key(0xcd).to_string().to_uppercase());
+    let inner = shouting_key.join(Generation::from_bytes([0xef; 16]).to_string());
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::write(inner.join("disk.qcow2"), b"disk").unwrap();
+
+    env.store.gc(&Fixed(vec![])).unwrap();
+    assert!(shouting_generation.join("disk.qcow2").is_file());
+    assert!(inner.join("disk.qcow2").is_file());
+}
