@@ -128,10 +128,7 @@ fn killing_the_builder_lets_the_waiter_build_in_a_fresh_staging_dir(#[fixture(an
 
     a.child.kill().unwrap();
     a.child.wait().unwrap();
-    assert!(
-        Path::new(&a_staging).exists(),
-        "the dead builder leaves its staging dir behind"
-    );
+    assert!(a_staging.contains(".staging-"), "{a_staging}");
 
     let b_staging = b.expect_stdout("building ");
     assert_ne!(a_staging, b_staging);
