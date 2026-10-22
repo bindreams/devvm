@@ -107,7 +107,6 @@ pub struct Resources {
     pub disk: Option<u64>,
 }
 
-/// One parsed recipe file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recipe {
     pub name: String,

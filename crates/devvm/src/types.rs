@@ -9,7 +9,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[path = "types_tests.rs"]
 mod types_tests;
 
-/// CPU architecture of a guest or host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Arch {
     Amd64,
@@ -38,7 +37,6 @@ impl Arch {
     }
 }
 
-/// The operating system a guest runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GuestKind {
     Linux,
@@ -54,7 +52,6 @@ pub enum RunAs {
     Elevated,
 }
 
-/// Guest network mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Network {
     /// Guest internet through the host's NAT.
@@ -64,7 +61,6 @@ pub enum Network {
     None,
 }
 
-/// Options for building an image.
 #[derive(Clone, Debug, Default)]
 pub struct BuildOptions {
     /// Build for this architecture instead of the host's.
@@ -80,7 +76,6 @@ pub struct StartOptions {
     pub network: Network,
 }
 
-/// A command to run in a guest.
 #[derive(Clone, Debug, Default)]
 pub struct Command {
     pub argv: Vec<String>,

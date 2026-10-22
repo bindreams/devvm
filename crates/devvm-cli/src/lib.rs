@@ -134,7 +134,6 @@ pub fn install_panic_hook() {
 
 // Entry points ========================================================================================================
 
-/// The real dispatch.
 fn dispatch(_deps: &Deps, command: Cmd) -> Result<ExitStatus> {
     match command {
         Cmd::Build { reference } => {

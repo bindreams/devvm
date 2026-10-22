@@ -62,7 +62,6 @@ impl ErrorKind {
 
 type Source = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-/// A devvm failure.
 #[derive(Debug)]
 pub struct Error {
     kind: ErrorKind,

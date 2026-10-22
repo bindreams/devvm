@@ -61,7 +61,6 @@ impl Recipe {
 
     /// Resolves the `from:` chain. A cycle is an error naming the loop.
     pub fn flatten(&self) -> Result<Flattened> {
-        // Leaf first.
         let mut chain: Vec<Recipe> = vec![self.clone()];
         let mut visited: HashSet<String> = HashSet::new();
         let mut trail: Vec<String> = Vec::new();

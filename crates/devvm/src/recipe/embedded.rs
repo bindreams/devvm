@@ -27,7 +27,7 @@ pub fn names() -> &'static [&'static str] {
 /// The embedded recipe called `name`.
 ///
 /// # Panics
-/// If an embedded recipe does not parse; a test guards that.
+/// If an embedded recipe does not parse.
 pub fn get(name: &str) -> Option<Recipe> {
     let (_, text) = RECIPES.iter().find(|(known, _)| *known == name)?;
     let origin = format!("{name}.devvm.yaml");

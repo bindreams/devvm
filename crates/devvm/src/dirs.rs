@@ -65,12 +65,10 @@ impl Dirs {
         }
     }
 
-    /// Layer store root.
     pub fn layers(&self) -> PathBuf {
         self.data.join("layers")
     }
 
-    /// Verified download cache.
     pub fn downloads(&self) -> PathBuf {
         self.cache.join("downloads")
     }

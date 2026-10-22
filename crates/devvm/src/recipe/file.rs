@@ -305,8 +305,7 @@ impl Recipe {
     }
 }
 
-/// Features the 0.1.0 scope leaves out are named in an error instead of falling through to "unknown field" (or, worse,
-/// being ignored). A scalar `arch:` is not the multi-arch list and stays an unknown field.
+/// Out-of-scope features are named in an error instead of falling through to "unknown field".
 fn reject_out_of_scope(text: &str, origin: &Path) -> Result<()> {
     let Ok(yaml_serde::Value::Mapping(top)) = yaml_serde::from_str::<yaml_serde::Value>(text) else {
         return Ok(());
