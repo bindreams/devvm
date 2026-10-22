@@ -300,7 +300,7 @@ fn an_owned_instance_whose_lock_files_are_gone_is_still_reaped(#[fixture(anna_ho
     let owned = create(&fx, Some("foo"));
     let id = *owned.dir().id();
     drop(owned);
-    fx.registry.locks().remove(&id);
+    fx.registry.locks().remove(&id).unwrap();
     let report = fx.registry.reap();
     assert_eq!(report.reaped, ["foo"], "{report:?}");
     assert!(report.warnings.is_empty(), "{report:?}");

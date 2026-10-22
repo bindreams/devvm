@@ -91,7 +91,7 @@ fn a_remove_queued_behind_a_holder_does_not_remove_a_recreated_name(#[fixture(an
 
         // The instance is removed behind the holder's back and its name is taken by a new one.
         std::fs::remove_dir_all(fx.env.dirs.instances().join("foo")).unwrap();
-        fx.engine.registry().locks().remove(first.id());
+        fx.engine.registry().locks().remove(first.id()).unwrap();
         let second = instance_in(&fx, "foo", home);
         let before = std::fs::read(second.path().join("record.json")).unwrap();
         drop(holder);

@@ -75,7 +75,7 @@ fn try_owner_on_a_file_unlinked_after_the_open_is_gone(#[fixture(anna_home)] hom
     drop(locks.acquire_owner_new(&id).unwrap());
     let path = locks.owner_path(&id);
     let probe = locks
-        .try_owner_with(&id, &mut || std::fs::remove_file(&path).unwrap())
+        .try_owner_with(&id, &mut || {}, &mut || std::fs::remove_file(&path).unwrap())
         .unwrap();
     assert!(
         matches!(probe, Probe::Gone),
@@ -138,7 +138,7 @@ fn op_wait_that_wakes_on_an_unlinked_file_is_not_found(#[fixture(anna_home)] hom
             });
             assert_eq!(messages.recv().unwrap(), "waiting for the instance");
             // The holder removes the instance (unlinking the lock files) and then releases.
-            locks.remove(&id);
+            locks.remove(&id).unwrap();
             drop(holder);
             let error = waiter.join().unwrap().expect_err("the instance is gone");
             assert_eq!(error.kind(), ErrorKind::NotFound);
@@ -189,11 +189,11 @@ fn remove_deletes_both_files_and_ids_lists_only_present_ones(#[fixture(anna_home
     expected.sort_by_key(|id| id.to_string());
     assert_eq!(listed, expected);
 
-    locks.remove(&first);
+    locks.remove(&first).unwrap();
     assert!(!locks.owner_path(&first).exists());
     assert!(!locks.op_path(&first).exists());
     assert_eq!(locks.ids().unwrap(), vec![second]);
-    locks.remove(&first);
+    locks.remove(&first).unwrap();
 }
 
 #[skuld::test]
@@ -212,7 +212,7 @@ fn renaming_waits_for_a_reader_and_the_reader_never_waits_for_another_reader(#[f
                 other.unlock().unwrap();
                 let renamer = scope.spawn(|| {
                     locks
-                        .renaming(&mut || contended.send(()).unwrap(), || {
+                        .excluding_readers(&mut || contended.send(()).unwrap(), || {
                             log.lock().unwrap().push("rename")
                         })
                         .unwrap();
@@ -234,7 +234,7 @@ fn a_reader_cannot_start_while_a_directory_is_renamed(#[fixture(anna_home)] home
     drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
     let path = home.join("locks").join("instances.dir");
     locks
-        .renaming(&mut || {}, || {
+        .excluding_readers(&mut || {}, || {
             let mut reader = FileLock::open(&path).unwrap();
             assert!(!reader.try_lock(Mode::Shared).unwrap());
         })
@@ -246,4 +246,84 @@ fn reading_with_no_lock_file_runs_and_creates_nothing(#[fixture(anna_home)] home
     let locks = locks(home);
     assert_eq!(locks.reading(|| 7).unwrap(), 7);
     assert!(!home.join("locks").exists());
+}
+
+#[skuld::test]
+fn probes_racing_the_unlink_of_the_lock_files_see_present_or_gone_never_an_error(#[fixture(anna_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    let finished = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let prober = scope.spawn(|| {
+            let mut probes = 0u64;
+            while !finished.load(std::sync::atomic::Ordering::Acquire) {
+                // Windows refuses an open that meets an unlink with "access denied", not "not found".
+                locks.try_owner(&id).unwrap();
+                locks.try_op_exclusive(&id).unwrap();
+                probes += 1;
+            }
+            probes
+        });
+        for _ in 0..3000 {
+            drop(locks.acquire_owner_new(&id).unwrap());
+            locks.remove(&id).unwrap();
+        }
+        finished.store(true, std::sync::atomic::Ordering::Release);
+        assert!(prober.join().unwrap() > 0);
+    });
+}
+
+#[skuld::test]
+fn a_probe_waits_while_the_lock_files_are_unlinked_and_then_finds_them_gone(#[fixture(anna_home)] home: &Path) {
+    let locks = locks(home);
+    let locks = &locks;
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let (waiting, opener_waits) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let probe = locks
+            .excluding_readers(&mut || {}, || {
+                // `waiting` is dropped with the closure, so a probe that does not wait fails the `recv` below
+                // instead of hanging it.
+                let probe =
+                    scope.spawn(move || locks.try_owner_with(&id, &mut || waiting.send(()).unwrap(), &mut || {}));
+                assert!(
+                    opener_waits.recv().is_ok(),
+                    "the probe opened the lock file while it could be unlinked"
+                );
+                std::fs::remove_file(locks.owner_path(&id)).unwrap();
+                std::fs::remove_file(locks.op_path(&id)).unwrap();
+                probe
+            })
+            .unwrap();
+        assert!(matches!(probe.join().unwrap().unwrap(), Probe::Gone));
+    });
+}
+
+#[skuld::test]
+fn unlinking_the_lock_files_waits_for_whoever_is_opening_one(#[fixture(anna_home)] home: &Path) {
+    let locks = locks(home);
+    let locks = &locks;
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let (waiting, remover_waits) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        locks
+            .reading(|| {
+                let remover = scope.spawn(move || locks.remove_with(&id, &mut || waiting.send(()).unwrap()));
+                assert!(
+                    remover_waits.recv().is_ok(),
+                    "the lock files were unlinked while a probe could be opening them"
+                );
+                assert!(locks.owner_path(&id).is_file() && locks.op_path(&id).is_file());
+                remover
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+    });
+    assert!(!locks.owner_path(&id).exists() && !locks.op_path(&id).exists());
 }
