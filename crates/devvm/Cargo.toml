@@ -11,5 +11,11 @@ authors.workspace = true
 [lib]
 harness = false
 
+[dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
 [dev-dependencies]
+serde_json = "1"
 skuld = { workspace = true }
