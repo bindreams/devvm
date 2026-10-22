@@ -4,6 +4,7 @@ pub(crate) mod dir;
 pub mod info;
 pub(crate) mod locks;
 pub(crate) mod name;
+pub(crate) mod quarantine;
 pub(crate) mod reach;
 pub(crate) mod reaper;
 pub(crate) mod record;

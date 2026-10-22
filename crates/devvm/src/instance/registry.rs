@@ -93,7 +93,16 @@ impl Registry {
     pub(crate) fn open(&self, name: &InstanceName) -> Result<InstanceDir> {
         let path = self.root.join(name.as_str());
         match self.locks.read_record(&path)? {
-            RecordRead::Valid(record) => Ok(self.handle(record.id, record.name)),
+            RecordRead::Valid(record) if record.name == *name => Ok(self.handle(record.id, record.name)),
+            // A moved or copied directory: its record is for another name. The reaper moves it to quarantine.
+            RecordRead::Valid(record) => Err(Error::new(
+                ErrorKind::Store,
+                format!(
+                    "the record in the directory of instance {name} is for an instance called {} ({}); the next                      devvm command moves the directory to quarantine",
+                    record.name,
+                    path.join("record.json").display()
+                ),
+            )),
             RecordRead::Absent => Err(Error::new(ErrorKind::NotFound, format!("no instance called {name}"))),
             RecordRead::Corrupt(why) => Err(Error::new(
                 ErrorKind::Store,

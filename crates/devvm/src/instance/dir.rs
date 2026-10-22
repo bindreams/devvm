@@ -74,7 +74,16 @@ impl InstanceDir {
     /// The record on disk. `NotFound` unless it is this handle's instance.
     pub(crate) fn record(&self) -> Result<InstanceRecord> {
         match self.locks.read_record(&self.path)? {
-            RecordRead::Valid(record) if record.id == self.id => Ok(*record),
+            RecordRead::Valid(record) if record.id == self.id && record.name == self.name => Ok(*record),
+            RecordRead::Valid(record) if record.id == self.id => Err(Error::new(
+                ErrorKind::Store,
+                format!(
+                    "the record in the directory of instance {} is for an instance called {}: {}",
+                    self.name,
+                    record.name,
+                    self.path.join("record.json").display()
+                ),
+            )),
             RecordRead::Valid(_) | RecordRead::Absent => Err(self.gone()),
             RecordRead::Corrupt(why) => Err(Error::new(
                 ErrorKind::Store,
