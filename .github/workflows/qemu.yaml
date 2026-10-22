@@ -165,7 +165,9 @@ jobs:
           name: qemu-zip
           path: ${{ runner.temp }}/zip
 
+      # Well under the job's 30 minutes, so a hang is cancelled by the step and the job still reports.
       - name: Accept
+        timeout-minutes: 15
         env:
           EXPECTED_SHA256: ${{ needs.build.outputs.zip_sha256 }}
         run: |
