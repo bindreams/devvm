@@ -1,0 +1,72 @@
+name: Reusable Publish Release
+
+# Step 2 of a track's two-step release: makes a verified draft public. The caller runs reusable-verify-release.yaml
+# first and passes its outputs here, and passes this job `contents: write`.
+#
+# "Latest" is set explicitly, as it was at draft creation, so the published state matches even if the draft was edited
+# in between.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag and release name"
+        required: true
+        type: string
+      commit:
+        description: "The commit the verified assets were built from"
+        required: true
+        type: string
+      release-id:
+        description: "The id of the verified release"
+        required: true
+        type: string
+      latest:
+        description: "Whether this track's releases are the repository's Latest"
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Publish the verified release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      COMMIT: ${{ inputs.commit }}
+      RELEASE_ID: ${{ inputs.release-id }}
+      LATEST: ${{ inputs.latest }}
+    steps:
+      - name: Publish
+        run: |
+          set -euo pipefail
+          # The tag must still be where it was verified, and the release must be the one that was verified.
+          tagged="$(gh api -X GET "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha)"
+          if [[ "$tagged" != "$COMMIT" ]]; then
+            echo "::error::the tag ${TAG} is at ${tagged}, not the verified commit ${COMMIT}"
+            exit 1
+          fi
+          state="$(gh api -X GET "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq '"\(.tag_name) \(.draft)"')"
+          read -r release_tag draft <<< "$state"
+          if [[ "$release_tag" != "$TAG" ]]; then
+            echo "::error::release ${RELEASE_ID} is ${release_tag}, not ${TAG}"
+            exit 1
+          fi
+          if [[ "$draft" == "true" ]]; then
+            gh api -X PATCH "repos/${GH_REPO}/releases/${RELEASE_ID}" -F draft=false -f make_latest="$LATEST"
+          else
+            # A re-run after a PATCH whose response was lost: the release is public already.
+            echo "the release ${TAG} was already published"
+          fi
+          echo "Release published: https://github.com/${GH_REPO}/releases/tag/${TAG}" | tee -a "$GITHUB_STEP_SUMMARY"

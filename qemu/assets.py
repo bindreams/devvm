@@ -41,7 +41,10 @@ REQUIRED = (
 )
 
 TAG = re.compile(r"^qemu-(\d+\.\d+\.\d+)-(\d+)$")
-VERIFY = "gh attestation verify <file> -R {repo} --signer-workflow {repo}/.github/workflows/qemu.yaml"
+VERIFY = (
+    "gh attestation verify <file> -R {repo}"
+    " --signer-workflow {repo}/.github/workflows/reusable-draft-release.yaml"
+)
 
 
 def sha256_of(path: Path) -> str:

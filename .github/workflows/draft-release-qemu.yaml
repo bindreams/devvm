@@ -1,0 +1,72 @@
+name: Draft Release (qemu)
+
+# Step 1 of the qemu track: build and test the QEMU pinned in qemu/pin.env, create a draft release from the tested
+# bytes, and verify the draft's assets. The owner reviews the draft, then dispatches publish-release-qemu.yaml.
+# The qemu track never takes the repository's "Latest" badge.
+
+on:
+  workflow_dispatch:
+
+# Not keyed on the tag, which only the build knows. One draft at a time.
+concurrency:
+  group: draft-release-qemu
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # A dispatch accepts any ref; the build takes two hours, so refuse early.
+  main-only:
+    name: Dispatched from main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the ref
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Releases are drafted from main only, not ${GITHUB_REF}"
+            exit 1
+          fi
+
+  qemu:
+    name: QEMU
+    needs: main-only
+    uses: ./.github/workflows/qemu.yaml
+
+  draft:
+    name: Draft
+    needs: qemu
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/reusable-draft-release.yaml
+    with:
+      track: qemu
+      tag: ${{ needs.qemu.outputs.tag }}
+      title: ${{ needs.qemu.outputs.title }}
+      latest: false
+      notes-file: notes.md
+      sha256sums: ${{ needs.qemu.outputs.zip_sha256 }}  ${{ needs.qemu.outputs.zip }}
+      attest: |
+        ${{ needs.qemu.outputs.tag }}-*.zip
+        ${{ needs.qemu.outputs.tag }}-build-scripts.tar.gz
+      summary-file: qemu-manifest.toml
+      summary-intro: "After Publish Release (qemu) succeeds, commit this as crates/devvm/qemu-manifest.toml:"
+
+  verify:
+    name: Verify
+    needs: [qemu, draft]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/reusable-verify-release.yaml
+    with:
+      tag: ${{ needs.qemu.outputs.tag }}
+      runner: windows-latest
+      require-draft: true
+      attested: |
+        ${{ needs.qemu.outputs.tag }}-*.zip
+        ${{ needs.qemu.outputs.tag }}-build-scripts.tar.gz
+      sha256sums: ${{ needs.qemu.outputs.zip_sha256 }}  ${{ needs.qemu.outputs.zip }}
+      check-script: qemu/verify-release.sh

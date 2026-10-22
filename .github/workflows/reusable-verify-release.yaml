@@ -1,0 +1,194 @@
+name: Reusable Verify Release
+
+# Downloads every asset of a release through the API and checks it: the attestations, the source commit, and the
+# track's own checks. The draft workflow runs it on the fresh draft; the publish workflow runs it again before the draft
+# goes public. The caller passes this job `contents: write`.
+#
+# The API is the source because it serves drafts (the public download URLs do not) and published releases alike.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag and release name"
+        required: true
+        type: string
+      runner:
+        description: "The runner to verify on"
+        required: false
+        type: string
+        default: ubuntu-latest
+      require-draft:
+        description: "Fail unless the release is a draft"
+        required: true
+        type: boolean
+      attested:
+        description: "Asset-name globs, one per line; each must match an asset, and every match must be attested"
+        required: true
+        type: string
+      sha256sums:
+        description: "`<sha256>  <asset name>` lines: assets that must be byte-identical to the tested files"
+        required: false
+        type: string
+        default: ""
+      check-script:
+        description: "A bash script in the repository (at the tag) with the track's own checks; $1 is the directory of the assets"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      commit:
+        description: "The commit the tag points at"
+        value: ${{ jobs.verify.outputs.commit }}
+      release-id:
+        description: "The id of the release"
+        value: ${{ jobs.verify.outputs.release-id }}
+      draft:
+        description: "Whether the release is still a draft"
+        value: ${{ jobs.verify.outputs.draft }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    name: Verify the release
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    permissions:
+      # `write`: the release API shows draft releases only to callers with push access.
+      contents: write
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+      release-id: ${{ steps.release.outputs.id }}
+      draft: ${{ steps.release.outputs.draft }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Resolve the tag
+        id: commit
+        run: |
+          set -euo pipefail
+          ref="$(gh api -X GET "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq '[.object.type, .object.sha] | join(" ")' | tr -d '\r')"
+          read -r type commit <<< "$ref"
+          if [[ "$type" != "commit" ]]; then
+            echo "::error::the tag ${TAG} is a ${type} object, not a commit"
+            exit 1
+          fi
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+      # The track's checks and tools come from the tagged commit, the one that built the assets.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.commit.outputs.commit }}
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      # Lists releases through the API, which shows drafts to this token. A failed listing fails the step, so an outage
+      # cannot read as "no such release".
+      - name: Find the release
+        id: release
+        env:
+          REQUIRE_DRAFT: ${{ inputs.require-draft }}
+        run: |
+          set -euo pipefail
+          # "<id> <draft>" per release with the tag.
+          found="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" \
+            --jq '.[] | select(.tag_name == env.TAG) | "\(.id) \(.draft)"' | tr -d '\r')"
+          if [[ -z "$found" || "$found" == *$'\n'* ]]; then
+            echo "::error::expected one release ${TAG}, found: ${found:-none}"
+            exit 1
+          fi
+          read -r id draft <<< "$found"
+          if [[ "$REQUIRE_DRAFT" == "true" && "$draft" != "true" ]]; then
+            echo "::error::the release ${TAG} is not a draft"
+            exit 1
+          fi
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
+          echo "draft=${draft}" >> "$GITHUB_OUTPUT"
+
+          # The assets as "<id> <name>" lines; the names are the ones GitHub stored.
+          gh api -X GET --paginate "repos/${GH_REPO}/releases/${id}/assets" -f per_page=100 \
+            --jq '.[] | "\(.id) \(.name)"' | tr -d '\r' > "${RUNNER_TEMP}/assets.txt"
+
+      - name: Download the assets
+        run: |
+          set -euo pipefail
+          published="${RUNNER_TEMP}/published"
+          mkdir -p "$published"
+          mapfile -t lines < "${RUNNER_TEMP}/assets.txt"
+          if [[ "${#lines[@]}" -eq 0 ]]; then
+            echo "::error::the release ${TAG} has no assets"
+            exit 1
+          fi
+          for line in "${lines[@]}"; do
+            read -r id name <<< "$line"
+            gh api -X GET "repos/${GH_REPO}/releases/assets/${id}" -H "Accept: application/octet-stream" \
+              > "${published}/${name}"
+          done
+
+      - name: Check that these are the tested bytes
+        if: inputs.sha256sums != ''
+        env:
+          SHA256SUMS: ${{ inputs.sha256sums }}
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/published"
+          while IFS= read -r line; do
+            if [[ -z "$line" ]]; then
+              continue
+            fi
+            read -r expected name <<< "$line"
+            if [[ ! -f "$name" ]]; then
+              echo "::error::the release ${TAG} has no asset ${name}"
+              exit 1
+            fi
+            # Hash stdin: RUNNER_TEMP has backslashes on Windows, and sha256sum escapes such a name.
+            actual="$(sha256sum < "$name")"
+            if [[ "${actual%% *}" != "$expected" ]]; then
+              echo "::error::the published ${name} is not the tested one: ${actual%% *} != ${expected}"
+              exit 1
+            fi
+          done <<< "$SHA256SUMS"
+
+      # Signed by the reusable draft workflow, at the commit the tag points at.
+      - name: Verify the attestations
+        env:
+          ATTESTED: ${{ inputs.attested }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: |
+          set -euo pipefail
+          signer="${GITHUB_REPOSITORY}/.github/workflows/reusable-draft-release.yaml"
+          cd "${RUNNER_TEMP}/published"
+          while IFS= read -r glob; do
+            if [[ -z "$glob" ]]; then
+              continue
+            fi
+            matched=0
+            for file in *; do
+              # shellcheck disable=SC2053 # the glob is the point
+              if [[ "$file" == $glob ]]; then
+                gh attestation verify "$file" -R "$GITHUB_REPOSITORY" --signer-workflow "$signer" --source-digest "$COMMIT"
+                matched=$((matched + 1))
+              fi
+            done
+            if [[ "$matched" -eq 0 ]]; then
+              echo "::error::the release ${TAG} has no asset matching '${glob}'"
+              exit 1
+            fi
+          done <<< "$ATTESTED"
+
+      - name: Run the track's checks
+        if: inputs.check-script != ''
+        env:
+          CHECK_SCRIPT: ${{ inputs.check-script }}
+        run: bash "$CHECK_SCRIPT" "${RUNNER_TEMP}/published"

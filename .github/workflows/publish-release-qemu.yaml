@@ -1,0 +1,66 @@
+name: Publish Release (qemu)
+
+# Step 2 of the qemu track: verify the draft that draft-release-qemu.yaml created, again, then make it public. Each
+# dispatch is the owner's approval of one release; there is no GitHub environment to click through.
+# The qemu track never takes the repository's "Latest" badge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The draft's tag (e.g. qemu-11.1.2-1), shown in the draft run's summary"
+        required: true
+        type: string
+
+concurrency:
+  group: publish-release-qemu-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Dispatched from main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      INPUT_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Check the ref and the tag
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Releases are published from main only, not ${GITHUB_REF}"
+            exit 1
+          fi
+          if [[ ! "$INPUT_TAG" =~ ^qemu-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$ ]]; then
+            echo "::error::'${INPUT_TAG}' is not qemu-<version>-<revision>"
+            exit 1
+          fi
+
+  verify:
+    name: Verify
+    needs: validate
+    permissions:
+      contents: write
+    uses: ./.github/workflows/reusable-verify-release.yaml
+    with:
+      tag: ${{ inputs.tag }}
+      runner: windows-latest
+      require-draft: false
+      attested: |
+        ${{ inputs.tag }}-*.zip
+        ${{ inputs.tag }}-build-scripts.tar.gz
+      check-script: qemu/verify-release.sh
+
+  publish:
+    name: Publish
+    needs: verify
+    permissions:
+      contents: write
+    uses: ./.github/workflows/reusable-publish-release.yaml
+    with:
+      tag: ${{ inputs.tag }}
+      commit: ${{ needs.verify.outputs.commit }}
+      release-id: ${{ needs.verify.outputs.release-id }}
+      latest: false
