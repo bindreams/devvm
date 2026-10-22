@@ -419,3 +419,38 @@ fn keys_are_send_and_sync() {
     assert_bounds::<LayerKey>();
     assert_bounds::<CopyManifest>();
 }
+
+// Golden ==============================================================================================================
+
+/// Pins the byte-level framing: this test must pass unchanged on every host OS, and changing the framing or any
+/// hashed input is a new key scheme (bump `DOMAIN`) and an edit here.
+#[skuld::test]
+fn golden_key_for_a_fixed_recipe() {
+    let text = "from: ubuntu-24.04\nresources: { disk: 40GiB }\nsteps:\n  - run: echo hello\n    shell: bash\n    elevated: true\n    cwd: /srv\n  - copy: { from: git-tracked, to: ~/proj, read-only: true }\n  - set: { uac: auto-approve }\n";
+    let flat = Recipe::parse(text, Path::new("golden.devvm.yaml"))
+        .unwrap()
+        .flatten()
+        .unwrap();
+    let ctx = KeyContext {
+        arch: Arch::Amd64,
+        disk: flat.resources.disk,
+        guest_semantics_version: 3,
+    };
+    let content = RootContent::Sha256(sha(0xab));
+    let manifest = manifest(vec![
+        file("src/main.rs", 0o100644, 0x01),
+        file("run.sh", 0o100755, 0x02),
+        entry("link", 0o120000, EntryContent::SymlinkTarget("src/main.rs".into())),
+    ]);
+    let keys = chain_keys(&flat, &ctx, &content, &[0xcd; 32], &[None, Some(manifest), None]).unwrap();
+    let keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        keys,
+        [
+            "00ba9f166afd810916d41e029a00b0bc",
+            "94fcfa3c50b8d2a6d1d56b01aadebbcf",
+            "d3f8588161c25c87b0330d97a274d72a",
+            "4e7a141cfd7a26229edb4a98c341bb62",
+        ]
+    );
+}
