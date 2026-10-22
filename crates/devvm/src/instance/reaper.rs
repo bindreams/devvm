@@ -172,9 +172,10 @@ impl Registry {
     /// A readable instance: remove it if its owner is gone.
     fn reap_owned(&self, name: &str, path: &Path, record: InstanceRecord, report: &mut ReapReport) {
         let id = record.id;
-        let owner_lock = match self.locks().try_owner(&id) {
+        // The record names this id and the directory exists, so lock files that are missing were deleted from outside.
+        let owner_lock = match self.locks().try_owner_recreating(&id) {
             Ok(Probe::Free(lock)) => lock,
-            // Held: the owner is alive. Gone: not ours to judge without its lock.
+            // Held: the owner is alive.
             Ok(Probe::Held | Probe::Gone) => return,
             Err(e) => {
                 report.warn(
