@@ -1,0 +1,24 @@
+[package]
+name = "devvm-cli"
+description = "Command-line interface of devvm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "devvm_cli"
+harness = false
+
+[[bin]]
+name = "devvm"
+path = "src/main.rs"
+
+[dependencies]
+devvm = { path = "../devvm" }
+
+[dev-dependencies]
+skuld = { workspace = true }

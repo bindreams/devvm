@@ -1,0 +1,15 @@
+[package]
+name = "devvm"
+description = "Disposable virtual machines for tests: recipes, a layer cache, and QEMU"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+harness = false
+
+[dev-dependencies]
+skuld = { workspace = true }
