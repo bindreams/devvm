@@ -13,7 +13,7 @@ use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::instance::registry::Registry;
 use crate::store::layers::{Clock, LayerStore, SystemClock};
-use crate::{Dirs, Error, ErrorKind, Result};
+use crate::{Dirs, Error, ErrorKind, Instance, Result};
 
 #[cfg(test)]
 #[path = "engine_tests.rs"]
@@ -104,6 +104,11 @@ impl Engine {
             registry,
             store: OnceLock::new(),
         })
+    }
+
+    /// The instance called `name` (case-insensitive). Reaps leftovers of dead devvm processes first.
+    pub fn instance(self: &Arc<Engine>, name: &str) -> Result<Instance> {
+        Instance::open_in(self, name)
     }
 
     /// Removes instances whose owner is gone and finishes half-done removals. Never fails: what it cannot do is
