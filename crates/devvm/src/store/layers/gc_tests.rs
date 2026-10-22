@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 use crate::exit::{NullProgress, Progress};
+use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Clock, GcReport, Generation, LayerRef, LayerStore, Reachability, SystemClock};
 use crate::store::lock::Mode;
 use crate::test_support::fixtures::{FakeClock, anna_home};
@@ -331,6 +332,21 @@ fn child_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
     (old_parent, child_ref)
 }
 
+/// The abort message names the layer and says how to get the store collectable again.
+fn assert_recovery(error: &Error, key: LayerKey, moved_aside: &Path) {
+    let message = error.message();
+    let layer = format!("layer {key}");
+    assert!(message.contains(&layer), "{error}");
+    assert!(
+        message.contains(&format!(
+            "run `devvm build` for the recipe that produces {layer} to replace it, or remove the instance that uses \
+             it, or move {} aside",
+            moved_aside.display()
+        )),
+        "{error}"
+    );
+}
+
 #[skuld::test]
 fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancestors(#[fixture(anna_home)] home: &Path) {
     let env = env(home);
@@ -339,6 +355,7 @@ fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancest
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert!(error.message().contains(&child.generation.to_string()), "{error}");
+    assert_recovery(&error, child.key, &env.store.generation_dir(&child));
     assert!(
         exists(&env, &old_parent),
         "the unreadable child may still need its parent"
@@ -352,6 +369,7 @@ fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(anna_home)] home: &P
     std::fs::remove_file(env.store.generation_dir(&child).join("meta.json")).unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
+    assert_recovery(&error, child.key, &env.store.generation_dir(&child));
     assert!(exists(&env, &old_parent));
 }
 
@@ -359,14 +377,11 @@ fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(anna_home)] home: &P
 fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(anna_home)] home: &Path) {
     let env = env(home);
     let [oldest, _middle, newest] = three_generations(&env, 1);
-    std::fs::write(
-        env.dirs.layers().join(key(1).to_string()).join("current"),
-        b"not a generation",
-    )
-    .unwrap();
+    let current = env.dirs.layers().join(key(1).to_string()).join("current");
+    std::fs::write(&current, b"not a generation").unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
-    assert!(error.message().contains(&key(1).to_string()), "{error}");
+    assert_recovery(&error, key(1), &current);
     assert!(exists(&env, &oldest) && exists(&env, &newest));
 }
 

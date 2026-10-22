@@ -104,9 +104,10 @@ impl LayerStore {
                     return Err(Error::new(
                         ErrorKind::Store,
                         format!(
-                            "cannot collect: {} is unreadable, so the layer it keeps and that layer's ancestors \
-                             are unknown; nothing was deleted",
-                            path.display()
+                            "cannot collect: {} is unreadable, so the generation that layer {key} keeps and that \
+                             generation's ancestors are unknown; nothing was deleted; {}",
+                            path.display(),
+                            recovery(key, &path)
                         ),
                     ));
                 }
@@ -132,10 +133,11 @@ impl LayerStore {
                         ErrorKind::Store,
                         format!(
                             "cannot collect: the record of kept layer {} generation {} ({}) is unreadable, so its \
-                             ancestors are unknown; nothing was deleted",
+                             ancestors are unknown; nothing was deleted; {}",
                             layer.key,
                             layer.generation,
-                            dir.display()
+                            dir.display(),
+                            recovery(&layer.key, &dir)
                         ),
                     ));
                 }
@@ -224,4 +226,13 @@ impl LayerStore {
         let _ = std::fs::remove_dir(&key_dir);
         Ok(())
     }
+}
+
+/// How to make a store collectable again after an abort that names `key`'s unreadable `path`.
+fn recovery(key: &LayerKey, path: &std::path::Path) -> String {
+    format!(
+        "run `devvm build` for the recipe that produces layer {key} to replace it, or remove the instance that uses \
+         it, or move {} aside",
+        path.display()
+    )
 }
