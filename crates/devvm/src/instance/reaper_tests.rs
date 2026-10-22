@@ -7,6 +7,7 @@ use crate::contain::contain_tests::Sleeper;
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Probe;
 use crate::instance::name::InstanceName;
+use crate::instance::reaper::ReapReport;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
 use crate::instance::registry::registry_tests::{Fixture, create, fixture, lock_files};
 use crate::store::layers::layers_tests::names;
@@ -128,6 +129,24 @@ fn a_dead_creators_new_dir_and_lock_files_are_removed(#[fixture(anna_home)] home
     assert!(!new_dir.exists());
     assert!(lock_files(&fx).is_empty());
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+#[skuld::test]
+fn a_new_dir_placed_after_the_listing_keeps_its_lock_files(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let id = *dir.id();
+    // The reaper listed `.new-<id>`, then the creator renamed it to `foo` and let go of its owner lock.
+    let mut report = ReapReport::default();
+    fx.registry.reap_new(
+        &id.to_string(),
+        &format!(".new-{id}"),
+        &root(&fx).join(format!(".new-{id}")),
+        &mut report,
+    );
+    assert!(report.warnings.is_empty(), "{report:?}");
+    assert_eq!(lock_files(&fx).len(), 2, "the placed instance keeps both lock files");
+    assert!(dir.op_exclusive().is_ok());
 }
 
 #[skuld::test]
@@ -298,6 +317,11 @@ fn create_in_a_loop_while_a_reaper_loop_runs_never_loses_a_live_instance(#[fixtu
     });
 
     assert_eq!(fx.registry.list().unwrap().len(), INSTANCES);
+    assert_eq!(
+        lock_files(&fx).len(),
+        2 * INSTANCES,
+        "every instance keeps both lock files"
+    );
     for owned in &kept {
         assert!(matches!(
             InstanceRecord::read(owned.dir().path()).unwrap(),
