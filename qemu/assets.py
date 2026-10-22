@@ -10,6 +10,7 @@
     assets.py qapi   --source <extracted qemu source> --out <zip>
     assets.py stanza --zip <zip> --tag <tag> --repo <owner/repo>
     assets.py notes  --tag <tag> --repo <owner/repo>
+    assets.py urls   --zip <zip> --tag <tag> --repo <owner/repo>
     assets.py check-manifest <qemu-manifest.toml>
 """
 
@@ -134,7 +135,8 @@ def cmd_notes(args: argparse.Namespace) -> int:
 
 - `{args.tag}-<target triple>.zip` and `.sha256`: the build (`x86_64-pc-windows-msvc`). Self-contained: QEMU, every
   non-system DLL, the edk2 UEFI firmware, licences, `BUILD-INFO.txt`, `THIRD-PARTY.txt`, `SOURCE.txt`.
-- `qemu-{version}.tar.xz` and `.sig`: the exact upstream source the build was made from (GPL-2.0-or-later).
+- `qemu-{version}.tar.xz` and `.sig`: the exact upstream source the build was made from. QEMU is GPL-2.0 as a whole;
+  individual files carry their own terms (`licenses/qemu/LICENSE` in the zip).
 - `{args.tag}-build-scripts.tar.gz`: the build scripts and workflow at the build commit.
 - `{args.tag}-qapi.zip`: QEMU's QAPI schema (`qapi/*.json`).
 - `*.src.tar.zst`: the source archives of the bundled LGPL/GPL MSYS2 libraries, exactly the versions in the zip.
@@ -146,13 +148,42 @@ def cmd_notes(args: argparse.Namespace) -> int:
 {verify}
 ```
 
-**Firmware.** `share/edk2-*.fd` are the prebuilt edk2 binaries that ship inside the QEMU tarball, not rebuilt
-here; their source is under `roms/edk2` in the attached tarball.
+**Firmware.** `share/` holds the prebuilt firmware, ROMs and keymaps that ship inside the QEMU tarball, not rebuilt
+here, and only those the two emulators can load. `THIRD-PARTY.txt` lists each with its place and source in the
+attached tarball.
 
 **Source offer.** The complete corresponding source of everything in the zip is attached to this release (see
 `SOURCE.txt` in the zip). The bundled libraries are separate DLLs that can be replaced by a modified build of the
 attached source (LGPL section 6). Should an asset become unavailable, request the source in the issue tracker of
 {args.repo}; it will be provided for three years from the release date.""")
+    return 0
+
+
+def cmd_urls(args: argparse.Namespace) -> int:
+    """Print every release URL a published release must serve: those named in the zip's THIRD-PARTY.txt and SOURCE.txt
+    (URLs, and the bare names of the mirrored source archives) plus the fixed assets of the release."""
+    tag, repo = args.tag, args.repo
+    version = tag_version(tag)
+    urls = {
+        release_url(repo, tag, name)
+        for name in (
+            args.zip.name,
+            f"{args.zip.name}.sha256",
+            f"qemu-{version}.tar.xz",
+            f"qemu-{version}.tar.xz.sig",
+            f"{tag}-qapi.zip",
+            f"{tag}-build-scripts.tar.gz",
+            "qemu-manifest.toml",
+        )
+    }
+    with zipfile.ZipFile(args.zip) as archive:
+        texts = [archive.read(name).decode("utf-8") for name in ("THIRD-PARTY.txt", "SOURCE.txt")]
+    for text in texts:
+        urls.update(u.rstrip(".") for u in re.findall(rf"https://github\.com/{re.escape(repo)}/releases/[^\s,]+", text))
+        mirrored = re.findall(r"^\s+(\S+\.src\.tar\.zst)$", text, re.MULTILINE)
+        urls.update(release_url(repo, tag, name) for name in mirrored)
+    # Bytes: a text-mode stdout writes CRLF on Windows and the workflow reads the lines in bash.
+    sys.stdout.buffer.write("".join(f"{url}\n" for url in sorted(urls)).encode())
     return 0
 
 
@@ -214,6 +245,12 @@ def main() -> int:
     notes.add_argument("--tag", required=True)
     notes.add_argument("--repo", required=True)
     notes.set_defaults(func=cmd_notes)
+
+    urls = sub.add_parser("urls", help="print the release URLs named by the zip's THIRD-PARTY.txt and SOURCE.txt")
+    urls.add_argument("--zip", type=Path, required=True)
+    urls.add_argument("--tag", required=True)
+    urls.add_argument("--repo", required=True)
+    urls.set_defaults(func=cmd_urls)
 
     manifest = sub.add_parser("check-manifest", help="download each url in the manifest and compare sha256")
     manifest.add_argument("manifest", type=Path)

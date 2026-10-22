@@ -102,7 +102,11 @@ jobs:
         shell: msys2 {0}
         env:
           TAG: ${{ steps.pin.outputs.tag }}
-        run: python qemu/third_party.py --stage "$STAGE" --sources "$SOURCES" --tag "$TAG" --repo "$GITHUB_REPOSITORY"
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          python qemu/third_party.py --stage "$STAGE" --sources "$SOURCES" --qemu-source "${WORK}/src/qemu-${QEMU_VERSION}" \
+            --tag "$TAG" --repo "$GITHUB_REPOSITORY"
 
       - name: Zip
         id: zip
@@ -336,4 +340,29 @@ jobs:
             echo "::error::the published zip is not the tested one: ${actual%% *} != ${EXPECTED_SHA256}"
             exit 1
           fi
+
+          # The attached source tarball is the pinned one.
+          curl -fsSL -o "${RUNNER_TEMP}/qemu.tar.xz" "${base}/qemu-${QEMU_VERSION}.tar.xz"
+          actual="$(sha256sum < "${RUNNER_TEMP}/qemu.tar.xz")"
+          if [[ "${actual%% *}" != "$QEMU_SHA256" ]]; then
+            echo "::error::the published QEMU tarball is not the pinned one: ${actual%% *} != ${QEMU_SHA256}"
+            exit 1
+          fi
+
+          # Every URL the zip's THIRD-PARTY.txt and SOURCE.txt name, and every other asset of the release, must resolve.
+          uv run --script qemu/assets.py urls --zip "${RUNNER_TEMP}/${zip}" --tag "$TAG" --repo "$GITHUB_REPOSITORY" \
+            > "${RUNNER_TEMP}/urls.txt"
+          failed=0
+          while IFS= read -r url; do
+            if curl -fsSIL -o /dev/null "$url"; then
+              echo "ok: $url"
+            else
+              echo "::error::cannot fetch ${url}"
+              failed=1
+            fi
+          done < "${RUNNER_TEMP}/urls.txt"
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
+
           uv run --script qemu/assets.py check-manifest crates/devvm/qemu-manifest.toml

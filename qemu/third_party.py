@@ -2,15 +2,17 @@
 """Document and mirror the MSYS2 libraries bundled next to QEMU. Runs in the MSYS2 UCRT64 shell, after `pe_deps.py
 bundle` has copied the DLLs into `<stage>/bin`.
 
-    third_party.py --stage <dir> --sources <dir> --tag <release tag> --repo <owner/repo>
+    third_party.py --stage <dir> --sources <dir> --qemu-source <dir> --tag <release tag> --repo <owner/repo>
 
 For every bundled DLL: find the owning package, classify its licence (an unknown or missing licence fails), copy its
 licence files into `<stage>/licenses/<package>/`, and for copyleft packages download the exact source archive of the
 installed version into `<sources>` (it becomes a release asset). Writes `THIRD-PARTY.txt` and `SOURCE.txt` into the
-stage. Standard library only.
+stage; THIRD-PARTY.txt also inventories every file under `<stage>/share` against the extracted QEMU source. Standard
+library only.
 """
 
 import argparse
+import fnmatch
 import os
 import re
 import shutil
@@ -30,6 +32,27 @@ PERMISSIVE = (
     "MIT", "BSD", "ISC", "ZLIB", "APACHE", "BSL", "CC0", "UNLICENSE", "X11", "LIBPNG", "CURL", "HPND", "UNICODE",
     "OPENSSL", "BZIP2", "FTL", "IJG", "0BSD",
 )  # fmt: skip
+
+QEMU_LICENCE = "GPL-2.0 as a whole; individual files carry their own terms, see licenses/qemu/LICENSE"
+
+# The prebuilt firmware and ROMs left in share/ (build.sh `prune`), by the directory of the QEMU tarball that holds
+# their source. A file in share/ matching none of these fails the build: add it here after finding its source.
+BLOB_SOURCES = (
+    ("edk2-*.fd", "roms/edk2"),
+    ("bios*.bin", "roms/seabios"),
+    ("vgabios*.bin", "roms/seabios"),
+    ("qboot.rom", "roms/qboot"),
+    ("pxe-*.rom", "roms/ipxe"),
+    ("efi-*.rom", "roms/ipxe"),
+    ("*_bootrom.bin", "roms/vbootrom"),
+    ("kvmvapic.bin", "pc-bios/optionrom"),
+    ("linuxboot_dma.bin", "pc-bios/optionrom"),
+    ("multiboot_dma.bin", "pc-bios/optionrom"),
+    ("pvh.bin", "pc-bios/optionrom"),
+    ("keymaps/*", "pc-bios/keymaps"),
+)
+# How the prebuilt files are produced from roms/; named in THIRD-PARTY.txt.
+BLOB_RECIPES = ("roms/Makefile", "roms/edk2-build.config")
 
 
 HERE = Path(__file__).resolve().parent
@@ -57,11 +80,17 @@ class Package:
 
     @property
     def source_asset(self) -> str:
-        # MSYS2 writes an epoch "1:2.0-1" as "1~2.0-1" in file names.
+        """The archive's file name at repo.msys2.org. MSYS2 writes an epoch "1:2.0-1" as "1~2.0-1"."""
         return f"{self.base}-{self.version.replace(':', '~')}.src.tar.zst"
 
+    @property
+    def mirror_asset(self) -> str:
+        """The release asset name. GitHub rewrites characters such as `~` in asset names, so anything outside
+        [A-Za-z0-9._-] becomes `_` here, deterministically, instead of depending on what GitHub does."""
+        return re.sub(r"[^A-Za-z0-9._-]", "_", self.source_asset)
 
-# Everything that touches the system is below, so a check can replace it ---------------------------------------------
+
+# Everything that touches the system is below, so a check can replace it -----------------------------------------------
 
 
 def pacman(*args: str) -> str:
@@ -101,7 +130,7 @@ def fetch(url: str, dest: Path) -> None:
         raise Failure(f"cannot download {url}: {done.stderr.strip() or done.returncode}")
 
 
-# Parsing and classification ----------------------------------------------------------------------------------------
+# Parsing and classification -------------------------------------------------------------------------------------------
 
 
 def parse_desc(text: str) -> dict[str, str]:
@@ -159,7 +188,7 @@ def classify(licenses: str, package: str) -> str:
     return "copyleft" if any(t.upper().startswith(COPYLEFT) for t in tokens) else "permissive"
 
 
-# The work ----------------------------------------------------------------------------------------------------------
+# The work -------------------------------------------------------------------------------------------------------------
 
 
 def collect(stage: Path) -> list[Package]:
@@ -215,21 +244,58 @@ def copy_licenses(stage: Path, packages: list[Package]) -> None:
 def mirror_sources(sources: Path, packages: list[Package]) -> None:
     sources.mkdir(parents=True, exist_ok=True)
     for package in packages:
-        target = sources / package.source_asset
+        target = sources / package.mirror_asset
         if package.klass == "copyleft" and not target.exists():
             fetch(f"{SOURCES_URL}/{package.source_asset}", target)
 
 
-def write_third_party(stage: Path, packages: list[Package], tag: str, repo: str) -> None:
+def share_inventory(share: Path, qemu_source: Path) -> list[str]:
+    """One line per entry of `share`: the prebuilt file in the tarball and the directory holding its source (a
+    directory is one line, its files copied from the same directory of the tarball). Fails for a file with no entry
+    in BLOB_SOURCES and for any named path that `qemu_source` (the extracted tarball) lacks."""
+    missing = [path for path in BLOB_RECIPES if not (qemu_source / path).is_file()]
+    lines = []
+    for entry in sorted(share.iterdir()):
+        files = [entry.name]
+        if entry.is_dir():
+            files = sorted(p.relative_to(share).as_posix() for p in entry.rglob("*") if p.is_file())
+        if not files:
+            raise Failure(f"share/{entry.name}/ holds no file")
+        prebuilt = []
+        for file in files:
+            sources = [source for pattern, source in BLOB_SOURCES if fnmatch.fnmatch(file, pattern)]
+            if not sources:
+                raise Failure(f"share/{file} has no entry in BLOB_SOURCES; find its source in the tarball and add it")
+            candidates = [f"pc-bios/{file}", f"pc-bios/{file}.bz2"]
+            found = next((c for c in candidates if (qemu_source / c).is_file()), None)
+            if found is None:
+                missing.append(candidates[0])
+            if not (qemu_source / sources[0]).is_dir():
+                missing.append(sources[0])
+            prebuilt.append(found)
+        if entry.is_dir():
+            lines.append(f"  share/{entry.name}/: pc-bios/{entry.name}/, source {sources[0]}")
+        else:
+            lines.append(f"  share/{entry.name}: {prebuilt[0]}, source {sources[0]}")
+    if missing:
+        raise Failure(f"not in the QEMU tarball: {', '.join(dict.fromkeys(missing))}")
+    return lines
+
+
+def write_third_party(stage: Path, packages: list[Package], tag: str, repo: str, inventory: list[str]) -> None:
     release = f"https://github.com/{repo}/releases/download/{tag}"
     lines = [
         "Third-party components in this QEMU build",
         "=========================================",
         "",
-        "QEMU (GPL-2.0-or-later; see licenses/qemu/)",
+        f"QEMU ({QEMU_LICENCE})",
         f"  Source: {release}/qemu-{QEMU_VERSION}.tar.xz, the exact tarball this build was made from.",
-        "  Firmware: share/edk2-*.fd are the prebuilt edk2 binaries shipped inside the QEMU tarball, not rebuilt",
-        "  here. Their source is under roms/edk2 in that tarball; licences: licenses/qemu/edk2-licenses.txt.",
+        "",
+        "Firmware, ROMs and keymaps (share/): prebuilt files that ship inside the QEMU tarball, not rebuilt here.",
+        "Each line names the file in the tarball and the directory of the tarball that holds its source. The recipes",
+        f"are {' and '.join(BLOB_RECIPES)}. Provenance and licences: licenses/qemu/pc-bios-README and",
+        "licenses/qemu/edk2-licenses.txt.",
+        *inventory,
         "",
         "Libraries from MSYS2 (bin/*.dll), each built from the MSYS2 recipe and source archive named below.",
         "",
@@ -243,7 +309,9 @@ def write_third_party(stage: Path, packages: list[Package], tag: str, repo: str)
             f"  MSYS2 recipe: {RECIPES_URL}/{package.base}",
         ]
         if package.klass == "copyleft":
-            lines.append(f"  Source archive: {release}/{package.source_asset}")
+            lines.append(f"  Source archive: {release}/{package.mirror_asset}")
+            if package.mirror_asset != package.source_asset:
+                lines.append(f"    (MSYS2 file name: {package.source_asset})")
         else:
             lines.append("  Source archive: not mirrored (permissive licence)")
         lines.append("")
@@ -252,7 +320,7 @@ def write_third_party(stage: Path, packages: list[Package], tag: str, repo: str)
 
 def write_source_offer(stage: Path, packages: list[Package], tag: str, repo: str) -> None:
     release = f"https://github.com/{repo}/releases/tag/{tag}"
-    mirrored = [p.source_asset for p in sorted(packages, key=lambda p: p.name) if p.klass == "copyleft"]
+    mirrored = [p.mirror_asset for p in sorted(packages, key=lambda p: p.name) if p.klass == "copyleft"]
     text = f"""Source code for this build
 ==========================
 
@@ -260,7 +328,7 @@ The complete corresponding source of everything in this archive is attached to t
 
   {release}
 
-  - qemu-{QEMU_VERSION}.tar.xz and .sig: the upstream QEMU source (GPL-2.0-or-later), signature included. The build
+  - qemu-{QEMU_VERSION}.tar.xz and .sig: the upstream QEMU source (GPL-2.0 as a whole), signature included. The build
     patches this tarball in one place only: qemu/build.sh adds devvm.manifest to the source root and one line to
     version.rc (it embeds the UTF-8 application manifest).
   - {tag}-build-scripts.tar.gz: qemu/ and .github/workflows/qemu.yaml at the commit that built it (BUILD-INFO.txt
@@ -276,11 +344,12 @@ https://github.com/{repo}/issues and it will be provided for three years from th
     (stage / "SOURCE.txt").write_text(text, encoding="utf-8", newline="\n")
 
 
-def generate(stage: Path, sources: Path, tag: str, repo: str) -> None:
+def generate(stage: Path, sources: Path, qemu_source: Path, tag: str, repo: str) -> None:
     packages = collect(stage)
+    inventory = share_inventory(stage / "share", qemu_source)
     copy_licenses(stage, packages)
     mirror_sources(sources, packages)
-    write_third_party(stage, packages, tag, repo)
+    write_third_party(stage, packages, tag, repo, inventory)
     write_source_offer(stage, packages, tag, repo)
     for package in packages:
         print(f"{package.short} {package.version}: {package.licenses} ({package.klass}), {len(package.dlls)} DLLs")
@@ -290,11 +359,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", type=Path, required=True)
     parser.add_argument("--sources", type=Path, required=True)
+    parser.add_argument("--qemu-source", type=Path, required=True, help="the extracted QEMU tarball")
     parser.add_argument("--tag", required=True)
     parser.add_argument("--repo", required=True)
     args = parser.parse_args()
     try:
-        generate(args.stage, args.sources, args.tag, args.repo)
+        generate(args.stage, args.sources, args.qemu_source, args.tag, args.repo)
     except Failure as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

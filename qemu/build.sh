@@ -185,11 +185,44 @@ lay_out_stage() {
     done
 }
 
+# Entries of share/ that stay (globs). x86_64: edk2 UEFI, SeaBIOS, VGA BIOSes, NIC option ROMs (iPXE), qboot, KVM APIC,
+# direct-boot option ROMs. aarch64: edk2 aarch64/arm and the arm BMC boot ROMs.
+keep_in_share=(
+    edk2-x86_64-code.fd edk2-x86_64-secure-code.fd edk2-i386-code.fd edk2-i386-secure-code.fd edk2-i386-vars.fd
+    edk2-aarch64-code.fd edk2-arm-code.fd edk2-arm-vars.fd
+    bios.bin bios-256k.bin bios-microvm.bin qboot.rom 'vgabios*.bin' 'pxe-*.rom' 'efi-*.rom'
+    kvmvapic.bin linuxboot_dma.bin multiboot_dma.bin pvh.bin
+    ast27x0_bootrom.bin npcm7xx_bootrom.bin npcm8xx_bootrom.bin
+    keymaps
+)
+
 prune() {
     stage "j: prune"
-    local tool found expected="qemu-img.exe qemu-system-aarch64.exe qemu-system-x86_64.exe"
-    # Firmware descriptors hold install-time absolute paths; devvm passes explicit pflash paths.
-    rm -rf "$STAGE/share/firmware"
+    local tool found entry name pattern kept expected="qemu-img.exe qemu-system-aarch64.exe qemu-system-x86_64.exe"
+    local -a removed=()
+    # Only what qemu-system-x86_64 or qemu-system-aarch64 can load stays in share/: the prebuilt blobs of the other
+    # targets (ppc, s390, hppa, riscv, ...) cost size and licence surface and no shipped emulator reads them. The
+    # firmware descriptors (share/firmware) hold install-time absolute paths and devvm passes explicit pflash paths.
+    # Each pattern must match: an upstream rename fails here, not as a missing ROM in a guest.
+    for pattern in "${keep_in_share[@]}"; do
+        if ! compgen -G "$STAGE/share/$pattern" >/dev/null; then
+            fail "nothing in share/ matches '${pattern}'"
+        fi
+    done
+    for entry in "$STAGE"/share/*; do
+        name="${entry##*/}"
+        kept=no
+        for pattern in "${keep_in_share[@]}"; do
+            if [[ "$name" == $pattern ]]; then
+                kept=yes
+            fi
+        done
+        if [[ "$kept" == no ]]; then
+            removed+=("$name")
+            rm -rf "$entry"
+        fi
+    done
+    printf '%s\n' "${removed[@]}" >"$WORK/pruned.txt"
     # --enable-tools builds these together with qemu-img; devvm uses none of them.
     for tool in qemu-io qemu-nbd qemu-storage-daemon qemu-edid; do
         rm -f "$STAGE/bin/$tool.exe"
@@ -206,6 +239,7 @@ copy_licenses() {
     stage "k: licenses"
     mkdir -p "$STAGE/licenses/qemu"
     cp "$src/COPYING" "$src/COPYING.LIB" "$src/LICENSE" "$src/pc-bios/edk2-licenses.txt" "$STAGE/licenses/qemu/"
+    cp "$src/pc-bios/README" "$STAGE/licenses/qemu/pc-bios-README"
 }
 
 write_build_info() {
@@ -221,6 +255,9 @@ write_build_info() {
         echo
         echo "Symlinks of the tarball not extracted (not read by this build):"
         cat "$WORK/symlinks.txt"
+        echo
+        echo "Entries of share/ removed (no shipped emulator loads them):"
+        cat "$WORK/pruned.txt"
         echo
         echo "Packages of the build environment (pacman -Q):"
         pacman -Q
