@@ -51,9 +51,17 @@ pub(crate) fn fixture(home: &Path) -> Fixture {
 }
 
 pub(crate) fn new_instance<'a>(fx: &'a Fixture, name: Option<&str>, storage: &'a TestStorage) -> NewInstance<'a> {
+    new_instance_on(&fx.chain, name, storage)
+}
+
+pub(crate) fn new_instance_on<'a>(
+    chain: &'a ChainLease,
+    name: Option<&str>,
+    storage: &'a TestStorage,
+) -> NewInstance<'a> {
     NewInstance {
         name: name.map(|text| InstanceName::parse(text).unwrap()),
-        chain: &fx.chain,
+        chain,
         guest: GuestKind::Linux,
         arch: Arch::Amd64,
         disk_size: 1 << 30,

@@ -5,6 +5,7 @@ pub(crate) mod backend;
 pub mod config;
 pub(crate) mod contain;
 pub mod dirs;
+pub mod engine;
 pub mod error;
 pub mod exit;
 pub(crate) mod guest;
@@ -13,11 +14,15 @@ pub(crate) mod instance;
 pub mod recipe;
 pub mod store;
 pub mod types;
+pub mod vm;
 
 pub use dirs::Dirs;
+pub use engine::{Engine, ListFilter};
 pub use error::{Error, ErrorKind, Result};
 pub use host::{Unavailable, host_exit_width};
+pub use instance::info::{InstanceInfo, InstanceState};
 pub use types::{Arch, BuildOptions, Command, GuestKind, Network, RunAs, Sha256, StartOptions};
+pub use vm::Instance;
 
 /// The target triple this crate was compiled for, e.g. `x86_64-pc-windows-msvc`.
 pub const TARGET: &str = env!("DEVVM_TARGET");
