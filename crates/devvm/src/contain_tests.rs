@@ -14,12 +14,12 @@ pub fn sleeper(_args: &[String]) {
 }
 
 /// A running `sleeper`; closing its stdin lets it exit.
-struct Sleeper {
-    child: Child,
+pub(crate) struct Sleeper {
+    pub(crate) child: Child,
 }
 
 impl Sleeper {
-    fn spawn() -> Sleeper {
+    pub(crate) fn spawn() -> Sleeper {
         let child = helper::command("sleeper", &[])
             .stdin(Stdio::piped())
             .spawn()
@@ -27,7 +27,7 @@ impl Sleeper {
         Sleeper { child }
     }
 
-    fn record(&self) -> ProcessIdRecord {
+    pub(crate) fn record(&self) -> ProcessIdRecord {
         let process = cosca::Process::from_pid(self.child.id())
             .found()
             .expect("the sleeper is alive");
@@ -35,7 +35,7 @@ impl Sleeper {
     }
 
     /// Lets the sleeper exit and reaps it.
-    fn finish(mut self) {
+    pub(crate) fn finish(mut self) {
         drop(self.child.stdin.take());
         self.child.wait().unwrap();
     }
