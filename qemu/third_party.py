@@ -24,11 +24,11 @@ RECIPES_URL = "https://github.com/msys2/MINGW-packages/tree/master"
 PREFIX = "mingw-w64-ucrt-x86_64-"
 
 # Licence families whose terms require offering the source: mirrored.
-COPYLEFT = ("GPL", "LGPL", "AGPL", "MPL", "EPL", "CDDL", "EUPL", "OSL")
+COPYLEFT = ("GPL", "LGPL", "AGPL", "MPL", "EPL", "CDDL", "EUPL", "OSL", "GFDL")
 # Licences that ask only for attribution. Anything else is unknown and fails the build: add it here after reading it.
 PERMISSIVE = (
     "MIT", "BSD", "ISC", "ZLIB", "APACHE", "BSL", "CC0", "UNLICENSE", "X11", "LIBPNG", "CURL", "HPND", "UNICODE",
-    "OPENSSL", "BZIP2", "FTL", "IJG",
+    "OPENSSL", "BZIP2", "FTL", "IJG", "0BSD",
 )  # fmt: skip
 
 
@@ -115,14 +115,34 @@ def parse_info(text: str) -> dict[str, str]:
     return fields
 
 
+def spdx_ids(licenses: str) -> list[str]:
+    """The licence identifiers in a `pacman -Qi` licence field.
+
+    MSYS2 writes each entry as `spdx:<expression>` or `<component>:spdx:<expression>` and pacman joins the entries with
+    two spaces, so `spdx:LGPL-2.1-or-later  documentation:spdx:GPL-3.0-or-later` holds two. Expressions use AND, OR,
+    WITH and parentheses; the operand of WITH is an exception, not a licence. Anything else (`custom:BSD`, a bare
+    legacy name) is returned as written for the caller to classify.
+    """
+    ids = []
+    after_with = False
+    for token in re.split(r"[\s(),]+", licenses):
+        token = re.sub(r"^(?:[^\s:]+:)*spdx:", "", token, flags=re.IGNORECASE)
+        if not token:
+            continue
+        if token.upper() == "WITH":
+            after_with = True
+        elif token.upper() in ("AND", "OR"):
+            after_with = False
+        elif after_with:
+            after_with = False
+        elif token.upper() not in ("NONE", "UNKNOWN"):
+            ids.append(token)
+    return ids
+
+
 def classify(licenses: str, package: str) -> str:
     """"copyleft" or "permissive"; raises Failure for an empty or unrecognised licence."""
-    tokens = []
-    for token in re.split(r"[\s(),]+", licenses):
-        token = re.sub(r"^spdx:", "", token, flags=re.IGNORECASE)
-        # Exception identifiers (GCC-exception-3.1, ...) qualify a licence listed beside them.
-        if token and token.upper() not in ("AND", "OR", "WITH", "NONE", "UNKNOWN") and "exception" not in token.lower():
-            tokens.append(token)
+    tokens = spdx_ids(licenses)
     if not tokens:
         raise Failure(f"{package}: pacman -Qi shows no licence ({licenses!r})")
 
