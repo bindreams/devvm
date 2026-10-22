@@ -29,3 +29,8 @@ percent-encoding = "2.3.2"
 
 [dev-dependencies]
 skuld = { workspace = true }
+
+[[test]]
+name = "vm_gate"
+path = "tests/vm_gate.rs"
+harness = false
