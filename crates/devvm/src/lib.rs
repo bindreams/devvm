@@ -19,10 +19,6 @@ pub const TARGET: &str = env!("DEVVM_TARGET");
 mod test_support;
 
 #[cfg(test)]
-#[path = "lib_tests.rs"]
-mod lib_tests;
-
-#[cfg(test)]
 fn main() {
     test_helpers::run_if_requested();
     skuld::run_all();

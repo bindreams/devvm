@@ -373,8 +373,9 @@ impl LayerStore {
     /// Returns the layer for `req.key`, running `builder` into a fresh staging directory when there is none.
     ///
     /// Concurrent builds of one key run `builder` once: the build lock serializes them and the waiter looks again
-    /// (with a fresh clock read) once it has the lock. A builder error or panic removes the staging directory and
-    /// publishes nothing.
+    /// (with a fresh clock read) once it has the lock. A builder error, or a panic that unwinds to the caller, removes
+    /// the staging directory and publishes nothing. A process that exits without unwinding (the CLI's panic hook)
+    /// leaves the directory for the next build of the key, or `gc`, to sweep.
     pub fn build<F>(&self, req: &BuildRequest, parent: Option<&ChainLease>, builder: F) -> Result<ChainLease>
     where
         F: FnOnce(&Staging<'_>) -> Result<Built>,

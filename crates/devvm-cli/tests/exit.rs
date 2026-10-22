@@ -5,9 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Barrier};
 
-use devvm::exit::{ExitWidth, NullProgress};
+use devvm::exit::{ExitStatus, ExitWidth, NullProgress};
+use devvm::recipe::hash::LayerKey;
 use devvm::store::fetch::{Artifact, Fetcher, Response, Resume, Transport};
-use devvm::{Error, ErrorKind, Result, Sha256};
+use devvm::store::layers::{BuildRequest, Built, LayerStore, SystemClock};
+use devvm::{Dirs, Error, ErrorKind, Result, Sha256};
 use devvm_cli::Deps;
 use serde_json::Value;
 
@@ -19,6 +21,7 @@ fn main() {
         let code = match name.to_str() {
             Some("panic-on-worker") => panic_on_workers(&args, 1),
             Some("panic-on-two-workers") => panic_on_workers(&args, 2),
+            Some("panic-in-builder") => panic_in_builder(&args),
             other => panic!("unknown helper {other:?}"),
         };
         std::process::exit(code);
@@ -66,6 +69,32 @@ fn panic_on_workers(args: &[String], parties: usize) -> i32 {
             "the panic hook did not end the process",
         ))
     })
+}
+
+/// Runs the real entry point with an action that panics inside a layer builder. `args[0]` is the home directory
+/// whose layer store is used; the rest are the CLI arguments.
+fn panic_in_builder(args: &[String]) -> i32 {
+    let dirs = Dirs::under(Path::new(&args[0]));
+    let cli_args: Vec<OsString> = args[1..].iter().map(OsString::from).collect();
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, Deps::real(), &|_, _| {
+        let store = LayerStore::open(&dirs, Arc::new(SystemClock), Arc::new(NullProgress))?;
+        store.build(&request(), None, |staging| {
+            std::fs::write(staging.dir.path().join("half"), b"x").unwrap();
+            panic!("injected builder fault");
+        })?;
+        Ok(ExitStatus::Code(0))
+    })
+}
+
+fn request() -> BuildRequest {
+    BuildRequest {
+        key: layer_key(),
+        source_label: "test source".to_owned(),
+    }
+}
+
+fn layer_key() -> LayerKey {
+    LayerKey::from_bytes([7; 16])
 }
 
 fn temp() -> skuld::TempDir {
@@ -137,12 +166,11 @@ fn a_missing_recipe_file_exits_125_with_one_error_line_and_a_status_file() {
 }
 
 #[skuld::test]
-fn build_resolves_the_recipe_then_reports_that_it_is_not_wired() {
+fn build_of_an_embedded_recipe_ends_in_one_devvm_error_line() {
     let dir = temp();
     let output = devvm(&dir, &["build", "ubuntu-24.04"], &[]);
     assert_eq!(output.status.code(), Some(125));
-    let line = one_error_line(&output, "not-supported");
-    assert!(line.contains("build is not wired yet"), "{line}");
+    one_error_line(&output, "not-supported");
 }
 
 #[skuld::test]
@@ -230,4 +258,42 @@ fn an_unwritable_status_file_still_exits_125_with_one_line() {
     assert_eq!(output.status.code(), Some(125));
     let line = one_error_line(&output, "status-file");
     assert!(line.contains("original: usage:"), "{line}");
+}
+
+/// Under the CLI the panic hook ends the process without unwinding, so a builder's staging directory is not removed
+/// by its destructor; the next build of the key sweeps it.
+#[skuld::test]
+fn a_builder_panic_leaves_its_staging_dir_for_the_next_build_to_sweep() {
+    let dir = temp();
+    let home = dir.join("Anna Ж");
+    let file = home.join("status.json");
+    let output = Command::new(std::env::current_exe().unwrap())
+        .env(HELPER_VAR, "panic-in-builder")
+        .args([
+            home.to_str().unwrap(),
+            "--status-file",
+            file.to_str().unwrap(),
+            "build",
+            "ubuntu-24.04",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    let line = one_error_line(&output, "panic");
+    assert!(line.contains("injected builder fault"), "{line}");
+
+    let dirs = Dirs::under(&home);
+    let key_dir = dirs.layers().join(layer_key().to_string());
+    let staging = |dir: &Path| {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".staging-"))
+            .count()
+    };
+    assert_eq!(staging(&key_dir), 1, "the hook exits without running destructors");
+
+    let store = LayerStore::open(&dirs, Arc::new(SystemClock), Arc::new(NullProgress)).unwrap();
+    store.build(&request(), None, |_| Ok(Built::default())).unwrap();
+    assert_eq!(staging(&key_dir), 0, "the next build sweeps what the dead one left");
 }

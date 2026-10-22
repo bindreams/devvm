@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use clap::{CommandFactory, Parser, Subcommand};
 use devvm::exit::{ExitStatus, ExitWidth, finish};
@@ -74,7 +74,7 @@ impl Transport for LazyHttp {
 }
 
 /// The `--status-file` the arguments or the environment name, found without a full parse so that even a usage error
-/// can be reported there. Flags after a `--` belong to the guest command and are ignored.
+/// can be reported there. Flags after a `--` belong to the guest command and are ignored; an empty value is no value.
 pub fn status_file_hint(args: &[OsString], env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -83,10 +83,15 @@ pub fn status_file_hint(args: &[OsString], env: &dyn Fn(&str) -> Option<OsString
         }
         let text = arg.to_string_lossy();
         if text == "--status-file" {
-            if let Some(value) = args.next() {
-                return Some(PathBuf::from(value));
+            match args.next() {
+                // The `--` ends the options, so it is no value.
+                Some(value) if value == "--" => break,
+                Some(value) if !value.is_empty() => return Some(PathBuf::from(value)),
+                _ => {}
             }
-        } else if let Some(value) = text.strip_prefix("--status-file=") {
+        } else if let Some(value) = text.strip_prefix("--status-file=")
+            && !value.is_empty()
+        {
             return Some(PathBuf::from(value));
         }
     }
@@ -106,8 +111,8 @@ fn set_status_file(path: Option<PathBuf>) {
 
 /// Makes a panic on any thread print one `devvm-error: panic:` line, write the status file if one is set, and exit 125.
 ///
-/// Concurrent panics queue on a process-wide lock; the first to get it exits the process, so exactly one line is
-/// printed. The hook never panics itself: it ignores write errors and tolerates a poisoned lock.
+/// Concurrent panics queue on a process-wide lock, which the normal finish takes too; the first to get it ends the
+/// process, so exactly one line is printed. The hook never panics itself: it ignores write errors and tolerates a poisoned lock.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let _only_one_at_a_time = PANICKING.lock().unwrap_or_else(PoisonError::into_inner);
@@ -164,29 +169,68 @@ pub fn main_entry_with(
     action: &dyn Fn(&Deps, Cmd) -> Result<ExitStatus>,
 ) -> i32 {
     install_panic_hook();
+    run_locked(width, args, deps, action).code
+}
+
+/// Like [`main_entry`], but ends the process, so that no panic on another thread can print a second line or rewrite
+/// the status file between the normal finish and the exit.
+pub fn run(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> ! {
+    install_panic_hook();
+    let exit = run_locked(width, args, deps, &dispatch);
+    std::process::exit(exit.code)
+}
+
+/// How the command ended, with the panic hook's lock held: the hook cannot run until this is dropped.
+struct Exit {
+    code: i32,
+    _only_one_ending: MutexGuard<'static, ()>,
+}
+
+/// The command line from status-file setup to `finish`. The lock is taken once the action is over, not before: a
+/// panic inside the action must still reach the hook.
+fn run_locked(
+    width: ExitWidth,
+    args: Vec<OsString>,
+    deps: Deps,
+    action: &dyn Fn(&Deps, Cmd) -> Result<ExitStatus>,
+) -> Exit {
     let status_file = status_file_hint(&args, &|name| std::env::var_os(name));
     set_status_file(status_file.clone());
+    let ending = || PANICKING.lock().unwrap_or_else(PoisonError::into_inner);
 
     let cli = match Cli::try_parse_from(std::iter::once(OsString::from("devvm")).chain(args)) {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() => {
             // `--help` and `--version`: printed on stdout, not a failure.
+            let guard = ending();
             let _ = e.print();
-            return 0;
+            return Exit {
+                code: 0,
+                _only_one_ending: guard,
+            };
         }
         Err(e) => {
-            return finish(
+            let guard = ending();
+            let code = finish(
                 status_file.as_deref(),
                 Err(usage_error(&e)),
                 width,
                 &mut std::io::stderr(),
             );
+            return Exit {
+                code,
+                _only_one_ending: guard,
+            };
         }
     };
     let outcome = action(&deps, cli.command);
+    let guard = ending();
     let code = finish(status_file.as_deref(), outcome, width, &mut std::io::stderr());
     let _ = std::io::stdout().flush();
-    code
+    Exit {
+        code,
+        _only_one_ending: guard,
+    }
 }
 
 fn usage_error(e: &clap::Error) -> Error {
