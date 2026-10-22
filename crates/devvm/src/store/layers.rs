@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::exit::Progress;
 use crate::recipe::hash::LayerKey;
@@ -29,6 +29,9 @@ use meta::MetaRead;
 #[cfg(test)]
 #[path = "layers_tests.rs"]
 pub(crate) mod layers_tests;
+
+/// A lookup within this long of a layer's expiry is a miss, so a layer is never handed out just before it expires.
+pub const EXPIRY_MARGIN: Duration = Duration::from_secs(10 * 24 * 3600);
 
 // Public types ========================================================================================================
 
@@ -174,6 +177,8 @@ impl LayerStore {
 
     /// `lookup` with the shared `gc.lock` already held by the caller.
     fn lookup_locked(&self, key: &LayerKey) -> Result<Option<ChainLease>> {
+        // Read afresh by every lookup: a waiter that gets the build lock must not judge expiry by a stale time.
+        let now = self.clock.now();
         let Some(generation) = self.read_current(key)? else {
             return Ok(None);
         };
@@ -188,7 +193,7 @@ impl LayerStore {
                 ));
                 return Ok(None);
             }
-            let Some(lease) = self.lease(&wanted)? else {
+            let Some(lease) = self.lease(&wanted, now)? else {
                 return Ok(None);
             };
             let parent = lease.meta().parent;
@@ -203,7 +208,7 @@ impl LayerStore {
     }
 
     /// Takes the shared lock on one generation and reads its record; `None` when it is missing or unusable.
-    fn lease(&self, layer: &LayerRef) -> Result<Option<LayerLease>> {
+    fn lease(&self, layer: &LayerRef, now: SystemTime) -> Result<Option<LayerLease>> {
         let lock = self.generation_lock(layer)?;
         lock.lock(Mode::Shared, "a layer being replaced", &*self.progress)?;
         let dir = self.generation_dir(layer);
@@ -223,6 +228,7 @@ impl LayerStore {
                 ));
                 Ok(None)
             }
+            MetaRead::Valid(meta) if meta.expires.is_some_and(|expires| now + EXPIRY_MARGIN >= expires) => Ok(None),
             MetaRead::Valid(meta) => Ok(Some(LayerLease::new(meta, LayerDir(dir), lock))),
         }
     }
@@ -293,12 +299,32 @@ impl LayerStore {
         };
         let built = builder(&staging)?;
 
+        let parent_expiry = parent.and_then(|parent| parent.tip().meta().expires);
+        let expires = match (built.expires, parent_expiry) {
+            (Some(own), Some(inherited)) => Some(own.min(inherited)),
+            (own, inherited) => own.or(inherited),
+        };
+        let created = self.clock.now();
+        if let Some(expires) = expires
+            && created + EXPIRY_MARGIN >= expires
+        {
+            return Err(Error::new(
+                ErrorKind::ExpiredBase,
+                format!(
+                    "the base for layer {} expires on {}, within {} days: {}",
+                    req.key,
+                    date_text(expires),
+                    EXPIRY_MARGIN.as_secs() / (24 * 3600),
+                    req.source_label
+                ),
+            ));
+        }
         let meta = LayerMeta {
             key: req.key,
             generation,
             parent: parent.map(|parent| parent.tip().layer_ref()),
-            created: self.clock.now(),
-            expires: built.expires,
+            created,
+            expires,
         };
         self.write_meta(&staging_path, &meta)?;
         self.publish(&req.key, &staging_path, &generation)?;
@@ -376,6 +402,14 @@ impl LayerStore {
 }
 
 // Helpers =============================================================================================================
+
+/// `YYYY-MM-DD` in UTC.
+fn date_text(time: SystemTime) -> String {
+    match jiff::Timestamp::try_from(time) {
+        Ok(timestamp) => timestamp.to_zoned(jiff::tz::TimeZone::UTC).date().to_string(),
+        Err(_) => "an unrepresentable date".to_owned(),
+    }
+}
 
 /// Writes `bytes` to a new file and flushes it to disk.
 fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {

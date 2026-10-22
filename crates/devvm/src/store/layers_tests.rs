@@ -299,3 +299,188 @@ fn store_types_are_send_and_sync() {
     assert_bounds::<ChainLease>();
     assert_bounds::<crate::store::layers::LayerLease>();
 }
+
+// Generations and expiry ==============================================================================================
+
+use crate::store::layers::EXPIRY_MARGIN;
+
+fn current_of(env: &Env, key: LayerKey) -> String {
+    std::fs::read_to_string(env.dirs.layers().join(key.to_string()).join("current")).unwrap()
+}
+
+#[skuld::test]
+fn near_expiry_base_and_child_both_miss_and_rebuild_as_new_generations(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let base = build_expiring(&env, key(1), None, Some(t0() + days(90)));
+    let child = build_expiring(&env, key(2), Some(&base), Some(t0() + days(120)));
+    let (old_base, old_child) = (base.tip().meta().generation, child.tip().meta().generation);
+    let (old_base_dir, old_child_dir) = (base.tip().dir().path().to_owned(), child.tip().dir().path().to_owned());
+
+    env.clock.set(t0() + days(80) + Duration::from_secs(1));
+    assert!(env.store.lookup(&key(1)).unwrap().is_none());
+    assert!(env.store.lookup(&key(2)).unwrap().is_none());
+
+    let now = t0() + days(80) + Duration::from_secs(1);
+    let new_base = build_expiring(&env, key(1), None, Some(now + days(90)));
+    let new_child = build_expiring(&env, key(2), Some(&new_base), Some(now + days(120)));
+    assert_ne!(new_base.tip().meta().generation, old_base);
+    assert_ne!(new_child.tip().meta().generation, old_child);
+    assert_eq!(current_of(&env, key(1)), new_base.tip().meta().generation.to_string());
+    assert_eq!(current_of(&env, key(2)), new_child.tip().meta().generation.to_string());
+    assert_eq!(
+        new_child.tip().meta().parent.unwrap().generation,
+        new_base.tip().meta().generation
+    );
+
+    // The old generations, which instances may still be using, keep their files.
+    assert_eq!(std::fs::read(old_base_dir.join("disk.qcow2")).unwrap(), b"disk");
+    assert_eq!(std::fs::read(old_child_dir.join("disk.qcow2")).unwrap(), b"disk");
+}
+
+#[skuld::test]
+fn lookup_boundary_is_exactly_ten_days(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let expires = t0() + days(100);
+    drop(build_expiring(&env, key(1), None, Some(expires)));
+    assert_eq!(EXPIRY_MARGIN, days(10));
+    env.clock.set(expires - EXPIRY_MARGIN - Duration::from_secs(1));
+    assert!(env.store.lookup(&key(1)).unwrap().is_some());
+    env.clock.set(expires - EXPIRY_MARGIN);
+    assert!(env.store.lookup(&key(1)).unwrap().is_none());
+    env.clock.set(expires + days(1));
+    assert!(env.store.lookup(&key(1)).unwrap().is_none());
+}
+
+#[skuld::test]
+fn child_expiry_is_the_minimum_of_own_and_parent(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let parent = build_expiring(&env, key(1), None, Some(t0() + days(90)));
+    let later = build_expiring(&env, key(2), Some(&parent), Some(t0() + days(200)));
+    assert_eq!(later.tip().meta().expires, Some(t0() + days(90)));
+    let sooner = build_expiring(&env, key(3), Some(&parent), Some(t0() + days(30)));
+    assert_eq!(sooner.tip().meta().expires, Some(t0() + days(30)));
+    let unlimited = build_expiring(&env, key(4), Some(&parent), None);
+    assert_eq!(unlimited.tip().meta().expires, Some(t0() + days(90)));
+}
+
+#[skuld::test]
+fn born_expired_build_fails_with_expired_base_and_publishes_nothing(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let expires = t0() + days(3);
+    let error = env
+        .store
+        .build(&request(key(1)), None, |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Built { expires: Some(expires) })
+        })
+        .map(|_| ())
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::ExpiredBase);
+    assert!(error.message().contains("2027-01-18"), "{error}");
+    assert!(error.message().contains("test source"), "{error}");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "it never loops");
+    assert_eq!(names(&env.dirs.layers().join(key(1).to_string())), Vec::<String>::new());
+}
+
+#[skuld::test]
+fn failed_expiry_triggered_rebuild_is_an_error_not_the_old_generation(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let old = build_expiring(&env, key(1), None, Some(t0() + days(90)));
+    let old_generation = old.tip().meta().generation;
+    env.clock.set(t0() + days(85));
+    let result = env.store.build(&request(key(1)), None, |_| {
+        Err(crate::Error::new(ErrorKind::Io, "rebuild failed"))
+    });
+    assert_eq!(result.map(|_| ()).unwrap_err().message(), "rebuild failed");
+    assert!(env.store.lookup(&key(1)).unwrap().is_none());
+    assert_eq!(current_of(&env, key(1)), old_generation.to_string());
+    assert_eq!(
+        std::fs::read(old.tip().dir().path().join("disk.qcow2")).unwrap(),
+        b"disk"
+    );
+}
+
+struct ChannelProgress(std::sync::Mutex<std::sync::mpsc::Sender<String>>);
+
+impl Progress for ChannelProgress {
+    fn message(&self, text: &str) {
+        self.0.lock().unwrap().send(text.to_owned()).unwrap();
+    }
+}
+
+#[skuld::test]
+fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(anna_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let clock = Arc::new(FakeClock::new(t0()));
+    let (messages, waiting) = std::sync::mpsc::channel();
+    let store = LayerStore::open(
+        &dirs,
+        clock.clone() as Arc<dyn Clock>,
+        Arc::new(ChannelProgress(std::sync::Mutex::new(messages))),
+    )
+    .unwrap();
+    let (building_tx, building_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let waiter_builds = std::sync::atomic::AtomicUsize::new(0);
+
+    let (a_generation, b_generation) = std::thread::scope(|scope| {
+        let store = &store;
+        let a = scope.spawn(move || {
+            let lease = store
+                .build(&request(key(1)), None, |_| {
+                    building_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(Built {
+                        expires: Some(t0() + days(90)),
+                    })
+                })
+                .unwrap();
+            lease.tip().meta().generation
+        });
+        building_rx.recv().unwrap();
+        let (clock, waiter_builds) = (&clock, &waiter_builds);
+        let b = scope.spawn(move || {
+            // B's first clock read is at T0; its second, once it holds the build lock, is 85 days later.
+            clock.script_this_thread(t0() + days(85));
+            let lease = store
+                .build(&request(key(1)), None, |_| {
+                    waiter_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Built {
+                        expires: Some(t0() + days(85) + days(90)),
+                    })
+                })
+                .unwrap();
+            lease.tip().meta().generation
+        });
+        let message = waiting.recv().unwrap();
+        assert!(
+            message.starts_with("waiting for another devvm process building layer"),
+            "{message}"
+        );
+        release_tx.send(()).unwrap();
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!(
+        waiter_builds.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a clock read before the wait would have hit A's layer, which is within the margin by now"
+    );
+    assert_ne!(a_generation, b_generation);
+}
+
+#[skuld::test]
+fn waiter_whose_layer_was_built_meanwhile_does_not_build_again(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    drop(build(&env, key(1), None));
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    drop(
+        env.store
+            .build(&request(key(1)), None, |_| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Built { expires: None })
+            })
+            .unwrap(),
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}

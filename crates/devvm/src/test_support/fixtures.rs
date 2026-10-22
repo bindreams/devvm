@@ -32,22 +32,39 @@ pub fn anna_home() -> Result<AnnaHome, String> {
 /// A clock the test sets.
 pub struct FakeClock {
     now: std::sync::Mutex<std::time::SystemTime>,
+    scripts: std::sync::Mutex<std::collections::HashMap<std::thread::ThreadId, (std::time::SystemTime, bool)>>,
 }
 
 impl FakeClock {
     pub fn new(now: std::time::SystemTime) -> FakeClock {
         FakeClock {
             now: std::sync::Mutex::new(now),
+            scripts: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     pub fn set(&self, now: std::time::SystemTime) {
         *self.now.lock().unwrap() = now;
     }
+
+    /// Makes the calling thread's reads return the shared time once, then `later` from the second read on. This
+    /// models time passing between two steps of one thread without depending on how other threads interleave.
+    pub fn script_this_thread(&self, later: std::time::SystemTime) {
+        self.scripts
+            .lock()
+            .unwrap()
+            .insert(std::thread::current().id(), (later, false));
+    }
 }
 
 impl crate::store::layers::Clock for FakeClock {
     fn now(&self) -> std::time::SystemTime {
+        if let Some((later, started)) = self.scripts.lock().unwrap().get_mut(&std::thread::current().id()) {
+            if *started {
+                return *later;
+            }
+            *started = true;
+        }
         *self.now.lock().unwrap()
     }
 }
