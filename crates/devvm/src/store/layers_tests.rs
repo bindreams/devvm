@@ -173,6 +173,31 @@ fn builder_panic_leaves_no_staging_and_no_current(#[fixture(anna_home)] home: &P
 }
 
 #[skuld::test]
+fn failed_publish_after_the_rename_does_not_report_a_missing_staging_dir(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let key_dir = env.dirs.layers().join(key(1).to_string());
+    // A directory named `current` makes the final rename fail, after staging became the generation directory.
+    let result = env.store.build(&request(key(1)), None, |_| {
+        std::fs::create_dir(key_dir.join("current")).unwrap();
+        Ok(Built { expires: None })
+    });
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::Io);
+    assert_eq!(env.progress.messages(), Vec::<String>::new());
+}
+
+#[skuld::test]
+fn build_sweeps_leftover_current_temp_files(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let key_dir = env.dirs.layers().join(key(1).to_string());
+    std::fs::create_dir_all(&key_dir).unwrap();
+    std::fs::write(key_dir.join("current.tmp-0badc0de"), b"torn").unwrap();
+    let lease = build(&env, key(1), None);
+    let mut expected = vec!["current".to_owned(), lease.tip().meta().generation.to_string()];
+    expected.sort();
+    assert_eq!(names(&key_dir), expected);
+}
+
+#[skuld::test]
 fn child_records_parent_key_and_generation(#[fixture(anna_home)] home: &Path) {
     let env = env(home);
     let parent = build(&env, key(1), None);

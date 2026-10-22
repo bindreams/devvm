@@ -360,6 +360,26 @@ fn unexpected_status_on_resume_keeps_the_part(#[fixture(anna_home)] home: &Path)
     assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 30_000);
 }
 
+#[skuld::test]
+fn a_cached_entry_clears_a_stale_sidecar(#[fixture(anna_home)] home: &Path) {
+    let data = bytes(10_000, 6);
+    let wanted = artifact(&data);
+    let setup = setup(home, Script::serving(data.clone()));
+    setup.fetcher.fetch(&wanted).unwrap();
+    // A crash between publishing and deleting the sidecar leaves these behind.
+    std::fs::write(sidecar(&setup, &wanted), b"{}").unwrap();
+    std::fs::write(
+        setup.downloads.join(format!("{}.part.json.tmp", wanted.sha256)),
+        b"{}",
+    )
+    .unwrap();
+    setup.fetcher.fetch(&wanted).unwrap();
+    assert_eq!(
+        listing(&setup.downloads),
+        vec![wanted.sha256.to_string(), format!("{}.lock", wanted.sha256)]
+    );
+}
+
 // Resume corner cases =================================================================================================
 
 /// Leaves `have` bytes of `data` as a part from `URL`, as an interrupted run would.

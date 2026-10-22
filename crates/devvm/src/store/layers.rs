@@ -383,7 +383,7 @@ impl LayerStore {
         let key_dir = self.key_dir(&req.key);
         std::fs::create_dir_all(&key_dir)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", key_dir.display()), e))?;
-        self.remove_stale_staging(&key_dir);
+        self.sweep_leftovers(&key_dir);
 
         let generation = self.ids.generation();
         let staging_path = key_dir.join(format!(".staging-{}", Generation::random()));
@@ -427,8 +427,7 @@ impl LayerStore {
             expires,
         };
         self.write_meta(&staging_path, &meta)?;
-        self.publish(&req.key, &staging_path, &generation)?;
-        cleanup.disarm();
+        self.publish(&req.key, &staging_path, &generation, &mut cleanup)?;
 
         match self.lookup(&req.key)? {
             Some(lease) => Ok(lease),
@@ -457,22 +456,29 @@ impl LayerStore {
         Ok(())
     }
 
-    /// Under the key's build lock every other staging directory belongs to a dead process: a live builder holds the
-    /// lock for its whole build.
-    fn remove_stale_staging(&self, key_dir: &Path) {
+    /// Removes what an interrupted build left in `key_dir`: staging directories and `current.tmp-*` files. The caller
+    /// holds the key's build lock, and a live builder holds it for its whole build, so every such entry is dead.
+    /// Returns how many staging directories it removed.
+    pub(super) fn sweep_leftovers(&self, key_dir: &Path) -> usize {
         let Ok(entries) = std::fs::read_dir(key_dir) else {
-            return;
+            return 0;
         };
+        let mut staging_removed = 0;
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".staging-")
-                && let Err(e) = std::fs::remove_dir_all(entry.path())
-            {
-                self.progress.message(&format!(
-                    "cannot remove stale staging directory {}: {e}",
-                    entry.path().display()
-                ));
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let result = if name.starts_with(".staging-") {
+                std::fs::remove_dir_all(entry.path()).inspect(|()| staging_removed += 1)
+            } else if name.starts_with("current.tmp-") {
+                std::fs::remove_file(entry.path())
+            } else {
+                continue;
+            };
+            if let Err(e) = result {
+                self.progress
+                    .message(&format!("cannot remove leftover {}: {e}", entry.path().display()));
             }
         }
+        staging_removed
     }
 
     fn write_meta(&self, staging: &Path, meta: &LayerMeta) -> Result<()> {
@@ -480,8 +486,15 @@ impl LayerStore {
         write_durable(&path, meta.to_json()?.as_bytes())
     }
 
-    /// Renames staging to the generation directory and replaces `current`, under the shared `gc.lock`.
-    fn publish(&self, key: &LayerKey, staging: &Path, generation: &Generation) -> Result<()> {
+    /// Renames staging to the generation directory and replaces `current`, under the shared `gc.lock`. Disarms
+    /// `cleanup` once the rename has moved the staging directory away.
+    fn publish(
+        &self,
+        key: &LayerKey,
+        staging: &Path,
+        generation: &Generation,
+        cleanup: &mut RemoveOnDrop,
+    ) -> Result<()> {
         let mut gc = self.gc_lock()?;
         gc.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
         let key_dir = self.key_dir(key);
@@ -493,6 +506,7 @@ impl LayerStore {
                 e,
             )
         })?;
+        cleanup.disarm();
         let temp = key_dir.join(format!("current.tmp-{}", Generation::random()));
         write_durable(&temp, generation.to_string().as_bytes())?;
         let current = key_dir.join("current");

@@ -191,6 +191,9 @@ impl Fetcher {
         )?;
         let entry = self.entry_path(artifact);
         if entry.is_file() {
+            // A crash between publishing and the cleanup in `verify_and_publish` leaves these behind.
+            remove_if_present(&self.sidecar_path(artifact))?;
+            remove_if_present(&self.sidecar_temp_path(artifact))?;
             return Ok(entry);
         }
         self.download(artifact, &entry)?;
@@ -330,13 +333,17 @@ impl Fetcher {
         }
     }
 
+    fn sidecar_temp_path(&self, artifact: &Artifact) -> PathBuf {
+        self.downloads.join(format!("{}.part.json.tmp", artifact.sha256))
+    }
+
     fn write_sidecar(&self, artifact: &Artifact, validator: Option<String>) -> Result<()> {
         let sidecar = Sidecar {
             url: artifact.url.clone(),
             validator,
         };
         let path = self.sidecar_path(artifact);
-        let temp = self.downloads.join(format!("{}.part.json.tmp", artifact.sha256));
+        let temp = self.sidecar_temp_path(artifact);
         let json = serde_json::to_vec(&sidecar).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
         std::fs::write(&temp, json)
             .and_then(|()| std::fs::rename(&temp, &path))

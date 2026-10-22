@@ -211,6 +211,18 @@ fn gc_skips_a_key_with_a_live_builder_and_sweeps_a_dead_one(#[fixture(anna_home)
 }
 
 #[skuld::test]
+fn gc_sweeps_leftover_current_temp_files_of_a_kept_key(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let layer = build_expiring(&env, key(1), None, None).tip().layer_ref();
+    let key_dir = env.dirs.layers().join(key(1).to_string());
+    std::fs::write(key_dir.join("current.tmp-0badc0de"), b"torn").unwrap();
+    env.store.gc(&Fixed(vec![vec![layer]])).unwrap();
+    let mut expected = vec!["current".to_owned(), layer.generation.to_string()];
+    expected.sort();
+    assert_eq!(names(&key_dir), expected);
+}
+
+#[skuld::test]
 fn lease_chain_refuses_a_chain_with_a_missing_link(#[fixture(anna_home)] home: &Path) {
     let env = env(home);
     let parent = build_expiring(&env, key(1), None, None);

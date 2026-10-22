@@ -17,6 +17,9 @@ use crate::{Error, ErrorKind, Result};
 /// What is still needed by something outside the store.
 pub trait Reachability {
     /// The full ancestor chain of every instance record, running or stopped.
+    ///
+    /// Called while the exclusive `gc.lock` is held. It must only read records and must never wait on a lock: any
+    /// holder of the shared `gc.lock` that the wait depends on is itself waiting for collection to end.
     fn chains(&self) -> Result<Vec<Vec<LayerRef>>>;
 }
 
@@ -159,23 +162,12 @@ impl LayerStore {
             }
         }
 
-        // Staging directories belong to a live builder exactly when it holds the key's build lock.
+        // Leftovers are dead exactly when no builder holds the key's build lock.
         let mut build = self.build_lock(key)?;
         if !build.try_lock(Mode::Exclusive)? {
             return Ok(());
         }
-        let entries = std::fs::read_dir(&key_dir)
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", key_dir.display()), e))?;
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".staging-") {
-                match std::fs::remove_dir_all(entry.path()) {
-                    Ok(()) => report.staging_removed += 1,
-                    Err(e) => self
-                        .progress
-                        .message(&format!("cannot remove {}: {e}", entry.path().display())),
-                }
-            }
-        }
+        report.staging_removed += self.sweep_leftovers(&key_dir);
         // Fails while the directory still holds anything, which is the point.
         let _ = std::fs::remove_dir(&key_dir);
         Ok(())
