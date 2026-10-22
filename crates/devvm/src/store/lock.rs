@@ -59,11 +59,7 @@ impl FileLock {
 
     /// Takes the lock if nobody else holds a conflicting one. `Ok(false)` means someone else does.
     pub fn try_lock(&mut self, mode: Mode) -> Result<bool> {
-        debug_assert!(
-            !self.held,
-            "{} is already locked",
-            self.path.display()
-        );
+        debug_assert!(!self.held, "{} is already locked", self.path.display());
         let result = match mode {
             Mode::Shared => self.file.try_lock_shared(),
             Mode::Exclusive => self.file.try_lock(),

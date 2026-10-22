@@ -368,11 +368,7 @@ fn a_cached_entry_clears_a_stale_sidecar(#[fixture(anna_home)] home: &Path) {
     setup.fetcher.fetch(&wanted).unwrap();
     // A crash between publishing and deleting the sidecar leaves these behind.
     std::fs::write(sidecar(&setup, &wanted), b"{}").unwrap();
-    std::fs::write(
-        setup.downloads.join(format!("{}.part.json.tmp", wanted.sha256)),
-        b"{}",
-    )
-    .unwrap();
+    std::fs::write(setup.downloads.join(format!("{}.part.json.tmp", wanted.sha256)), b"{}").unwrap();
     setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(
         listing(&setup.downloads),
