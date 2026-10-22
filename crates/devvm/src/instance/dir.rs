@@ -176,7 +176,7 @@ impl InstanceDir {
             .expect("an instance path has a parent")
             .join(format!(".dead-{}", self.id));
         self.locks
-            .renaming(before_wait, || std::fs::rename(&self.path, &dead))?
+            .excluding_readers(before_wait, || std::fs::rename(&self.path, &dead))?
             .map_err(|e| {
                 Error::io(
                     ErrorKind::Io,
@@ -205,7 +205,14 @@ impl InstanceDir {
                 e.message()
             )),
         }
-        self.locks.remove(&self.id);
+        // The instance is gone either way; leftover lock files go in the next lock sweep.
+        if let Err(e) = self.locks.remove(&self.id) {
+            self.progress.message(&format!(
+                "instance {} is removed, but its lock files could not be deleted ({}); the next devvm command retries",
+                self.name,
+                e.message()
+            ));
+        }
         Ok(())
     }
 }

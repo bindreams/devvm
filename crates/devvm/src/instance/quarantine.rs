@@ -101,7 +101,7 @@ impl Registry {
             .join(format!("{name}-{}", hex::encode(suffix)));
         match self
             .locks()
-            .renaming(&mut || {}, || move_if_unchanged(name, path, id, &target))
+            .excluding_readers(&mut || {}, || move_if_unchanged(name, path, id, &target))
         {
             Ok(Moved::Done) => {
                 self.progress().message(&format!(
@@ -122,7 +122,7 @@ impl Registry {
     }
 }
 
-/// Runs inside `Locks::renaming`: reads the files directly, takes no lock.
+/// Runs inside `Locks::excluding_readers`: reads the files directly, takes no lock.
 fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &PathBuf) -> Moved {
     if !path.exists() {
         return Moved::Vanished;

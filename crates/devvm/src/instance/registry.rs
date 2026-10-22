@@ -178,7 +178,8 @@ impl Registry {
             Ok(dir) => Ok(Owned { dir, owner }),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&temp);
-                self.locks.remove(&id);
+                // Already failing with the creation's error; a lock file left over is swept by the next reaper pass.
+                let _ = self.locks.remove(&id);
                 drop(owner);
                 Err(e)
             }

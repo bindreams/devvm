@@ -4,10 +4,12 @@
 //!   only after taking it.
 //! - `instance-<id>.op`: taken exclusive by `start`, `stop` and `rm`, shared by `run`, `ssh` and `cp`.
 //!
-//! - `instances.dir`: a leaf lock around the files inside instance directories. Whoever reads `record.json` or
-//!   `owner.json` holds it shared; whoever renames an instance directory (`rm`, quarantine) holds it exclusive. Windows
-//!   refuses to rename a directory while any file inside is open, so without it a reader makes `rm` fail. Its holders
-//!   only read files or rename, never wait for another lock, so waiting for it cannot deadlock, not even in the layer
+//! - `instances.dir`: a leaf lock around the files inside instance directories and around the lock files. Whoever reads
+//!   `record.json` or `owner.json`, or opens a lock file, holds it shared; whoever renames an instance directory (`rm`,
+//!   quarantine) or unlinks lock files holds it exclusive. Windows refuses to rename a directory while any file inside
+//!   is open, so without it a reader makes `rm` fail; and it refuses to open a file that is being unlinked with "access
+//!   denied" instead of "not found", so an open can only see the file present or absent. Its holders only read files,
+//!   open files, rename or unlink, never wait for another lock, so waiting for it cannot deadlock, not even in the layer
 //!   store's collection, which must not wait for any lock that a holder of the shared `gc.lock` could hold.
 //! - `dead.lock`: taken without waiting by whoever deletes the contents of a `.dead-<id>` directory (`rm`, the reaper),
 //!   so that two processes never delete one tree at once.
@@ -67,9 +69,10 @@ impl Locks {
         Ok(f())
     }
 
-    /// Runs `f`, which renames an instance directory, while no one reads inside any instance directory. `before_wait`
-    /// runs just before waiting for the readers. `f` must not take or wait for any other lock.
-    pub(crate) fn renaming<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
+    /// Runs `f`, which renames an instance directory or unlinks lock files, while no one reads inside any instance
+    /// directory or opens a lock file. `before_wait` runs just before waiting for them. `f` must not take or wait for
+    /// any other lock.
+    pub(crate) fn excluding_readers<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
         let _lock = take(FileLock::open(&self.dir_lock_path())?, Mode::Exclusive, before_wait)?;
         Ok(f())
     }
@@ -116,14 +119,12 @@ impl Locks {
     /// sweeper can remove it afterwards.
     pub(crate) fn acquire_owner_new_with(&self, id: &InstanceId, between: &mut dyn FnMut()) -> Result<FileLock> {
         let path = self.owner_path(id);
-        // Every instance has this file from its creation on; `reading` relies on it.
-        drop(FileLock::open(&self.dir_lock_path())?);
         loop {
-            let mut owner = FileLock::open(&path)?;
+            let mut owner = self.create_lock_file(&path)?;
             owner.lock(Mode::Exclusive, "a lock-file sweep to finish", &NullProgress)?;
             between();
             if path.exists() {
-                drop(FileLock::open(&self.op_path(id))?);
+                drop(self.create_lock_file(&self.op_path(id))?);
                 return Ok(owner);
             }
         }
@@ -137,12 +138,12 @@ impl Locks {
     pub(crate) fn try_owner_recreating(&self, id: &InstanceId) -> Result<Probe> {
         let path = self.owner_path(id);
         loop {
-            let mut owner = FileLock::open(&path)?;
+            let mut owner = self.create_lock_file(&path)?;
             if !owner.try_lock(Mode::Exclusive)? {
                 return Ok(Probe::Held);
             }
             if path.exists() {
-                drop(FileLock::open(&self.op_path(id))?);
+                drop(self.create_lock_file(&self.op_path(id))?);
                 return Ok(Probe::Free(owner));
             }
         }
@@ -150,16 +151,21 @@ impl Locks {
 
     /// Tries the owner lock without creating anything.
     pub(crate) fn try_owner(&self, id: &InstanceId) -> Result<Probe> {
-        self.try_owner_with(id, &mut || {})
+        self.try_owner_with(id, &mut || {}, &mut || {})
     }
 
-    pub(crate) fn try_owner_with(&self, id: &InstanceId, between: &mut dyn FnMut()) -> Result<Probe> {
-        probe(&self.owner_path(id), between)
+    pub(crate) fn try_owner_with(
+        &self,
+        id: &InstanceId,
+        before_wait: &mut dyn FnMut(),
+        between: &mut dyn FnMut(),
+    ) -> Result<Probe> {
+        self.probe(&self.owner_path(id), before_wait, between)
     }
 
     /// Tries the exclusive op lock without creating anything.
     pub(crate) fn try_op_exclusive(&self, id: &InstanceId) -> Result<Probe> {
-        probe(&self.op_path(id), &mut || {})
+        self.probe(&self.op_path(id), &mut || {}, &mut || {})
     }
 
     /// Takes the op lock exclusive, waiting for it. `NotFound` if the instance is gone before or after the wait.
@@ -174,16 +180,53 @@ impl Locks {
 
     fn op(&self, id: &InstanceId, mode: Mode, what: &str, progress: &dyn Progress) -> Result<FileLock> {
         let path = self.op_path(id);
-        let mut lock = FileLock::open_existing(&path)?.ok_or_else(|| gone(id))?;
+        let mut lock = self.open_lock_file(&path, &mut || {})?.ok_or_else(|| gone(id))?;
         lock.lock(mode, what, progress)?;
         // The holder we waited for may have removed the instance: we would then hold a lock on an unlinked file.
         if path.exists() { Ok(lock) } else { Err(gone(id)) }
     }
 
-    /// Deletes both lock files, best effort. For a holder of the owner lock (reaper, `Owned`) or of the op lock.
-    pub(crate) fn remove(&self, id: &InstanceId) {
-        let _ = std::fs::remove_file(self.op_path(id));
-        let _ = std::fs::remove_file(self.owner_path(id));
+    /// Unlinks both lock files while no one opens a lock file; an unlink that fails leaves its file for the next lock
+    /// sweep. For a holder of the owner lock (reaper, `Owned`) or of the op lock. An error means the files were not
+    /// even tried.
+    pub(crate) fn remove(&self, id: &InstanceId) -> Result<()> {
+        self.remove_with(id, &mut || {})
+    }
+
+    /// `remove` with `before_wait` run just before it waits for whoever is opening a lock file.
+    pub(crate) fn remove_with(&self, id: &InstanceId, before_wait: &mut dyn FnMut()) -> Result<()> {
+        self.excluding_readers(before_wait, || {
+            let _ = std::fs::remove_file(self.op_path(id));
+            let _ = std::fs::remove_file(self.owner_path(id));
+        })
+    }
+
+    /// Opens a lock file that exists, creating nothing: `None` if it is absent. Held shared on `instances.dir` for the
+    /// open only: waiting on the opened lock happens after, so it never blocks an unlink.
+    fn open_lock_file(&self, path: &Path, before_wait: &mut dyn FnMut()) -> Result<Option<FileLock>> {
+        // No `instances.dir` means no instance was ever created: the lock file is absent.
+        let Some(dir_lock) = FileLock::open_existing(&self.dir_lock_path())? else {
+            return Ok(None);
+        };
+        let _shared = take(dir_lock, Mode::Shared, before_wait)?;
+        FileLock::open_existing(path)
+    }
+
+    /// Opens a lock file, creating it and `instances.dir` if needed. Held shared like [`Locks::open_lock_file`].
+    fn create_lock_file(&self, path: &Path) -> Result<FileLock> {
+        let _shared = take(FileLock::open(&self.dir_lock_path())?, Mode::Shared, &mut || {})?;
+        FileLock::open(path)
+    }
+
+    fn probe(&self, path: &Path, before_wait: &mut dyn FnMut(), between: &mut dyn FnMut()) -> Result<Probe> {
+        let Some(mut lock) = self.open_lock_file(path, before_wait)? else {
+            return Ok(Probe::Gone);
+        };
+        between();
+        if !lock.try_lock(Mode::Exclusive)? {
+            return Ok(Probe::Held);
+        }
+        Ok(if path.exists() { Probe::Free(lock) } else { Probe::Gone })
     }
 
     /// The ids that have a lock file, in no particular order.
@@ -228,15 +271,4 @@ fn take(mut lock: FileLock, mode: Mode, before_wait: &mut dyn FnMut()) -> Result
         lock.lock(mode, "devvm commands reading instances", &NullProgress)?;
     }
     Ok(lock)
-}
-
-fn probe(path: &std::path::Path, between: &mut dyn FnMut()) -> Result<Probe> {
-    let Some(mut lock) = FileLock::open_existing(path)? else {
-        return Ok(Probe::Gone);
-    };
-    between();
-    if !lock.try_lock(Mode::Exclusive)? {
-        return Ok(Probe::Held);
-    }
-    Ok(if path.exists() { Probe::Free(lock) } else { Probe::Gone })
 }

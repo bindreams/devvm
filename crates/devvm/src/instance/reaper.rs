@@ -138,8 +138,11 @@ impl Registry {
         // The creator may have placed the instance after the listing and let go of its owner lock: the lock files go
         // only when, with the owner lock held, no placed, `.new` or `.dead` directory belongs to the id.
         let (present, unattributed) = self.present_ids();
-        if !unattributed && !present.contains(&id) {
-            self.locks().remove(&id);
+        if !unattributed
+            && !present.contains(&id)
+            && let Err(e) = self.locks().remove(&id)
+        {
+            report.warn(self, format!("cannot delete the lock files of {name}: {}", e.message()));
         }
     }
 
@@ -318,8 +321,10 @@ impl Registry {
         let (present, unattributed) = self.present_ids_with(listing);
         if !unattributed {
             for (id, _lock) in &free {
-                if !present.contains(id) {
-                    self.locks().remove(id);
+                if !present.contains(id)
+                    && let Err(e) = self.locks().remove(id)
+                {
+                    report.warn(self, format!("cannot delete the lock files of {id}: {}", e.message()));
                 }
             }
         }

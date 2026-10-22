@@ -364,7 +364,7 @@ fn a_waiter_on_the_op_lock_of_a_removed_and_recreated_name_gets_not_found(#[fixt
         // Remove the instance behind the holder's back, then create a new one under the same name. The holder still
         // has the old op lock; the waiter wakes on it only once the holder lets go.
         std::fs::remove_dir_all(instances(&fx).join("foo")).unwrap();
-        fx.registry.locks().remove(first.id());
+        fx.registry.locks().remove(first.id()).unwrap();
         let second = create(&fx, Some("foo"));
         let second_record = std::fs::read(instances(&fx).join("foo").join("record.json")).unwrap();
         drop(held);
