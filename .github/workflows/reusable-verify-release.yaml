@@ -177,7 +177,7 @@ jobs:
             for file in *; do
               # shellcheck disable=SC2053 # the glob is the point
               if [[ "$file" == $glob ]]; then
-                gh attestation verify "$file" -R "$GITHUB_REPOSITORY" --signer-workflow "$signer" --source-digest "$COMMIT"
+                gh attestation verify "$file" -R "$GITHUB_REPOSITORY" --signer-workflow "$signer" --source-digest "$COMMIT" --source-ref refs/heads/main
                 matched=$((matched + 1))
               fi
             done

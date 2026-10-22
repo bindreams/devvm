@@ -173,7 +173,7 @@ jobs:
           {
             echo "Draft release: ${url}"
             echo
-            echo "The next job verifies the draft's assets. Review the draft, then dispatch \"Publish Release (${TRACK})\"" \
+            echo "The next job verifies the draft's assets. After that job succeeds, review the draft and dispatch \"Publish Release (${TRACK})\"" \
               "from main with the tag \`${TAG}\`."
             if [[ -n "$SUMMARY_FILE" ]]; then
               echo
