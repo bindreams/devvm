@@ -111,6 +111,24 @@ PY
     fi
 }
 
+embed_manifest() {
+    stage "e: manifest"
+    # version.rc is linked into every QEMU executable (meson.build: version_res), so one resource line covers them
+    # all. 24 is RT_MANIFEST and 1 the id Windows reads for an executable. A silent no-op would give every executable
+    # the ANSI code page again, so check the result.
+    local line='1 24 "devvm.manifest"'
+    cp "$here/devvm.manifest" "$src/devvm.manifest"
+    printf '
+%s
+' "$line" >>"$src/version.rc"
+    if ! grep -qxF "$line" "$src/version.rc"; then
+        fail "version.rc lacks the manifest resource line"
+    fi
+    if ! cmp -s "$here/devvm.manifest" "$src/devvm.manifest"; then
+        fail "devvm.manifest was not copied into the source root"
+    fi
+}
+
 configure() {
     stage "f: configure"
     # Everything off, then only what devvm needs; each --enable-* fails configure when its dependency is missing.
@@ -214,6 +232,7 @@ main() {
     verify_sha256
     verify_signature
     extract
+    embed_manifest
     configure
     compile
     install_to_destdir
