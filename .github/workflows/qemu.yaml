@@ -1,0 +1,407 @@
+name: QEMU
+
+# Builds the pinned QEMU in qemu/pin.env for Windows x64, proves it on a runner whose ANSI code page is not UTF-8, and
+# publishes it on a manual dispatch from main. A pull request builds and tests without publishing.
+
+on:
+  pull_request:
+    paths:
+      - "qemu/**"
+      - ".github/workflows/qemu.yaml"
+      - "crates/devvm/qemu-manifest.toml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the release (main only; the owner approves each dispatch)"
+        type: boolean
+        default: false
+
+# No workflow-level `concurrency`: runs of different commits of one branch must be able to coexist.
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TRIPLE: x86_64-pc-windows-msvc
+
+jobs:
+  build:
+    name: Build (windows)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      tag: ${{ steps.pin.outputs.tag }}
+      zip_sha256: ${{ steps.zip.outputs.zip_sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read the pin
+        id: pin
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          echo "tag=qemu-${QEMU_VERSION}-${QEMU_REVISION}" >> "$GITHUB_OUTPUT"
+          echo "STAGE=${RUNNER_TEMP}/qemu-stage" >> "$GITHUB_ENV"
+          echo "WORK=${RUNNER_TEMP}/qemu-work" >> "$GITHUB_ENV"
+          echo "SOURCES=${RUNNER_TEMP}/qemu-sources" >> "$GITHUB_ENV"
+
+      # MSYS2 is a rolling repository: the package versions are recorded in BUILD-INFO.txt, not pinned.
+      - name: Set up MSYS2 UCRT64
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          update: true
+          # python-pip, -setuptools and -wheel: configure's mkvenv tooling group, since downloads are disabled.
+          pacboy: >-
+            gcc:p
+            binutils:p
+            pkgconf:p
+            meson:p
+            ninja:p
+            python:p
+            python-pip:p
+            python-setuptools:p
+            python-wheel:p
+            glib2:p
+            pixman:p
+            libslirp:p
+            dtc:p
+            zlib:p
+          install: >-
+            make
+            curl
+            gnupg
+            xz
+            bzip2
+            diffutils
+
+      - name: Build QEMU
+        shell: msys2 {0}
+        run: ./qemu/build.sh
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Bundle DLLs
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: uv run --script qemu/pe_deps.py bundle --stage "$STAGE" --search "${MSYS2_LOCATION}\ucrt64\bin"
+
+      - name: Test the licence and asset tooling
+        run: uv run --with pytest pytest qemu/test_third_party.py qemu/test_assets.py
+
+      # Licence texts, THIRD-PARTY.txt, SOURCE.txt and the source archives of the bundled copyleft libraries. After
+      # `bundle`, so the list matches the DLLs shipped; before `zip`, so the files are in the zip.
+      - name: Document and mirror the bundled libraries
+        shell: msys2 {0}
+        env:
+          TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          python qemu/third_party.py --stage "$STAGE" --sources "$SOURCES" --qemu-source "${WORK}/src/qemu-${QEMU_VERSION}" \
+            --tag "$TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: Zip
+        id: zip
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          zip="qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
+          mkdir -p "${RUNNER_TEMP}/zip"
+          uv run --script qemu/assets.py zip --stage "$STAGE" --out "${RUNNER_TEMP}/zip/${zip}"
+          sha256="$(uv run --script qemu/assets.py sha256 "${RUNNER_TEMP}/zip/${zip}")"
+          echo "zip_sha256=${sha256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qemu-zip
+          path: ${{ runner.temp }}/zip
+          if-no-files-found: error
+
+      # Everything else a release carries. The zip travels in its own artifact so `test` need not download these.
+      - name: Collect the other release assets
+        id: assets
+        env:
+          TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          assets="${RUNNER_TEMP}/assets"
+          mkdir -p "${assets}/sources"
+          cp "${WORK}/qemu-${QEMU_VERSION}.tar.xz" "${WORK}/qemu-${QEMU_VERSION}.tar.xz.sig" "${assets}/"
+          cp -R "${SOURCES}/." "${assets}/sources/"
+          uv run --script qemu/assets.py qapi --source "${WORK}/src/qemu-${QEMU_VERSION}" --out "${assets}/${TAG}-qapi.zip"
+          git archive --format=tar.gz --output="${assets}/${TAG}-build-scripts.tar.gz" "$GITHUB_SHA" qemu .github/workflows/qemu.yaml
+
+      - name: Upload the other release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qemu-assets
+          path: ${{ runner.temp }}/assets
+          if-no-files-found: error
+
+  # A plain windows-latest job: its ANSI code page is whatever the image ships, which accept.py records and refuses to
+  # accept if it is UTF-8. MSYS2 and the VC++ redistributables are installed on the image, so the isolation proof is
+  # the static dependency walk against the system-DLL allowlist, not the machine.
+  test:
+    name: Test (windows)
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Download the zip
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: qemu-zip
+          path: ${{ runner.temp }}/zip
+
+      # Well under the job's 30 minutes, so a hang is cancelled by the step and the job still reports.
+      - name: Accept
+        timeout-minutes: 15
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.zip_sha256 }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          zip="${RUNNER_TEMP}/zip/qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
+          # Hash stdin: RUNNER_TEMP has backslashes, and sha256sum escapes such a name and prefixes the hash with `\`.
+          actual="$(sha256sum < "$zip")"
+          if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::the downloaded zip is not the one the build produced: ${actual%% *} != ${EXPECTED_SHA256}"
+            exit 1
+          fi
+          uv run --script qemu/accept.py "$zip" "${RUNNER_TEMP}/accept"
+
+  # The committed qemu-manifest.toml names a release and its hash; both must be real. It may be absent only while no
+  # qemu release is published.
+  manifest:
+    name: Manifest matches its release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --script qemu/assets.py check-manifest crates/devvm/qemu-manifest.toml --repo "$GITHUB_REPOSITORY"
+
+  # Only on a dispatch from main with `publish` set. Each dispatch is the owner's approval of one release; there is no
+  # GitHub environment to click through. The release is created as a draft, `verify` checks the draft's assets, and
+  # `finalize` publishes it: nothing is public before it has been checked.
+  publish:
+    name: Publish
+    needs: [build, test]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: release-${{ needs.build.outputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      # `write`: the release API shows draft releases only to callers with push access.
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Lists releases through the API, which shows drafts to this token (`gh release view` may not). A failed listing
+      # fails the step, so an outage cannot read as "no such release".
+      - name: Fail if the release exists
+        run: |
+          set -euo pipefail
+          ids="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" --jq '.[] | select(.tag_name == env.TAG) | .id')"
+          if [[ -n "$ids" ]]; then
+            echo "::error::Release ${TAG} already exists (draft or published). Bump QEMU_REVISION in qemu/pin.env."
+            exit 1
+          fi
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Download the tested zip and the other assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: qemu-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+
+      - name: Check that these are the tested bytes
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.zip_sha256 }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          actual="$(sha256sum < "${RUNNER_TEMP}/release/qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip")"
+          if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::the zip to publish is not the one the tests ran on: ${actual%% *} != ${EXPECTED_SHA256}"
+            exit 1
+          fi
+
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/*.zip
+            ${{ runner.temp }}/release/*-build-scripts.tar.gz
+
+      # The tag is pushed first, without force: git rejects it if the tag exists at another commit, so no existing tag
+      # can capture the release. (A tag already at this commit is accepted unchanged.) If a step after the push fails,
+      # delete the draft release if one exists and the tag (`git push --delete origin <tag>`), then dispatch again.
+      # Attestations of the failed run are harmless.
+      - name: Create the draft release
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          zip="qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
+          scripts="${GITHUB_WORKSPACE}/qemu/assets.py"
+          git push origin "${GITHUB_SHA}:refs/tags/${TAG}"
+          cd "${RUNNER_TEMP}/release"
+          uv run --script "$scripts" notes --tag "$TAG" --repo "$GH_REPO" > "${RUNNER_TEMP}/notes.md"
+          uv run --script "$scripts" stanza --zip "$zip" --tag "$TAG" --repo "$GH_REPO" > qemu-manifest.toml
+          mapfile -d '' -t files < <(find . -type f -print0)
+          gh release create "$TAG" --draft --verify-tag --title "QEMU ${QEMU_VERSION} (build ${QEMU_REVISION})" \
+            --notes-file "${RUNNER_TEMP}/notes.md" "${files[@]}"
+          {
+            echo "If the Publish the verified release job succeeds, commit this as crates/devvm/qemu-manifest.toml:"
+            echo '```toml'
+            cat qemu-manifest.toml
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Downloads the draft release's assets through the API (not the artifact, and not the public URLs, which do not serve
+  # a draft) and checks them against the tested hash and their attestation.
+  verify:
+    name: Verify the release
+    needs: [build, publish]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      # `write`: the release API shows draft releases only to callers with push access.
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Verify
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.zip_sha256 }}
+        run: |
+          set -euo pipefail
+          source qemu/pin.env
+          signer="${GITHUB_REPOSITORY}/.github/workflows/qemu.yaml"
+          zip="qemu-${QEMU_VERSION}-${QEMU_REVISION}-${TRIPLE}.zip"
+          published="${RUNNER_TEMP}/published"
+          mkdir -p "$published"
+
+          # The draft's assets as "<id> <name>" lines; the names are the ones GitHub stored.
+          gh api -X GET --paginate "repos/${GH_REPO}/releases" \
+            --jq '.[] | select(.draft and .tag_name == env.TAG) | .assets[] | "\(.id) \(.name)"' \
+            | tr -d '\r' > "${RUNNER_TEMP}/assets.txt"
+          declare -A asset_id=()
+          while IFS=' ' read -r id name; do
+            asset_id["$name"]="$id"
+          done < "${RUNNER_TEMP}/assets.txt"
+          if [[ "${#asset_id[@]}" -eq 0 ]]; then
+            echo "::error::no draft release ${TAG} with assets"
+            exit 1
+          fi
+
+          download() {
+            if [[ -z "${asset_id[$1]:-}" ]]; then
+              echo "::error::the draft release ${TAG} has no asset ${1}"
+              return 1
+            fi
+            gh api -X GET "repos/${GH_REPO}/releases/assets/${asset_id[$1]}" -H "Accept: application/octet-stream" \
+              > "${published}/${1}"
+          }
+
+          for asset in "$zip" "${TAG}-qapi.zip" "${TAG}-build-scripts.tar.gz"; do
+            download "$asset"
+            gh attestation verify "${published}/${asset}" -R "$GITHUB_REPOSITORY" --signer-workflow "$signer"
+          done
+          actual="$(sha256sum < "${published}/${zip}")"
+          if [[ "${actual%% *}" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::the published zip is not the tested one: ${actual%% *} != ${EXPECTED_SHA256}"
+            exit 1
+          fi
+
+          # The attached source tarball is the pinned one.
+          download "qemu-${QEMU_VERSION}.tar.xz"
+          actual="$(sha256sum < "${published}/qemu-${QEMU_VERSION}.tar.xz")"
+          if [[ "${actual%% *}" != "$QEMU_SHA256" ]]; then
+            echo "::error::the published QEMU tarball is not the pinned one: ${actual%% *} != ${QEMU_SHA256}"
+            exit 1
+          fi
+
+          # Every URL the zip's THIRD-PARTY.txt and SOURCE.txt name, and every other asset of the release, must be an
+          # asset of this release (or the release page).
+          uv run --script qemu/assets.py check-urls --zip "${published}/${zip}" --tag "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --assets "${!asset_id[@]}"
+
+  # The last step: the draft becomes public only after `verify` passed.
+  finalize:
+    name: Publish the verified release
+    needs: [build, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - name: Publish
+        run: |
+          set -euo pipefail
+          # "<id> <draft>" per release with the tag.
+          found="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" \
+            --jq '.[] | select(.tag_name == env.TAG) | "\(.id) \(.draft)"' | tr -d '\r')"
+          if [[ -z "$found" || "$found" == *$'\n'* ]]; then
+            echo "::error::expected one release ${TAG}, found: ${found:-none}"
+            exit 1
+          fi
+          read -r id draft <<< "$found"
+          if [[ "$draft" == "true" ]]; then
+            gh api -X PATCH "repos/${GH_REPO}/releases/${id}" -F draft=false
+            exit 0
+          fi
+          # A re-run after a PATCH whose response was lost: the release is public already; check it is this commit's.
+          tagged="$(gh api -X GET "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha)"
+          if [[ "$tagged" != "$GITHUB_SHA" ]]; then
+            echo "::error::the published release ${TAG} is at ${tagged}, not the tested commit ${GITHUB_SHA}"
+            exit 1
+          fi
+          echo "the release ${TAG} is already published at ${GITHUB_SHA}"
