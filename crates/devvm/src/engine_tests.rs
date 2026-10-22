@@ -205,3 +205,37 @@ fn list_ignores_a_directory_that_is_not_an_instance_name(#[fixture(anna_home)] h
     assert!(memory.messages()[0].contains("Not Valid"));
     assert_eq!(names(&fx.env.dirs.instances()).len(), 2, "nothing is deleted");
 }
+
+#[skuld::test]
+fn list_says_nothing_about_an_instance_removed_while_it_lists(#[fixture(anna_home)] home: &Path) {
+    let progress = memory();
+    let fx = engine_fixture(home, progress.clone());
+    instance_in(&fx, "foo", home);
+
+    let infos = fx
+        .engine
+        .list_with(ListFilter::All, &mut |dir| {
+            let op = dir.op_exclusive().unwrap();
+            dir.destroy(op).unwrap();
+        })
+        .unwrap();
+
+    assert!(infos.is_empty());
+    assert!(progress.messages().is_empty(), "{:?}", progress.messages());
+}
+
+#[skuld::test]
+fn list_still_warns_about_an_instance_with_an_unreadable_marker(#[fixture(anna_home)] home: &Path) {
+    let progress = memory();
+    let fx = engine_fixture(home, progress.clone());
+    let dir = instance_in(&fx, "foo", home);
+    std::fs::remove_file(dir.path().join("owner.json")).unwrap();
+
+    assert!(fx.engine.list(ListFilter::All).unwrap().is_empty());
+    let messages = progress.messages();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("foo") && messages[0].contains("owner.json"),
+        "{messages:?}"
+    );
+}
