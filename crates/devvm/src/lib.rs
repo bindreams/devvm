@@ -4,6 +4,7 @@ pub mod config;
 pub mod dirs;
 pub mod error;
 pub mod exit;
+pub mod recipe;
 pub mod store;
 pub mod types;
 
