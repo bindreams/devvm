@@ -9,6 +9,7 @@ use crate::contain::VmProcess;
 use crate::exit::{Progress, StderrProgress};
 use crate::guest::{BuiltinGuests, Guests};
 use crate::host::{self, Host};
+use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{MarkerRead, Owner};
 use crate::instance::registry::Registry;
@@ -119,6 +120,15 @@ impl Engine {
 
     /// The instances matching `filter`, by name.
     pub fn list(&self, filter: ListFilter) -> Result<Vec<InstanceInfo>> {
+        self.list_with(filter, &mut |_| {})
+    }
+
+    /// `list` with `after_record` run for each instance between reading its record and its owner marker.
+    pub(crate) fn list_with(
+        &self,
+        filter: ListFilter,
+        after_record: &mut dyn FnMut(&InstanceDir),
+    ) -> Result<Vec<InstanceInfo>> {
         let wanted = match &filter {
             ListFilter::All => None,
             ListFilter::CreatedIn(path) => Some((path.clone(), canonical_or_raw(path))),
@@ -141,9 +151,14 @@ impl Engine {
             {
                 continue;
             }
+            after_record(&dir);
             let ownerless = match dir.marker() {
                 Ok(MarkerRead::Valid(marker)) => marker.owner == Owner::None,
                 Ok(_) | Err(_) => {
+                    // An instance removed since its record was read has no marker either: not worth a word.
+                    if matches!(dir.record(), Err(e) if e.kind() == ErrorKind::NotFound) {
+                        continue;
+                    }
                     self.progress.message(&format!(
                         "skipping instance {}: its owner.json is unreadable",
                         dir.name()
