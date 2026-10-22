@@ -12,7 +12,6 @@ library only.
 """
 
 import argparse
-import fnmatch
 import os
 import re
 import shutil
@@ -166,7 +165,7 @@ def spdx_ids(licenses: str) -> list[str]:
     MSYS2 writes each entry as `spdx:<expression>` or `<component>:spdx:<expression>` and pacman joins the entries with
     two spaces, so `spdx:LGPL-2.1-or-later  documentation:spdx:GPL-3.0-or-later` holds two. Expressions use AND, OR,
     WITH and parentheses; the operand of WITH is an exception, not a licence. Anything else (`custom:BSD`, a bare
-    legacy name) is returned as written for the caller to classify.
+    legacy name, NONE, UNKNOWN) is returned as written for the caller to classify.
     """
     ids = []
     after_with = False
@@ -180,7 +179,7 @@ def spdx_ids(licenses: str) -> list[str]:
             after_with = False
         elif after_with:
             after_with = False
-        elif token.upper() not in ("NONE", "UNKNOWN"):
+        else:
             ids.append(token)
     return ids
 
@@ -271,6 +270,11 @@ def copy_firmware_licences(stage: Path, qemu_source: Path) -> None:
             shutil.copyfile(qemu_source / directory / name, target / name)
 
 
+def blob_matches(pattern: str, file: str) -> bool:
+    """Whether a BLOB_SOURCES pattern matches a path under share/. `*` stays inside one path component."""
+    return re.fullmatch(re.escape(pattern).replace(r"\*", "[^/]*"), file) is not None
+
+
 def share_inventory(share: Path, qemu_source: Path) -> list[str]:
     """One line per entry of `share`: the prebuilt file in the tarball and the directory holding its source (a
     directory is one line, its files copied from the same directory of the tarball). Fails for a file with no entry
@@ -284,10 +288,12 @@ def share_inventory(share: Path, qemu_source: Path) -> list[str]:
         if not files:
             raise Failure(f"share/{entry.name}/ holds no file")
         prebuilt = []
+        entry_sources = set()
         for file in files:
-            sources = [source for pattern, source in BLOB_SOURCES if fnmatch.fnmatch(file, pattern)]
+            sources = [source for pattern, source in BLOB_SOURCES if blob_matches(pattern, file)]
             if not sources:
                 raise Failure(f"share/{file} has no entry in BLOB_SOURCES; find its source in the tarball and add it")
+            entry_sources.add(sources[0])
             candidates = [f"pc-bios/{file}", f"pc-bios/{file}.bz2"]
             found = next((c for c in candidates if (qemu_source / c).is_file()), None)
             if found is None:
@@ -295,10 +301,13 @@ def share_inventory(share: Path, qemu_source: Path) -> list[str]:
             if not (qemu_source / sources[0]).is_dir() or not any((qemu_source / sources[0]).iterdir()):
                 missing.append(sources[0])
             prebuilt.append(found)
+        if len(entry_sources) != 1:
+            raise Failure(f"share/{entry.name}/ has files from different sources: {', '.join(sorted(entry_sources))}")
+        (source,) = entry_sources
         if entry.is_dir():
-            lines.append(f"  share/{entry.name}/: pc-bios/{entry.name}/, source {sources[0]}")
+            lines.append(f"  share/{entry.name}/: pc-bios/{entry.name}/, source {source}")
         else:
-            lines.append(f"  share/{entry.name}: {prebuilt[0]}, source {sources[0]}")
+            lines.append(f"  share/{entry.name}: {prebuilt[0]}, source {source}")
     if missing:
         raise Failure(f"not in the QEMU tarball, or an empty directory: {', '.join(dict.fromkeys(missing))}")
     return lines

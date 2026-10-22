@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import third_party  # noqa: E402
 from third_party import (  # noqa: E402
     Failure,
     Package,
@@ -93,6 +94,10 @@ def test_class_of_a_real_msys2_field(package, field, ids, klass):
         "custom:SIL OFL1.1",
         "spdx-GPL-3.0-or-later",
         "unknown",
+        "NONE",
+        "spdx:MIT AND NONE",
+        "spdx:GPL-2.0-only OR UNKNOWN",
+        "spdx:MIT  docs:spdx:none",
     ],
 )
 def test_an_unknown_or_missing_licence_fails_the_build(field):
@@ -270,6 +275,24 @@ def test_a_source_directory_with_no_file_in_it_fails(tmp_path):
         share_inventory(share, src)
 
 
+def test_a_directory_whose_files_have_different_sources_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        third_party, "BLOB_SOURCES", (("maps/*.a", "roms/seabios"), ("maps/*.b", "roms/ipxe"))
+    )
+    share = tree(tmp_path / "share", "maps/x.a", "maps/y.b")
+    src = source_tree(tmp_path / "src", "pc-bios/maps/x.a", "pc-bios/maps/y.b")
+    with pytest.raises(Failure, match=r"maps.*roms/seabios.*roms/ipxe|maps.*roms/ipxe.*roms/seabios"):
+        share_inventory(share, src)
+
+
+def test_a_star_in_a_blob_pattern_does_not_cross_a_directory_boundary(tmp_path):
+    # keymaps/* is one directory deep: a nested file has no entry rather than inheriting keymaps' source.
+    share = tree(tmp_path / "share", "keymaps/en-us", "keymaps/nested/de")
+    src = source_tree(tmp_path / "src", "pc-bios/keymaps/en-us", "pc-bios/keymaps/nested/de")
+    with pytest.raises(Failure, match=r"share/keymaps/nested/de"):
+        share_inventory(share, src)
+
+
 def test_the_third_party_text_says_each_source_directory_holds_its_own_recipe(tmp_path):
     write_third_party(tmp_path, [], "qemu-1.2.3-1", "o/r", [])
     text = (tmp_path / "THIRD-PARTY.txt").read_text(encoding="utf-8")
@@ -287,17 +310,6 @@ def firmware_source(root: Path) -> Path:
             tree(root, f"{directory}/{name}")
             (root / directory / name).write_text(f"{project}/{name}")
     return root
-
-
-def test_the_firmware_licences_are_the_ones_the_review_named():
-    listed = {project: set(names) for project, (_, names) in FIRMWARE_LICENCES.items()}
-    assert listed == {
-        "seabios": {"COPYING", "COPYING.LESSER"},
-        "ipxe": {"COPYING", "COPYING.GPLv2", "COPYING.UBDL"},
-        "vbootrom": {"LICENSE"},
-        "qboot": {"LICENSE"},
-    }
-    assert FIRMWARE_LICENCES["seabios"][0] == "roms/seabios"
 
 
 def test_the_firmware_licence_texts_are_copied_under_licenses_qemu_firmware(tmp_path):

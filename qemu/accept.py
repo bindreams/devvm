@@ -14,6 +14,7 @@ fails on 65001, since the rest would then prove nothing.
 import itertools
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -85,7 +86,8 @@ def acp_is_not_utf8(z: Zip):
 def version_and_accel(z: Zip):
     for system in ("qemu-system-x86_64", "qemu-system-aarch64"):
         out = z.run([z.bin / f"{system}.exe", "--version"]).stdout
-        assert out.startswith(f"QEMU emulator version {VERSION}"), f"{system} --version printed: {out!r}"
+        pattern = rf"QEMU emulator version {re.escape(VERSION)}(?:\s|$)"
+        assert re.match(pattern, out), f"{system} --version printed: {out!r}"
     accels = z.run([z.bin / "qemu-system-x86_64.exe", "-accel", "help"]).stdout.split()
     assert "whpx" in accels, f"-accel help lists {accels}"
 
@@ -152,9 +154,11 @@ class Qmp:
         return self.log_path.read_text(encoding="utf-8", errors="replace")  # QEMU writes UTF-8 (activeCodePage)
 
     def explain(self, what: str) -> AssertionError:
+        """The failure for a QMP step that QEMU did not complete; raise it `from` the OSError that ended the step."""
+        code = self.proc.wait()  # first: `expired` is set before the watchdog's kill, so it is final once QEMU is gone
         if self.expired:
             return AssertionError(f"QEMU did not {what} within {QEMU_BOUND}s and was killed; output: {self.log_text()}")
-        return AssertionError(f"QEMU exited {self.proc.wait()} before it could {what}; output: {self.log_text()}")
+        return AssertionError(f"QEMU exited {code} before it could {what}; output: {self.log_text()}")
 
     def connect(self):
         # Repeats while QEMU is alive and has not created the pipe yet; the watchdog bounds a QEMU that never does.
@@ -164,19 +168,21 @@ class Qmp:
             except OSError as error:
                 if not (isinstance(error, FileNotFoundError) or error.winerror == ERROR_PIPE_BUSY):
                     raise
+                last = error
             try:
                 self.proc.wait(timeout=0.02)
             except subprocess.TimeoutExpired:
                 continue
-            raise self.explain("open the QMP pipe")
+            raise self.explain("open the QMP pipe") from last
 
     def receive(self) -> dict:
+        cause = None
         try:
             line = self.pipe.readline()  # blocks until QEMU speaks, exits or is killed
-        except OSError:
-            line = b""  # a broken pipe is EOF
+        except OSError as error:
+            line, cause = b"", error  # a broken pipe is EOF
         if not line:
-            raise self.explain("answer on the QMP pipe")
+            raise self.explain("answer on the QMP pipe") from cause
         return json.loads(line)
 
     def command(self, name: str) -> dict:
@@ -184,8 +190,8 @@ class Qmp:
         try:
             while data:
                 data = data[self.pipe.write(data) :]
-        except OSError:
-            raise self.explain(f"accept {name}") from None
+        except OSError as error:
+            raise self.explain(f"accept {name}") from error
         while True:
             message = self.receive()
             if "return" in message or "error" in message:

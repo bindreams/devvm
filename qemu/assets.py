@@ -11,13 +11,13 @@
     assets.py stanza --zip <zip> --tag <tag> --repo <owner/repo>
     assets.py notes  --tag <tag> --repo <owner/repo>
     assets.py urls   --zip <zip> --tag <tag> --repo <owner/repo>
-    assets.py check-manifest <qemu-manifest.toml>
+    assets.py check-manifest <qemu-manifest.toml> --repo <owner/repo>
 """
 
 import argparse
 import hashlib
 import re
-import shutil
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -75,8 +75,8 @@ def add_file(archive: zipfile.ZipFile, name: str, path: Path) -> None:
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = 0o644 << 16
-    with path.open("rb") as src, archive.open(info, "w") as dst:
-        shutil.copyfileobj(src, dst, 1 << 20)
+    # writestr, not archive.open(info, "w"): open() ignores the archive's level for a ZipInfo.
+    archive.writestr(info, path.read_bytes(), compresslevel=archive.compresslevel)
 
 
 def cmd_zip(args: argparse.Namespace) -> int:
@@ -187,9 +187,23 @@ def cmd_urls(args: argparse.Namespace) -> int:
     return 0
 
 
+def published_qemu_tags(repo: str) -> list[str]:
+    """The tags of the published (not draft) `qemu-*` releases of `repo`."""
+    jq = ".[] | select(.draft | not) | .tag_name"
+    argv = ["gh", "api", "-X", "GET", "--paginate", f"repos/{repo}/releases", "--jq", jq]
+    done = subprocess.run(argv, capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise SystemExit(f"FAIL: cannot list the releases of {repo}: {done.stderr.strip()}")
+    return [tag for tag in done.stdout.split() if tag.startswith("qemu-")]
+
+
 def cmd_check_manifest(args: argparse.Namespace) -> int:
     if not args.manifest.exists():
-        print(f"notice: {args.manifest} does not exist yet; nothing to check")
+        tags = published_qemu_tags(args.repo)
+        if tags:
+            print(f"FAIL: {args.manifest} does not exist, but {', '.join(tags)} is published; commit the manifest")
+            return 1
+        print(f"notice: {args.manifest} does not exist yet and no qemu release is published; nothing to check")
         return 0
     targets = tomllib.loads(args.manifest.read_text(encoding="utf-8")).get("targets", {})
     if not targets:
@@ -254,6 +268,7 @@ def main() -> int:
 
     manifest = sub.add_parser("check-manifest", help="download each url in the manifest and compare sha256")
     manifest.add_argument("manifest", type=Path)
+    manifest.add_argument("--repo", required=True)
     manifest.set_defaults(func=cmd_check_manifest)
 
     args = parser.parse_args()
