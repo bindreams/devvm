@@ -25,6 +25,7 @@ mod registry_windows_tests;
 /// The instances under one state directory.
 pub(crate) struct Registry {
     root: PathBuf,
+    quarantine: PathBuf,
     locks: Arc<Locks>,
     progress: Arc<dyn Progress>,
 }
@@ -59,6 +60,7 @@ impl Registry {
     pub(crate) fn new(dirs: &Dirs, progress: Arc<dyn Progress>) -> Registry {
         Registry {
             root: dirs.instances(),
+            quarantine: dirs.instance_quarantine(),
             locks: Arc::new(Locks::new(dirs.instance_locks())),
             progress,
         }
@@ -73,11 +75,16 @@ impl Registry {
         &self.root
     }
 
+    /// `<state>/quarantine`.
+    pub(super) fn quarantine_root(&self) -> &std::path::Path {
+        &self.quarantine
+    }
+
     pub(crate) fn progress(&self) -> &Arc<dyn Progress> {
         &self.progress
     }
 
-    fn handle(&self, id: InstanceId, name: InstanceName) -> InstanceDir {
+    pub(super) fn handle(&self, id: InstanceId, name: InstanceName) -> InstanceDir {
         let path = self.root.join(name.as_str());
         InstanceDir::new(id, name, path, self.locks.clone(), self.progress.clone())
     }
