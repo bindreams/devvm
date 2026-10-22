@@ -9,6 +9,7 @@ pub mod error;
 pub mod exit;
 pub(crate) mod guest;
 pub(crate) mod host;
+pub(crate) mod instance;
 pub mod recipe;
 pub mod store;
 pub mod types;
