@@ -287,10 +287,13 @@ fn a_weak_etag_is_never_sent_as_if_range(#[fixture(anna_home)] home: &Path) {
     assert_eq!(requests[1].if_range, None, "a weak validator can never match If-Range");
 }
 
-fn headers(pairs: &[(&'static str, &str)]) -> reqwest::header::HeaderMap {
+fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
     let mut map = reqwest::header::HeaderMap::new();
     for (name, value) in pairs {
-        map.insert(*name, value.parse().unwrap());
+        map.insert(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            value.parse().unwrap(),
+        );
     }
     map
 }
@@ -298,7 +301,8 @@ fn headers(pairs: &[(&'static str, &str)]) -> reqwest::header::HeaderMap {
 #[skuld::test]
 fn the_validator_is_a_strong_etag_else_last_modified_else_none() {
     let modified = "Wed, 21 Oct 2015 07:28:00 GMT";
-    let cases: [(&[(&str, &str)], Option<&str>); 5] = [
+    type Case<'a> = (&'a [(&'a str, &'a str)], Option<&'a str>);
+    let cases: [Case; 5] = [
         (&[("etag", "\"v1\"")], Some("\"v1\"")),
         (&[("etag", "\"v1\""), ("last-modified", modified)], Some("\"v1\"")),
         (&[("etag", "W/\"v1\""), ("last-modified", modified)], Some(modified)),

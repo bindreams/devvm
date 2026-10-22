@@ -531,7 +531,8 @@ fn a_server_that_answers_a_resume_with_the_whole_file_is_reported(#[fixture(anna
 #[skuld::test]
 fn a_mismatched_206_or_416_is_reported_when_the_part_is_discarded(#[fixture(anna_home)] home: &Path) {
     let data = bytes(5_000, 9);
-    let answers: Vec<(&str, fn(&[u8]) -> Response)> = vec![
+    type Answer = (&'static str, fn(&[u8]) -> Response);
+    let answers: Vec<Answer> = vec![
         ("123", |data| Response {
             content_range: Some(ContentRange::Range {
                 start: 123,
