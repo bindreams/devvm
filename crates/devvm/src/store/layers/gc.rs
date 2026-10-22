@@ -60,7 +60,7 @@ impl LayerStore {
             if !seen.insert(wanted) {
                 return Err(missing());
             }
-            let lease = self.lease(&wanted, None)?.ok_or_else(missing)?;
+            let lease = self.lease(&wanted, None, false)?.ok_or_else(missing)?;
             let parent = lease.meta().parent;
             leases.push(lease);
             match parent {
@@ -88,7 +88,7 @@ impl LayerStore {
 
         let mut keep: HashSet<LayerRef> = chains.into_iter().flatten().collect();
         for key in &keys {
-            if let Some(generation) = self.read_current(key)? {
+            if let Some(generation) = self.read_current(key, false)? {
                 keep.insert(LayerRef { key: *key, generation });
             }
         }

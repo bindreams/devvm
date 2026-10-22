@@ -40,6 +40,10 @@ pub(crate) mod cross_tests;
 #[path = "layers/gc_tests.rs"]
 pub(crate) mod gc_tests;
 
+#[cfg(test)]
+#[path = "layers/corrupt_tests.rs"]
+mod corrupt_tests;
+
 /// A lookup within this long of a layer's expiry is a miss, so a layer is never handed out just before it expires.
 pub const EXPIRY_MARGIN: Duration = Duration::from_secs(10 * 24 * 3600);
 
@@ -115,7 +119,6 @@ pub struct BuildRequest {
 
 pub struct LayerStore {
     layers: PathBuf,
-    #[allow(dead_code)] // read by quarantine handling (Task 20)
     quarantine: PathBuf,
     clock: Arc<dyn Clock>,
     progress: Arc<dyn Progress>,
@@ -152,6 +155,77 @@ impl LayerStore {
 
     // Paths -----------------------------------------------------------------------------------------------------------
 
+    // Quarantine ------------------------------------------------------------------------------------------------------
+
+    /// A fresh, not yet existing path under the quarantine root; its parent exists.
+    fn quarantine_path(&self, label: &str) -> Result<PathBuf> {
+        std::fs::create_dir_all(&self.quarantine)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", self.quarantine.display()), e))?;
+        Ok(self.quarantine.join(format!("{label}-{}", Generation::random())))
+    }
+
+    /// Moves an unreadable `current` file to quarantine. Never deletes it.
+    fn quarantine_current(&self, key: &LayerKey, current: &Path) -> Result<()> {
+        let dir = self.quarantine_path(&format!("{key}-current"))?;
+        std::fs::create_dir(&dir)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", dir.display()), e))?;
+        let target = dir.join("current");
+        std::fs::rename(current, &target).map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot move {} to {}", current.display(), target.display()),
+                e,
+            )
+        })?;
+        self.progress.message(&format!(
+            "moved the unreadable {} to {}",
+            current.display(),
+            target.display()
+        ));
+        Ok(())
+    }
+
+    /// Moves a generation whose record is unreadable to quarantine, unless someone holds a lease on it: then the
+    /// directory stays where it is and only a copy of its record is kept. Never deletes anything.
+    fn quarantine_generation(&self, layer: &LayerRef) -> Result<()> {
+        let source = self.generation_dir(layer);
+        let dir = self.quarantine_path(&format!("{}-{}", layer.key, layer.generation))?;
+        let lock = self.generation_lock(layer)?;
+        if lock.try_lock(Mode::Exclusive)? {
+            match std::fs::rename(&source, &dir) {
+                Ok(()) => {
+                    self.progress.message(&format!(
+                        "moved the unreadable layer {} to {}",
+                        source.display(),
+                        dir.display()
+                    ));
+                    return Ok(());
+                }
+                Err(e) => self.progress.message(&format!(
+                    "cannot move {} to quarantine: {e}; keeping a copy of its record",
+                    source.display()
+                )),
+            }
+        } else {
+            self.progress.message(&format!(
+                "layer {} is in use; leaving it in place and keeping a copy of its record in {}",
+                source.display(),
+                dir.display()
+            ));
+        }
+        std::fs::create_dir(&dir)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", dir.display()), e))?;
+        std::fs::copy(source.join("meta.json"), dir.join("meta.json"))
+            .map(|_| ())
+            .map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot copy the record of {}", source.display()),
+                    e,
+                )
+            })
+    }
+
     pub(crate) fn key_dir(&self, key: &LayerKey) -> PathBuf {
         self.layers.join(key.to_string())
     }
@@ -180,16 +254,22 @@ impl LayerStore {
 
     /// Leases the chain published under `key`, or `None` on a miss.
     pub fn lookup(&self, key: &LayerKey) -> Result<Option<ChainLease>> {
-        let gc = self.gc_lock()?;
-        gc.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
-        self.lookup_locked(key)
+        self.lookup_with(key, false)
     }
 
-    /// `lookup` with the shared `gc.lock` already held by the caller.
-    fn lookup_locked(&self, key: &LayerKey) -> Result<Option<ChainLease>> {
+    /// `lookup`; with `repair` it also moves `key`'s own unreadable records to quarantine. Only a caller holding the
+    /// key's build lock may repair.
+    fn lookup_with(&self, key: &LayerKey, repair: bool) -> Result<Option<ChainLease>> {
+        let gc = self.gc_lock()?;
+        gc.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
+        self.lookup_locked(key, repair)
+    }
+
+    /// `lookup_with` with the shared `gc.lock` already held by the caller.
+    fn lookup_locked(&self, key: &LayerKey, repair: bool) -> Result<Option<ChainLease>> {
         // Read afresh by every lookup: a waiter that gets the build lock must not judge expiry by a stale time.
         let now = self.clock.now();
-        let Some(generation) = self.read_current(key)? else {
+        let Some(generation) = self.read_current(key, repair)? else {
             return Ok(None);
         };
         let mut wanted = LayerRef { key: *key, generation };
@@ -203,7 +283,7 @@ impl LayerStore {
                 ));
                 return Ok(None);
             }
-            let Some(lease) = self.lease(&wanted, Some(now))? else {
+            let Some(lease) = self.lease(&wanted, Some(now), repair && wanted.key == *key)? else {
                 return Ok(None);
             };
             let parent = lease.meta().parent;
@@ -219,7 +299,7 @@ impl LayerStore {
 
     /// Takes the shared lock on one generation and reads its record; `None` when it is missing or unusable, or (when
     /// `now` is given) within the expiry margin.
-    fn lease(&self, layer: &LayerRef, now: Option<SystemTime>) -> Result<Option<LayerLease>> {
+    fn lease(&self, layer: &LayerRef, now: Option<SystemTime>, repair: bool) -> Result<Option<LayerLease>> {
         let lock = self.generation_lock(layer)?;
         lock.lock(Mode::Shared, "a layer being replaced", &*self.progress)?;
         let dir = self.generation_dir(layer);
@@ -230,6 +310,10 @@ impl LayerStore {
                     "layer record {} is unreadable ({why}); treating it as missing",
                     dir.display()
                 ));
+                if repair {
+                    drop(lock);
+                    self.quarantine_generation(layer)?;
+                }
                 Ok(None)
             }
             MetaRead::Valid(meta) if meta.key != layer.key || meta.generation != layer.generation => {
@@ -247,7 +331,7 @@ impl LayerStore {
     }
 
     /// The generation `<key>/current` names; `None` when there is none or it is unusable.
-    fn read_current(&self, key: &LayerKey) -> Result<Option<Generation>> {
+    fn read_current(&self, key: &LayerKey, repair: bool) -> Result<Option<Generation>> {
         let path = self.key_dir(key).join("current");
         let text = match std::fs::read(&path) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
@@ -261,6 +345,9 @@ impl LayerStore {
                     "{} is unreadable; treating the layer as missing",
                     path.display()
                 ));
+                if repair {
+                    self.quarantine_current(key, &path)?;
+                }
                 Ok(None)
             }
         }
@@ -286,7 +373,7 @@ impl LayerStore {
             &format!("another devvm process building layer {}", req.key),
             &*self.progress,
         )?;
-        if let Some(hit) = self.lookup(&req.key)? {
+        if let Some(hit) = self.lookup_with(&req.key, true)? {
             return Ok(hit);
         }
         if let Some(parent) = parent {
