@@ -69,3 +69,33 @@ fn destroy_waits_for_a_reader_that_has_a_file_open(#[fixture(anna_home)] home: &
     });
     assert!(!fx.env.dirs.instances().join("foo").exists());
 }
+
+#[skuld::test]
+fn two_deleters_of_one_dead_tree_do_not_warn(#[fixture(anna_home)] home: &Path) {
+    const ROUNDS: usize = 40;
+    let fx = fixture(home);
+    let done = AtomicBool::new(false);
+    let warnings = std::thread::scope(|scope| {
+        let reaper = scope.spawn(|| {
+            let mut warnings = Vec::new();
+            while !done.load(Ordering::Acquire) {
+                warnings.extend(fx.registry.reap().warnings);
+            }
+            warnings
+        });
+        for _ in 0..ROUNDS {
+            let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+            let files = dir.path().join("files");
+            std::fs::create_dir(&files).unwrap();
+            for i in 0..300 {
+                std::fs::write(files.join(i.to_string()), "x").unwrap();
+            }
+            let op = dir.op_exclusive().unwrap();
+            dir.destroy(op).unwrap();
+        }
+        done.store(true, Ordering::Release);
+        reaper.join().unwrap()
+    });
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
+}
