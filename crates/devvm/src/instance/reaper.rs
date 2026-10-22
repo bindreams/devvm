@@ -250,6 +250,12 @@ impl Registry {
     /// Ids that a directory under `instances/` belongs to, and whether some placed directory could not be attributed
     /// to an id (then no lock file may be called an orphan).
     fn present_ids(&self) -> (HashSet<InstanceId>, bool) {
+        self.present_ids_with(&mut || {})
+    }
+
+    /// `present_ids` with `listing` run once for each read of the instance directories.
+    fn present_ids_with(&self, listing: &mut dyn FnMut()) -> (HashSet<InstanceId>, bool) {
+        listing();
         let mut present = HashSet::new();
         let mut unattributed = false;
         let Ok(entries) = self.entries() else {
@@ -284,9 +290,14 @@ impl Registry {
         (present, unattributed)
     }
 
-    /// Deletes the lock files of instances that no longer exist. The directory listing is taken after the owner lock,
-    /// so a creator that gets the lock first is seen.
+    /// Deletes the lock files of instances that no longer exist. It takes every free owner lock first and lists the
+    /// instance directories once afterwards, so a creator that held a lock and let go of it before this pass took it
+    /// has placed its instance, and the listing sees it.
     fn sweep_locks(&self, report: &mut ReapReport) {
+        self.sweep_locks_with(report, &mut || {});
+    }
+
+    fn sweep_locks_with(&self, report: &mut ReapReport, listing: &mut dyn FnMut()) {
         let ids = match self.locks().ids() {
             Ok(ids) => ids,
             Err(e) => {
@@ -294,15 +305,23 @@ impl Registry {
                 return;
             }
         };
-        for id in ids {
-            let Ok(Probe::Free(lock)) = self.locks().try_owner(&id) else {
-                continue;
-            };
-            let (present, unattributed) = self.present_ids();
-            if !unattributed && !present.contains(&id) {
-                self.locks().remove(&id);
+        let free: Vec<_> = ids
+            .into_iter()
+            .filter_map(|id| match self.locks().try_owner(&id) {
+                Ok(Probe::Free(lock)) => Some((id, lock)),
+                _ => None,
+            })
+            .collect();
+        if free.is_empty() {
+            return;
+        }
+        let (present, unattributed) = self.present_ids_with(listing);
+        if !unattributed {
+            for (id, _lock) in &free {
+                if !present.contains(id) {
+                    self.locks().remove(id);
+                }
             }
-            drop(lock);
         }
     }
 }
