@@ -622,3 +622,62 @@ fn fetcher_is_send_and_sync() {
     fn assert_bounds<T: Send + Sync>() {}
     assert_bounds::<Fetcher>();
 }
+
+// Restart ordering ====================================================================================================
+
+struct DenyOpener;
+
+impl PartOpener for DenyOpener {
+    fn open(&self, _path: &Path, _append: bool) -> std::io::Result<Box<dyn PartWriter>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "part file locked by a scanner",
+        ))
+    }
+}
+
+#[skuld::test]
+fn failed_restart_keeps_the_old_validator_with_the_old_part(#[fixture(anna_home)] home: &Path) {
+    let stale = bytes(100_000, 4);
+    let good = bytes(100_000, 5);
+    let (stale_head, current) = (stale.clone(), good.clone());
+    let v2 = "\"v2\"";
+    let transport = Script::new(move |n, resume| match n {
+        0 => Ok(response(200, stale_head[..40_000].to_vec(), Some(100_000), true)),
+        // The resume's If-Range no longer matches, so the server sends the whole new file.
+        1 => Ok(Response {
+            validator: Some(v2.to_owned()),
+            ..response(200, current.clone(), Some(100_000), false)
+        }),
+        // A server honouring If-Range: a v2 validator continues, anything else gets the whole file.
+        _ => match resume.and_then(|resume| resume.validator.as_deref()) {
+            Some(validator) if validator == v2 => Ok(Response {
+                validator: Some(v2.to_owned()),
+                ..serve(&current, resume)
+            }),
+            _ => Ok(Response {
+                validator: Some(v2.to_owned()),
+                ..serve(&current, None)
+            }),
+        },
+    });
+    let wanted = artifact(&good);
+    let downloads = Dirs::under(home).downloads();
+    let progress = Arc::new(MemoryProgress::default());
+
+    let first = Fetcher::new(downloads.clone(), transport.clone(), progress.clone());
+    assert_eq!(first.fetch(&wanted).unwrap_err().kind(), ErrorKind::Download);
+    let denied = Fetcher::with_part_opener(
+        downloads.clone(),
+        transport.clone(),
+        progress.clone(),
+        Arc::new(DenyOpener),
+    );
+    assert_eq!(denied.fetch(&wanted).unwrap_err().kind(), ErrorKind::Io);
+
+    let healthy = Fetcher::new(downloads, transport, progress);
+    let entry = healthy
+        .fetch(&wanted)
+        .unwrap_or_else(|e| panic!("the remote is healthy, yet: {e}"));
+    assert_eq!(std::fs::read(entry).unwrap(), good);
+}

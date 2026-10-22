@@ -218,12 +218,9 @@ impl Fetcher {
             }
         };
 
-        let (mut response, from, mut hasher) = match plan {
-            Plan::Append { response, from } => (response, from, hash_file_state(&part)?),
-            Plan::Fresh { response } => {
-                self.write_sidecar(artifact, response.validator.clone())?;
-                (response, 0, Sha2::new())
-            }
+        let (mut response, from, mut hasher, fresh) = match plan {
+            Plan::Append { response, from } => (response, from, hash_file_state(&part)?, false),
+            Plan::Fresh { response } => (response, 0, Sha2::new(), true),
             Plan::Complete => unreachable!("handled above"),
         };
 
@@ -231,6 +228,10 @@ impl Fetcher {
             .opener
             .open(&part, from > 0)
             .map_err(|e| self.write_error(&part, e))?;
+        if fresh {
+            // After the truncation: a failed open must leave the old validator beside the old part.
+            self.write_sidecar(artifact, response.validator.clone())?;
+        }
         self.progress.message(&format!(
             "downloading {}: {from} of {} bytes",
             artifact.url,
