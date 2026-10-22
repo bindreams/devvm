@@ -25,7 +25,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-# What devvm reads out of the zip (the Interfaces of the unit plan), plus the files that make it redistributable.
+# What devvm reads out of the zip, plus the files that make it redistributable.
 REQUIRED = (
     "bin/qemu-system-x86_64.exe",
     "bin/qemu-system-aarch64.exe",
@@ -71,7 +71,7 @@ def tag_version(tag: str) -> str:
 
 
 def add_file(archive: zipfile.ZipFile, name: str, path: Path) -> None:
-    # A fixed timestamp makes the same input zip to the same bytes.
+    # Fixed timestamp: the same input yields the same zip bytes.
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = 0o644 << 16

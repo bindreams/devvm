@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pefile
 
-# DLLs that ship with every supported Windows (10 1903+ / 11), by name. WinHvPlatform and WinHvEmulation are absent on
-# purpose: they exist only with the Hypervisor Platform feature and are never bundled, QEMU's WHPX accelerator loads
-# WinHvPlatform at run time, so a hard import of either is a defect and must fail the walk.
+# DLLs that ship with every supported Windows (10 1903+ / 11), by name. WinHvPlatform and WinHvEmulation are
+# deliberately absent: they exist only with the Hypervisor Platform feature and are never bundled (WHPX loads
+# WinHvPlatform at run time), so a hard import of either must fail the walk.
 SYSTEM_DLLS = frozenset(
     {
         "advapi32.dll",
