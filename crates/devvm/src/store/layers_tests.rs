@@ -193,7 +193,9 @@ fn sweep_reports_a_directory_it_cannot_list(#[fixture(anna_home)] home: &Path) {
     assert_eq!(env.store.sweep_leftovers(&not_a_dir), 0);
     let messages = env.progress.messages();
     assert!(
-        messages.iter().any(|m| m.contains("cannot list") && m.contains("plain-file")),
+        messages
+            .iter()
+            .any(|m| m.contains("cannot list") && m.contains("plain-file")),
         "{messages:?}"
     );
 }

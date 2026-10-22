@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::ContentRange;
-use super::http::{parse_content_range, stall_message};
+use super::http::{parse_content_range, read_head, stall_message};
 
 #[skuld::test]
 fn stall_error_text_names_url_and_seconds() {
@@ -235,4 +235,92 @@ fn ctrl_c_mid_download_resumes(#[fixture(anna_home)] home: &Path) {
         Some(format!("bytes={kept}-").as_str())
     );
     drop(release_tx);
+}
+
+#[skuld::test]
+fn a_stall_mid_body_is_reported_as_a_stall_and_keeps_the_part(#[fixture(anna_home)] home: &Path) {
+    let body = data(300_000);
+    let server = TestServer::start(body.clone(), ETAG);
+    let (paused_tx, paused_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    server.script(vec![Behavior::PauseAfter {
+        after: 81_920,
+        paused: paused_tx,
+        release: release_rx,
+    }]);
+    let artifact = artifact_for(&server, &body);
+    let downloads = Dirs::under(home).downloads();
+    let transport = HttpTransport::with_stall(Duration::from_secs(1)).unwrap();
+    let fetcher = Fetcher::new(downloads.clone(), Arc::new(transport), Arc::new(NullProgress));
+
+    let error = fetcher.fetch(&artifact).unwrap_err();
+    paused_rx.recv().unwrap();
+    drop(release_tx);
+    assert_eq!(error.kind(), ErrorKind::Download, "{error}");
+    assert!(
+        error
+            .message()
+            .contains(&format!("no data from {} for 1s", artifact.url)),
+        "{error}"
+    );
+    let part = downloads.join(format!("{}.part", artifact.sha256));
+    assert!(std::fs::metadata(part).unwrap().len() > 0);
+}
+
+#[skuld::test]
+fn a_weak_etag_is_never_sent_as_if_range(#[fixture(anna_home)] home: &Path) {
+    let body = data(300_000);
+    let server = TestServer::start(body.clone(), "W/\"weak-1\"");
+    server.script(vec![Behavior::AbortAfter(81_920)]);
+    let artifact = artifact_for(&server, &body);
+    let fetcher = Fetcher::new(
+        Dirs::under(home).downloads(),
+        Arc::new(HttpTransport::new().unwrap()),
+        Arc::new(NullProgress),
+    );
+
+    assert_eq!(fetcher.fetch(&artifact).unwrap_err().kind(), ErrorKind::Download);
+    let path = fetcher.fetch(&artifact).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), body);
+    let requests = server.requests();
+    assert!(requests[1].range.is_some(), "the resume still asks for a range");
+    assert_eq!(requests[1].if_range, None, "a weak validator can never match If-Range");
+}
+
+fn headers(pairs: &[(&'static str, &str)]) -> reqwest::header::HeaderMap {
+    let mut map = reqwest::header::HeaderMap::new();
+    for (name, value) in pairs {
+        map.insert(*name, value.parse().unwrap());
+    }
+    map
+}
+
+#[skuld::test]
+fn the_validator_is_a_strong_etag_else_last_modified_else_none() {
+    let modified = "Wed, 21 Oct 2015 07:28:00 GMT";
+    let cases: [(&[(&str, &str)], Option<&str>); 5] = [
+        (&[("etag", "\"v1\"")], Some("\"v1\"")),
+        (&[("etag", "\"v1\""), ("last-modified", modified)], Some("\"v1\"")),
+        (&[("etag", "W/\"v1\""), ("last-modified", modified)], Some(modified)),
+        (&[("etag", "W/\"v1\"")], None),
+        (&[], None),
+    ];
+    for (pairs, expected) in cases {
+        let head = read_head(&headers(pairs));
+        assert_eq!(head.validator.as_deref(), expected, "{pairs:?}");
+        assert!(head.warnings.is_empty(), "{pairs:?}: {:?}", head.warnings);
+    }
+}
+
+#[skuld::test]
+fn malformed_length_and_range_headers_are_named_in_warnings() {
+    let head = read_head(&headers(&[("content-length", "lots"), ("content-range", "bytes 5")]));
+    assert_eq!((head.content_length, head.content_range), (None, None));
+    let [range, length] = head.warnings.try_into().unwrap();
+    assert!(length.contains("Content-Length") && length.contains("lots"), "{length}");
+    assert!(range.contains("Content-Range") && range.contains("bytes 5"), "{range}");
+
+    let head = read_head(&headers(&[("content-length", "10"), ("content-range", "bytes 0-9/10")]));
+    assert_eq!(head.content_length, Some(10));
+    assert!(head.warnings.is_empty());
 }

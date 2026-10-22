@@ -202,7 +202,7 @@ impl LayerStore {
                     report.deleted.push(layer);
                     drop(lock);
                     // Best effort: a lock file left behind is reused by the next holder of that generation.
-                    let _ =std::fs::remove_file(self.lock_path(&format!("{key}-{generation}.gen")));
+                    let _ = std::fs::remove_file(self.lock_path(&format!("{key}-{generation}.gen")));
                 }
                 Err(e) => {
                     self.progress.message(&format!(

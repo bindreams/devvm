@@ -53,6 +53,7 @@ fn response(status: u16, data: Vec<u8>, length: Option<u64>, fail: bool) -> Resp
         content_range: None,
         content_length: length,
         validator: Some(ETAG.to_owned()),
+        warnings: Vec::new(),
         body: Box::new(Body {
             data: Cursor::new(data),
             fail,
@@ -462,6 +463,135 @@ fn a_part_from_another_url_is_not_resumed(#[fixture(anna_home)] home: &Path) {
     assert_eq!(transport.requests(), vec![None]);
 }
 
+// A resume that is given up is said so ================================================================================
+
+fn abandonments(setup: &Setup) -> Vec<String> {
+    setup
+        .progress
+        .messages()
+        .into_iter()
+        .filter(|m| m.starts_with("not resuming"))
+        .collect()
+}
+
+#[skuld::test]
+fn a_part_without_a_sidecar_is_restarted_and_says_why(#[fixture(anna_home)] home: &Path) {
+    let data = bytes(5_000, 9);
+    let setup = setup(home, Script::serving(data.clone()));
+    let wanted = artifact(&data);
+    seed_part(&setup, &wanted, &data, 2_000, URL);
+    std::fs::remove_file(sidecar(&setup, &wanted)).unwrap();
+
+    setup.fetcher.fetch(&wanted).unwrap();
+    let [message] = abandonments(&setup).try_into().unwrap();
+    assert!(message.contains(URL) && message.contains("no record"), "{message}");
+}
+
+#[skuld::test]
+fn an_unreadable_sidecar_is_restarted_and_says_why(#[fixture(anna_home)] home: &Path) {
+    let data = bytes(5_000, 9);
+    let setup = setup(home, Script::serving(data.clone()));
+    let wanted = artifact(&data);
+    seed_part(&setup, &wanted, &data, 2_000, URL);
+    std::fs::write(sidecar(&setup, &wanted), b"{ torn").unwrap();
+
+    setup.fetcher.fetch(&wanted).unwrap();
+    let [message] = abandonments(&setup).try_into().unwrap();
+    assert!(
+        message.contains("unreadable") && message.contains(".part.json"),
+        "{message}"
+    );
+}
+
+#[skuld::test]
+fn a_part_from_another_url_is_restarted_and_says_so(#[fixture(anna_home)] home: &Path) {
+    let data = bytes(5_000, 9);
+    let setup = setup(home, Script::serving(data.clone()));
+    let wanted = artifact(&data);
+    seed_part(&setup, &wanted, &data, 2_000, "https://mirror.test/other");
+
+    setup.fetcher.fetch(&wanted).unwrap();
+    let [message] = abandonments(&setup).try_into().unwrap();
+    assert!(message.contains("https://mirror.test/other"), "{message}");
+}
+
+#[skuld::test]
+fn a_server_that_answers_a_resume_with_the_whole_file_is_reported(#[fixture(anna_home)] home: &Path) {
+    let data = bytes(5_000, 9);
+    let handler_data = data.clone();
+    let setup = setup(home, Script::new(move |_, _| Ok(serve(&handler_data, None))));
+    let wanted = artifact(&data);
+    seed_part(&setup, &wanted, &data, 2_000, URL);
+
+    setup.fetcher.fetch(&wanted).unwrap();
+    let [message] = abandonments(&setup).try_into().unwrap();
+    assert!(message.contains("whole file") && message.contains("2000"), "{message}");
+}
+
+#[skuld::test]
+fn a_mismatched_206_or_416_is_reported_when_the_part_is_discarded(#[fixture(anna_home)] home: &Path) {
+    let data = bytes(5_000, 9);
+    let answers: Vec<(&str, fn(&[u8]) -> Response)> = vec![
+        ("123", |data| Response {
+            content_range: Some(ContentRange::Range {
+                start: 123,
+                end: 4_999,
+                total: Some(5_000),
+            }),
+            ..response(206, data[123..].to_vec(), Some(4_877), false)
+        }),
+        ("no usable Content-Range", |data| {
+            response(206, data[2_000..].to_vec(), Some(3_000), false)
+        }),
+        ("4000", |_| Response {
+            content_range: Some(ContentRange::Unsatisfied { total: 4_000 }),
+            ..response(416, Vec::new(), Some(0), false)
+        }),
+    ];
+    for (n, (expected, answer)) in answers.into_iter().enumerate() {
+        let sub = home.join(n.to_string());
+        std::fs::create_dir(&sub).unwrap();
+        let handler_data = data.clone();
+        let setup = setup(
+            &sub,
+            Script::new(move |attempt, resume| match (attempt, resume) {
+                (0, Some(_)) => Ok(answer(&handler_data)),
+                _ => Ok(serve(&handler_data, resume)),
+            }),
+        );
+        let wanted = artifact(&data);
+        seed_part(&setup, &wanted, &data, 2_000, URL);
+
+        setup.fetcher.fetch(&wanted).unwrap();
+        let [message] = abandonments(&setup).try_into().unwrap();
+        assert!(message.contains(URL) && message.contains(expected), "{message}");
+    }
+}
+
+#[skuld::test]
+fn header_oddities_the_transport_noticed_reach_the_progress_sink(#[fixture(anna_home)] home: &Path) {
+    let data = bytes(5_000, 9);
+    let handler_data = data.clone();
+    let setup = setup(
+        home,
+        Script::new(move |_, resume| {
+            Ok(Response {
+                warnings: vec!["ignoring the malformed Content-Length `lots`".to_owned()],
+                ..serve(&handler_data, resume)
+            })
+        }),
+    );
+    setup.fetcher.fetch(&artifact(&data)).unwrap();
+    assert!(
+        setup
+            .progress
+            .messages()
+            .contains(&format!("{URL}: ignoring the malformed Content-Length `lots`")),
+        "{:?}",
+        setup.progress.messages()
+    );
+}
+
 // Disk full ===========================================================================================================
 
 /// Writes to the real file until `budget` bytes are written, then fails with `kind`.
@@ -539,9 +669,20 @@ fn disk_full_is_a_clear_error_and_publishes_nothing(#[fixture(anna_home)] home: 
 
 // File names ==========================================================================================================
 
+const WINDOWS_DEVICES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
+    "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 #[skuld::test]
 fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(anna_home)] home: &Path) {
     let hundred_dots = format!("{}.", "a".repeat(99));
+    let devices = WINDOWS_DEVICES.iter().flat_map(|device| {
+        [
+            format!("https://h/{device}"),
+            format!("https://h/{}.img", device.to_ascii_lowercase()),
+        ]
+    });
     let urls = [
         "https://h/..".to_owned(),
         "https://h/..%2f..%2fx".to_owned(),
@@ -549,8 +690,6 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(anna_home)] home
         "https://h/CON.txt".to_owned(),
         "https://h/CON.tar.gz".to_owned(),
         "https://h/nul.".to_owned(),
-        "https://h/COM1".to_owned(),
-        "https://h/lpt9.img".to_owned(),
         "https://h/CONIN%24".to_owned(),
         "https://h/CONOUT$".to_owned(),
         "https://h/a.".to_owned(),
@@ -565,7 +704,9 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(anna_home)] home
         "https://h/a\\b".to_owned(),
         "https://h/%2e%2e".to_owned(),
         "not a url at all".to_owned(),
-    ];
+    ]
+    .into_iter()
+    .chain(devices);
     let downloads = Dirs::under(home).downloads();
     for url in urls {
         let wanted = Artifact {
@@ -589,10 +730,7 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(anna_home)] home
         );
         assert!(!name.starts_with('.') && !name.ends_with('.'), "{url}: {name}");
         let stem = name.split('.').next().unwrap().to_ascii_uppercase();
-        assert!(
-            !["CON", "PRN", "AUX", "NUL", "COM1", "COM9", "LPT1", "LPT9"].contains(&stem.as_str()),
-            "{url}: {name}"
-        );
+        assert!(!WINDOWS_DEVICES.contains(&stem.as_str()), "{url}: {name}");
     }
     let name = |url: &str| {
         let wanted = Artifact {

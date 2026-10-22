@@ -47,7 +47,7 @@ pub struct Artifact {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resume {
     pub from: u64,
-    /// The `ETag`, else `Last-Modified`, the first attempt saw; sent as `If-Range`.
+    /// The strong `ETag`, else `Last-Modified`, the first attempt saw; sent as `If-Range`.
     pub validator: Option<String>,
 }
 
@@ -66,8 +66,10 @@ pub struct Response {
     pub content_range: Option<ContentRange>,
     /// The body length the server declared, if it did.
     pub content_length: Option<u64>,
-    /// `ETag`, else `Last-Modified`.
+    /// A strong `ETag`, else `Last-Modified`; `None` when the server gave neither.
     pub validator: Option<String>,
+    /// Headers the transport had to ignore, one sentence each; the fetcher reports them.
+    pub warnings: Vec<String>,
     pub body: Box<dyn Read + Send>,
 }
 
@@ -298,13 +300,12 @@ impl Fetcher {
             Some(have) if have > 0 => have,
             _ => return self.fresh(artifact, part),
         };
-        let sidecar = std::fs::read(self.sidecar_path(artifact))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Sidecar>(&bytes).ok());
-        let Some(sidecar) = sidecar.filter(|sidecar| sidecar.url == artifact.url) else {
-            return self.fresh(artifact, part);
+        let sidecar = match self.read_sidecar(artifact) {
+            Ok(sidecar) if sidecar.url == artifact.url => sidecar,
+            Ok(sidecar) => return self.restart(artifact, part, &format!("its partial file is from {}", sidecar.url)),
+            Err(why) => return self.restart(artifact, part, &why),
         };
-        let response = self.transport.get(
+        let response = self.get(
             &artifact.url,
             Some(Resume {
                 from: have,
@@ -312,21 +313,74 @@ impl Fetcher {
             }),
         )?;
         match (response.status, response.content_range) {
-            (200, _) => Ok(Plan::Fresh { response }),
+            (200, _) => {
+                self.report_abandoned(
+                    artifact,
+                    &format!("the server sent the whole file instead of continuing at {have} bytes"),
+                );
+                Ok(Plan::Fresh { response })
+            }
             (206, Some(ContentRange::Range { start, .. })) if start == have => {
                 Ok(Plan::Append { response, from: have })
             }
             (416, Some(ContentRange::Unsatisfied { total })) if total == have => Ok(Plan::Complete),
-            (206 | 416, _) => self.fresh(artifact, part),
+            (status @ (206 | 416), content_range) => {
+                let said = match content_range {
+                    Some(ContentRange::Range { start, .. }) => format!("a range starting at byte {start}"),
+                    Some(ContentRange::Unsatisfied { total }) => format!("a total of {total} bytes"),
+                    None => "no usable Content-Range".to_owned(),
+                };
+                self.restart(
+                    artifact,
+                    part,
+                    &format!(
+                        "the server answered {status} with {said}, not what {have} bytes of partial file call for"
+                    ),
+                )
+            }
             (status, _) => Err(unexpected_status(&artifact.url, status)),
         }
+    }
+
+    /// The sidecar of the part in progress; `Err` says why it cannot be used.
+    fn read_sidecar(&self, artifact: &Artifact) -> std::result::Result<Sidecar, String> {
+        let path = self.sidecar_path(artifact);
+        match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{} is unreadable: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err("there is no record of where its partial file came from".to_owned())
+            }
+            Err(e) => Err(format!("{} is unreadable: {e}", path.display())),
+        }
+    }
+
+    /// Gives up the resume for `why`, says so, and downloads from the start.
+    fn restart(&self, artifact: &Artifact, part: &Path, why: &str) -> Result<Plan> {
+        self.report_abandoned(artifact, why);
+        self.fresh(artifact, part)
+    }
+
+    fn report_abandoned(&self, artifact: &Artifact, why: &str) {
+        self.progress.message(&format!(
+            "not resuming {}: {why}; downloading it from the start",
+            artifact.url
+        ));
+    }
+
+    /// `Transport::get`, passing the transport's header warnings on to the progress sink.
+    fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
+        let response = self.transport.get(url, resume)?;
+        for warning in &response.warnings {
+            self.progress.message(&format!("{url}: {warning}"));
+        }
+        Ok(response)
     }
 
     /// Discards any part and asks for the whole file.
     fn fresh(&self, artifact: &Artifact, part: &Path) -> Result<Plan> {
         remove_if_present(part)?;
         remove_if_present(&self.sidecar_path(artifact))?;
-        let response = self.transport.get(&artifact.url, None)?;
+        let response = self.get(&artifact.url, None)?;
         match response.status {
             200 => Ok(Plan::Fresh { response }),
             status => Err(unexpected_status(&artifact.url, status)),

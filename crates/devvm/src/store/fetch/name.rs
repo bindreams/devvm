@@ -5,6 +5,10 @@ const MAX_LEN: usize = 100;
 
 const FALLBACK: &str = "artifact";
 
+#[cfg(test)]
+#[path = "name_tests.rs"]
+mod name_tests;
+
 /// The last path segment of `url`, percent-decoded and reduced to `[A-Za-z0-9._-]`.
 ///
 /// Query and fragment never reach the name. The result is never empty, never starts with a dot, never ends with a

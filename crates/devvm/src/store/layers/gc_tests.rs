@@ -332,16 +332,17 @@ fn child_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
 }
 
 #[skuld::test]
-fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancestors(
-    #[fixture(anna_home)] home: &Path,
-) {
+fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancestors(#[fixture(anna_home)] home: &Path) {
     let env = env(home);
     let (old_parent, child) = child_of_an_aged_parent(&env);
     std::fs::write(env.store.generation_dir(&child).join("meta.json"), b"{ torn").unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert!(error.message().contains(&child.generation.to_string()), "{error}");
-    assert!(exists(&env, &old_parent), "the unreadable child may still need its parent");
+    assert!(
+        exists(&env, &old_parent),
+        "the unreadable child may still need its parent"
+    );
 }
 
 #[skuld::test]
@@ -358,7 +359,11 @@ fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(anna_home)] home: &P
 fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(anna_home)] home: &Path) {
     let env = env(home);
     let [oldest, _middle, newest] = three_generations(&env, 1);
-    std::fs::write(env.dirs.layers().join(key(1).to_string()).join("current"), b"not a generation").unwrap();
+    std::fs::write(
+        env.dirs.layers().join(key(1).to_string()).join("current"),
+        b"not a generation",
+    )
+    .unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert!(error.message().contains(&key(1).to_string()), "{error}");
@@ -375,9 +380,7 @@ fn gc_ignores_a_current_that_names_a_generation_that_is_gone(#[fixture(anna_home
 }
 
 #[skuld::test]
-fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting_it(
-    #[fixture(anna_home)] home: &Path,
-) {
+fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting_it(#[fixture(anna_home)] home: &Path) {
     let env = env(home);
     let [oldest, middle, newest] = three_generations(&env, 1);
     std::fs::write(env.store.generation_dir(&oldest).join("meta.json"), b"{ torn").unwrap();
@@ -387,7 +390,10 @@ fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting
     assert!(!env.store.generation_dir(&oldest).exists());
     let quarantine = env.dirs.quarantine();
     let [moved] = names(&quarantine).try_into().unwrap();
-    assert_eq!(std::fs::read(quarantine.join(moved).join("disk.qcow2")).unwrap(), b"disk");
+    assert_eq!(
+        std::fs::read(quarantine.join(moved).join("disk.qcow2")).unwrap(),
+        b"disk"
+    );
     assert!(
         env.progress
             .messages()
