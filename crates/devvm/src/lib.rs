@@ -33,7 +33,10 @@ fn main() {
 mod test_helpers {
     use crate::test_support::helper::{self, HelperFn};
 
-    const HELPERS: &[(&str, HelperFn)] = &[("hold-lock", crate::store::lock::lock_tests::hold_lock)];
+    const HELPERS: &[(&str, HelperFn)] = &[
+        ("hold-lock", crate::store::lock::lock_tests::hold_lock),
+        ("layer-builder", crate::store::layers::cross_tests::layer_builder),
+    ];
 
     pub fn run_if_requested() {
         helper::run_if_requested(HELPERS);

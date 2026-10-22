@@ -30,6 +30,10 @@ use meta::MetaRead;
 #[path = "layers_tests.rs"]
 pub(crate) mod layers_tests;
 
+#[cfg(test)]
+#[path = "layers/cross_tests.rs"]
+pub(crate) mod cross_tests;
+
 /// A lookup within this long of a layer's expiry is a miss, so a layer is never handed out just before it expires.
 pub const EXPIRY_MARGIN: Duration = Duration::from_secs(10 * 24 * 3600);
 
