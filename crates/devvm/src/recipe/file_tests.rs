@@ -269,6 +269,19 @@ fn out_of_scope_keys_win_over_other_errors() {
 }
 
 #[skuld::test]
+fn oci_digest_is_stored_lowercase() {
+    let upper = SHA_B.to_ascii_uppercase();
+    let oci = format!("from: {{ oci: ghcr.io/x/macos:15, digest: 'sha256:{upper}' }}");
+    assert_eq!(
+        parse(&oci).source,
+        Source::Oci {
+            reference: "ghcr.io/x/macos:15".into(),
+            digest: format!("sha256:{SHA_B}")
+        }
+    );
+}
+
+#[skuld::test]
 fn bad_values_are_errors() {
     let cases = [
         "from: { url: 'https://h/a', sha256: abc }".to_owned(),

@@ -180,19 +180,19 @@ fn source(raw: RawFrom, dir: &Path, origin: &Path) -> Result<Source> {
             path: dir.join(iso.iso),
         },
         RawFrom::Oci(oci) => {
-            let valid = oci
+            let parsed = oci
                 .digest
                 .strip_prefix("sha256:")
-                .is_some_and(|hex| hex.parse::<Sha256>().is_ok());
-            if !valid {
+                .and_then(|hex| hex.parse::<Sha256>().ok());
+            let Some(parsed) = parsed else {
                 return Err(invalid(
                     origin,
                     format!("`digest` must be `sha256:` and 64 hex digits, got `{}`", oci.digest),
                 ));
-            }
+            };
             Source::Oci {
                 reference: oci.oci,
-                digest: oci.digest,
+                digest: format!("sha256:{parsed}"),
             }
         }
         RawFrom::Pin(raw) => Source::DiskImage(PerArch::any(pin(raw))),

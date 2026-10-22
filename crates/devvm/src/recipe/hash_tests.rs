@@ -100,6 +100,16 @@ impl Chain {
 }
 
 #[skuld::test]
+fn oci_digest_case_does_not_change_the_key() {
+    let lower = format!("sha256:{}", sha(0xab));
+    let mut chain = Chain::base();
+    chain.content = RootContent::OciDigest(lower.clone());
+    let expected = chain.root();
+    chain.content = RootContent::OciDigest(lower.to_ascii_uppercase());
+    assert_eq!(chain.root(), expected);
+}
+
+#[skuld::test]
 fn every_key_input_changes_the_key() {
     let base = Chain::base();
     let mut variants: Vec<(&str, Chain)> = Vec::new();

@@ -79,7 +79,7 @@ pub struct KeyContext {
 pub enum RootContent {
     /// The sha256 of a disk image or of an ISO's content.
     Sha256(Sha256),
-    /// An OCI image digest.
+    /// An OCI image digest; hashed in lowercase, so case variants share a key.
     OciDigest(String),
 }
 
@@ -214,7 +214,7 @@ pub(crate) fn root_key_with(
     framer.context(ctx, step_semantics);
     match content {
         RootContent::Sha256(sha) => framer.tag(1).bytes(sha.as_bytes()),
-        RootContent::OciDigest(digest) => framer.tag(2).str(digest),
+        RootContent::OciDigest(digest) => framer.tag(2).str(&digest.to_ascii_lowercase()),
     };
     framer.bytes(base_definition);
     framer.finish()
