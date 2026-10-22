@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::contain::VmProcess;
+use crate::instance::dir::remove_tree;
 use crate::instance::locks::Probe;
 use crate::instance::name::InstanceName;
 use crate::instance::quarantine::{Placed, classify};
@@ -59,7 +60,7 @@ impl Registry {
             Ok(entries) => {
                 for (name, path) in entries {
                     if name.starts_with(".dead-") {
-                        self.remove_leftover(&name, &path, &mut report);
+                        self.reap_dead(&name, &path, &mut report);
                     } else if let Some(id) = name.strip_prefix(".new-") {
                         self.reap_new(id, &name, &path, &mut report);
                     } else if !name.starts_with('.') {
@@ -103,10 +104,17 @@ impl Registry {
 
     // Leftovers -------------------------------------------------------------------------------------------------------
 
+    /// Deletes a `.dead-<id>` directory unless a deletion is already running: two deleters of one tree make each other
+    /// fail on Windows.
+    fn reap_dead(&self, name: &str, path: &Path, report: &mut ReapReport) {
+        if let Err(e) = self.locks().deleting(|| self.remove_leftover(name, path, report)) {
+            report.warn(self, format!("cannot delete {name}: {}", e.message()));
+        }
+    }
+
     fn remove_leftover(&self, name: &str, path: &Path, report: &mut ReapReport) {
-        match std::fs::remove_dir_all(path) {
+        match remove_tree(path) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => report.warn(
                 self,
                 format!("cannot delete {name} ({e}); the next devvm command retries"),

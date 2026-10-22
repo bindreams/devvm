@@ -9,6 +9,8 @@
 //!   refuses to rename a directory while any file inside is open, so without it a reader makes `rm` fail. Its holders
 //!   only read files or rename, never wait for another lock, so waiting for it cannot deadlock, not even in the layer
 //!   store's collection, which must not wait for any lock that a holder of the shared `gc.lock` could hold.
+//! - `dead.lock`: taken without waiting by whoever deletes the contents of a `.dead-<id>` directory (`rm`, the reaper),
+//!   so that two processes never delete one tree at once.
 //!
 //! Nothing but a holder of the owner lock (or, in `destroy`, of the op lock) unlinks a lock file. A process that
 //! opened a lock file before it was unlinked can still lock it, and then holds a lock on a file nobody else will ever
@@ -70,6 +72,21 @@ impl Locks {
     pub(crate) fn renaming<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
         let _lock = take(FileLock::open(&self.dir_lock_path())?, Mode::Exclusive, before_wait)?;
         Ok(f())
+    }
+
+    /// Runs `f`, which deletes the contents of a `.dead-<id>` directory, unless another process is deleting one: then
+    /// `None`, and that deletion (or the next devvm command's reaper) covers it. Never waits. `f` must not take or wait
+    /// for any other lock.
+    ///
+    /// Two processes deleting one tree make each other fail on Windows, and a lock on the tree's instance cannot
+    /// serialize them: its lock files are unlinked at the end of `rm`, and a file that is being unlinked cannot be
+    /// opened.
+    pub(crate) fn deleting<T>(&self, f: impl FnOnce() -> T) -> Result<Option<T>> {
+        let mut lock = FileLock::open(&self.dir.join("dead.lock"))?;
+        if !lock.try_lock(Mode::Exclusive)? {
+            return Ok(None);
+        }
+        Ok(Some(f()))
     }
 
     fn dir_lock_path(&self) -> PathBuf {

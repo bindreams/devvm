@@ -189,14 +189,32 @@ impl InstanceDir {
                     e,
                 )
             })?;
-        if let Err(e) = std::fs::remove_dir_all(&dead) {
-            self.progress.message(&format!(
+        // Another deletion in progress is reason to leave this one to the reaper, which runs at the start of every
+        // devvm command.
+        match self.locks.deleting(|| remove_tree(&dead)) {
+            Ok(Some(Err(e))) => self.progress.message(&format!(
                 "instance {} is removed, but {} could not be deleted ({e}); the next devvm command retries",
                 self.name,
                 dead.display()
-            ));
+            )),
+            Ok(Some(Ok(())) | None) => {}
+            Err(e) => self.progress.message(&format!(
+                "instance {} is removed, but {} could not be deleted ({}); the next devvm command retries",
+                self.name,
+                dead.display(),
+                e.message()
+            )),
         }
         self.locks.remove(&self.id);
         Ok(())
+    }
+}
+
+/// Deletes `path` and everything under it. A tree that is gone afterwards is success, even when the error came from
+/// a process outside devvm deleting it at the same time.
+pub(super) fn remove_tree(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(_) if !path.exists() => Ok(()),
+        other => other,
     }
 }
