@@ -1,0 +1,187 @@
+name: Reusable Draft Release
+
+# Step 1 of a track's two-step release (draft, then publish-release-<track>.yaml): turns the artifacts a caller built
+# and tested into a draft release. The caller must grant `contents: write`, `id-token: write` and `attestations: write`.
+#
+# Nothing is public: the release is a draft, and the "Latest" badge is pinned here and again at publish, so GitHub's
+# date-and-version heuristic never picks a release of one track as the repository's Latest.
+
+on:
+  workflow_call:
+    inputs:
+      track:
+        description: "Release track (e.g. qemu); selects the artifacts `<track>-*` and names the publish workflow"
+        required: true
+        type: string
+      tag:
+        description: "Tag and release name"
+        required: true
+        type: string
+      title:
+        description: "GitHub release title"
+        required: true
+        type: string
+      latest:
+        description: "Whether this track's releases are the repository's Latest"
+        required: true
+        type: boolean
+      notes-file:
+        description: "Release notes: a path in the downloaded artifacts, not uploaded as an asset"
+        required: true
+        type: string
+      sha256sums:
+        description: "`<sha256>  <file name>` lines: the tested files, which must be byte-identical to the artifacts"
+        required: false
+        type: string
+        default: ""
+      attest:
+        description: "Asset-name globs, one per line; each must match a file, and every match gets an attestation"
+        required: true
+        type: string
+      summary-file:
+        description: "A file in the downloaded artifacts to show in the step summary, in a code block"
+        required: false
+        type: string
+        default: ""
+      summary-intro:
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  draft:
+    name: Create the draft release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      # `write`: the release API shows draft releases only to callers with push access.
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Lists releases through the API, which shows drafts to this token (`gh release view` may not). A failed listing
+      # fails the step, so an outage cannot read as "no such release".
+      - name: Fail if the release exists
+        run: |
+          set -euo pipefail
+          ids="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" --jq '.[] | select(.tag_name == env.TAG) | .id')"
+          if [[ -n "$ids" ]]; then
+            echo "::error::Release ${TAG} already exists (draft or published). Pick a new version."
+            exit 1
+          fi
+
+      - name: Download the artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ${{ inputs.track }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+
+      - name: Check that these are the tested bytes
+        if: inputs.sha256sums != ''
+        env:
+          SHA256SUMS: ${{ inputs.sha256sums }}
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/release"
+          while IFS= read -r line; do
+            if [[ -z "$line" ]]; then
+              continue
+            fi
+            read -r expected name <<< "$line"
+            if [[ ! -f "$name" ]]; then
+              echo "::error::${name} is not among the artifacts"
+              exit 1
+            fi
+            actual="$(sha256sum < "$name")"
+            if [[ "${actual%% *}" != "$expected" ]]; then
+              echo "::error::${name} is not the file the tests ran on: ${actual%% *} != ${expected}"
+              exit 1
+            fi
+          done <<< "$SHA256SUMS"
+
+      - name: List the attestation subjects
+        env:
+          ATTEST: ${{ inputs.attest }}
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/release"
+          mapfile -d '' -t files < <(find . -type f -print0)
+          subjects="${RUNNER_TEMP}/subjects.sha256"
+          : > "$subjects"
+          while IFS= read -r glob; do
+            if [[ -z "$glob" ]]; then
+              continue
+            fi
+            matched=0
+            for file in "${files[@]}"; do
+              name="${file##*/}"
+              # shellcheck disable=SC2053 # the glob is the point
+              if [[ "$name" == $glob ]]; then
+                digest="$(sha256sum < "$file")"
+                printf '%s  %s\n' "${digest%% *}" "$name" >> "$subjects"
+                matched=$((matched + 1))
+              fi
+            done
+            if [[ "$matched" -eq 0 ]]; then
+              echo "::error::no file matches the attestation glob '${glob}'"
+              exit 1
+            fi
+          done <<< "$ATTEST"
+          sort -u -o "$subjects" "$subjects"
+
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/subjects.sha256
+
+      # The tag is pushed first, without force: git rejects it if the tag exists at another commit, so no existing tag
+      # can capture the release. (A tag already at this commit is accepted unchanged.) If a later step or the verify job
+      # fails, delete the draft release if one exists and the tag (`git push --delete origin <tag>`), then dispatch
+      # again. Attestations of the failed run are harmless.
+      - name: Create the draft release
+        env:
+          LATEST: ${{ inputs.latest }}
+          TITLE: ${{ inputs.title }}
+          NOTES_FILE: ${{ inputs.notes-file }}
+          TRACK: ${{ inputs.track }}
+          SUMMARY_FILE: ${{ inputs.summary-file }}
+          SUMMARY_INTRO: ${{ inputs.summary-intro }}
+        run: |
+          set -euo pipefail
+          git push origin "${GITHUB_SHA}:refs/tags/${TAG}"
+          cd "${RUNNER_TEMP}/release"
+          find . -type f ! -path "./${NOTES_FILE}" -print0 > "${RUNNER_TEMP}/assets.list"
+          mapfile -d '' -t files < "${RUNNER_TEMP}/assets.list"
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "::error::there are no assets to release"
+            exit 1
+          fi
+          url="$(gh release create "$TAG" --draft --latest="$LATEST" --verify-tag --title "$TITLE" \
+            --notes-file "$NOTES_FILE" "${files[@]}")"
+          {
+            echo "Draft release: ${url}"
+            echo
+            echo "After the Verify job succeeds, review the draft and dispatch \"Publish Release (${TRACK})\" from main with the tag \`${TAG}\`."
+            if [[ -n "$SUMMARY_FILE" ]]; then
+              echo
+              echo "$SUMMARY_INTRO"
+              printf '```%s\n' "${SUMMARY_FILE##*.}"
+              cat "$SUMMARY_FILE"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

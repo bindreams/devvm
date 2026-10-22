@@ -1,0 +1,100 @@
+name: Reusable Publish Release
+
+# Step 2 of a track's two-step release: makes a verified draft public. The caller runs reusable-verify-release.yaml
+# first and passes its outputs here, and passes this job `contents: write`.
+#
+# "Latest" is set explicitly so an edit to the draft cannot change it.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag and release name"
+        required: true
+        type: string
+      commit:
+        description: "The commit the verified assets were built from"
+        required: true
+        type: string
+      release-id:
+        description: "The id of the verified release"
+        required: true
+        type: string
+      assets:
+        description: "The verified assets, as `<asset id> sha256:<hex> <name>` lines"
+        required: true
+        type: string
+      latest:
+        description: "Whether this track's releases are the repository's Latest"
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Publish the verified release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      COMMIT: ${{ inputs.commit }}
+      RELEASE_ID: ${{ inputs.release-id }}
+      ASSETS: ${{ inputs.assets }}
+      LATEST: ${{ inputs.latest }}
+    steps:
+      - name: Publish
+        run: |
+          set -euo pipefail
+          # The tag must still be where it was verified, and the release must be the one that was verified.
+          tagged="$(gh api -X GET "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha)"
+          if [[ "$tagged" != "$COMMIT" ]]; then
+            echo "::error::the tag ${TAG} is at ${tagged}, not the verified commit ${COMMIT}"
+            exit 1
+          fi
+          state="$(gh api -X GET "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq '"\(.tag_name) \(.draft)"')"
+          read -r release_tag draft <<< "$state"
+          if [[ "$release_tag" != "$TAG" ]]; then
+            echo "::error::release ${RELEASE_ID} is ${release_tag}, not ${TAG}"
+            exit 1
+          fi
+          if [[ "$draft" != "true" ]]; then
+            # Already public: the PATCH re-applies "Latest", and the checks below run again.
+            echo "the release ${TAG} was already published"
+          fi
+          gh api -X PATCH "repos/${GH_REPO}/releases/${RELEASE_ID}" -F draft=false -f make_latest="$LATEST"
+
+          # A draft stays editable until the PATCH: the assets must still be the verified ones.
+          expected="$(LC_ALL=C sort <<< "$ASSETS")"
+          actual="$(gh api -X GET --paginate "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" -f per_page=100 \
+            --jq '.[] | "\(.id) \(.digest) \(.name)"' | LC_ALL=C sort)"
+          if [[ -z "$expected" || "$actual" != "$expected" ]]; then
+            echo "::error::the assets of ${TAG} are not the verified ones"
+            printf 'verified:\n%s\npublished:\n%s\n' "$expected" "$actual"
+            exit 1
+          fi
+
+          # The release must not have taken the "Latest" badge. No release is Latest yet: 404.
+          err="${RUNNER_TEMP}/latest.err"
+          latest_tag=""
+          if ! latest_tag="$(gh api -X GET "repos/${GH_REPO}/releases/latest" --jq .tag_name 2> "$err")"; then
+            if ! grep -q 'HTTP 404' "$err"; then
+              cat "$err" >&2
+              exit 1
+            fi
+            latest_tag=""
+          fi
+          if [[ "$LATEST" == "false" && "$latest_tag" == "$TAG" ]]; then
+            echo "::error::${TAG} is the repository's Latest release, which this track must never be"
+            exit 1
+          fi
+          echo "Release published: https://github.com/${GH_REPO}/releases/tag/${TAG}" | tee -a "$GITHUB_STEP_SUMMARY"
