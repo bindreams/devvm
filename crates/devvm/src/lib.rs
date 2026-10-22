@@ -4,12 +4,14 @@ pub mod config;
 pub mod dirs;
 pub mod error;
 pub mod exit;
+pub(crate) mod host;
 pub mod recipe;
 pub mod store;
 pub mod types;
 
 pub use dirs::Dirs;
 pub use error::{Error, ErrorKind, Result};
+pub use host::{Unavailable, host_exit_width};
 pub use types::{Arch, BuildOptions, Command, GuestKind, Network, RunAs, Sha256, StartOptions};
 
 /// The target triple this crate was compiled for, e.g. `x86_64-pc-windows-msvc`.

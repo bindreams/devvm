@@ -2,4 +2,5 @@
 
 pub mod fixtures;
 pub mod helper;
+pub mod host;
 pub mod http;
