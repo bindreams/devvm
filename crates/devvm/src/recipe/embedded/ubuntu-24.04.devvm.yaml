@@ -1,0 +1,8 @@
+# Ubuntu 24.04 (noble) server cloud image. Placeholder pins until the dated release is chosen.
+from:
+  amd64:
+    url: https://cloud-images.ubuntu.com/releases/noble/release-00000000/ubuntu-24.04-server-cloudimg-amd64.img
+    sha256: 0000000000000000000000000000000000000000000000000000000000000001
+  arm64:
+    url: https://cloud-images.ubuntu.com/releases/noble/release-00000000/ubuntu-24.04-server-cloudimg-arm64.img
+    sha256: 0000000000000000000000000000000000000000000000000000000000000002

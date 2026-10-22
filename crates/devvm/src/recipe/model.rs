@@ -114,6 +114,8 @@ pub struct Recipe {
     pub source: Source,
     pub resources: Resources,
     pub steps: Vec<Step>,
+    /// The file this was parsed from (a synthetic name for an embedded recipe).
+    pub path: PathBuf,
     /// The directory of the file; relative paths in it were resolved against this.
     pub dir: PathBuf,
 }

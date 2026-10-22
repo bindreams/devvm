@@ -284,6 +284,7 @@ impl Recipe {
                 disk: raw.resources.disk.map(|size| size.0),
             },
             steps,
+            path: origin.to_path_buf(),
             dir,
         })
     }
