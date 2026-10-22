@@ -85,8 +85,15 @@ fn instances(fx: &Fixture) -> PathBuf {
     fx.env.dirs.instances()
 }
 
-fn lock_files(fx: &Fixture) -> Vec<String> {
-    names(&fx.env.dirs.instance_locks())
+/// The per-instance lock files; `instances.dir` is shared by all instances and never removed.
+pub(crate) fn lock_files(fx: &Fixture) -> Vec<String> {
+    lock_files_in(&fx.env.dirs)
+}
+
+pub(crate) fn lock_files_in(dirs: &Dirs) -> Vec<String> {
+    let mut found = names(&dirs.instance_locks());
+    found.retain(|name| name != "instances.dir");
+    found
 }
 
 #[skuld::test]

@@ -4,14 +4,20 @@
 //!   only after taking it.
 //! - `instance-<id>.op`: taken exclusive by `start`, `stop` and `rm`, shared by `run`, `ssh` and `cp`.
 //!
+//! - `instances.dir`: a leaf lock around the files inside instance directories. Whoever reads `record.json` or
+//!   `owner.json` holds it shared; whoever renames an instance directory (`rm`, quarantine) holds it exclusive. Windows
+//!   refuses to rename a directory while any file inside is open, so without it a reader makes `rm` fail. Its holders
+//!   only read files or rename, never wait for another lock, so waiting for it cannot deadlock, not even in the layer
+//!   store's collection, which must not wait for any lock that a holder of the shared `gc.lock` could hold.
+//!
 //! Nothing but a holder of the owner lock (or, in `destroy`, of the op lock) unlinks a lock file. A process that
 //! opened a lock file before it was unlinked can still lock it, and then holds a lock on a file nobody else will ever
 //! see, so every take verifies that the file is still there afterwards.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::exit::{NullProgress, Progress};
-use crate::instance::record::InstanceId;
+use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -49,6 +55,37 @@ impl Locks {
         self.dir.join(format!("instance-{id}.op"))
     }
 
+    /// Runs `f` while no instance directory is renamed. `f` must only read files: it must not take or wait for any
+    /// other lock.
+    pub(crate) fn reading<T>(&self, f: impl FnOnce() -> T) -> Result<T> {
+        // No lock file means no instance was ever created, so no directory can be renamed: nothing to exclude.
+        let _lock = FileLock::open_existing(&self.dir_lock_path())?
+            .map(|lock| take(lock, Mode::Shared, &mut || {}))
+            .transpose()?;
+        Ok(f())
+    }
+
+    /// Runs `f`, which renames an instance directory, while no one reads inside any instance directory. `before_wait`
+    /// runs just before waiting for the readers. `f` must not take or wait for any other lock.
+    pub(crate) fn renaming<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
+        let _lock = take(FileLock::open(&self.dir_lock_path())?, Mode::Exclusive, before_wait)?;
+        Ok(f())
+    }
+
+    fn dir_lock_path(&self) -> PathBuf {
+        self.dir.join("instances.dir")
+    }
+
+    /// `record.json` of the instance directory `dir`, read while no directory is renamed.
+    pub(crate) fn read_record(&self, dir: &Path) -> Result<RecordRead> {
+        self.reading(|| InstanceRecord::read(dir))?
+    }
+
+    /// `owner.json` of the instance directory `dir`, read while no directory is renamed.
+    pub(crate) fn read_marker(&self, dir: &Path) -> Result<MarkerRead> {
+        self.reading(|| read_marker(dir))?
+    }
+
     /// Creates the owner and op files for a new instance and returns the owner lock, held.
     pub(crate) fn acquire_owner_new(&self, id: &InstanceId) -> Result<FileLock> {
         self.acquire_owner_new_with(id, &mut || {})
@@ -62,6 +99,8 @@ impl Locks {
     /// sweeper can remove it afterwards.
     pub(crate) fn acquire_owner_new_with(&self, id: &InstanceId, between: &mut dyn FnMut()) -> Result<FileLock> {
         let path = self.owner_path(id);
+        // Every instance has this file from its creation on; `reading` relies on it.
+        drop(FileLock::open(&self.dir_lock_path())?);
         loop {
             let mut owner = FileLock::open(&path)?;
             owner.lock(Mode::Exclusive, "a lock-file sweep to finish", &NullProgress)?;
@@ -144,6 +183,15 @@ impl Locks {
         }
         Ok(ids)
     }
+}
+
+/// Locks `lock`, saying so through `before_wait` first when it has to wait.
+fn take(mut lock: FileLock, mode: Mode, before_wait: &mut dyn FnMut()) -> Result<FileLock> {
+    if !lock.try_lock(mode)? {
+        before_wait();
+        lock.lock(mode, "devvm commands reading instances", &NullProgress)?;
+    }
+    Ok(lock)
 }
 
 fn probe(path: &std::path::Path, between: &mut dyn FnMut()) -> Result<Probe> {

@@ -8,7 +8,7 @@ use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Probe;
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
-use crate::instance::registry::registry_tests::{Fixture, create, fixture};
+use crate::instance::registry::registry_tests::{Fixture, create, fixture, lock_files};
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::anna_home;
 
@@ -56,7 +56,7 @@ fn an_owned_instance_with_a_dead_owner_is_reaped_with_its_vm(#[fixture(anna_home
         "the recorded VM is killed, and kill waited for its exit"
     );
     assert!(names(&root(&fx)).is_empty());
-    assert!(names(&fx.env.dirs.instance_locks()).is_empty());
+    assert!(lock_files(&fx).is_empty());
 }
 
 #[skuld::test]
@@ -88,7 +88,7 @@ fn an_ownerless_instance_is_never_reaped(#[fixture(anna_home)] home: &Path) {
     assert!(report.reaped.is_empty() && report.warnings.is_empty());
     assert!(dir.record().is_ok());
     assert!(alive(&machine(&sleeper)));
-    assert_eq!(names(&fx.env.dirs.instance_locks()).len(), 2, "its lock files stay");
+    assert_eq!(lock_files(&fx).len(), 2, "its lock files stay");
 }
 
 #[skuld::test]
@@ -126,7 +126,7 @@ fn a_dead_creators_new_dir_and_lock_files_are_removed(#[fixture(anna_home)] home
     drop(dead);
     let report = fx.registry.reap();
     assert!(!new_dir.exists());
-    assert!(names(&fx.env.dirs.instance_locks()).is_empty());
+    assert!(lock_files(&fx).is_empty());
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 }
 
@@ -145,7 +145,7 @@ fn an_orphan_lock_file_is_swept_but_an_ownerless_instances_locks_are_not(#[fixtu
     let orphan = InstanceId::random();
     drop(fx.registry.locks().acquire_owner_new(&orphan).unwrap());
     let kept = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
-    assert_eq!(names(&fx.env.dirs.instance_locks()).len(), 4);
+    assert_eq!(lock_files(&fx).len(), 4);
 
     fx.registry.reap();
     assert!(!fx.registry.locks().owner_path(&orphan).exists());

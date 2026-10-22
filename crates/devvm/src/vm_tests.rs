@@ -7,6 +7,7 @@ use crate::contain::contain_tests::Sleeper;
 use crate::engine::engine_tests::{engine_fixture, instance_in};
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
+use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
 use crate::{ErrorKind, Instance};
@@ -42,7 +43,7 @@ fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[
         "the VM is dead when remove returns"
     );
     assert!(names(&fx.env.dirs.instances()).is_empty());
-    assert!(names(&fx.env.dirs.instance_locks()).is_empty());
+    assert!(lock_files_in(&fx.env.dirs).is_empty());
     assert_eq!(
         Instance::open_in(&fx.engine, "foo").err().unwrap().kind(),
         ErrorKind::NotFound
@@ -73,7 +74,7 @@ fn remove_and_remove_queued_together_have_one_winner(#[fixture(anna_home)] home:
         .count();
     assert_eq!((ok, not_found), (1, 1), "{results:?}");
     assert!(names(&fx.env.dirs.instances()).is_empty());
-    assert!(names(&fx.env.dirs.instance_locks()).is_empty());
+    assert!(lock_files_in(&fx.env.dirs).is_empty());
 }
 
 #[skuld::test]

@@ -1,6 +1,6 @@
 //! The instance records as the layer store's reachability: every instance keeps its whole layer chain alive.
 
-use crate::instance::record::{InstanceRecord, RecordRead};
+use crate::instance::record::RecordRead;
 use crate::instance::registry::Registry;
 use crate::store::layers::{LayerRef, Reachability};
 use crate::{Error, ErrorKind, Result};
@@ -12,8 +12,9 @@ mod reach_tests;
 impl Reachability for Registry {
     /// The chain of every placed instance, running or stopped, owned or not, root first.
     ///
-    /// Only reads `record.json` files and takes no lock: collection calls this while holding the exclusive `gc.lock`,
-    /// and a creator waiting on that lock may hold the very locks a wait here would need. A directory whose record is
+    /// Only reads `record.json` files and takes no lock but the leaf `instances.dir` lock (see `Locks`): collection
+    /// calls this while holding the exclusive `gc.lock`, and a creator waiting on that lock may hold the very locks a
+    /// wait here would need, but no holder of `instances.dir` ever waits for anything. A directory whose record is
     /// unreadable fails the call naming it, so collection stops before it could delete something that instance needs.
     /// Dot-directories (`.new-*`, `.dead-*`) and directories without a record (one being removed) hold no instance.
     fn chains(&self) -> Result<Vec<Vec<LayerRef>>> {
@@ -37,7 +38,7 @@ impl Reachability for Registry {
                 continue;
             }
             let path = entry.path();
-            match InstanceRecord::read(&path)? {
+            match self.locks().read_record(&path)? {
                 RecordRead::Valid(record) => chains.push(record.chain),
                 RecordRead::Absent => {}
                 RecordRead::Corrupt(why) => {

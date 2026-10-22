@@ -10,7 +10,7 @@ use crate::exit::{Progress, StderrProgress};
 use crate::guest::{BuiltinGuests, Guests};
 use crate::host::{self, Host};
 use crate::instance::info::{InstanceInfo, InstanceState};
-use crate::instance::record::{MarkerRead, Owner, read_marker};
+use crate::instance::record::{MarkerRead, Owner};
 use crate::instance::registry::Registry;
 use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
@@ -141,7 +141,7 @@ impl Engine {
             {
                 continue;
             }
-            let ownerless = match read_marker(dir.path()) {
+            let ownerless = match dir.marker() {
                 Ok(MarkerRead::Valid(marker)) => marker.owner == Owner::None,
                 Ok(_) | Err(_) => {
                     self.progress.message(&format!(
