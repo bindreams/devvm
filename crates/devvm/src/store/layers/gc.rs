@@ -91,9 +91,10 @@ impl LayerStore {
             &*self.progress,
         )?;
         let chains = reachable.chains()?;
+        let instance_layers: HashSet<LayerRef> = chains.iter().flatten().copied().collect();
         let keys = self.key_dirs()?;
 
-        let mut keep: HashSet<LayerRef> = chains.into_iter().flatten().collect();
+        let mut keep = instance_layers.clone();
         for key in &keys {
             match self.read_current_file(key)? {
                 CurrentFile::Absent => {}
@@ -107,7 +108,7 @@ impl LayerStore {
                             "cannot collect: {} is unreadable, so the generation that layer {key} keeps and that \
                              generation's ancestors are unknown; nothing was deleted; {}",
                             path.display(),
-                            recovery(key, &path)
+                            current_recovery(key, &path)
                         ),
                     ));
                 }
@@ -129,6 +130,7 @@ impl LayerStore {
                     }
                 }
                 MetaRead::Absent | MetaRead::Corrupt(_) => {
+                    let holders = self.holders(&layer, &keep, &instance_layers)?;
                     return Err(Error::new(
                         ErrorKind::Store,
                         format!(
@@ -137,7 +139,7 @@ impl LayerStore {
                             layer.key,
                             layer.generation,
                             dir.display(),
-                            recovery(&layer.key, &dir)
+                            record_recovery(&holders, &dir)
                         ),
                     ));
                 }
@@ -228,11 +230,82 @@ impl LayerStore {
     }
 }
 
-/// How to make a store collectable again after an abort that names `key`'s unreadable `path`.
-fn recovery(key: &LayerKey, path: &std::path::Path) -> String {
+/// What keeps a generation from being collected.
+enum Holder {
+    /// It is its key's `current`.
+    Current(LayerKey),
+    /// It is in the chain of an instance record.
+    Instance,
+    /// It is the recorded parent of this kept layer.
+    Child(LayerRef),
+}
+
+impl LayerStore {
+    /// Why `layer` is kept, given the kept set so far. Only runs on the way to an abort.
+    fn holders(
+        &self,
+        layer: &LayerRef,
+        keep: &HashSet<LayerRef>,
+        instance_layers: &HashSet<LayerRef>,
+    ) -> Result<Vec<Holder>> {
+        let mut holders = Vec::new();
+        if let CurrentFile::Generation(generation) = self.read_current_file(&layer.key)?
+            && generation == layer.generation
+        {
+            holders.push(Holder::Current(layer.key));
+        }
+        if instance_layers.contains(layer) {
+            holders.push(Holder::Instance);
+        }
+        let mut children: Vec<LayerRef> = Vec::new();
+        for other in keep {
+            let dir = self.generation_dir(other);
+            // A child whose own record is unreadable is reported when the walk reaches it.
+            if dir.is_dir()
+                && let Ok(MetaRead::Valid(meta)) = meta::read(&dir)
+                && meta.parent == Some(*layer)
+            {
+                children.push(*other);
+            }
+        }
+        children.sort_by_key(|child| (child.key.to_string(), child.generation.to_string()));
+        holders.extend(children.into_iter().map(Holder::Child));
+        Ok(holders)
+    }
+}
+
+impl std::fmt::Display for Holder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Holder::Current(key) => write!(
+                f,
+                "the current generation of layer {key} (run `devvm build` for the recipe that produces it)"
+            ),
+            Holder::Instance => write!(f, "part of an instance's chain (remove that instance)"),
+            Holder::Child(child) => write!(
+                f,
+                "the parent of layer {} generation {}, which is itself kept",
+                child.key, child.generation
+            ),
+        }
+    }
+}
+
+/// How to make a store collectable again after an abort over an unreadable record at `path`: every hold on it must go,
+/// or the directory must move aside.
+fn record_recovery(holders: &[Holder], path: &std::path::Path) -> String {
+    let holders: Vec<String> = holders.iter().map(Holder::to_string).collect();
     format!(
-        "run `devvm build` for the recipe that produces layer {key} to replace it, or remove the instance that uses \
-         it, or move {} aside",
+        "it is kept as {}; to recover, move {} aside or release every hold on it",
+        holders.join(" and "),
+        path.display()
+    )
+}
+
+/// How to make a store collectable again after an abort over `key`'s unparseable `current` file at `path`.
+fn current_recovery(key: &LayerKey, path: &std::path::Path) -> String {
+    format!(
+        "run `devvm build` for the recipe that produces layer {key} to replace it, or move {} aside",
         path.display()
     )
 }

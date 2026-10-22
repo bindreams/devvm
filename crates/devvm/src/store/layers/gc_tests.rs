@@ -332,19 +332,39 @@ fn child_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
     (old_parent, child_ref)
 }
 
-/// The abort message names the layer and says how to get the store collectable again.
-fn assert_recovery(error: &Error, key: LayerKey, moved_aside: &Path) {
+/// The abort message names the layer and the way out of an unreadable `current` file.
+fn assert_current_recovery(error: &Error, key: LayerKey, moved_aside: &Path) {
     let message = error.message();
-    let layer = format!("layer {key}");
-    assert!(message.contains(&layer), "{error}");
+    assert!(message.contains(&format!("layer {key}")), "{error}");
     assert!(
         message.contains(&format!(
-            "run `devvm build` for the recipe that produces {layer} to replace it, or remove the instance that uses \
-             it, or move {} aside",
+            "run `devvm build` for the recipe that produces layer {key} to replace it, or move {} aside",
             moved_aside.display()
         )),
         "{error}"
     );
+    assert!(!message.contains("instance"), "{error}");
+}
+
+/// The abort message names the layer, each thing that keeps it, and the ways out.
+fn assert_record_recovery(error: &Error, layer: &LayerRef, holders: &str, moved_aside: &Path) {
+    let message = error.message();
+    assert!(
+        message.contains(&format!("layer {} generation {}", layer.key, layer.generation)),
+        "{error}"
+    );
+    assert!(message.contains(&format!("it is kept as {holders}; ")), "{error}");
+    assert!(
+        message.contains(&format!(
+            "to recover, move {} aside or release every hold on it",
+            moved_aside.display()
+        )),
+        "{error}"
+    );
+}
+
+fn as_current(key: LayerKey) -> String {
+    format!("the current generation of layer {key} (run `devvm build` for the recipe that produces it)")
 }
 
 #[skuld::test]
@@ -355,7 +375,12 @@ fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancest
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert!(error.message().contains(&child.generation.to_string()), "{error}");
-    assert_recovery(&error, child.key, &env.store.generation_dir(&child));
+    assert_record_recovery(
+        &error,
+        &child,
+        &as_current(child.key),
+        &env.store.generation_dir(&child),
+    );
     assert!(
         exists(&env, &old_parent),
         "the unreadable child may still need its parent"
@@ -369,8 +394,41 @@ fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(anna_home)] home: &P
     std::fs::remove_file(env.store.generation_dir(&child).join("meta.json")).unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
-    assert_recovery(&error, child.key, &env.store.generation_dir(&child));
+    assert_record_recovery(
+        &error,
+        &child,
+        &as_current(child.key),
+        &env.store.generation_dir(&child),
+    );
     assert!(exists(&env, &old_parent));
+}
+
+#[skuld::test]
+fn gc_names_the_child_that_keeps_a_non_current_parent_with_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    std::fs::write(env.store.generation_dir(&old_parent).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    let holder = format!(
+        "the parent of layer {} generation {}, which is itself kept",
+        child.key, child.generation
+    );
+    assert_record_recovery(&error, &old_parent, &holder, &env.store.generation_dir(&old_parent));
+    assert!(!error.message().contains("devvm build"), "{error}");
+    assert!(!error.message().contains("instance"), "{error}");
+}
+
+#[skuld::test]
+fn gc_names_the_instance_that_keeps_a_non_current_generation_with_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let [oldest, _middle, _newest] = three_generations(&env, 1);
+    std::fs::write(env.store.generation_dir(&oldest).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![vec![oldest]])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    let holder = "part of an instance's chain (remove that instance)";
+    assert_record_recovery(&error, &oldest, holder, &env.store.generation_dir(&oldest));
+    assert!(!error.message().contains("devvm build"), "{error}");
 }
 
 #[skuld::test]
@@ -381,7 +439,7 @@ fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(anna_home)] home: &Path
     std::fs::write(&current, b"not a generation").unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
-    assert_recovery(&error, key(1), &current);
+    assert_current_recovery(&error, key(1), &current);
     assert!(exists(&env, &oldest) && exists(&env, &newest));
 }
 
