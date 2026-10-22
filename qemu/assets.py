@@ -29,10 +29,10 @@ REQUIRED = (
     "bin/qemu-system-x86_64.exe",
     "bin/qemu-system-aarch64.exe",
     "bin/qemu-img.exe",
-    "share/qemu/edk2-x86_64-code.fd",
-    "share/qemu/edk2-i386-vars.fd",
-    "share/qemu/edk2-aarch64-code.fd",
-    "share/qemu/edk2-arm-vars.fd",
+    "share/edk2-x86_64-code.fd",
+    "share/edk2-i386-vars.fd",
+    "share/edk2-aarch64-code.fd",
+    "share/edk2-arm-vars.fd",
     "licenses/qemu/COPYING",
     "BUILD-INFO.txt",
     "THIRD-PARTY.txt",
@@ -146,7 +146,7 @@ def cmd_notes(args: argparse.Namespace) -> int:
 {verify}
 ```
 
-**Firmware.** `share/qemu/edk2-*.fd` are the prebuilt edk2 binaries that ship inside the QEMU tarball, not rebuilt
+**Firmware.** `share/edk2-*.fd` are the prebuilt edk2 binaries that ship inside the QEMU tarball, not rebuilt
 here; their source is under `roms/edk2` in the attached tarball.
 
 **Source offer.** The complete corresponding source of everything in the zip is attached to this release (see

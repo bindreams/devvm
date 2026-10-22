@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the pinned QEMU (qemu/pin.env) for Windows x64 in an MSYS2 UCRT64 shell.
 #
-# Input env:  STAGE  output directory (receives bin/, share/qemu/, licenses/qemu/, BUILD-INFO.txt)
+# Input env:  STAGE  output directory (receives bin/, share/, licenses/qemu/, BUILD-INFO.txt)
 #             WORK   scratch directory (receives the verified tarball, signature and source tree)
 # DLLs are bundled afterwards by pe_deps.py; THIRD-PARTY.txt and SOURCE.txt by third_party.py.
 set -Eeuxo pipefail
@@ -167,8 +167,8 @@ lay_out_stage() {
         fail "expected one bin/qemu-system-x86_64.exe under ${WORK}/destdir, found ${#hits[@]}"
     fi
     root="$(dirname "$(dirname "${hits[0]}")")"
-    if [[ ! -d "$root/share/qemu" ]]; then
-        fail "no share/qemu beside ${hits[0]}"
+    if [[ ! -d "$root/share" ]]; then
+        fail "no share beside ${hits[0]}"
     fi
 
     rm -rf "$STAGE"
@@ -176,8 +176,9 @@ lay_out_stage() {
     mv "$root/bin" "$root/share" "$STAGE/"
 
     for path in bin/qemu-img.exe bin/qemu-system-aarch64.exe bin/qemu-system-x86_64.exe \
-        share/qemu/edk2-x86_64-code.fd share/qemu/edk2-i386-vars.fd \
-        share/qemu/edk2-aarch64-code.fd share/qemu/edk2-arm-vars.fd; do
+        share/edk2-x86_64-code.fd share/edk2-i386-vars.fd \
+        share/edk2-aarch64-code.fd share/edk2-arm-vars.fd \
+        share/vgabios-stdvga.bin share/efi-e1000e.rom share/efi-virtio.rom share/keymaps/en-us; do
         if [[ ! -f "$STAGE/$path" ]]; then
             fail "installed tree lacks ${path}"
         fi
@@ -188,7 +189,7 @@ prune() {
     stage "j: prune"
     local tool found expected="qemu-img.exe qemu-system-aarch64.exe qemu-system-x86_64.exe"
     # Firmware descriptors hold install-time absolute paths; devvm passes explicit pflash paths.
-    rm -rf "$STAGE/share/qemu/firmware"
+    rm -rf "$STAGE/share/firmware"
     # --enable-tools builds these together with qemu-img; devvm uses none of them.
     for tool in qemu-io qemu-nbd qemu-storage-daemon qemu-edid; do
         rm -f "$STAGE/bin/$tool.exe"

@@ -190,7 +190,7 @@ def write_third_party(stage: Path, packages: list[Package], tag: str, repo: str)
         "",
         "QEMU (GPL-2.0-or-later; see licenses/qemu/)",
         f"  Source: {release}/qemu-{QEMU_VERSION}.tar.xz, the exact tarball this build was made from.",
-        "  Firmware: share/qemu/edk2-*.fd are the prebuilt edk2 binaries shipped inside the QEMU tarball, not rebuilt",
+        "  Firmware: share/edk2-*.fd are the prebuilt edk2 binaries shipped inside the QEMU tarball, not rebuilt",
         "  here. Their source is under roms/edk2 in that tarball; licences: licenses/qemu/edk2-licenses.txt.",
         "",
         "Libraries from MSYS2 (bin/*.dll), each built from the MSYS2 recipe and source archive named below.",

@@ -47,7 +47,7 @@ class Zip:
         self.env = {**os.environ, "PATH": f"{system_root}\\System32;{system_root}"}
         self.original_env = dict(os.environ)
         self.bin = self.root / "bin"
-        self.share = self.root / "share" / "qemu"
+        self.share = self.root / "share"
 
     def run(self, argv, **kwargs) -> subprocess.CompletedProcess:
         """Run a QEMU tool; fail with its output if it exits non-zero."""
@@ -78,6 +78,16 @@ def version_and_accel(z: Zip):
         assert out.startswith(f"QEMU emulator version {VERSION}"), f"{system} --version printed: {out!r}"
     accels = z.run([z.bin / "qemu-system-x86_64.exe", "-accel", "help"]).stdout.split()
     assert "whpx" in accels, f"-accel help lists {accels}"
+
+
+@check
+def data_dir_is_the_zips_share(z: Zip):
+    # No -L anywhere in these checks: QEMU must find the zip's share/ (ROMs, keymaps) relative to its own executable.
+    for system in ("qemu-system-x86_64", "qemu-system-aarch64"):
+        out = z.run([z.bin / f"{system}.exe", "-L", "help"]).stdout
+        searched = [os.path.normcase(os.path.normpath(line)) for line in out.splitlines() if line]
+        expected = os.path.normcase(os.path.normpath(z.root / "share"))
+        assert expected in searched, f"{system} -L help lists {out!r}, not {expected}"
 
 
 @check
