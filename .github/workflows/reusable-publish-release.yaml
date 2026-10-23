@@ -83,18 +83,25 @@ jobs:
             exit 1
           fi
 
-          # The release must not have taken the "Latest" badge. No release is Latest yet: 404.
-          err="${RUNNER_TEMP}/latest.err"
-          latest_tag=""
-          if ! latest_tag="$(gh api -X GET "repos/${GH_REPO}/releases/latest" --jq .tag_name 2> "$err")"; then
-            if ! grep -q 'HTTP 404' "$err"; then
-              cat "$err" >&2
+          # A track with `latest: false` must not take the "Latest" badge. Read the release's own status: the
+          # repository's `/releases/latest` is eventually consistent and can still show the previous state.
+          is_latest="$(gh api graphql -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}" -f tag="$TAG" \
+            -f query='query($owner: String!, $name: String!, $tag: String!) {
+              repository(owner: $owner, name: $name) { release(tagName: $tag) { isLatest } }
+            }' --jq '.data.repository.release.isLatest')"
+          if [[ "$is_latest" != "true" && "$is_latest" != "false" ]]; then
+            echo "::error::could not read whether ${TAG} is the repository's Latest release (got '${is_latest}')"
+            exit 1
+          fi
+          if [[ "$LATEST" == "false" && "$is_latest" == "true" ]]; then
+            # GitHub makes the only published full release Latest whatever make_latest says.
+            others="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" -f per_page=100 \
+              --jq '.[] | select(.draft == false and .prerelease == false and .tag_name != env.TAG) | .tag_name')"
+            if [[ -n "$others" ]]; then
+              echo "::error::${TAG} is the repository's Latest release, which this track must never be"
+              printf 'other published releases:\n%s\n' "$others"
               exit 1
             fi
-            latest_tag=""
-          fi
-          if [[ "$LATEST" == "false" && "$latest_tag" == "$TAG" ]]; then
-            echo "::error::${TAG} is the repository's Latest release, which this track must never be"
-            exit 1
+            echo "::notice::${TAG} is the repository's Latest release only because it is the only published full release"
           fi
           echo "Release published: https://github.com/${GH_REPO}/releases/tag/${TAG}" | tee -a "$GITHUB_STEP_SUMMARY"
