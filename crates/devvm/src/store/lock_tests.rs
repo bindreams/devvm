@@ -140,3 +140,22 @@ fn other_errors_are_not_retried() {
     assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
     assert_eq!(calls, 1);
 }
+
+#[skuld::test]
+fn open_existing_returns_none_for_a_missing_file_and_does_not_create_it(#[fixture(anna_home)] home: &Path) {
+    let path = home.join("missing").join("a.lock");
+    assert!(FileLock::open_existing(&path).unwrap().is_none());
+    assert!(!path.exists());
+    assert!(!path.parent().unwrap().exists());
+}
+
+#[skuld::test]
+fn open_existing_locks_like_open(#[fixture(anna_home)] home: &Path) {
+    let path = home.join("a.lock");
+    drop(FileLock::open(&path).unwrap());
+    let mut existing = FileLock::open_existing(&path).unwrap().expect("the file exists");
+    assert!(existing.try_lock(Mode::Exclusive).unwrap());
+    let mut other = FileLock::open(&path).unwrap();
+    assert!(!other.try_lock(Mode::Exclusive).unwrap());
+    assert!(!other.try_lock(Mode::Shared).unwrap());
+}

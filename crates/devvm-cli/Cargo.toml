@@ -18,6 +18,7 @@ name = "devvm"
 path = "src/main.rs"
 
 [dependencies]
+bytesize = "2.7.0"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 devvm = { path = "../devvm" }
 
@@ -28,4 +29,9 @@ skuld = { workspace = true }
 [[test]]
 name = "exit"
 path = "tests/exit.rs"
+harness = false
+
+[[test]]
+name = "ls"
+path = "tests/ls.rs"
 harness = false

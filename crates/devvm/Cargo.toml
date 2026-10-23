@@ -26,6 +26,7 @@ jiff = "0.2.38"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
 url = "2.5.8"
 percent-encoding = "2.3.2"
+cosca = { version = "0.5.0", features = ["serde"] }
 
 [dev-dependencies]
 skuld = { workspace = true }

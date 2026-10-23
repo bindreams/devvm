@@ -44,6 +44,17 @@ pub enum GuestKind {
     Macos,
 }
 
+impl GuestKind {
+    /// The name used in messages: `linux`, `windows` or `macos`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GuestKind::Linux => "linux",
+            GuestKind::Windows => "windows",
+            GuestKind::Macos => "macos",
+        }
+    }
+}
+
 /// Privilege a guest command runs with. `Elevated` is root via sudo on Linux and macOS, High integrity on Windows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RunAs {
