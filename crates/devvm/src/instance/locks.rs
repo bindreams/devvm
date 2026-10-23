@@ -222,7 +222,7 @@ impl Locks {
         if path.exists() { Ok(lock) } else { Err(gone(id)) }
     }
 
-    /// Unlinks both lock files while no one opens a lock file; an unlink that fails leaves its file for the next lock
+    /// Unlinks both lock files while no one opens a lock file; an unlink that fails stops it and leaves the owner file for the next lock
     /// sweep. For a holder of the owner lock (reaper, `Owned`) or of the op lock. An error means the files were not
     /// even tried.
     pub(crate) fn remove(&self, id: &InstanceId) -> Result<()> {
@@ -231,9 +231,27 @@ impl Locks {
 
     /// `remove` with `before_wait` run just before it waits for whoever is opening a lock file.
     pub(crate) fn remove_with(&self, id: &InstanceId, before_wait: &mut dyn FnMut()) -> Result<()> {
+        self.remove_via(id, before_wait, &|path| std::fs::remove_file(path))
+    }
+
+    /// `remove_with` unlinking through `unlink`.
+    ///
+    /// The owner file goes only after the op file did: a failure leaves the owner file, which is what the lock sweep
+    /// looks for (an op file alone would be listed but never reported free).
+    fn remove_via(
+        &self,
+        id: &InstanceId,
+        before_wait: &mut dyn FnMut(),
+        unlink: &dyn Fn(&Path) -> std::io::Result<()>,
+    ) -> Result<()> {
         self.excluding_readers(before_wait, || {
-            let _ = std::fs::remove_file(self.op_path(id));
-            let _ = std::fs::remove_file(self.owner_path(id));
+            for path in [self.op_path(id), self.owner_path(id)] {
+                match unlink(&path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => break,
+                }
+            }
         })
     }
 

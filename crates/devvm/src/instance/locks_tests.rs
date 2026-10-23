@@ -369,3 +369,31 @@ fn unlinking_the_lock_files_waits_for_whoever_is_opening_one(#[fixture(anna_home
     });
     assert!(!locks.owner_path(&id).exists() && !locks.op_path(&id).exists());
 }
+
+#[skuld::test]
+fn a_failed_unlink_of_the_op_file_leaves_the_owner_file_for_the_sweep(#[fixture(anna_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let op = locks.op_path(&id);
+
+    locks
+        .remove_via(&id, &mut || {}, &|path| {
+            if path == op {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                std::fs::remove_file(path)
+            }
+        })
+        .unwrap();
+
+    assert!(locks.op_path(&id).exists());
+    assert!(
+        locks.owner_path(&id).exists(),
+        "the sweep would never see this id as free"
+    );
+    // The sweep's view: the owner file is there to be taken, and the next remove finishes the job.
+    assert!(matches!(locks.try_owner(&id).unwrap(), Probe::Free(_)));
+    locks.remove(&id).unwrap();
+    assert!(!locks.op_path(&id).exists() && !locks.owner_path(&id).exists());
+}
