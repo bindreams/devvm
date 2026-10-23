@@ -9,7 +9,7 @@ use crate::exit::Progress;
 use crate::guest::BuiltinGuests;
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
-use crate::instance::record::InstanceRecord;
+use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, write_marker};
 use crate::instance::registry::registry_tests::{TestStorage, new_instance_on};
 use crate::store::layers::layers_tests::{Env, build, env, key, names, t0};
 use crate::store::layers::{ChainLease, SystemClock};
@@ -238,4 +238,29 @@ fn list_still_warns_about_an_instance_with_an_unreadable_marker(#[fixture(anna_h
         messages[0].contains("foo") && messages[0].contains("owner.json"),
         "{messages:?}"
     );
+}
+
+#[skuld::test]
+fn list_says_nothing_about_an_instance_whose_name_was_reused_while_it_lists(#[fixture(anna_home)] home: &Path) {
+    let progress = memory();
+    let fx = engine_fixture(home, progress.clone());
+    instance_in(&fx, "foo", home);
+
+    let infos = fx
+        .engine
+        .list_with(ListFilter::All, &mut |dir| {
+            // The marker of another instance that now has the name.
+            write_marker(
+                dir.path(),
+                &Marker {
+                    owner: Owner::Process,
+                    id: InstanceId::random(),
+                },
+            )
+            .unwrap();
+        })
+        .unwrap();
+
+    assert!(infos.is_empty(), "{infos:?}");
+    assert!(progress.messages().is_empty(), "{:?}", progress.messages());
 }
