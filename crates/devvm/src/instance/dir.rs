@@ -168,6 +168,16 @@ impl InstanceDir {
 
     /// `destroy` with `before_wait` run just before it waits for the readers of instance files to finish.
     pub(crate) fn destroy_with(&self, op: OpExclusive, before_wait: &mut dyn FnMut()) -> Result<()> {
+        self.destroy_with_waits(op, before_wait, &mut || {})
+    }
+
+    /// `destroy_with`, and `before_delete_wait` run just before it waits for another deletion to finish.
+    pub(crate) fn destroy_with_waits(
+        &self,
+        op: OpExclusive,
+        before_wait: &mut dyn FnMut(),
+        before_delete_wait: &mut dyn FnMut(),
+    ) -> Result<()> {
         self.check(&op)?;
         self.record()?;
         let dead = self
@@ -189,15 +199,15 @@ impl InstanceDir {
                     e,
                 )
             })?;
-        // Another deletion in progress is reason to leave this one to the reaper, which runs at the start of every
-        // devvm command.
-        match self.locks.deleting(|| remove_tree(&dead)) {
-            Ok(Some(Err(e))) => self.progress.message(&format!(
+        // Deleting is done one tree at a time. This waits for a deletion in progress (it only deletes, so it ends) and
+        // then deletes this tree: `rm` promises it is gone.
+        match self.locks.deleting_waiting(before_delete_wait, || remove_tree(&dead)) {
+            Ok(Err(e)) => self.progress.message(&format!(
                 "instance {} is removed, but {} could not be deleted ({e}); the next devvm command retries",
                 self.name,
                 dead.display()
             )),
-            Ok(Some(Ok(())) | None) => {}
+            Ok(Ok(())) => {}
             Err(e) => self.progress.message(&format!(
                 "instance {} is removed, but {} could not be deleted ({}); the next devvm command retries",
                 self.name,

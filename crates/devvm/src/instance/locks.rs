@@ -11,8 +11,9 @@
 //!   denied" instead of "not found", so an open can only see the file present or absent. Its holders only read files,
 //!   open files, rename or unlink, never wait for another lock, so waiting for it cannot deadlock, not even in the layer
 //!   store's collection, which must not wait for any lock that a holder of the shared `gc.lock` could hold.
-//! - `dead.lock`: taken without waiting by whoever deletes the contents of a `.dead-<id>` directory (`rm`, the reaper),
-//!   so that two processes never delete one tree at once.
+//! - `dead.lock`: held by whoever deletes the contents of a `.dead-<id>` directory, so that two processes never delete
+//!   one tree at once. `rm` waits for it (it promises its tree is gone); the reaper only tries it, since it runs again.
+//!   Its holders only delete and wait for nothing.
 //!
 //! Nothing but a holder of the owner lock (or, in `destroy`, of the op lock) unlinks a lock file. A process that
 //! opened a lock file before it was unlinked can still lock it, and then holds a lock on a file nobody else will ever
@@ -99,8 +100,8 @@ impl Locks {
     }
 
     /// Runs `f`, which deletes the contents of a `.dead-<id>` directory, unless another process is deleting one: then
-    /// `None`, and that deletion (or the next devvm command's reaper) covers it. Never waits. `f` must not take or wait
-    /// for any other lock.
+    /// `None`, and the next devvm command's reaper covers this tree. Never waits. `f` must not take or wait for any
+    /// other lock. The reaper uses this, since it has other work and runs again.
     ///
     /// Two processes deleting one tree make each other fail on Windows, and a lock on the tree's instance cannot
     /// serialize them: its lock files are unlinked at the end of `rm`, and a file that is being unlinked cannot be
@@ -111,6 +112,18 @@ impl Locks {
             return Ok(None);
         }
         Ok(Some(f()))
+    }
+
+    /// Like [`Locks::deleting`], but waits for the other deletion to finish, with `before_wait` run just before. `rm`
+    /// uses this: it promises its tree is gone. Holders only delete a tree and wait for nothing, so this cannot
+    /// deadlock, whatever lock the caller holds.
+    pub(crate) fn deleting_waiting<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
+        let _lock = take(
+            FileLock::open(&self.dir.join("dead.lock"))?,
+            Mode::Exclusive,
+            before_wait,
+        )?;
+        Ok(f())
     }
 
     fn dir_lock_path(&self) -> PathBuf {

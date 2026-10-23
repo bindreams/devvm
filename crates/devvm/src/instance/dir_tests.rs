@@ -100,3 +100,32 @@ fn two_deleters_of_one_dead_tree_do_not_warn(#[fixture(anna_home)] home: &Path) 
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
 }
+
+#[skuld::test]
+fn destroy_deletes_its_own_tree_even_while_another_deletion_runs(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let dead = fx.env.dirs.instances().join(format!(".dead-{}", dir.id()));
+    let op = dir.op_exclusive().unwrap();
+    let locks = fx.registry.locks();
+    let (held, other_deletion) = std::sync::mpsc::channel();
+    let (contended, waiting) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let other = scope.spawn(move || {
+            locks
+                .deleting(|| {
+                    held.send(()).unwrap();
+                    // Ends when `destroy` waits, or, if it does not wait, when the sender is dropped.
+                    let _ = waiting.recv();
+                })
+                .unwrap()
+        });
+        other_deletion.recv().unwrap();
+        dir.destroy_with_waits(op, &mut || {}, &mut move || contended.send(()).unwrap())
+            .unwrap();
+        assert!(!dead.exists(), "rm left its tree for the next command");
+        other.join().unwrap();
+    });
+    assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
+}
