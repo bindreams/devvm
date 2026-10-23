@@ -6,11 +6,16 @@
 //!
 //! - `instances.dir`: a leaf lock around the files inside instance directories and around the lock files. Whoever reads
 //!   `record.json` or `owner.json`, or opens a lock file, holds it shared; whoever renames an instance directory (`rm`,
-//!   quarantine) or unlinks lock files holds it exclusive. Windows refuses to rename a directory while any file inside
-//!   is open, so without it a reader makes `rm` fail; and it refuses to open a file that is being unlinked with "access
-//!   denied" instead of "not found", so an open can only see the file present or absent. Its holders only read files,
-//!   open files, rename or unlink, never wait for another lock, so waiting for it cannot deadlock, not even in the layer
-//!   store's collection, which must not wait for any lock that a holder of the shared `gc.lock` could hold.
+//!   placing a new instance, quarantine) or unlinks lock files holds it exclusive. Windows refuses to rename a
+//!   directory while any file inside is open, so without it a reader makes `rm` fail; and it refuses to open a file
+//!   that is being unlinked with "access denied" instead of "not found", so an open can only see the file present or
+//!   absent. That last guarantee relies on `std::fs::remove_file` using POSIX delete semantics (NTFS): on a file
+//!   system without them (FAT, exFAT, SMB) a lock file with open handles stays delete-pending and opens still fail, so
+//!   the state directory must be on NTFS. Its holders only read files, open files, rename or unlink, never wait for
+//!   another lock, so waiting for it cannot deadlock, not even in the layer store's collection, which must not wait
+//!   for any lock that a holder of the shared `gc.lock` could hold. A reader never creates it: a creator makes it
+//!   before it places an instance and nothing deletes it, so a reader opens it only after seeing the directory it will
+//!   read.
 //! - `dead.lock`: held by whoever deletes the contents of a `.dead-<id>` directory, so that two processes never delete
 //!   one tree at once. `rm` waits for it (it promises its tree is gone); the reaper only tries it, since it runs again.
 //!   Its holders only delete and wait for nothing.
