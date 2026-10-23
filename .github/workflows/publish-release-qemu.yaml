@@ -64,3 +64,5 @@ jobs:
       release-id: ${{ needs.verify.outputs.release-id }}
       assets: ${{ needs.verify.outputs.assets }}
       latest: false
+      non-latest-tag-patterns: |
+        qemu-*

@@ -3,7 +3,7 @@ name: Reusable Publish Release
 # Step 2 of a track's two-step release: makes a verified draft public. The caller runs reusable-verify-release.yaml
 # first and passes its outputs here, and passes this job `contents: write`.
 #
-# "Latest" is set explicitly so an edit to the draft cannot change it.
+# "Latest" is set explicitly so an edit to the draft cannot change it, and checked repository-wide after every publish.
 
 on:
   workflow_call:
@@ -28,6 +28,12 @@ on:
         description: "Whether this track's releases are the repository's Latest"
         required: true
         type: boolean
+      non-latest-tag-patterns:
+        description: >-
+          Shell globs, one per line, matching the tags of every `latest: false` track in the repository (qemu:
+          `qemu-*`). A release matching none of them counts as a `latest: true` track's.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -41,6 +47,11 @@ jobs:
     name: Publish the verified release
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # One group for every publish in the repository, whatever its tag or track, so one publish's PATCH and checks
+    # never interleave with another's.
+    concurrency:
+      group: publish-release-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
@@ -51,6 +62,7 @@ jobs:
       RELEASE_ID: ${{ inputs.release-id }}
       ASSETS: ${{ inputs.assets }}
       LATEST: ${{ inputs.latest }}
+      NON_LATEST_PATTERNS: ${{ inputs.non-latest-tag-patterns }}
     steps:
       - name: Publish
         run: |
@@ -83,25 +95,58 @@ jobs:
             exit 1
           fi
 
-          # A track with `latest: false` must not take the "Latest" badge. Read the release's own status: the
-          # repository's `/releases/latest` is eventually consistent and can still show the previous state.
-          is_latest="$(gh api graphql -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}" -f tag="$TAG" \
-            -f query='query($owner: String!, $name: String!, $tag: String!) {
-              repository(owner: $owner, name: $name) { release(tagName: $tag) { isLatest } }
-            }' --jq '.data.repository.release.isLatest')"
-          if [[ "$is_latest" != "true" && "$is_latest" != "false" ]]; then
-            echo "::error::could not read whether ${TAG} is the repository's Latest release (got '${is_latest}')"
+          # The repository-wide invariant, checked on every publish whatever tag holds the badge: Latest belongs to a
+          # `latest: true` track's release, or is the only published full release (GitHub then picks it whatever
+          # make_latest says). One GraphQL read gives the holder and the count together; `/releases/latest` is
+          # eventually consistent. A stale read is caught by the next publish.
+          releases="$(gh api graphql --paginate -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}"             -f query='query($owner: String!, $name: String!, $endCursor: String) {
+              repository(owner: $owner, name: $name) {
+                releases(first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes { tagName isDraft isPrerelease isLatest }
+                }
+              }
+            }' --jq '.data.repository.releases.nodes[] | "\(.tagName) \(.isDraft) \(.isPrerelease) \(.isLatest)"')"
+          published=0
+          this_published=false
+          holders=()
+          while IFS=' ' read -r name is_draft is_prerelease is_latest; do
+            if [[ "$is_draft" == "false" ]]; then
+              if [[ "$name" == "$TAG" ]]; then
+                this_published=true
+              fi
+              if [[ "$is_prerelease" == "false" ]]; then
+                published=$((published + 1))
+              fi
+            fi
+            if [[ "$is_latest" == "true" ]]; then
+              holders+=("$name")
+            fi
+          done <<< "$releases"
+          if [[ "$this_published" != "true" ]]; then
+            echo "::error::${TAG} is not a published release in the repository's release list"
             exit 1
           fi
-          if [[ "$LATEST" == "false" && "$is_latest" == "true" ]]; then
-            # GitHub makes the only published full release Latest whatever make_latest says.
-            others="$(gh api -X GET --paginate "repos/${GH_REPO}/releases" -f per_page=100 \
-              --jq '.[] | select(.draft == false and .prerelease == false and .tag_name != env.TAG) | .tag_name')"
-            if [[ -n "$others" ]]; then
-              echo "::error::${TAG} is the repository's Latest release, which this track must never be"
-              printf 'other published releases:\n%s\n' "$others"
-              exit 1
-            fi
-            echo "::notice::${TAG} is the repository's Latest release only because it is the only published full release"
+          if (( ${#holders[@]} > 1 )); then
+            echo "::error::more than one release is Latest: ${holders[*]}"
+            exit 1
+          fi
+
+          holder="${holders[0]:-}"
+          if [[ "$LATEST" == "true" && "$holder" != "$TAG" ]]; then
+            echo "::error::${TAG} must be the repository's Latest release, but it is '${holder}'"
+            exit 1
+          fi
+          if [[ -n "$holder" ]]; then
+            while IFS= read -r pattern; do
+              if [[ -n "$pattern" && "$holder" == $pattern ]]; then
+                if (( published == 1 )); then
+                  echo "::notice::${holder} is Latest because it is the only published full release"
+                else
+                  echo "::error::${holder} is the repository's Latest release, but its track never takes Latest (${pattern}) and ${published} full releases are published"
+                  exit 1
+                fi
+              fi
+            done <<< "$NON_LATEST_PATTERNS"
           fi
           echo "Release published: https://github.com/${GH_REPO}/releases/tag/${TAG}" | tee -a "$GITHUB_STEP_SUMMARY"
