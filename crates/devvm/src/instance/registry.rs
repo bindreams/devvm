@@ -169,13 +169,24 @@ impl Registry {
     pub(crate) fn create_with(
         &self,
         new: NewInstance<'_>,
+        guard: &RecordGuard,
+        before_rename: &mut dyn FnMut(),
+    ) -> Result<Owned> {
+        self.create_with_waits(new, guard, before_rename, &mut || {})
+    }
+
+    /// `create_with`, and `before_wait` run just before the placement waits for the readers of instance files.
+    pub(crate) fn create_with_waits(
+        &self,
+        new: NewInstance<'_>,
         _guard: &RecordGuard,
         before_rename: &mut dyn FnMut(),
+        before_wait: &mut dyn FnMut(),
     ) -> Result<Owned> {
         let id = InstanceId::random();
         let owner = self.locks.acquire_owner_new(&id)?;
         let temp = self.root.join(format!(".new-{id}"));
-        match self.build_and_place(id, &new, &temp, before_rename) {
+        match self.build_and_place(id, &new, &temp, before_rename, before_wait) {
             Ok(dir) => Ok(Owned { dir, owner }),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&temp);
@@ -193,6 +204,7 @@ impl Registry {
         new: &NewInstance<'_>,
         temp: &std::path::Path,
         before_rename: &mut dyn FnMut(),
+        before_wait: &mut dyn FnMut(),
     ) -> Result<InstanceDir> {
         let io = |what: &str, path: &std::path::Path, e| {
             Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), e)
@@ -228,7 +240,11 @@ impl Registry {
             .write(temp)?;
             before_rename();
             let target = self.root.join(name.as_str());
-            match std::fs::rename(temp, &target) {
+            // Placed while no one reads inside any instance directory, like every other rename of one.
+            match self
+                .locks
+                .excluding_readers(before_wait, || std::fs::rename(temp, &target))?
+            {
                 Ok(()) => return Ok(self.handle(id, name)),
                 Err(e) if target.exists() => {
                     if new.name.is_some() {

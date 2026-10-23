@@ -420,3 +420,38 @@ fn a_shared_guard_lets_readers_coexist_but_excludes_the_exclusive_op(#[fixture(a
     drop((first, second));
     assert!(dir.try_op_exclusive().unwrap().is_some());
 }
+
+#[skuld::test]
+fn placing_a_new_instance_waits_for_readers_of_instance_files(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let existing = create(&fx, Some("bar")).make_ownerless(&mut || Ok(())).unwrap();
+    let (contended, contention) = mpsc::channel::<()>();
+
+    let placed_while_reading = std::thread::scope(|scope| {
+        let fx = &fx;
+        let creator = fx.registry.locks().reading(existing.path(), || {
+            let creator = scope.spawn(move || {
+                let guard = fx.env.store.begin_record().unwrap();
+                fx.registry.create_with_waits(
+                    new_instance(fx, Some("foo"), &TestStorage { fail: false }),
+                    &guard,
+                    &mut || {},
+                    &mut || contended.send(()).unwrap(),
+                )
+            });
+            // The creator is at its placement and found the readers' lock taken: `foo` is not there yet.
+            // `contended` is dropped with the creator if it never waits, so this fails instead of hanging.
+            let waited = contention.recv().is_ok();
+            (creator, waited, instances(fx).join("foo").exists())
+        });
+        let (creator, waited, placed_early) = creator.unwrap().unwrap();
+        creator.join().unwrap().unwrap();
+        (waited, placed_early)
+    });
+    assert_eq!(
+        placed_while_reading,
+        (true, false),
+        "the creator placed `foo` while a reader had files open"
+    );
+    assert_eq!(names(&instances(&fx)), ["bar", "foo"]);
+}

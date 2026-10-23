@@ -66,8 +66,8 @@ impl Registry {
     ///
     /// `id` is the instance the verdict named, if any; when known the move happens under both its locks, so a live
     /// owner or a running command stops it. The verdict was taken without any lock, so it is checked again at the
-    /// moment of the move, while no devvm command reads or renames an instance directory (nothing can place or remove
-    /// the directory in between): the move happens only if the directory at `path` is still unreadable and still names
+    /// moment of the move, while no devvm command reads, places or removes an instance directory (each does so under
+    /// the same lock): the move happens only if the directory at `path` is still unreadable and still names
     /// the same `id`. A path that is gone is success.
     pub(super) fn quarantine(
         &self,
