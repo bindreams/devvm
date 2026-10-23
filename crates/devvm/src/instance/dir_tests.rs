@@ -57,13 +57,14 @@ fn destroy_waits_for_a_reader_that_has_a_file_open(#[fixture(anna_home)] home: &
         let destroyer = fx
             .registry
             .locks()
-            .reading(|| {
+            .reading(dir.path(), || {
                 // On Windows this handle alone makes a rename of the directory fail.
                 let _open = std::fs::File::open(dir.path().join("record.json")).unwrap();
                 let destroyer = scope.spawn(|| dir.destroy_with(op, &mut || contended.send(()).unwrap()));
                 contention.recv().unwrap();
                 destroyer
             })
+            .unwrap()
             .unwrap();
         destroyer.join().unwrap().unwrap();
     });

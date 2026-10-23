@@ -206,7 +206,7 @@ fn renaming_waits_for_a_reader_and_the_reader_never_waits_for_another_reader(#[f
 
     std::thread::scope(|scope| {
         let renamer = locks
-            .reading(|| {
+            .reading(home, || {
                 let mut other = FileLock::open(&path).unwrap();
                 assert!(other.try_lock(Mode::Shared).unwrap(), "readers share");
                 other.unlock().unwrap();
@@ -222,6 +222,7 @@ fn renaming_waits_for_a_reader_and_the_reader_never_waits_for_another_reader(#[f
                 log.lock().unwrap().push("reader done");
                 renamer
             })
+            .unwrap()
             .unwrap();
         renamer.join().unwrap();
     });
@@ -242,10 +243,50 @@ fn a_reader_cannot_start_while_a_directory_is_renamed(#[fixture(anna_home)] home
 }
 
 #[skuld::test]
-fn reading_with_no_lock_file_runs_and_creates_nothing(#[fixture(anna_home)] home: &Path) {
+fn reading_an_absent_directory_reads_nothing_and_creates_nothing(#[fixture(anna_home)] home: &Path) {
     let locks = locks(home);
-    assert_eq!(locks.reading(|| 7).unwrap(), 7);
+    assert!(
+        locks
+            .reading(&home.join("instances").join("foo"), || 7)
+            .unwrap()
+            .is_none()
+    );
     assert!(!home.join("locks").exists());
+}
+
+#[skuld::test]
+fn a_reader_that_stalls_after_seeing_a_directory_still_reads_under_the_lock_of_a_first_create(
+    #[fixture(anna_home)] home: &Path,
+) {
+    let locks = locks(home);
+    let dir = home.join("instances").join("foo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let lock_path = home.join("locks").join("instances.dir");
+    let mut read_locked = None;
+    let read = locks
+        .reading_with(
+            &dir,
+            &mut || {
+                // The first create of a fresh state, while the reader is stalled.
+                drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
+            },
+            || {
+                let mut renamer = FileLock::open(&lock_path).unwrap();
+                read_locked = Some(!renamer.try_lock(Mode::Exclusive).unwrap());
+            },
+        )
+        .unwrap();
+    assert!(read.is_some());
+    assert_eq!(read_locked, Some(true), "the reader read without holding instances.dir");
+}
+
+#[skuld::test]
+fn a_reader_that_saw_a_directory_but_finds_no_lock_file_reads_nothing(#[fixture(anna_home)] home: &Path) {
+    let locks = locks(home);
+    let dir = home.join("instances").join("foo");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(locks.reading(&dir, || 7).unwrap().is_none());
+    assert!(!home.join("locks").exists(), "a reader creates nothing");
 }
 
 #[skuld::test]
@@ -311,7 +352,7 @@ fn unlinking_the_lock_files_waits_for_whoever_is_opening_one(#[fixture(anna_home
 
     std::thread::scope(|scope| {
         locks
-            .reading(|| {
+            .reading(home, || {
                 let remover = scope.spawn(move || locks.remove_with(&id, &mut || waiting.send(()).unwrap()));
                 assert!(
                     remover_waits.recv().is_ok(),
@@ -320,6 +361,7 @@ fn unlinking_the_lock_files_waits_for_whoever_is_opening_one(#[fixture(anna_home
                 assert!(locks.owner_path(&id).is_file() && locks.op_path(&id).is_file());
                 remover
             })
+            .unwrap()
             .unwrap()
             .join()
             .unwrap()
