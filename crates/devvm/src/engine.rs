@@ -153,7 +153,9 @@ impl Engine {
             }
             after_record(&dir);
             let ownerless = match dir.marker() {
-                Ok(MarkerRead::Valid(marker)) => marker.owner == Owner::None,
+                Ok(MarkerRead::Valid(marker)) if marker.id == *dir.id() => marker.owner == Owner::None,
+                // The name belongs to another instance now: this one was removed since its record was read.
+                Ok(MarkerRead::Valid(_)) => continue,
                 Ok(_) | Err(_) => {
                     // An instance removed since its record was read has no marker either: not worth a word.
                     if matches!(dir.record(), Err(e) if e.kind() == ErrorKind::NotFound) {
