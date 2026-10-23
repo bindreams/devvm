@@ -59,14 +59,35 @@ impl Locks {
         self.dir.join(format!("instance-{id}.op"))
     }
 
-    /// Runs `f` while no instance directory is renamed. `f` must only read files: it must not take or wait for any
-    /// other lock.
-    pub(crate) fn reading<T>(&self, f: impl FnOnce() -> T) -> Result<T> {
-        // No lock file means no instance was ever created, so no directory can be renamed: nothing to exclude.
-        let _lock = FileLock::open_existing(&self.dir_lock_path())?
-            .map(|lock| take(lock, Mode::Shared, &mut || {}))
-            .transpose()?;
-        Ok(f())
+    /// Runs `f` while no instance directory is renamed, if the instance directory `seen` exists; else `None`. `f` must
+    /// only read files: it must not take or wait for any other lock.
+    ///
+    /// `seen` is looked at before `instances.dir` is opened. A creator makes `instances.dir` before it places any
+    /// instance and nothing deletes it, so a directory that exists means the lock file exists, and no reader ever has
+    /// to create it. `None` also when the lock file is absent: there is nothing to read.
+    pub(crate) fn reading<T>(&self, seen: &Path, f: impl FnOnce() -> T) -> Result<Option<T>> {
+        self.reading_with(seen, &mut || {}, f)
+    }
+
+    /// `reading` with `after_seen` run after `seen` was found and before `instances.dir` is opened.
+    pub(crate) fn reading_with<T>(
+        &self,
+        seen: &Path,
+        after_seen: &mut dyn FnMut(),
+        f: impl FnOnce() -> T,
+    ) -> Result<Option<T>> {
+        let seen_dir = seen
+            .try_exists()
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", seen.display()), e))?;
+        if !seen_dir {
+            return Ok(None);
+        }
+        after_seen();
+        let Some(lock) = FileLock::open_existing(&self.dir_lock_path())? else {
+            return Ok(None);
+        };
+        let _shared = take(lock, Mode::Shared, &mut || {})?;
+        Ok(Some(f()))
     }
 
     /// Runs `f`, which renames an instance directory or unlinks lock files, while no one reads inside any instance
@@ -98,12 +119,14 @@ impl Locks {
 
     /// `record.json` of the instance directory `dir`, read while no directory is renamed.
     pub(crate) fn read_record(&self, dir: &Path) -> Result<RecordRead> {
-        self.reading(|| InstanceRecord::read(dir))?
+        self.reading(dir, || InstanceRecord::read(dir))?
+            .unwrap_or(Ok(RecordRead::Absent))
     }
 
     /// `owner.json` of the instance directory `dir`, read while no directory is renamed.
     pub(crate) fn read_marker(&self, dir: &Path) -> Result<MarkerRead> {
-        self.reading(|| read_marker(dir))?
+        self.reading(dir, || read_marker(dir))?
+            .unwrap_or(Ok(MarkerRead::Absent))
     }
 
     /// Creates the owner and op files for a new instance and returns the owner lock, held.
