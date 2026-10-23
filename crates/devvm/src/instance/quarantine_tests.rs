@@ -109,10 +109,13 @@ fn a_moved_instance_directory_is_quarantined_not_trusted(#[fixture(anna_home)] h
     // Before the reaper runs, `bar` is not served on the strength of a record that says `foo`.
     let error = fx.registry.open(&InstanceName::parse("bar").unwrap()).err().unwrap();
     assert_eq!(error.kind(), ErrorKind::Store);
-    assert!(
-        error.message().contains("bar") && error.message().contains("foo"),
-        "{}",
-        error.message()
+    assert_eq!(
+        error.message(),
+        format!(
+            "the record in the directory of instance bar is for an instance called foo ({}); the next devvm command \
+             moves the directory to quarantine",
+            root.join("bar").join("record.json").display()
+        )
     );
     assert!(fx.registry.list().unwrap().is_empty());
 

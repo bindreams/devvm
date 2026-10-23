@@ -98,7 +98,8 @@ impl Registry {
             RecordRead::Valid(record) => Err(Error::new(
                 ErrorKind::Store,
                 format!(
-                    "the record in the directory of instance {name} is for an instance called {} ({}); the next                      devvm command moves the directory to quarantine",
+                    "the record in the directory of instance {name} is for an instance called {} ({}); the next devvm command \
+                     moves the directory to quarantine",
                     record.name,
                     path.join("record.json").display()
                 ),
