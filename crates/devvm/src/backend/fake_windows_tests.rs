@@ -429,7 +429,10 @@ fn a_relaunch_in_the_same_directory_reads_only_its_own_run(#[fixture(anna_home)]
     first.kill().unwrap();
 
     let mut second = target.backend().launch(&spec).unwrap();
-    assert!(!target.has_run(&spec), "the previous run's started file outlives its VM");
+    assert!(
+        !target.has_run(&spec),
+        "the previous run's started file outlives its VM"
+    );
     second.resume().unwrap();
 
     let pid = second.record().process.pid;

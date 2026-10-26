@@ -547,15 +547,24 @@ impl LaunchHooks for HoldsRecordFrom {
 
 /// A backend whose machines count their `kill` calls, and whose process lives on when the machine is dropped (as a
 /// backend's does when its machine is not a contained child): only an explicit `kill` stops it. With `fail_resume`,
-/// a machine runs after `resume` but reports a failure.
+/// a machine runs after `resume` but reports a failure. With `fail_kill`, `kill` is counted and fails without ending
+/// the machine.
 struct Spied {
     inner: Arc<FakeBackend>,
     fail_resume: bool,
+    fail_kill: bool,
     kills: Arc<AtomicUsize>,
 }
 
 impl Spied {
     fn wrap(fail_resume: bool) -> (impl FnOnce(Arc<FakeBackend>) -> Arc<dyn Backend>, Arc<AtomicUsize>) {
+        Spied::wrap_with(fail_resume, false)
+    }
+
+    fn wrap_with(
+        fail_resume: bool,
+        fail_kill: bool,
+    ) -> (impl FnOnce(Arc<FakeBackend>) -> Arc<dyn Backend>, Arc<AtomicUsize>) {
         let kills = Arc::new(AtomicUsize::new(0));
         let counted = kills.clone();
         (
@@ -563,6 +572,7 @@ impl Spied {
                 Arc::new(Spied {
                     inner,
                     fail_resume,
+                    fail_kill,
                     kills: counted,
                 }) as Arc<dyn Backend>
             },
@@ -576,6 +586,7 @@ impl Backend for Spied {
         Ok(Box::new(SpiedMachine {
             inner: self.inner.launch(spec)?,
             fail_resume: self.fail_resume,
+            fail_kill: self.fail_kill,
             kills: self.kills.clone(),
         }))
     }
@@ -596,6 +607,7 @@ impl Backend for Spied {
 struct SpiedMachine {
     inner: Box<dyn Machine>,
     fail_resume: bool,
+    fail_kill: bool,
     kills: Arc<AtomicUsize>,
 }
 
@@ -640,6 +652,9 @@ impl Machine for SpiedMachine {
 
     fn kill(&mut self) -> crate::Result<()> {
         self.kills.fetch_add(1, Ordering::SeqCst);
+        if self.fail_kill {
+            return Err(crate::Error::new(ErrorKind::Io, "the control channel refused the kill"));
+        }
         self.inner.kill()
     }
 }
@@ -735,5 +750,74 @@ fn a_second_record_write_that_fails_kills_the_machine_and_deletes_its_leftovers(
     // The record names a dead machine, which the next command on the instance clears.
     instance.stop().unwrap();
     assert!(recorded(&instance).is_none());
+    instance.remove().unwrap();
+}
+
+/// Ends the process of a machine that a failed kill left running, so the test does not leak it.
+struct KillsOnDrop(MachineRecord);
+
+impl Drop for KillsOnDrop {
+    fn drop(&mut self) {
+        if let Ok(Some(mut vm)) = VmProcess::attach(&self.0.process) {
+            let _ = vm.kill();
+        }
+    }
+}
+
+#[skuld::test]
+fn a_resume_that_fails_with_a_machine_that_cannot_be_killed_keeps_the_record_and_names_both_errors(
+    #[fixture(anna_home)] home: &Path,
+) {
+    let (wrap, kills) = Spied::wrap_with(true, true);
+    let fx = engine_fixture_with(
+        home,
+        Arc::new(MemoryProgress::default()),
+        Arc::new(crate::engine::NoHooks),
+        wrap,
+    );
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    let error = instance.start().expect_err("the resume fails");
+
+    let machine = fx.fake.launched()[0].clone();
+    let _leak_guard = KillsOnDrop(machine.clone());
+    assert_eq!(kills.load(Ordering::SeqCst), 1, "the machine was to be killed");
+    assert!(running(&machine), "the kill failed, so the machine still runs");
+    let kept = recorded(&instance).expect("the record still names the machine that may run");
+    assert_eq!(kept.process, machine.process);
+    let text = error.to_string();
+    assert!(
+        text.contains("lost its control channel"),
+        "the resume failure is lost: {text}"
+    );
+    assert!(text.contains("refused the kill"), "the kill failure is lost: {text}");
+    assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
+    // The next command on the instance finds the machine through the record and ends it.
+    instance.stop().unwrap();
+    assert!(!running(&machine));
+    assert!(recorded(&instance).is_none());
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn an_unrecorded_machine_that_cannot_be_killed_is_named_in_the_error(#[fixture(anna_home)] home: &Path) {
+    let hooks = HoldsRecordFrom::new(LaunchStep::Spawned);
+    let (wrap, kills) = Spied::wrap_with(false, true);
+    let fx = engine_fixture_with(home, Arc::new(MemoryProgress::default()), hooks.clone(), wrap);
+    let dir = instance_in(&fx, "foo", home);
+    hooks.instance_dir.set(dir.path().to_path_buf()).unwrap();
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    let error = instance.start().expect_err("the record cannot be written");
+
+    hooks.release();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert_eq!(kills.load(Ordering::SeqCst), 1);
+    let text = error.to_string();
+    assert!(
+        text.contains("refused the kill") && text.contains("never recorded"),
+        "{text}"
+    );
     instance.remove().unwrap();
 }

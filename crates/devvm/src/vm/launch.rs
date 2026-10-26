@@ -65,44 +65,61 @@ pub(super) fn launch(
     engine.hooks().reached(LaunchStep::Spawned, &machine_record);
     if let Err(e) = dir.update(op, &mut |record| record.machine = Some(machine_record.clone())) {
         // Not recorded, so nothing could find it again: it must not run.
-        kill_unrecorded(engine, dir, &mut *machine);
-        return Err(e);
+        return Err(match kill_unrecorded(engine, dir, &mut *machine) {
+            Ok(()) => e,
+            Err(kill) => survivor(e, kill, "it was never recorded, so nothing can find it"),
+        });
     }
     engine.hooks().reached(LaunchStep::Recorded, &machine_record);
     if let Err(e) = machine.resume() {
-        abandon(engine, dir, op, &mut *machine);
-        return Err(e);
+        return Err(abandon(engine, dir, op, &mut *machine, e));
     }
     // A machine may learn its endpoints only by running, so its record is written once more.
     let running_record = machine.record();
     engine.hooks().reached(LaunchStep::Resumed, &running_record);
     if let Err(e) = dir.update(op, &mut |record| record.machine = Some(running_record.clone())) {
-        abandon(engine, dir, op, &mut *machine);
-        return Err(e);
+        return Err(abandon(engine, dir, op, &mut *machine, e));
     }
     Ok(Some(machine))
 }
 
-/// A recorded machine that must not run after all: kills it and clears the record that names it.
-fn abandon(engine: &Engine, dir: &InstanceDir, op: &OpExclusive, machine: &mut dyn Machine) {
-    kill_unrecorded(engine, dir, machine);
+/// A recorded machine that must not run after all: kills it and clears the record that names it. `cause` is why the
+/// start failed and comes back as the error. A machine that cannot be killed may still run, so its record stays and the
+/// next stop or remove of the instance ends it; the returned error then names both failures.
+fn abandon(engine: &Engine, dir: &InstanceDir, op: &OpExclusive, machine: &mut dyn Machine, cause: Error) -> Error {
+    if let Err(kill) = kill_unrecorded(engine, dir, machine) {
+        return survivor(
+            cause,
+            kill,
+            "its record is kept, and the next stop or remove of the instance ends it",
+        );
+    }
     if let Err(clear) = dir.update(op, &mut |record| record.machine = None) {
         engine.progress().message(&format!(
-            "instance {} could not be started, and its record still names the machine ({}); the next devvm \
-             command on it clears that",
+            "instance {} could not be started, and its record still names the machine ({}); the next devvm              command on it clears that",
             dir.name(),
             clear.message()
         ));
     }
+    cause
 }
 
-fn kill_unrecorded(engine: &Engine, dir: &InstanceDir, machine: &mut dyn Machine) {
-    match machine.kill() {
-        Ok(()) => remove_leftovers(engine, dir, &machine.record()),
-        Err(e) => engine.progress().message(&format!(
-            "instance {}: the machine that failed to start could not be killed ({})",
-            dir.name(),
-            e.message()
-        )),
-    }
+/// Kills a machine that must not run, and deletes its leftovers once it is dead. The error is the failed kill.
+fn kill_unrecorded(engine: &Engine, dir: &InstanceDir, machine: &mut dyn Machine) -> Result<()> {
+    machine.kill()?;
+    remove_leftovers(engine, dir, &machine.record());
+    Ok(())
+}
+
+/// The error of a start that failed (`cause`) while the machine it had launched could not be killed (`kill`).
+fn survivor(cause: Error, kill: Error, what_happens: &str) -> Error {
+    Error::new(
+        cause.kind(),
+        format!(
+            "{}; the machine that failed to start could not be killed either ({}) and may still run: {what_happens}",
+            cause.message(),
+            kill.message()
+        ),
+    )
+    .with_source(kill)
 }
