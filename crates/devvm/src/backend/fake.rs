@@ -125,6 +125,13 @@ impl Backend for FakeBackend {
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         FakeBackend::backing_layer(&spec.disk)?;
         let state_dir = spec.serial_log.parent().expect("a serial log has a directory");
+        fake_vm::forget_earlier_runs(state_dir).map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot clear the earlier runs of {}", state_dir.display()),
+                e,
+            )
+        })?;
         let vm = VmProcess::spawn_frozen(
             self.host,
             fake_vm::command(state_dir),

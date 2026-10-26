@@ -10,7 +10,7 @@ use crate::backend::contract::{self, ContractTarget};
 use crate::backend::{Backend, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
 use crate::store::layers::{ChainLease, LayerStore};
-use crate::test_support::fake_vm::{STARTED, connect_when_up};
+use crate::test_support::fake_vm::{STARTED, answer, connect_when_up};
 use crate::test_support::fixtures::anna_home;
 
 /// The processes of the machines that `await_booted` was called for.
@@ -388,4 +388,29 @@ fn fake_counts_every_launch(#[fixture(anna_home)] home: &Path) {
     assert_eq!(target.launches(), 0);
     contract::launch_reports_a_live_process_and_loopback_endpoints(&target, home);
     assert_eq!(target.launches(), 1);
+}
+
+#[skuld::test]
+fn a_relaunch_in_the_same_directory_reads_only_its_own_run(#[fixture(anna_home)] home: &Path) {
+    let target = FakeTarget::new();
+    let env = crate::store::layers::layers_tests::env(home);
+    let parent = target.parent_layer(&env.store);
+    let spec = target.spec(home, 0);
+    std::fs::create_dir_all(spec.disk.parent().unwrap()).unwrap();
+    target
+        .backend()
+        .storage()
+        .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+        .unwrap();
+    let mut first = target.backend().launch(&spec).unwrap();
+    first.resume().unwrap();
+    first.kill().unwrap();
+
+    let mut second = target.backend().launch(&spec).unwrap();
+    assert!(!target.has_run(&spec), "the previous run's started file outlives its VM");
+    second.resume().unwrap();
+
+    let pid = second.record().process.pid;
+    assert!(answer(second.ssh_endpoints()[0].1.port()).starts_with(&format!("up pid={pid} ")));
+    second.kill().unwrap();
 }

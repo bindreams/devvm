@@ -29,6 +29,9 @@ mod probe;
 /// The file a fake VM writes when it runs; a frozen one never does.
 pub const STARTED: &str = "started";
 
+/// Where the port is written before it is renamed to [`STARTED`].
+const PENDING: &str = "started.tmp";
+
 /// What a fake VM writes to its stdout and stderr; a test hands `log(state_dir)` to `spawn_frozen` to collect it.
 pub const OUT_LINE: &str = "fake-vm: out";
 pub const ERR_LINE: &str = "fake-vm: err";
@@ -36,6 +39,18 @@ pub const ERR_LINE: &str = "fake-vm: err";
 /// Where the fake VM's output goes for the state directory `state_dir`.
 pub fn log(state_dir: &Path) -> PathBuf {
     state_dir.join("fake-vm.log")
+}
+
+/// Deletes what an earlier VM of `state_dir` left, so that the `started` file describes only the run that follows. Call
+/// it before spawning a VM into a directory that may have held one; a VM that is not spawned yet cannot write the file.
+pub fn forget_earlier_runs(state_dir: &Path) -> std::io::Result<()> {
+    for name in [STARTED, PENDING] {
+        match std::fs::remove_file(state_dir.join(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// The command that runs the fake VM, with `state_dir` for its `started` file.
@@ -52,14 +67,15 @@ pub fn fake_vm(args: &[String]) {
     eprintln!("{ERR_LINE}");
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback port should be available");
     let port = listener.local_addr().expect("a bound listener has an address").port();
-    let pending = state_dir.join("started.tmp");
+    let pending = state_dir.join(PENDING);
     std::fs::write(&pending, port.to_string()).expect("the state directory should exist");
     std::fs::rename(&pending, state_dir.join(STARTED)).expect("the state directory should exist");
     for stream in listener.incoming() {
         let mut stream = stream.expect("an accepted connection");
         let _ = writeln!(
             stream,
-            "up kill-on-close={} console={}",
+            "up pid={} kill-on-close={} console={}",
+            std::process::id(),
             probe::kill_on_close(),
             probe::console_processes()
         );
@@ -108,6 +124,18 @@ pub fn connect_when_up(vm: &VmProcess, port: u16) -> String {
             }
         }
     }
+}
+
+/// Connects once to the fake VM on `port` and returns its answer line. A VM whose `started` file names the port
+/// already listens, so a refused connection fails the test: the port belongs to nothing that runs.
+pub fn answer(port: u16) -> String {
+    let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .unwrap_or_else(|e| panic!("nothing listens on port {port}, which a machine reported as its endpoint: {e}"));
+    let mut line = String::new();
+    BufReader::new(stream)
+        .read_line(&mut line)
+        .expect("the fake VM answers");
+    line.trim_end().to_owned()
 }
 
 /// Spawns the fake VM frozen with `lifetime`, resumes it and prints its identity record on one line.

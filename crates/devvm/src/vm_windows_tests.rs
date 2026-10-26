@@ -16,7 +16,7 @@ use crate::engine::{LaunchHooks, LaunchStep};
 use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::{build_expiring, days, key, names, t0};
-use crate::test_support::fake_vm::{STARTED, connect_when_up};
+use crate::test_support::fake_vm::{STARTED, answer, connect_when_up};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
 use crate::test_support::helper;
 use crate::vm::vm_tests::{queued, step_name};
@@ -39,6 +39,16 @@ fn wait_until_dead(machine: &MachineRecord) {
     if let Some(vm) = VmProcess::attach(&machine.process).unwrap() {
         vm.wait().unwrap();
     }
+}
+
+/// The endpoint `machine` records belongs to its own process: it already listens, and its process answers.
+fn assert_answers_as(machine: &MachineRecord) {
+    let report = answer(machine.ssh[0].addr.port());
+    assert!(
+        report.starts_with(&format!("up pid={} ", machine.process.pid)),
+        "the endpoint of process {} is answered by another VM: {report}",
+        machine.process.pid
+    );
 }
 
 #[skuld::test]
@@ -143,6 +153,7 @@ fn stop_then_start_gives_a_new_process(#[fixture(anna_home)] home: &Path) {
     let second = recorded(&instance).unwrap();
     assert_ne!(first.process, second.process);
     assert_eq!(fx.fake.launches(), 2);
+    assert_answers_as(&second);
     instance.remove().unwrap();
 }
 
@@ -245,7 +256,9 @@ fn a_cli_killed_at(step: LaunchStep, home: &Path) {
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
     instance.start().expect("a later start launches again");
     assert_eq!(fx.fake.launches(), 1);
-    assert!(running(&recorded(&instance).unwrap()));
+    let restarted = recorded(&instance).unwrap();
+    assert!(running(&restarted));
+    assert_answers_as(&restarted);
     instance.remove().unwrap();
 }
 
