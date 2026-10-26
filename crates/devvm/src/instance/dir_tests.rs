@@ -181,3 +181,24 @@ fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(an
         "{messages:?}"
     );
 }
+
+#[skuld::test]
+fn handing_over_an_instance_with_a_corrupt_record_reports_the_record_and_writes_nothing(
+    #[fixture(anna_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    let owned = create(&fx, Some("foo"));
+    let instance = fx.env.dirs.instances().join("foo");
+    std::fs::write(instance.join("record.json"), "{ torn").unwrap();
+    let marker_before = std::fs::read(instance.join("owner.json")).unwrap();
+
+    let error = owned.make_ownerless(&mut || Ok(())).err().expect("the record is torn");
+
+    assert_eq!(error.kind(), crate::ErrorKind::Store);
+    assert!(
+        error.message().contains("unreadable") && error.message().contains("foo"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(std::fs::read(instance.join("owner.json")).unwrap(), marker_before);
+}

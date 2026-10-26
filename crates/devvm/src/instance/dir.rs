@@ -86,15 +86,19 @@ impl InstanceDir {
                 ),
             )),
             RecordRead::Valid(_) | RecordRead::Absent => Err(self.gone()),
-            RecordRead::Corrupt(why) => Err(Error::new(
-                ErrorKind::Store,
-                format!(
-                    "the record of instance {} is unreadable ({why}): {}",
-                    self.name,
-                    self.path.join("record.json").display()
-                ),
-            )),
+            RecordRead::Corrupt(why) => Err(self.unreadable_record(&why)),
         }
+    }
+
+    fn unreadable_record(&self, why: &str) -> Error {
+        Error::new(
+            ErrorKind::Store,
+            format!(
+                "the record of instance {} is unreadable ({why}): {}",
+                self.name,
+                self.path.join("record.json").display()
+            ),
+        )
     }
 
     /// The owner marker on disk, whichever instance it names.
@@ -103,7 +107,8 @@ impl InstanceDir {
     }
 
     /// Writes the owner marker `marker` into this instance's directory, after `before_write` ran. The directory cannot
-    /// be renamed meanwhile, and it must still be this handle's instance: `NotFound` otherwise, with nothing written.
+    /// be renamed meanwhile, and it must still be this handle's instance: `NotFound` if it is gone or another one,
+    /// `Store` if its record is unreadable; nothing is written either way.
     pub(super) fn write_marker(&self, marker: &Marker, before_write: &mut dyn FnMut()) -> Result<()> {
         self.locks
             .reading(&self.path, || match InstanceRecord::read(&self.path)? {
@@ -111,7 +116,8 @@ impl InstanceDir {
                     before_write();
                     write_marker(&self.path, marker)
                 }
-                _ => Err(self.gone()),
+                RecordRead::Corrupt(why) => Err(self.unreadable_record(&why)),
+                RecordRead::Valid(_) | RecordRead::Absent => Err(self.gone()),
             })?
             .unwrap_or_else(|| Err(self.gone()))
     }
