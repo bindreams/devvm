@@ -42,6 +42,10 @@ pub(crate) trait Storage: Send + Sync {
 
     /// Turns an instance's disk into a layer. Writes only into `staging` and never modifies a parent layer.
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()>;
+
+    /// Makes the downloaded disk `image` (any format the backend reads) the root layer's disk in `staging`, with the
+    /// firmware variables template for `arch`. Writes only into `staging`.
+    fn import_base(&self, image: &Path, arch: Arch, staging: &LayerDir) -> Result<()>;
 }
 
 pub(crate) trait Machine: Send {

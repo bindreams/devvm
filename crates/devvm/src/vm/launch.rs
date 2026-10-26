@@ -3,7 +3,7 @@
 use crate::backend::{Endpoint, Machine, MachineSpec};
 use crate::contain::{Lifetime, VmProcess};
 use crate::engine::{Engine, LaunchStep};
-use crate::guest::SeedSpec;
+use crate::guest::{SeedKeys, SeedSpec};
 use crate::instance::dir::{InstanceDir, OpExclusive};
 use crate::{Error, ErrorKind, Result};
 
@@ -36,6 +36,9 @@ pub(super) fn launch(
     let seed = guest.instance_seed(&SeedSpec {
         hostname: dir.name().as_str().to_owned(),
         dir: seed_dir,
+        instance_id: *dir.id(),
+        // Placeholder until the instance's keys exist (U4 generates them before the first start).
+        keys: SeedKeys::default(),
     })?;
     let spec = MachineSpec {
         id: *dir.id(),

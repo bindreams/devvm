@@ -7,7 +7,8 @@ use std::sync::Arc;
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, Media};
 use crate::exit::Progress;
-use crate::recipe::Source;
+use crate::instance::record::InstanceId;
+use crate::recipe::{Shell, Source};
 use crate::store::layers::{LayerDir, LayerMeta};
 use crate::{Arch, Command, Dirs, Error, ErrorKind, GuestKind, Result};
 
@@ -31,6 +32,9 @@ pub(crate) trait GuestOs: Send + Sync {
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;
     fn wait_ready(&self, ssh: &SshSession) -> Result<()>;
+    /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
+    /// the guest does not have is a `recipe` error.
+    fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>>;
 }
 
 pub(crate) trait BaseBuilder: Send + Sync {
@@ -50,6 +54,19 @@ pub(crate) struct SeedSpec {
     pub hostname: String,
     /// A scratch directory the seed may be written into.
     pub dir: PathBuf,
+    /// The instance the seed is for; it stays the same across restarts.
+    pub instance_id: InstanceId,
+    pub keys: SeedKeys,
+}
+
+/// The SSH keys a first boot installs, as the text of their files.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SeedKeys {
+    /// The public key of the client allowed to log in.
+    pub client_public: String,
+    /// The guest's SSH host key pair.
+    pub host_private: String,
+    pub host_public: String,
 }
 
 pub(crate) struct SeedMedia {

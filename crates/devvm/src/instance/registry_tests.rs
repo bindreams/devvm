@@ -28,6 +28,10 @@ impl Storage for TestStorage {
     fn commit_layer(&self, _instance_disk: &Path, _staging: &LayerDir) -> Result<()> {
         unreachable!("the registry never commits layers")
     }
+
+    fn import_base(&self, _image: &Path, _arch: Arch, _staging: &LayerDir) -> Result<()> {
+        unreachable!("the registry never imports images")
+    }
 }
 
 pub(crate) struct Fixture {

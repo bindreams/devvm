@@ -414,3 +414,16 @@ fn start_records_the_machine_again_after_it_resumed(#[fixture(anna_home)] home: 
     assert_eq!(recorded(&instance).unwrap().qmp, AFTER_RESUME);
     instance.remove().unwrap();
 }
+
+#[skuld::test]
+fn start_gives_the_seed_the_instance_id(#[fixture(anna_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+
+    let seed = std::fs::read_to_string(dir.path().join("seed").join("seed.fake")).unwrap();
+    assert!(seed.contains(&format!("instance-id={}", dir.id())), "{seed}");
+    instance.remove().unwrap();
+}

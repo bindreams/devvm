@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
 use crate::guest::{BaseBuilder, GuestOs, Guests, SeedMedia, SeedSpec};
+use crate::recipe::Shell;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
 pub(crate) struct FakeGuests;
@@ -28,7 +29,7 @@ impl GuestOs for FakeGuestOs {
     /// A file in `seed.dir` naming the host.
     fn instance_seed(&self, seed: &SeedSpec) -> Result<SeedMedia> {
         let path = seed.dir.join("seed.fake");
-        std::fs::write(&path, format!("hostname={}", seed.hostname))
+        std::fs::write(&path, format!("hostname={}\ninstance-id={}", seed.hostname, seed.instance_id))
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", path.display()), e))?;
         Ok(SeedMedia {
             media: Media {
@@ -66,5 +67,18 @@ impl GuestOs for FakeGuestOs {
 
     fn wait_ready(&self, _ssh: &SshSession) -> Result<()> {
         Ok(())
+    }
+
+    /// As on Linux: `bash` by default, `cmd` does not exist.
+    fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>> {
+        let program: &[&str] = match shell {
+            None | Some(Shell::Bash) => &["bash", "-c"],
+            Some(Shell::Sh) => &["sh", "-c"],
+            Some(Shell::Pwsh) => &["pwsh", "-NoProfile", "-Command"],
+            Some(Shell::Cmd) => {
+                return Err(Error::new(ErrorKind::Recipe, "the shell `cmd` does not exist in this guest"));
+            }
+        };
+        Ok(program.iter().map(|part| (*part).to_owned()).chain([script.to_owned()]).collect())
     }
 }

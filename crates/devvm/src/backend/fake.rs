@@ -205,6 +205,17 @@ impl Storage for FakeStorage {
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write the disk {}", into.display()), e))
     }
 
+    fn import_base(&self, image: &Path, _arch: Arch, staging: &LayerDir) -> Result<()> {
+        let target = staging.path().join(LAYER_DISK);
+        std::fs::copy(image, &target).map(drop).map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot copy {} to {}", image.display(), target.display()),
+                e,
+            )
+        })
+    }
+
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()> {
         let disk = std::fs::read_to_string(instance_disk).map_err(|e| {
             Error::io(
