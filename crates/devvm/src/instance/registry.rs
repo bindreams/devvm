@@ -50,6 +50,29 @@ pub(crate) struct NewInstance<'a> {
     pub storage: &'a dyn Storage,
 }
 
+/// Where a test can step into `create`; the defaults do nothing and generate real names.
+pub(crate) struct CreateSeams<'a> {
+    /// Once the temporary directory is complete and before it takes its name.
+    pub before_rename: Box<dyn FnMut() + 'a>,
+    /// Just before the placement waits for the readers of instance files.
+    pub before_wait: Box<dyn FnMut() + 'a>,
+    /// After the placement was tried, whatever came of it.
+    pub after_rename: Box<dyn FnMut() + 'a>,
+    /// The next name to try, when the caller gave none or the name was taken.
+    pub generate: Box<dyn FnMut() -> InstanceName + 'a>,
+}
+
+impl CreateSeams<'_> {
+    pub(crate) fn none<'a>() -> CreateSeams<'a> {
+        CreateSeams {
+            before_rename: Box::new(|| {}),
+            before_wait: Box::new(|| {}),
+            after_rename: Box::new(|| {}),
+            generate: Box::new(InstanceName::generate),
+        }
+    }
+}
+
 /// A freshly created instance whose owner is this process: it holds the owner lock until it is dropped or made
 /// ownerless.
 pub(crate) struct Owned {
@@ -169,31 +192,37 @@ impl Registry {
     }
 
     /// `create` with `before_rename` run once the temporary directory is complete and before it takes its name.
-    ///
-    /// Order: take the owner lock first (its file is keyed by the new id, outside the directory), build the instance
-    /// under `.new-<id>`, then rename it into place. The reaper treats `.new-<id>` as reapable only after taking the
-    /// same owner lock, so it cannot remove a directory that is being built.
     pub(crate) fn create_with(
         &self,
         new: NewInstance<'_>,
         guard: &RecordGuard,
         before_rename: &mut dyn FnMut(),
     ) -> Result<Owned> {
-        self.create_with_waits(new, guard, before_rename, &mut || {})
+        self.create_with_seams(
+            new,
+            guard,
+            &mut CreateSeams {
+                before_rename: Box::new(before_rename),
+                ..CreateSeams::none()
+            },
+        )
     }
 
-    /// `create_with`, and `before_wait` run just before the placement waits for the readers of instance files.
-    pub(crate) fn create_with_waits(
+    /// `create` with the test seams of [`CreateSeams`].
+    ///
+    /// Order: take the owner lock first (its file is keyed by the new id, outside the directory), build the instance
+    /// under `.new-<id>`, then rename it into place. The reaper treats `.new-<id>` as reapable only after taking the
+    /// same owner lock, so it cannot remove a directory that is being built.
+    pub(crate) fn create_with_seams(
         &self,
         new: NewInstance<'_>,
         _guard: &RecordGuard,
-        before_rename: &mut dyn FnMut(),
-        before_wait: &mut dyn FnMut(),
+        seams: &mut CreateSeams<'_>,
     ) -> Result<Owned> {
         let id = InstanceId::random();
         let owner = self.locks.acquire_owner_new(&id)?;
         let temp = self.root.join(format!(".new-{id}"));
-        match self.build_and_place(id, &new, &temp, before_rename, before_wait) {
+        match self.build_and_place(id, &new, &temp, seams) {
             Ok(dir) => Ok(Owned { dir, owner }),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&temp);
@@ -210,8 +239,7 @@ impl Registry {
         id: InstanceId,
         new: &NewInstance<'_>,
         temp: &std::path::Path,
-        before_rename: &mut dyn FnMut(),
-        before_wait: &mut dyn FnMut(),
+        seams: &mut CreateSeams<'_>,
     ) -> Result<InstanceDir> {
         let io = |what: &str, path: &std::path::Path, e| {
             Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), e)
@@ -228,7 +256,7 @@ impl Registry {
             },
         )?;
 
-        let mut name = new.name.clone().unwrap_or_else(InstanceName::generate);
+        let mut name = new.name.clone().unwrap_or_else(&mut seams.generate);
         loop {
             InstanceRecord {
                 id,
@@ -245,15 +273,16 @@ impl Registry {
                 machine: None,
             }
             .write(temp)?;
-            before_rename();
+            (seams.before_rename)();
             let target = self.root.join(name.as_str());
             // Placed while no one reads inside any instance directory, like every other rename of one.
-            match self
+            let placed = self
                 .locks
-                .excluding_readers(before_wait, || std::fs::rename(temp, &target))?
-            {
-                Ok(()) => return Ok(self.handle(id, name)),
-                Err(e) if target.exists() => {
+                .excluding_readers(&mut seams.before_wait, || place(temp, &target))?;
+            (seams.after_rename)();
+            match placed {
+                Placement::Placed => return Ok(self.handle(id, name)),
+                Placement::Taken(e) => {
                     if new.name.is_some() {
                         return Err(Error::new(
                             ErrorKind::AlreadyExists,
@@ -261,11 +290,29 @@ impl Registry {
                         )
                         .with_source(e));
                     }
-                    name = InstanceName::generate();
+                    name = (seams.generate)();
                 }
-                Err(e) => return Err(io("rename", temp, e)),
+                Placement::Failed(e) => return Err(io("rename", temp, e)),
             }
         }
+    }
+}
+
+/// How the rename of a new instance to its name went.
+enum Placement {
+    Placed,
+    /// The name belongs to another instance.
+    Taken(std::io::Error),
+    Failed(std::io::Error),
+}
+
+/// Renames `temp` to `target` and, when that fails, tells a taken name from any other failure. Runs while no one
+/// renames an instance directory, so no `rm` can free the name between the failure and the look.
+fn place(temp: &std::path::Path, target: &std::path::Path) -> Placement {
+    match std::fs::rename(temp, target) {
+        Ok(()) => Placement::Placed,
+        Err(e) if target.exists() => Placement::Taken(e),
+        Err(e) => Placement::Failed(e),
     }
 }
 
@@ -281,14 +328,24 @@ impl Owned {
     /// the lock is released with the instance still owned, so the reaper takes it. Flipping first would leave an
     /// ownerless instance whose VM a dying owner's job then kills.
     pub(crate) fn make_ownerless(self, disarm: &mut dyn FnMut() -> Result<()>) -> Result<InstanceDir> {
+        self.make_ownerless_with(disarm, &mut || {})
+    }
+
+    /// `make_ownerless` with `during_write` run just before the marker is written.
+    pub(crate) fn make_ownerless_with(
+        self,
+        disarm: &mut dyn FnMut() -> Result<()>,
+        during_write: &mut dyn FnMut(),
+    ) -> Result<InstanceDir> {
         let Owned { dir, owner } = self;
         disarm()?;
-        write_marker(
-            dir.path(),
+        // Written while no one can rename the directory away, and only into this instance's own directory.
+        dir.write_marker(
             &Marker {
                 owner: Owner::None,
                 id: *dir.id(),
             },
+            during_write,
         )?;
         drop(owner);
         Ok(dir)

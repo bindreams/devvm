@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::ErrorKind;
+use crate::instance::reach::entry_is_dir;
 use crate::instance::registry::registry_tests::{Fixture, TestStorage, create, fixture, new_instance};
 use crate::store::layers::layers_tests::{build, build_expiring, days, key, t0};
 use crate::store::layers::{LayerRef, Reachability};
@@ -46,6 +47,49 @@ fn chains_lists_every_instance_chain_running_or_stopped(#[fixture(anna_home)] ho
 }
 
 #[skuld::test]
+fn chains_keeps_an_instance_whose_dir_lock_file_was_deleted_from_outside(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let owned = create(&fx, Some("foo"));
+    std::fs::remove_file(fx.env.dirs.instance_locks().join("instances.dir")).unwrap();
+
+    assert_eq!(
+        fx.registry.chains().unwrap(),
+        [fx.chain.refs()],
+        "a live chain must not read as absent, or gc deletes its layers"
+    );
+    assert!(
+        fx.registry
+            .open(&crate::instance::name::InstanceName::parse("foo").unwrap())
+            .is_ok()
+    );
+    drop(owned);
+}
+
+#[skuld::test]
+fn an_entry_whose_type_cannot_be_read_fails_the_call_instead_of_being_skipped() {
+    let path = Path::new("instances/foo");
+    let error = entry_is_dir(path, Err(std::io::Error::other("the type is unreadable"))).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(
+        error.message().contains("foo") && error.message().contains("nothing was deleted"),
+        "{}",
+        error.message()
+    );
+}
+
+#[skuld::test]
+fn an_entry_that_is_a_directory_is_one_and_a_file_is_not(#[fixture(anna_home)] home: &Path) {
+    let file = home.join("file");
+    std::fs::write(&file, b"x").unwrap();
+    for (path, expected) in [(home.to_path_buf(), true), (file, false)] {
+        assert_eq!(
+            entry_is_dir(&path, std::fs::metadata(&path).map(|m| m.file_type())).unwrap(),
+            expected
+        );
+    }
+}
+
+#[skuld::test]
 fn chains_does_not_wait_on_held_locks(#[fixture(anna_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
@@ -67,6 +111,40 @@ fn chains_fails_naming_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
     let error = fx.registry.chains().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert!(error.message().contains("foo"), "{}", error.message());
+}
+
+#[skuld::test]
+fn chains_keeps_the_chain_of_a_quarantined_instance(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    drop(create(&fx, Some("foo")));
+    std::fs::remove_file(fx.env.dirs.instances().join("foo").join("owner.json")).unwrap();
+    let report = fx.registry.reap();
+    assert_eq!(report.quarantined.len(), 1, "{report:?}");
+    assert!(!fx.env.dirs.instances().join("foo").exists());
+
+    assert_eq!(
+        fx.registry.chains().unwrap(),
+        [fx.chain.refs()],
+        "quarantine never deletes the disk, so gc must not delete its layers"
+    );
+}
+
+#[skuld::test]
+fn chains_fails_naming_a_quarantined_instance_whose_record_is_unreadable(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    drop(create(&fx, Some("foo")));
+    std::fs::write(fx.env.dirs.instances().join("foo").join("record.json"), "{ torn").unwrap();
+    let report = fx.registry.reap();
+    assert_eq!(report.quarantined.len(), 1, "{report:?}");
+
+    let error = fx.registry.chains().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(
+        error.message().contains("quarantine") && error.message().contains("nothing was deleted"),
+        "{}",
+        error.message()
+    );
 }
 
 #[skuld::test]

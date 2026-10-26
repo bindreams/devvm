@@ -7,7 +7,7 @@ use crate::backend::MachineRecord;
 use crate::exit::Progress;
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
-use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead};
+use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
 use crate::store::lock::FileLock;
 use crate::{Error, ErrorKind, Result};
 
@@ -100,6 +100,20 @@ impl InstanceDir {
     /// The owner marker on disk, whichever instance it names.
     pub(crate) fn marker(&self) -> Result<MarkerRead> {
         self.locks.read_marker(&self.path)
+    }
+
+    /// Writes the owner marker `marker` into this instance's directory, after `before_write` ran. The directory cannot
+    /// be renamed meanwhile, and it must still be this handle's instance: `NotFound` otherwise, with nothing written.
+    pub(super) fn write_marker(&self, marker: &Marker, before_write: &mut dyn FnMut()) -> Result<()> {
+        self.locks
+            .reading(&self.path, || match InstanceRecord::read(&self.path)? {
+                RecordRead::Valid(record) if record.id == self.id => {
+                    before_write();
+                    write_marker(&self.path, marker)
+                }
+                _ => Err(self.gone()),
+            })?
+            .unwrap_or_else(|| Err(self.gone()))
     }
 
     fn what(&self) -> String {

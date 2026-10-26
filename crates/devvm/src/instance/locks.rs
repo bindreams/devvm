@@ -13,9 +13,9 @@
 //!   system without them (FAT, exFAT, SMB) a lock file with open handles stays delete-pending and opens still fail, so
 //!   the state directory must be on NTFS. Its holders only read files, open files, rename or unlink, never wait for
 //!   another lock, so waiting for it cannot deadlock, not even in the layer store's collection, which must not wait
-//!   for any lock that a holder of the shared `gc.lock` could hold. A reader never creates it: a creator makes it
-//!   before it places an instance and nothing deletes it, so a reader opens it only after seeing the directory it will
-//!   read.
+//!   for any lock that a holder of the shared `gc.lock` could hold. A creator makes it before it places an instance
+//!   and nothing deletes it, so a reader opens it only after seeing the directory it will read, and puts it back if
+//!   that directory exists without it.
 //! - `dead.lock`: held by whoever deletes the contents of a `.dead-<id>` directory, so that two processes never delete
 //!   one tree at once. `rm` waits for it (it promises its tree is gone); the reaper only tries it, since it runs again.
 //!   Its holders only delete and wait for nothing.
@@ -65,12 +65,13 @@ impl Locks {
         self.dir.join(format!("instance-{id}.op"))
     }
 
-    /// Runs `f` while no instance directory is renamed, if the instance directory `seen` exists; else `None`. `f` must
-    /// only read files: it must not take or wait for any other lock.
+    /// Runs `f` while no instance directory is renamed, if the instance directory `seen` exists; else `None`. `f` may
+    /// read and write files inside the directory, but must not take or wait for any other lock.
     ///
-    /// `seen` is looked at before `instances.dir` is opened. A creator makes `instances.dir` before it places any
-    /// instance and nothing deletes it, so a directory that exists means the lock file exists, and no reader ever has
-    /// to create it. `None` also when the lock file is absent: there is nothing to read.
+    /// `seen` is looked at before `instances.dir` is opened, so that a reader of a state that never held an instance
+    /// creates nothing. A creator makes `instances.dir` before it places any instance and nothing deletes it: a
+    /// directory that exists while the lock file does not was damaged from outside, and the reader puts the file back
+    /// rather than report that there is nothing to read.
     pub(crate) fn reading<T>(&self, seen: &Path, f: impl FnOnce() -> T) -> Result<Option<T>> {
         self.reading_with(seen, &mut || {}, f)
     }
@@ -89,10 +90,7 @@ impl Locks {
             return Ok(None);
         }
         after_seen();
-        let Some(lock) = FileLock::open_existing(&self.dir_lock_path())? else {
-            return Ok(None);
-        };
-        let _shared = take(lock, Mode::Shared, &mut || {})?;
+        let _shared = take(FileLock::open(&self.dir_lock_path())?, Mode::Shared, &mut || {})?;
         Ok(Some(f()))
     }
 

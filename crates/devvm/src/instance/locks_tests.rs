@@ -281,12 +281,22 @@ fn a_reader_that_stalls_after_seeing_a_directory_still_reads_under_the_lock_of_a
 }
 
 #[skuld::test]
-fn a_reader_that_saw_a_directory_but_finds_no_lock_file_reads_nothing(#[fixture(anna_home)] home: &Path) {
+fn a_reader_that_saw_a_directory_but_finds_no_lock_file_recreates_it_and_reads(#[fixture(anna_home)] home: &Path) {
     let locks = locks(home);
     let dir = home.join("instances").join("foo");
     std::fs::create_dir_all(&dir).unwrap();
-    assert!(locks.reading(&dir, || 7).unwrap().is_none());
-    assert!(!home.join("locks").exists(), "a reader creates nothing");
+    std::fs::write(dir.join("owner.json"), "x").unwrap();
+
+    // The directory exists, so the lock file went missing from outside: the reader must not report "nothing there".
+    assert_eq!(locks.reading(&dir, || 7).unwrap(), Some(7));
+    assert!(home.join("locks").join("instances.dir").exists());
+    assert!(
+        !matches!(
+            locks.read_marker(&dir).unwrap(),
+            crate::instance::record::MarkerRead::Absent
+        ),
+        "an existing file is not absent"
+    );
 }
 
 #[skuld::test]

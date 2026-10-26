@@ -6,7 +6,7 @@ use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Storage};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
-use crate::instance::registry::{NewInstance, Owned, Registry};
+use crate::instance::registry::{CreateSeams, NewInstance, Owned, Registry};
 use crate::store::layers::layers_tests::{Env, build, env, key, names};
 use crate::store::layers::{ChainLease, LayerDir};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
@@ -443,11 +443,13 @@ fn placing_a_new_instance_waits_for_readers_of_instance_files(#[fixture(anna_hom
         let creator = fx.registry.locks().reading(existing.path(), || {
             let creator = scope.spawn(move || {
                 let guard = fx.env.store.begin_record().unwrap();
-                fx.registry.create_with_waits(
+                fx.registry.create_with_seams(
                     new_instance(fx, Some("foo"), &TestStorage { fail: false }),
                     &guard,
-                    &mut || {},
-                    &mut || contended.send(()).unwrap(),
+                    &mut CreateSeams {
+                        before_wait: Box::new(|| contended.send(()).unwrap()),
+                        ..CreateSeams::none()
+                    },
                 )
             });
             // The creator is at its placement and found the readers' lock taken: `foo` is not there yet.
@@ -465,4 +467,130 @@ fn placing_a_new_instance_waits_for_readers_of_instance_files(#[fixture(anna_hom
         "the creator placed `foo` while a reader had files open"
     );
     assert_eq!(names(&instances(&fx)), ["bar", "foo"]);
+}
+
+#[skuld::test]
+fn an_rm_during_the_handover_waits_for_the_marker_write(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let owned = create(&fx, Some("foo"));
+    let remover = fx.registry.open(&InstanceName::parse("foo").unwrap()).unwrap();
+    let (tx, events) = mpsc::channel::<&str>();
+    let mut first_event = None;
+
+    let (handed_over, removed) = std::thread::scope(|scope| {
+        let mut remove = None;
+        let handed_over = owned.make_ownerless_with(&mut || Ok(()), &mut || {
+            // An `rm` of the same instance arrives while the marker is being written.
+            remove = Some(scope.spawn(|| {
+                let op = remover.op_exclusive().unwrap();
+                let removed = remover.destroy_with(op, &mut || tx.send("waiting").unwrap());
+                tx.send("finished").unwrap();
+                removed
+            }));
+            first_event = Some(events.recv().unwrap());
+        });
+        (handed_over, remove.take().unwrap().join().unwrap())
+    });
+
+    assert_eq!(
+        first_event,
+        Some("waiting"),
+        "the rename must wait for the marker write"
+    );
+    handed_over.expect("the marker is written before the instance is renamed away");
+    removed.unwrap();
+    assert!(names(&instances(&fx)).is_empty());
+}
+
+#[skuld::test]
+fn a_handover_never_writes_into_an_instance_that_took_the_name(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let owned = create(&fx, Some("foo"));
+    let remover = fx.registry.open(&InstanceName::parse("foo").unwrap()).unwrap();
+    let mut successor = None;
+
+    let error = owned
+        .make_ownerless(&mut || {
+            // Removed behind the owner's back, and its name taken by a new instance.
+            let op = remover.op_exclusive().unwrap();
+            remover.destroy(op).unwrap();
+            successor = Some(create(&fx, Some("foo")));
+            Ok(())
+        })
+        .err()
+        .expect("the instance is gone");
+
+    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
+    let successor = successor.unwrap();
+    match successor.dir().marker().unwrap() {
+        MarkerRead::Valid(marker) => assert_eq!(
+            (marker.owner, marker.id),
+            (Owner::Process, *successor.dir().id()),
+            "the new instance's marker is untouched"
+        ),
+        _ => panic!("owner.json should be valid"),
+    }
+}
+
+#[skuld::test]
+fn a_named_create_whose_name_is_freed_right_after_the_failed_rename_still_says_already_exists(
+    #[fixture(anna_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    let existing = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let guard = fx.env.store.begin_record().unwrap();
+
+    let error = fx
+        .registry
+        .create_with_seams(
+            new_instance(&fx, Some("foo"), &TestStorage { fail: false }),
+            &guard,
+            &mut CreateSeams {
+                // The `rm` of the instance that held the name lands right after the rename was refused.
+                after_rename: Box::new(|| {
+                    let op = existing.op_exclusive().unwrap();
+                    existing.destroy(op).unwrap();
+                }),
+                ..CreateSeams::none()
+            },
+        )
+        .err()
+        .expect("the name was taken when the rename ran");
+
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert!(
+        names(&instances(&fx)).is_empty(),
+        "nothing is left of the failed create"
+    );
+}
+
+#[skuld::test]
+fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let existing = create(&fx, Some("taken")).make_ownerless(&mut || Ok(())).unwrap();
+    let guard = fx.env.store.begin_record().unwrap();
+    let mut offered = vec!["taken", "free"].into_iter();
+    let mut freed = false;
+
+    let owned = fx
+        .registry
+        .create_with_seams(
+            new_instance(&fx, None, &TestStorage { fail: false }),
+            &guard,
+            &mut CreateSeams {
+                generate: Box::new(|| InstanceName::parse(offered.next().expect("one retry")).unwrap()),
+                // The holder of the first name is removed right after it blocked the rename.
+                after_rename: Box::new(|| {
+                    if !std::mem::replace(&mut freed, true) {
+                        let op = existing.op_exclusive().unwrap();
+                        existing.destroy(op).unwrap();
+                    }
+                }),
+                ..CreateSeams::none()
+            },
+        )
+        .expect("a taken generated name is a retry, not a failure");
+
+    assert_eq!(owned.dir().name().as_str(), "free");
+    assert_eq!(names(&instances(&fx)), ["free"]);
 }
