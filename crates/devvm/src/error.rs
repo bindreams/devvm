@@ -27,6 +27,8 @@ pub enum ErrorKind {
     StatusFile,
     NoExitStatus,
     ConnectionLost,
+    /// The guest presented a host key other than the pinned one.
+    HostKey,
     Unavailable,
     NotSupported,
     Panic,
@@ -52,6 +54,7 @@ impl ErrorKind {
             ErrorKind::StatusFile => "status-file",
             ErrorKind::NoExitStatus => "no-exit-status",
             ErrorKind::ConnectionLost => "connection-lost",
+            ErrorKind::HostKey => "host-key",
             ErrorKind::Unavailable => "unavailable",
             ErrorKind::NotSupported => "not-supported",
             ErrorKind::Panic => "panic",

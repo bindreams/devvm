@@ -21,6 +21,7 @@ fn kind_strings_are_the_wire_names() {
         (StatusFile, "status-file"),
         (NoExitStatus, "no-exit-status"),
         (ConnectionLost, "connection-lost"),
+        (HostKey, "host-key"),
         (Unavailable, "unavailable"),
         (NotSupported, "not-supported"),
         (Panic, "panic"),
