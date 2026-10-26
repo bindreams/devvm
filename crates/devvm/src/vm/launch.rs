@@ -96,7 +96,8 @@ fn abandon(engine: &Engine, dir: &InstanceDir, op: &OpExclusive, machine: &mut d
     }
     if let Err(clear) = dir.update(op, &mut |record| record.machine = None) {
         engine.progress().message(&format!(
-            "instance {} could not be started, and its record still names the machine ({}); the next devvm              command on it clears that",
+            "instance {} could not be started, and its record still names the machine ({}); the next devvm \
+             command on it clears that",
             dir.name(),
             clear.message()
         ));
