@@ -177,3 +177,11 @@ fn an_outlives_owner_vm_has_no_console(#[fixture(anna_home)] home: &Path) {
     assert!(connect_when_up(&vm, port).ends_with("console=0"));
     vm.kill().unwrap();
 }
+
+#[skuld::test]
+fn a_dies_with_owner_vm_has_no_console_either(#[fixture(anna_home)] home: &Path) {
+    let (mut vm, port) = frozen(home, Lifetime::DiesWithOwner);
+    vm.resume().unwrap();
+    assert!(connect_when_up(&vm, port).ends_with("console=0"));
+    vm.kill().unwrap();
+}

@@ -53,7 +53,9 @@ pub(crate) trait Machine: Send {
     fn ssh_endpoints(&self) -> &[(Endpoint, SocketAddr)];
     fn serial_log(&self) -> &Path;
 
-    /// Lets a frozen machine run. `record()` is valid before it. `Internal` on a machine from `Backend::attach`.
+    /// Lets a frozen machine run and returns once its endpoints are known: `ssh_endpoints()` and the `ssh` of
+    /// `record()` are valid only from then on. `record()` is valid before, apart from the endpoints. `Internal` on a
+    /// machine from `Backend::attach`.
     fn resume(&mut self) -> Result<()>;
 
     /// Disarms the containment of a resumed machine: it now outlives this process. `Ok` on a machine from

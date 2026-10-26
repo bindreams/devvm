@@ -64,8 +64,9 @@ impl VmProcess {
     /// Starts `cmd` frozen: the process exists and has an identity, and has not run. Record the identity
     /// (`record`), then `resume`. Dropping a frozen `VmProcess` kills the process, so it never runs.
     ///
-    /// The process is always contained (killed when this process dies). `OutlivesOwner` also gives it null stdio and
-    /// the host's detach, so it holds none of the owner's pipes and has no console; `release` disarms the containment.
+    /// The process is always contained (killed when this process dies) and has no console (the host's detach).
+    /// `OutlivesOwner` also gives it null stdio, so it holds none of the owner's pipes; `release` disarms the
+    /// containment.
     ///
     /// Windows only in 0.1.0: cosca can hold a process before its first instruction there alone (a POSIX child cannot
     /// be held before exec without a gate), so every other host gets `NotSupported`.
@@ -76,8 +77,9 @@ impl VmProcess {
                 cmd.fd(fd, cosca::Stdio::null())
                     .map_err(|e| cosca_error("cannot give the VM process null stdio", e))?;
             }
-            host.detach(&mut cmd)?;
         }
+        // Whatever the lifetime, no console window may open when devvm itself has no console.
+        host.detach(&mut cmd)?;
         let frozen = cmd.spawn_suspended().map_err(frozen_spawn_error)?;
         Ok(VmProcess {
             state: State::Frozen(frozen),
