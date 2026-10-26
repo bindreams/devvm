@@ -94,7 +94,9 @@ fn windows_host_exit_width_is_full32() {
 #[cfg(windows)]
 #[skuld::test]
 fn windows_host_detach_leaves_the_child_without_a_console() {
+    // With `no_window`, a detach that stopped detaching gives the child a windowless console, never a window.
     let mut cmd = console_window_command();
+    cmd.no_window();
     super::windows::WindowsHost.detach(&mut cmd).unwrap();
 
     let detached = console_facts(cmd);
@@ -108,6 +110,8 @@ fn test_host_accelerates_with_tcg_and_detaches_like_the_current_host() {
     assert!(matches!(host.accelerator(Arch::host()), Ok(super::Accel::Tcg)));
     assert_eq!(host.exit_width(), current().exit_width());
     let (mut ours, mut current_hosts) = (console_window_command(), console_window_command());
+    ours.no_window();
+    current_hosts.no_window();
     host.detach(&mut ours).unwrap();
     current().detach(&mut current_hosts).unwrap();
     assert_eq!(console_facts(ours), console_facts(current_hosts));
@@ -121,7 +125,7 @@ fn quiet_sets_create_no_window() {
     let output = cmd.output().unwrap();
     assert!(output.status.success());
     // A console of its own (only this process is on it) that has no window. Without the flag the child shares its
-    // parent's console, or has none.
+    // parent's console, or gets a new one with a window when the parent has none.
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "window=none console=1");
 }
 
