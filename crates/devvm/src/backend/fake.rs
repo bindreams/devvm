@@ -281,6 +281,18 @@ impl ContractTarget for FakeTarget {
         fake_spec(dir.join("disk.img"), dir.join("serial.log"), Lifetime::OutlivesOwner)
     }
 
+    fn has_run(&self, spec: &MachineSpec) -> bool {
+        spec.serial_log
+            .parent()
+            .expect("a serial log has a directory")
+            .join(fake_vm::STARTED)
+            .exists()
+    }
+
+    fn leftovers(&self, _spec: &MachineSpec) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
     fn launch_elsewhere(&self, spec: &MachineSpec) -> Result<MachineRecord> {
         let output = crate::test_support::helper::command(
             "fake-launcher",

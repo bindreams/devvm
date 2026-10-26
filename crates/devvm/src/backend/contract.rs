@@ -33,6 +33,20 @@ pub(crate) trait ContractTarget {
 
     /// Another OS process launches the spec, resumes and releases it, prints the `MachineRecord`, and exits.
     fn launch_elsewhere(&self, spec: &MachineSpec) -> crate::Result<MachineRecord>;
+
+    /// Whether the machine launched from `spec` has ever run. Observes it without an endpoint: a frozen machine's
+    /// endpoints may not exist yet.
+    fn has_run(&self, spec: &MachineSpec) -> bool;
+
+    /// The files outside the instance directory that belong to the machine launched from `spec`, whether or not they
+    /// exist now. A killed machine leaves none of them.
+    fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf>;
+
+    /// Waits until a resumed machine has booted far enough to act on a graceful shutdown. A machine that needs no
+    /// guest keeps this default.
+    fn await_booted(&self, _machine: &dyn Machine) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 /// A layer store under the test's root, and the parent layer instance disks sit on.
@@ -88,15 +102,21 @@ pub(crate) fn launch_reports_a_live_process_and_loopback_endpoints(target: &dyn 
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
     let mut machine = target.backend().launch(&spec).unwrap();
-    let record = machine.record();
+    assert!(
+        is_running(&machine.record()),
+        "a launched machine has a live process"
+    );
 
-    assert!(is_running(&record), "a launched machine has a live process");
+    // The endpoints exist once the machine runs: on some backends the ports are chosen then.
+    machine.resume().unwrap();
+    let record = machine.record();
     assert!(!machine.ssh_endpoints().is_empty());
     for (_, addr) in machine.ssh_endpoints() {
         assert!(addr.ip().is_loopback(), "{addr} is not a loopback address");
     }
     let recorded: Vec<_> = record.ssh.iter().map(|e| (e.endpoint, e.addr)).collect();
     assert_eq!(recorded, machine.ssh_endpoints(), "the record names the endpoints");
+    assert_eq!(record.serial_log, spec.serial_log, "the record names the serial log");
     machine.kill().unwrap();
 }
 
@@ -105,12 +125,14 @@ pub(crate) fn a_frozen_machine_has_not_run_and_kill_leaves_nothing(target: &dyn 
     let spec = prepared(target, &world, root, 0);
     let mut machine = target.backend().launch(&spec).unwrap();
     let record = machine.record();
-    let addr = first_endpoint(&*machine);
 
-    assert!(refuses(addr), "a frozen machine has not run, so nothing listens");
+    assert!(!target.has_run(&spec), "a frozen machine has not run");
     machine.kill().unwrap();
     assert!(!is_running(&record), "kill leaves no process");
-    assert!(refuses(addr), "a killed frozen machine never ran");
+    assert!(!target.has_run(&spec), "a killed frozen machine never ran");
+    for leftover in target.leftovers(&spec) {
+        assert!(!leftover.exists(), "kill left {}", leftover.display());
+    }
 }
 
 pub(crate) fn a_released_machine_outlives_its_launcher_and_attach_finds_it(target: &dyn ContractTarget, root: &Path) {
@@ -122,7 +144,9 @@ pub(crate) fn a_released_machine_outlives_its_launcher_and_attach_finds_it(targe
     assert!(is_running(&record), "a released machine survives its launcher");
     let mut machine = target.backend().attach(&record).unwrap();
     assert_eq!(machine.record(), record);
+    assert_eq!(machine.serial_log(), spec.serial_log, "an attached machine knows its serial log");
     accepts_eventually(&record, first_endpoint(&*machine));
+    target.await_booted(&*machine).unwrap();
     assert_eq!(
         machine.resume().unwrap_err().kind(),
         ErrorKind::Internal,
@@ -171,6 +195,7 @@ pub(crate) fn shutdown_stops_the_process(target: &dyn ContractTarget, root: &Pat
     let record = machine.record();
     machine.resume().unwrap();
     accepts_eventually(&record, first_endpoint(&*machine));
+    target.await_booted(&*machine).unwrap();
 
     machine.shutdown().unwrap();
     assert!(
