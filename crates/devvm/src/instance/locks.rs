@@ -227,9 +227,8 @@ impl Locks {
         if path.exists() { Ok(lock) } else { Err(gone(id)) }
     }
 
-    /// Unlinks both lock files while no one opens a lock file; an unlink that fails stops it and leaves the owner file for the next lock
-    /// sweep. For a holder of the owner lock (reaper, `Owned`) or of the op lock. An error means the files were not
-    /// even tried.
+    /// Unlinks both lock files while no one opens a lock file. An unlink that fails stops it, leaves the owner file for
+    /// the next lock sweep, and is the error. For a holder of the owner lock (reaper, `Owned`) or of the op lock.
     pub(crate) fn remove(&self, id: &InstanceId) -> Result<()> {
         self.remove_with(id, &mut || {})
     }
@@ -254,10 +253,17 @@ impl Locks {
                 match unlink(&path) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(_) => break,
+                    Err(e) => {
+                        return Err(Error::io(
+                            ErrorKind::Io,
+                            format!("cannot delete the lock file {}", path.display()),
+                            e,
+                        ));
+                    }
                 }
             }
-        })
+            Ok(())
+        })?
     }
 
     /// Opens a lock file that exists, creating nothing: `None` if it is absent. Held shared on `instances.dir` for the

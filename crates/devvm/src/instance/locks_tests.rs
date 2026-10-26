@@ -377,7 +377,7 @@ fn a_failed_unlink_of_the_op_file_leaves_the_owner_file_for_the_sweep(#[fixture(
     drop(locks.acquire_owner_new(&id).unwrap());
     let op = locks.op_path(&id);
 
-    locks
+    let error = locks
         .remove_via(&id, &mut || {}, &|path| {
             if path == op {
                 Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
@@ -385,7 +385,18 @@ fn a_failed_unlink_of_the_op_file_leaves_the_owner_file_for_the_sweep(#[fixture(
                 std::fs::remove_file(path)
             }
         })
-        .unwrap();
+        .expect_err("an unlink that fails is reported, with its cause");
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(
+        error.message().contains(&op.display().to_string()),
+        "the error names the file: {}",
+        error.message()
+    );
+    assert!(
+        error.message().to_lowercase().contains("permission denied"),
+        "the error keeps the cause: {}",
+        error.message()
+    );
 
     assert!(locks.op_path(&id).exists());
     assert!(
