@@ -102,10 +102,7 @@ pub(crate) fn launch_reports_a_live_process_and_loopback_endpoints(target: &dyn 
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
     let mut machine = target.backend().launch(&spec).unwrap();
-    assert!(
-        is_running(&machine.record()),
-        "a launched machine has a live process"
-    );
+    assert!(is_running(&machine.record()), "a launched machine has a live process");
 
     // The endpoints exist once the machine runs: on some backends the ports are chosen then.
     machine.resume().unwrap();
@@ -144,7 +141,11 @@ pub(crate) fn a_released_machine_outlives_its_launcher_and_attach_finds_it(targe
     assert!(is_running(&record), "a released machine survives its launcher");
     let mut machine = target.backend().attach(&record).unwrap();
     assert_eq!(machine.record(), record);
-    assert_eq!(machine.serial_log(), spec.serial_log, "an attached machine knows its serial log");
+    assert_eq!(
+        machine.serial_log(),
+        spec.serial_log,
+        "an attached machine knows its serial log"
+    );
     accepts_eventually(&record, first_endpoint(&*machine));
     target.await_booted(&*machine).unwrap();
     assert_eq!(

@@ -38,5 +38,9 @@ pub fn console_processes() -> String {
 /// `window` when this process has a console window, `none` when it has a console without one or no console.
 pub fn console_window() -> &'static str {
     // SAFETY: no arguments; returns a handle or null.
-    if unsafe { GetConsoleWindow() }.is_null() { "none" } else { "window" }
+    if unsafe { GetConsoleWindow() }.is_null() {
+        "none"
+    } else {
+        "window"
+    }
 }

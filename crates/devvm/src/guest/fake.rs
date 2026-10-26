@@ -29,8 +29,11 @@ impl GuestOs for FakeGuestOs {
     /// A file in `seed.dir` naming the host.
     fn instance_seed(&self, seed: &SeedSpec) -> Result<SeedMedia> {
         let path = seed.dir.join("seed.fake");
-        std::fs::write(&path, format!("hostname={}\ninstance-id={}", seed.hostname, seed.instance_id))
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", path.display()), e))?;
+        std::fs::write(
+            &path,
+            format!("hostname={}\ninstance-id={}", seed.hostname, seed.instance_id),
+        )
+        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", path.display()), e))?;
         Ok(SeedMedia {
             media: Media {
                 path,
@@ -76,9 +79,16 @@ impl GuestOs for FakeGuestOs {
             Some(Shell::Sh) => &["sh", "-c"],
             Some(Shell::Pwsh) => &["pwsh", "-NoProfile", "-Command"],
             Some(Shell::Cmd) => {
-                return Err(Error::new(ErrorKind::Recipe, "the shell `cmd` does not exist in this guest"));
+                return Err(Error::new(
+                    ErrorKind::Recipe,
+                    "the shell `cmd` does not exist in this guest",
+                ));
             }
         };
-        Ok(program.iter().map(|part| (*part).to_owned()).chain([script.to_owned()]).collect())
+        Ok(program
+            .iter()
+            .map(|part| (*part).to_owned())
+            .chain([script.to_owned()])
+            .collect())
     }
 }

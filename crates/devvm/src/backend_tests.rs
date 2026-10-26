@@ -59,9 +59,7 @@ fn a_machine_record_without_leftovers_parses_with_none() {
 }
 
 #[skuld::test]
-fn remove_leftovers_deletes_files_ignores_absent_ones_and_warns_on_the_rest(
-    #[fixture(anna_home)] home: &Path,
-) {
+fn remove_leftovers_deletes_files_ignores_absent_ones_and_warns_on_the_rest(#[fixture(anna_home)] home: &Path) {
     let (gone, kept_by_warning, absent) = (home.join("a.sock"), home.join("stuck"), home.join("never"));
     std::fs::write(&gone, b"x").unwrap();
     // A directory cannot be removed as a file.

@@ -405,7 +405,11 @@ fn reaping_deletes_the_leftovers_of_the_killed_machine(#[fixture(anna_home)] hom
 
     let report = fx.registry.reap();
     assert_eq!(report.reaped, ["foo"]);
-    assert!(report.warnings.is_empty(), "an absent leftover is fine: {:?}", report.warnings);
+    assert!(
+        report.warnings.is_empty(),
+        "an absent leftover is fine: {:?}",
+        report.warnings
+    );
     assert!(!socket.exists() && !lock.exists());
 }
 

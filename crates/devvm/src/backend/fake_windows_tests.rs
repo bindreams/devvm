@@ -45,7 +45,10 @@ impl Machine for Strict {
     }
 
     fn ssh_endpoints(&self) -> &[(Endpoint, SocketAddr)] {
-        assert!(self.resumed, "the endpoints of a machine that has not run are not known");
+        assert!(
+            self.resumed,
+            "the endpoints of a machine that has not run are not known"
+        );
         self.inner.ssh_endpoints()
     }
 
@@ -131,7 +134,11 @@ fn the_shutdown_functions_wait_for_a_boot_before_the_first_shutdown(#[fixture(an
     contract::shutdown_stops_the_process(&target, &home.join("a"));
     assert_eq!(target.booted_waits.load(Ordering::SeqCst), 1);
     contract::a_released_machine_outlives_its_launcher_and_attach_finds_it(&target, &home.join("b"));
-    assert_eq!(target.booted_waits.load(Ordering::SeqCst), 2, "the attached machine is awaited");
+    assert_eq!(
+        target.booted_waits.load(Ordering::SeqCst),
+        2,
+        "the attached machine is awaited"
+    );
 }
 
 #[skuld::test]
@@ -151,11 +158,15 @@ fn fake_has_run_only_after_the_process_runs(#[fixture(anna_home)] home: &Path) {
     assert!(!target.has_run(&spec));
     machine.resume().unwrap();
     let port = machine.ssh_endpoints()[0].1.port();
-    let vm = crate::contain::VmProcess::attach(&machine.record().process).unwrap().unwrap();
+    let vm = crate::contain::VmProcess::attach(&machine.record().process)
+        .unwrap()
+        .unwrap();
     connect_when_up(&vm, port);
     assert!(target.has_run(&spec));
     assert!(target.leftovers(&spec).is_empty());
-    target.await_booted(&*machine).expect("a fake machine is booted once it runs");
+    target
+        .await_booted(&*machine)
+        .expect("a fake machine is booted once it runs");
     machine.kill().unwrap();
 }
 

@@ -2,10 +2,10 @@ use std::path::Path;
 
 use super::FakeTarget;
 use crate::backend::contract::{self, ContractTarget};
-use crate::store::layers::layers_tests::{env, key, request};
 use crate::store::layers::Built;
-use crate::{Arch, ErrorKind};
+use crate::store::layers::layers_tests::{env, key, request};
 use crate::test_support::fixtures::anna_home;
+use crate::{Arch, ErrorKind};
 
 #[skuld::test]
 fn fake_storage_writes_only_into_staging(#[fixture(anna_home)] home: &Path) {
@@ -42,7 +42,10 @@ fn fake_import_base_makes_the_image_the_layers_disk(#[fixture(anna_home)] home: 
     let imported = env
         .store
         .build(&request(key(5)), None, |staging| {
-            target.backend().storage().import_base(&image, Arch::Amd64, staging.dir)?;
+            target
+                .backend()
+                .storage()
+                .import_base(&image, Arch::Amd64, staging.dir)?;
             Ok(Built::default())
         })
         .unwrap();
@@ -64,16 +67,15 @@ fn fake_import_base_makes_the_image_the_layers_disk(#[fixture(anna_home)] home: 
 fn fake_import_base_of_a_missing_image_is_an_io_error(#[fixture(anna_home)] home: &Path) {
     let target = FakeTarget::new();
     let env = env(home);
-    let error = env
-        .store
-        .build(&request(key(5)), None, |staging| {
-            target
-                .backend()
-                .storage()
-                .import_base(&home.join("missing.img"), Arch::Amd64, staging.dir)?;
-            Ok(Built::default())
-        })
-        .err()
-        .expect("there is no image");
-    assert_eq!(error.kind(), ErrorKind::Io);
+    let built = env.store.build(&request(key(5)), None, |staging| {
+        target
+            .backend()
+            .storage()
+            .import_base(&home.join("missing.img"), Arch::Amd64, staging.dir)?;
+        Ok(Built::default())
+    });
+    assert!(
+        matches!(built, Err(e) if e.kind() == ErrorKind::Io),
+        "there is no image"
+    );
 }

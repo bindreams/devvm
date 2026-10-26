@@ -57,11 +57,13 @@ pub enum FileCall {
 /// [`RecordingHost::mark_executable`] as executable, so a test means the same on every OS. Writes and
 /// `set_executable` still reach the real host. Hand it to code that wants a `&'static dyn Host` with `Box::leak`.
 #[derive(Default)]
+#[allow(dead_code, reason = "U4's access and recipe tests are the first users")]
 pub struct RecordingHost {
     calls: Mutex<Vec<FileCall>>,
     executable: Mutex<HashSet<PathBuf>>,
 }
 
+#[allow(dead_code, reason = "U4's access and recipe tests are the first users")]
 impl RecordingHost {
     pub fn new() -> RecordingHost {
         RecordingHost::default()
@@ -100,7 +102,10 @@ impl Host for RecordingHost {
     }
 
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        self.calls.lock().unwrap().push(FileCall::WritePrivate(path.to_path_buf()));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(FileCall::WritePrivate(path.to_path_buf()));
         TestHost.write_private(path, bytes)
     }
 
@@ -109,7 +114,10 @@ impl Host for RecordingHost {
     }
 
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
-        self.calls.lock().unwrap().push(FileCall::SetExecutable(path.to_path_buf()));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(FileCall::SetExecutable(path.to_path_buf()));
         TestHost.set_executable(path)
     }
 }

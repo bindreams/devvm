@@ -95,7 +95,9 @@ fn windows_host_system_dirs_come_from_the_os_and_not_the_environment(#[fixture(e
     for name in ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"] {
         env.set(name, "Z:/not/windows");
     }
-    let dirs = super::windows::WindowsHost.system_dirs().expect("Windows has system directories");
+    let dirs = super::windows::WindowsHost
+        .system_dirs()
+        .expect("Windows has system directories");
     assert!(dirs.root.is_dir(), "{}", dirs.root.display());
     assert!(dirs.system32.is_dir(), "{}", dirs.system32.display());
     assert!(dirs.system32.starts_with(&dirs.root));
@@ -112,7 +114,11 @@ fn write_private_is_create_new_and_owner_only(#[fixture(anna_home)] home: &Path)
 
     let error = current().write_private(&path, b"other").unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
-    assert_eq!(std::fs::read(&path).unwrap(), b"secret", "an existing file is left alone");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"secret",
+        "an existing file is left alone"
+    );
 }
 
 #[skuld::test]

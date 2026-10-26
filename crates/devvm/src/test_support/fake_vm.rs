@@ -121,5 +121,9 @@ pub fn release_owner(args: &[String]) {
 
 /// Helper `console-window`: prints whether this process has a console window and how many processes share its console.
 pub fn console_window(_args: &[String]) {
-    println!("window={} console={}", probe::console_window(), probe::console_processes());
+    println!(
+        "window={} console={}",
+        probe::console_window(),
+        probe::console_processes()
+    );
 }

@@ -148,7 +148,11 @@ impl Instance {
             }
             // The VM is dead: what it left outside the directory goes too, and a destroy that fails below must not
             // leave a record naming it.
-            machine.remove_leftovers(&mut |text| self.engine.progress().message(&format!("instance {}: {text}", dir.name())));
+            machine.remove_leftovers(&mut |text| {
+                self.engine
+                    .progress()
+                    .message(&format!("instance {}: {text}", dir.name()))
+            });
             dir.update(&op, &mut |record| record.machine = None)?;
         }
         dir.destroy(op)?;
