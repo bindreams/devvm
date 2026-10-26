@@ -8,7 +8,9 @@ use crate::backend::fake::FakeBackend;
 use crate::contain::Lifetime;
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
-use crate::engine::engine_tests::{dead_machine, engine_fixture, image_of, instance_in, record_machine, stub_fixture};
+use crate::engine::engine_tests::{
+    dead_machine, engine_fixture, engine_over, image_of, instance_in, record_machine, stub_fixture,
+};
 use crate::engine::{Engine, EngineParts, LaunchHooks, LaunchStep};
 use crate::guest::fake::FakeGuests;
 use crate::instance::name::InstanceName;
@@ -17,7 +19,7 @@ use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fake_vm::connect_when_up;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
-use crate::test_support::host::TestHost;
+use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, TestHost};
 use crate::test_support::stub_backend::Attach;
 use crate::{Dirs, ErrorKind, Instance, StartOptions};
 
@@ -370,6 +372,45 @@ fn start_when_the_backend_cannot_look_fails_and_launches_nothing(#[fixture(anna_
 
     assert_eq!(error.kind(), ErrorKind::Io);
     assert_eq!(fx.fake.launches(), 0);
+}
+
+#[skuld::test]
+fn start_in_a_build_without_a_backend_is_not_supported(#[fixture(anna_home)] home: &Path) {
+    let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
+    instance_in(&fx, "foo", home);
+    let engine = engine_over(&fx, &TestHost, None, std::sync::Arc::new(MemoryProgress::default()));
+
+    let error = Instance::open_in(&engine, "foo")
+        .unwrap()
+        .start()
+        .expect_err("there is no backend to launch with");
+
+    assert_eq!(error.kind(), ErrorKind::NotSupported);
+    assert!(error.message().contains("no VM backend"), "{}", error.message());
+    assert_eq!(engine.backend().err().unwrap().kind(), ErrorKind::NotSupported);
+}
+
+#[skuld::test]
+fn start_on_a_host_without_a_hypervisor_is_unavailable_and_launches_nothing(#[fixture(anna_home)] home: &Path) {
+    let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
+    let dir = instance_in(&fx, "foo", home);
+    let engine = engine_over(
+        &fx,
+        &NoAccelHost,
+        Some(fx.fake.clone()),
+        std::sync::Arc::new(MemoryProgress::default()),
+    );
+
+    let error = Instance::open_in(&engine, "foo")
+        .unwrap()
+        .start()
+        .expect_err("this host cannot run a VM");
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(error.message(), NO_ACCELERATOR);
+    assert_eq!(fx.fake.launches(), 0);
+    assert!(dir.record().unwrap().machine.is_none());
+    assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
 }
 
 // Helper processes ====================================================================================================

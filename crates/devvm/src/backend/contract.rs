@@ -42,6 +42,10 @@ pub(crate) trait ContractTarget {
     /// endpoints may not exist yet.
     fn has_run(&self, spec: &MachineSpec) -> bool;
 
+    /// Whether the machine launched from `spec` was ended by being asked to (`Machine::shutdown`) and not by being
+    /// killed. Observed from outside the backend: a killed machine never asked.
+    fn ended_gracefully(&self, spec: &MachineSpec) -> bool;
+
     /// The files outside the instance directory that belong to the machine launched from `spec`, whether or not they
     /// exist now. The machine's record names them from the launch on, before the resume, and a machine that was killed
     /// or shut down leaves none of them.
@@ -182,6 +186,15 @@ pub(crate) fn a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(targe
         machine.resume().unwrap();
         accepts_eventually(&before_the_run, first_endpoint(&*machine));
         target.await_booted(&*machine).unwrap();
+        // The files must exist while the machine runs, or "none left afterwards" proves nothing.
+        let leftovers = target.leftovers(&spec);
+        assert!(
+            !leftovers.is_empty(),
+            "a target names the files its running machine creates"
+        );
+        for leftover in &leftovers {
+            assert!(leftover.exists(), "a running machine has {}", leftover.display());
+        }
         match end {
             End::Kill => machine.kill().unwrap(),
             End::Shutdown => machine.shutdown().unwrap(),
@@ -191,6 +204,11 @@ pub(crate) fn a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(targe
             "{end:?} returned while the process was still running"
         );
         assert_no_leftovers(target, &spec, &format!("{end:?}"));
+        assert_eq!(
+            target.ended_gracefully(&spec),
+            matches!(end, End::Shutdown),
+            "{end:?} and a graceful end are not the same thing"
+        );
     }
 }
 
@@ -240,6 +258,7 @@ pub(crate) fn kill_returns_only_after_the_process_has_exited(target: &dyn Contra
         !is_running(&record),
         "kill returned while the process was still running"
     );
+    assert!(!target.ended_gracefully(&spec), "a killed machine was not asked to end");
 }
 
 pub(crate) fn attach_to_a_dead_machine_fails(target: &dyn ContractTarget, root: &Path) {
@@ -267,6 +286,10 @@ pub(crate) fn shutdown_stops_the_process(target: &dyn ContractTarget, root: &Pat
         !is_running(&record),
         "shutdown returned while the process was still running"
     );
+    assert!(
+        target.ended_gracefully(&spec),
+        "shutdown ended the machine without asking it to"
+    );
 }
 
 pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn ContractTarget, root: &Path) {
@@ -285,6 +308,10 @@ pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn Contr
         "shutdown returned while the process was still running"
     );
     assert_no_leftovers(target, &spec, "a shutdown from another process");
+    assert!(
+        target.ended_gracefully(&spec),
+        "a shutdown from another process ended the machine without asking it to"
+    );
 }
 
 pub(crate) fn concurrent_launches_get_distinct_processes_and_endpoints(target: &dyn ContractTarget, root: &Path) {

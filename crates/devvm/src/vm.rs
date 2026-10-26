@@ -15,7 +15,7 @@ use crate::{Command, Error, ErrorKind, Result};
 
 #[allow(
     dead_code,
-    reason = "`Recipe::build` (U4) is the first non-test caller of `Image::from_chain`, and `up` (U4) of `Vm::hand_over`"
+    reason = "`Recipe::build` and `up` are the first callers of `Image::from_chain` and `Vm::hand_over`"
 )]
 mod image;
 mod launch;
@@ -34,8 +34,8 @@ mod vm_windows_tests;
 #[path = "vm_other_tests.rs"]
 mod vm_other_tests;
 
-/// Running commands in a guest and moving files in and out of it. Needs the access layer, which arrives with the QEMU
-/// backend: until then every method is `not-supported`.
+/// Running commands in a guest and moving files in and out of it. Needs the access layer: until it exists every
+/// method is `not-supported`.
 pub trait Guest {
     fn run(&self, cmd: &Command) -> Result<Output>;
     fn reboot(&self) -> Result<()>;
@@ -55,10 +55,7 @@ pub(crate) fn warn_for<'a>(engine: &'a Engine, dir: &'a InstanceDir) -> impl FnM
 }
 
 pub(crate) fn no_access_layer() -> Error {
-    Error::new(
-        ErrorKind::NotSupported,
-        "reaching the guest needs the access layer, which arrives with the QEMU backend",
-    )
+    Error::new(ErrorKind::NotSupported, "reaching the guest needs the access layer")
 }
 
 /// A named VM that stays until it is removed.

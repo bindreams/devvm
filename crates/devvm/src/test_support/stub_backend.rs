@@ -20,10 +20,14 @@ pub enum Attach {
     Fails(ErrorKind),
 }
 
+/// Something a test does while a machine is being stopped.
+type OnStop = Arc<Mutex<Option<Box<dyn FnMut() + Send>>>>;
+
 pub struct StubBackend {
     attach: Mutex<Attach>,
     stop_fails: Mutex<bool>,
     calls: Arc<Mutex<Vec<String>>>,
+    on_stop: OnStop,
     storage: FakeStorage,
 }
 
@@ -33,8 +37,18 @@ impl StubBackend {
             attach: Mutex::new(attach),
             stop_fails: Mutex::new(false),
             calls: Arc::new(Mutex::new(Vec::new())),
+            on_stop: OnStop::default(),
             storage: FakeStorage,
         })
+    }
+
+    #[cfg_attr(
+        not(windows),
+        allow(dead_code, reason = "only a test that needs Windows file locking uses it")
+    )]
+    /// Runs `hook` each time a machine found by `attach` is shut down or killed, once the machine is counted dead.
+    pub fn on_stop(&self, hook: impl FnMut() + Send + 'static) {
+        *self.on_stop.lock().unwrap() = Some(Box::new(hook));
     }
 
     /// Changes what `attach` answers from now on.
@@ -65,6 +79,7 @@ impl Backend for StubBackend {
                 record: rec.clone(),
                 fails: *self.stop_fails.lock().unwrap(),
                 calls: self.calls.clone(),
+                on_stop: self.on_stop.clone(),
             })),
             Attach::Gone => Err(Error::new(ErrorKind::NotFound, "the stub machine is gone")),
             Attach::Fails(kind) => Err(Error::new(kind, "the stub backend cannot look")),
@@ -84,11 +99,15 @@ struct StubMachine {
     record: MachineRecord,
     fails: bool,
     calls: Arc<Mutex<Vec<String>>>,
+    on_stop: OnStop,
 }
 
 impl StubMachine {
     fn stop(&self, call: &str) -> Result<()> {
         self.calls.lock().unwrap().push(call.to_owned());
+        if let Some(hook) = self.on_stop.lock().unwrap().as_mut() {
+            hook();
+        }
         if self.fails {
             Err(Error::new(ErrorKind::Io, format!("the stub machine refuses to {call}")))
         } else {

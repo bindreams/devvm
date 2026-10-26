@@ -126,6 +126,70 @@ fn record_round_trips_every_field(#[fixture(anna_home)] home: &Path) {
     bare.arch = Arch::Arm64;
     bare.write(home).unwrap();
     assert_eq!(read_valid(home), bare);
+
+    for guest in [GuestKind::Linux, GuestKind::Windows, GuestKind::Macos] {
+        for arch in [Arch::Amd64, Arch::Arm64] {
+            let mut each = original.clone();
+            each.guest = guest;
+            each.arch = arch;
+            each.write(home).unwrap();
+            assert_eq!(read_valid(home), each, "{guest:?} on {arch:?}");
+        }
+    }
+}
+
+/// `GOLDEN` with the top-level `field` set to `value`.
+fn golden_with(field: &str, value: serde_json::Value) -> String {
+    let mut json: serde_json::Value = serde_json::from_str(GOLDEN).unwrap();
+    json[field] = value;
+    json.to_string()
+}
+
+/// `GOLDEN` with `field` of its first layer set to `value`.
+fn golden_with_layer(field: &str, value: &str) -> String {
+    let mut json: serde_json::Value = serde_json::from_str(GOLDEN).unwrap();
+    json["chain"][0][field] = value.into();
+    json.to_string()
+}
+
+#[skuld::test]
+fn a_record_with_a_field_that_means_nothing_is_corrupt_and_says_which(#[fixture(anna_home)] home: &Path) {
+    let cases = [
+        ("an empty chain", golden_with("chain", serde_json::json!([])), "chain"),
+        ("an uppercase name", golden_with("name", "FOO".into()), "lowercase"),
+        ("an unknown guest", golden_with("guest", "beos".into()), "guest"),
+        (
+            "an unknown architecture",
+            golden_with("arch", "mips".into()),
+            "architecture",
+        ),
+        ("an unknown network", golden_with("network", "tun".into()), "network"),
+        (
+            "an unparseable creation time",
+            golden_with("created", "yesterday".into()),
+            "yesterday",
+        ),
+        ("an unparseable expiry", golden_with("expires", "soon".into()), "soon"),
+        (
+            "an uppercase id",
+            golden_with("id", "000102030405060708090A0B0C0D0E0F".into()),
+            "instance id",
+        ),
+        ("a layer key that is not hex", golden_with_layer("key", "zz"), "zz"),
+        (
+            "a layer generation that is not hex",
+            golden_with_layer("generation", "zz"),
+            "zz",
+        ),
+    ];
+    for (what, text, expected) in cases {
+        std::fs::write(home.join("record.json"), text).unwrap();
+        match InstanceRecord::read(home).unwrap() {
+            RecordRead::Corrupt(why) => assert!(why.contains(expected), "{what}: `{why}` does not say `{expected}`"),
+            RecordRead::Absent => panic!("{what}: reported absent"),
+            RecordRead::Valid(_) => panic!("{what}: accepted"),
+        }
+    }
 }
 
 #[skuld::test]

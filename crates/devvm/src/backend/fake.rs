@@ -4,7 +4,8 @@
 //! Test code, so a missing helper fails the test visibly. Like QEMU's port-0 forward, the VM picks its own port and a
 //! machine knows its endpoint only once it runs.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -246,13 +247,65 @@ impl Machine for FakeMachine {
         if self.attached { Ok(()) } else { self.vm.release() }
     }
 
-    /// A fake has no guest to ask, so this is a kill.
+    /// Asks the VM over its endpoint to exit, like a guest asked to power off, and waits for the process to be gone.
     fn shutdown(&mut self) -> Result<()> {
-        self.kill()
+        let addr = self.endpoint()?;
+        let ask = |e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot ask the machine at {addr} to shut down"),
+                e,
+            )
+        };
+        let mut stream = TcpStream::connect(addr).map_err(ask)?;
+        // The VM greets first. Closing with its greeting unread would reset the connection and could drop the request.
+        let mut greeting = String::new();
+        BufReader::new(&stream).read_line(&mut greeting).map_err(ask)?;
+        writeln!(stream, "{}", fake_vm::SHUTDOWN_REQUEST).map_err(ask)?;
+        // The VM drops the connection when it exits, as a close or as a reset; the process exit is what is awaited.
+        let _ = std::io::copy(&mut stream, &mut std::io::sink());
+        self.vm.wait()?;
+        self.remove_leftovers()
     }
 
     fn kill(&mut self) -> Result<()> {
         self.vm.kill()?;
+        self.remove_leftovers()
+    }
+}
+
+impl FakeMachine {
+    /// Where the VM listens: the endpoint of the record, or, for a record taken before the machine ran, the port the VM
+    /// reported in its state directory.
+    fn endpoint(&self) -> Result<SocketAddr> {
+        if let Some((_, addr)) = self.ssh.first() {
+            return Ok(*addr);
+        }
+        let started = self
+            .serial_log
+            .parent()
+            .expect("a serial log has a directory")
+            .join(fake_vm::STARTED);
+        match std::fs::read_to_string(&started) {
+            Ok(port) => port
+                .parse()
+                .map(|port| SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+                .map_err(|e| {
+                    Error::new(
+                        ErrorKind::Internal,
+                        format!("{} holds {port:?}: {e}", started.display()),
+                    )
+                }),
+            Err(e) => Err(Error::io(
+                ErrorKind::Internal,
+                "a machine that has not run cannot be asked to shut down",
+                e,
+            )),
+        }
+    }
+
+    /// Deletes the leftovers of a machine that is gone, if this backend's machines clean up after themselves.
+    fn remove_leftovers(&self) -> Result<()> {
         if self.cleaned_by_kill {
             let mut failures = Vec::new();
             self.record.remove_leftovers(&mut |text| failures.push(text));
@@ -380,6 +433,14 @@ impl ContractTarget for FakeTarget {
                 ),
             ))
         }
+    }
+
+    fn ended_gracefully(&self, spec: &MachineSpec) -> bool {
+        spec.serial_log
+            .parent()
+            .expect("a serial log has a directory")
+            .join(fake_vm::GRACEFUL)
+            .exists()
     }
 
     fn has_run(&self, spec: &MachineSpec) -> bool {

@@ -1,43 +1,22 @@
 //! devvm: disposable virtual machines for tests.
 
-#[allow(
-    dead_code,
-    reason = "the QEMU backend and `up` (U4) use what nothing in this build does yet: a `Backend` implementation, an `Image`, the guest and shared-lock paths"
-)]
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod access;
-#[allow(
-    dead_code,
-    reason = "the QEMU backend and `up` (U4) use what nothing in this build does yet: a `Backend` implementation, an `Image`, the guest and shared-lock paths"
-)]
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod backend;
 pub mod config;
-#[allow(
-    dead_code,
-    reason = "the QEMU backend and `up` (U4) use what nothing in this build does yet: a `Backend` implementation, an `Image`, the guest and shared-lock paths"
-)]
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod contain;
 pub mod dirs;
-#[allow(
-    dead_code,
-    reason = "the QEMU backend and `up` (U4) use what nothing in this build does yet: a `Backend` implementation, an `Image`, the guest and shared-lock paths"
-)]
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub mod engine;
 pub mod error;
 pub mod exit;
-#[allow(
-    dead_code,
-    reason = "the QEMU backend and `up` (U4) use what nothing in this build does yet: a `Backend` implementation, an `Image`, the guest and shared-lock paths"
-)]
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod guest;
-#[allow(
-    dead_code,
-    reason = "the QEMU backend and `up` (U4) use what nothing in this build does yet: a `Backend` implementation, an `Image`, the guest and shared-lock paths"
-)]
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod host;
-#[allow(
-    dead_code,
-    reason = "the QEMU backend and `up` (U4) use what nothing in this build does yet: a `Backend` implementation, an `Image`, the guest and shared-lock paths"
-)]
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod instance;
 pub mod recipe;
 pub mod store;

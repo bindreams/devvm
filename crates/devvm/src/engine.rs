@@ -245,12 +245,9 @@ impl Engine {
 
     /// The VM backend, or `not-supported` when this build has none.
     pub(crate) fn backend(&self) -> Result<&Arc<dyn Backend>> {
-        self.backend.as_ref().ok_or_else(|| {
-            Error::new(
-                ErrorKind::NotSupported,
-                "this build of devvm has no VM backend yet (it arrives with the QEMU backend)",
-            )
-        })
+        self.backend
+            .as_ref()
+            .ok_or_else(|| Error::new(ErrorKind::NotSupported, "this build of devvm has no VM backend"))
     }
 
     /// The layer store, opened on first use (opening creates its directories).

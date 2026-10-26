@@ -13,7 +13,7 @@ use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "dir_tests.rs"]
-mod dir_tests;
+pub(crate) mod dir_tests;
 
 /// A handle on the instance `instances/<name>`, remembering which instance (by id) that name was when it was opened.
 ///

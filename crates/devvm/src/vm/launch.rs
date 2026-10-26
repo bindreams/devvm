@@ -42,7 +42,7 @@ pub(super) fn launch(
         hostname: dir.name().as_str().to_owned(),
         dir: seed_dir,
         instance_id: *dir.id(),
-        // Placeholder until the instance's keys exist (U4 generates them before the first start).
+        // Placeholder until the instance's keys exist.
         keys: SeedKeys::default(),
     })?;
     let spec = MachineSpec {

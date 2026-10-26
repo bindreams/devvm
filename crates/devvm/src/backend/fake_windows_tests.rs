@@ -130,6 +130,10 @@ impl ContractTarget for StrictTarget {
         self.inner.shutdown_elsewhere(record)
     }
 
+    fn ended_gracefully(&self, spec: &MachineSpec) -> bool {
+        self.inner.ended_gracefully(spec)
+    }
+
     fn has_run(&self, spec: &MachineSpec) -> bool {
         self.inner.has_run(spec)
     }
@@ -162,6 +166,67 @@ enum Fault {
     /// The shutdown helper reports success at once and leaves the machine running, like a backend whose `shutdown`
     /// asks the guest to power off and returns before the process has exited.
     ShutdownReturnsEarly,
+    /// The target names no leftover files, so nothing would be checked.
+    NamesNoLeftovers,
+    /// The machine's files are gone as soon as it runs, so "none left afterwards" would hold for any backend.
+    LeftoversNeverExist,
+    /// A shutdown that ends the machine without asking it to, like a kill.
+    ShutdownIsAKill,
+}
+
+/// A backend whose running machines have none of the files their record names.
+struct DeletesLeftoversOnResume(Arc<dyn Backend>);
+
+impl Backend for DeletesLeftoversOnResume {
+    fn launch(&self, spec: &MachineSpec) -> crate::Result<Box<dyn Machine>> {
+        Ok(Box::new(Deleting(self.0.launch(spec)?)))
+    }
+
+    fn attach(&self, rec: &MachineRecord) -> crate::Result<Box<dyn Machine>> {
+        self.0.attach(rec)
+    }
+
+    fn storage(&self) -> &dyn Storage {
+        self.0.storage()
+    }
+
+    fn can_save_memory(&self) -> bool {
+        false
+    }
+}
+
+struct Deleting(Box<dyn Machine>);
+
+impl Machine for Deleting {
+    fn record(&self) -> MachineRecord {
+        self.0.record()
+    }
+
+    fn ssh_endpoints(&self) -> &[(Endpoint, SocketAddr)] {
+        self.0.ssh_endpoints()
+    }
+
+    fn serial_log(&self) -> &Path {
+        self.0.serial_log()
+    }
+
+    fn resume(&mut self) -> crate::Result<()> {
+        self.0.resume()?;
+        self.0.record().remove_leftovers(&mut |_| {});
+        Ok(())
+    }
+
+    fn release(&mut self) -> crate::Result<()> {
+        self.0.release()
+    }
+
+    fn shutdown(&mut self) -> crate::Result<()> {
+        self.0.shutdown()
+    }
+
+    fn kill(&mut self) -> crate::Result<()> {
+        self.0.kill()
+    }
 }
 
 /// The fake target with one thing going wrong.
@@ -183,7 +248,10 @@ impl FailingTarget {
 
 impl ContractTarget for FailingTarget {
     fn backend(&self) -> Arc<dyn Backend> {
-        self.inner.backend()
+        match self.fault {
+            Fault::LeftoversNeverExist => Arc::new(DeletesLeftoversOnResume(self.inner.backend())),
+            _ => self.inner.backend(),
+        }
     }
 
     fn parent_layer(&self, store: &LayerStore) -> ChainLease {
@@ -204,8 +272,12 @@ impl ContractTarget for FailingTarget {
         match self.fault {
             Fault::ShutdownFails => Err(crate::Error::new(ErrorKind::Internal, "the shutdown helper failed")),
             Fault::ShutdownReturnsEarly => Ok(()),
-            Fault::BootFails => self.inner.shutdown_elsewhere(record),
+            _ => self.inner.shutdown_elsewhere(record),
         }
+    }
+
+    fn ended_gracefully(&self, spec: &MachineSpec) -> bool {
+        self.fault != Fault::ShutdownIsAKill && self.inner.ended_gracefully(spec)
     }
 
     fn has_run(&self, spec: &MachineSpec) -> bool {
@@ -213,7 +285,10 @@ impl ContractTarget for FailingTarget {
     }
 
     fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf> {
-        self.inner.leftovers(spec)
+        match self.fault {
+            Fault::NamesNoLeftovers => Vec::new(),
+            _ => self.inner.leftovers(spec),
+        }
     }
 
     fn await_booted(&self, machine: &dyn Machine) -> crate::Result<()> {
@@ -256,6 +331,72 @@ fn a_shutdown_that_returns_before_the_process_exits_fails_its_function_and_leave
         home,
         contract::shutdown_from_another_process_stops_the_machine,
     );
+}
+
+/// The contract function `function`, run over a target with `fault`, must fail.
+fn the_function_fails(fault: Fault, home: &Path, function: fn(&dyn ContractTarget, &Path)) {
+    let target = FailingTarget::new(fault);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| function(&target, home)));
+    assert!(outcome.is_err(), "the contract function passed a target that breaks it");
+}
+
+#[skuld::test]
+fn a_target_that_names_no_leftovers_fails_the_leftover_function(#[fixture(anna_home)] home: &Path) {
+    the_function_fails(
+        Fault::NamesNoLeftovers,
+        home,
+        contract::a_running_machine_leaves_no_leftovers_after_kill_or_shutdown,
+    );
+}
+
+#[skuld::test]
+fn a_machine_whose_files_never_exist_fails_the_leftover_function(#[fixture(anna_home)] home: &Path) {
+    the_function_fails(
+        Fault::LeftoversNeverExist,
+        home,
+        contract::a_running_machine_leaves_no_leftovers_after_kill_or_shutdown,
+    );
+}
+
+#[skuld::test]
+fn a_shutdown_that_is_a_kill_fails_the_shutdown_functions(#[fixture(anna_home)] home: &Path) {
+    the_function_fails(
+        Fault::ShutdownIsAKill,
+        &home.join("a"),
+        contract::shutdown_stops_the_process,
+    );
+    the_function_fails(
+        Fault::ShutdownIsAKill,
+        &home.join("b"),
+        contract::a_running_machine_leaves_no_leftovers_after_kill_or_shutdown,
+    );
+}
+
+#[skuld::test]
+fn the_fake_shuts_down_by_asking_the_vm_and_kill_never_asks(#[fixture(anna_home)] home: &Path) {
+    let target = FakeTarget::new();
+    let env = crate::store::layers::layers_tests::env(home);
+    let parent = target.parent_layer(&env.store);
+    let mut specs = Vec::new();
+    for n in 0..2 {
+        let spec = target.spec(home, n);
+        std::fs::create_dir_all(spec.disk.parent().unwrap()).unwrap();
+        target
+            .backend()
+            .storage()
+            .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+            .unwrap();
+        let mut machine = target.backend().launch(&spec).unwrap();
+        machine.resume().unwrap();
+        if n == 0 {
+            machine.shutdown().unwrap();
+        } else {
+            machine.kill().unwrap();
+        }
+        specs.push(spec);
+    }
+    assert!(target.ended_gracefully(&specs[0]), "shutdown asked the VM to exit");
+    assert!(!target.ended_gracefully(&specs[1]), "kill did not ask");
 }
 
 #[skuld::test]

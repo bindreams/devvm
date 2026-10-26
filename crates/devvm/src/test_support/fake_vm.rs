@@ -1,6 +1,6 @@
 //! The fake VM: a real process that stands in for QEMU. It listens on a loopback port of its own choosing, writes a
 //! `started` file naming that port when it first runs, and answers each connection with one line describing its own
-//! containment.
+//! containment. A client that then sends [`SHUTDOWN_REQUEST`] makes it exit by itself.
 //!
 //! Only the tests that spawn a frozen process (Windows in 0.1.0) use most of this.
 #![cfg_attr(
@@ -29,6 +29,13 @@ mod probe;
 /// The file a fake VM writes when it runs; a frozen one never does.
 pub const STARTED: &str = "started";
 
+/// The file a fake VM writes when it is asked to shut down (see [`SHUTDOWN_REQUEST`]), just before it exits; a killed
+/// one never does.
+pub const GRACEFUL: &str = "stopped-gracefully";
+
+/// What a client sends to the fake VM to ask it to shut down.
+pub const SHUTDOWN_REQUEST: &str = "shutdown";
+
 /// Where the port is written before it is renamed to [`STARTED`].
 const PENDING: &str = "started.tmp";
 
@@ -44,7 +51,7 @@ pub fn log(state_dir: &Path) -> PathBuf {
 /// Deletes what an earlier VM of `state_dir` left, so that the `started` file describes only the run that follows. Call
 /// it before spawning a VM into a directory that may have held one; a VM that is not spawned yet cannot write the file.
 pub fn forget_earlier_runs(state_dir: &Path) -> std::io::Result<()> {
-    for name in [STARTED, PENDING] {
+    for name in [STARTED, PENDING, GRACEFUL] {
         match std::fs::remove_file(state_dir.join(name)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
             _ => {}
@@ -79,6 +86,13 @@ pub fn fake_vm(args: &[String]) {
             probe::kill_on_close(),
             probe::console_processes()
         );
+        // A client may then ask the VM to power off, as a backend asks its guest to.
+        let mut request = String::new();
+        let _ = BufReader::new(&stream).read_line(&mut request);
+        if request.trim_end() == SHUTDOWN_REQUEST {
+            std::fs::write(state_dir.join(GRACEFUL), b"").expect("the state directory should exist");
+            std::process::exit(0);
+        }
     }
 }
 

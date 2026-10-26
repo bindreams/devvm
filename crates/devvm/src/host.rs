@@ -24,8 +24,7 @@ use unsupported::UnsupportedHost as Current;
 use windows::WindowsHost as Current;
 
 /// How a hypervisor is reached on this host.
-// The backends that return the other variants arrive with U4.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Accel {
     Whpx,

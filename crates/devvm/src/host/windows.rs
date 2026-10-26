@@ -1,4 +1,4 @@
-//! The Windows host. U4 replaces the accelerator stub with WHPX detection.
+//! The Windows host.
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -32,7 +32,7 @@ pub(super) struct WindowsHost;
 impl Host for WindowsHost {
     fn accelerator(&self, _arch: Arch) -> std::result::Result<Accel, Unavailable> {
         Err(Unavailable {
-            missing: "WHPX detection arrives with the QEMU backend".to_owned(),
+            missing: "WHPX detection is not implemented".to_owned(),
         })
     }
 

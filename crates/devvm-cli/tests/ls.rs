@@ -150,6 +150,7 @@ fn ls_json_emits_one_object_per_instance_and_filters_by_creation_dir() {
         assert_eq!(object["created_from"], a.to_str().unwrap());
         assert_eq!(object["expires"], Value::Null);
     }
+    assert_eq!(objects.len(), 2);
     for line in &lines {
         let keys = [
             "name",
@@ -169,7 +170,6 @@ fn ls_json_emits_one_object_per_instance_and_filters_by_creation_dir() {
             positions.windows(2).all(|pair| pair[0] < pair[1]),
             "keys out of order: {line}"
         );
-        assert_eq!(objects.len(), 2);
         assert_eq!(
             serde_json::from_str::<Value>(line).unwrap().as_object().unwrap().len(),
             keys.len()
@@ -212,13 +212,65 @@ fn ls_prints_a_table_and_nothing_at_all_when_there_are_no_instances() {
     assert!(empty.stdout.is_empty() && empty.stderr.is_empty());
 
     home.seed("alpha", &id(1), &a, "none");
+    home.seed("beta", &id(2), &a, "process");
+    // A live owner: this process holds the owner lock, so the reaper leaves beta alone.
+    let owner = std::fs::OpenOptions::new()
+        .write(true)
+        .open(home.state().join("locks").join(format!("instance-{}.owner", id(2))))
+        .unwrap();
+    owner.lock().unwrap();
+
     let lines = stdout_lines(&home.devvm(&a, &["ls"]));
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    assert!(lines[0].starts_with("NAME") && lines[0].contains("STATE"), "{lines:?}");
-    assert!(
-        lines[1].starts_with("alpha") && lines[1].contains("stopped"),
-        "{lines:?}"
+    drop(owner);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    let header: Vec<&str> = lines[0].split_whitespace().collect();
+    assert_eq!(header, ["NAME", "STATE", "GUEST", "ARCH", "OWNER"]);
+    // Every column of each row, in header order.
+    let rows: Vec<Vec<&str>> = lines[1..]
+        .iter()
+        .map(|line| line.split_whitespace().collect())
+        .collect();
+    assert_eq!(rows[0], ["alpha", "stopped", "linux", "amd64", "none"]);
+    assert_eq!(rows[1], ["beta", "stopped", "linux", "amd64", "process"]);
+}
+
+/// Replaces the `machine` of the seeded instance `name` with a record of a process that no backend can look for.
+fn seed_a_machine(home: &Home, name: &str) {
+    let path = home.state().join("instances").join(name).join("record.json");
+    let record = std::fs::read_to_string(&path).unwrap().replace(
+        r#""machine": null"#,
+        r#""machine": {
+    "process": {"v": 1, "platform": "windows", "pid": 4242, "token": "133000000000000000"},
+    "qmp": "",
+    "ssh": [],
+    "serial_log": "serial.log",
+    "leftovers": []
+  }"#,
     );
+    std::fs::write(path, record).unwrap();
+}
+
+#[skuld::test]
+fn ls_says_unknown_for_a_recorded_machine_this_build_has_no_backend_to_look_for() {
+    let home = home();
+    let a = home.project("a");
+    home.seed("alpha", &id(1), &a, "none");
+    seed_a_machine(&home, "alpha");
+
+    let table = home.devvm(&a, &["ls"]);
+    assert_eq!(table.status.code(), Some(0));
+    let lines = stdout_lines(&table);
+    let row: Vec<&str> = lines[1].split_whitespace().collect();
+    assert_eq!(row, ["alpha", "unknown", "linux", "amd64", "none"]);
+    let stderr = String::from_utf8(table.stderr).unwrap();
+    assert!(
+        stderr.contains("alpha") && stderr.contains("no VM backend"),
+        "the cause is said: {stderr:?}"
+    );
+
+    let json = home.devvm(&a, &["ls", "--json"]);
+    let object: Value = serde_json::from_str(&stdout_lines(&json)[0]).unwrap();
+    assert_eq!(object["state"], "unknown");
 }
 
 #[skuld::test]

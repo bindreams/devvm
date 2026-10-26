@@ -1,8 +1,6 @@
-//! Hosts for the tests: one whose accelerator always works, and one that also records what callers ask of it.
+//! Hosts for the tests: one whose accelerator always works, and one that has none.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::Path;
 
 use crate::exit::ExitWidth;
 use crate::host::{self, Accel, Host, SystemDirs, Unavailable};
@@ -46,43 +44,17 @@ impl Host for TestHost {
     }
 }
 
-/// What a [`RecordingHost`] was asked to do to a file.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FileCall {
-    WritePrivate(PathBuf),
-    SetExecutable(PathBuf),
-}
+/// What [`NoAccelHost`] says is missing.
+pub const NO_ACCELERATOR: &str = "the test host has no hypervisor";
 
-/// A [`TestHost`] that records the file-permission calls it receives and reports exactly the files marked with
-/// [`RecordingHost::mark_executable`] as executable, so a test means the same on every OS. Writes and
-/// `set_executable` still reach the real host. Hand it to code that wants a `&'static dyn Host` with `Box::leak`.
-#[derive(Default)]
-#[allow(dead_code, reason = "U4's access and recipe tests are the first users")]
-pub struct RecordingHost {
-    calls: Mutex<Vec<FileCall>>,
-    executable: Mutex<HashSet<PathBuf>>,
-}
+/// A host without a hypervisor, otherwise like [`TestHost`].
+pub struct NoAccelHost;
 
-#[allow(dead_code, reason = "U4's access and recipe tests are the first users")]
-impl RecordingHost {
-    pub fn new() -> RecordingHost {
-        RecordingHost::default()
-    }
-
-    /// Makes `is_executable` report `path` as executable.
-    pub fn mark_executable(&self, path: &Path) {
-        self.executable.lock().unwrap().insert(path.to_path_buf());
-    }
-
-    /// The file-permission calls so far, in order.
-    pub fn calls(&self) -> Vec<FileCall> {
-        self.calls.lock().unwrap().clone()
-    }
-}
-
-impl Host for RecordingHost {
-    fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable> {
-        TestHost.accelerator(arch)
+impl Host for NoAccelHost {
+    fn accelerator(&self, _arch: Arch) -> std::result::Result<Accel, Unavailable> {
+        Err(Unavailable {
+            missing: NO_ACCELERATOR.to_owned(),
+        })
     }
 
     fn detach(&self, cmd: &mut cosca::Command) -> Result<()> {
@@ -102,22 +74,14 @@ impl Host for RecordingHost {
     }
 
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(FileCall::WritePrivate(path.to_path_buf()));
         TestHost.write_private(path, bytes)
     }
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
-        Ok(self.executable.lock().unwrap().contains(path))
+        TestHost.is_executable(path)
     }
 
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(FileCall::SetExecutable(path.to_path_buf()));
         TestHost.set_executable(path)
     }
 }

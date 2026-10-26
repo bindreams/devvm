@@ -98,3 +98,36 @@ fn a_failed_create_that_cannot_delete_its_half_built_directory_says_so(#[fixture
         "the next command deletes it"
     );
 }
+
+#[skuld::test]
+fn destroy_warns_but_succeeds_when_the_renamed_tree_cannot_be_deleted(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let dead = fx.env.dirs.instances().join(format!(".dead-{}", dir.id()));
+
+    let (destroyed, held) = crate::instance::dir::dir_tests::destroy_while_a_deletion_runs(&fx, &dir, || {
+        // A program outside devvm opens a file of the renamed tree without sharing.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(dead.join("disk.img"))
+            .unwrap()
+    });
+
+    destroyed.expect("the instance is removed, so rm succeeds");
+    assert!(!fx.env.dirs.instances().join("foo").exists(), "the name is free");
+    let messages = fx.progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("foo") && m.contains("could not be deleted")),
+        "{messages:?}"
+    );
+    drop(held);
+    fx.registry.reap();
+    assert!(
+        names(&fx.env.dirs.instances()).is_empty(),
+        "the next command finishes the deletion"
+    );
+    assert!(lock_files(&fx).is_empty());
+}

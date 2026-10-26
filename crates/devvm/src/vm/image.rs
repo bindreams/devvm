@@ -7,7 +7,7 @@ use crate::backend::Machine;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
 use crate::exit::Output;
-use crate::host::{self, Unavailable};
+use crate::host::{self, Host, Unavailable};
 use crate::instance::name::InstanceName;
 use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
@@ -124,18 +124,23 @@ impl Image {
 }
 
 impl Recipe {
-    /// Builds the image this recipe describes. Needs the QEMU backend, so it is `not-supported` until that arrives.
+    /// Builds the image this recipe describes. `not-supported` without the QEMU backend.
     pub fn build(&self, _opts: &BuildOptions) -> Result<Image> {
         Err(Error::new(
             ErrorKind::NotSupported,
-            "building images needs the QEMU backend, which arrives with the next devvm release",
+            "building images needs the QEMU backend",
         ))
     }
 }
 
 /// Whether this host can run VMs; what is missing otherwise.
 pub fn availability() -> std::result::Result<(), Unavailable> {
-    host::current().accelerator(Arch::host()).map(drop)
+    availability_on(host::current())
+}
+
+/// `availability` on a given host.
+fn availability_on(host: &dyn Host) -> std::result::Result<(), Unavailable> {
+    host.accelerator(Arch::host()).map(drop)
 }
 
 /// A VM that lives as long as this handle. Dropping it kills the machine and destroys the instance; if the instance is

@@ -1,5 +1,4 @@
-//! Guest operating systems: what differs between Linux, Windows and macOS guests, behind traits. U4 and U5 add the
-//! implementations.
+//! Guest operating systems: what differs between Linux, Windows and macOS guests, behind traits.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,7 +79,7 @@ pub(crate) struct BuildCtx {
     pub progress: Arc<dyn Progress>,
 }
 
-/// The guests compiled into this build: none yet. U4 adds Linux and U5 adds Windows.
+/// The guests compiled into this build: none yet.
 pub(crate) struct BuiltinGuests;
 
 fn missing(kind: GuestKind) -> Error {

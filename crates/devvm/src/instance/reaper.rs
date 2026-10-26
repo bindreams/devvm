@@ -205,7 +205,8 @@ impl Registry {
         let owner_lock = match self.locks().try_owner_recreating(&id) {
             Ok(Probe::Free(lock)) => lock,
             // Held: the owner is alive.
-            Ok(Probe::Held | Probe::Gone) => return,
+            Ok(Probe::Held) => return,
+            Ok(Probe::Gone) => unreachable!("try_owner_recreating puts back a missing lock file"),
             Err(e) => {
                 report.warn(
                     self,

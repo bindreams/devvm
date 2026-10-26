@@ -129,3 +129,55 @@ fn destroy_deletes_its_own_tree_even_while_another_deletion_runs(#[fixture(anna_
     });
     assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
 }
+
+/// Runs `destroy` of `dir` while another deletion holds the tree lock, and calls `sabotage` in that deletion once
+/// `destroy` has renamed the directory and waits for it: the state of the renamed tree and of the lock files can then
+/// be spoiled between the rename and the cleanup.
+pub(crate) fn destroy_while_a_deletion_runs<T: Send>(
+    fx: &crate::instance::registry::registry_tests::Fixture,
+    dir: &crate::instance::dir::InstanceDir,
+    sabotage: impl FnOnce() -> T + Send,
+) -> (crate::Result<()>, T) {
+    let op = dir.op_exclusive().unwrap();
+    let locks = fx.registry.locks();
+    let (held, other_deletion) = std::sync::mpsc::channel();
+    let (contended, waiting) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let other = scope.spawn(move || {
+            locks
+                .deleting(|| {
+                    held.send(()).unwrap();
+                    waiting.recv().unwrap();
+                    sabotage()
+                })
+                .unwrap()
+                .unwrap()
+        });
+        other_deletion.recv().unwrap();
+        let destroyed = dir.destroy_with_waits(op, &mut || {}, &mut move || contended.send(()).unwrap());
+        (destroyed, other.join().unwrap())
+    })
+}
+
+#[skuld::test]
+fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let op_file = fx.registry.locks().op_path(dir.id());
+
+    let (destroyed, ()) = destroy_while_a_deletion_runs(&fx, &dir, || {
+        // The lock file is replaced by a directory, which no unlink of a file can remove.
+        std::fs::remove_file(&op_file).unwrap();
+        std::fs::create_dir(&op_file).unwrap();
+        std::fs::write(op_file.join("x"), "x").unwrap();
+    });
+
+    destroyed.expect("the instance is removed, so rm succeeds");
+    assert!(!fx.env.dirs.instances().join("foo").exists());
+    let messages = fx.progress.messages();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("foo") && messages[0].contains("lock files could not be deleted"),
+        "{messages:?}"
+    );
+}

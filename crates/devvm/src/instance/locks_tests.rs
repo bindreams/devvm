@@ -304,23 +304,31 @@ fn probes_racing_the_unlink_of_the_lock_files_see_present_or_gone_never_an_error
     let locks = locks(home);
     let id = InstanceId::random();
     let finished = std::sync::atomic::AtomicBool::new(false);
+    let (probing, first_probe_done) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         let prober = scope.spawn(|| {
-            let mut probes = 0u64;
-            while !finished.load(std::sync::atomic::Ordering::Acquire) {
+            let mut first = true;
+            loop {
                 // Windows refuses an open that meets an unlink with "access denied", not "not found".
                 locks.try_owner(&id).unwrap();
                 locks.try_op_exclusive(&id).unwrap();
-                probes += 1;
+                if std::mem::take(&mut first) {
+                    probing.send(()).unwrap();
+                }
+                if finished.load(std::sync::atomic::Ordering::Acquire) {
+                    return;
+                }
             }
-            probes
         });
+        // The prober has probed once before the unlinking starts: it is running, not still to be scheduled.
+        first_probe_done.recv().unwrap();
         for _ in 0..3000 {
             drop(locks.acquire_owner_new(&id).unwrap());
             locks.remove(&id).unwrap();
         }
         finished.store(true, std::sync::atomic::Ordering::Release);
-        assert!(prober.join().unwrap() > 0);
+        // A failed probe panics the prober, and the join reports it.
+        prober.join().unwrap();
     });
 }
 

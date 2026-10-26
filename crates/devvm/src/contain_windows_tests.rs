@@ -67,7 +67,14 @@ fn a_failed_resume_leaves_no_process(#[fixture(anna_home)] home: &Path) {
     other.kill().unwrap();
 
     let error = vm.resume().expect_err("a dead process cannot be resumed");
-    assert!(!error.message().is_empty());
+    assert_eq!(error.kind(), ErrorKind::Io);
+    let pid = vm.record().unwrap().pid;
+    assert!(
+        error.message().contains(&format!("cannot resume the VM process {pid}"))
+            && error.message().contains("could not resume the frozen child"),
+        "the process and cosca's cause are both named: {}",
+        error.message()
+    );
     assert!(!vm.is_alive().unwrap());
     assert!(!home.join(STARTED).exists());
 }

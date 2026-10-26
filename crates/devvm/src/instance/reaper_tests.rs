@@ -622,3 +622,23 @@ fn an_entry_whose_type_cannot_be_read_is_warned_about_and_blocks_the_lock_sweep(
     let (_, unattributed) = fx.registry.attribute(entries);
     assert!(unattributed, "a lock file may belong to the entry nobody could examine");
 }
+
+#[skuld::test]
+fn a_placed_directory_nobody_can_attribute_keeps_every_lock_file(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let orphan = InstanceId::random();
+    drop(fx.registry.locks().acquire_owner_new(&orphan).unwrap());
+    let stray = root(&fx).join("bar");
+    std::fs::create_dir_all(&stray).unwrap();
+    std::fs::write(stray.join("record.json"), "{ torn").unwrap();
+    std::fs::write(stray.join("owner.json"), "{ torn").unwrap();
+
+    // The directory may well be the instance that owns the lock files: neither of its files says which it is.
+    let mut report = ReapReport::default();
+    fx.registry.sweep_locks(&mut report);
+    assert_eq!(lock_files(&fx).len(), 2, "{:?}", report.warnings);
+
+    std::fs::remove_dir_all(&stray).unwrap();
+    fx.registry.sweep_locks(&mut report);
+    assert!(lock_files(&fx).is_empty(), "with nothing unattributed the orphan goes");
+}

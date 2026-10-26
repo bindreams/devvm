@@ -8,6 +8,7 @@ use crate::contain::contain_tests::Sleeper;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, ListFilter, NoHooks};
 use crate::exit::Progress;
 use crate::guest::fake::FakeGuests;
+use crate::host::Host;
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, write_marker};
@@ -81,6 +82,25 @@ pub(crate) fn engine_fixture_from(
         engine,
         fake,
     }
+}
+
+/// An engine over the fixture's state with its own `host` and `backend`.
+pub(crate) fn engine_over(
+    fx: &EngineFixture,
+    host: &'static dyn Host,
+    backend: Option<Arc<dyn Backend>>,
+    progress: Arc<dyn Progress>,
+) -> Arc<Engine> {
+    Engine::with_parts(EngineParts {
+        dirs: fx.env.dirs.clone(),
+        host,
+        backend,
+        guests: Arc::new(FakeGuests),
+        clock: Arc::new(SystemClock),
+        progress,
+        hooks: Arc::new(NoHooks),
+        boot_bound: DEFAULT_BOOT_BOUND,
+    })
 }
 
 /// An engine whose backend is the scripted [`StubBackend`], with the progress it reports to.
@@ -220,6 +240,24 @@ fn list_filters_by_creation_dir_and_all_lists_everything(#[fixture(anna_home)] h
     assert!(listed[0].ownerless);
     assert_eq!(listed[0].guest, GuestKind::Linux);
     assert_eq!(listed[0].arch, Arch::Amd64);
+}
+
+#[skuld::test]
+fn list_matches_a_creation_dir_given_in_another_spelling_of_the_same_directory(#[fixture(anna_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let here = home.join("projects").join("here");
+    let elsewhere = home.join("projects").join("elsewhere");
+    std::fs::create_dir_all(&here).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    instance_in(&fx, "a", &here);
+    instance_in(&fx, "b", &elsewhere);
+
+    // The same directory through a `..` segment: not the path the record holds, but the directory it names.
+    let spelled = elsewhere.join("..").join("here");
+    assert_ne!(spelled, here);
+    let listed = fx.engine.list(ListFilter::CreatedIn(spelled)).unwrap();
+
+    assert_eq!(info_names(&listed), ["a"]);
 }
 
 #[skuld::test]
@@ -453,16 +491,7 @@ fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixtu
     let dir = instance_in(&fx, "foo", home);
     record_machine(&dir, &dead_machine(Vec::new()));
     let progress = memory();
-    let engine = Engine::with_parts(EngineParts {
-        dirs: fx.env.dirs.clone(),
-        host: &TestHost,
-        backend: None,
-        guests: Arc::new(FakeGuests),
-        clock: Arc::new(SystemClock),
-        progress: progress.clone(),
-        hooks: Arc::new(NoHooks),
-        boot_bound: DEFAULT_BOOT_BOUND,
-    });
+    let engine = engine_over(&fx, &TestHost, None, progress.clone());
 
     let infos = engine.list(ListFilter::All).unwrap();
 

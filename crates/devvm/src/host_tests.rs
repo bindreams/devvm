@@ -23,10 +23,21 @@ fn unsupported_host_names_itself_in_unavailable() {
     assert!(missing.contains("0.1.0"), "{missing}");
 }
 
+/// What the `console-window` helper says about its console when started from `cmd`.
+fn console_report(mut cmd: cosca::Command) -> String {
+    let output = cmd.output().expect("the helper should run");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn console_window_command() -> cosca::Command {
+    helper::cosca_command("console-window", &[])
+}
+
 #[skuld::test]
 fn unsupported_host_detach_changes_nothing() {
-    let mut cmd = cosca::Command::new();
+    let mut cmd = console_window_command();
     UnsupportedHost.detach(&mut cmd).unwrap();
+    assert_eq!(console_report(cmd), console_report(console_window_command()));
 }
 
 #[skuld::test]
@@ -48,9 +59,17 @@ fn windows_host_exit_width_is_full32() {
 
 #[cfg(windows)]
 #[skuld::test]
-fn windows_host_detach_accepts_a_command() {
-    let mut cmd = cosca::Command::new();
+fn windows_host_detach_leaves_the_child_without_a_console() {
+    let mut cmd = console_window_command();
     super::windows::WindowsHost.detach(&mut cmd).unwrap();
+
+    let detached = console_report(cmd);
+    let attached = console_report(console_window_command());
+    assert!(detached.ends_with("console=0"), "{detached}");
+    assert!(
+        !attached.ends_with("console=0"),
+        "the helper cannot tell the two apart: {attached}"
+    );
 }
 
 #[skuld::test]
@@ -58,8 +77,10 @@ fn test_host_accelerates_with_tcg_and_detaches_like_the_current_host() {
     let host = TestHost;
     assert!(matches!(host.accelerator(Arch::host()), Ok(super::Accel::Tcg)));
     assert_eq!(host.exit_width(), current().exit_width());
-    let mut cmd = cosca::Command::new();
-    host.detach(&mut cmd).unwrap();
+    let (mut ours, mut current_hosts) = (console_window_command(), console_window_command());
+    host.detach(&mut ours).unwrap();
+    current().detach(&mut current_hosts).unwrap();
+    assert_eq!(console_report(ours), console_report(current_hosts));
 }
 
 #[cfg(windows)]
