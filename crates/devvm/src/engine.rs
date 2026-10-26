@@ -21,7 +21,7 @@ use crate::{Dirs, Error, ErrorKind, Instance, Result};
 pub(crate) mod engine_tests;
 
 /// How long a guest gets to boot and answer before a start fails: a failure bound on an event outside devvm. Read by
-/// the readiness wait of the QEMU backend; `start` waits for no boot in this build.
+/// the engine's `Instance::start_with` once it waits for readiness; `start` waits for no boot in this build.
 pub(crate) const DEFAULT_BOOT_BOUND: Duration = Duration::from_secs(10 * 60);
 
 /// Which instances `list` returns.
@@ -226,7 +226,8 @@ impl Engine {
         &self.hooks
     }
 
-    /// How long a started guest gets to answer before the start fails. For the readiness wait of the QEMU backend.
+    /// How long a started guest gets to answer before the start fails. Read by the engine's `Instance::start_with`
+    /// (not yet: `start` waits for no boot in this build), which hands it to the readiness wait as its failure bound.
     pub(crate) fn boot_bound(&self) -> Duration {
         self.boot_bound
     }
