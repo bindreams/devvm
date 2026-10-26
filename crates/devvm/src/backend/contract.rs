@@ -253,6 +253,10 @@ pub(crate) fn concurrent_launches_get_distinct_processes_and_endpoints(target: &
 
     let records: Vec<MachineRecord> = machines.iter().map(|machine| machine.record()).collect();
     let processes: HashSet<_> = records.iter().map(|r| (r.process.pid, r.process.token)).collect();
+    // The endpoints exist once the machines run.
+    for machine in &mut machines {
+        machine.resume().unwrap();
+    }
     let endpoints: HashSet<_> = machines.iter().map(|m| first_endpoint(&**m)).collect();
     for machine in &mut machines {
         machine.kill().unwrap();

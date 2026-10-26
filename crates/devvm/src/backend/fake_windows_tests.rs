@@ -126,10 +126,20 @@ impl ContractTarget for StrictTarget {
 }
 
 #[skuld::test]
-fn the_launch_and_frozen_functions_read_no_endpoint_before_resume(#[fixture(anna_home)] home: &Path) {
+fn no_contract_function_reads_an_endpoint_before_resume(#[fixture(anna_home)] home: &Path) {
     let target = StrictTarget::new();
-    contract::launch_reports_a_live_process_and_loopback_endpoints(&target, &home.join("a"));
-    contract::a_frozen_machine_has_not_run_and_kill_leaves_nothing(&target, &home.join("b"));
+    let functions: [fn(&dyn ContractTarget, &Path); 7] = [
+        contract::launch_reports_a_live_process_and_loopback_endpoints,
+        contract::a_frozen_machine_has_not_run_and_kill_leaves_nothing,
+        contract::a_released_machine_outlives_its_launcher_and_attach_finds_it,
+        contract::kill_returns_only_after_the_process_has_exited,
+        contract::attach_to_a_dead_machine_fails,
+        contract::shutdown_stops_the_process,
+        contract::concurrent_launches_get_distinct_processes_and_endpoints,
+    ];
+    for (n, function) in functions.into_iter().enumerate() {
+        function(&target, &home.join(n.to_string()));
+    }
 }
 
 #[skuld::test]
