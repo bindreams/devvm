@@ -200,6 +200,18 @@ impl Registry {
 
     /// A readable instance: remove it if its owner is gone.
     fn reap_owned(&self, name: &str, path: &Path, record: InstanceRecord, report: &mut ReapReport) {
+        self.reap_owned_with(name, path, record, report, &mut || {});
+    }
+
+    /// `reap_owned` with `after_op_lock` run once the op lock is held and before the record is read again.
+    fn reap_owned_with(
+        &self,
+        name: &str,
+        path: &Path,
+        record: InstanceRecord,
+        report: &mut ReapReport,
+        after_op_lock: &mut dyn FnMut(),
+    ) {
         let id = record.id;
         // The record names this id and the directory exists, so lock files that are missing were deleted from outside.
         let owner_lock = match self.locks().try_owner_recreating(&id) {
@@ -235,6 +247,7 @@ impl Registry {
                 return;
             }
         };
+        after_op_lock();
         let record = match dir.record() {
             Ok(record) => record,
             Err(e) => {

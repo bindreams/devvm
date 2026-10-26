@@ -642,3 +642,28 @@ fn a_placed_directory_nobody_can_attribute_keeps_every_lock_file(#[fixture(anna_
     fx.registry.sweep_locks(&mut report);
     assert!(lock_files(&fx).is_empty(), "with nothing unattributed the orphan goes");
 }
+
+#[skuld::test]
+fn an_instance_whose_record_turns_unreadable_after_the_op_lock_is_left_for_the_next_pass(
+    #[fixture(anna_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    drop(create(&fx, Some("foo")));
+    let path = root(&fx).join("foo");
+    let RecordRead::Valid(record) = InstanceRecord::read(&path).unwrap() else {
+        panic!("the record should be readable before the reap");
+    };
+    let mut report = ReapReport::default();
+    let mut tear = || std::fs::write(path.join("record.json"), "{ torn").unwrap();
+
+    fx.registry.reap_owned_with("foo", &path, *record, &mut report, &mut tear);
+
+    assert!(report.reaped.is_empty(), "{report:?}");
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    let warning = &report.warnings[0];
+    assert!(
+        warning.contains("cannot read instance foo") && warning.contains("unreadable"),
+        "{warning}"
+    );
+    assert!(path.is_dir(), "an instance whose record cannot be read is not removed");
+}
