@@ -31,6 +31,17 @@ cosca = { version = "0.6.0", features = ["serde"] }
 [dev-dependencies]
 skuld = { workspace = true }
 
+# The fake VM reports its own job and console to the tests (`test_support/fake_vm`).
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [[test]]
 name = "vm_gate"
 path = "tests/vm_gate.rs"

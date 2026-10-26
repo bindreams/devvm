@@ -4,7 +4,8 @@ use std::sync::mpsc;
 
 use cosca::identity::ProcessIdRecord;
 
-use crate::contain::VmProcess;
+use crate::ErrorKind;
+use crate::contain::{VmProcess, frozen_spawn_error};
 use crate::test_support::helper;
 
 /// Helper process: blocks until stdin closes.
@@ -111,4 +112,29 @@ fn record_names_the_attached_process() {
     let record = sleeper.record();
     let vm = VmProcess::attach(&record).unwrap().unwrap();
     assert_eq!(vm.record().unwrap(), record);
+}
+
+#[skuld::test]
+fn a_host_that_cannot_freeze_a_process_is_not_supported_naming_the_host() {
+    let refusal = cosca::error::Error::Unsupported {
+        op: "spawn_suspended".into(),
+        platform: "plan9",
+        detail: "no gate before exec".into(),
+    };
+    let error = frozen_spawn_error(refusal);
+    assert_eq!(error.kind(), ErrorKind::NotSupported);
+    assert!(
+        error.message().contains("frozen spawn needs Windows in 0.1.0") && error.message().contains("plan9"),
+        "{}",
+        error.message()
+    );
+}
+
+#[skuld::test]
+fn any_other_frozen_spawn_failure_is_an_io_error_carrying_coscas_words() {
+    let error = frozen_spawn_error(cosca::error::Error::Containment {
+        detail: "no job".into(),
+    });
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(error.message().contains("no job"), "{}", error.message());
 }

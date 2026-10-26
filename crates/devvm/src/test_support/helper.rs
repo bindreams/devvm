@@ -34,3 +34,11 @@ pub fn command(name: &str, args: &[&str]) -> Command {
     command.env(HELPER_VAR, name).args(args);
     command
 }
+
+/// `command` for cosca: a frozen spawn needs cosca's own command type.
+pub fn cosca_command(name: &str, args: &[&str]) -> cosca::Command {
+    let exe = std::env::current_exe().expect("test binary path should be known");
+    let mut command = cosca::Command::new();
+    command.arg(exe).args(args).env(HELPER_VAR, name);
+    command
+}
