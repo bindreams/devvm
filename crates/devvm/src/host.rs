@@ -90,10 +90,28 @@ fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::
     let mut file = options.write(true).create_new(true).open(path)?;
     if let Err(e) = file.write_all(bytes) {
         drop(file);
-        let _ = std::fs::remove_file(path);
-        return Err(e);
+        return Err(after_failed_write(path, e, || std::fs::remove_file(path)));
     }
     Ok(())
+}
+
+/// The error of a write to `path` that failed with `error`, after `remove` took the partial file away. A file that
+/// stays is named in the error: a retry would otherwise meet `AlreadyExists` with no explanation.
+fn after_failed_write(
+    path: &Path,
+    error: std::io::Error,
+    remove: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Error {
+    match remove() {
+        Ok(()) => error,
+        Err(left) => std::io::Error::new(
+            error.kind(),
+            format!(
+                "{error}; the partial file {} could not be removed either ({left})",
+                path.display()
+            ),
+        ),
+    }
 }
 
 /// The host this binary runs on.

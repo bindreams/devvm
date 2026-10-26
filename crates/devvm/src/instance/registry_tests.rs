@@ -594,3 +594,39 @@ fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(a
     assert_eq!(owned.dir().name().as_str(), "free");
     assert_eq!(names(&instances(&fx)), ["free"]);
 }
+
+#[skuld::test]
+fn an_entry_whose_type_cannot_be_read_is_skipped_with_a_warning_naming_it(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let path = instances(&fx).join("foo");
+
+    let listed = fx.registry.listed_name(
+        "foo".as_ref(),
+        &path,
+        Err(std::io::Error::other("the type is unreadable")),
+    );
+
+    assert!(listed.is_none());
+    let messages = fx.progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("foo") && m.contains("the type is unreadable")),
+        "{messages:?}"
+    );
+}
+
+#[skuld::test]
+fn an_unreadable_hidden_entry_is_not_worth_a_word(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let path = instances(&fx).join(".new-x");
+
+    let listed = fx.registry.listed_name(
+        ".new-x".as_ref(),
+        &path,
+        Err(std::io::Error::other("the type is unreadable")),
+    );
+
+    assert!(listed.is_none());
+    assert!(fx.progress.messages().is_empty());
+}

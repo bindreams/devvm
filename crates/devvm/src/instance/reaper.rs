@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 
 use crate::instance::dir::remove_tree;
 use crate::instance::locks::Probe;
-use crate::instance::name::InstanceName;
 use crate::instance::quarantine::{Placed, classify};
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead};
 use crate::instance::registry::Registry;
@@ -44,6 +43,32 @@ pub(crate) struct ReapReport {
     pub warnings: Vec<String>,
 }
 
+/// The entries of `instances/` as the reaper sees them.
+#[derive(Default)]
+pub(super) struct Entries {
+    /// Name and path of each directory.
+    pub dirs: Vec<(String, PathBuf)>,
+    /// Entries whose type could not be read. They may be instances, so no lock file may be called an orphan while
+    /// there is one.
+    pub unreadable: Vec<(PathBuf, std::io::Error)>,
+}
+
+impl Entries {
+    /// Sorts an entry by what `kind`, the result of asking for its type, says it is. A directory with a name that is
+    /// not text cannot be an instance's, since instance names and ids are text.
+    pub(super) fn push(&mut self, name: std::ffi::OsString, path: PathBuf, kind: std::io::Result<std::fs::FileType>) {
+        match kind {
+            Ok(kind) if kind.is_dir() => {
+                if let Ok(name) = name.into_string() {
+                    self.dirs.push((name, path));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => self.unreadable.push((path, e)),
+        }
+    }
+}
+
 impl ReapReport {
     pub(super) fn warn(&mut self, registry: &Registry, text: String) {
         registry.progress().message(&text);
@@ -56,28 +81,37 @@ impl Registry {
     pub(crate) fn reap(&self) -> ReapReport {
         let mut report = ReapReport::default();
         match self.entries() {
-            Ok(entries) => {
-                for (name, path) in entries {
-                    if name.starts_with(".dead-") {
-                        self.reap_dead(&name, &path, &mut report);
-                    } else if let Some(id) = name.strip_prefix(".new-") {
-                        self.reap_new(id, &name, &path, &mut report);
-                    } else if !name.starts_with('.') {
-                        self.reap_placed(&name, &path, &mut report);
-                    }
-                }
-            }
+            Ok(entries) => self.reap_listed(entries, &mut report),
             Err(e) => report.warn(self, format!("cannot list instances: {}", e.message())),
         }
         self.sweep_locks(&mut report);
         report
     }
 
-    /// The directories under `instances/`, by name; empty when there is no such directory.
-    fn entries(&self) -> crate::Result<Vec<(String, PathBuf)>> {
+    /// The reaper's rules for each of `entries`.
+    pub(super) fn reap_listed(&self, entries: Entries, report: &mut ReapReport) {
+        for (path, error) in &entries.unreadable {
+            report.warn(
+                self,
+                format!("cannot tell what {} is ({error}); it is left alone", path.display()),
+            );
+        }
+        for (name, path) in entries.dirs {
+            if name.starts_with(".dead-") {
+                self.reap_dead(&name, &path, report);
+            } else if let Some(id) = name.strip_prefix(".new-") {
+                self.reap_new(id, &name, &path, report);
+            } else if !name.starts_with('.') {
+                self.reap_placed(&name, &path, report);
+            }
+        }
+    }
+
+    /// The directories under `instances/`; empty when there is no such directory.
+    fn entries(&self) -> crate::Result<Entries> {
         let entries = match std::fs::read_dir(self.root()) {
             Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Entries::default()),
             Err(e) => {
                 return Err(Error::io(
                     ErrorKind::Io,
@@ -86,18 +120,13 @@ impl Registry {
                 ));
             }
         };
-        let mut found = Vec::new();
+        let mut found = Entries::default();
         for entry in entries {
             let entry =
                 entry.map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", self.root().display()), e))?;
-            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                continue;
-            }
-            if let Ok(name) = entry.file_name().into_string() {
-                found.push((name, entry.path()));
-            }
+            found.push(entry.file_name(), entry.path(), entry.file_type());
         }
-        found.sort();
+        found.dirs.sort();
         Ok(found)
     }
 
@@ -122,7 +151,13 @@ impl Registry {
     }
 
     fn reap_new(&self, id: &str, name: &str, path: &Path, report: &mut ReapReport) {
-        let Ok(id) = id.parse::<InstanceId>() else { return };
+        let Ok(id) = id.parse::<InstanceId>() else {
+            report.warn(
+                self,
+                format!("leaving {name} alone: the part after `.new-` is not an instance id"),
+            );
+            return;
+        };
         // Held means the creator is alive and still building. A missing lock file means nobody can be building.
         let _creator_gone = match self.locks().try_owner(&id) {
             Ok(Probe::Held) => return,
@@ -188,10 +223,7 @@ impl Registry {
                 return;
             }
         }
-        let Ok(instance_name) = InstanceName::parse(name) else {
-            return;
-        };
-        let dir = self.handle(id, instance_name);
+        let dir = self.handle(id, record.name.clone());
         let op = match dir.try_op_exclusive() {
             Ok(Some(op)) => op,
             // Busy: another command is working on it; this is not an error.
@@ -214,7 +246,8 @@ impl Registry {
                 report.warn(
                     self,
                     format!(
-                        "cannot stop the VM of instance {name}: this build of devvm has no VM backend; it is left for                          the next devvm command"
+                        "cannot stop the VM of instance {name}: this build of devvm has no VM backend; it is left for \
+                         the next devvm command"
                     ),
                 );
                 return;
@@ -271,12 +304,17 @@ impl Registry {
     /// `present_ids` with `listing` run once for each read of the instance directories.
     fn present_ids_with(&self, listing: &mut dyn FnMut()) -> (HashSet<InstanceId>, bool) {
         listing();
+        match self.entries() {
+            Ok(entries) => self.attribute(entries),
+            Err(_) => (HashSet::new(), true),
+        }
+    }
+
+    /// The ids that a directory of `entries` belongs to, and whether some entry could not be attributed.
+    pub(super) fn attribute(&self, entries: Entries) -> (HashSet<InstanceId>, bool) {
         let mut present = HashSet::new();
-        let mut unattributed = false;
-        let Ok(entries) = self.entries() else {
-            return (present, true);
-        };
-        for (name, path) in entries {
+        let mut unattributed = !entries.unreadable.is_empty();
+        for (name, path) in entries.dirs {
             let hidden = name.strip_prefix(".new-").or_else(|| name.strip_prefix(".dead-"));
             if let Some(text) = hidden {
                 match text.parse::<InstanceId>() {

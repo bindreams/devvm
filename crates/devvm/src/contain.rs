@@ -126,7 +126,8 @@ impl VmProcess {
                 return Err(Error::new(
                     ErrorKind::Internal,
                     format!(
-                        "cannot release the VM process {}: it was started DiesWithOwner, so it must not outlive                          its owner",
+                        "cannot release the VM process {}: it was started DiesWithOwner, so it must not outlive \
+                         its owner",
                         id.pid()
                     ),
                 ));

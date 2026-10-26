@@ -324,19 +324,26 @@ pub(crate) fn concurrent_launches_get_distinct_processes_and_endpoints(target: &
 
 // Storage =============================================================================================================
 
-/// Every file under `dir` with its bytes.
+/// Every file under `dir` with its bytes, except the layer store's lock files: they hold no data and the build in
+/// progress has them locked.
 fn files_under(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut found = BTreeMap::new();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(next) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&next) else {
-            continue;
-        };
+        // A file the check cannot see is a file it cannot vouch for: unreadable is a failure, not a skip.
+        let entries = std::fs::read_dir(&next).unwrap_or_else(|e| panic!("cannot list {}: {e}", next.display()));
         for entry in entries {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
+            let entry = entry.unwrap_or_else(|e| panic!("cannot list {}: {e}", next.display()));
+            let path = entry.path();
+            let kind = entry
+                .file_type()
+                .unwrap_or_else(|e| panic!("cannot tell what {} is: {e}", path.display()));
+            if path.file_name().is_some_and(|name| name == ".locks") {
+                continue;
+            } else if kind.is_dir() {
                 pending.push(path);
-            } else if let Ok(bytes) = std::fs::read(&path) {
+            } else {
+                let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
                 found.insert(path, bytes);
             }
         }

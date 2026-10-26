@@ -194,7 +194,8 @@ impl Drop for Vm {
             Some(mut machine) => {
                 if let Err(e) = machine.kill() {
                     progress.message(&format!(
-                        "instance {} could not be removed: its VM could not be killed ({}); the next devvm command                          retries",
+                        "instance {} could not be removed: its VM could not be killed ({}); the next devvm command \
+                         retries",
                         dir.name(),
                         e.message()
                     ));
@@ -233,7 +234,8 @@ impl Drop for Vm {
             Ok(None) => {
                 leftovers_only();
                 progress.message(&format!(
-                    "instance {} is busy with another devvm command and was not removed; the next devvm command                      removes it",
+                    "instance {} is busy with another devvm command and was not removed; the next devvm command \
+                     removes it",
                     dir.name()
                 ));
             }

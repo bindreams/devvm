@@ -335,6 +335,37 @@ fn list_still_warns_about_an_instance_with_an_unreadable_marker(#[fixture(anna_h
 }
 
 #[skuld::test]
+fn list_names_why_a_marker_is_unusable(#[fixture(anna_home)] home: &Path) {
+    let progress = memory();
+    let fx = engine_fixture(home, progress.clone());
+    let torn = instance_in(&fx, "torn", home);
+    std::fs::write(torn.path().join("owner.json"), "{ torn").unwrap();
+    let newer = instance_in(&fx, "newer", home);
+    std::fs::write(newer.path().join("owner.json"), r#"{"schema": 2}"#).unwrap();
+
+    assert!(fx.engine.list(ListFilter::All).unwrap().is_empty());
+
+    let messages = progress.messages();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    let about = |name: &str| {
+        messages
+            .iter()
+            .find(|m| m.contains(name))
+            .unwrap_or_else(|| panic!("{messages:?}"))
+    };
+    assert!(
+        about("torn").contains("line 1 column"),
+        "the parse error is lost: {}",
+        about("torn")
+    );
+    assert!(
+        about("newer").contains("newer devvm"),
+        "the read error is lost: {}",
+        about("newer")
+    );
+}
+
+#[skuld::test]
 fn list_says_nothing_about_an_instance_whose_name_was_reused_while_it_lists(#[fixture(anna_home)] home: &Path) {
     let progress = memory();
     let fx = engine_fixture(home, progress.clone());

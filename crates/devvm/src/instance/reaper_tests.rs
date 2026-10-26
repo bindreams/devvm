@@ -11,7 +11,7 @@ use crate::engine::engine_tests::dead_machine;
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Probe;
 use crate::instance::name::InstanceName;
-use crate::instance::reaper::ReapReport;
+use crate::instance::reaper::{Entries, ReapReport};
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
 use crate::instance::registry::registry_tests::{Fixture, create, fixture, fixture_with, lock_files};
 use crate::store::layers::layers_tests::names;
@@ -571,4 +571,54 @@ fn a_live_owners_machine_keeps_its_leftovers(#[fixture(anna_home)] home: &Path) 
     fx.registry.reap();
     assert!(socket.exists());
     drop(owned);
+}
+
+#[skuld::test]
+fn a_new_directory_whose_name_is_not_an_id_is_reported_and_left_alone(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let stray = root(&fx).join(".new-not-an-id");
+    std::fs::create_dir_all(&stray).unwrap();
+
+    let report = fx.registry.reap();
+
+    assert!(
+        stray.is_dir(),
+        "a directory the reaper cannot attribute is never deleted"
+    );
+    assert!(
+        report.warnings.iter().any(|w| w.contains(".new-not-an-id")),
+        "it is not silently ignored: {:?}",
+        report.warnings
+    );
+}
+
+#[skuld::test]
+fn an_entry_whose_type_cannot_be_read_is_warned_about_and_blocks_the_lock_sweep(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let mut entries = Entries::default();
+    entries.push(
+        "foo".into(),
+        root(&fx).join("foo"),
+        Err(std::io::Error::other("the type is unreadable")),
+    );
+    let mut report = ReapReport::default();
+
+    fx.registry.reap_listed(entries, &mut report);
+
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("foo") && w.contains("the type is unreadable")),
+        "{:?}",
+        report.warnings
+    );
+    let mut entries = Entries::default();
+    entries.push(
+        "foo".into(),
+        root(&fx).join("foo"),
+        Err(std::io::Error::other("the type is unreadable")),
+    );
+    let (_, unattributed) = fx.registry.attribute(entries);
+    assert!(unattributed, "a lock file may belong to the entry nobody could examine");
 }

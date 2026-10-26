@@ -163,14 +163,7 @@ impl Registry {
         for entry in entries {
             let entry =
                 entry.map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", self.root.display()), e))?;
-            let file_name = entry.file_name();
-            let Some(text) = file_name.to_str() else { continue };
-            if text.starts_with('.') || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                continue;
-            }
-            let Ok(name) = InstanceName::parse(text) else {
-                self.progress
-                    .message(&format!("ignoring {}: not an instance name", entry.path().display()));
+            let Some(name) = self.listed_name(&entry.file_name(), &entry.path(), entry.file_type()) else {
                 continue;
             };
             match self.open(&name) {
@@ -183,6 +176,38 @@ impl Registry {
         }
         found.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
         Ok(found)
+    }
+
+    /// The instance name of the directory entry `path`, if it is one. `kind` is the result of asking for its type.
+    /// Anything that is not a candidate is skipped; an entry whose type cannot be read, or whose name is not an
+    /// instance name, is skipped with a warning, since an instance may be missing from the listing.
+    pub(super) fn listed_name(
+        &self,
+        file_name: &std::ffi::OsStr,
+        path: &std::path::Path,
+        kind: std::io::Result<std::fs::FileType>,
+    ) -> Option<InstanceName> {
+        let text = file_name.to_str()?;
+        if text.starts_with('.') {
+            return None;
+        }
+        match kind {
+            Ok(kind) if !kind.is_dir() => return None,
+            Ok(_) => {}
+            Err(e) => {
+                self.progress
+                    .message(&format!("skipping {}: cannot tell what it is ({e})", path.display()));
+                return None;
+            }
+        }
+        match InstanceName::parse(text) {
+            Ok(name) => Some(name),
+            Err(_) => {
+                self.progress
+                    .message(&format!("ignoring {}: not an instance name", path.display()));
+                None
+            }
+        }
     }
 
     /// Creates an instance owned by this process. `_guard` proves the chain was leased and the record is written under
@@ -225,7 +250,15 @@ impl Registry {
         match self.build_and_place(id, &new, &temp, seams) {
             Ok(dir) => Ok(Owned { dir, owner }),
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&temp);
+                if let Err(left) = std::fs::remove_dir_all(&temp)
+                    && left.kind() != std::io::ErrorKind::NotFound
+                {
+                    self.progress.message(&format!(
+                        "the half-built instance {} could not be deleted ({left}); the next devvm \
+                         command deletes it",
+                        temp.display()
+                    ));
+                }
                 // Already failing with the creation's error; a lock file left over is swept by the next reaper pass.
                 let _ = self.locks.remove(&id);
                 drop(owner);

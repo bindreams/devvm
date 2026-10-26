@@ -164,15 +164,18 @@ impl Engine {
                 Ok(MarkerRead::Valid(marker)) if marker.id == *dir.id() => marker.owner == Owner::None,
                 // The name belongs to another instance now: this one was removed since its record was read.
                 Ok(MarkerRead::Valid(_)) => continue,
-                Ok(_) | Err(_) => {
+                unusable => {
                     // An instance removed since its record was read has no marker either: not worth a word.
                     if matches!(dir.record(), Err(e) if e.kind() == ErrorKind::NotFound) {
                         continue;
                     }
-                    self.progress.message(&format!(
-                        "skipping instance {}: its owner.json is unreadable",
-                        dir.name()
-                    ));
+                    let why = match unusable {
+                        Ok(MarkerRead::Corrupt(why)) => format!("unreadable ({why})"),
+                        Ok(_) => "missing".to_owned(),
+                        Err(e) => format!("unreadable ({})", e.message()),
+                    };
+                    self.progress
+                        .message(&format!("skipping instance {}: its owner.json is {why}", dir.name()));
                     continue;
                 }
             };

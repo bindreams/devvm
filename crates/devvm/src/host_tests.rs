@@ -145,3 +145,41 @@ fn executable_bit_round_trips_on_unix_and_is_inert_on_windows(#[fixture(anna_hom
     current().set_executable(&write_only).unwrap();
     assert_eq!(file_mode::mode(&write_only), cfg!(unix).then_some(0o200));
 }
+
+#[skuld::test]
+fn a_failed_cleanup_of_a_partial_file_is_named_next_to_the_write_error(#[fixture(anna_home)] home: &Path) {
+    let path = home.join("key");
+    let write_error = std::io::Error::new(std::io::ErrorKind::StorageFull, "the disk is full");
+
+    let error = super::after_failed_write(&path, write_error, || {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the file is locked",
+        ))
+    });
+
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::StorageFull,
+        "the write error stays the error"
+    );
+    let text = error.to_string();
+    assert!(text.contains("the disk is full"), "{text}");
+    assert!(
+        text.contains("key") && text.contains("the file is locked"),
+        "the partial file and why it stays are not named: {text}"
+    );
+}
+
+#[skuld::test]
+fn a_cleaned_up_partial_file_leaves_the_write_error_as_it_was(#[fixture(anna_home)] home: &Path) {
+    let path = home.join("key");
+    std::fs::write(&path, b"half").unwrap();
+
+    let error = super::after_failed_write(&path, std::io::Error::other("the disk is full"), || {
+        std::fs::remove_file(&path)
+    });
+
+    assert_eq!(error.to_string(), "the disk is full");
+    assert!(!path.exists());
+}
