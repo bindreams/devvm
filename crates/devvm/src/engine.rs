@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use crate::backend::{Backend, MachineRecord};
 use crate::contain::VmProcess;
@@ -19,6 +20,9 @@ use crate::{Dirs, Error, ErrorKind, Instance, Result};
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 pub(crate) mod engine_tests;
+
+/// How long a guest gets to boot and answer before a start fails: a failure bound on an event outside devvm.
+pub(crate) const DEFAULT_BOOT_BOUND: Duration = Duration::from_secs(10 * 60);
 
 /// Which instances `list` returns.
 #[derive(Clone, Debug)]
@@ -58,6 +62,7 @@ pub(crate) struct EngineParts {
     pub clock: Arc<dyn Clock>,
     pub progress: Arc<dyn Progress>,
     pub hooks: Arc<dyn LaunchHooks>,
+    pub boot_bound: Duration,
 }
 
 pub struct Engine {
@@ -68,6 +73,7 @@ pub struct Engine {
     clock: Arc<dyn Clock>,
     progress: Arc<dyn Progress>,
     hooks: Arc<dyn LaunchHooks>,
+    boot_bound: Duration,
     registry: Registry,
     store: OnceLock<LayerStore>,
 }
@@ -84,6 +90,7 @@ impl Engine {
             clock: Arc::new(SystemClock),
             progress,
             hooks: Arc::new(NoHooks),
+            boot_bound: DEFAULT_BOOT_BOUND,
         }))
     }
 
@@ -102,6 +109,7 @@ impl Engine {
             clock: parts.clock,
             progress: parts.progress,
             hooks: parts.hooks,
+            boot_bound: parts.boot_bound,
             registry,
             store: OnceLock::new(),
         })
@@ -213,6 +221,11 @@ impl Engine {
 
     pub(crate) fn hooks(&self) -> &Arc<dyn LaunchHooks> {
         &self.hooks
+    }
+
+    /// How long a started guest gets to answer before the start fails.
+    pub(crate) fn boot_bound(&self) -> Duration {
+        self.boot_bound
     }
 
     pub(crate) fn clock(&self) -> &Arc<dyn Clock> {

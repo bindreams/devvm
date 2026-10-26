@@ -3,10 +3,12 @@ use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::Arc;
 
-use crate::backend::MachineRecord;
+use crate::backend::fake::FakeBackend;
+use crate::backend::{Backend, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
-use crate::engine::LaunchStep;
-use crate::engine::engine_tests::{EngineFixture, engine_fixture, instance_in};
+use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_fixture_with, instance_in};
+use crate::engine::{LaunchHooks, LaunchStep};
+use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::{build_expiring, days, key, names, t0};
 use crate::test_support::fake_vm::{STARTED, connect_when_up};
@@ -282,5 +284,133 @@ fn a_stopped_instance_on_a_superseded_generation_survives_gc_and_starts(#[fixtur
 
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
     instance.start().expect("the fake launch finds its backing layer");
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn start_tells_the_backend_the_instance_id_and_directory(#[fixture(anna_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+
+    let specs = fx.fake.specs();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].id, *dir.id());
+    assert_eq!(specs[0].dir, dir.path());
+    assert!(specs[0].disk.starts_with(&specs[0].dir));
+    assert!(specs[0].serial_log.starts_with(&specs[0].dir));
+    instance.remove().unwrap();
+}
+
+// A backend whose machine learns its endpoints only when it runs: its record says so before and after `resume`.
+const BEFORE_RESUME: &str = "unknown before resume";
+const AFTER_RESUME: &str = "known after resume";
+
+struct LateRecords(Arc<FakeBackend>);
+
+impl Backend for LateRecords {
+    fn launch(&self, spec: &MachineSpec) -> crate::Result<Box<dyn Machine>> {
+        Ok(Box::new(LateMachine {
+            inner: self.0.launch(spec)?,
+            resumed: false,
+        }))
+    }
+
+    fn attach(&self, rec: &MachineRecord) -> crate::Result<Box<dyn Machine>> {
+        self.0.attach(rec)
+    }
+
+    fn storage(&self) -> &dyn Storage {
+        self.0.storage()
+    }
+
+    fn can_save_memory(&self) -> bool {
+        false
+    }
+}
+
+struct LateMachine {
+    inner: Box<dyn Machine>,
+    resumed: bool,
+}
+
+impl Machine for LateMachine {
+    fn record(&self) -> MachineRecord {
+        let mut record = self.inner.record();
+        record.qmp = (if self.resumed { AFTER_RESUME } else { BEFORE_RESUME }).to_owned();
+        record
+    }
+
+    fn ssh_endpoints(&self) -> &[(Endpoint, std::net::SocketAddr)] {
+        self.inner.ssh_endpoints()
+    }
+
+    fn serial_log(&self) -> &Path {
+        self.inner.serial_log()
+    }
+
+    fn resume(&mut self) -> crate::Result<()> {
+        self.inner.resume()?;
+        self.resumed = true;
+        Ok(())
+    }
+
+    fn release(&mut self) -> crate::Result<()> {
+        self.inner.release()
+    }
+
+    fn shutdown(&mut self) -> crate::Result<()> {
+        self.inner.shutdown()
+    }
+
+    fn kill(&mut self) -> crate::Result<()> {
+        self.inner.kill()
+    }
+}
+
+/// Notes what the instance record on disk names as the machine's `qmp` at each launch step.
+struct SeesRecord {
+    instance_dir: std::sync::OnceLock<std::path::PathBuf>,
+    seen: std::sync::Mutex<Vec<(LaunchStep, String)>>,
+}
+
+impl LaunchHooks for SeesRecord {
+    fn reached(&self, step: LaunchStep, _machine: &MachineRecord) {
+        let dir = self.instance_dir.get().expect("the test set the directory");
+        let qmp = match InstanceRecord::read(dir).unwrap() {
+            RecordRead::Valid(record) => record.machine.map(|m| m.qmp).unwrap_or_default(),
+            _ => panic!("no readable record"),
+        };
+        self.seen.lock().unwrap().push((step, qmp));
+    }
+}
+
+#[skuld::test]
+fn start_records_the_machine_again_after_it_resumed(#[fixture(anna_home)] home: &Path) {
+    let hooks = Arc::new(SeesRecord {
+        instance_dir: std::sync::OnceLock::new(),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let fx = engine_fixture_with(home, Arc::new(MemoryProgress::default()), hooks.clone(), |fake| {
+        Arc::new(LateRecords(fake))
+    });
+    let dir = instance_in(&fx, "foo", home);
+    hooks.instance_dir.set(dir.path().to_path_buf()).unwrap();
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+
+    // The first record is written while the machine is frozen; the second after it ran.
+    assert_eq!(
+        *hooks.seen.lock().unwrap(),
+        [
+            (LaunchStep::Spawned, String::new()),
+            (LaunchStep::Recorded, BEFORE_RESUME.to_owned()),
+            (LaunchStep::Resumed, BEFORE_RESUME.to_owned()),
+        ]
+    );
+    assert_eq!(recorded(&instance).unwrap().qmp, AFTER_RESUME);
     instance.remove().unwrap();
 }

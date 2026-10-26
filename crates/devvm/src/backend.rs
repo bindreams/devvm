@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contain::Lifetime;
 use crate::host::Accel;
+use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
 use crate::{Arch, Network, Result};
 
@@ -106,6 +107,10 @@ impl MachineRecord {
 
 #[derive(Clone, Debug)]
 pub(crate) struct MachineSpec {
+    /// The instance this machine belongs to; a backend derives names that must not collide from it.
+    pub id: InstanceId,
+    /// The instance directory. `disk`, `serial_log` and the firmware variables sit in it.
+    pub dir: PathBuf,
     pub arch: Arch,
     pub accel: Accel,
     pub cpus: u32,

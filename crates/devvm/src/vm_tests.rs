@@ -271,6 +271,7 @@ pub(crate) fn helper_engine(home: &Path, hooks: Arc<dyn LaunchHooks>) -> Arc<Eng
         clock: Arc::new(crate::store::layers::SystemClock),
         progress: Arc::new(crate::exit::StderrProgress),
         hooks,
+        boot_bound: crate::engine::DEFAULT_BOOT_BOUND,
     })
 }
 

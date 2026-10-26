@@ -14,6 +14,7 @@ use crate::backend::{
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
+use crate::instance::record::InstanceId;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerDir, LayerStore};
 use crate::test_support::fake_vm;
@@ -34,6 +35,7 @@ const LAYER_DISK: &str = "disk.qcow2";
 pub(crate) struct FakeBackend {
     host: &'static dyn Host,
     launched: Mutex<Vec<MachineRecord>>,
+    specs: Mutex<Vec<MachineSpec>>,
     ports: Mutex<HashSet<u16>>,
     storage: FakeStorage,
 }
@@ -43,6 +45,7 @@ impl FakeBackend {
         FakeBackend {
             host,
             launched: Mutex::new(Vec::new()),
+            specs: Mutex::new(Vec::new()),
             ports: Mutex::new(HashSet::new()),
             storage: FakeStorage,
         }
@@ -56,6 +59,11 @@ impl FakeBackend {
     /// The record of every machine launched through this backend, in launch order.
     pub(crate) fn launched(&self) -> Vec<MachineRecord> {
         self.launched.lock().unwrap().clone()
+    }
+
+    /// The spec of every machine launched through this backend, in launch order.
+    pub(crate) fn specs(&self) -> Vec<MachineSpec> {
+        self.specs.lock().unwrap().clone()
     }
 
     /// A loopback port no machine of this backend has had.
@@ -112,6 +120,7 @@ impl Backend for FakeBackend {
             leftovers: Vec::new(),
         };
         self.launched.lock().unwrap().push(record.clone());
+        self.specs.lock().unwrap().push(spec.clone());
         Ok(Box::new(FakeMachine {
             vm,
             record,
@@ -213,6 +222,8 @@ impl Storage for FakeStorage {
 /// A spec for a fake machine whose disk and serial log are at the given paths.
 pub(crate) fn fake_spec(disk: PathBuf, serial_log: PathBuf, lifetime: Lifetime) -> MachineSpec {
     MachineSpec {
+        id: InstanceId::random(),
+        dir: disk.parent().expect("a disk has a directory").to_path_buf(),
         arch: Arch::Amd64,
         accel: Accel::Tcg,
         cpus: 1,

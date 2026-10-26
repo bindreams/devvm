@@ -38,6 +38,8 @@ pub(super) fn launch(
         dir: seed_dir,
     })?;
     let spec = MachineSpec {
+        id: *dir.id(),
+        dir: dir.path().to_path_buf(),
         arch: record.arch,
         accel,
         cpus: record.cpus,
@@ -62,19 +64,30 @@ pub(super) fn launch(
     }
     engine.hooks().reached(LaunchStep::Recorded, &machine_record);
     if let Err(e) = machine.resume() {
-        kill_unrecorded(engine, dir, &mut *machine);
-        if let Err(clear) = dir.update(op, &mut |record| record.machine = None) {
-            engine.progress().message(&format!(
-                "instance {} could not be started, and its record still names the machine ({}); the next devvm \
-                 command on it clears that",
-                dir.name(),
-                clear.message()
-            ));
-        }
+        abandon(engine, dir, op, &mut *machine);
         return Err(e);
     }
-    engine.hooks().reached(LaunchStep::Resumed, &machine_record);
+    // A machine may learn its endpoints only by running, so its record is written once more.
+    let running_record = machine.record();
+    engine.hooks().reached(LaunchStep::Resumed, &running_record);
+    if let Err(e) = dir.update(op, &mut |record| record.machine = Some(running_record.clone())) {
+        abandon(engine, dir, op, &mut *machine);
+        return Err(e);
+    }
     Ok(Some(machine))
+}
+
+/// A recorded machine that must not run after all: kills it and clears the record that names it.
+fn abandon(engine: &Engine, dir: &InstanceDir, op: &OpExclusive, machine: &mut dyn Machine) {
+    kill_unrecorded(engine, dir, machine);
+    if let Err(clear) = dir.update(op, &mut |record| record.machine = None) {
+        engine.progress().message(&format!(
+            "instance {} could not be started, and its record still names the machine ({}); the next devvm \
+             command on it clears that",
+            dir.name(),
+            clear.message()
+        ));
+    }
 }
 
 fn kill_unrecorded(engine: &Engine, dir: &InstanceDir, machine: &mut dyn Machine) {

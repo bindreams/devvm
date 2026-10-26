@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::backend::MachineRecord;
 use crate::backend::fake::{FakeBackend, FakeStorage};
+use crate::backend::{Backend, MachineRecord};
 use crate::contain::contain_tests::Sleeper;
-use crate::engine::{Engine, EngineParts, ListFilter, NoHooks};
+use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, ListFilter, NoHooks};
 use crate::exit::Progress;
 use crate::guest::fake::FakeGuests;
 use crate::instance::dir::InstanceDir;
@@ -28,17 +28,28 @@ pub(crate) struct EngineFixture {
 }
 
 pub(crate) fn engine_fixture(home: &Path, progress: Arc<dyn Progress>) -> EngineFixture {
+    engine_fixture_with(home, progress, Arc::new(NoHooks), |fake| fake)
+}
+
+/// `engine_fixture` with launch `hooks`, and with the engine reaching the fake backend through `wrap`.
+pub(crate) fn engine_fixture_with(
+    home: &Path,
+    progress: Arc<dyn Progress>,
+    hooks: Arc<dyn LaunchHooks>,
+    wrap: impl FnOnce(Arc<FakeBackend>) -> Arc<dyn Backend>,
+) -> EngineFixture {
     let env = env(home);
     let chain = build(&env, key(1), None);
     let fake = Arc::new(FakeBackend::new(&TestHost));
     let engine = Engine::with_parts(EngineParts {
         dirs: env.dirs.clone(),
         host: &TestHost,
-        backend: Some(fake.clone()),
+        backend: Some(wrap(fake.clone())),
         guests: Arc::new(FakeGuests),
         clock: Arc::new(SystemClock),
         progress,
-        hooks: Arc::new(NoHooks),
+        hooks,
+        boot_bound: DEFAULT_BOOT_BOUND,
     });
     EngineFixture {
         env,
@@ -292,4 +303,26 @@ fn list_says_nothing_about_an_instance_whose_name_was_reused_while_it_lists(#[fi
 
     assert!(infos.is_empty(), "{infos:?}");
     assert!(progress.messages().is_empty(), "{:?}", progress.messages());
+}
+
+#[skuld::test]
+fn from_env_waits_ten_minutes_for_a_boot() {
+    let engine = Engine::from_env(Arc::new(MemoryProgress::default())).unwrap();
+    assert_eq!(engine.boot_bound(), Duration::from_secs(10 * 60));
+}
+
+#[skuld::test]
+fn with_parts_keeps_the_boot_bound_it_is_given(#[fixture(anna_home)] home: &Path) {
+    let env = env(home);
+    let engine = Engine::with_parts(EngineParts {
+        dirs: env.dirs.clone(),
+        host: &TestHost,
+        backend: None,
+        guests: Arc::new(FakeGuests),
+        clock: Arc::new(SystemClock),
+        progress: Arc::new(MemoryProgress::default()),
+        hooks: Arc::new(NoHooks),
+        boot_bound: Duration::from_millis(250),
+    });
+    assert_eq!(engine.boot_bound(), Duration::from_millis(250));
 }
