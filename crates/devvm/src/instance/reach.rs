@@ -23,21 +23,22 @@ impl Reachability for Registry {
     /// record (one being removed) hold no instance.
     ///
     /// Quarantine never deletes an instance's disk, which sits on its chain, so a quarantined instance keeps the chain
-    /// alive too. Its record cannot be missing: nothing is being removed there.
+    /// alive too. Quarantine also holds directories whose record is missing or torn (that is why they are there), so
+    /// such a directory fails the call too, until a person removes it.
     fn chains(&self) -> Result<Vec<Vec<LayerRef>>> {
         let mut chains = Vec::new();
         for path in self.directories(self.root(), true)? {
             match self.locks().read_record(&path)? {
                 RecordRead::Valid(record) => chains.push(record.chain),
                 RecordRead::Absent => {}
-                RecordRead::Corrupt(why) => return Err(unreadable(&path, &why)),
+                RecordRead::Corrupt(why) => return Err(unreadable(&path, &why, false)),
             }
         }
         for path in self.directories(&self.quarantine_root().join("instances"), false)? {
             match InstanceRecord::read(&path)? {
                 RecordRead::Valid(record) => chains.push(record.chain),
-                RecordRead::Absent => return Err(unreadable(&path, "record.json is missing")),
-                RecordRead::Corrupt(why) => return Err(unreadable(&path, &why)),
+                RecordRead::Absent => return Err(unreadable(&path, "record.json is missing", true)),
+                RecordRead::Corrupt(why) => return Err(unreadable(&path, &why, true)),
             }
         }
         Ok(chains)
@@ -82,11 +83,13 @@ pub(super) fn entry_is_dir(path: &Path, kind: std::io::Result<FileType>) -> Resu
     })
 }
 
-fn unreadable(path: &Path, why: &str) -> Error {
+fn unreadable(path: &Path, why: &str, quarantined: bool) -> Error {
+    let which = if quarantined { "a quarantined instance" } else { "an instance" };
+    let way_out = if quarantined { " (remove the quarantined directory to proceed)" } else { "" };
     Error::new(
         ErrorKind::Store,
         format!(
-            "cannot collect: the record of an instance is unreadable ({why}): {}; nothing was deleted",
+            "cannot collect: the record of {which} is unreadable ({why}): {}; nothing was deleted{way_out}",
             path.join("record.json").display()
         ),
     )

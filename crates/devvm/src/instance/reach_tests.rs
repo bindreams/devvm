@@ -148,6 +148,28 @@ fn chains_fails_naming_a_quarantined_instance_whose_record_is_unreadable(#[fixtu
 }
 
 #[skuld::test]
+fn chains_fails_naming_a_quarantined_instance_whose_record_is_missing(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    drop(create(&fx, Some("foo")));
+    std::fs::remove_file(fx.env.dirs.instances().join("foo").join("record.json")).unwrap();
+    let report = fx.registry.reap();
+    assert_eq!(report.quarantined.len(), 1, "{report:?}");
+    let quarantined = report.quarantined[0].clone();
+
+    let error = fx.registry.chains().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(
+        error.message().contains("quarantined instance")
+            && error.message().contains("record.json is missing")
+            && error.message().contains(&quarantined.display().to_string())
+            && error.message().contains("nothing was deleted"),
+        "{}",
+        error.message()
+    );
+}
+
+#[skuld::test]
 fn chains_fails_on_a_record_from_a_newer_devvm(#[fixture(anna_home)] home: &Path) {
     let fx = fixture(home);
     drop(create(&fx, Some("foo")));
