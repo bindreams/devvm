@@ -4,6 +4,7 @@ use super::unsupported::UnsupportedHost;
 use super::{Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
+use crate::test_support::fake_vm;
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::anna_home;
 use crate::test_support::helper;
@@ -23,21 +24,50 @@ fn unsupported_host_names_itself_in_unavailable() {
     assert!(missing.contains("0.1.0"), "{missing}");
 }
 
-/// What the `console-window` helper says about its console when started from `cmd`.
-fn console_report(mut cmd: cosca::Command) -> String {
+/// What the `console-window` helper says about its own console: whether it has a window, and whether it has a console
+/// at all. Not how many processes share the console: other tests start and end processes on it meanwhile.
+#[derive(Debug, PartialEq, Eq)]
+struct ConsoleFacts {
+    window: String,
+    attached: bool,
+}
+
+/// The helper's own console facts when started from `cmd`.
+fn console_facts(mut cmd: cosca::Command) -> ConsoleFacts {
     let output = cmd.output().expect("the helper should run");
-    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let field = |name: &str| {
+        text.split(' ')
+            .find_map(|part| part.strip_prefix(name))
+            .unwrap_or_else(|| panic!("the helper printed no {name}: {text}"))
+            .to_owned()
+    };
+    ConsoleFacts {
+        window: field("window="),
+        attached: field("console=") != "0",
+    }
 }
 
 fn console_window_command() -> cosca::Command {
     helper::cosca_command("console-window", &[])
 }
 
+/// A child that was not detached shares this process's console, or has none when this process has none.
+fn undetached_control() -> ConsoleFacts {
+    let facts = console_facts(console_window_command());
+    assert_eq!(
+        facts.attached,
+        fake_vm::this_process_has_console(),
+        "a child that is not detached should inherit this process's console: {facts:?}"
+    );
+    facts
+}
+
 #[skuld::test]
 fn unsupported_host_detach_changes_nothing() {
     let mut cmd = console_window_command();
     UnsupportedHost.detach(&mut cmd).unwrap();
-    assert_eq!(console_report(cmd), console_report(console_window_command()));
+    assert_eq!(console_facts(cmd), undetached_control());
 }
 
 #[skuld::test]
@@ -63,13 +93,9 @@ fn windows_host_detach_leaves_the_child_without_a_console() {
     let mut cmd = console_window_command();
     super::windows::WindowsHost.detach(&mut cmd).unwrap();
 
-    let detached = console_report(cmd);
-    let attached = console_report(console_window_command());
-    assert!(detached.ends_with("console=0"), "{detached}");
-    assert!(
-        !attached.ends_with("console=0"),
-        "the helper cannot tell the two apart: {attached}"
-    );
+    let detached = console_facts(cmd);
+    undetached_control();
+    assert!(!detached.attached, "a detached child has no console: {detached:?}");
 }
 
 #[skuld::test]
@@ -80,7 +106,7 @@ fn test_host_accelerates_with_tcg_and_detaches_like_the_current_host() {
     let (mut ours, mut current_hosts) = (console_window_command(), console_window_command());
     host.detach(&mut ours).unwrap();
     current().detach(&mut current_hosts).unwrap();
-    assert_eq!(console_report(ours), console_report(current_hosts));
+    assert_eq!(console_facts(ours), console_facts(current_hosts));
 }
 
 #[cfg(windows)]
