@@ -1,5 +1,7 @@
 //! VM processes: found again by identity (PID plus start token), never by a bare PID.
 
+use std::path::Path;
+
 use cosca::error::RecordErrorKind;
 use cosca::identity::{Liveness, ProcessId, ProcessIdRecord};
 
@@ -64,21 +66,28 @@ impl VmProcess {
     /// Starts `cmd` frozen: the process exists and has an identity, and has not run. Record the identity
     /// (`record`), then `resume`. Dropping a frozen `VmProcess` kills the process, so it never runs.
     ///
-    /// The process is always contained (killed when this process dies) and has no console (the host's detach).
-    /// `OutlivesOwner` also gives it null stdio, so it holds none of the owner's pipes; `release` disarms the
-    /// containment.
+    /// The process is always contained (killed when this process dies), has no console (the host's detach) and holds
+    /// none of this process's pipes: stdin is null, and stdout and stderr are appended to the file `log`, which is
+    /// created. Both lifetimes start alike; `release` is what lets a VM outlive its owner.
     ///
     /// Windows only in 0.1.0: cosca can hold a process before its first instruction there alone (a POSIX child cannot
     /// be held before exec without a gate), so every other host gets `NotSupported`.
-    pub(crate) fn spawn_frozen(host: &dyn Host, mut cmd: cosca::Command, lifetime: Lifetime) -> Result<VmProcess> {
+    pub(crate) fn spawn_frozen(
+        host: &dyn Host,
+        mut cmd: cosca::Command,
+        _lifetime: Lifetime,
+        log: &Path,
+    ) -> Result<VmProcess> {
         cmd.contain();
-        if lifetime == Lifetime::OutlivesOwner {
-            for fd in [cosca::Fd::STDIN, cosca::Fd::STDOUT, cosca::Fd::STDERR] {
-                cmd.fd(fd, cosca::Stdio::null())
-                    .map_err(|e| cosca_error("cannot give the VM process null stdio", e))?;
-            }
-        }
-        // Whatever the lifetime, no console window may open when devvm itself has no console.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot open the VM log {}", log.display()), e))?;
+        cmd.fd(cosca::Fd::STDIN, cosca::Stdio::null())
+            .and_then(|cmd| cmd.fd(cosca::Fd::STDOUT, cosca::Stdio::from_file(file)))
+            .and_then(|cmd| cmd.fd(cosca::Fd::STDERR, cosca::Stdio::merge(cosca::Fd::STDOUT)))
+            .map_err(|e| cosca_error("cannot set up the VM process's stdio", e))?;
         host.detach(&mut cmd)?;
         let frozen = cmd.spawn_suspended().map_err(frozen_spawn_error)?;
         Ok(VmProcess {

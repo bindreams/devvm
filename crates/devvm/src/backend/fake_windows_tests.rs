@@ -107,6 +107,10 @@ impl ContractTarget for StrictTarget {
         self.inner.launch_elsewhere(spec)
     }
 
+    fn shutdown_elsewhere(&self, record: &MachineRecord) -> crate::Result<()> {
+        self.inner.shutdown_elsewhere(record)
+    }
+
     fn has_run(&self, spec: &MachineSpec) -> bool {
         self.inner.has_run(spec)
     }
@@ -189,6 +193,11 @@ fn fake_a_frozen_machine_has_not_run_and_kill_leaves_nothing(#[fixture(anna_home
 #[skuld::test]
 fn fake_a_released_machine_outlives_its_launcher_and_attach_finds_it(#[fixture(anna_home)] home: &Path) {
     contract::a_released_machine_outlives_its_launcher_and_attach_finds_it(&FakeTarget::new(), home);
+}
+
+#[skuld::test]
+fn fake_shutdown_from_another_process_stops_the_machine(#[fixture(anna_home)] home: &Path) {
+    contract::shutdown_from_another_process_stops_the_machine(&FakeTarget::new(), home);
 }
 
 #[skuld::test]

@@ -12,8 +12,13 @@ use crate::{ErrorKind, host};
 
 fn frozen(home: &Path, lifetime: Lifetime) -> (VmProcess, u16) {
     let port = free_port();
-    let vm = VmProcess::spawn_frozen(host::current(), fake_vm::command(port, home), lifetime)
-        .expect("the fake VM should spawn frozen");
+    let vm = VmProcess::spawn_frozen(
+        host::current(),
+        fake_vm::command(port, home),
+        lifetime,
+        &fake_vm::log(home),
+    )
+    .expect("the fake VM should spawn frozen");
     (vm, port)
 }
 
@@ -184,4 +189,27 @@ fn a_dies_with_owner_vm_has_no_console_either(#[fixture(anna_home)] home: &Path)
     vm.resume().unwrap();
     assert!(connect_when_up(&vm, port).ends_with("console=0"));
     vm.kill().unwrap();
+}
+
+#[skuld::test]
+fn a_vms_stdout_and_stderr_go_to_the_log_file_whatever_its_lifetime(#[fixture(anna_home)] home: &Path) {
+    for lifetime in [Lifetime::DiesWithOwner, Lifetime::OutlivesOwner] {
+        let state = home.join(format!("{lifetime:?}"));
+        std::fs::create_dir_all(&state).unwrap();
+        let port = free_port();
+        let mut vm = VmProcess::spawn_frozen(
+            host::current(),
+            fake_vm::command(port, &state),
+            lifetime,
+            &fake_vm::log(&state),
+        )
+        .unwrap();
+        vm.resume().unwrap();
+        // The VM wrote both lines before it opened the port.
+        connect_when_up(&vm, port);
+        let log = std::fs::read_to_string(fake_vm::log(&state)).unwrap();
+        assert!(log.contains(fake_vm::OUT_LINE), "{lifetime:?}: {log:?}");
+        assert!(log.contains(fake_vm::ERR_LINE), "{lifetime:?}: {log:?}");
+        vm.kill().unwrap();
+    }
 }

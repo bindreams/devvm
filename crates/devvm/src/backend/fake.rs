@@ -107,7 +107,12 @@ impl Backend for FakeBackend {
         FakeBackend::backing_layer(&spec.disk)?;
         let state_dir = spec.serial_log.parent().expect("a serial log has a directory");
         let port = self.claim_port();
-        let vm = VmProcess::spawn_frozen(self.host, fake_vm::command(port, state_dir), spec.lifetime)?;
+        let vm = VmProcess::spawn_frozen(
+            self.host,
+            fake_vm::command(port, state_dir),
+            spec.lifetime,
+            &fake_vm::log(state_dir),
+        )?;
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         let record = MachineRecord {
             process: vm.record()?,
@@ -292,6 +297,23 @@ impl ContractTarget for FakeTarget {
         fake_spec(dir.join("disk.img"), dir.join("serial.log"), Lifetime::OutlivesOwner)
     }
 
+    fn shutdown_elsewhere(&self, record: &MachineRecord) -> Result<()> {
+        let output = crate::test_support::helper::command("fake-shutdown", &[&serde_json::to_string(record).unwrap()])
+            .output()
+            .expect("the shutdown helper should run");
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(Error::new(
+                ErrorKind::Internal,
+                format!(
+                    "the shutdown helper failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            ))
+        }
+    }
+
     fn has_run(&self, spec: &MachineSpec) -> bool {
         spec.serial_log
             .parent()
@@ -327,6 +349,18 @@ impl ContractTarget for FakeTarget {
             )
         })
     }
+}
+
+/// Helper `fake-shutdown <machine-record-json>`: attaches to the machine, waits for it to be booted and shuts it down.
+pub(crate) fn fake_shutdown(args: &[String]) {
+    let record: MachineRecord = serde_json::from_str(&args[0]).expect("the argument is a machine record");
+    let mut machine = FakeBackend::new(host::current())
+        .attach(&record)
+        .expect("the machine should be attachable");
+    FakeTarget::new()
+        .await_booted(&*machine)
+        .expect("the machine should be booted");
+    machine.shutdown().expect("the machine should shut down");
 }
 
 /// Helper `fake-launcher <disk> <serial-log>`: launches an `OutlivesOwner` machine, resumes and releases it, prints

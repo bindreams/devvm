@@ -75,6 +75,7 @@ mod test_helpers {
         ("sleeper", crate::contain::contain_tests::sleeper),
         ("fake-vm", crate::test_support::fake_vm::fake_vm),
         ("fake-launcher", crate::backend::fake::fake_launcher),
+        ("fake-shutdown", crate::backend::fake::fake_shutdown),
         ("fake-cli-start", crate::vm::vm_tests::fake_cli_start),
         ("fake-cli-run", crate::vm::vm_tests::fake_cli_run),
         ("fake-cli-up", crate::vm::vm_tests::fake_cli_up),

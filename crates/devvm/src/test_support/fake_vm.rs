@@ -28,6 +28,15 @@ mod probe;
 /// The file a fake VM writes when it runs; a frozen one never does.
 pub const STARTED: &str = "started";
 
+/// What a fake VM writes to its stdout and stderr; a test hands `log(state_dir)` to `spawn_frozen` to collect it.
+pub const OUT_LINE: &str = "fake-vm: out";
+pub const ERR_LINE: &str = "fake-vm: err";
+
+/// Where the fake VM's output goes for the state directory `state_dir`.
+pub fn log(state_dir: &Path) -> PathBuf {
+    state_dir.join("fake-vm.log")
+}
+
 /// A port nobody listens on right now. Another process could take it before the fake VM does; the fake is test code,
 /// so a lost race fails the test visibly.
 pub fn free_port() -> u16 {
@@ -46,6 +55,9 @@ pub fn command(port: u16, state_dir: &Path) -> cosca::Command {
 pub fn fake_vm(args: &[String]) {
     let port: u16 = args[0].parse().expect("the port is a number");
     let state_dir = PathBuf::from(&args[1]);
+    // Before the port opens, so a connection proves both lines were written.
+    println!("{OUT_LINE}");
+    eprintln!("{ERR_LINE}");
     // Listening first, so that `started` means the port is open.
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("the port should be free");
     std::fs::write(state_dir.join(STARTED), b"").expect("the state directory should exist");
@@ -91,7 +103,8 @@ pub fn connect_when_up(vm: &VmProcess, port: u16) -> String {
 /// Spawns the fake VM frozen with `lifetime`, resumes it and prints its identity record on one line.
 fn spawn_and_report(args: &[String], lifetime: Lifetime) -> VmProcess {
     let port: u16 = args[0].parse().expect("the port is a number");
-    let mut vm = VmProcess::spawn_frozen(host::current(), command(port, Path::new(&args[1])), lifetime)
+    let state_dir = Path::new(&args[1]);
+    let mut vm = VmProcess::spawn_frozen(host::current(), command(port, state_dir), lifetime, &log(state_dir))
         .expect("the fake VM should spawn frozen");
     vm.resume().expect("the fake VM should resume");
     vm

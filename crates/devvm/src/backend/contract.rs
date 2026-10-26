@@ -34,6 +34,10 @@ pub(crate) trait ContractTarget {
     /// Another OS process launches the spec, resumes and releases it, prints the `MachineRecord`, and exits.
     fn launch_elsewhere(&self, spec: &MachineSpec) -> crate::Result<MachineRecord>;
 
+    /// Another OS process attaches to the machine `record` names, waits until it has booted (`await_booted`), shuts
+    /// it down and exits. Returns once that process has exited, with an error if it failed.
+    fn shutdown_elsewhere(&self, record: &MachineRecord) -> crate::Result<()>;
+
     /// Whether the machine launched from `spec` has ever run. Observes it without an endpoint: a frozen machine's
     /// endpoints may not exist yet.
     fn has_run(&self, spec: &MachineSpec) -> bool;
@@ -199,6 +203,27 @@ pub(crate) fn shutdown_stops_the_process(target: &dyn ContractTarget, root: &Pat
     target.await_booted(&*machine).unwrap();
 
     machine.shutdown().unwrap();
+    assert!(
+        !is_running(&record),
+        "shutdown returned while the process was still running"
+    );
+}
+
+pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn ContractTarget, root: &Path) {
+    let world = world(target, root);
+    let spec = prepared(target, &world, root, 0);
+    let record = target.launch_elsewhere(&spec).unwrap();
+    assert!(is_running(&record), "a released machine survives its launcher");
+    let observer = VmProcess::attach(&record.process)
+        .unwrap()
+        .expect("the machine runs until it is shut down");
+
+    // This process only watches the machine's process end; the other one asks it to.
+    std::thread::scope(|scope| {
+        let watching = scope.spawn(move || observer.wait());
+        target.shutdown_elsewhere(&record).unwrap();
+        watching.join().unwrap().unwrap();
+    });
     assert!(
         !is_running(&record),
         "shutdown returned while the process was still running"
