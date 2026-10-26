@@ -88,6 +88,16 @@ impl Dirs {
         self.state.join("locks")
     }
 
+    /// Where the QEMU sidecars are extracted.
+    pub fn qemu(&self) -> PathBuf {
+        self.cache.join("qemu")
+    }
+
+    /// The `ssh_config` and `known_hosts` files devvm writes for the system `ssh`.
+    pub fn ssh(&self) -> PathBuf {
+        self.state.join("ssh")
+    }
+
     /// Where unreadable instance directories are moved instead of being deleted.
     pub fn instance_quarantine(&self) -> PathBuf {
         self.state.join("quarantine")

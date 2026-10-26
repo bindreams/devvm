@@ -105,3 +105,11 @@ fn dirs_instance_paths_live_under_state(#[fixture(anna_home)] home: &Path) {
     assert_eq!(dirs.instance_quarantine(), dirs.state.join("quarantine"));
     assert!(!dirs.state.exists(), "the accessors must not create anything");
 }
+
+#[skuld::test]
+fn dirs_qemu_is_under_cache_and_ssh_under_state(#[fixture(anna_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    assert_eq!(dirs.qemu(), dirs.cache.join("qemu"));
+    assert_eq!(dirs.ssh(), dirs.state.join("ssh"));
+    assert!(!dirs.cache.exists() && !dirs.state.exists(), "the accessors must not create anything");
+}
