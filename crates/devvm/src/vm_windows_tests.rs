@@ -2,12 +2,16 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
-use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_fixture_with, instance_in, leaking_fixture};
+use crate::engine::engine_tests::{
+    EngineFixture, engine_fixture, engine_fixture_from, engine_fixture_with, instance_in, leaking_backend,
+    leaking_fixture,
+};
 use crate::engine::{LaunchHooks, LaunchStep};
 use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
@@ -483,5 +487,240 @@ fn start_over_a_stale_record_deletes_the_old_machines_leftovers(#[fixture(anna_h
 
     assert_eq!(fx.fake.launches(), 1, "the dead machine is replaced");
     assert!(!socket.exists(), "the old machine's leftovers are deleted");
+    instance.remove().unwrap();
+}
+
+// Failures while launching =============================================================================================
+
+/// Holds `record.json` open without sharing from the `step` on, so that no record read or write succeeds.
+struct HoldsRecordFrom {
+    step: LaunchStep,
+    instance_dir: std::sync::OnceLock<std::path::PathBuf>,
+    held: std::sync::Mutex<Option<std::fs::File>>,
+}
+
+impl HoldsRecordFrom {
+    fn new(step: LaunchStep) -> Arc<HoldsRecordFrom> {
+        Arc::new(HoldsRecordFrom {
+            step,
+            instance_dir: std::sync::OnceLock::new(),
+            held: std::sync::Mutex::new(None),
+        })
+    }
+
+    fn release(&self) {
+        *self.held.lock().unwrap() = None;
+    }
+}
+
+impl LaunchHooks for HoldsRecordFrom {
+    fn reached(&self, step: LaunchStep, _machine: &MachineRecord) {
+        if step == self.step {
+            use std::os::windows::fs::OpenOptionsExt;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(
+                    self.instance_dir
+                        .get()
+                        .expect("the test set the directory")
+                        .join("record.json"),
+                )
+                .unwrap();
+            *self.held.lock().unwrap() = Some(file);
+        }
+    }
+}
+
+/// A backend whose machines count their `kill` calls, and whose process lives on when the machine is dropped (as a
+/// backend's does when its machine is not a contained child): only an explicit `kill` stops it. With `fail_resume`,
+/// a machine runs after `resume` but reports a failure.
+struct Spied {
+    inner: Arc<FakeBackend>,
+    fail_resume: bool,
+    kills: Arc<AtomicUsize>,
+}
+
+impl Spied {
+    fn wrap(fail_resume: bool) -> (impl FnOnce(Arc<FakeBackend>) -> Arc<dyn Backend>, Arc<AtomicUsize>) {
+        let kills = Arc::new(AtomicUsize::new(0));
+        let counted = kills.clone();
+        (
+            move |inner| {
+                Arc::new(Spied {
+                    inner,
+                    fail_resume,
+                    kills: counted,
+                }) as Arc<dyn Backend>
+            },
+            kills,
+        )
+    }
+}
+
+impl Backend for Spied {
+    fn launch(&self, spec: &MachineSpec) -> crate::Result<Box<dyn Machine>> {
+        Ok(Box::new(SpiedMachine {
+            inner: self.inner.launch(spec)?,
+            fail_resume: self.fail_resume,
+            kills: self.kills.clone(),
+        }))
+    }
+
+    fn attach(&self, rec: &MachineRecord) -> crate::Result<Box<dyn Machine>> {
+        self.inner.attach(rec)
+    }
+
+    fn storage(&self) -> &dyn Storage {
+        self.inner.storage()
+    }
+
+    fn can_save_memory(&self) -> bool {
+        false
+    }
+}
+
+struct SpiedMachine {
+    inner: Box<dyn Machine>,
+    fail_resume: bool,
+    kills: Arc<AtomicUsize>,
+}
+
+impl Drop for SpiedMachine {
+    fn drop(&mut self) {
+        // A frozen machine cannot be released and is killed by its own drop; a running one now outlives this handle.
+        let _ = self.inner.release();
+    }
+}
+
+impl Machine for SpiedMachine {
+    fn record(&self) -> MachineRecord {
+        self.inner.record()
+    }
+
+    fn ssh_endpoints(&self) -> &[(Endpoint, std::net::SocketAddr)] {
+        self.inner.ssh_endpoints()
+    }
+
+    fn serial_log(&self) -> &Path {
+        self.inner.serial_log()
+    }
+
+    fn resume(&mut self) -> crate::Result<()> {
+        self.inner.resume()?;
+        if self.fail_resume {
+            return Err(crate::Error::new(
+                ErrorKind::Internal,
+                "the machine lost its control channel",
+            ));
+        }
+        Ok(())
+    }
+
+    fn release(&mut self) -> crate::Result<()> {
+        self.inner.release()
+    }
+
+    fn shutdown(&mut self) -> crate::Result<()> {
+        self.inner.shutdown()
+    }
+
+    fn kill(&mut self) -> crate::Result<()> {
+        self.kills.fetch_add(1, Ordering::SeqCst);
+        self.inner.kill()
+    }
+}
+
+#[skuld::test]
+fn a_record_write_that_fails_after_the_spawn_kills_the_unrecorded_machine(#[fixture(anna_home)] home: &Path) {
+    let hooks = HoldsRecordFrom::new(LaunchStep::Spawned);
+    let (wrap, kills) = Spied::wrap(false);
+    let fx = engine_fixture_with(home, Arc::new(MemoryProgress::default()), hooks.clone(), wrap);
+    let dir = instance_in(&fx, "foo", home);
+    hooks.instance_dir.set(dir.path().to_path_buf()).unwrap();
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    let error = instance.start().expect_err("the record cannot be written");
+
+    hooks.release();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert_eq!(fx.fake.launches(), 1);
+    assert_eq!(kills.load(Ordering::SeqCst), 1, "the unrecorded machine is killed");
+    let machine = &fx.fake.launched()[0];
+    wait_until_dead(machine);
+    assert!(!running(machine), "an unrecorded machine must not run");
+    assert!(recorded(&instance).is_none());
+    assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn a_resume_that_fails_kills_the_machine_clears_the_record_and_deletes_its_leftovers(
+    #[fixture(anna_home)] home: &Path,
+) {
+    let (wrap, kills) = Spied::wrap(true);
+    let fx = engine_fixture_from(
+        home,
+        Arc::new(MemoryProgress::default()),
+        Arc::new(crate::engine::NoHooks),
+        leaking_backend(home),
+        wrap,
+    );
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    let error = instance.start().expect_err("the resume fails");
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert_eq!(kills.load(Ordering::SeqCst), 1, "the machine is killed");
+    let machine = fx.fake.launched()[0].clone();
+    wait_until_dead(&machine);
+    assert!(!running(&machine), "a machine that failed to resume must not run");
+    assert!(recorded(&instance).is_none(), "the record names no machine");
+    assert!(!machine.leftovers.is_empty());
+    for leftover in &machine.leftovers {
+        assert!(!leftover.exists(), "the failed start left {}", leftover.display());
+    }
+    assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn a_second_record_write_that_fails_kills_the_machine_and_deletes_its_leftovers(#[fixture(anna_home)] home: &Path) {
+    let hooks = HoldsRecordFrom::new(LaunchStep::Resumed);
+    let progress = Arc::new(MemoryProgress::default());
+    let (wrap, kills) = Spied::wrap(false);
+    let fx = engine_fixture_from(home, progress.clone(), hooks.clone(), leaking_backend(home), wrap);
+    let dir = instance_in(&fx, "foo", home);
+    hooks.instance_dir.set(dir.path().to_path_buf()).unwrap();
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    let error = instance.start().expect_err("the record cannot be written");
+
+    hooks.release();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert_eq!(kills.load(Ordering::SeqCst), 1, "the machine is killed");
+    let machine = fx.fake.launched()[0].clone();
+    wait_until_dead(&machine);
+    assert!(
+        !running(&machine),
+        "a machine whose endpoints could not be recorded must not run"
+    );
+    assert!(!machine.leftovers.is_empty());
+    for leftover in &machine.leftovers {
+        assert!(!leftover.exists(), "the failed start left {}", leftover.display());
+    }
+    assert!(
+        progress
+            .messages()
+            .iter()
+            .any(|m| m.contains("foo") && m.contains("record still names")),
+        "the record could not be cleared either, and the warning says so: {:?}",
+        progress.messages()
+    );
+    assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
+    // The record names a dead machine, which the next command on the instance clears.
+    instance.stop().unwrap();
+    assert!(recorded(&instance).is_none());
     instance.remove().unwrap();
 }
