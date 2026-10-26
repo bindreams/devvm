@@ -152,20 +152,30 @@ impl ContractTarget for StrictTarget {
     }
 }
 
-/// The fake target with a helper process that fails: the shutdown helper, or the wait for a boot.
+/// What goes wrong in a [`FailingTarget`].
+#[derive(Clone, Copy, PartialEq)]
+enum Fault {
+    /// The shutdown helper reports a failure.
+    ShutdownFails,
+    /// The wait for a boot reports a failure.
+    BootFails,
+    /// The shutdown helper reports success at once and leaves the machine running, like a backend whose `shutdown`
+    /// asks the guest to power off and returns before the process has exited.
+    ShutdownReturnsEarly,
+}
+
+/// The fake target with one thing going wrong.
 struct FailingTarget {
     inner: FakeTarget,
-    shutdown_fails: bool,
-    boot_fails: bool,
+    fault: Fault,
     launched_elsewhere: Mutex<Vec<MachineRecord>>,
 }
 
 impl FailingTarget {
-    fn new(shutdown_fails: bool, boot_fails: bool) -> FailingTarget {
+    fn new(fault: Fault) -> FailingTarget {
         FailingTarget {
             inner: FakeTarget::new(),
-            shutdown_fails,
-            boot_fails,
+            fault,
             launched_elsewhere: Mutex::new(Vec::new()),
         }
     }
@@ -191,10 +201,11 @@ impl ContractTarget for FailingTarget {
     }
 
     fn shutdown_elsewhere(&self, record: &MachineRecord) -> crate::Result<()> {
-        if self.shutdown_fails {
-            return Err(crate::Error::new(ErrorKind::Internal, "the shutdown helper failed"));
+        match self.fault {
+            Fault::ShutdownFails => Err(crate::Error::new(ErrorKind::Internal, "the shutdown helper failed")),
+            Fault::ShutdownReturnsEarly => Ok(()),
+            Fault::BootFails => self.inner.shutdown_elsewhere(record),
         }
-        self.inner.shutdown_elsewhere(record)
     }
 
     fn has_run(&self, spec: &MachineSpec) -> bool {
@@ -206,7 +217,7 @@ impl ContractTarget for FailingTarget {
     }
 
     fn await_booted(&self, machine: &dyn Machine) -> crate::Result<()> {
-        if self.boot_fails {
+        if self.fault == Fault::BootFails {
             return Err(crate::Error::new(ErrorKind::Internal, "the machine never booted"));
         }
         self.inner.await_booted(machine)
@@ -230,7 +241,18 @@ fn fails_and_leaves_no_machine(target: &FailingTarget, home: &Path, function: fn
 #[skuld::test]
 fn a_failing_shutdown_helper_fails_its_function_and_leaves_no_machine(#[fixture(anna_home)] home: &Path) {
     fails_and_leaves_no_machine(
-        &FailingTarget::new(true, false),
+        &FailingTarget::new(Fault::ShutdownFails),
+        home,
+        contract::shutdown_from_another_process_stops_the_machine,
+    );
+}
+
+#[skuld::test]
+fn a_shutdown_that_returns_before_the_process_exits_fails_its_function_and_leaves_no_machine(
+    #[fixture(anna_home)] home: &Path,
+) {
+    fails_and_leaves_no_machine(
+        &FailingTarget::new(Fault::ShutdownReturnsEarly),
         home,
         contract::shutdown_from_another_process_stops_the_machine,
     );
@@ -239,7 +261,7 @@ fn a_failing_shutdown_helper_fails_its_function_and_leaves_no_machine(#[fixture(
 #[skuld::test]
 fn a_failing_assertion_after_a_release_leaves_no_machine(#[fixture(anna_home)] home: &Path) {
     fails_and_leaves_no_machine(
-        &FailingTarget::new(false, true),
+        &FailingTarget::new(Fault::BootFails),
         home,
         contract::a_released_machine_outlives_its_launcher_and_attach_finds_it,
     );

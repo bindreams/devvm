@@ -276,13 +276,10 @@ pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn Contr
     let _released = KillsOnDrop(&record);
     assert_names_the_leftovers(target, &spec, &record);
     assert!(is_running(&record), "a released machine survives its launcher");
-    let observer = VmProcess::attach(&record.process)
-        .unwrap()
-        .expect("the machine runs until it is shut down");
 
-    // The other process asks the machine to shut down and returns once it has exited, or fails.
+    // The other process asks the machine to shut down and returns once it has exited, or fails. Nothing here waits
+    // for the process: a machine still running when the call returns fails the function.
     target.shutdown_elsewhere(&record).unwrap();
-    observer.wait().unwrap();
     assert!(
         !is_running(&record),
         "shutdown returned while the process was still running"
