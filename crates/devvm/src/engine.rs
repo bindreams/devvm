@@ -215,6 +215,10 @@ impl Engine {
         &self.hooks
     }
 
+    pub(crate) fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
+    }
+
     pub(crate) fn progress(&self) -> &Arc<dyn Progress> {
         &self.progress
     }

@@ -5,18 +5,20 @@ use std::sync::mpsc::Receiver;
 
 use crate::backend::MachineRecord;
 use crate::backend::fake::FakeBackend;
+use crate::contain::Lifetime;
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
-use crate::engine::engine_tests::{engine_fixture, instance_in};
+use crate::engine::engine_tests::{engine_fixture, image_of, instance_in};
 use crate::engine::{Engine, EngineParts, LaunchHooks, LaunchStep};
 use crate::guest::fake::FakeGuests;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
+use crate::test_support::fake_vm::connect_when_up;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
 use crate::test_support::host::TestHost;
-use crate::{Dirs, ErrorKind, Instance};
+use crate::{Dirs, ErrorKind, Instance, StartOptions};
 
 /// Reads progress messages until `count` of them say `waiting for`: that many commands are provably queued on a lock.
 pub(crate) fn queued(messages: &Receiver<String>, count: usize) {
@@ -176,16 +178,20 @@ struct ParkAt(LaunchStep);
 
 impl LaunchHooks for ParkAt {
     fn reached(&self, step: LaunchStep, machine: &MachineRecord) {
-        if step != self.0 {
-            return;
+        if step == self.0 {
+            park(machine);
         }
-        let mut stdout = std::io::stdout();
-        writeln!(stdout, "parked {}", serde_json::to_string(machine).unwrap())
-            .and_then(|()| stdout.flush())
-            .unwrap();
-        let mut sink = Vec::new();
-        std::io::stdin().read_to_end(&mut sink).unwrap();
     }
+}
+
+/// Prints `parked <machine record>` and blocks until stdin closes, which only a test killing the process does.
+fn park(machine: &MachineRecord) {
+    let mut stdout = std::io::stdout();
+    writeln!(stdout, "parked {}", serde_json::to_string(machine).unwrap())
+        .and_then(|()| stdout.flush())
+        .unwrap();
+    let mut sink = Vec::new();
+    std::io::stdin().read_to_end(&mut sink).unwrap();
 }
 
 pub(crate) fn step_name(step: LaunchStep) -> &'static str {
@@ -196,11 +202,10 @@ pub(crate) fn step_name(step: LaunchStep) -> &'static str {
     }
 }
 
-fn step_named(name: &str) -> LaunchStep {
+fn step_named(name: &str) -> Option<LaunchStep> {
     [LaunchStep::Spawned, LaunchStep::Recorded, LaunchStep::Resumed]
         .into_iter()
         .find(|step| step_name(*step) == name)
-        .unwrap_or_else(|| panic!("no launch step called {name}"))
 }
 
 /// The engine of a helper process: the fake backend over the state under `home`.
@@ -220,17 +225,76 @@ pub(crate) fn helper_engine(home: &Path, hooks: Arc<dyn LaunchHooks>) -> Arc<Eng
 /// step it parks there instead (see [`ParkAt`]).
 pub(crate) fn fake_cli_start(args: &[String]) {
     let hooks: Arc<dyn LaunchHooks> = match args.get(2) {
-        Some(step) => Arc::new(ParkAt(step_named(step))),
+        Some(step) => Arc::new(ParkAt(
+            step_named(step).unwrap_or_else(|| panic!("no launch step called {step}")),
+        )),
         None => Arc::new(crate::engine::NoHooks),
     };
     let engine = helper_engine(Path::new(&args[0]), hooks);
     let instance = Instance::open_in(&engine, &args[1]).expect("the instance exists");
     instance.start().expect("the instance should start");
     let machine = instance
-        .dir
+        .dir()
         .record()
         .unwrap()
         .machine
         .expect("a started instance names its machine");
     println!("started {}", serde_json::to_string(&machine).unwrap());
+}
+
+/// Helper `fake-cli-run <home>`: starts an owned VM that dies with this process, prints `running <name> <machine
+/// record>` and blocks until stdin closes (that is, until the test kills it).
+pub(crate) fn fake_cli_run(args: &[String]) {
+    let engine = helper_engine(Path::new(&args[0]), Arc::new(crate::engine::NoHooks));
+    let vm = image_of(&engine)
+        .start(&StartOptions::default())
+        .expect("the VM should start");
+    let machine = vm
+        .instance()
+        .dir()
+        .record()
+        .unwrap()
+        .machine
+        .expect("a started VM names its machine");
+    println!("running {} {}", vm.name(), serde_json::to_string(&machine).unwrap());
+    let mut sink = Vec::new();
+    std::io::stdin().read_to_end(&mut sink).unwrap();
+}
+
+/// Helper `fake-cli-up <home> [step]`: `up` over the fake backend. An owned VM that outlives its owner, then the
+/// handover. With a step (`spawned`, `recorded`, `resumed`, or `disarmed`, which is after the containment is disarmed
+/// and before the owner marker is flipped) it parks there. Otherwise it reads the VM's own report of its containment
+/// (it must be disarmed) and prints `up <name> <machine record>`.
+pub(crate) fn fake_cli_up(args: &[String]) {
+    let step = args.get(1).map(String::as_str);
+    let hooks: Arc<dyn LaunchHooks> = match step.and_then(step_named) {
+        Some(step) => Arc::new(ParkAt(step)),
+        None => Arc::new(crate::engine::NoHooks),
+    };
+    let engine = helper_engine(Path::new(&args[0]), hooks);
+    let vm = image_of(&engine)
+        .start_vm(&StartOptions::default(), Lifetime::OutlivesOwner)
+        .expect("the VM should start");
+    let machine = vm
+        .instance()
+        .dir()
+        .record()
+        .unwrap()
+        .machine
+        .expect("a started VM names its machine");
+    let instance = vm
+        .hand_over(&mut || {
+            if step == Some("disarmed") {
+                park(&machine);
+            }
+        })
+        .expect("the handover should succeed");
+
+    let process = VmProcess::attach(&machine.process).unwrap().expect("the VM runs");
+    let report = connect_when_up(&process, machine.ssh[0].addr.port());
+    assert!(
+        report.contains("kill-on-close=false"),
+        "the VM is still contained: {report}"
+    );
+    println!("up {} {}", instance.name(), serde_json::to_string(&machine).unwrap());
 }

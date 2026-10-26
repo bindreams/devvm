@@ -20,7 +20,7 @@ fn memory_fixture(home: &Path) -> EngineFixture {
 }
 
 fn recorded(instance: &Instance) -> Option<MachineRecord> {
-    instance.dir.record().unwrap().machine
+    instance.dir().record().unwrap().machine
 }
 
 fn running(machine: &MachineRecord) -> bool {

@@ -1,15 +1,26 @@
-//! The public handles: [`Instance`] now; `Image` and `Vm` follow with the backend.
+//! The public handles: [`Image`] (what instances are made from), [`Vm`] (a VM that dies with its handle) and
+//! [`Instance`] (a named VM that stays until it is removed).
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::backend::Machine;
 use crate::contain::{Lifetime, VmProcess};
 use crate::engine::Engine;
+use crate::exit::Output;
 use crate::instance::dir::InstanceDir;
 use crate::instance::name::InstanceName;
-use crate::{ErrorKind, Result};
+use crate::instance::registry::Owned;
+use crate::{Command, Error, ErrorKind, Result};
 
+#[allow(
+    dead_code,
+    reason = "`Recipe::build` (U4) is the first non-test caller of `Image::from_chain`, and `up` (U4) of `Vm::hand_over`"
+)]
+mod image;
 mod launch;
+
+pub use image::{Image, Vm, availability};
 
 #[cfg(test)]
 #[path = "vm_tests.rs"]
@@ -23,10 +34,32 @@ mod vm_windows_tests;
 #[path = "vm_other_tests.rs"]
 mod vm_other_tests;
 
+/// Running commands in a guest and moving files in and out of it. Needs the access layer, which arrives with the QEMU
+/// backend: until then every method is `not-supported`.
+pub trait Guest {
+    fn run(&self, cmd: &Command) -> Result<Output>;
+    fn reboot(&self) -> Result<()>;
+    fn copy_in(&self, src: &Path, dest: &str) -> Result<()>;
+    fn copy_out(&self, src: &str, dest: &Path) -> Result<()>;
+}
+
+pub(crate) fn no_access_layer() -> Error {
+    Error::new(
+        ErrorKind::NotSupported,
+        "reaching the guest needs the access layer, which arrives with the QEMU backend",
+    )
+}
+
 /// A named VM that stays until it is removed.
 pub struct Instance {
     engine: Arc<Engine>,
-    dir: InstanceDir,
+    handle: Handle,
+}
+
+/// How an `Instance` reaches its directory: opened by name, or created by this process, which then still owns it.
+enum Handle {
+    Open(InstanceDir),
+    Owned(Owned),
 }
 
 impl Instance {
@@ -46,12 +79,19 @@ impl Instance {
         let dir = engine.registry().open(&name)?;
         Ok(Instance {
             engine: engine.clone(),
-            dir,
+            handle: Handle::Open(dir),
         })
     }
 
+    pub(crate) fn dir(&self) -> &InstanceDir {
+        match &self.handle {
+            Handle::Open(dir) => dir,
+            Handle::Owned(owned) => owned.dir(),
+        }
+    }
+
     pub fn name(&self) -> &str {
-        self.dir.name().as_str()
+        self.dir().name().as_str()
     }
 
     /// Starts the VM and leaves it running after this process exits. Does nothing if it already runs. Waits for other
@@ -69,14 +109,15 @@ impl Instance {
     /// Launches under the exclusive op lock; `None` when the machine already runs. The machine is resumed and still
     /// contained: the caller releases it (`start`) or keeps it (`Image::start`, `up`).
     pub(crate) fn start_with(&self, lifetime: Lifetime) -> Result<Option<Box<dyn Machine>>> {
-        let op = self.dir.op_exclusive()?;
-        launch::launch(&self.engine, &self.dir, &op, lifetime)
+        let dir = self.dir();
+        let op = dir.op_exclusive()?;
+        launch::launch(&self.engine, dir, &op, lifetime)
     }
 
     /// Shuts the VM down and returns once its process has exited. Does nothing to an instance that is not running.
     /// A shutdown that fails is an error: `remove` is the forceful way.
     pub fn stop(&self) -> Result<()> {
-        let dir = &self.dir;
+        let dir = self.dir();
         let op = dir.op_exclusive()?;
         let Some(machine) = dir.record()?.machine else {
             return Ok(());
@@ -94,7 +135,7 @@ impl Instance {
     /// Kills the VM by its recorded identity and deletes the instance. Waits for other commands working on it; if
     /// another command removed it first, that is `not-found`.
     pub fn remove(self) -> Result<()> {
-        let dir = &self.dir;
+        let dir = self.dir();
         let op = dir.op_exclusive()?;
         let record = dir.record()?;
         if let Some(machine) = &record.machine {
@@ -109,5 +150,23 @@ impl Instance {
             .progress()
             .message(&format!("removed instance {}", dir.name()));
         Ok(())
+    }
+}
+
+impl Guest for Instance {
+    fn run(&self, _cmd: &Command) -> Result<Output> {
+        Err(no_access_layer())
+    }
+
+    fn reboot(&self) -> Result<()> {
+        Err(no_access_layer())
+    }
+
+    fn copy_in(&self, _src: &Path, _dest: &str) -> Result<()> {
+        Err(no_access_layer())
+    }
+
+    fn copy_out(&self, _src: &str, _dest: &Path) -> Result<()> {
+        Err(no_access_layer())
     }
 }

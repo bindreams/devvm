@@ -50,7 +50,7 @@ impl FakeBackend {
 
     /// How many machines were launched (spawned frozen) through this backend.
     pub(crate) fn launches(&self) -> usize {
-        self.launched.lock().unwrap().len()
+        self.launched().len()
     }
 
     /// The record of every machine launched through this backend, in launch order.

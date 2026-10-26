@@ -12,11 +12,12 @@ use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, write_marker};
 use crate::instance::registry::registry_tests::new_instance_on;
+use crate::recipe::{Flattened, Resources, Source};
 use crate::store::layers::layers_tests::{Env, build, env, key, names, t0};
 use crate::store::layers::{ChainLease, SystemClock};
 use crate::test_support::fixtures::{MemoryProgress, anna_home};
 use crate::test_support::host::TestHost;
-use crate::{Arch, ErrorKind, GuestKind, Instance};
+use crate::{Arch, ErrorKind, GuestKind, Image, Instance};
 
 /// A test engine over the fake host, backend and guests, with its own state under the test's home.
 pub(crate) struct EngineFixture {
@@ -45,6 +46,24 @@ pub(crate) fn engine_fixture(home: &Path, progress: Arc<dyn Progress>) -> Engine
         engine,
         fake,
     }
+}
+
+/// The image on the fixture's layer (key 1), leased through the engine's own store.
+pub(crate) fn image_of(engine: &Arc<Engine>) -> Image {
+    let chain = engine
+        .store()
+        .unwrap()
+        .lookup(&key(1))
+        .unwrap()
+        .expect("the fixture built layer 1");
+    let flat = Flattened {
+        name: "test".to_owned(),
+        guest: GuestKind::Linux,
+        root: Source::Embedded("test".to_owned()),
+        resources: Resources::default(),
+        steps: Vec::new(),
+    };
+    Image::from_chain(engine.clone(), chain, &flat)
 }
 
 /// An ownerless, stopped instance called `name`, created from `created_from`.
