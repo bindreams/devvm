@@ -18,6 +18,8 @@ fn machine(sleeper: &Sleeper) -> MachineRecord {
         process: sleeper.record(),
         qmp: String::new(),
         ssh: Vec::new(),
+        serial_log: PathBuf::new(),
+        leftovers: Vec::new(),
     }
 }
 
@@ -382,4 +384,91 @@ fn create_in_a_loop_while_a_reaper_loop_runs_never_loses_a_live_instance(#[fixtu
             Probe::Held
         ));
     }
+}
+
+#[skuld::test]
+fn reaping_deletes_the_leftovers_of_the_killed_machine(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let sleeper = Sleeper::spawn();
+    let (socket, lock) = (home.join("machine.sock"), home.join("machine.sock.lock"));
+    std::fs::write(&socket, b"x").unwrap();
+    std::fs::write(&lock, b"x").unwrap();
+    let owned = create(&fx, Some("foo"));
+    set_machine(
+        owned.dir(),
+        MachineRecord {
+            leftovers: vec![socket.clone(), home.join("never-existed"), lock.clone()],
+            ..machine(&sleeper)
+        },
+    );
+    drop(owned);
+
+    let report = fx.registry.reap();
+    assert_eq!(report.reaped, ["foo"]);
+    assert!(report.warnings.is_empty(), "an absent leftover is fine: {:?}", report.warnings);
+    assert!(!socket.exists() && !lock.exists());
+}
+
+#[skuld::test]
+fn the_leftovers_of_a_machine_that_already_exited_are_deleted(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let sleeper = Sleeper::spawn();
+    let socket = home.join("machine.sock");
+    std::fs::write(&socket, b"x").unwrap();
+    let record = MachineRecord {
+        leftovers: vec![socket.clone()],
+        ..machine(&sleeper)
+    };
+    sleeper.finish();
+    let owned = create(&fx, Some("foo"));
+    set_machine(owned.dir(), record);
+    drop(owned);
+
+    let report = fx.registry.reap();
+    assert_eq!(report.reaped, ["foo"]);
+    assert!(!socket.exists());
+}
+
+#[skuld::test]
+fn a_leftover_that_cannot_be_deleted_is_a_warning_and_the_instance_still_goes(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let sleeper = Sleeper::spawn();
+    let (stuck, socket) = (home.join("stuck"), home.join("machine.sock"));
+    std::fs::create_dir(&stuck).unwrap();
+    std::fs::write(&socket, b"x").unwrap();
+    let owned = create(&fx, Some("foo"));
+    set_machine(
+        owned.dir(),
+        MachineRecord {
+            leftovers: vec![stuck.clone(), socket.clone()],
+            ..machine(&sleeper)
+        },
+    );
+    drop(owned);
+
+    let report = fx.registry.reap();
+    assert_eq!(report.reaped, ["foo"]);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].contains("stuck"), "{:?}", report.warnings);
+    assert!(!socket.exists(), "the other leftover is still deleted");
+}
+
+#[skuld::test]
+fn a_live_owners_machine_keeps_its_leftovers(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture(home);
+    let sleeper = Sleeper::spawn();
+    let socket = home.join("machine.sock");
+    std::fs::write(&socket, b"x").unwrap();
+    let owned = create(&fx, Some("foo"));
+    set_machine(
+        owned.dir(),
+        MachineRecord {
+            leftovers: vec![socket.clone()],
+            ..machine(&sleeper)
+        },
+    );
+
+    fx.registry.reap();
+    assert!(socket.exists());
+    drop(owned);
 }

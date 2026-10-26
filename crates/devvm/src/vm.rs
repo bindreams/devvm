@@ -124,8 +124,12 @@ impl Instance {
         };
         match self.engine.backend()?.attach(&machine) {
             Ok(mut running) => running.shutdown()?,
-            // Not running any more: the record is stale.
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            // Not running any more: the record is stale, and what the machine left behind can go.
+            Err(e) if e.kind() == ErrorKind::NotFound => machine.remove_leftovers(&mut |text| {
+                self.engine
+                    .progress()
+                    .message(&format!("instance {}: {text}", dir.name()))
+            }),
             Err(e) => return Err(e),
         }
         dir.update(&op, &mut |record| record.machine = None)?;
@@ -142,7 +146,9 @@ impl Instance {
             if let Some(mut vm) = VmProcess::attach(&machine.process)? {
                 vm.kill()?;
             }
-            // The VM is dead: a destroy that fails below must not leave a record naming it.
+            // The VM is dead: what it left outside the directory goes too, and a destroy that fails below must not
+            // leave a record naming it.
+            machine.remove_leftovers(&mut |text| self.engine.progress().message(&format!("instance {}: {text}", dir.name())));
             dir.update(&op, &mut |record| record.machine = None)?;
         }
         dir.destroy(op)?;

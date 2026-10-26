@@ -166,6 +166,8 @@ fn list_marks_running_by_recorded_identity(#[fixture(anna_home)] home: &Path) {
         process: sleeper.record(),
         qmp: String::new(),
         ssh: Vec::new(),
+        serial_log: std::path::PathBuf::new(),
+        leftovers: Vec::new(),
     };
     let op = dir.op_exclusive().unwrap();
     dir.update(&op, &mut |r: &mut InstanceRecord| r.machine = Some(record.clone()))

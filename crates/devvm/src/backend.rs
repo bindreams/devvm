@@ -83,6 +83,25 @@ pub(crate) struct MachineRecord {
     /// Where the machine's control channel listens.
     pub qmp: String,
     pub ssh: Vec<SshEndpoint>,
+    /// The machine's serial console log, named in boot-failure errors by a machine found with `Backend::attach`.
+    pub serial_log: PathBuf,
+    /// Files outside the instance directory that die with the machine (QEMU: the QMP socket and its lock file).
+    #[serde(default)]
+    pub leftovers: Vec<PathBuf>,
+}
+
+impl MachineRecord {
+    /// Deletes `leftovers`, best effort: a file that is already gone is fine, any other failure goes to `warn`.
+    /// Call it only once the machine is proven dead.
+    pub(crate) fn remove_leftovers(&self, warn: &mut dyn FnMut(String)) {
+        for path in &self.leftovers {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => warn(format!("cannot delete {}: {e}", path.display())),
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

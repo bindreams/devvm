@@ -108,6 +108,8 @@ impl Backend for FakeBackend {
                 endpoint: Endpoint::Normal,
                 addr,
             }],
+            serial_log: spec.serial_log.clone(),
+            leftovers: Vec::new(),
         };
         self.launched.lock().unwrap().push(record.clone());
         Ok(Box::new(FakeMachine {
@@ -130,7 +132,7 @@ impl Backend for FakeBackend {
             vm,
             record: record.clone(),
             ssh: record.ssh.iter().map(|e| (e.endpoint, e.addr)).collect(),
-            serial_log: PathBuf::new(),
+            serial_log: record.serial_log.clone(),
             attached: true,
         }))
     }

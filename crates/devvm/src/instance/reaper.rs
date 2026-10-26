@@ -237,6 +237,8 @@ impl Registry {
                     return;
                 }
             }
+            // The machine is dead, so what it left outside the instance directory can go.
+            machine.remove_leftovers(&mut |text| report.warn(self, format!("instance {name}: {text}")));
             if let Err(e) = dir.update(&op, &mut |record| record.machine = None) {
                 report.warn(self, format!("cannot update instance {name}: {}", e.message()));
             }

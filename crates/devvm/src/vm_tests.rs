@@ -39,6 +39,8 @@ fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[
         process: sleeper.record(),
         qmp: String::new(),
         ssh: Vec::new(),
+        serial_log: std::path::PathBuf::new(),
+        leftovers: Vec::new(),
     };
     let op = dir.op_exclusive().unwrap();
     dir.update(&op, &mut |r: &mut InstanceRecord| r.machine = Some(machine.clone()))
@@ -56,6 +58,57 @@ fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[
         Instance::open_in(&fx.engine, "foo").err().unwrap().kind(),
         ErrorKind::NotFound
     );
+}
+
+/// Records `machine` as the instance's machine.
+fn record_machine(dir: &crate::instance::dir::InstanceDir, machine: &MachineRecord) {
+    let op = dir.op_exclusive().unwrap();
+    dir.update(&op, &mut |r: &mut InstanceRecord| r.machine = Some(machine.clone()))
+        .unwrap();
+}
+
+#[skuld::test]
+fn remove_deletes_the_leftovers_of_the_machine(#[fixture(anna_home)] home: &Path) {
+    let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
+    let dir = instance_in(&fx, "foo", home);
+    let sleeper = Sleeper::spawn();
+    let socket = home.join("machine.sock");
+    std::fs::write(&socket, b"x").unwrap();
+    record_machine(
+        &dir,
+        &MachineRecord {
+            process: sleeper.record(),
+            qmp: String::new(),
+            ssh: Vec::new(),
+            serial_log: std::path::PathBuf::new(),
+            leftovers: vec![socket.clone(), home.join("never-existed")],
+        },
+    );
+
+    Instance::open_in(&fx.engine, "foo").unwrap().remove().unwrap();
+    assert!(!socket.exists());
+}
+
+#[skuld::test]
+fn stop_deletes_the_leftovers_of_a_machine_that_is_already_gone(#[fixture(anna_home)] home: &Path) {
+    let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
+    let dir = instance_in(&fx, "foo", home);
+    let sleeper = Sleeper::spawn();
+    let socket = home.join("machine.sock");
+    std::fs::write(&socket, b"x").unwrap();
+    let machine = MachineRecord {
+        process: sleeper.record(),
+        qmp: String::new(),
+        ssh: Vec::new(),
+        serial_log: std::path::PathBuf::new(),
+        leftovers: vec![socket.clone()],
+    };
+    sleeper.finish();
+    record_machine(&dir, &machine);
+
+    Instance::open_in(&fx.engine, "foo").unwrap().stop().unwrap();
+    assert!(!socket.exists());
+    assert!(dir.record().unwrap().machine.is_none());
 }
 
 #[skuld::test]

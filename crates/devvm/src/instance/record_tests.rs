@@ -35,6 +35,8 @@ fn machine() -> MachineRecord {
             pid_ns: None,
         },
         qmp: "/run/devvm-ab.sock".to_owned(),
+        serial_log: std::path::PathBuf::from("/state/serial.log"),
+        leftovers: Vec::new(),
         ssh: vec![SshEndpoint {
             endpoint: Endpoint::Normal,
             addr: "127.0.0.1:2222".parse().unwrap(),
@@ -96,7 +98,9 @@ const GOLDEN: &str = r#"{
         "endpoint": "normal",
         "addr": "127.0.0.1:2222"
       }
-    ]
+    ],
+    "serial_log": "/state/serial.log",
+    "leftovers": []
   }
 }"#;
 
