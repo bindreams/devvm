@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::FakeTarget;
+use crate::ErrorKind;
 use crate::backend::contract::{self, ContractTarget};
 use crate::backend::{Backend, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
@@ -149,6 +150,99 @@ impl ContractTarget for StrictTarget {
         self.awaited.lock().unwrap().insert(record.process.pid);
         self.inner.await_booted(machine)
     }
+}
+
+/// The fake target with a helper process that fails: the shutdown helper, or the wait for a boot.
+struct FailingTarget {
+    inner: FakeTarget,
+    shutdown_fails: bool,
+    boot_fails: bool,
+    launched_elsewhere: Mutex<Vec<MachineRecord>>,
+}
+
+impl FailingTarget {
+    fn new(shutdown_fails: bool, boot_fails: bool) -> FailingTarget {
+        FailingTarget {
+            inner: FakeTarget::new(),
+            shutdown_fails,
+            boot_fails,
+            launched_elsewhere: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ContractTarget for FailingTarget {
+    fn backend(&self) -> Arc<dyn Backend> {
+        self.inner.backend()
+    }
+
+    fn parent_layer(&self, store: &LayerStore) -> ChainLease {
+        self.inner.parent_layer(store)
+    }
+
+    fn spec(&self, root: &Path, n: u32) -> MachineSpec {
+        self.inner.spec(root, n)
+    }
+
+    fn launch_elsewhere(&self, spec: &MachineSpec) -> crate::Result<MachineRecord> {
+        let record = self.inner.launch_elsewhere(spec)?;
+        self.launched_elsewhere.lock().unwrap().push(record.clone());
+        Ok(record)
+    }
+
+    fn shutdown_elsewhere(&self, record: &MachineRecord) -> crate::Result<()> {
+        if self.shutdown_fails {
+            return Err(crate::Error::new(ErrorKind::Internal, "the shutdown helper failed"));
+        }
+        self.inner.shutdown_elsewhere(record)
+    }
+
+    fn has_run(&self, spec: &MachineSpec) -> bool {
+        self.inner.has_run(spec)
+    }
+
+    fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf> {
+        self.inner.leftovers(spec)
+    }
+
+    fn await_booted(&self, machine: &dyn Machine) -> crate::Result<()> {
+        if self.boot_fails {
+            return Err(crate::Error::new(ErrorKind::Internal, "the machine never booted"));
+        }
+        self.inner.await_booted(machine)
+    }
+}
+
+/// Runs `function` over `target`, which must fail it, and checks that it failed and left no machine running.
+fn fails_and_leaves_no_machine(target: &FailingTarget, home: &Path, function: fn(&dyn ContractTarget, &Path)) {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| function(target, home)));
+    assert!(outcome.is_err(), "the helper failed, and the contract function did not");
+    let machines = target.launched_elsewhere.lock().unwrap().clone();
+    assert_eq!(machines.len(), 1);
+    for machine in machines {
+        assert!(
+            VmProcess::attach(&machine.process).unwrap().is_none(),
+            "a failed contract function left its released machine running"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_failing_shutdown_helper_fails_its_function_and_leaves_no_machine(#[fixture(anna_home)] home: &Path) {
+    fails_and_leaves_no_machine(
+        &FailingTarget::new(true, false),
+        home,
+        contract::shutdown_from_another_process_stops_the_machine,
+    );
+}
+
+#[skuld::test]
+fn a_failing_assertion_after_a_release_leaves_no_machine(#[fixture(anna_home)] home: &Path) {
+    fails_and_leaves_no_machine(
+        &FailingTarget::new(false, true),
+        home,
+        contract::a_released_machine_outlives_its_launcher_and_attach_finds_it,
+    );
 }
 
 #[skuld::test]

@@ -99,6 +99,19 @@ fn assert_no_leftovers(target: &dyn ContractTarget, spec: &MachineSpec, after: &
     }
 }
 
+/// Ends the process of a released machine, by its recorded identity, when the test fails before it has: nothing else
+/// holds a released machine, so a failed function would leave it running after the test run.
+struct KillsOnDrop<'a>(&'a MachineRecord);
+
+impl Drop for KillsOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Ok(Some(mut vm)) = VmProcess::attach(&self.0.process) {
+            let _ = vm.kill();
+        }
+        self.0.remove_leftovers(&mut |_| {});
+    }
+}
+
 fn is_running(record: &MachineRecord) -> bool {
     VmProcess::attach(&record.process).unwrap().is_some()
 }
@@ -185,6 +198,7 @@ pub(crate) fn a_released_machine_outlives_its_launcher_and_attach_finds_it(targe
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
     let record = target.launch_elsewhere(&spec).unwrap();
+    let _released = KillsOnDrop(&record);
     assert_names_the_leftovers(target, &spec, &record);
 
     // The launcher process has exited by now.
@@ -259,18 +273,16 @@ pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn Contr
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
     let record = target.launch_elsewhere(&spec).unwrap();
+    let _released = KillsOnDrop(&record);
     assert_names_the_leftovers(target, &spec, &record);
     assert!(is_running(&record), "a released machine survives its launcher");
     let observer = VmProcess::attach(&record.process)
         .unwrap()
         .expect("the machine runs until it is shut down");
 
-    // This process only watches the machine's process end; the other one asks it to.
-    std::thread::scope(|scope| {
-        let watching = scope.spawn(move || observer.wait());
-        target.shutdown_elsewhere(&record).unwrap();
-        watching.join().unwrap().unwrap();
-    });
+    // The other process asks the machine to shut down and returns once it has exited, or fails.
+    target.shutdown_elsewhere(&record).unwrap();
+    observer.wait().unwrap();
     assert!(
         !is_running(&record),
         "shutdown returned while the process was still running"
