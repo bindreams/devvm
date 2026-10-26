@@ -20,12 +20,14 @@ mod contain_windows_tests;
 #[path = "contain_other_tests.rs"]
 mod contain_other_tests;
 
-/// How long a VM process lives relative to the devvm process that started it.
+/// How long a VM process may live relative to the devvm process that started it. The lifetime is the permission and
+/// `VmProcess::release` the switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lifetime {
-    /// Dies with its owner, enforced by the OS.
+    /// Dies with its owner, enforced by the OS. `release` refuses it.
     DiesWithOwner,
-    /// Detached, with no inherited stdio; its containment is disarmed once its record is written.
+    /// May outlive its owner: detached, with no inherited stdio, and `release` disarms its containment once its
+    /// record is written.
     OutlivesOwner,
 }
 
@@ -39,8 +41,8 @@ pub(crate) struct VmProcess {
 }
 
 enum State {
-    Frozen(cosca::SuspendedChild),
-    Running(cosca::Child),
+    Frozen(cosca::SuspendedChild, Lifetime),
+    Running(cosca::Child, Lifetime),
     /// Started by this process, containment disarmed.
     Released(cosca::Process),
     /// A process this one did not spawn (or no longer owns).
@@ -68,14 +70,14 @@ impl VmProcess {
     ///
     /// The process is always contained (killed when this process dies), has no console (the host's detach) and holds
     /// none of this process's pipes: stdin is null, and stdout and stderr are appended to the file `log`, which is
-    /// created. Both lifetimes start alike; `release` is what lets a VM outlive its owner.
+    /// created. Both lifetimes start alike; `release` is what lets an `OutlivesOwner` VM outlive its owner.
     ///
     /// Windows only in 0.1.0: cosca can hold a process before its first instruction there alone (a POSIX child cannot
     /// be held before exec without a gate), so every other host gets `NotSupported`.
     pub(crate) fn spawn_frozen(
         host: &dyn Host,
         mut cmd: cosca::Command,
-        _lifetime: Lifetime,
+        lifetime: Lifetime,
         log: &Path,
     ) -> Result<VmProcess> {
         cmd.contain();
@@ -91,7 +93,7 @@ impl VmProcess {
         host.detach(&mut cmd)?;
         let frozen = cmd.spawn_suspended().map_err(frozen_spawn_error)?;
         Ok(VmProcess {
-            state: State::Frozen(frozen),
+            state: State::Frozen(frozen, lifetime),
         })
     }
 
@@ -99,48 +101,62 @@ impl VmProcess {
     /// the process is frozen.
     pub(crate) fn resume(&mut self) -> Result<()> {
         let pid = self.id().pid();
-        let Some(frozen) = self.take_frozen() else {
+        let Some((frozen, lifetime)) = self.take_frozen() else {
             return Err(Error::new(
                 ErrorKind::Internal,
                 format!("cannot resume the VM process {pid}: it is not frozen"),
             ));
         };
-        self.state = State::Running(
-            frozen
-                .resume()
-                .map_err(|e| cosca_error(&format!("cannot resume the VM process {pid}"), e))?,
-        );
+        let child = frozen
+            .resume()
+            .map_err(|e| cosca_error(&format!("cannot resume the VM process {pid}"), e))?;
+        self.state = State::Running(child, lifetime);
         Ok(())
     }
 
     /// Disarms the containment of a resumed process: it now outlives this one. `Internal` unless the process is
-    /// running and contained, so a release before `resume`, or a second one, is a mistake.
+    /// running and contained, so a release before `resume`, or a second one, is a mistake; `Internal` too for a VM
+    /// started `DiesWithOwner`, whose lifetime does not allow it. The lifetime is the permission, `release` the switch.
+    /// cosca's `detach` only logs a disarm that fails, so a success here does not prove the containment is gone.
     pub(crate) fn release(&mut self) -> Result<()> {
         let id = self.id();
-        if !matches!(self.state, State::Running(_)) {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                format!(
-                    "cannot release the VM process {}: it is not running under this process's containment",
-                    id.pid()
-                ),
-            ));
+        match &self.state {
+            State::Running(_, Lifetime::OutlivesOwner) => {}
+            State::Running(_, Lifetime::DiesWithOwner) => {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    format!(
+                        "cannot release the VM process {}: it was started DiesWithOwner, so it must not outlive                          its owner",
+                        id.pid()
+                    ),
+                ));
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    format!(
+                        "cannot release the VM process {}: it is not running under this process's containment",
+                        id.pid()
+                    ),
+                ));
+            }
         }
-        if let State::Running(child) = std::mem::replace(&mut self.state, State::Released(cosca::Process::from_id(id)))
-        {
-            child.detach();
-        }
+        let State::Running(child, _) = std::mem::replace(&mut self.state, State::Released(cosca::Process::from_id(id)))
+        else {
+            unreachable!("checked just above");
+        };
+        child.detach();
         Ok(())
     }
 
-    fn take_frozen(&mut self) -> Option<cosca::SuspendedChild> {
-        if !matches!(self.state, State::Frozen(_)) {
+    fn take_frozen(&mut self) -> Option<(cosca::SuspendedChild, Lifetime)> {
+        if !matches!(self.state, State::Frozen(..)) {
             return None;
         }
         // What is left behind is the identity alone: if the resume fails nothing of the process is still held.
         let left = State::Foreign(cosca::Process::from_id(self.id()));
         match std::mem::replace(&mut self.state, left) {
-            State::Frozen(frozen) => Some(frozen),
+            State::Frozen(frozen, lifetime) => Some((frozen, lifetime)),
             _ => unreachable!("checked just above"),
         }
     }
@@ -182,8 +198,8 @@ impl VmProcess {
 
     fn id(&self) -> ProcessId {
         match &self.state {
-            State::Frozen(frozen) => frozen.id(),
-            State::Running(child) => child.id(),
+            State::Frozen(frozen, _) => frozen.id(),
+            State::Running(child, _) => child.id(),
             State::Released(process) | State::Foreign(process) => process.id(),
         }
     }
@@ -219,12 +235,14 @@ impl VmProcess {
         let id = self.id();
         let pid = id.pid();
         let killed = match &self.state {
-            State::Frozen(_) => {
-                // Dropping a frozen child kills it, whatever `kill_on_drop` says.
+            State::Frozen(..) => {
+                // Killed by identity first, so that a failure is seen: dropping a frozen child kills it too, but
+                // discards how that went.
+                let killed = cosca::Process::from_id(id).kill();
                 self.state = State::Foreign(cosca::Process::from_id(id));
-                Ok(())
+                killed
             }
-            State::Running(child) => child.kill_tree(),
+            State::Running(child, _) => child.kill_tree(),
             State::Released(process) | State::Foreign(process) => process.kill(),
         };
         killed.map_err(|e| cosca_error(&format!("cannot kill the VM process {pid}"), e))?;

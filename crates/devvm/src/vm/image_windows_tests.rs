@@ -281,6 +281,22 @@ fn an_ownerless_instance_survives_the_cli_and_only_remove_deletes_it(#[fixture(a
 }
 
 #[skuld::test]
+fn a_vm_that_dies_with_its_owner_cannot_be_handed_over(#[fixture(anna_home)] home: &Path) {
+    let (fx, _) = memory_fixture(home);
+    let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
+    let machine = vm.instance().dir().record().unwrap().machine.unwrap();
+
+    let error = vm.hand_over(&mut || {}).err().expect("release is refused");
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("DiesWithOwner"), "{}", error.message());
+    fx.engine.reap();
+    wait_until_dead(&machine);
+    assert!(!running(&machine), "the VM was never released");
+    nothing_is_left(&fx);
+}
+
+#[skuld::test]
 fn vm_guest_methods_are_not_supported_until_the_access_layer(#[fixture(anna_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();

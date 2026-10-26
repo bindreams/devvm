@@ -73,6 +73,22 @@ fn a_failed_resume_leaves_no_process(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
+fn kill_of_a_frozen_vm_returns_after_it_has_exited_and_it_never_ran(#[fixture(anna_home)] home: &Path) {
+    let mut vm = frozen(home, Lifetime::OutlivesOwner);
+    let record = vm.record().unwrap();
+
+    vm.kill().unwrap();
+
+    assert!(
+        !vm.is_alive().unwrap(),
+        "kill must not return before the process has exited"
+    );
+    assert!(VmProcess::attach(&record).unwrap().is_none());
+    assert!(!home.join(STARTED).exists());
+    vm.kill().expect("killing a dead VM is Ok");
+}
+
+#[skuld::test]
 fn release_before_resume_is_an_internal_error(#[fixture(anna_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::OutlivesOwner);
     assert_eq!(vm.release().unwrap_err().kind(), ErrorKind::Internal);
@@ -83,6 +99,20 @@ fn release_before_resume_is_an_internal_error(#[fixture(anna_home)] home: &Path)
         ErrorKind::Internal,
         "a second release is a mistake"
     );
+    vm.kill().unwrap();
+}
+
+#[skuld::test]
+fn a_dies_with_owner_vm_refuses_release_and_stays_contained(#[fixture(anna_home)] home: &Path) {
+    let mut vm = frozen(home, Lifetime::DiesWithOwner);
+    vm.resume().unwrap();
+    let port = await_port(&vm, home);
+
+    let error = vm.release().expect_err("a DiesWithOwner VM cannot outlive its owner");
+
+    assert_eq!(error.kind(), ErrorKind::Internal);
+    assert!(error.message().contains("DiesWithOwner"), "{}", error.message());
+    assert!(connect_when_up(&vm, port).contains("kill-on-close=true"));
     vm.kill().unwrap();
 }
 
