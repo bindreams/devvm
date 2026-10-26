@@ -1,28 +1,39 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use super::FakeTarget;
 use crate::backend::contract::{self, ContractTarget};
 use crate::backend::{Backend, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
+use crate::contain::VmProcess;
 use crate::store::layers::{ChainLease, LayerStore};
 use crate::test_support::fake_vm::{STARTED, connect_when_up};
 use crate::test_support::fixtures::anna_home;
 
-/// A backend like QEMU in one respect: a frozen machine has no endpoints yet, and asking for them is a mistake.
-struct EndpointsAfterResume(Arc<dyn Backend>);
+/// The processes of the machines that `await_booted` was called for.
+type Awaited = Arc<Mutex<HashSet<u32>>>;
+
+/// A backend like QEMU in two respects: a frozen machine has no endpoints yet, and asking for them is a mistake; and a
+/// machine that has not booted yet cannot be shut down gracefully, so a shutdown before `await_booted` is a mistake.
+struct EndpointsAfterResume(Arc<dyn Backend>, Awaited);
 
 impl Backend for EndpointsAfterResume {
     fn launch(&self, spec: &MachineSpec) -> crate::Result<Box<dyn Machine>> {
         Ok(Box::new(Strict {
             inner: self.0.launch(spec)?,
             resumed: false,
+            awaited: self.1.clone(),
         }))
     }
 
     fn attach(&self, rec: &MachineRecord) -> crate::Result<Box<dyn Machine>> {
-        self.0.attach(rec)
+        Ok(Box::new(Strict {
+            inner: self.0.attach(rec)?,
+            resumed: true,
+            awaited: self.1.clone(),
+        }))
     }
 
     fn storage(&self) -> &dyn Storage {
@@ -37,6 +48,7 @@ impl Backend for EndpointsAfterResume {
 struct Strict {
     inner: Box<dyn Machine>,
     resumed: bool,
+    awaited: Awaited,
 }
 
 impl Machine for Strict {
@@ -67,6 +79,10 @@ impl Machine for Strict {
     }
 
     fn shutdown(&mut self) -> crate::Result<()> {
+        assert!(
+            self.awaited.lock().unwrap().contains(&self.record().process.pid),
+            "shutdown before the boot was awaited"
+        );
         self.inner.shutdown()
     }
 
@@ -75,10 +91,11 @@ impl Machine for Strict {
     }
 }
 
-/// The fake target behind [`EndpointsAfterResume`], counting how often the contract waits for a boot.
+/// The fake target behind [`EndpointsAfterResume`]. Its `await_booted` is only valid on a running machine, and counts.
 struct StrictTarget {
     inner: FakeTarget,
     booted_waits: AtomicUsize,
+    awaited: Awaited,
 }
 
 impl StrictTarget {
@@ -86,13 +103,14 @@ impl StrictTarget {
         StrictTarget {
             inner: FakeTarget::new(),
             booted_waits: AtomicUsize::new(0),
+            awaited: Awaited::default(),
         }
     }
 }
 
 impl ContractTarget for StrictTarget {
     fn backend(&self) -> Arc<dyn Backend> {
-        Arc::new(EndpointsAfterResume(self.inner.backend()))
+        Arc::new(EndpointsAfterResume(self.inner.backend(), self.awaited.clone()))
     }
 
     fn parent_layer(&self, store: &LayerStore) -> ChainLease {
@@ -120,7 +138,15 @@ impl ContractTarget for StrictTarget {
     }
 
     fn await_booted(&self, machine: &dyn Machine) -> crate::Result<()> {
+        // A machine that has not been resumed has no endpoints, and the call panics.
+        assert!(!machine.ssh_endpoints().is_empty(), "the machine was not resumed");
+        let record = machine.record();
+        assert!(
+            VmProcess::attach(&record.process).unwrap().is_some(),
+            "the machine is not running"
+        );
         self.booted_waits.fetch_add(1, Ordering::SeqCst);
+        self.awaited.lock().unwrap().insert(record.process.pid);
         self.inner.await_booted(machine)
     }
 }
@@ -153,6 +179,30 @@ fn the_shutdown_functions_wait_for_a_boot_before_the_first_shutdown(#[fixture(an
         2,
         "the attached machine is awaited"
     );
+}
+
+#[skuld::test]
+fn a_shutdown_before_the_boot_was_awaited_fails_the_strict_target(#[fixture(anna_home)] home: &Path) {
+    let target = StrictTarget::new();
+    let env = crate::store::layers::layers_tests::env(home);
+    let parent = target.parent_layer(&env.store);
+    let spec = target.spec(home, 0);
+    std::fs::create_dir_all(spec.disk.parent().unwrap()).unwrap();
+    let backend = target.backend();
+    backend
+        .storage()
+        .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+        .unwrap();
+    let mut machine = backend.launch(&spec).unwrap();
+    machine.resume().unwrap();
+
+    let early = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| machine.shutdown()));
+    assert!(
+        early.is_err(),
+        "the strict machine allowed a shutdown before await_booted"
+    );
+    target.await_booted(&*machine).unwrap();
+    machine.shutdown().expect("a shutdown after the wait is fine");
 }
 
 #[skuld::test]
