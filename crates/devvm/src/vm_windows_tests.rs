@@ -490,7 +490,7 @@ fn start_over_a_stale_record_deletes_the_old_machines_leftovers(#[fixture(anna_h
     instance.remove().unwrap();
 }
 
-// Failures while launching =============================================================================================
+// Failures while launching ============================================================================================
 
 /// Holds `record.json` open without sharing from the `step` on, so that no record read or write succeeds.
 struct HoldsRecordFrom {
