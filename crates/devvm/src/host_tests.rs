@@ -4,7 +4,6 @@ use super::unsupported::UnsupportedHost;
 use super::{Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
-use crate::test_support::fake_vm;
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::anna_home;
 use crate::test_support::helper;
@@ -52,20 +51,25 @@ fn console_window_command() -> cosca::Command {
     helper::cosca_command("console-window", &[])
 }
 
-/// A child that was not detached shares this process's console, or has none when this process has none.
+/// A child that was not detached, started with `CREATE_NO_WINDOW`: on Windows it has a console of its own with no
+/// window, whether or not this process has a console. Without the flag, a parent with no console would give it a new
+/// console with a window.
 fn undetached_control() -> ConsoleFacts {
-    let facts = console_facts(console_window_command());
-    assert_eq!(
+    let mut cmd = console_window_command();
+    cmd.no_window();
+    let facts = console_facts(cmd);
+    assert!(
         facts.attached,
-        fake_vm::this_process_has_console(),
-        "a child that is not detached should inherit this process's console: {facts:?}"
+        "a child that is not detached should have a console: {facts:?}"
     );
+    assert_ne!(facts.window, "window", "the control should have no window: {facts:?}");
     facts
 }
 
 #[skuld::test]
 fn unsupported_host_detach_changes_nothing() {
     let mut cmd = console_window_command();
+    cmd.no_window();
     UnsupportedHost.detach(&mut cmd).unwrap();
     assert_eq!(console_facts(cmd), undetached_control());
 }

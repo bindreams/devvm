@@ -183,11 +183,6 @@ pub fn release_owner(args: &[String]) {
     print_record(&vm);
 }
 
-/// Whether this process has a console.
-pub fn this_process_has_console() -> bool {
-    probe::console_processes() != "0"
-}
-
 /// Helper `console-window`: prints whether this process has a console window and how many processes share its console.
 pub fn console_window(_args: &[String]) {
     println!(
