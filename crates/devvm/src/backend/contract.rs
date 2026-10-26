@@ -43,7 +43,8 @@ pub(crate) trait ContractTarget {
     fn has_run(&self, spec: &MachineSpec) -> bool;
 
     /// The files outside the instance directory that belong to the machine launched from `spec`, whether or not they
-    /// exist now. A killed machine leaves none of them.
+    /// exist now. The machine's record names them from the launch on, before the resume, and a machine that was killed
+    /// or shut down leaves none of them.
     fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf>;
 
     /// Waits until a resumed machine has booted far enough to act on a graceful shutdown. A machine that needs no
@@ -79,6 +80,23 @@ fn prepared(target: &dyn ContractTarget, world: &World, root: &Path, n: u32) -> 
 
 fn first_endpoint(machine: &dyn Machine) -> SocketAddr {
     machine.ssh_endpoints().first().expect("a machine has an endpoint").1
+}
+
+/// The record names every leftover of `spec`'s machine; the engine persists this record before the resume.
+fn assert_names_the_leftovers(target: &dyn ContractTarget, spec: &MachineSpec, record: &MachineRecord) {
+    for leftover in target.leftovers(spec) {
+        assert!(
+            record.leftovers.contains(&leftover),
+            "the record taken before the resume does not name {}",
+            leftover.display()
+        );
+    }
+}
+
+fn assert_no_leftovers(target: &dyn ContractTarget, spec: &MachineSpec, after: &str) {
+    for leftover in target.leftovers(spec) {
+        assert!(!leftover.exists(), "{after} left {}", leftover.display());
+    }
 }
 
 fn is_running(record: &MachineRecord) -> bool {
@@ -122,13 +140,44 @@ pub(crate) fn a_frozen_machine_has_not_run_and_kill_leaves_nothing(target: &dyn 
     let spec = prepared(target, &world, root, 0);
     let mut machine = target.backend().launch(&spec).unwrap();
     let record = machine.record();
+    assert_names_the_leftovers(target, &spec, &record);
 
     assert!(!target.has_run(&spec), "a frozen machine has not run");
     machine.kill().unwrap();
     assert!(!is_running(&record), "kill leaves no process");
     assert!(!target.has_run(&spec), "a killed frozen machine never ran");
-    for leftover in target.leftovers(&spec) {
-        assert!(!leftover.exists(), "kill left {}", leftover.display());
+    assert_no_leftovers(target, &spec, "kill");
+}
+
+/// How a running machine is ended.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum End {
+    Kill,
+    Shutdown,
+}
+
+/// A machine that ran and is then killed or shut down leaves nothing outside its directory. The record taken before
+/// the resume already names the files it creates.
+pub(crate) fn a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(target: &dyn ContractTarget, root: &Path) {
+    let world = world(target, root);
+    for (n, end) in [End::Kill, End::Shutdown].into_iter().enumerate() {
+        let spec = prepared(target, &world, root, n as u32);
+        let mut machine = target.backend().launch(&spec).unwrap();
+        let before_the_run = machine.record();
+        assert_names_the_leftovers(target, &spec, &before_the_run);
+
+        machine.resume().unwrap();
+        accepts_eventually(&before_the_run, first_endpoint(&*machine));
+        target.await_booted(&*machine).unwrap();
+        match end {
+            End::Kill => machine.kill().unwrap(),
+            End::Shutdown => machine.shutdown().unwrap(),
+        }
+        assert!(
+            !is_running(&before_the_run),
+            "{end:?} returned while the process was still running"
+        );
+        assert_no_leftovers(target, &spec, &format!("{end:?}"));
     }
 }
 
@@ -136,6 +185,7 @@ pub(crate) fn a_released_machine_outlives_its_launcher_and_attach_finds_it(targe
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
     let record = target.launch_elsewhere(&spec).unwrap();
+    assert_names_the_leftovers(target, &spec, &record);
 
     // The launcher process has exited by now.
     assert!(is_running(&record), "a released machine survives its launcher");
@@ -209,6 +259,7 @@ pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn Contr
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
     let record = target.launch_elsewhere(&spec).unwrap();
+    assert_names_the_leftovers(target, &spec, &record);
     assert!(is_running(&record), "a released machine survives its launcher");
     let observer = VmProcess::attach(&record.process)
         .unwrap()
@@ -224,6 +275,7 @@ pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn Contr
         !is_running(&record),
         "shutdown returned while the process was still running"
     );
+    assert_no_leftovers(target, &spec, "a shutdown from another process");
 }
 
 pub(crate) fn concurrent_launches_get_distinct_processes_and_endpoints(target: &dyn ContractTarget, root: &Path) {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::backend::MachineRecord;
 use crate::contain::VmProcess;
-use crate::engine::engine_tests::{EngineFixture, engine_fixture, image_of};
+use crate::engine::engine_tests::{EngineFixture, engine_fixture, image_of, leaking_fixture};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{MarkerRead, Owner};
 use crate::instance::registry::registry_tests::lock_files_in;
@@ -61,6 +61,21 @@ fn vm_drop_kills_the_machine_and_removes_the_instance(#[fixture(anna_home)] home
     drop(vm);
 
     assert!(!running(&machine), "drop returns after the VM has exited");
+    nothing_is_left(&fx);
+}
+
+#[skuld::test]
+fn vm_drop_deletes_the_leftovers_of_the_machine(#[fixture(anna_home)] home: &Path) {
+    let fx = leaking_fixture(home, Arc::new(MemoryProgress::default()));
+    let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
+    let leftovers = vm.instance().dir().record().unwrap().machine.unwrap().leftovers;
+    assert!(!leftovers.is_empty() && leftovers.iter().all(|path| path.exists()));
+
+    drop(vm);
+
+    for leftover in leftovers {
+        assert!(!leftover.exists(), "drop left {}", leftover.display());
+    }
     nothing_is_left(&fx);
 }
 

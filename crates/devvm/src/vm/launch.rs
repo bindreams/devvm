@@ -5,6 +5,7 @@ use crate::contain::{Lifetime, VmProcess};
 use crate::engine::{Engine, LaunchStep};
 use crate::guest::{SeedKeys, SeedSpec};
 use crate::instance::dir::{InstanceDir, OpExclusive};
+use crate::vm::remove_leftovers;
 use crate::{Error, ErrorKind, Result};
 
 /// Launches the machine of `dir` unless it already runs (`None`). The machine comes back resumed and still contained.
@@ -18,10 +19,12 @@ pub(super) fn launch(
     lifetime: Lifetime,
 ) -> Result<Option<Box<dyn Machine>>> {
     let record = dir.record()?;
-    if let Some(machine) = &record.machine
-        && VmProcess::attach(&machine.process)?.is_some()
-    {
-        return Ok(None);
+    if let Some(machine) = &record.machine {
+        if VmProcess::attach(&machine.process)?.is_some() {
+            return Ok(None);
+        }
+        // A stale record: the machine is dead, and its files must go before a new machine takes their place.
+        remove_leftovers(engine, dir, machine);
     }
 
     let backend = engine.backend()?;
@@ -94,11 +97,12 @@ fn abandon(engine: &Engine, dir: &InstanceDir, op: &OpExclusive, machine: &mut d
 }
 
 fn kill_unrecorded(engine: &Engine, dir: &InstanceDir, machine: &mut dyn Machine) {
-    if let Err(e) = machine.kill() {
-        engine.progress().message(&format!(
+    match machine.kill() {
+        Ok(()) => remove_leftovers(engine, dir, &machine.record()),
+        Err(e) => engine.progress().message(&format!(
             "instance {}: the machine that failed to start could not be killed ({})",
             dir.name(),
             e.message()
-        ));
+        )),
     }
 }

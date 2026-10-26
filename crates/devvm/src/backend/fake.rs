@@ -28,6 +28,17 @@ mod fake_tests;
 #[path = "fake_windows_tests.rs"]
 mod fake_windows_tests;
 
+/// What a fake machine leaves outside its instance directory (see [`FakeBackend::with_leftovers_in`]).
+struct Leftovers {
+    dir: PathBuf,
+    cleaned_by_kill: bool,
+}
+
+/// The files a fake machine of instance `id` creates under `dir`.
+pub(crate) fn leftover_paths(dir: &Path, id: &InstanceId) -> Vec<PathBuf> {
+    vec![dir.join(format!("{id}.sock")), dir.join(format!("{id}.sock.lock"))]
+}
+
 /// The file in a layer that an instance disk sits on.
 const LAYER_DISK: &str = "disk.qcow2";
 
@@ -35,6 +46,7 @@ pub(crate) struct FakeBackend {
     host: &'static dyn Host,
     /// Updated when a machine resumes and learns its endpoint.
     launched: Arc<Mutex<Vec<MachineRecord>>>,
+    leftovers: Option<Leftovers>,
     specs: Mutex<Vec<MachineSpec>>,
     storage: FakeStorage,
 }
@@ -44,9 +56,22 @@ impl FakeBackend {
         FakeBackend {
             host,
             launched: Arc::new(Mutex::new(Vec::new())),
+            leftovers: None,
             specs: Mutex::new(Vec::new()),
             storage: FakeStorage,
         }
+    }
+
+    /// A backend whose machines create files outside their instance directory when they run, as QEMU's control socket
+    /// and its lock file are, and name them in their record from the launch on. Under `dir`, one pair per instance.
+    /// With `cleaned_by_kill` false, `kill` and `shutdown` leave the files, like a backend that does not clean up: the
+    /// code around the machine must then.
+    pub(crate) fn with_leftovers_in(mut self, dir: &Path, cleaned_by_kill: bool) -> FakeBackend {
+        self.leftovers = Some(Leftovers {
+            dir: dir.to_path_buf(),
+            cleaned_by_kill,
+        });
+        self
     }
 
     /// How many machines were launched (spawned frozen) through this backend.
@@ -62,6 +87,12 @@ impl FakeBackend {
     /// The spec of every machine launched through this backend, in launch order.
     pub(crate) fn specs(&self) -> Vec<MachineSpec> {
         self.specs.lock().unwrap().clone()
+    }
+
+    fn cleaned_by_kill(&self) -> bool {
+        self.leftovers
+            .as_ref()
+            .is_none_or(|leftovers| leftovers.cleaned_by_kill)
     }
 
     /// The layer file the instance disk `disk` sits on; an error when that file is gone.
@@ -105,7 +136,11 @@ impl Backend for FakeBackend {
             qmp: String::new(),
             ssh: Vec::new(),
             serial_log: spec.serial_log.clone(),
-            leftovers: Vec::new(),
+            leftovers: self
+                .leftovers
+                .as_ref()
+                .map(|leftovers| leftover_paths(&leftovers.dir, &spec.id))
+                .unwrap_or_default(),
         };
         let index = {
             let mut launched = self.launched.lock().unwrap();
@@ -120,6 +155,7 @@ impl Backend for FakeBackend {
             serial_log: spec.serial_log.clone(),
             state_dir: state_dir.to_path_buf(),
             launched: Some((self.launched.clone(), index)),
+            cleaned_by_kill: self.cleaned_by_kill(),
             attached: false,
         }))
     }
@@ -138,6 +174,7 @@ impl Backend for FakeBackend {
             serial_log: record.serial_log.clone(),
             state_dir: PathBuf::new(),
             launched: None,
+            cleaned_by_kill: self.cleaned_by_kill(),
             attached: true,
         }))
     }
@@ -160,6 +197,8 @@ struct FakeMachine {
     state_dir: PathBuf,
     /// The backend's list of launched records and this machine's place in it.
     launched: Option<(Arc<Mutex<Vec<MachineRecord>>>, usize)>,
+    /// Whether `kill` and `shutdown` delete the record's `leftovers`.
+    cleaned_by_kill: bool,
     /// Found with `attach`: already running, and not this process's to contain.
     attached: bool,
 }
@@ -188,6 +227,11 @@ impl Machine for FakeMachine {
         if let Some((launched, index)) = &self.launched {
             launched.lock().unwrap()[*index] = self.record.clone();
         }
+        // The running machine creates its files.
+        for path in &self.record.leftovers {
+            std::fs::write(path, b"")
+                .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", path.display()), e))?;
+        }
         Ok(())
     }
 
@@ -197,11 +241,19 @@ impl Machine for FakeMachine {
 
     /// A fake has no guest to ask, so this is a kill.
     fn shutdown(&mut self) -> Result<()> {
-        self.vm.kill()
+        self.kill()
     }
 
     fn kill(&mut self) -> Result<()> {
-        self.vm.kill()
+        self.vm.kill()?;
+        if self.cleaned_by_kill {
+            let mut failures = Vec::new();
+            self.record.remove_leftovers(&mut |text| failures.push(text));
+            if !failures.is_empty() {
+                return Err(Error::new(ErrorKind::Io, failures.join("; ")));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -267,12 +319,16 @@ pub(crate) fn fake_spec(disk: PathBuf, serial_log: PathBuf, lifetime: Lifetime) 
 /// The fake backend as a contract target.
 pub(crate) struct FakeTarget {
     backend: Arc<FakeBackend>,
+    /// Where the machines of this target leave their files; they clean up after themselves.
+    run_dir: tempfile::TempDir,
 }
 
 impl FakeTarget {
     pub(crate) fn new() -> FakeTarget {
+        let run_dir = tempfile::tempdir().expect("a temporary directory");
         FakeTarget {
-            backend: Arc::new(FakeBackend::new(host::current())),
+            backend: Arc::new(FakeBackend::new(host::current()).with_leftovers_in(run_dir.path(), true)),
+            run_dir,
         }
     }
 }
@@ -327,14 +383,19 @@ impl ContractTarget for FakeTarget {
             .exists()
     }
 
-    fn leftovers(&self, _spec: &MachineSpec) -> Vec<PathBuf> {
-        Vec::new()
+    fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf> {
+        leftover_paths(self.run_dir.path(), &spec.id)
     }
 
     fn launch_elsewhere(&self, spec: &MachineSpec) -> Result<MachineRecord> {
         let output = crate::test_support::helper::command(
             "fake-launcher",
-            &[&spec.disk.display().to_string(), &spec.serial_log.display().to_string()],
+            &[
+                &spec.disk.display().to_string(),
+                &spec.serial_log.display().to_string(),
+                &spec.id.to_string(),
+                &self.run_dir.path().display().to_string(),
+            ],
         )
         .output()
         .expect("the launcher should run");
@@ -368,15 +429,16 @@ pub(crate) fn fake_shutdown(args: &[String]) {
     machine.shutdown().expect("the machine should shut down");
 }
 
-/// Helper `fake-launcher <disk> <serial-log>`: launches an `OutlivesOwner` machine, resumes and releases it, prints
+/// Helper `fake-launcher <disk> <serial-log> <instance-id> <leftover-dir>`: launches an `OutlivesOwner` machine, resumes and releases it, prints
 /// its record and exits, leaving the machine running.
 pub(crate) fn fake_launcher(args: &[String]) {
-    let backend = FakeBackend::new(host::current());
-    let spec = fake_spec(
+    let backend = FakeBackend::new(host::current()).with_leftovers_in(Path::new(&args[3]), true);
+    let mut spec = fake_spec(
         PathBuf::from(&args[0]),
         PathBuf::from(&args[1]),
         Lifetime::OutlivesOwner,
     );
+    spec.id = args[2].parse().expect("the instance id");
     let mut machine = backend.launch(&spec).expect("the machine should launch");
     machine.resume().expect("the machine should resume");
     machine.release().expect("the machine should release");

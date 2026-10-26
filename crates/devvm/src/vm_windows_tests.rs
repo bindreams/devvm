@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
-use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_fixture_with, instance_in};
+use crate::contain::contain_tests::Sleeper;
+use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_fixture_with, instance_in, leaking_fixture};
 use crate::engine::{LaunchHooks, LaunchStep};
 use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
@@ -433,5 +434,54 @@ fn start_gives_the_seed_the_instance_id(#[fixture(anna_home)] home: &Path) {
 
     let seed = std::fs::read_to_string(dir.path().join("seed").join("seed.fake")).unwrap();
     assert!(seed.contains(&format!("instance-id={}", dir.id())), "{seed}");
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn stop_deletes_the_leftovers_of_a_running_machine(#[fixture(anna_home)] home: &Path) {
+    let fx = leaking_fixture(home, Arc::new(MemoryProgress::default()));
+    instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+    instance.start().unwrap();
+    let leftovers = recorded(&instance).unwrap().leftovers;
+    assert!(!leftovers.is_empty());
+    assert!(
+        leftovers.iter().all(|path| path.exists()),
+        "the running machine made them"
+    );
+
+    instance.stop().unwrap();
+
+    assert!(!running(&fx.fake.launched()[0]));
+    for leftover in leftovers {
+        assert!(!leftover.exists(), "stop left {}", leftover.display());
+    }
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn start_over_a_stale_record_deletes_the_old_machines_leftovers(#[fixture(anna_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let sleeper = Sleeper::spawn();
+    let socket = home.join("stale.sock");
+    std::fs::write(&socket, b"x").unwrap();
+    let stale = MachineRecord {
+        process: sleeper.record(),
+        qmp: String::new(),
+        ssh: Vec::new(),
+        serial_log: std::path::PathBuf::new(),
+        leftovers: vec![socket.clone()],
+    };
+    sleeper.finish();
+    let op = dir.op_exclusive().unwrap();
+    dir.update(&op, &mut |r| r.machine = Some(stale.clone())).unwrap();
+    drop(op);
+
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+    instance.start().unwrap();
+
+    assert_eq!(fx.fake.launches(), 1, "the dead machine is replaced");
+    assert!(!socket.exists(), "the old machine's leftovers are deleted");
     instance.remove().unwrap();
 }

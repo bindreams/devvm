@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::backend::Machine;
+use crate::backend::{Machine, MachineRecord};
 use crate::contain::{Lifetime, VmProcess};
 use crate::engine::Engine;
 use crate::exit::Output;
@@ -41,6 +41,12 @@ pub trait Guest {
     fn reboot(&self) -> Result<()>;
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()>;
     fn copy_out(&self, src: &str, dest: &Path) -> Result<()>;
+}
+
+/// Deletes what `machine` left outside the instance directory. Call it only once the machine is proven dead; a file
+/// that cannot be deleted is a warning naming the instance.
+pub(crate) fn remove_leftovers(engine: &Engine, dir: &InstanceDir, machine: &MachineRecord) {
+    machine.remove_leftovers(&mut |text| engine.progress().message(&format!("instance {}: {text}", dir.name())));
 }
 
 pub(crate) fn no_access_layer() -> Error {
@@ -124,14 +130,12 @@ impl Instance {
         };
         match self.engine.backend()?.attach(&machine) {
             Ok(mut running) => running.shutdown()?,
-            // Not running any more: the record is stale, and what the machine left behind can go.
-            Err(e) if e.kind() == ErrorKind::NotFound => machine.remove_leftovers(&mut |text| {
-                self.engine
-                    .progress()
-                    .message(&format!("instance {}: {text}", dir.name()))
-            }),
+            // Not running any more: the record is stale.
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
+        // The machine is dead either way, and what it left behind can go.
+        remove_leftovers(&self.engine, dir, &machine);
         dir.update(&op, &mut |record| record.machine = None)?;
         Ok(())
     }
@@ -148,11 +152,7 @@ impl Instance {
             }
             // The VM is dead: what it left outside the directory goes too, and a destroy that fails below must not
             // leave a record naming it.
-            machine.remove_leftovers(&mut |text| {
-                self.engine
-                    .progress()
-                    .message(&format!("instance {}: {text}", dir.name()))
-            });
+            remove_leftovers(&self.engine, dir, machine);
             dir.update(&op, &mut |record| record.machine = None)?;
         }
         dir.destroy(op)?;

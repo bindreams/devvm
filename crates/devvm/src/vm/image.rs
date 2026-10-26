@@ -12,7 +12,7 @@ use crate::instance::name::InstanceName;
 use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
 use crate::store::layers::ChainLease;
-use crate::vm::{Guest, Handle, Instance, no_access_layer};
+use crate::vm::{Guest, Handle, Instance, no_access_layer, remove_leftovers};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, GuestKind, Result, StartOptions};
 
 #[cfg(test)]
@@ -190,15 +190,16 @@ impl Drop for Vm {
         let dir = instance.dir();
         let progress = instance.engine.progress();
         let machine = self.machine.get_mut().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(mut machine) = machine
-            && let Err(e) = machine.kill()
-        {
-            progress.message(&format!(
-                "instance {} could not be removed: its VM could not be killed ({}); the next devvm command retries",
-                dir.name(),
-                e.message()
-            ));
-            return;
+        if let Some(mut machine) = machine {
+            if let Err(e) = machine.kill() {
+                progress.message(&format!(
+                    "instance {} could not be removed: its VM could not be killed ({}); the next devvm command retries",
+                    dir.name(),
+                    e.message()
+                ));
+                return;
+            }
+            remove_leftovers(&instance.engine, dir, &machine.record());
         }
         match dir.try_op_exclusive() {
             Ok(Some(op)) => {

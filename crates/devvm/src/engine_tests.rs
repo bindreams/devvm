@@ -38,9 +38,32 @@ pub(crate) fn engine_fixture_with(
     hooks: Arc<dyn LaunchHooks>,
     wrap: impl FnOnce(Arc<FakeBackend>) -> Arc<dyn Backend>,
 ) -> EngineFixture {
+    engine_fixture_from(home, progress, hooks, FakeBackend::new(&TestHost), wrap)
+}
+
+/// `engine_fixture` over a backend whose machines create files outside their instance directory (under `home/run`) and
+/// do not delete them when killed or shut down: everything that ends a machine must.
+pub(crate) fn leaking_fixture(home: &Path, progress: Arc<dyn Progress>) -> EngineFixture {
+    engine_fixture_from(home, progress, Arc::new(NoHooks), leaking_backend(home), |fake| fake)
+}
+
+/// The fake backend of [`leaking_fixture`].
+pub(crate) fn leaking_backend(home: &Path) -> FakeBackend {
+    let run_dir = home.join("run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    FakeBackend::new(&TestHost).with_leftovers_in(&run_dir, false)
+}
+
+pub(crate) fn engine_fixture_from(
+    home: &Path,
+    progress: Arc<dyn Progress>,
+    hooks: Arc<dyn LaunchHooks>,
+    fake: FakeBackend,
+    wrap: impl FnOnce(Arc<FakeBackend>) -> Arc<dyn Backend>,
+) -> EngineFixture {
     let env = env(home);
     let chain = build(&env, key(1), None);
-    let fake = Arc::new(FakeBackend::new(&TestHost));
+    let fake = Arc::new(fake);
     let engine = Engine::with_parts(EngineParts {
         dirs: env.dirs.clone(),
         host: &TestHost,

@@ -62,10 +62,11 @@ pub(crate) trait Machine: Send {
     /// `Backend::attach`.
     fn release(&mut self) -> Result<()>;
 
-    /// Graceful shutdown; returns after the process has exited.
+    /// Graceful shutdown; returns after the process has exited and its `leftovers` are deleted.
     fn shutdown(&mut self) -> Result<()>;
 
-    /// Kills the machine; returns after the process has exited. A frozen machine never runs.
+    /// Kills the machine; returns after the process has exited and its `leftovers` are deleted. A frozen machine never
+    /// runs.
     fn kill(&mut self) -> Result<()>;
 }
 
