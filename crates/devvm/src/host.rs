@@ -2,6 +2,9 @@
 //! file, where the implementation is chosen.
 
 use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -46,6 +49,13 @@ impl fmt::Display for Unavailable {
 
 impl std::error::Error for Unavailable {}
 
+/// The Windows directories, as the OS reports them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SystemDirs {
+    pub root: PathBuf,
+    pub system32: PathBuf,
+}
+
 pub(crate) trait Host: Send + Sync {
     /// The accelerator for guests of `arch`, or what is missing.
     fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable>;
@@ -56,6 +66,34 @@ pub(crate) trait Host: Send + Sync {
 
     /// How many bits of a guest exit code this host's processes can pass on.
     fn exit_width(&self) -> ExitWidth;
+
+    /// Prepares a short non-interactive tool (`qemu-img`, `git`, `ssh -G`) to run without a console window.
+    fn quiet(&self, cmd: &mut std::process::Command);
+
+    /// The Windows and System32 directories from the OS (never from the environment); `None` off Windows.
+    fn system_dirs(&self) -> Option<SystemDirs>;
+
+    /// Creates `path` with `bytes`, readable by the current user only from the moment it exists; fails with
+    /// `AlreadyExists` instead of replacing a file. Windows has no mode bits: the file keeps the ACL it inherits.
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+
+    /// Whether any execute bit of `path` is set; always `false` on Windows.
+    fn is_executable(&self, path: &Path) -> std::io::Result<bool>;
+
+    /// Adds execute where read is set; does nothing on Windows.
+    fn set_executable(&self, path: &Path) -> std::io::Result<()>;
+}
+
+/// Creates `path` with `options` and writes `bytes`. A file whose write failed is removed, so a half-written secret
+/// is never left behind.
+fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = options.write(true).create_new(true).open(path)?;
+    if let Err(e) = file.write_all(bytes) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// The host this binary runs on.

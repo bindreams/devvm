@@ -80,6 +80,7 @@ mod test_helpers {
         ("fake-cli-up", crate::vm::vm_tests::fake_cli_up),
         ("contain-owner", crate::test_support::fake_vm::contain_owner),
         ("release-owner", crate::test_support::fake_vm::release_owner),
+        ("console-window", crate::test_support::fake_vm::console_window),
         ("layer-builder", crate::store::layers::cross_tests::layer_builder),
         ("lease-holder", crate::store::layers::gc_tests::lease_holder),
         ("fetch-artifact", crate::store::fetch::http_tests::fetch_artifact),

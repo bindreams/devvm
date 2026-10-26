@@ -118,3 +118,8 @@ pub fn release_owner(args: &[String]) {
     vm.release().expect("the fake VM should release");
     print_record(&vm);
 }
+
+/// Helper `console-window`: prints whether this process has a console window and how many processes share its console.
+pub fn console_window(_args: &[String]) {
+    println!("window={} console={}", probe::console_window(), probe::console_processes());
+}

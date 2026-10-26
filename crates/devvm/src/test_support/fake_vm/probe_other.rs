@@ -7,3 +7,7 @@ pub fn kill_on_close() -> &'static str {
 pub fn console_processes() -> String {
     "n/a".to_owned()
 }
+
+pub fn console_window() -> &'static str {
+    "n/a"
+}

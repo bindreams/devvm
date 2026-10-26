@@ -1,6 +1,6 @@
 //! What the fake VM reports about itself on Windows.
 
-use windows_sys::Win32::System::Console::GetConsoleProcessList;
+use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
 use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
     QueryInformationJobObject,
@@ -33,4 +33,10 @@ pub fn console_processes() -> String {
     // SAFETY: the list is one element long, as passed.
     let count = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 1) };
     count.to_string()
+}
+
+/// `window` when this process has a console window, `none` when it has a console without one or no console.
+pub fn console_window() -> &'static str {
+    // SAFETY: no arguments; returns a handle or null.
+    if unsafe { GetConsoleWindow() }.is_null() { "none" } else { "window" }
 }
