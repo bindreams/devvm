@@ -1,19 +1,25 @@
+use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use crate::backend::MachineRecord;
+use crate::backend::fake::FakeBackend;
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::engine_tests::{engine_fixture, instance_in};
+use crate::engine::{Engine, EngineParts, LaunchHooks, LaunchStep};
+use crate::guest::fake::FakeGuests;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
-use crate::{ErrorKind, Instance};
+use crate::test_support::host::TestHost;
+use crate::{Dirs, ErrorKind, Instance};
 
 /// Reads progress messages until `count` of them say `waiting for`: that many commands are provably queued on a lock.
-fn queued(messages: &Receiver<String>, count: usize) {
+pub(crate) fn queued(messages: &Receiver<String>, count: usize) {
     let mut seen = 0;
     while seen < count {
         if messages.recv().unwrap().starts_with("waiting for") {
@@ -101,4 +107,130 @@ fn a_remove_queued_behind_a_holder_does_not_remove_a_recreated_name(#[fixture(an
         assert_eq!(std::fs::read(second.path().join("record.json")).unwrap(), before);
         assert!(fx.engine.registry().open(&InstanceName::parse("foo").unwrap()).is_ok());
     });
+}
+
+#[skuld::test]
+fn a_start_queued_behind_a_remove_does_not_start_a_recreated_name(#[fixture(anna_home)] home: &Path) {
+    let (progress, messages) = ChannelProgress::new();
+    let fx = engine_fixture(home, progress);
+    let first = instance_in(&fx, "foo", home);
+    let waiting = Instance::open_in(&fx.engine, "foo").unwrap();
+    let holder = first.op_exclusive().unwrap();
+
+    std::thread::scope(|scope| {
+        let waiter = scope.spawn(move || waiting.start());
+        queued(&messages, 1);
+
+        std::fs::remove_dir_all(fx.env.dirs.instances().join("foo")).unwrap();
+        fx.engine.registry().locks().remove(first.id()).unwrap();
+        let second = instance_in(&fx, "foo", home);
+        let before = std::fs::read(second.path().join("record.json")).unwrap();
+        drop(holder);
+
+        let error = waiter.join().unwrap().expect_err("the instance it queued for is gone");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(fx.fake.launches(), 0, "nothing was launched");
+        assert_eq!(std::fs::read(second.path().join("record.json")).unwrap(), before);
+    });
+}
+
+#[skuld::test]
+fn stop_is_idempotent(#[fixture(anna_home)] home: &Path) {
+    let fx = engine_fixture(home, Arc::new(MemoryProgress::default()));
+    instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+    instance.stop().expect("a stopped instance stops");
+    instance.stop().expect("and again");
+}
+
+#[skuld::test]
+fn stop_and_remove_queued_together_end_with_nothing_left(#[fixture(anna_home)] home: &Path) {
+    let (progress, messages) = ChannelProgress::new();
+    let fx = engine_fixture(home, progress);
+    let dir = instance_in(&fx, "foo", home);
+    let stopper = Instance::open_in(&fx.engine, "foo").unwrap();
+    let remover = Instance::open_in(&fx.engine, "foo").unwrap();
+    let holder = dir.op_exclusive().unwrap();
+
+    let (stopped, removed) = std::thread::scope(|scope| {
+        let a = scope.spawn(move || stopper.stop());
+        let b = scope.spawn(move || remover.remove());
+        queued(&messages, 2);
+        drop(holder);
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    removed.expect("the remove always succeeds");
+    // Either stop ran first (a no-op on a stopped instance) or the instance was already gone.
+    if let Err(e) = stopped {
+        assert_eq!(e.kind(), ErrorKind::NotFound, "{e}");
+    }
+    assert!(names(&fx.env.dirs.instances()).is_empty());
+    assert!(lock_files_in(&fx.env.dirs).is_empty());
+}
+
+// Helper processes ====================================================================================================
+
+/// Parks the launch of `fake-cli-start` at one step: prints the machine's record and waits for stdin to close, which
+/// only the test killing the process does.
+struct ParkAt(LaunchStep);
+
+impl LaunchHooks for ParkAt {
+    fn reached(&self, step: LaunchStep, machine: &MachineRecord) {
+        if step != self.0 {
+            return;
+        }
+        let mut stdout = std::io::stdout();
+        writeln!(stdout, "parked {}", serde_json::to_string(machine).unwrap())
+            .and_then(|()| stdout.flush())
+            .unwrap();
+        let mut sink = Vec::new();
+        std::io::stdin().read_to_end(&mut sink).unwrap();
+    }
+}
+
+pub(crate) fn step_name(step: LaunchStep) -> &'static str {
+    match step {
+        LaunchStep::Spawned => "spawned",
+        LaunchStep::Recorded => "recorded",
+        LaunchStep::Resumed => "resumed",
+    }
+}
+
+fn step_named(name: &str) -> LaunchStep {
+    [LaunchStep::Spawned, LaunchStep::Recorded, LaunchStep::Resumed]
+        .into_iter()
+        .find(|step| step_name(*step) == name)
+        .unwrap_or_else(|| panic!("no launch step called {name}"))
+}
+
+/// The engine of a helper process: the fake backend over the state under `home`.
+pub(crate) fn helper_engine(home: &Path, hooks: Arc<dyn LaunchHooks>) -> Arc<Engine> {
+    Engine::with_parts(EngineParts {
+        dirs: Dirs::under(home),
+        host: &TestHost,
+        backend: Some(Arc::new(FakeBackend::new(&TestHost))),
+        guests: Arc::new(FakeGuests),
+        clock: Arc::new(crate::store::layers::SystemClock),
+        progress: Arc::new(crate::exit::StderrProgress),
+        hooks,
+    })
+}
+
+/// Helper `fake-cli-start <home> <name> [step]`: starts the instance and prints `started <machine record>`; with a
+/// step it parks there instead (see [`ParkAt`]).
+pub(crate) fn fake_cli_start(args: &[String]) {
+    let hooks: Arc<dyn LaunchHooks> = match args.get(2) {
+        Some(step) => Arc::new(ParkAt(step_named(step))),
+        None => Arc::new(crate::engine::NoHooks),
+    };
+    let engine = helper_engine(Path::new(&args[0]), hooks);
+    let instance = Instance::open_in(&engine, &args[1]).expect("the instance exists");
+    instance.start().expect("the instance should start");
+    let machine = instance
+        .dir
+        .record()
+        .unwrap()
+        .machine
+        .expect("a started instance names its machine");
+    println!("started {}", serde_json::to_string(&machine).unwrap());
 }

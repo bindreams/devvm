@@ -7,7 +7,6 @@ use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
@@ -34,7 +33,7 @@ const LAYER_DISK: &str = "disk.qcow2";
 
 pub(crate) struct FakeBackend {
     host: &'static dyn Host,
-    launches: AtomicUsize,
+    launched: Mutex<Vec<MachineRecord>>,
     ports: Mutex<HashSet<u16>>,
     storage: FakeStorage,
 }
@@ -43,7 +42,7 @@ impl FakeBackend {
     pub(crate) fn new(host: &'static dyn Host) -> FakeBackend {
         FakeBackend {
             host,
-            launches: AtomicUsize::new(0),
+            launched: Mutex::new(Vec::new()),
             ports: Mutex::new(HashSet::new()),
             storage: FakeStorage,
         }
@@ -51,7 +50,12 @@ impl FakeBackend {
 
     /// How many machines were launched (spawned frozen) through this backend.
     pub(crate) fn launches(&self) -> usize {
-        self.launches.load(Ordering::SeqCst)
+        self.launched.lock().unwrap().len()
+    }
+
+    /// The record of every machine launched through this backend, in launch order.
+    pub(crate) fn launched(&self) -> Vec<MachineRecord> {
+        self.launched.lock().unwrap().clone()
     }
 
     /// A loopback port no machine of this backend has had.
@@ -96,7 +100,6 @@ impl Backend for FakeBackend {
         let state_dir = spec.serial_log.parent().expect("a serial log has a directory");
         let port = self.claim_port();
         let vm = VmProcess::spawn_frozen(self.host, fake_vm::command(port, state_dir), spec.lifetime)?;
-        self.launches.fetch_add(1, Ordering::SeqCst);
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         let record = MachineRecord {
             process: vm.record()?,
@@ -106,6 +109,7 @@ impl Backend for FakeBackend {
                 addr,
             }],
         };
+        self.launched.lock().unwrap().push(record.clone());
         Ok(Box::new(FakeMachine {
             vm,
             record,

@@ -50,14 +50,14 @@ pub(crate) fn fixture(home: &Path) -> Fixture {
     }
 }
 
-pub(crate) fn new_instance<'a>(fx: &'a Fixture, name: Option<&str>, storage: &'a TestStorage) -> NewInstance<'a> {
+pub(crate) fn new_instance<'a>(fx: &'a Fixture, name: Option<&str>, storage: &'a dyn Storage) -> NewInstance<'a> {
     new_instance_on(&fx.chain, name, storage)
 }
 
 pub(crate) fn new_instance_on<'a>(
     chain: &'a ChainLease,
     name: Option<&str>,
-    storage: &'a TestStorage,
+    storage: &'a dyn Storage,
 ) -> NewInstance<'a> {
     NewInstance {
         name: name.map(|text| InstanceName::parse(text).unwrap()),

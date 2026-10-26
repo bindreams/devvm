@@ -3,46 +3,54 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::backend::MachineRecord;
+use crate::backend::fake::{FakeBackend, FakeStorage};
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::{Engine, EngineParts, ListFilter, NoHooks};
 use crate::exit::Progress;
-use crate::guest::BuiltinGuests;
+use crate::guest::fake::FakeGuests;
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, write_marker};
-use crate::instance::registry::registry_tests::{TestStorage, new_instance_on};
+use crate::instance::registry::registry_tests::new_instance_on;
 use crate::store::layers::layers_tests::{Env, build, env, key, names, t0};
 use crate::store::layers::{ChainLease, SystemClock};
 use crate::test_support::fixtures::{MemoryProgress, anna_home};
 use crate::test_support::host::TestHost;
 use crate::{Arch, ErrorKind, GuestKind, Instance};
 
-/// A test engine over the fake host (and, from Task 12b on, the fake backend) with its own state under the test's home.
+/// A test engine over the fake host, backend and guests, with its own state under the test's home.
 pub(crate) struct EngineFixture {
     pub env: Env,
     pub chain: ChainLease,
     pub engine: Arc<Engine>,
+    pub fake: Arc<FakeBackend>,
 }
 
 pub(crate) fn engine_fixture(home: &Path, progress: Arc<dyn Progress>) -> EngineFixture {
     let env = env(home);
     let chain = build(&env, key(1), None);
+    let fake = Arc::new(FakeBackend::new(&TestHost));
     let engine = Engine::with_parts(EngineParts {
         dirs: env.dirs.clone(),
         host: &TestHost,
-        backend: None,
-        guests: Arc::new(BuiltinGuests),
+        backend: Some(fake.clone()),
+        guests: Arc::new(FakeGuests),
         clock: Arc::new(SystemClock),
         progress,
         hooks: Arc::new(NoHooks),
     });
-    EngineFixture { env, chain, engine }
+    EngineFixture {
+        env,
+        chain,
+        engine,
+        fake,
+    }
 }
 
 /// An ownerless, stopped instance called `name`, created from `created_from`.
 pub(crate) fn instance_in(fx: &EngineFixture, name: &str, created_from: &Path) -> InstanceDir {
     let guard = fx.env.store.begin_record().unwrap();
-    let mut new = new_instance_on(&fx.chain, Some(name), &TestStorage { fail: false });
+    let mut new = new_instance_on(&fx.chain, Some(name), &FakeStorage);
     new.created_from = created_from.to_path_buf();
     fx.engine
         .registry()
