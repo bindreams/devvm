@@ -1,5 +1,6 @@
-//! The fake VM: a real process that stands in for QEMU. It listens on a loopback port, writes a `started` file when it
-//! first runs, and answers each connection with one line describing its own containment.
+//! The fake VM: a real process that stands in for QEMU. It listens on a loopback port of its own choosing, writes a
+//! `started` file naming that port when it first runs, and answers each connection with one line describing its own
+//! containment.
 //!
 //! Only the tests that spawn a frozen process (Windows in 0.1.0) use most of this.
 #![cfg_attr(
@@ -37,30 +38,23 @@ pub fn log(state_dir: &Path) -> PathBuf {
     state_dir.join("fake-vm.log")
 }
 
-/// A port nobody listens on right now. Another process could take it before the fake VM does; the fake is test code,
-/// so a lost race fails the test visibly.
-pub fn free_port() -> u16 {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .and_then(|listener| listener.local_addr())
-        .expect("a loopback port should be available")
-        .port()
+/// The command that runs the fake VM, with `state_dir` for its `started` file.
+pub fn command(state_dir: &Path) -> cosca::Command {
+    helper::cosca_command("fake-vm", &[&state_dir.display().to_string()])
 }
 
-/// The command that runs the fake VM on `port`, with `state_dir` for its `started` file.
-pub fn command(port: u16, state_dir: &Path) -> cosca::Command {
-    helper::cosca_command("fake-vm", &[&port.to_string(), &state_dir.display().to_string()])
-}
-
-/// Helper `fake-vm <port> <state-dir>`.
+/// Helper `fake-vm <state-dir>`. Binds a loopback port of its own choosing, like QEMU's port-0 forward, and reports it
+/// as the content of `started`, which appears (whole, by rename) only once the VM listens.
 pub fn fake_vm(args: &[String]) {
-    let port: u16 = args[0].parse().expect("the port is a number");
-    let state_dir = PathBuf::from(&args[1]);
+    let state_dir = PathBuf::from(&args[0]);
     // Before the port opens, so a connection proves both lines were written.
     println!("{OUT_LINE}");
     eprintln!("{ERR_LINE}");
-    // Listening first, so that `started` means the port is open.
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("the port should be free");
-    std::fs::write(state_dir.join(STARTED), b"").expect("the state directory should exist");
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback port should be available");
+    let port = listener.local_addr().expect("a bound listener has an address").port();
+    let pending = state_dir.join("started.tmp");
+    std::fs::write(&pending, port.to_string()).expect("the state directory should exist");
+    std::fs::rename(&pending, state_dir.join(STARTED)).expect("the state directory should exist");
     for stream in listener.incoming() {
         let mut stream = stream.expect("an accepted connection");
         let _ = writeln!(
@@ -72,9 +66,25 @@ pub fn fake_vm(args: &[String]) {
     }
 }
 
-/// Whether nothing accepts connections on `port`.
-pub fn refuses(port: u16) -> bool {
-    TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err()
+/// Waits until the fake VM of `state_dir` listens and returns its port. Fails if the process dies first, so a fake VM
+/// that never comes up fails the test and does not hang it.
+pub fn await_port(vm: &VmProcess, state_dir: &Path) -> u16 {
+    let started = state_dir.join(STARTED);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(&started) {
+            return text
+                .parse()
+                .unwrap_or_else(|e| panic!("{} holds {text:?}: {e}", started.display()));
+        }
+        if !vm.is_alive().unwrap() {
+            // It may have written the file between the read and the liveness check.
+            if let Ok(text) = std::fs::read_to_string(&started) {
+                return text.parse().expect("the started file holds a port");
+            }
+            panic!("the fake VM in {} exited before it listened", state_dir.display());
+        }
+        std::thread::yield_now();
+    }
 }
 
 /// Connects to the fake VM and returns its answer line, retrying until it accepts. The retry ends with an error when
@@ -102,9 +112,8 @@ pub fn connect_when_up(vm: &VmProcess, port: u16) -> String {
 
 /// Spawns the fake VM frozen with `lifetime`, resumes it and prints its identity record on one line.
 fn spawn_and_report(args: &[String], lifetime: Lifetime) -> VmProcess {
-    let port: u16 = args[0].parse().expect("the port is a number");
-    let state_dir = Path::new(&args[1]);
-    let mut vm = VmProcess::spawn_frozen(host::current(), command(port, state_dir), lifetime, &log(state_dir))
+    let state_dir = Path::new(&args[0]);
+    let mut vm = VmProcess::spawn_frozen(host::current(), command(state_dir), lifetime, &log(state_dir))
         .expect("the fake VM should spawn frozen");
     vm.resume().expect("the fake VM should resume");
     vm
@@ -116,7 +125,7 @@ fn print_record(vm: &VmProcess) {
     writeln!(stdout, "{line}").and_then(|()| stdout.flush()).unwrap();
 }
 
-/// Helper `contain-owner <port> <state-dir>`: owns a `DiesWithOwner` fake VM and parks until its stdin closes.
+/// Helper `contain-owner <state-dir>`: owns a `DiesWithOwner` fake VM and parks until its stdin closes.
 pub fn contain_owner(args: &[String]) {
     let vm = spawn_and_report(args, Lifetime::DiesWithOwner);
     print_record(&vm);
@@ -124,7 +133,7 @@ pub fn contain_owner(args: &[String]) {
     std::io::stdin().read_to_end(&mut sink).unwrap();
 }
 
-/// Helper `release-owner <port> <state-dir>`: starts an `OutlivesOwner` fake VM, releases it, prints its identity and
+/// Helper `release-owner <state-dir>`: starts an `OutlivesOwner` fake VM, releases it, prints its identity and
 /// exits.
 pub fn release_owner(args: &[String]) {
     let mut vm = spawn_and_report(args, Lifetime::OutlivesOwner);

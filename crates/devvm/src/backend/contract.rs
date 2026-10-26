@@ -96,10 +96,6 @@ fn accepts_eventually(record: &MachineRecord, addr: SocketAddr) {
     }
 }
 
-fn refuses(addr: SocketAddr) -> bool {
-    TcpStream::connect(addr).is_err()
-}
-
 // Machines ============================================================================================================
 
 pub(crate) fn launch_reports_a_live_process_and_loopback_endpoints(target: &dyn ContractTarget, root: &Path) {

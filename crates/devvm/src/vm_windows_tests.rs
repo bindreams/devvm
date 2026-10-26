@@ -222,7 +222,15 @@ fn a_cli_killed_at(step: LaunchStep, home: &Path) {
     let record = dir.record().unwrap().machine;
     match step {
         LaunchStep::Spawned => assert!(record.is_none(), "nothing was recorded yet"),
-        LaunchStep::Recorded | LaunchStep::Resumed => assert_eq!(record, Some(machine)),
+        LaunchStep::Recorded => assert_eq!(record, Some(machine)),
+        // The endpoints are recorded after the `Resumed` step, so a CLI killed there left the record from before.
+        LaunchStep::Resumed => assert_eq!(
+            record,
+            Some(MachineRecord {
+                ssh: Vec::new(),
+                ..machine
+            })
+        ),
     }
     assert_eq!(
         fx.engine.list(ListFilter::All).unwrap()[0].state,

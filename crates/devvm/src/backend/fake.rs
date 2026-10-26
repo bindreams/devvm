@@ -1,12 +1,12 @@
 //! The fake backend: the real process machinery with a stand-in for QEMU. A "VM" is the `fake-vm` helper process,
 //! started through `VmProcess::spawn_frozen`; its disk is a file naming the layer it sits on.
 //!
-//! Test code, so a lost port race or a missing helper fails the test visibly.
+//! Test code, so a missing helper fails the test visibly. Like QEMU's port-0 forward, the VM picks its own port and a
+//! machine knows its endpoint only once it runs.
 
-use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
@@ -19,7 +19,6 @@ use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerDir, LayerStore};
 use crate::test_support::fake_vm;
 use crate::{Arch, Error, ErrorKind, Network, Result};
-use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "fake_tests.rs"]
@@ -34,9 +33,9 @@ const LAYER_DISK: &str = "disk.qcow2";
 
 pub(crate) struct FakeBackend {
     host: &'static dyn Host,
-    launched: Mutex<Vec<MachineRecord>>,
+    /// Updated when a machine resumes and learns its endpoint.
+    launched: Arc<Mutex<Vec<MachineRecord>>>,
     specs: Mutex<Vec<MachineSpec>>,
-    ports: Mutex<HashSet<u16>>,
     storage: FakeStorage,
 }
 
@@ -44,9 +43,8 @@ impl FakeBackend {
     pub(crate) fn new(host: &'static dyn Host) -> FakeBackend {
         FakeBackend {
             host,
-            launched: Mutex::new(Vec::new()),
+            launched: Arc::new(Mutex::new(Vec::new())),
             specs: Mutex::new(Vec::new()),
-            ports: Mutex::new(HashSet::new()),
             storage: FakeStorage,
         }
     }
@@ -64,16 +62,6 @@ impl FakeBackend {
     /// The spec of every machine launched through this backend, in launch order.
     pub(crate) fn specs(&self) -> Vec<MachineSpec> {
         self.specs.lock().unwrap().clone()
-    }
-
-    /// A loopback port no machine of this backend has had.
-    fn claim_port(&self) -> u16 {
-        loop {
-            let port = fake_vm::free_port();
-            if self.ports.lock().unwrap().insert(port) {
-                return port;
-            }
-        }
     }
 
     /// The layer file the instance disk `disk` sits on; an error when that file is gone.
@@ -106,31 +94,32 @@ impl Backend for FakeBackend {
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         FakeBackend::backing_layer(&spec.disk)?;
         let state_dir = spec.serial_log.parent().expect("a serial log has a directory");
-        let port = self.claim_port();
         let vm = VmProcess::spawn_frozen(
             self.host,
-            fake_vm::command(port, state_dir),
+            fake_vm::command(state_dir),
             spec.lifetime,
             &fake_vm::log(state_dir),
         )?;
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         let record = MachineRecord {
             process: vm.record()?,
             qmp: String::new(),
-            ssh: vec![SshEndpoint {
-                endpoint: Endpoint::Normal,
-                addr,
-            }],
+            ssh: Vec::new(),
             serial_log: spec.serial_log.clone(),
             leftovers: Vec::new(),
         };
-        self.launched.lock().unwrap().push(record.clone());
+        let index = {
+            let mut launched = self.launched.lock().unwrap();
+            launched.push(record.clone());
+            launched.len() - 1
+        };
         self.specs.lock().unwrap().push(spec.clone());
         Ok(Box::new(FakeMachine {
             vm,
             record,
-            ssh: vec![(Endpoint::Normal, addr)],
+            ssh: Vec::new(),
             serial_log: spec.serial_log.clone(),
+            state_dir: state_dir.to_path_buf(),
+            launched: Some((self.launched.clone(), index)),
             attached: false,
         }))
     }
@@ -147,6 +136,8 @@ impl Backend for FakeBackend {
             record: record.clone(),
             ssh: record.ssh.iter().map(|e| (e.endpoint, e.addr)).collect(),
             serial_log: record.serial_log.clone(),
+            state_dir: PathBuf::new(),
+            launched: None,
             attached: true,
         }))
     }
@@ -165,6 +156,10 @@ struct FakeMachine {
     record: MachineRecord,
     ssh: Vec<(Endpoint, SocketAddr)>,
     serial_log: PathBuf,
+    /// Where the VM writes its `started` file.
+    state_dir: PathBuf,
+    /// The backend's list of launched records and this machine's place in it.
+    launched: Option<(Arc<Mutex<Vec<MachineRecord>>>, usize)>,
     /// Found with `attach`: already running, and not this process's to contain.
     attached: bool,
 }
@@ -183,7 +178,17 @@ impl Machine for FakeMachine {
     }
 
     fn resume(&mut self) -> Result<()> {
-        self.vm.resume()
+        self.vm.resume()?;
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, fake_vm::await_port(&self.vm, &self.state_dir)));
+        self.ssh = vec![(Endpoint::Normal, addr)];
+        self.record.ssh = vec![SshEndpoint {
+            endpoint: Endpoint::Normal,
+            addr,
+        }];
+        if let Some((launched, index)) = &self.launched {
+            launched.lock().unwrap()[*index] = self.record.clone();
+        }
+        Ok(())
     }
 
     fn release(&mut self) -> Result<()> {
