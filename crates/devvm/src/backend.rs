@@ -16,6 +16,11 @@ use crate::{Arch, Network, Result};
 #[path = "backend_tests.rs"]
 mod backend_tests;
 
+#[cfg(test)]
+pub(crate) mod contract;
+#[cfg(test)]
+pub(crate) mod fake;
+
 pub(crate) trait Backend: Send + Sync {
     /// Starts a machine and returns it **frozen**: its identity is known (`Machine::record`) but it has not run. The
     /// caller persists the record, then calls `Machine::resume`.

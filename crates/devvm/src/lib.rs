@@ -73,6 +73,7 @@ mod test_helpers {
         ("hold-lock", crate::store::lock::lock_tests::hold_lock),
         ("sleeper", crate::contain::contain_tests::sleeper),
         ("fake-vm", crate::test_support::fake_vm::fake_vm),
+        ("fake-launcher", crate::backend::fake::fake_launcher),
         ("contain-owner", crate::test_support::fake_vm::contain_owner),
         ("release-owner", crate::test_support::fake_vm::release_owner),
         ("layer-builder", crate::store::layers::cross_tests::layer_builder),

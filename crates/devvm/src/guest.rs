@@ -15,6 +15,9 @@ use crate::{Arch, Command, Dirs, Error, ErrorKind, GuestKind, Result};
 #[path = "guest_tests.rs"]
 mod guest_tests;
 
+#[cfg(test)]
+pub(crate) mod fake;
+
 pub(crate) trait GuestOs: Send + Sync {
     /// The per-instance first-boot media (account, keys, hostname).
     fn instance_seed(&self, seed: &SeedSpec) -> Result<SeedMedia>;
