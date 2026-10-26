@@ -12,7 +12,7 @@ use crate::instance::name::InstanceName;
 use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
 use crate::store::layers::ChainLease;
-use crate::vm::{Guest, Handle, Instance, no_access_layer, remove_leftovers};
+use crate::vm::{Guest, Handle, Instance, no_access_layer, remove_leftovers, warn_for};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, GuestKind, Result, StartOptions};
 
 #[cfg(test)]
@@ -190,19 +190,38 @@ impl Drop for Vm {
         let dir = instance.dir();
         let progress = instance.engine.progress();
         let machine = self.machine.get_mut().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(mut machine) = machine {
-            if let Err(e) = machine.kill() {
-                progress.message(&format!(
-                    "instance {} could not be removed: its VM could not be killed ({}); the next devvm command retries",
-                    dir.name(),
-                    e.message()
-                ));
-                return;
+        let dead = match machine {
+            Some(mut machine) => {
+                if let Err(e) = machine.kill() {
+                    progress.message(&format!(
+                        "instance {} could not be removed: its VM could not be killed ({}); the next devvm command                          retries",
+                        dir.name(),
+                        e.message()
+                    ));
+                    return;
+                }
+                Some(machine.record())
             }
-            remove_leftovers(&instance.engine, dir, &machine.record());
-        }
+            None => None,
+        };
+        let engine = &instance.engine;
+        // Without the op lock the record stays, but the dead machine's files go all the same.
+        let leftovers_only = || {
+            if let Some(dead) = &dead {
+                remove_leftovers(engine, dir, dead);
+            }
+        };
         match dir.try_op_exclusive() {
             Ok(Some(op)) => {
+                if let Some(dead) = &dead
+                    && let Err(e) = dir.retire_machine(&op, dead, &mut warn_for(engine, dir))
+                {
+                    progress.message(&format!(
+                        "instance {} still has a record naming its dead VM ({}); the next devvm command clears it",
+                        dir.name(),
+                        e.message()
+                    ));
+                }
                 if let Err(e) = dir.destroy(op) {
                     progress.message(&format!(
                         "instance {} could not be removed ({}); the next devvm command retries",
@@ -211,17 +230,23 @@ impl Drop for Vm {
                     ));
                 }
             }
-            Ok(None) => progress.message(&format!(
-                "instance {} is busy with another devvm command and was not removed; the next devvm command removes it",
-                dir.name()
-            )),
+            Ok(None) => {
+                leftovers_only();
+                progress.message(&format!(
+                    "instance {} is busy with another devvm command and was not removed; the next devvm command                      removes it",
+                    dir.name()
+                ));
+            }
             // Already removed by someone else.
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => progress.message(&format!(
-                "instance {} could not be removed ({}); the next devvm command retries",
-                dir.name(),
-                e.message()
-            )),
+            Err(e) if e.kind() == ErrorKind::NotFound => leftovers_only(),
+            Err(e) => {
+                leftovers_only();
+                progress.message(&format!(
+                    "instance {} could not be removed ({}); the next devvm command retries",
+                    dir.name(),
+                    e.message()
+                ));
+            }
         }
     }
 }

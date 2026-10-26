@@ -11,7 +11,7 @@ use crate::contain::Lifetime;
 use crate::host::Accel;
 use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
-use crate::{Arch, Network, Result};
+use crate::{Arch, ErrorKind, Network, Result};
 
 #[cfg(test)]
 #[path = "backend_tests.rs"]
@@ -27,8 +27,18 @@ pub(crate) trait Backend: Send + Sync {
     /// caller persists the record, then calls `Machine::resume`.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>>;
 
-    /// Finds a machine started by another process (or an earlier run) from its record.
+    /// Finds a machine started by another process (or an earlier run) from its record. `NotFound` when it is not
+    /// running. This is how every process finds a machine again, whatever a machine is in this backend.
     fn attach(&self, rec: &MachineRecord) -> Result<Box<dyn Machine>>;
+
+    /// `attach`, with `None` for a machine that is not running.
+    fn find(&self, rec: &MachineRecord) -> Result<Option<Box<dyn Machine>>> {
+        match self.attach(rec) {
+            Ok(machine) => Ok(Some(machine)),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 
     fn storage(&self) -> &dyn Storage;
 

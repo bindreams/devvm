@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::backend::MachineRecord;
 use crate::exit::Progress;
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
@@ -155,6 +156,19 @@ impl InstanceDir {
         f(&mut record);
         record.write(&self.path)?;
         Ok(record)
+    }
+
+    /// The machine named by `machine` is dead: deletes what it left outside the instance directory (a file that
+    /// cannot be deleted goes to `warn`) and clears the record that names it. Call it only once the machine is proven
+    /// dead, by a kill or by the backend not finding it.
+    pub(crate) fn retire_machine(
+        &self,
+        op: &OpExclusive,
+        machine: &MachineRecord,
+        warn: &mut dyn FnMut(String),
+    ) -> Result<()> {
+        machine.remove_leftovers(warn);
+        self.update(op, &mut |record| record.machine = None).map(drop)
     }
 
     /// Removes the instance: the name vanishes at once (a rename), then the files and the lock files go.

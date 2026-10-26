@@ -1,17 +1,23 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::ErrorKind;
 use crate::backend::MachineRecord;
+use crate::backend::fake::FakeBackend;
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
+use crate::engine::engine_tests::dead_machine;
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Probe;
 use crate::instance::name::InstanceName;
 use crate::instance::reaper::ReapReport;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
-use crate::instance::registry::registry_tests::{Fixture, create, fixture, lock_files};
+use crate::instance::registry::registry_tests::{Fixture, create, fixture, fixture_with, lock_files};
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::anna_home;
+use crate::test_support::host::TestHost;
+use crate::test_support::stub_backend::{Attach, StubBackend};
 
 fn machine(sleeper: &Sleeper) -> MachineRecord {
     MachineRecord {
@@ -60,6 +66,92 @@ fn an_owned_instance_with_a_dead_owner_is_reaped_with_its_vm(#[fixture(anna_home
     );
     assert!(names(&root(&fx)).is_empty());
     assert!(lock_files(&fx).is_empty());
+}
+
+#[skuld::test]
+fn the_vm_of_a_dead_owner_is_found_and_killed_through_the_backend(#[fixture(anna_home)] home: &Path) {
+    let stub = StubBackend::new(Attach::Running);
+    let fx = fixture_with(home, Some(stub.clone()));
+    let socket = home.join("machine.sock");
+    std::fs::write(&socket, b"x").unwrap();
+    let owned = create(&fx, Some("foo"));
+    set_machine(owned.dir(), dead_machine(vec![socket.clone()]));
+    drop(owned);
+
+    let report = fx.registry.reap();
+
+    assert_eq!(report.reaped, ["foo"]);
+    assert_eq!(stub.calls(), ["attach", "kill"]);
+    assert!(!socket.exists());
+}
+
+#[skuld::test]
+fn an_instance_whose_vm_cannot_be_killed_is_left_for_the_next_pass(#[fixture(anna_home)] home: &Path) {
+    let stub = StubBackend::new(Attach::Running);
+    stub.fail_stops();
+    let fx = fixture_with(home, Some(stub.clone()));
+    let owned = create(&fx, Some("foo"));
+    let machine = dead_machine(Vec::new());
+    set_machine(owned.dir(), machine.clone());
+    drop(owned);
+
+    let report = fx.registry.reap();
+
+    assert!(report.reaped.is_empty());
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(
+        report.warnings[0].contains("foo") && report.warnings[0].contains("refuses to kill"),
+        "{:?}",
+        report.warnings
+    );
+    let dir = fx.registry.open(&InstanceName::parse("foo").unwrap()).unwrap();
+    assert_eq!(
+        dir.record().unwrap().machine,
+        Some(machine),
+        "the record still names the VM"
+    );
+}
+
+#[skuld::test]
+fn an_instance_whose_vm_cannot_be_looked_for_is_left_for_the_next_pass(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture_with(home, Some(StubBackend::new(Attach::Fails(ErrorKind::Io))));
+    let owned = create(&fx, Some("foo"));
+    set_machine(owned.dir(), dead_machine(Vec::new()));
+    drop(owned);
+
+    let report = fx.registry.reap();
+
+    assert!(report.reaped.is_empty());
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("cannot check the VM of instance foo")),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(names(&root(&fx)), ["foo"]);
+}
+
+#[skuld::test]
+fn an_instance_with_a_recorded_vm_is_left_alone_when_the_build_has_no_backend(#[fixture(anna_home)] home: &Path) {
+    let fx = fixture_with(home, None);
+    let owned = create(&fx, Some("foo"));
+    set_machine(owned.dir(), dead_machine(Vec::new()));
+    drop(owned);
+
+    let report = fx.registry.reap();
+
+    assert!(report.reaped.is_empty());
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("foo") && w.contains("no VM backend")),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(names(&root(&fx)), ["foo"]);
 }
 
 #[skuld::test]
@@ -435,7 +527,11 @@ fn the_leftovers_of_a_machine_that_already_exited_are_deleted(#[fixture(anna_hom
 
 #[skuld::test]
 fn a_leftover_that_cannot_be_deleted_is_a_warning_and_the_instance_still_goes(#[fixture(anna_home)] home: &Path) {
-    let fx = fixture(home);
+    // A backend that does not clean up after a kill: the reaper's own step meets the stuck file.
+    let fx = fixture_with(
+        home,
+        Some(Arc::new(FakeBackend::new(&TestHost).with_leftovers_in(home, false))),
+    );
     let sleeper = Sleeper::spawn();
     let (stuck, socket) = (home.join("stuck"), home.join("machine.sock"));
     std::fs::create_dir(&stuck).unwrap();

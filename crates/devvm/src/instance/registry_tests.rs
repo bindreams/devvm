@@ -2,13 +2,15 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use crate::backend::Storage;
+use crate::backend::fake::FakeBackend;
+use crate::backend::{Backend, Storage};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
 use crate::instance::registry::{NewInstance, Owned, Registry};
 use crate::store::layers::layers_tests::{Env, build, env, key, names};
 use crate::store::layers::{ChainLease, LayerDir};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
+use crate::test_support::host::TestHost;
 use crate::{Arch, Dirs, ErrorKind, GuestKind, Network, Result};
 
 /// Writes `disk.img` holding the path of the layer it sits on; optionally fails.
@@ -42,10 +44,15 @@ pub(crate) struct Fixture {
 }
 
 pub(crate) fn fixture(home: &Path) -> Fixture {
+    fixture_with(home, Some(Arc::new(FakeBackend::new(&TestHost))))
+}
+
+/// `fixture` whose registry reaches machines through `backend`.
+pub(crate) fn fixture_with(home: &Path, backend: Option<Arc<dyn Backend>>) -> Fixture {
     let env = env(home);
     let chain = build(&env, key(1), None);
     let progress = Arc::new(MemoryProgress::default());
-    let registry = Registry::new(&env.dirs, progress.clone());
+    let registry = Registry::new(&env.dirs, progress.clone(), backend);
     Fixture {
         env,
         chain,
@@ -278,7 +285,7 @@ fn make_ownerless_with_a_failing_disarm_flips_nothing(#[fixture(anna_home)] home
 #[skuld::test]
 fn a_bad_name_is_rejected_by_parse_and_the_state_directory_is_never_created(#[fixture(anna_home)] home: &Path) {
     let dirs = Dirs::under(home);
-    let registry = Registry::new(&dirs, Arc::new(MemoryProgress::default()));
+    let registry = Registry::new(&dirs, Arc::new(MemoryProgress::default()), None);
     for text in ["../x", "con", "a*", &"a".repeat(64)] {
         assert_eq!(InstanceName::parse(text).unwrap_err().kind(), ErrorKind::InvalidName);
     }
@@ -349,7 +356,7 @@ fn a_waiter_on_the_op_lock_of_a_removed_and_recreated_name_gets_not_found(#[fixt
     let (progress, messages) = ChannelProgress::new();
     let env = env(home);
     let chain = build(&env, key(1), None);
-    let registry = Registry::new(&env.dirs, progress);
+    let registry = Registry::new(&env.dirs, progress, None);
     let fx = Fixture {
         env,
         chain,

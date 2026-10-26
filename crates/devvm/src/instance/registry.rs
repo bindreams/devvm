@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::backend::Storage;
+use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
@@ -28,6 +28,8 @@ pub(crate) struct Registry {
     quarantine: PathBuf,
     locks: Arc<Locks>,
     progress: Arc<dyn Progress>,
+    /// How the reaper finds and kills the machines of dead owners; `None` in a build without a VM backend.
+    backend: Option<Arc<dyn Backend>>,
 }
 
 /// What `create` needs to make an instance.
@@ -57,13 +59,18 @@ pub(crate) struct Owned {
 
 impl Registry {
     /// Touches nothing on disk.
-    pub(crate) fn new(dirs: &Dirs, progress: Arc<dyn Progress>) -> Registry {
+    pub(crate) fn new(dirs: &Dirs, progress: Arc<dyn Progress>, backend: Option<Arc<dyn Backend>>) -> Registry {
         Registry {
             root: dirs.instances(),
             quarantine: dirs.instance_quarantine(),
             locks: Arc::new(Locks::new(dirs.instance_locks())),
             progress,
+            backend,
         }
+    }
+
+    pub(super) fn backend(&self) -> Option<&Arc<dyn Backend>> {
+        self.backend.as_ref()
     }
 
     pub(crate) fn locks(&self) -> &Arc<Locks> {

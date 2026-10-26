@@ -659,6 +659,140 @@ impl Machine for SpiedMachine {
     }
 }
 
+/// A backend whose machines, when released, say whether the instance's op lock was held at that moment.
+struct NotesOpLock {
+    inner: Arc<FakeBackend>,
+    dir: Arc<crate::instance::dir::InstanceDir>,
+    held_at_release: Arc<std::sync::Mutex<Vec<bool>>>,
+    fail_release: bool,
+}
+
+impl Backend for NotesOpLock {
+    fn launch(&self, spec: &MachineSpec) -> crate::Result<Box<dyn Machine>> {
+        Ok(Box::new(NotesOpLockMachine {
+            inner: self.inner.launch(spec)?,
+            dir: self.dir.clone(),
+            held_at_release: self.held_at_release.clone(),
+            fail_release: self.fail_release,
+        }))
+    }
+
+    fn attach(&self, rec: &MachineRecord) -> crate::Result<Box<dyn Machine>> {
+        self.inner.attach(rec)
+    }
+
+    fn storage(&self) -> &dyn Storage {
+        self.inner.storage()
+    }
+
+    fn can_save_memory(&self) -> bool {
+        false
+    }
+}
+
+struct NotesOpLockMachine {
+    inner: Box<dyn Machine>,
+    dir: Arc<crate::instance::dir::InstanceDir>,
+    held_at_release: Arc<std::sync::Mutex<Vec<bool>>>,
+    fail_release: bool,
+}
+
+impl Machine for NotesOpLockMachine {
+    fn record(&self) -> MachineRecord {
+        self.inner.record()
+    }
+
+    fn ssh_endpoints(&self) -> &[(Endpoint, std::net::SocketAddr)] {
+        self.inner.ssh_endpoints()
+    }
+
+    fn serial_log(&self) -> &Path {
+        self.inner.serial_log()
+    }
+
+    fn resume(&mut self) -> crate::Result<()> {
+        self.inner.resume()
+    }
+
+    fn release(&mut self) -> crate::Result<()> {
+        let held = self.dir.try_op_exclusive().unwrap().is_none();
+        self.held_at_release.lock().unwrap().push(held);
+        if self.fail_release {
+            return Err(crate::Error::new(ErrorKind::Internal, "the machine cannot be released"));
+        }
+        self.inner.release()
+    }
+
+    fn shutdown(&mut self) -> crate::Result<()> {
+        self.inner.shutdown()
+    }
+
+    fn kill(&mut self) -> crate::Result<()> {
+        self.inner.kill()
+    }
+}
+
+#[skuld::test]
+fn start_releases_the_machine_while_it_holds_the_op_lock(#[fixture(anna_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = Arc::new(instance_in(&fx, "foo", home));
+    let held_at_release = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let engine = notes_op_lock_engine(&fx, &dir, &held_at_release, false);
+    let instance = Instance::open_in(&engine, "foo").unwrap();
+
+    instance.start().unwrap();
+
+    assert_eq!(
+        *held_at_release.lock().unwrap(),
+        [true],
+        "another start could otherwise see a machine that is still contained and about to be released"
+    );
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn a_release_that_fails_kills_the_machine_and_clears_the_record(#[fixture(anna_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = Arc::new(instance_in(&fx, "foo", home));
+    let held_at_release = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let engine = notes_op_lock_engine(&fx, &dir, &held_at_release, true);
+    let instance = Instance::open_in(&engine, "foo").unwrap();
+
+    let error = instance.start().expect_err("the release fails");
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    let machine = fx.fake.launched()[0].clone();
+    wait_until_dead(&machine);
+    assert!(!running(&machine), "a machine that cannot be released must not run");
+    assert!(recorded(&instance).is_none());
+    assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
+    instance.remove().unwrap();
+}
+
+/// An engine over the fixture's state whose backend notes the op lock at each release.
+fn notes_op_lock_engine(
+    fx: &EngineFixture,
+    dir: &Arc<crate::instance::dir::InstanceDir>,
+    held_at_release: &Arc<std::sync::Mutex<Vec<bool>>>,
+    fail_release: bool,
+) -> Arc<crate::engine::Engine> {
+    crate::engine::Engine::with_parts(crate::engine::EngineParts {
+        dirs: fx.env.dirs.clone(),
+        host: &crate::test_support::host::TestHost,
+        backend: Some(Arc::new(NotesOpLock {
+            inner: fx.fake.clone(),
+            dir: dir.clone(),
+            held_at_release: held_at_release.clone(),
+            fail_release,
+        })),
+        guests: Arc::new(crate::guest::fake::FakeGuests),
+        clock: Arc::new(crate::store::layers::SystemClock),
+        progress: Arc::new(MemoryProgress::default()),
+        hooks: Arc::new(crate::engine::NoHooks),
+        boot_bound: crate::engine::DEFAULT_BOOT_BOUND,
+    })
+}
+
 #[skuld::test]
 fn a_record_write_that_fails_after_the_spawn_kills_the_unrecorded_machine(#[fixture(anna_home)] home: &Path) {
     let hooks = HoldsRecordFrom::new(LaunchStep::Spawned);

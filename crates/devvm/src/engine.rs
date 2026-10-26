@@ -6,7 +6,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::backend::{Backend, MachineRecord};
-use crate::contain::VmProcess;
 use crate::exit::{Progress, StderrProgress};
 use crate::guest::{BuiltinGuests, Guests};
 use crate::host::{self, Host};
@@ -21,7 +20,8 @@ use crate::{Dirs, Error, ErrorKind, Instance, Result};
 #[path = "engine_tests.rs"]
 pub(crate) mod engine_tests;
 
-/// How long a guest gets to boot and answer before a start fails: a failure bound on an event outside devvm.
+/// How long a guest gets to boot and answer before a start fails: a failure bound on an event outside devvm. Read by
+/// the readiness wait of the QEMU backend; `start` waits for no boot in this build.
 pub(crate) const DEFAULT_BOOT_BOUND: Duration = Duration::from_secs(10 * 60);
 
 /// Which instances `list` returns.
@@ -100,7 +100,7 @@ impl Engine {
     }
 
     pub(crate) fn with_parts(parts: EngineParts) -> Arc<Engine> {
-        let registry = Registry::new(&parts.dirs, parts.progress.clone());
+        let registry = Registry::new(&parts.dirs, parts.progress.clone(), parts.backend.clone());
         Arc::new(Engine {
             dirs: parts.dirs,
             host: parts.host,
@@ -194,7 +194,7 @@ impl Engine {
         let Some(machine) = machine else {
             return InstanceState::Stopped;
         };
-        match VmProcess::attach(&machine.process) {
+        match self.backend().and_then(|backend| backend.find(machine)) {
             Ok(Some(_)) => InstanceState::Running,
             Ok(None) => InstanceState::Stopped,
             Err(e) => {
@@ -223,7 +223,7 @@ impl Engine {
         &self.hooks
     }
 
-    /// How long a started guest gets to answer before the start fails.
+    /// How long a started guest gets to answer before the start fails. For the readiness wait of the QEMU backend.
     pub(crate) fn boot_bound(&self) -> Duration {
         self.boot_bound
     }

@@ -1,33 +1,35 @@
 //! Starting a machine for an instance: the spec, the frozen launch, the record, the resume.
 
 use crate::backend::{Endpoint, Machine, MachineSpec};
-use crate::contain::{Lifetime, VmProcess};
+use crate::contain::Lifetime;
 use crate::engine::{Engine, LaunchStep};
 use crate::guest::{SeedKeys, SeedSpec};
 use crate::instance::dir::{InstanceDir, OpExclusive};
-use crate::vm::remove_leftovers;
+use crate::vm::{remove_leftovers, warn_for};
 use crate::{Error, ErrorKind, Result};
 
 /// Launches the machine of `dir` unless it already runs (`None`). The machine comes back resumed and still contained.
 ///
-/// Order, so that a devvm process killed at any point leaves no VM running: launch frozen, record the machine in the
-/// instance record, resume. Until the caller releases the machine, it dies with this process.
+/// Order: launch frozen, record the machine in the instance record, resume. Until the caller releases the machine, it
+/// dies with this process. A devvm killed after the launch returns therefore leaves no VM running. One killed inside
+/// the launch, between cosca creating the frozen process and putting it into its job, leaves a frozen process nothing
+/// kills and nothing records.
 pub(super) fn launch(
     engine: &Engine,
     dir: &InstanceDir,
     op: &OpExclusive,
     lifetime: Lifetime,
 ) -> Result<Option<Box<dyn Machine>>> {
+    let backend = engine.backend()?;
     let record = dir.record()?;
     if let Some(machine) = &record.machine {
-        if VmProcess::attach(&machine.process)?.is_some() {
+        if backend.find(machine)?.is_some() {
             return Ok(None);
         }
         // A stale record: the machine is dead, and its files must go before a new machine takes their place.
-        remove_leftovers(engine, dir, machine);
+        dir.retire_machine(op, machine, &mut warn_for(engine, dir))?;
     }
 
-    let backend = engine.backend()?;
     let guest = engine.guests().os(record.guest)?;
     let accel = engine
         .host()
@@ -86,15 +88,21 @@ pub(super) fn launch(
 /// A recorded machine that must not run after all: kills it and clears the record that names it. `cause` is why the
 /// start failed and comes back as the error. A machine that cannot be killed may still run, so its record stays and the
 /// next stop or remove of the instance ends it; the returned error then names both failures.
-fn abandon(engine: &Engine, dir: &InstanceDir, op: &OpExclusive, machine: &mut dyn Machine, cause: Error) -> Error {
-    if let Err(kill) = kill_unrecorded(engine, dir, machine) {
+pub(super) fn abandon(
+    engine: &Engine,
+    dir: &InstanceDir,
+    op: &OpExclusive,
+    machine: &mut dyn Machine,
+    cause: Error,
+) -> Error {
+    if let Err(kill) = machine.kill() {
         return survivor(
             cause,
             kill,
             "its record is kept, and the next stop or remove of the instance ends it",
         );
     }
-    if let Err(clear) = dir.update(op, &mut |record| record.machine = None) {
+    if let Err(clear) = dir.retire_machine(op, &machine.record(), &mut warn_for(engine, dir)) {
         engine.progress().message(&format!(
             "instance {} could not be started, and its record still names the machine ({}); the next devvm \
              command on it clears that",

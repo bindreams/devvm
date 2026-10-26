@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::backend::{Machine, MachineRecord};
-use crate::contain::{Lifetime, VmProcess};
+use crate::contain::Lifetime;
 use crate::engine::Engine;
 use crate::exit::Output;
 use crate::instance::dir::InstanceDir;
@@ -46,7 +46,12 @@ pub trait Guest {
 /// Deletes what `machine` left outside the instance directory. Call it only once the machine is proven dead; a file
 /// that cannot be deleted is a warning naming the instance.
 pub(crate) fn remove_leftovers(engine: &Engine, dir: &InstanceDir, machine: &MachineRecord) {
-    machine.remove_leftovers(&mut |text| engine.progress().message(&format!("instance {}: {text}", dir.name())));
+    machine.remove_leftovers(&mut warn_for(engine, dir));
+}
+
+/// Reports a problem with the files of a dead machine of `dir` on the progress channel, naming the instance.
+pub(crate) fn warn_for<'a>(engine: &'a Engine, dir: &'a InstanceDir) -> impl FnMut(String) + 'a {
+    move |text| engine.progress().message(&format!("instance {}: {text}", dir.name()))
 }
 
 pub(crate) fn no_access_layer() -> Error {
@@ -106,14 +111,20 @@ impl Instance {
     /// Returns once the instance record names the machine and the machine has been released from this process.
     /// Frozen spawn needs Windows in 0.1.0, so elsewhere this is `not-supported`.
     pub fn start(&self) -> Result<()> {
-        match self.start_with(Lifetime::OutlivesOwner)? {
-            Some(mut machine) => machine.release(),
-            None => Ok(()),
-        }
+        let dir = self.dir();
+        let op = dir.op_exclusive()?;
+        let Some(mut machine) = launch::launch(&self.engine, dir, &op, Lifetime::OutlivesOwner)? else {
+            return Ok(());
+        };
+        // Released under the op lock: until then the machine dies with this process, and a second `start` must not
+        // find it running.
+        machine
+            .release()
+            .map_err(|e| launch::abandon(&self.engine, dir, &op, &mut *machine, e))
     }
 
     /// Launches under the exclusive op lock; `None` when the machine already runs. The machine is resumed and still
-    /// contained: the caller releases it (`start`) or keeps it (`Image::start`, `up`).
+    /// contained: the caller keeps it (`Image::start`, `up`).
     pub(crate) fn start_with(&self, lifetime: Lifetime) -> Result<Option<Box<dyn Machine>>> {
         let dir = self.dir();
         let op = dir.op_exclusive()?;
@@ -128,16 +139,11 @@ impl Instance {
         let Some(machine) = dir.record()?.machine else {
             return Ok(());
         };
-        match self.engine.backend()?.attach(&machine) {
-            Ok(mut running) => running.shutdown()?,
-            // Not running any more: the record is stale.
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+        // A machine the backend does not find is not running: the record is stale.
+        if let Some(mut running) = self.engine.backend()?.find(&machine)? {
+            running.shutdown()?;
         }
-        // The machine is dead either way, and what it left behind can go.
-        remove_leftovers(&self.engine, dir, &machine);
-        dir.update(&op, &mut |record| record.machine = None)?;
-        Ok(())
+        dir.retire_machine(&op, &machine, &mut warn_for(&self.engine, dir))
     }
 
     /// Kills the VM by its recorded identity and deletes the instance. Waits for other commands working on it; if
@@ -147,13 +153,11 @@ impl Instance {
         let op = dir.op_exclusive()?;
         let record = dir.record()?;
         if let Some(machine) = &record.machine {
-            if let Some(mut vm) = VmProcess::attach(&machine.process)? {
-                vm.kill()?;
+            if let Some(mut running) = self.engine.backend()?.find(machine)? {
+                running.kill()?;
             }
-            // The VM is dead: what it left outside the directory goes too, and a destroy that fails below must not
-            // leave a record naming it.
-            remove_leftovers(&self.engine, dir, machine);
-            dir.update(&op, &mut |record| record.machine = None)?;
+            // A destroy that fails below must not leave a record naming a dead machine.
+            dir.retire_machine(&op, machine, &mut warn_for(&self.engine, dir))?;
         }
         dir.destroy(op)?;
         self.engine

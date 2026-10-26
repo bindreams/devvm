@@ -17,7 +17,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::contain::VmProcess;
 use crate::instance::dir::remove_tree;
 use crate::instance::locks::Probe;
 use crate::instance::name::InstanceName;
@@ -211,9 +210,18 @@ impl Registry {
             }
         };
         if let Some(machine) = &record.machine {
-            match VmProcess::attach(&machine.process) {
-                Ok(Some(mut vm)) => {
-                    if let Err(e) = vm.kill() {
+            let Some(backend) = self.backend() else {
+                report.warn(
+                    self,
+                    format!(
+                        "cannot stop the VM of instance {name}: this build of devvm has no VM backend; it is left for                          the next devvm command"
+                    ),
+                );
+                return;
+            };
+            match backend.find(machine) {
+                Ok(Some(mut running)) => {
+                    if let Err(e) = running.kill() {
                         report.warn(
                             self,
                             format!(
@@ -238,8 +246,10 @@ impl Registry {
                 }
             }
             // The machine is dead, so what it left outside the instance directory can go.
-            machine.remove_leftovers(&mut |text| report.warn(self, format!("instance {name}: {text}")));
-            if let Err(e) = dir.update(&op, &mut |record| record.machine = None) {
+            let retired = dir.retire_machine(&op, machine, &mut |text| {
+                report.warn(self, format!("instance {name}: {text}"))
+            });
+            if let Err(e) = retired {
                 report.warn(self, format!("cannot update instance {name}: {}", e.message()));
             }
         }

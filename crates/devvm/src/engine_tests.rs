@@ -17,6 +17,7 @@ use crate::store::layers::layers_tests::{Env, build, env, key, names, t0};
 use crate::store::layers::{ChainLease, SystemClock};
 use crate::test_support::fixtures::{MemoryProgress, anna_home};
 use crate::test_support::host::TestHost;
+use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::{Arch, ErrorKind, GuestKind, Image, Instance};
 
 /// A test engine over the fake host, backend and guests, with its own state under the test's home.
@@ -82,6 +83,36 @@ pub(crate) fn engine_fixture_from(
     }
 }
 
+/// An engine whose backend is the scripted [`StubBackend`], with the progress it reports to.
+pub(crate) fn stub_fixture(home: &Path, attach: Attach) -> (EngineFixture, Arc<StubBackend>, Arc<MemoryProgress>) {
+    let stub = StubBackend::new(attach);
+    let progress = memory();
+    let found = stub.clone();
+    let fx = engine_fixture_with(home, progress.clone(), Arc::new(NoHooks), move |_| found);
+    (fx, stub, progress)
+}
+
+/// The record of a machine whose process is gone, naming `leftovers`.
+pub(crate) fn dead_machine(leftovers: Vec<PathBuf>) -> MachineRecord {
+    let sleeper = Sleeper::spawn();
+    let machine = MachineRecord {
+        process: sleeper.record(),
+        qmp: String::new(),
+        ssh: Vec::new(),
+        serial_log: PathBuf::new(),
+        leftovers,
+    };
+    sleeper.finish();
+    machine
+}
+
+/// Records `machine` as the machine of `dir`.
+pub(crate) fn record_machine(dir: &InstanceDir, machine: &MachineRecord) {
+    let op = dir.op_exclusive().unwrap();
+    dir.update(&op, &mut |r: &mut InstanceRecord| r.machine = Some(machine.clone()))
+        .unwrap();
+}
+
 /// The image on the fixture's layer (key 1), leased through the engine's own store.
 pub(crate) fn image_of(engine: &Arc<Engine>) -> Image {
     let chain = engine
@@ -113,7 +144,7 @@ pub(crate) fn instance_in(fx: &EngineFixture, name: &str, created_from: &Path) -
         .unwrap()
 }
 
-fn memory() -> Arc<MemoryProgress> {
+pub(crate) fn memory() -> Arc<MemoryProgress> {
     Arc::new(MemoryProgress::default())
 }
 
@@ -348,4 +379,68 @@ fn with_parts_keeps_the_boot_bound_it_is_given(#[fixture(anna_home)] home: &Path
         boot_bound: Duration::from_millis(250),
     });
     assert_eq!(engine.boot_bound(), Duration::from_millis(250));
+}
+
+#[skuld::test]
+fn list_asks_the_backend_whether_a_recorded_machine_runs(#[fixture(anna_home)] home: &Path) {
+    let (fx, stub, _) = stub_fixture(home, Attach::Running);
+    let dir = instance_in(&fx, "foo", home);
+    record_machine(&dir, &dead_machine(Vec::new()));
+
+    let state = |fx: &EngineFixture| fx.engine.list(ListFilter::All).unwrap()[0].state;
+    assert_eq!(
+        state(&fx),
+        InstanceState::Running,
+        "the backend decides, not the process table"
+    );
+    stub.answer(Attach::Gone);
+    assert_eq!(state(&fx), InstanceState::Stopped);
+}
+
+#[skuld::test]
+fn list_cannot_tell_when_the_backend_cannot_look(#[fixture(anna_home)] home: &Path) {
+    let (fx, _, progress) = stub_fixture(home, Attach::Fails(ErrorKind::Io));
+    let dir = instance_in(&fx, "foo", home);
+    record_machine(&dir, &dead_machine(Vec::new()));
+
+    assert_eq!(
+        fx.engine.list(ListFilter::All).unwrap()[0].state,
+        InstanceState::Unknown
+    );
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("cannot tell whether instance foo is running") && m.contains("cannot look")),
+        "{messages:?}"
+    );
+}
+
+#[skuld::test]
+fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixture(anna_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "foo", home);
+    record_machine(&dir, &dead_machine(Vec::new()));
+    let progress = memory();
+    let engine = Engine::with_parts(EngineParts {
+        dirs: fx.env.dirs.clone(),
+        host: &TestHost,
+        backend: None,
+        guests: Arc::new(FakeGuests),
+        clock: Arc::new(SystemClock),
+        progress: progress.clone(),
+        hooks: Arc::new(NoHooks),
+        boot_bound: DEFAULT_BOOT_BOUND,
+    });
+
+    let infos = engine.list(ListFilter::All).unwrap();
+
+    assert_eq!(infos[0].state, InstanceState::Unknown);
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("foo") && m.contains("no VM backend")),
+        "the cause is the missing backend: {messages:?}"
+    );
 }
