@@ -84,8 +84,16 @@ pub(super) fn entry_is_dir(path: &Path, kind: std::io::Result<FileType>) -> Resu
 }
 
 fn unreadable(path: &Path, why: &str, quarantined: bool) -> Error {
-    let which = if quarantined { "a quarantined instance" } else { "an instance" };
-    let way_out = if quarantined { " (remove the quarantined directory to proceed)" } else { "" };
+    let which = if quarantined {
+        "a quarantined instance"
+    } else {
+        "an instance"
+    };
+    let way_out = if quarantined {
+        " (remove the quarantined directory to proceed)"
+    } else {
+        ""
+    };
     Error::new(
         ErrorKind::Store,
         format!(

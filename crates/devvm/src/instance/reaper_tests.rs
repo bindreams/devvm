@@ -656,7 +656,8 @@ fn an_instance_whose_record_turns_unreadable_after_the_op_lock_is_left_for_the_n
     let mut report = ReapReport::default();
     let mut tear = || std::fs::write(path.join("record.json"), "{ torn").unwrap();
 
-    fx.registry.reap_owned_with("foo", &path, *record, &mut report, &mut tear);
+    fx.registry
+        .reap_owned_with("foo", &path, *record, &mut report, &mut tear);
 
     assert!(report.reaped.is_empty(), "{report:?}");
     assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
