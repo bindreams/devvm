@@ -14,6 +14,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum ErrorKind {
     Usage,
     NotFound,
+    AlreadyExists,
     InvalidName,
     Recipe,
     Config,
@@ -24,9 +25,10 @@ pub enum ErrorKind {
     ExpiredBase,
     Store,
     StatusFile,
-    DetachRefused,
     NoExitStatus,
     ConnectionLost,
+    /// The guest presented a host key other than the pinned one.
+    HostKey,
     Unavailable,
     NotSupported,
     Panic,
@@ -39,6 +41,7 @@ impl ErrorKind {
         match self {
             ErrorKind::Usage => "usage",
             ErrorKind::NotFound => "not-found",
+            ErrorKind::AlreadyExists => "already-exists",
             ErrorKind::InvalidName => "invalid-name",
             ErrorKind::Recipe => "recipe",
             ErrorKind::Config => "config",
@@ -49,9 +52,9 @@ impl ErrorKind {
             ErrorKind::ExpiredBase => "expired-base",
             ErrorKind::Store => "store",
             ErrorKind::StatusFile => "status-file",
-            ErrorKind::DetachRefused => "detach-refused",
             ErrorKind::NoExitStatus => "no-exit-status",
             ErrorKind::ConnectionLost => "connection-lost",
+            ErrorKind::HostKey => "host-key",
             ErrorKind::Unavailable => "unavailable",
             ErrorKind::NotSupported => "not-supported",
             ErrorKind::Panic => "panic",

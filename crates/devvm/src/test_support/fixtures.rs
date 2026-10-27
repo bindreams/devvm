@@ -84,3 +84,22 @@ impl crate::exit::Progress for MemoryProgress {
         self.0.lock().unwrap().push(text.to_owned());
     }
 }
+
+/// A progress sink that sends every message down a channel, so a test can wait for "waiting for ..." as an event.
+pub struct ChannelProgress(std::sync::Mutex<std::sync::mpsc::Sender<String>>);
+
+impl ChannelProgress {
+    pub fn new() -> (std::sync::Arc<ChannelProgress>, std::sync::mpsc::Receiver<String>) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        (
+            std::sync::Arc::new(ChannelProgress(std::sync::Mutex::new(sender))),
+            receiver,
+        )
+    }
+}
+
+impl crate::exit::Progress for ChannelProgress {
+    fn message(&self, text: &str) {
+        let _ = self.0.lock().unwrap().send(text.to_owned());
+    }
+}

@@ -8,6 +8,7 @@ fn kind_strings_are_the_wire_names() {
     let table = [
         (Usage, "usage"),
         (NotFound, "not-found"),
+        (AlreadyExists, "already-exists"),
         (InvalidName, "invalid-name"),
         (Recipe, "recipe"),
         (Config, "config"),
@@ -18,9 +19,9 @@ fn kind_strings_are_the_wire_names() {
         (ExpiredBase, "expired-base"),
         (Store, "store"),
         (StatusFile, "status-file"),
-        (DetachRefused, "detach-refused"),
         (NoExitStatus, "no-exit-status"),
         (ConnectionLost, "connection-lost"),
+        (HostKey, "host-key"),
         (Unavailable, "unavailable"),
         (NotSupported, "not-supported"),
         (Panic, "panic"),
