@@ -272,9 +272,10 @@ fn the_host_code_page_is_the_one_this_run_claims() {
     let claimed = std::env::var(COVERS_ACP).unwrap();
     let actual = current().ansi_code_page();
     let why = match std::env::var(PINNED_CHILD) {
-        Ok(locale) => format!("the manifest's activeCodePage={locale} did not pin the process to ANSI code page {claimed}"),
-        Err(_) => "the Test job on windows-latest claims 1252, and a runner image that changed its code page no longer                    covers it"
-            .to_owned(),
+        Ok(locale) => {
+            format!("the manifest's activeCodePage={locale} did not pin the process to ANSI code page {claimed}")
+        }
+        Err(_) => format!("the CI job that claims {claimed} runs on a host whose code page is no longer {claimed}"),
     };
     assert_eq!(
         actual.map(|acp| acp.to_string()),
@@ -343,9 +344,15 @@ fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
         .env(COVERS_ACP, "1252")
         .env(PINNED_CHILD, PINNED_LOCALE)
         .env_remove("SKULD_LABELS")
-        .env_remove(helper::HELPER_VAR);
+        .env_remove(helper::HELPER_VAR)
+        .arg("--color=never");
     current().quiet(&mut cmd);
-    let output = cmd.output().unwrap();
+    let output = cmd.output().unwrap_or_else(|e| {
+        panic!(
+            "cannot start {} with activeCodePage={PINNED_LOCALE}: {e}",
+            exe.display()
+        )
+    });
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
