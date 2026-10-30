@@ -5,7 +5,9 @@ use std::path::Path;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 
+use crate::exit::NullProgress;
 use crate::host::Host;
+use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -14,6 +16,8 @@ mod keys_tests;
 
 const CLIENT: &str = "client";
 const HOST: &str = "host";
+const LOCK: &str = ".keys.lock";
+const TEMP_PREFIX: &str = ".keys-";
 
 /// An instance's key pairs as OpenSSH text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +46,20 @@ fn generate_pair() -> Result<(String, String)> {
     Ok((private.to_string(), public))
 }
 
+/// Removes the `.keys-*` directories in `parent`: every writer holds the lock, so none of them is in use.
+fn sweep_temporaries(parent: &Path) -> Result<()> {
+    let io =
+        |what: &str, path: &Path, source| Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), source);
+    for entry in std::fs::read_dir(parent).map_err(|e| io("list", parent, e))? {
+        let entry = entry.map_err(|e| io("list", parent, e))?;
+        if entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
+            let path = entry.path();
+            std::fs::remove_dir_all(&path).map_err(|e| io("remove the leftover", &path, e))?;
+        }
+    }
+    Ok(())
+}
+
 impl InstanceKeys {
     /// Two new ed25519 pairs; no two instances share one.
     pub(crate) fn generate() -> Result<InstanceKeys> {
@@ -57,18 +75,13 @@ impl InstanceKeys {
 
     /// Writes `client`, `client.pub`, `host` and `host.pub` into the new directory `dir`. The files are first written
     /// to a temporary directory beside `dir`, which is then renamed into place: a failure or a kill leaves no
-    /// `dir`, and an existing `dir` is `AlreadyExists`, never replaced. The private files go through
-    /// [`Host::write_private`].
+    /// `dir`, and an existing `dir` is `AlreadyExists`, never replaced. Writers of one parent directory take turns
+    /// under a lock there (`.keys.lock`), so of several at once exactly one wins, and a temporary directory a killed
+    /// writer left (`.keys-*`) is removed by the next. The private files go through [`Host::write_private`].
     pub(crate) fn write(&self, host: &dyn Host, dir: &Path) -> Result<()> {
         let io = |what: &str, path: &Path, source| {
             Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), source)
         };
-        if dir.exists() {
-            return Err(Error::new(
-                ErrorKind::AlreadyExists,
-                format!("the keys directory {} already exists", dir.display()),
-            ));
-        }
         let parent = dir.parent().ok_or_else(|| {
             Error::new(
                 ErrorKind::Internal,
@@ -76,9 +89,18 @@ impl InstanceKeys {
             )
         })?;
         std::fs::create_dir_all(parent).map_err(|e| io("create", parent, e))?;
+        let mut lock = FileLock::open(&parent.join(LOCK))?;
+        lock.lock(Mode::Exclusive, "the instance keys", &NullProgress)?;
+        if dir.exists() {
+            return Err(Error::new(
+                ErrorKind::AlreadyExists,
+                format!("the keys directory {} already exists", dir.display()),
+            ));
+        }
+        sweep_temporaries(parent)?;
         // Removed on drop unless it is renamed into place.
         let temp = tempfile::Builder::new()
-            .prefix(".keys-")
+            .prefix(TEMP_PREFIX)
             .tempdir_in(parent)
             .map_err(|e| io("create a temporary directory in", parent, e))?;
         let files = [
