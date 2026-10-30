@@ -573,7 +573,7 @@ fn a_stop_event_in_a_normal_state_does_not_end_the_wait() {
     server.join().unwrap();
 }
 
-// A QEMU that goes away, or a socket that fails, at the wrong moment ------------------------------------------------
+// A QEMU that goes away, or a socket that fails, at the wrong moment --------------------------------------------------
 
 #[skuld::test]
 fn a_server_that_closes_after_the_greeting_is_a_lost_connection() {

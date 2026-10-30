@@ -721,7 +721,7 @@ fn paths_with_space_and_non_ascii_are_returned_verbatim(#[fixture(unicode_home)]
     assert!(install.tool("qemu-system-x86_64").is_file());
 }
 
-// The version check ====================================================================================================
+// The version check ===================================================================================================
 
 /// When this test binary runs as a copy installed as `qemu-img`, prints what it was started with (the version check's
 /// environment and working directory) as `--version` output, and exits. Called first in the test binary's `main`.
