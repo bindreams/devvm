@@ -9,7 +9,7 @@ use serde_json::json;
 use super::QemuMachine;
 use crate::Arch;
 use crate::ErrorKind;
-use crate::backend::qemu::qmp::qmp_tests::{Log, Session, serve};
+use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
 use crate::backend::{Machine, MachineRecord};
 use crate::contain::{Lifetime, VmProcess};
 use crate::host;
@@ -100,7 +100,7 @@ impl World {
 }
 
 /// Serves one client: answers `answered` commands as a running VM would, ends the VM process, and closes the connection.
-fn exits_after(world: &World, answered: usize) -> (std::thread::JoinHandle<()>, Log) {
+fn exits_after(world: &World, answered: usize) -> (Server, Log) {
     let qemu = world.qemu.clone();
     serve(world.sock.listen(), 1, move |session: &mut Session, _| {
         for _ in 0..answered {
@@ -214,7 +214,6 @@ fn reset_of_a_machine_that_exits_during_the_state_check_quotes_the_log(#[fixture
         if clients.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
             // An attached machine asks for its architecture first; aarch64 is one every host can reset.
             session.answer(json!({ "arch": "aarch64" }));
-            while session.command().is_some() {}
         } else {
             // QEMU dies on the state check.
             session.command().expect("query-status");
