@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::access::SshSession;
-use crate::access::sftp::{CHUNK, Failed, Sftp, check_listing, pump};
+use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
@@ -73,15 +74,33 @@ impl Env {
         std::fs::write(&path, content).unwrap();
         path
     }
+
+    /// [`tree`] of the guest directory `dir` (a guest path), with the symlinks the server keeps.
+    fn guest_tree(&self, dir: &str) -> Vec<String> {
+        let mut out = tree(&self.root().join(dir.trim_start_matches('/')));
+        let prefix = format!("{}/", dir.trim_end_matches('/'));
+        for (path, target) in self.rig.sshd.links() {
+            if let Some(rel) = path.strip_prefix(&prefix) {
+                out.push(format!("{rel} -> {target}"));
+            }
+        }
+        out.sort();
+        out
+    }
 }
 
-/// Every file and directory below `dir`, `/`-separated and sorted: a directory ends in `/`.
+/// Every file, directory and symlink below `dir`, `/`-separated and sorted: a directory ends in `/`, a symlink is
+/// followed by ` -> ` and what it holds.
 fn tree(dir: &Path) -> Vec<String> {
     fn visit(dir: &Path, prefix: &str, out: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
-            if entry.file_type().unwrap().is_dir() {
+            let kind = entry.file_type().unwrap();
+            if kind.is_symlink() {
+                let target = std::fs::read_link(entry.path()).unwrap();
+                out.push(format!("{name} -> {}", target.to_string_lossy().replace('\\', "/")));
+            } else if kind.is_dir() {
                 out.push(format!("{name}/"));
                 visit(&entry.path(), &format!("{name}/"), out);
             } else {
@@ -95,7 +114,48 @@ fn tree(dir: &Path) -> Vec<String> {
     out
 }
 
-// Edge cases ==========================================================================================================
+/// The host path `path` with a trailing separator, as a user writes `dir/`.
+fn with_slash(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}{}", path.display(), std::path::MAIN_SEPARATOR))
+}
+
+const MTIME: u64 = 1_000_000_000;
+
+fn set_mtime(path: &Path, secs: u64) {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+        .unwrap();
+}
+
+fn mtime(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// `proj` on the host: `a.txt`, `sub/b.txt`.
+fn project(env: &Env) -> PathBuf {
+    env.host_file("proj/a.txt", b"a");
+    env.host_file("proj/sub/b.txt", b"b");
+    env.local.join("proj")
+}
+
+/// `/proj` on the guest: the same tree.
+fn guest_project(env: &Env) {
+    env.guest_file("proj/a.txt", b"a");
+    env.guest_file("proj/sub/b.txt", b"b");
+}
+
+const PROJECT: [&str; 3] = ["a.txt", "sub/", "sub/b.txt"];
+
+// Directories =========================================================================================================
 
 #[skuld::test]
 fn cp_home_is_the_server_root(#[fixture(unicode_home)] home: &Path) {
@@ -109,89 +169,444 @@ fn cp_keeps_an_empty_directory_in_both_directions(#[fixture(unicode_home)] home:
     std::fs::create_dir_all(source.join("empty").join("deeper")).unwrap();
     std::fs::write(source.join("file.txt"), b"x").unwrap();
     env.copy_in(&source, "/tree").unwrap();
-    assert_eq!(tree(&env.root().join("tree")), ["empty/", "empty/deeper/", "file.txt"]);
+    assert_eq!(env.guest_tree("/tree"), ["empty/", "empty/deeper/", "file.txt"]);
 
     let back = env.local.join("back");
     env.copy_out("/tree", &back).unwrap();
     assert_eq!(tree(&back), ["empty/", "empty/deeper/", "file.txt"]);
 }
 
+/// The destination is the directory afterwards, whether or not it existed, so a rerun does not nest.
 #[skuld::test]
-fn cp_follows_a_symlink_to_a_file_and_to_a_directory(#[fixture(unicode_home)] home: &Path) {
+fn a_directory_becomes_the_destination_and_a_rerun_gives_the_same_layout(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
-    env.guest_file("data/real.txt", b"real");
-    env.rig.sshd.add_symlink("/file-link", "/data/real.txt");
-    env.rig.sshd.add_symlink("/dir-link", "data");
-    env.rig.sshd.add_symlink("/data/inner-link", "real.txt");
-
-    env.copy_out("/file-link", &env.local.join("f.txt")).unwrap();
-    assert_eq!(std::fs::read(env.local.join("f.txt")).unwrap(), b"real");
-
-    env.copy_out("/dir-link", &env.local.join("d")).unwrap();
-    assert_eq!(tree(&env.local.join("d")), ["inner-link", "real.txt"]);
-    assert_eq!(std::fs::read(env.local.join("d").join("inner-link")).unwrap(), b"real");
+    let proj = project(&env);
+    guest_project(&env);
+    std::fs::create_dir(env.root().join("existing")).unwrap();
+    for dest in ["/fresh", "/existing", "/deep/er/still"] {
+        for run in 1..=2 {
+            env.copy_in(&proj, dest).unwrap();
+            assert_eq!(env.guest_tree(dest), PROJECT, "in, {dest}, run {run}");
+        }
+    }
+    for name in ["fresh", "existing", "deep"] {
+        std::fs::create_dir_all(env.local.join("out").join(name)).unwrap();
+    }
+    std::fs::remove_dir(env.local.join("out").join("fresh")).unwrap();
+    for dest in ["fresh", "existing", "deep/er/still"] {
+        for run in 1..=2 {
+            let dest = env.local.join("out").join(dest);
+            env.copy_out("/proj", &dest).unwrap();
+            assert_eq!(tree(&dest), PROJECT, "out, {}, run {run}", dest.display());
+        }
+    }
 }
 
 #[skuld::test]
-fn cp_in_follows_host_symlinks_to_a_file_and_to_a_directory(#[fixture(unicode_home)] home: &Path) {
+fn dot_dotdot_and_a_trailing_slash_merge_into_an_existing_directory_and_nothing_is_deleted(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let env = Env::new(home);
-    let real = env.host_file("real/data.txt", b"data");
-    symlink(&real, &env.local.join("file-link"));
-    symlink(&env.local.join("real"), &env.local.join("dir-link"));
-    env.copy_in(&env.local.join("file-link"), "/f.txt").unwrap();
-    assert_eq!(std::fs::read(env.root().join("f.txt")).unwrap(), b"data");
-    env.copy_in(&env.local.join("dir-link"), "/d").unwrap();
-    assert_eq!(std::fs::read(env.root().join("d").join("data.txt")).unwrap(), b"data");
+    let proj = project(&env);
+    let sources = [proj.join("."), proj.join("sub").join(".."), with_slash(&proj)];
+    for (i, src) in sources.iter().enumerate() {
+        let dest = format!("/dest{i}");
+        env.guest_file(&format!("dest{i}/extra.txt"), b"keep");
+        env.copy_in(src, &dest).unwrap();
+        assert_eq!(
+            env.guest_tree(&dest),
+            ["a.txt", "extra.txt", "sub/", "sub/b.txt"],
+            "{}",
+            src.display()
+        );
+    }
+
+    guest_project(&env);
+    for (i, src) in ["/proj/.", "/proj/sub/..", "/proj/", "/proj"].into_iter().enumerate() {
+        let dest = env.local.join(format!("dest{i}"));
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("extra.txt"), b"keep").unwrap();
+        env.copy_out(src, &dest).unwrap();
+        assert_eq!(tree(&dest), ["a.txt", "extra.txt", "sub/", "sub/b.txt"], "{src}");
+    }
 }
 
 #[skuld::test]
-fn cp_in_refuses_a_host_symlink_loop_and_a_dangling_link_naming_the_path(#[fixture(unicode_home)] home: &Path) {
+fn a_root_is_a_directory_too(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
-    env.host_file("loop/file.txt", b"x");
-    symlink(&env.local.join("loop"), &env.local.join("loop").join("up"));
-    let error = env.copy_in(&env.local.join("loop"), "/l").unwrap_err();
+    guest_project(&env);
+    let dest = env.local.join("root");
+    env.copy_out("/", &dest).unwrap();
+    assert_eq!(tree(&dest), ["proj/", "proj/a.txt", "proj/sub/", "proj/sub/b.txt"]);
+}
+
+#[skuld::test]
+fn a_destination_with_a_missing_parent_gets_its_parents(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"x");
+    env.copy_in(&file, "/a/b/c.txt").unwrap();
+    assert_eq!(std::fs::read(env.root().join("a/b/c.txt")).unwrap(), b"x");
+    let out = env.local.join("p").join("q").join("f.txt");
+    env.copy_out("/a/b/c.txt", &out).unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), b"x");
+}
+
+// Files ===============================================================================================================
+
+#[skuld::test]
+fn a_file_goes_inside_a_directory_or_a_path_ending_in_a_slash_and_is_the_destination_otherwise(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    let src = env.host_file("f.txt", b"new");
+    std::fs::create_dir(env.root().join("dir")).unwrap();
+    env.guest_file("old.txt", b"old and longer");
+    // (destination, where the file ends up)
+    let table = [
+        ("/dir", "dir/f.txt"),
+        ("/dir/", "dir/f.txt"),
+        ("/fresh/", "fresh/f.txt"),
+        ("/deep/er/", "deep/er/f.txt"),
+        ("/old.txt", "old.txt"),
+        ("/renamed.txt", "renamed.txt"),
+        ("/no/such/parent.txt", "no/such/parent.txt"),
+    ];
+    for (dest, lands) in table {
+        env.copy_in(&src, dest).unwrap();
+        assert_eq!(std::fs::read(env.root().join(lands)).unwrap(), b"new", "in {dest}");
+    }
+
+    env.guest_file("g.txt", b"guest");
+    std::fs::create_dir(env.local.join("hd")).unwrap();
+    env.host_file("old.txt", b"old and longer");
+    let table = [
+        (env.local.join("hd"), "hd/g.txt"),
+        (with_slash(&env.local.join("hd")), "hd/g.txt"),
+        (with_slash(&env.local.join("fresh")), "fresh/g.txt"),
+        (env.local.join("old.txt"), "old.txt"),
+        (env.local.join("renamed.txt"), "renamed.txt"),
+        (
+            env.local.join("no").join("such").join("parent.txt"),
+            "no/such/parent.txt",
+        ),
+    ];
+    for (dest, lands) in table {
+        env.copy_out("/g.txt", &dest).unwrap();
+        assert_eq!(
+            std::fs::read(env.local.join(lands)).unwrap(),
+            b"guest",
+            "out {}",
+            dest.display()
+        );
+    }
+}
+
+#[skuld::test]
+fn a_slash_after_a_file_destination_is_an_error(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let src = env.host_file("f.txt", b"x");
+    env.guest_file("plain.txt", b"old");
+    let error = env.copy_in(&src, "/plain.txt/").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("symlink loop"), "{error}");
-    assert!(error.message().contains("up"), "{error}");
+    assert!(error.message().contains("/plain.txt"), "{error}");
+    assert_eq!(std::fs::read(env.root().join("plain.txt")).unwrap(), b"old");
 
-    env.host_file("dangling/file.txt", b"x");
-    symlink(&env.local.join("nowhere"), &env.local.join("dangling").join("broken"));
-    let error = env.copy_in(&env.local.join("dangling"), "/g").unwrap_err();
+    let there = env.host_file("there.txt", b"old");
+    let error = env.copy_out("/plain.txt", &with_slash(&there)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("dangling symlink"), "{error}");
-    assert!(error.message().contains("broken"), "{error}");
+    assert_eq!(std::fs::read(&there).unwrap(), b"old");
 }
 
 #[skuld::test]
-fn cp_refuses_a_link_that_leads_to_itself_naming_the_path(#[fixture(unicode_home)] home: &Path) {
+fn a_directory_onto_a_file_and_a_file_onto_a_directory_are_errors_naming_both_paths(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let env = Env::new(home);
-    env.rig.sshd.add_symlink("/self", "/self");
-    let error = env.copy_out("/self", &env.local.join("a")).unwrap_err();
+    let file = env.host_file("a", b"x");
+    std::fs::create_dir_all(env.root().join("d").join("a")).unwrap();
+    // A file onto a directory it would replace.
+    let error = env.copy_in(&file, "/d").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("/self"), "{error}");
+    assert!(error.message().contains("/d/a"), "{error}");
+    assert!(error.message().contains(&file.display().to_string()), "{error}");
+    // A directory onto an existing file.
+    env.guest_file("plain.txt", b"x");
+    let tree_src = env.local.join("tree");
+    std::fs::create_dir(&tree_src).unwrap();
+    let error = env.copy_in(&tree_src, "/plain.txt").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("/plain.txt"), "{error}");
+    assert!(error.message().contains(&tree_src.display().to_string()), "{error}");
+    // A guest directory onto a host file.
+    let error = env.copy_out("/d", &file).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains(&file.display().to_string()), "{error}");
+    assert!(error.message().contains("/d"), "{error}");
+    // A guest file onto a host directory it would replace.
+    std::fs::create_dir_all(env.local.join("out").join("plain.txt")).unwrap();
+    let error = env.copy_out("/plain.txt", &env.local.join("out")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("plain.txt"), "{error}");
 }
 
 #[skuld::test]
-fn cp_refuses_a_symlink_loop_inside_a_tree(#[fixture(unicode_home)] home: &Path) {
+fn a_clash_inside_a_merged_tree_is_an_error_naming_both_paths(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
-    env.guest_file("t/sub/file.txt", b"x");
-    env.rig.sshd.add_symlink("/t/sub/up", "/t");
-    let error = env.copy_out("/t", &env.local.join("a")).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("symlink loop"), "{error}");
-    assert!(error.message().contains("/t/sub/up"), "{error}");
+    // The host has a file `x`, the guest a directory `x`, and the other way round.
+    env.host_file("t/x", b"file");
+    env.host_file("t/y/inner", b"i");
+    std::fs::create_dir_all(env.root().join("dest1").join("x")).unwrap();
+    let error = env.copy_in(&env.local.join("t"), "/dest1").unwrap_err();
+    assert!(error.message().contains("/dest1/x"), "{error}");
+    env.guest_file("dest2/y", b"a file");
+    let error = env.copy_in(&env.local.join("t"), "/dest2").unwrap_err();
+    assert!(error.message().contains("/dest2/y"), "{error}");
+    assert_eq!(std::fs::read(env.root().join("dest2").join("y")).unwrap(), b"a file");
+
+    env.guest_file("g/x", b"file");
+    std::fs::create_dir_all(env.local.join("out").join("x")).unwrap();
+    let error = env.copy_out("/g", &env.local.join("out")).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains(&env.local.join("out").join("x").display().to_string()),
+        "{error}"
+    );
+    assert!(env.local.join("out").join("x").is_dir());
 }
 
 #[skuld::test]
-fn cp_refuses_a_dangling_link_inside_a_tree(#[fixture(unicode_home)] home: &Path) {
+fn cp_reports_a_missing_source_naming_the_side(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
-    env.guest_file("t/file.txt", b"x");
-    env.rig.sshd.add_symlink("/t/dangle", "/t/nowhere");
-    let error = env.copy_out("/t", &env.local.join("a")).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("dangling symlink"), "{error}");
-    assert!(error.message().contains("/t/dangle"), "{error}");
+    let error = env.copy_in(&env.local.join("nope"), "/x").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
+    assert!(error.message().contains("host source"), "{error}");
+
+    let error = env.copy_out("/nope", &env.local.join("x")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
+    assert!(error.message().contains("guest source /nope"), "{error}");
+    assert!(!env.local.join("x").exists());
 }
+
+// Symlinks ============================================================================================================
+
+/// Links in a tree are copied as links, whatever they lead to: a file, a directory, nothing, themselves or their own
+/// directory.
+#[skuld::test]
+fn links_in_a_tree_are_copied_as_links_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("pack/real.txt", b"real");
+    std::fs::create_dir(env.local.join("pack").join("sub")).unwrap();
+    for (name, target) in [
+        ("file-link", "real.txt"),
+        ("dir-link", "sub"),
+        ("dangling", "nowhere"),
+        ("self", "self"),
+        ("up", "."),
+    ] {
+        symlink(Path::new(target), &env.local.join("pack").join(name));
+    }
+    let want = [
+        "dangling -> nowhere",
+        "dir-link -> sub",
+        "file-link -> real.txt",
+        "real.txt",
+        "self -> self",
+        "sub/",
+        "up -> .",
+    ];
+    env.copy_in(&env.local.join("pack"), "/pack").unwrap();
+    assert_eq!(env.guest_tree("/pack"), want);
+    // Again, over the links that are there now.
+    env.copy_in(&env.local.join("pack"), "/pack").unwrap();
+    assert_eq!(env.guest_tree("/pack"), want);
+
+    env.copy_out("/pack", &env.local.join("back")).unwrap();
+    assert_eq!(tree(&env.local.join("back")), want);
+    env.copy_out("/pack", &env.local.join("back")).unwrap();
+    assert_eq!(tree(&env.local.join("back")), want);
+}
+
+#[skuld::test]
+fn a_link_given_as_the_source_is_copied_as_a_link_and_with_a_slash_it_is_followed_once(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    env.host_file("real/a.txt", b"a");
+    symlink(Path::new("shared"), &env.local.join("real").join("inner"));
+    symlink(&env.local.join("real"), &env.local.join("lnk"));
+    let target = env.local.join("real").display().to_string().replace('\\', "/");
+    env.copy_in(&env.local.join("lnk"), "/as-link").unwrap();
+    assert_eq!(env.rig.sshd.link_target("/as-link"), Some(target));
+    assert!(!env.root().join("as-link").exists());
+    env.copy_in(&with_slash(&env.local.join("lnk")), "/followed").unwrap();
+    assert_eq!(env.guest_tree("/followed"), ["a.txt", "inner -> shared"]);
+
+    env.guest_file("data/b.txt", b"b");
+    env.rig.sshd.add_symlink("/data/inner", "shared");
+    env.rig.sshd.add_symlink("/lnk", "/data");
+    env.copy_out("/lnk", &env.local.join("out-link")).unwrap();
+    let held = std::fs::read_link(env.local.join("out-link")).unwrap();
+    assert_eq!(held.to_string_lossy().replace('\\', "/"), "/data");
+    env.copy_out("/lnk/", &env.local.join("out-followed")).unwrap();
+    assert_eq!(tree(&env.local.join("out-followed")), ["b.txt", "inner -> shared"]);
+}
+
+#[skuld::test]
+fn a_link_the_host_cannot_store_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::without_symlinks();
+    env.guest_file("t/a.txt", b"a");
+    env.rig.sshd.add_symlink("/t/ln", "a.txt");
+    let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("/t/ln"), "{error}");
+    assert!(error.message().contains("cannot make symlinks"), "{error}");
+    assert!(!env.local.join("out").join("ln").exists());
+}
+
+#[skuld::test]
+fn a_guest_symlink_target_that_is_not_valid_utf8_is_refused_naming_the_link(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("t/a.txt", b"a");
+    env.rig.sshd.add_symlink("/t/ln", "bad\u{fffd}target");
+    let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("/t/ln"), "{error}");
+    assert!(error.message().contains("U+FFFD"), "{error}");
+    assert!(!env.local.join("out").exists(), "refused before anything was created");
+}
+
+// Replacing ===========================================================================================================
+
+#[skuld::test]
+fn a_read_only_target_and_a_symlink_at_the_destination_are_replaced_never_written_through(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    let src = env.host_file("src.txt", b"new");
+    // Guest: a read-only file, and a link to a file that must stay as it is.
+    env.guest_file("ro.txt", b"old");
+    env.rig.sshd.set_mode("/ro.txt", 0o444);
+    env.guest_file("elsewhere.txt", b"keep");
+    env.rig.sshd.add_symlink("/lnk.txt", "/elsewhere.txt");
+    env.copy_in(&src, "/ro.txt").unwrap();
+    assert_eq!(std::fs::read(env.root().join("ro.txt")).unwrap(), b"new");
+    env.copy_in(&src, "/lnk.txt").unwrap();
+    assert_eq!(std::fs::read(env.root().join("lnk.txt")).unwrap(), b"new");
+    assert_eq!(
+        env.rig.sshd.link_target("/lnk.txt"),
+        None,
+        "the link itself was replaced"
+    );
+    assert_eq!(std::fs::read(env.root().join("elsewhere.txt")).unwrap(), b"keep");
+
+    // Host: the same two cases.
+    env.guest_file("g.txt", b"guest");
+    let ro = env.host_file("ro.txt", b"old");
+    let mut permissions = std::fs::metadata(&ro).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&ro, permissions).unwrap();
+    env.copy_out("/g.txt", &ro).unwrap();
+    assert_eq!(std::fs::read(&ro).unwrap(), b"guest");
+    let elsewhere = env.host_file("elsewhere.txt", b"keep");
+    let lnk = env.local.join("lnk.txt");
+    symlink(&elsewhere, &lnk);
+    env.copy_out("/g.txt", &lnk).unwrap();
+    assert!(std::fs::read_link(&lnk).is_err(), "the link itself was replaced");
+    assert_eq!(std::fs::read(&lnk).unwrap(), b"guest");
+    assert_eq!(std::fs::read(&elsewhere).unwrap(), b"keep");
+}
+
+#[skuld::test]
+fn a_symlink_child_met_while_merging_is_replaced_never_written_through(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("t/a.txt", b"new a");
+    env.host_file("t/sub/b.txt", b"new b");
+    // Guest: `a.txt` is a link to a file and `sub` a link to a directory, both outside the destination.
+    env.guest_file("outside.txt", b"keep");
+    std::fs::create_dir(env.root().join("outside")).unwrap();
+    std::fs::create_dir(env.root().join("dest")).unwrap();
+    env.rig.sshd.add_symlink("/dest/a.txt", "/outside.txt");
+    env.rig.sshd.add_symlink("/dest/sub", "/outside");
+    env.copy_in(&env.local.join("t"), "/dest").unwrap();
+    assert_eq!(env.guest_tree("/dest"), ["a.txt", "sub/", "sub/b.txt"]);
+    assert_eq!(std::fs::read(env.root().join("dest/a.txt")).unwrap(), b"new a");
+    assert_eq!(std::fs::read(env.root().join("outside.txt")).unwrap(), b"keep");
+    assert!(
+        tree(&env.root().join("outside")).is_empty(),
+        "nothing was written through `sub`"
+    );
+
+    // Host: the same.
+    env.guest_file("g/a.txt", b"guest a");
+    env.guest_file("g/sub/b.txt", b"guest b");
+    let outside = env.host_file("outside.txt", b"keep");
+    let outside_dir = env.local.join("outside");
+    std::fs::create_dir(&outside_dir).unwrap();
+    let dest = env.local.join("dest");
+    std::fs::create_dir(&dest).unwrap();
+    symlink(&outside, &dest.join("a.txt"));
+    symlink(&outside_dir, &dest.join("sub"));
+    env.copy_out("/g", &dest).unwrap();
+    assert_eq!(tree(&dest), ["a.txt", "sub/", "sub/b.txt"]);
+    assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
+    assert!(tree(&outside_dir).is_empty(), "nothing was written through `sub`");
+}
+
+// Metadata ============================================================================================================
+
+#[skuld::test]
+fn the_modification_time_is_kept_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let src = env.host_file("pack/f.txt", b"x");
+    set_mtime(&src, MTIME);
+    set_mtime(&env.host_file("single.txt", b"y"), MTIME + 7);
+    env.copy_in(&env.local.join("pack"), "/pack").unwrap();
+    env.copy_in(&env.local.join("single.txt"), "/single.txt").unwrap();
+    assert_eq!(mtime(&env.root().join("pack/f.txt")), MTIME);
+    assert_eq!(mtime(&env.root().join("single.txt")), MTIME + 7);
+
+    set_mtime(&env.guest_file("g/h.txt", b"z"), MTIME + 99);
+    set_mtime(&env.guest_file("one.txt", b"w"), MTIME + 5);
+    env.copy_out("/g", &env.local.join("back")).unwrap();
+    env.copy_out("/one.txt", &env.local.join("one.txt")).unwrap();
+    assert_eq!(mtime(&env.local.join("back/h.txt")), MTIME + 99);
+    assert_eq!(mtime(&env.local.join("one.txt")), MTIME + 5);
+}
+
+#[skuld::test]
+fn the_executable_bit_is_kept_inside_a_tree_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("pack/run.sh", b"#!/bin/sh\n");
+    env.host_file("pack/plain.txt", b"p");
+    env.host.mark_executable(&env.local.join("pack").join("run.sh"));
+    env.copy_in(&env.local.join("pack"), "/pack").unwrap();
+    assert_eq!(env.rig.sshd.mode_of("/pack/run.sh"), Some(0o755));
+    assert_eq!(env.rig.sshd.mode_of("/pack/plain.txt"), Some(0o644));
+
+    env.copy_out("/pack", &env.local.join("back")).unwrap();
+    assert_eq!(env.host.set_executable_calls(), [env.local.join("back").join("run.sh")]);
+}
+
+#[skuld::test]
+fn cp_modes_follow_the_host_executable_bit_in_and_the_guest_bit_out(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let plain = env.host_file("plain", b"p");
+    let script = env.host_file("script", b"#!/bin/sh\n");
+    env.host.mark_executable(&script);
+    env.copy_in(&plain, "/plain").unwrap();
+    env.copy_in(&script, "/script").unwrap();
+    assert_eq!(env.rig.sshd.mode_of("/plain"), Some(0o644));
+    assert_eq!(env.rig.sshd.mode_of("/script"), Some(0o755));
+
+    env.copy_out("/plain", &env.local.join("plain-back")).unwrap();
+    assert!(env.host.set_executable_calls().is_empty());
+    env.copy_out("/script", &env.local.join("script-back")).unwrap();
+    assert_eq!(env.host.set_executable_calls(), [env.local.join("script-back")]);
+}
+
+// Names and bytes =====================================================================================================
 
 #[skuld::test]
 fn cp_carries_awkward_names(#[fixture(unicode_home)] home: &Path) {
@@ -203,7 +618,7 @@ fn cp_carries_awkward_names(#[fixture(unicode_home)] home: &Path) {
     env.copy_in(&env.local.join("tree"), "/tree").unwrap();
     let mut want: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
     want.sort();
-    assert_eq!(tree(&env.root().join("tree")), want);
+    assert_eq!(env.guest_tree("/tree"), want);
     for name in names {
         assert_eq!(
             std::fs::read(env.root().join("tree").join(name)).unwrap(),
@@ -224,95 +639,6 @@ fn cp_out_of_a_guest_name_with_a_newline(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn cp_over_an_existing_file_overwrites_and_into_an_existing_directory_nests(#[fixture(unicode_home)] home: &Path) {
-    let env = Env::new(home);
-    let src = env.host_file("src.txt", b"new");
-    env.guest_file("existing.txt", b"old and longer");
-    env.copy_in(&src, "/existing.txt").unwrap();
-    assert_eq!(std::fs::read(env.root().join("existing.txt")).unwrap(), b"new");
-
-    std::fs::create_dir(env.root().join("dir")).unwrap();
-    env.copy_in(&src, "/dir").unwrap();
-    assert_eq!(std::fs::read(env.root().join("dir").join("src.txt")).unwrap(), b"new");
-
-    // A directory lands inside an existing directory, as `<dest>/<basename>`, and is created at a missing path.
-    let tree_src = env.local.join("pack");
-    std::fs::create_dir(&tree_src).unwrap();
-    std::fs::write(tree_src.join("one"), b"1").unwrap();
-    env.copy_in(&tree_src, "/dir").unwrap();
-    assert_eq!(
-        std::fs::read(env.root().join("dir").join("pack").join("one")).unwrap(),
-        b"1"
-    );
-    env.copy_in(&tree_src, "/fresh").unwrap();
-    assert_eq!(std::fs::read(env.root().join("fresh").join("one")).unwrap(), b"1");
-
-    // And the same on the way out.
-    env.copy_out("/existing.txt", &src).unwrap();
-    assert_eq!(std::fs::read(&src).unwrap(), b"new");
-    let there = env.local.join("there");
-    std::fs::create_dir(&there).unwrap();
-    env.copy_out("/dir/pack", &there).unwrap();
-    assert_eq!(std::fs::read(there.join("pack").join("one")).unwrap(), b"1");
-    env.copy_out("/dir/src.txt", &there).unwrap();
-    assert_eq!(std::fs::read(there.join("src.txt")).unwrap(), b"new");
-}
-
-#[skuld::test]
-fn cp_onto_something_it_would_replace_wrongly_is_an_error(#[fixture(unicode_home)] home: &Path) {
-    let env = Env::new(home);
-    let file = env.host_file("a", b"x");
-    std::fs::create_dir_all(env.root().join("d").join("a")).unwrap();
-    // A file onto a directory it would replace.
-    let error = env.copy_in(&file, "/d").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("/d/a"), "{error}");
-    // A directory onto an existing file.
-    env.guest_file("plain.txt", b"x");
-    let tree_src = env.local.join("tree");
-    std::fs::create_dir(&tree_src).unwrap();
-    let error = env.copy_in(&tree_src, "/plain.txt").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("/plain.txt"), "{error}");
-    // A guest directory onto a host file.
-    let error = env.copy_out("/d", &file).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains(&file.display().to_string()), "{error}");
-    // A guest file onto a host directory it would replace.
-    std::fs::create_dir_all(env.local.join("out").join("plain.txt")).unwrap();
-    let error = env.copy_out("/plain.txt", &env.local.join("out")).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-}
-
-#[skuld::test]
-fn cp_reports_a_missing_source_and_a_missing_destination_parent_naming_the_side(#[fixture(unicode_home)] home: &Path) {
-    let env = Env::new(home);
-    let file = env.host_file("a", b"x");
-    let error = env.copy_in(&env.local.join("nope"), "/x").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
-    assert!(error.message().contains("host source"), "{error}");
-
-    let error = env.copy_out("/nope", &env.local.join("x")).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
-    assert!(error.message().contains("guest source /nope"), "{error}");
-
-    let error = env.copy_in(&file, "/missing-dir/x").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
-    assert!(
-        error.message().contains("guest destination directory /missing-dir"),
-        "{error}"
-    );
-    assert!(!env.root().join("missing-dir").exists(), "the parent is not created");
-
-    env.guest_file("g.txt", b"x");
-    let error = env
-        .copy_out("/g.txt", &env.local.join("missing-dir").join("x"))
-        .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
-    assert!(error.message().contains("host destination directory"), "{error}");
-}
-
-#[skuld::test]
 fn cp_leaves_crlf_alone_both_ways(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     let content = b"one\r\ntwo\r\n\r\nthree\n";
@@ -324,23 +650,6 @@ fn cp_leaves_crlf_alone_both_ways(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn cp_modes_follow_the_host_executable_bit_in_and_the_guest_bit_out(#[fixture(unicode_home)] home: &Path) {
-    let env = Env::new(home);
-    let plain = env.host_file("plain", b"p");
-    let script = env.host_file("script", b"#!/bin/sh\n");
-    env.host.mark_executable(&script);
-    env.copy_in(&plain, "/plain").unwrap();
-    env.copy_in(&script, "/script").unwrap();
-    assert_eq!(env.rig.sshd.mode_of("/plain"), Some(0o644));
-    assert_eq!(env.rig.sshd.mode_of("/script"), Some(0o755));
-
-    env.copy_out("/plain", &env.local.join("plain-back")).unwrap();
-    assert!(env.host.set_executable_calls().is_empty());
-    env.copy_out("/script", &env.local.join("script-back")).unwrap();
-    assert_eq!(env.host.set_executable_calls(), [env.local.join("script-back")]);
-}
-
-#[skuld::test]
 fn cp_expands_tilde_paths_against_the_guest_home(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     let src = env.host_file("src.txt", b"home");
@@ -349,6 +658,8 @@ fn cp_expands_tilde_paths_against_the_guest_home(#[fixture(unicode_home)] home: 
     env.copy_out("~/in.txt", &env.local.join("out.txt")).unwrap();
     assert_eq!(std::fs::read(env.local.join("out.txt")).unwrap(), b"home");
     env.copy_in(&src, "~").unwrap();
+    assert_eq!(std::fs::read(env.root().join("src.txt")).unwrap(), b"home");
+    env.copy_in(&src, "~/").unwrap();
     assert_eq!(std::fs::read(env.root().join("src.txt")).unwrap(), b"home");
 }
 
@@ -364,6 +675,34 @@ fn a_tilde_user_guest_path_is_a_usage_error_before_any_transfer(#[fixture(unicod
     assert!(!env.local.join("o").exists());
     assert!(env.progress.messages().is_empty(), "no transfer was announced");
 }
+
+// Refused before anything is written ==================================================================================
+
+/// Windows hosts cannot hold the names this test needs, so it runs where they can be made.
+#[cfg(unix)]
+#[skuld::test]
+fn a_name_a_windows_guest_cannot_store_is_refused_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.guest = FakeGuests.os(GuestKind::Windows).unwrap();
+    for (i, name) in ["a?b", "q*", "x.", "a:b"].into_iter().enumerate() {
+        env.host_file(&format!("t{i}/fine.txt"), b"f");
+        env.host_file(&format!("t{i}/sub/{name}"), b"x");
+        let error = env
+            .copy_in(&env.local.join(format!("t{i}")), &format!("/d{i}"))
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{name}: {error}");
+        assert!(error.message().contains(&format!("{name:?}")), "{name}: {error}");
+        assert!(tree(env.root()).is_empty(), "{name}: nothing was created");
+    }
+    // A name taken from the source path for a file going into a directory is checked too.
+    let file = env.host_file("a?b", b"x");
+    std::fs::create_dir(env.root().join("dir")).unwrap();
+    let error = env.copy_in(&file, "/dir").unwrap_err();
+    assert!(error.message().contains("\"a?b\""), "{error}");
+    assert!(tree(&env.root().join("dir")).is_empty());
+}
+
+// Failures ============================================================================================================
 
 #[skuld::test]
 fn a_dropped_connection_mid_copy_leaves_no_partial_file_at_the_final_path(#[fixture(unicode_home)] home: &Path) {
@@ -522,16 +861,6 @@ fn a_guest_name_with_a_replacement_character_is_refused_even_when_it_exists(#[fi
     assert!(!env.local.join("out").exists());
 }
 
-/// No real file system lists a name twice, so the fake server cannot be made to; the check is tested directly.
-#[skuld::test]
-fn a_listing_that_names_one_entry_twice_is_refused() {
-    let names = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
-    check_listing("/t", &names(&["a", "b", "c"])).unwrap();
-    let error = check_listing("/t", &names(&["a", "b", "b", "c"])).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("\"b\" twice"), "{error}");
-}
-
 #[skuld::test]
 fn cp_out_refuses_a_guest_name_a_windows_host_cannot_hold(#[fixture(unicode_home)] home: &Path) {
     let mut env = Env::new(home);
@@ -574,55 +903,4 @@ fn cp_out_into_a_directory_checks_the_name_it_takes_from_the_guest_path(#[fixtur
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("\"con\""), "{error}");
     assert!(tree(&dest).is_empty());
-}
-
-// `cp -r` of a directory's contents ===================================================================================
-
-fn project(env: &Env) -> PathBuf {
-    env.host_file("proj/a.txt", b"a");
-    env.host_file("proj/sub/b.txt", b"b");
-    env.local.join("proj")
-}
-
-#[skuld::test]
-fn cp_in_of_dir_slash_dot_and_dir_slash_dotdot_copies_the_contents_into_an_existing_directory(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let env = Env::new(home);
-    let proj = project(&env);
-    std::fs::create_dir(env.root().join("dest")).unwrap();
-    env.copy_in(&proj.join("."), "/dest").unwrap();
-    assert_eq!(tree(&env.root().join("dest")), ["a.txt", "sub/", "sub/b.txt"]);
-
-    std::fs::create_dir(env.root().join("dest2")).unwrap();
-    env.copy_in(&proj.join("sub").join(".."), "/dest2").unwrap();
-    assert_eq!(tree(&env.root().join("dest2")), ["a.txt", "sub/", "sub/b.txt"]);
-
-    // A destination that does not exist is created and holds the contents too.
-    env.copy_in(&proj.join("."), "/fresh").unwrap();
-    assert_eq!(tree(&env.root().join("fresh")), ["a.txt", "sub/", "sub/b.txt"]);
-}
-
-#[skuld::test]
-fn cp_out_of_dir_slash_dot_dotdot_and_the_root_copies_the_contents_into_an_existing_directory(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let env = Env::new(home);
-    env.guest_file("proj/a.txt", b"a");
-    env.guest_file("proj/sub/b.txt", b"b");
-    for (i, src) in ["/proj/.", "/proj/sub/..", "/proj/"].into_iter().enumerate() {
-        let dest = env.local.join(format!("dest{i}"));
-        std::fs::create_dir(&dest).unwrap();
-        env.copy_out(src, &dest).unwrap();
-        let want: &[&str] = if src == "/proj/" {
-            &["proj/", "proj/a.txt", "proj/sub/", "proj/sub/b.txt"]
-        } else {
-            &["a.txt", "sub/", "sub/b.txt"]
-        };
-        assert_eq!(tree(&dest), want, "{src}");
-    }
-    let dest = env.local.join("root");
-    std::fs::create_dir(&dest).unwrap();
-    env.copy_out("/", &dest).unwrap();
-    assert_eq!(tree(&dest), ["proj/", "proj/a.txt", "proj/sub/", "proj/sub/b.txt"]);
 }

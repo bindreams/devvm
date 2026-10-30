@@ -1,29 +1,34 @@
-//! SFTP file copy between the host and a guest, with `cp -r` / `scp -r` semantics.
+//! SFTP file copy between the host and a guest.
 //!
-//! A file goes to an existing directory *inside* it, onto an existing file *over* it, and to a new name as that name
-//! (the parent must exist: it is not created). A directory to a missing path is created there; to an existing directory
-//! it lands inside as `<dest>/<basename>`; onto an existing file is an error. Symlinks are followed (a loop or a
-//! dangling link is an error naming the path), empty directories are copied, and bytes are never translated.
+//! One source goes to one destination, and where it lands depends on the source and the destination only (owner,
+//! 2026-10-30; the rules are [`plan::place`]):
+//! - A directory *becomes* the destination: its contents merge into it, it is created with its parents when missing, and
+//!   it never nests, so a rerun gives the same layout.
+//! - A file goes inside a destination that is a directory or ends in `/`, and is the destination otherwise.
+//! - Symlinks are copied as links, never followed; a source path that is itself a link is copied as a link unless it
+//!   ends in `/`. A host or guest that cannot store a link is an error naming it.
+//! - Contents, the execute bit and the modification time of files are kept (through [`Host`] where the host decides).
+//! - Every file and link is written to `.devvm-partial-<random>` beside its target and renamed over it (on the guest
+//!   side with `posix-rename@openssh.com`), so a failure leaves no partial file at the final path, a read-only target
+//!   is replaced, and a symlink at the destination is replaced, never written through.
+//! - The whole source is walked before anything is written: a name the target cannot store fails the copy, naming it.
+//!   Nothing at the destination is deleted.
 //!
-//! Data moves in chunks, never whole, to a temporary name `.devvm-partial-<random>` beside the destination and is then
-//! renamed over it (on the guest side with `posix-rename@openssh.com`, which replaces an existing file atomically), so a
-//! failure leaves no partial file at the destination path. The host and the guest decide permissions through [`Host`]:
-//! a copy in makes the guest file `0755` when the source is executable on the host and `0644` otherwise; a copy out
-//! calls [`Host::set_executable`] when the guest file has an execute bit.
-//!
-//! The host side of a transfer (what exists, symlinks, modes, the temporary file and the final rename) runs on the
-//! calling thread; each remote step runs on the runtime, bounded by [`Inner::guarded`].
+//! The host side of a transfer ([`local`]) runs on the calling thread; each remote step ([`remote`]) runs on the
+//! runtime, bounded by [`Inner::guarded`].
 
-use std::collections::HashMap;
+mod local;
+mod plan;
+mod remote;
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use russh_sftp::client::error::Error as SftpError;
-use russh_sftp::client::{Config, RawSftpSession, SftpSession};
-use russh_sftp::protocol::{FileAttributes, OpenFlags, Packet, StatusCode};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use self::plan::{Conflict, Item, Kind, Place, Rules, Source};
+use self::remote::Remote;
 use crate::access::paths::{check_guest_path, expand_guest_path};
 use crate::access::runtime;
 use crate::access::session::Inner;
@@ -44,55 +49,9 @@ const CHUNK: usize = 256 * 1024;
 /// library adds this to the current time, and a sum that overflows is "no deadline".
 const NO_REQUEST_LIMIT_SECS: u64 = u64::MAX;
 
-/// What the guest side of a transfer holds. Cheap to clone; every remote step gets one.
-#[derive(Clone)]
-struct Remote {
-    inner: Arc<Inner>,
-    session: Arc<SftpSession>,
-    /// A second SFTP channel, used only for the `posix-rename@openssh.com` extension, which the high-level session
-    /// does not send.
-    raw: Arc<RawSftpSession>,
-}
-
 /// An SFTP session over an SSH session.
 pub(crate) struct Sftp {
     remote: Remote,
-}
-
-// Planning ============================================================================================================
-
-enum Kind {
-    Dir,
-    /// `executable`: the source has an execute bit.
-    File {
-        executable: bool,
-    },
-}
-
-/// One entry of a directory tree to copy, relative to its root.
-struct Item {
-    rel: Vec<String>,
-    kind: Kind,
-}
-
-fn join(base: &str, name: &str) -> String {
-    if base.ends_with('/') {
-        format!("{base}{name}")
-    } else {
-        format!("{base}/{name}")
-    }
-}
-
-fn parent_of(path: &str) -> String {
-    match path.rfind('/') {
-        Some(0) => "/".to_owned(),
-        Some(i) => path[..i].to_owned(),
-        None => ".".to_owned(),
-    }
-}
-
-fn base_name(path: &str) -> Option<&str> {
-    path.rsplit('/').find(|part| !part.is_empty())
 }
 
 fn partial_name() -> String {
@@ -125,79 +84,6 @@ where
     }
 }
 
-/// Refuses a listing of `dir` whose names cannot be told apart. The library decodes names lossily, so the bytes
-/// `a\xffb` and the text `a\u{fffd}b` both arrive as `a\u{fffd}b`, and a name with U+FFFD may be either. `names` is
-/// sorted.
-fn check_listing(dir: &str, names: &[String]) -> Result<()> {
-    if let Some(name) = names.iter().find(|name| name.contains('\u{fffd}')) {
-        return Err(Error::new(
-            ErrorKind::Io,
-            format!(
-                "the guest path {:?} has a name that is not valid UTF-8 or contains U+FFFD, which SFTP cannot tell apart",
-                join(dir, name)
-            ),
-        ));
-    }
-    if let Some(pair) = names.windows(2).find(|pair| pair[0] == pair[1]) {
-        return Err(Error::new(
-            ErrorKind::Io,
-            format!("the listing of the guest directory {dir} names {:?} twice", pair[0]),
-        ));
-    }
-    Ok(())
-}
-
-/// Whether copying `path` means copying what is in it, as `cp -r dir/. dest` does: a name that is `.` or `..`, or no
-/// name at all (a root).
-fn host_contents_only(path: &Path) -> bool {
-    let text = path.as_os_str().to_string_lossy();
-    match text.rsplit(std::path::is_separator).find(|part| !part.is_empty()) {
-        None | Some("." | "..") => true,
-        Some(_) => path.file_name().is_none(),
-    }
-}
-
-/// [`host_contents_only`] for a guest path.
-fn guest_contents_only(path: &str) -> bool {
-    base_name(path).is_none_or(|name| name == "." || name == "..")
-}
-
-/// Refuses a guest `name` the host cannot hold as one file name.
-fn check_host_name(name: &str, host: &dyn Host) -> Result<()> {
-    match host.file_name_problem(name) {
-        None => Ok(()),
-        Some(problem) => Err(Error::new(
-            ErrorKind::Io,
-            format!("the guest name {name:?} {problem}, so it cannot be copied to this host"),
-        )),
-    }
-}
-
-/// Refuses guest names the host cannot hold, and two names it takes for one (so the second would overwrite the first).
-fn check_host_names(items: &[Item], host: &dyn Host) -> Result<()> {
-    let mut seen: HashMap<Vec<String>, &[String]> = HashMap::new();
-    for item in items {
-        for part in &item.rel {
-            check_host_name(part, host)?;
-        }
-        let key = item.rel.iter().map(|part| host.name_key(part)).collect();
-        if let Some(first) = seen.insert(key, &item.rel)
-            && first != item.rel.as_slice()
-        {
-            return Err(Error::new(
-                ErrorKind::Io,
-                format!(
-                    "the guest paths {:?} and {:?} are one name on this host, whose file system ignores case, \
-                     so copying both would overwrite the first",
-                    first.join("/"),
-                    item.rel.join("/")
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn local_error(what: &str, path: &Path, source: std::io::Error) -> Error {
     let kind = if source.kind() == std::io::ErrorKind::NotFound {
         ErrorKind::NotFound
@@ -207,310 +93,48 @@ fn local_error(what: &str, path: &Path, source: std::io::Error) -> Error {
     Error::io(kind, format!("{what} {}", path.display()), source)
 }
 
-/// The host tree below `dir`, parents before children; symlinks are followed.
-fn walk_host(dir: &Path, host: &dyn Host) -> Result<Vec<Item>> {
-    struct Frame {
-        path: PathBuf,
-        rel: Vec<String>,
-        ancestors: Vec<PathBuf>,
-    }
-    let canonical = |path: &Path| std::fs::canonicalize(path).map_err(|e| local_error("cannot resolve", path, e));
-    let mut items = Vec::new();
-    let mut pending = vec![Frame {
-        path: dir.to_owned(),
-        rel: Vec::new(),
-        ancestors: Vec::new(),
-    }];
-    while let Some(frame) = pending.pop() {
-        let here = canonical(&frame.path)?;
-        if frame.ancestors.contains(&here) {
-            return Err(Error::new(
-                ErrorKind::Io,
-                format!(
-                    "{} is a symlink loop: it leads back to a directory that contains it",
-                    frame.path.display()
-                ),
-            ));
+/// What the destination being in the way means, in words.
+fn conflict_error(conflict: Conflict, what: &str, side: &str, dest: &str) -> Error {
+    let message = match conflict {
+        Conflict::DirOntoNonDir => {
+            format!("cannot copy {what} onto the {side} path {dest}, which is not a directory")
         }
-        let mut ancestors = frame.ancestors.clone();
-        ancestors.push(here);
-        let mut names = Vec::new();
-        for entry in std::fs::read_dir(&frame.path).map_err(|e| local_error("cannot list", &frame.path, e))? {
-            let entry = entry.map_err(|e| local_error("cannot list", &frame.path, e))?;
-            names.push(entry.file_name());
-        }
-        names.sort();
-        // Pushed in reverse so the first name is handled first; a directory's own item is added when its frame is.
-        for name in names.into_iter().rev() {
-            let path = frame.path.join(&name);
-            let Some(text) = name.to_str() else {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    format!(
-                        "{} has a name that is not valid Unicode, which SFTP cannot carry",
-                        path.display()
-                    ),
-                ));
-            };
-            let mut rel = frame.rel.clone();
-            rel.push(text.to_owned());
-            let metadata = std::fs::metadata(&path).map_err(|e| {
-                let why = if e.kind() == std::io::ErrorKind::NotFound {
-                    format!("{} is a dangling symlink", path.display())
-                } else {
-                    format!("cannot read {}", path.display())
-                };
-                Error::io(ErrorKind::Io, why, e)
-            })?;
-            if metadata.is_dir() {
-                items.push(Item {
-                    rel: rel.clone(),
-                    kind: Kind::Dir,
-                });
-                pending.push(Frame {
-                    path,
-                    rel,
-                    ancestors: ancestors.clone(),
-                });
-            } else if metadata.is_file() {
-                let executable = host
-                    .is_executable(&path)
-                    .map_err(|e| local_error("cannot read the mode of", &path, e))?;
-                items.push(Item {
-                    rel,
-                    kind: Kind::File { executable },
-                });
-            } else {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    format!("{} is neither a regular file nor a directory", path.display()),
-                ));
-            }
-        }
-    }
-    Ok(items)
+        Conflict::SlashOnNonDir => format!("the {side} destination {dest} ends in `/` but is not a directory"),
+    };
+    Error::new(ErrorKind::Io, message)
 }
 
-// Remote steps ========================================================================================================
-
-impl Remote {
-    fn error(&self, awaiting: &str, e: SftpError) -> Error {
-        match e {
-            SftpError::Status(status) if status.status_code == StatusCode::NoSuchFile => Error::new(
-                ErrorKind::NotFound,
-                format!(
-                    "{awaiting}: the guest has no such file or directory ({})",
-                    status.error_message
-                ),
-            ),
-            SftpError::Status(status) => Error::new(
-                ErrorKind::Io,
-                format!(
-                    "{awaiting}: the guest said: {}: {}",
-                    status.status_code, status.error_message
-                ),
-            ),
-            other => self.inner.connection_ended(&format!("{awaiting} ({other})")),
-        }
-    }
-
-    /// An `io::Error` out of a guest file read, write or close.
-    fn guest_io(&self, awaiting: &str, e: std::io::Error) -> Error {
-        match e.get_ref().and_then(|inner| inner.downcast_ref::<SftpError>()) {
-            Some(remote) => self.error(awaiting, remote.clone()),
-            None => Error::io(ErrorKind::Io, format!("{awaiting}: the guest side failed: {e}"), e),
-        }
-    }
-
-    /// The attributes of `path`, following symlinks; `None` when it does not exist.
-    async fn stat(&self, path: &str) -> Result<Option<FileAttributes>> {
-        match self.session.metadata(path).await {
-            Ok(attrs) => Ok(Some(attrs)),
-            Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
-            Err(e) => Err(self.error(&format!("cannot inspect the guest path {path}"), e)),
-        }
-    }
-
-    async fn ensure_dir(&self, path: &str) -> Result<()> {
-        match self.stat(path).await? {
-            Some(attrs) if attrs.is_dir() => Ok(()),
-            Some(_) => Err(Error::new(
-                ErrorKind::Io,
-                format!("the guest path {path} exists and is not a directory"),
-            )),
-            None => self
-                .session
-                .create_dir(path)
-                .await
-                .map_err(|e| self.error(&format!("cannot create the guest directory {path}"), e)),
-        }
-    }
-
-    async fn posix_rename(&self, from: &str, to: &str) -> Result<()> {
-        let mut data = Vec::new();
-        for text in [from, to] {
-            data.extend_from_slice(&(text.len() as u32).to_be_bytes());
-            data.extend_from_slice(text.as_bytes());
-        }
-        let awaiting = format!("cannot move {from} to {to} on the guest");
-        match self.raw.extended(POSIX_RENAME, data).await {
-            Ok(Packet::Status(status)) if status.status_code == StatusCode::Ok => Ok(()),
-            Ok(Packet::Status(status)) => Err(self.error(&awaiting, SftpError::Status(status))),
-            Ok(_) => Err(Error::new(ErrorKind::Io, format!("{awaiting}: unexpected reply"))),
-            Err(e) => Err(self.error(&awaiting, e)),
-        }
-    }
-
-    /// Streams `local` to the guest file `target`, through a temporary file renamed over `target`.
-    async fn upload(self, local: PathBuf, target: String, executable: bool) -> Result<()> {
-        if self.stat(&target).await?.is_some_and(|attrs| attrs.is_dir()) {
-            return Err(Error::new(
-                ErrorKind::Io,
-                format!("cannot copy {} onto the guest directory {target}", local.display()),
-            ));
-        }
-        let temp = join(&parent_of(&target), &partial_name());
-        let copied = self.upload_to(&local, &temp, executable).await;
-        let moved = match copied {
-            Ok(()) => self.posix_rename(&temp, &target).await,
-            Err(e) => Err(e),
-        };
-        if moved.is_err() {
-            let _ = self.session.remove_file(temp).await;
-        }
-        moved
-    }
-
-    async fn upload_to(&self, local: &Path, temp: &str, executable: bool) -> Result<()> {
-        let awaiting = format!("cannot write the guest file {temp}");
-        let attributes = FileAttributes {
-            permissions: Some(if executable { 0o755 } else { 0o644 }),
-            ..FileAttributes::default()
-        };
-        let mut file = self
-            .session
-            .open_with_flags_and_attributes(
-                temp,
-                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-                attributes,
-            )
-            .await
-            .map_err(|e| self.error(&awaiting, e))?;
-        let source = tokio::fs::File::open(local)
-            .await
-            .map_err(|e| local_error("cannot read", local, e))?;
-        pump(source, &mut file).await.map_err(|failed| match failed {
-            Failed::Read(e) => local_error("cannot read", local, e),
-            Failed::Write(e) => self.guest_io(&awaiting, e),
-        })?;
-        // Shutting down flushes and closes the handle: a failed write may only show here.
-        file.shutdown().await.map_err(|e| self.guest_io(&awaiting, e))
-    }
-
-    /// Streams the guest file `remote` into the new host file `temp`.
-    async fn download(self, remote: String, temp: PathBuf) -> Result<()> {
-        let awaiting = format!("cannot read the guest file {remote}");
-        let file = self
-            .session
-            .open(remote.as_str())
-            .await
-            .map_err(|e| self.error(&awaiting, e))?;
-        let mut local = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .await
-            .map_err(|e| local_error("cannot create", &temp, e))?;
-        pump(file, &mut local).await.map_err(|failed| match failed {
-            Failed::Read(e) => self.guest_io(&awaiting, e),
-            Failed::Write(e) => local_error("cannot write", &temp, e),
-        })?;
-        local
-            .shutdown()
-            .await
-            .map_err(|e| local_error("cannot finish", &temp, e))
-    }
-
-    /// The guest tree below `dir`, parents before children; symlinks are followed.
-    async fn walk(self, dir: String) -> Result<Vec<Item>> {
-        struct Frame {
-            path: String,
-            rel: Vec<String>,
-            ancestors: Vec<String>,
-        }
-        let mut items = Vec::new();
-        let mut pending = vec![Frame {
-            path: dir,
-            rel: Vec::new(),
-            ancestors: Vec::new(),
-        }];
-        while let Some(frame) = pending.pop() {
-            let awaiting = format!("cannot list the guest directory {}", frame.path);
-            let here = self
-                .session
-                .canonicalize(frame.path.as_str())
-                .await
-                .map_err(|e| self.error(&awaiting, e))?;
-            if frame.ancestors.contains(&here) {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    format!(
-                        "the guest path {} is a symlink loop: it leads back to a directory that contains it",
-                        frame.path
-                    ),
-                ));
+/// The announcement of a copy: what the walk found.
+fn total(top: &Kind, items: &[Item]) -> String {
+    let (mut files, mut dirs, mut links, mut bytes) = (0u64, 0u64, 0u64, 0u64);
+    for kind in std::iter::once(top).chain(items.iter().map(|item| &item.kind)) {
+        match kind {
+            Kind::Dir => dirs += 1,
+            Kind::File { size, .. } => {
+                files += 1;
+                bytes += size;
             }
-            let mut ancestors = frame.ancestors.clone();
-            ancestors.push(here);
-            let listing = self
-                .session
-                .read_dir(frame.path.as_str())
-                .await
-                .map_err(|e| self.error(&awaiting, e))?;
-            let mut entries: Vec<_> = listing.map(|entry| entry.file_name()).collect();
-            entries.sort();
-            check_listing(&frame.path, &entries)?;
-            for name in entries.into_iter().rev() {
-                let path = join(&frame.path, &name);
-                let mut rel = frame.rel.clone();
-                rel.push(name);
-                // `stat`, not the listing's attributes: those describe a symlink, not what it points to.
-                let Some(attrs) = self.stat(&path).await? else {
-                    return Err(Error::new(
-                        ErrorKind::Io,
-                        format!("the guest path {path} is a dangling symlink"),
-                    ));
-                };
-                if attrs.is_dir() {
-                    items.push(Item {
-                        rel: rel.clone(),
-                        kind: Kind::Dir,
-                    });
-                    pending.push(Frame {
-                        path,
-                        rel,
-                        ancestors: ancestors.clone(),
-                    });
-                } else if attrs.file_type().is_file() {
-                    items.push(Item {
-                        rel,
-                        kind: Kind::File {
-                            executable: attrs.permissions.is_some_and(|mode| mode & 0o111 != 0),
-                        },
-                    });
-                } else {
-                    return Err(Error::new(
-                        ErrorKind::Io,
-                        format!("the guest path {path} is neither a regular file nor a directory"),
-                    ));
-                }
-            }
+            Kind::Link { .. } => links += 1,
         }
-        Ok(items)
     }
+    format!(
+        "{files} files ({}), {links} symlinks, {} directories",
+        bytesize::ByteSize(bytes),
+        dirs.saturating_sub(u64::from(*top == Kind::Dir))
+    )
 }
 
-// The blocking API ====================================================================================================
+fn source_of(top: &Kind) -> Source {
+    if *top == Kind::Dir { Source::Dir } else { Source::Entry }
+}
+
+/// `path` without a trailing `/`, a lone `/` excepted.
+fn without_slash(path: &str) -> String {
+    match path.trim_end_matches('/') {
+        "" => path.chars().take(1).collect(),
+        trimmed => trimmed.to_owned(),
+    }
+}
 
 impl Sftp {
     /// Opens the SFTP subsystem twice on `inner`'s connection (the second channel carries only the rename extension).
@@ -541,13 +165,7 @@ impl Sftp {
 
     /// The guest user's home directory.
     pub(crate) fn home(&self) -> Result<String> {
-        self.call("asking the guest for its home directory", |remote| async move {
-            remote
-                .session
-                .canonicalize(".")
-                .await
-                .map_err(|e| remote.error("cannot find the guest home directory", e))
-        })
+        self.call("asking the guest for its home directory", Remote::home)
     }
 
     /// The guest path as the guest's SFTP server expects it.
@@ -557,7 +175,7 @@ impl Sftp {
         Ok(guest.sftp_path(&expand_guest_path(path, &home), &home))
     }
 
-    /// Copies the host file or directory `src` to the guest path `dest`.
+    /// Copies the host file, symlink or directory `src` to the guest path `dest`.
     pub(crate) fn copy_in(
         &self,
         src: &Path,
@@ -566,99 +184,87 @@ impl Sftp {
         guest: &dyn GuestOs,
         progress: &dyn Progress,
     ) -> Result<()> {
-        let dest = self.guest_path(dest, guest)?;
-        let metadata = std::fs::metadata(src).map_err(|e| local_error("the host source", src, e))?;
-        progress.message(&format!("copying {} to the guest ({dest})", src.display()));
-        let existing = self.call(&format!("inspecting the guest path {dest}"), {
+        let slash = dest.ends_with('/');
+        let dest = without_slash(&self.guest_path(dest, guest)?);
+        let top = local::inspect(src, host)?;
+        let items = if top == Kind::Dir {
+            local::walk(src, host)?
+        } else {
+            Vec::new()
+        };
+        let rules = Rules {
+            from: "host",
+            to: "the guest",
+            problem: &|name| guest.file_name_problem(name),
+            key: &|name| guest.name_key(name),
+        };
+        plan::check_names(&items, &rules)?;
+        let present = self.call(&format!("inspecting the guest path {dest}"), {
             let dest = dest.clone();
-            move |remote| async move { remote.stat(&dest).await }
+            move |remote| remote.present(dest)
         })?;
-        let name = || {
-            src.file_name()
+        let what = format!("the host directory {}", src.display());
+        let placed = plan::place(source_of(&top), slash, present)
+            .map_err(|conflict| conflict_error(conflict, &what, "guest", &dest))?;
+        let entry_target = |placed| -> Result<String> {
+            if placed == Place::At {
+                return Ok(dest.clone());
+            }
+            let name = local::without_trailing_separator(src)
+                .file_name()
                 .and_then(|name| name.to_str())
                 .map(str::to_owned)
-                .ok_or_else(|| Error::new(ErrorKind::Usage, format!("{} has no usable file name", src.display())))
+                .ok_or_else(|| Error::new(ErrorKind::Usage, format!("{} has no usable file name", src.display())))?;
+            plan::check_name(&name, &rules)?;
+            Ok(plan::join(&dest, &name))
         };
-        let missing_parent = |remote_dest: &str| -> Result<()> {
-            let parent = parent_of(remote_dest);
-            let parent_attrs = self.call(&format!("inspecting the guest path {parent}"), {
-                let parent = parent.clone();
-                move |remote| async move { remote.stat(&parent).await }
-            })?;
-            match parent_attrs {
-                Some(attrs) if attrs.is_dir() => Ok(()),
-                Some(_) => Err(Error::new(
-                    ErrorKind::Io,
-                    format!("the guest destination parent {parent} is not a directory"),
-                )),
-                None => Err(Error::new(
-                    ErrorKind::NotFound,
-                    format!("the guest destination directory {parent} does not exist"),
-                )),
-            }
-        };
-
-        if metadata.is_file() {
-            let target = match &existing {
-                Some(attrs) if attrs.is_dir() => join(&dest, &name()?),
-                Some(_) => dest.clone(),
-                None => {
-                    missing_parent(&dest)?;
-                    dest.clone()
-                }
-            };
-            let executable = host
-                .is_executable(src)
-                .map_err(|e| local_error("cannot read the mode of", src, e))?;
-            let local = src.to_owned();
-            return self.call(
-                &format!("copying {} to the guest path {target}", src.display()),
-                move |remote| remote.upload(local, target, executable),
-            );
-        }
-        if !metadata.is_dir() {
-            return Err(Error::new(
-                ErrorKind::Io,
-                format!("{} is neither a regular file nor a directory", src.display()),
-            ));
-        }
-        let root = match &existing {
-            Some(attrs) if attrs.is_dir() && host_contents_only(src) => dest.clone(),
-            Some(attrs) if attrs.is_dir() => join(&dest, &name()?),
-            Some(_) => {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    format!("cannot copy the directory {} onto the guest file {dest}", src.display()),
+        match placed {
+            Place::Root { follow } => {
+                progress.message(&format!(
+                    "copying {} to the guest ({dest}): {}",
+                    src.display(),
+                    total(&top, &items)
                 ));
+                self.call(&format!("creating the guest directory {dest}"), {
+                    let dest = dest.clone();
+                    move |remote| remote.put_dir(dest, follow, what)
+                })?;
+                for item in items {
+                    let remote_path = plan::join_all(&dest, &item.rel);
+                    let local_path = item.rel.iter().fold(src.to_owned(), |base, part| base.join(part));
+                    self.call(
+                        &format!("copying {} to the guest path {remote_path}", local_path.display()),
+                        move |remote| remote.put_item(item.kind, local_path, remote_path),
+                    )?;
+                }
             }
-            None => {
-                missing_parent(&dest)?;
-                dest.clone()
-            }
-        };
-        let items = walk_host(src, host)?;
-        self.call(&format!("creating the guest directory {root}"), {
-            let root = root.clone();
-            move |remote| async move { remote.ensure_dir(&root).await }
-        })?;
-        for item in items {
-            let remote_path = item.rel.iter().fold(root.clone(), |base, part| join(&base, part));
-            let local = item.rel.iter().fold(src.to_owned(), |base, part| base.join(part));
-            match item.kind {
-                Kind::Dir => self.call(
-                    &format!("creating the guest directory {remote_path}"),
-                    move |remote| async move { remote.ensure_dir(&remote_path).await },
-                )?,
-                Kind::File { executable } => self.call(
-                    &format!("copying {} to the guest path {remote_path}", local.display()),
-                    move |remote| remote.upload(local, remote_path, executable),
-                )?,
+            Place::At | Place::Inside => {
+                let target = entry_target(placed)?;
+                progress.message(&format!(
+                    "copying {} to the guest ({target}): {}",
+                    src.display(),
+                    total(&top, &items)
+                ));
+                let dir = if placed == Place::At {
+                    plan::parent_of(&dest)
+                } else {
+                    dest.clone()
+                };
+                self.call(
+                    &format!("creating the guest directory {dir}"),
+                    move |remote| async move { remote.make_dirs(&dir).await },
+                )?;
+                let local_path = src.to_owned();
+                self.call(
+                    &format!("copying {} to the guest path {target}", src.display()),
+                    move |remote| remote.put_item(top, local_path, target),
+                )?;
             }
         }
         Ok(())
     }
 
-    /// Copies the guest file or directory `src` to the host path `dest`.
+    /// Copies the guest file, symlink or directory `src` to the host path `dest`.
     pub(crate) fn copy_out(
         &self,
         src: &str,
@@ -667,178 +273,105 @@ impl Sftp {
         guest: &dyn GuestOs,
         progress: &dyn Progress,
     ) -> Result<()> {
+        let slash = local::ends_with_separator(dest);
+        let dest = local::without_trailing_separator(dest);
+        let follow = src.ends_with('/');
         let src = self.guest_path(src, guest)?;
-        let attrs = self
+        let top = self
             .call(&format!("inspecting the guest path {src}"), {
                 let src = src.clone();
-                move |remote| async move { remote.stat(&src).await }
+                move |remote| remote.inspect(src, follow)
             })?
             .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("the guest source {src} does not exist")))?;
-        progress.message(&format!("copying the guest path {src} to {}", dest.display()));
-        let existing = match std::fs::metadata(dest) {
-            Ok(metadata) => Some(metadata),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(local_error("the host destination", dest, e)),
+        let items = if top == Kind::Dir {
+            self.call(&format!("listing the guest directory {src}"), {
+                let src = src.clone();
+                move |remote| remote.walk(src)
+            })?
+        } else {
+            Vec::new()
         };
-        let name = || {
-            let name = base_name(&src).map(str::to_owned).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Usage,
-                    format!("the guest path {src} has no file name to copy"),
-                )
-            })?;
-            check_host_name(&name, host)?;
-            Ok::<_, Error>(name)
+        let rules = Rules {
+            from: "guest",
+            to: "this host",
+            problem: &|name| host.file_name_problem(name),
+            key: &|name| host.name_key(name),
         };
-        let check_parent = |path: &Path| -> Result<()> {
-            let parent = match path.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => parent,
-                _ => Path::new("."),
-            };
-            if parent.is_dir() {
-                Ok(())
-            } else {
-                Err(Error::new(
-                    ErrorKind::NotFound,
-                    format!("the host destination directory {} does not exist", parent.display()),
-                ))
-            }
-        };
-
-        if attrs.file_type().is_file() {
-            let target = match &existing {
-                Some(metadata) if metadata.is_dir() => dest.join(name()?),
-                Some(_) => dest.to_owned(),
-                None => {
-                    check_parent(dest)?;
-                    dest.to_owned()
-                }
-            };
-            return self.fetch(
-                &src,
-                &target,
-                attrs.permissions.is_some_and(|mode| mode & 0o111 != 0),
-                host,
-            );
-        }
-        let root = match &existing {
-            Some(metadata) if metadata.is_dir() && guest_contents_only(&src) => dest.to_owned(),
-            Some(metadata) if metadata.is_dir() => dest.join(name()?),
-            Some(_) => {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    format!(
-                        "cannot copy the guest directory {src} onto the host file {}",
-                        dest.display()
-                    ),
+        plan::check_names(&items, &rules)?;
+        let present = local::present(&dest)?;
+        let what = format!("the guest directory {src}");
+        let placed = plan::place(source_of(&top), slash, present)
+            .map_err(|conflict| conflict_error(conflict, &what, "host", &dest.display().to_string()))?;
+        match placed {
+            Place::Root { follow } => {
+                progress.message(&format!(
+                    "copying the guest path {src} to {}: {}",
+                    dest.display(),
+                    total(&top, &items)
                 ));
+                local::put_dir(&dest, follow, &what)?;
+                for item in items {
+                    let remote_path = plan::join_all(&src, &item.rel);
+                    let target = item.rel.iter().fold(dest.clone(), |base, part| base.join(part));
+                    self.put_local(host, item.kind, &remote_path, &target)?;
+                }
             }
-            None => {
-                check_parent(dest)?;
-                dest.to_owned()
-            }
-        };
-        let items = self.call(&format!("listing the guest directory {src}"), {
-            let src = src.clone();
-            move |remote| async move { remote.walk(src).await }
-        })?;
-        check_host_names(&items, host)?;
-        ensure_host_dir(&root)?;
-        for item in items {
-            let remote_path = item.rel.iter().fold(src.clone(), |base, part| join(&base, part));
-            let local = item.rel.iter().fold(root.clone(), |base, part| base.join(part));
-            match item.kind {
-                Kind::Dir => ensure_host_dir(&local)?,
-                Kind::File { executable } => self.fetch(&remote_path, &local, executable, host)?,
+            Place::At | Place::Inside => {
+                let target = if placed == Place::At {
+                    dest.clone()
+                } else {
+                    let name = plan::base_name(&src)
+                        .ok_or_else(|| {
+                            Error::new(
+                                ErrorKind::Usage,
+                                format!("the guest path {src} has no file name to copy"),
+                            )
+                        })?
+                        .to_owned();
+                    plan::check_name(&name, &rules)?;
+                    dest.join(name)
+                };
+                progress.message(&format!(
+                    "copying the guest path {src} to {}: {}",
+                    target.display(),
+                    total(&top, &items)
+                ));
+                let dir = if placed == Place::At {
+                    target.parent().map(Path::to_owned).unwrap_or_default()
+                } else {
+                    dest.clone()
+                };
+                if !dir.as_os_str().is_empty() {
+                    local::make_dirs(&dir)?;
+                }
+                self.put_local(host, top, &src, &target)?;
             }
         }
         Ok(())
     }
 
-    /// Downloads the guest file `remote` to `target` through a temporary file beside it.
-    fn fetch(&self, remote: &str, target: &Path, executable: bool, host: &dyn Host) -> Result<()> {
-        if target.is_dir() {
-            return Err(Error::new(
-                ErrorKind::Io,
-                format!(
-                    "cannot copy the guest file {remote} onto the host directory {}",
-                    target.display()
-                ),
-            ));
-        }
-        let parent = match target.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent,
-            _ => Path::new("."),
-        };
-        let temp = parent.join(partial_name());
-        let downloaded = self.call(&format!("copying the guest file {remote} to {}", target.display()), {
-            let (remote, temp) = (remote.to_owned(), temp.clone());
-            move |remote_side| remote_side.download(remote, temp)
-        });
-        let finished = downloaded.and_then(|()| {
-            std::fs::rename(&temp, target).map_err(|e| local_error("cannot move the copy into place at", target, e))
-        });
-        match finished {
-            Ok(()) => {
-                if executable {
-                    host.set_executable(target)
-                        .map_err(|e| local_error("cannot make executable", target, e))?;
+    /// Makes the host `target` the tree entry `kind` copied from the guest path `remote`.
+    fn put_local(&self, host: &dyn Host, kind: Kind, remote: &str, target: &Path) -> Result<()> {
+        match kind {
+            Kind::Dir => local::put_dir(target, false, &format!("the guest directory {remote}")),
+            Kind::Link { target: text, to_dir } => {
+                local::put_link(host, &text, to_dir, target, &format!("the guest symlink {remote}"))
+            }
+            Kind::File { executable, mtime, .. } => {
+                local::refuse_directory(target, &format!("the guest file {remote}"))?;
+                let temp: PathBuf = local::temp_beside(target);
+                let downloaded = self.call(&format!("copying the guest file {remote} to {}", target.display()), {
+                    let (remote, temp) = (remote.to_owned(), temp.clone());
+                    move |remote_side| remote_side.download(remote, temp)
+                });
+                match downloaded {
+                    Ok(()) => local::finish_file(&temp, target, executable, mtime, host),
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&temp);
+                        Err(e)
+                    }
                 }
-                Ok(())
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&temp);
-                Err(e)
             }
         }
-    }
-}
-
-impl Remote {
-    async fn connect(inner: Arc<Inner>) -> Result<Remote> {
-        let config = Config {
-            request_timeout_secs: NO_REQUEST_LIMIT_SECS,
-            ..Config::default()
-        };
-        let stream = |inner: Arc<Inner>| async move {
-            let channel = inner
-                .handle
-                .channel_open_session()
-                .await
-                .map_err(|_| inner.connection_ended("opening the SFTP subsystem"))?;
-            channel
-                .request_subsystem(true, "sftp")
-                .await
-                .map_err(|_| inner.connection_ended("opening the SFTP subsystem"))?;
-            Ok::<_, Error>(channel.into_stream())
-        };
-        let session = SftpSession::new_with_config(stream(inner.clone()).await?, config.clone())
-            .await
-            .map_err(|e| Remote::start_error(&inner, e))?;
-        let raw = RawSftpSession::new_with_config(stream(inner.clone()).await?, config);
-        raw.init().await.map_err(|e| Remote::start_error(&inner, e))?;
-        Ok(Remote {
-            inner,
-            session: Arc::new(session),
-            raw: Arc::new(raw),
-        })
-    }
-
-    fn start_error(inner: &Inner, e: SftpError) -> Error {
-        inner.connection_ended(&format!("starting the SFTP subsystem ({e})"))
-    }
-}
-
-fn ensure_host_dir(path: &Path) -> Result<()> {
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) => Err(Error::new(
-            ErrorKind::Io,
-            format!("{} exists and is not a directory", path.display()),
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(path).map_err(|e| local_error("cannot create the directory", path, e))
-        }
-        Err(e) => Err(local_error("cannot inspect", path, e)),
     }
 }
