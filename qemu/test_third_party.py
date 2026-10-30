@@ -193,6 +193,11 @@ def test_the_source_offer_lists_the_mirror_names(tmp_path):
     assert "mingw-w64-foo-1_2.0-1.src.tar.zst" in (tmp_path / "SOURCE.txt").read_text(encoding="utf-8")
 
 
+def test_the_source_offer_names_the_patches_applied_to_the_tarball(tmp_path):
+    write_source_offer(tmp_path, [], "qemu-1.2.3-1", "o/r")
+    assert "qemu/patches/*.patch" in (tmp_path / "SOURCE.txt").read_text(encoding="utf-8")
+
+
 def test_qemu_is_gpl_2_as_a_whole_not_or_later(tmp_path):
     write_third_party(tmp_path, [], "qemu-1.2.3-1", "o/r", [])
     write_source_offer(tmp_path, [], "qemu-1.2.3-1", "o/r")

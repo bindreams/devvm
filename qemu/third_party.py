@@ -361,8 +361,9 @@ The complete corresponding source of everything in this archive is attached to t
   {release}
 
   - qemu-{QEMU_VERSION}.tar.xz and .sig: the upstream QEMU source (GPL-2.0 as a whole), signature included. The build
-    patches this tarball in one place only: qemu/build.sh adds devvm.manifest to the source root and one line to
-    version.rc (it embeds the UTF-8 application manifest).
+    patches this tarball in two ways: qemu/build.sh adds devvm.manifest to the source root and one line to
+    version.rc (it embeds the UTF-8 application manifest), and it applies qemu/patches/*.patch in name order
+    (BUILD-INFO.txt lists them with their hashes).
   - {tag}-build-scripts.tar.gz: qemu/ and .github/workflows/qemu.yaml at the commit that built it (BUILD-INFO.txt
     names the commit): the pin, the build script, the configure options and the workflow.
   - The source archives of the bundled LGPL/GPL libraries, exactly the versions in bin/:
