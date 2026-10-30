@@ -55,17 +55,22 @@ pub(crate) fn snapshot(
     }
     listing.tracked.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
 
-    let io = |what: &str, e: std::io::Error| Error::io(ErrorKind::Io, format!("{what} in {}", into.display()), e);
     let file = tempfile::Builder::new()
         .prefix("devvm-copy-")
         .suffix(".tar")
         .tempfile_in(into)
-        .map_err(|e| io("cannot create the archive", e))?;
+        .map_err(|e| Error::write(into, e))?;
     let mut out = BufWriter::new(file.as_file());
-    let entries = archive::write(&root, &listing.tracked, read_only, &mut out)?;
-    out.flush().map_err(|e| io("cannot write the archive", e))?;
+    let entries = archive::write(host, &root, &listing.tracked, read_only, file.path(), &mut out)?;
+    out.flush().map_err(|e| Error::write(file.path(), e))?;
     drop(out);
     let manifest = CopyManifest::new(entries)?;
-    let (_, archive) = file.keep().map_err(|e| io("cannot keep the archive", e.error))?;
+    let (_, archive) = file.keep().map_err(|e| {
+        Error::io(
+            ErrorKind::Io,
+            format!("cannot keep the archive in {}", into.display()),
+            e.error,
+        )
+    })?;
     Ok(Snapshot { manifest, archive })
 }

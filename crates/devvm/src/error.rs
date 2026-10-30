@@ -1,6 +1,7 @@
 //! The crate's error type: a stable kind, a message, and an optional source.
 
 use std::fmt;
+use std::path::Path;
 
 #[cfg(test)]
 #[path = "error_tests.rs"]
@@ -108,6 +109,21 @@ impl Error {
     pub(crate) fn together_with(mut self, other: impl fmt::Display) -> Error {
         self.message = format!("{}; {other} as well", self.message);
         self
+    }
+
+    /// A failed write to `path`: `disk-full` when the device or quota is full, otherwise `io`.
+    pub(crate) fn write(path: &Path, source: std::io::Error) -> Error {
+        match source.kind() {
+            std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => Error::new(
+                ErrorKind::DiskFull,
+                format!(
+                    "no space left to write {}: {source}; free some space and run again",
+                    path.display()
+                ),
+            )
+            .with_source(source),
+            _ => Error::io(ErrorKind::Io, format!("cannot write {}", path.display()), source),
+        }
     }
 
     pub fn kind(&self) -> ErrorKind {

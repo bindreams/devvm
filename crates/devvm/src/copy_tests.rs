@@ -194,13 +194,66 @@ fn symlinks_unix_and_windows_index_mode(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
+fn a_symlink_target_is_the_text_git_stores_not_what_the_work_tree_holds(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "sub/dir/target.txt", b"t");
+    put(&repo, "link", b"sub/dir/target.txt");
+    git(&repo, &["add", "sub/dir/target.txt"]);
+    track_as_symlink(&repo, "link");
+    // What a Windows link (or its stand-in) can read back as: the same path with backslashes.
+    put(&repo, "link", b"sub\\dir\\target.txt");
+    let taken = take(&repo, false, home).unwrap();
+    let link = taken
+        .snapshot
+        .manifest
+        .entries()
+        .iter()
+        .find(|e| e.path == "link")
+        .unwrap();
+    assert_eq!(link.content, EntryContent::SymlinkTarget("sub/dir/target.txt".into()));
+    let entries = read_tar(&taken.snapshot.archive);
+    let entry = entries.iter().find(|e| e.path == "link").unwrap();
+    assert_eq!(entry.link.as_deref(), Some("sub/dir/target.txt"));
+}
+
+#[skuld::test]
+fn a_symlink_inside_a_submodule_takes_its_target_from_the_submodule(#[fixture(unicode_home)] home: &Path) {
+    let inner = new_repo(home, "inner");
+    put(&inner, "sub/target.txt", b"t");
+    put(&inner, "link", b"sub/target.txt");
+    git(&inner, &["add", "sub/target.txt"]);
+    track_as_symlink(&inner, "link");
+    git(&inner, &["commit", "-q", "-m", "x"]);
+
+    let outer = new_repo(home, "outer");
+    put(&outer, "top.txt", b"top");
+    add_all(&outer);
+    git(
+        &outer,
+        &["submodule", "add", "-q", inner.to_str().unwrap(), "vendor/inner"],
+    );
+    git(&outer, &["commit", "-q", "-m", "x"]);
+
+    let taken = take(&outer, false, home).unwrap();
+    let link = taken
+        .snapshot
+        .manifest
+        .entries()
+        .iter()
+        .find(|e| e.path == "vendor/inner/link")
+        .expect("the submodule's symlink is copied");
+    assert_eq!(link.content, EntryContent::SymlinkTarget("sub/target.txt".into()));
+}
+
+#[skuld::test]
 fn names_with_spaces_non_ascii_quotes_and_a_leading_dash(#[fixture(unicode_home)] home: &Path) {
     let repo = new_repo(home, "repo");
     let long = format!("long/{}", "n".repeat(101));
     let names = [
         "a b.txt",
         "\u{e9} \u{416} \u{4e16} \u{1f600}.txt",
-        "it's `x` $HOME;&|.txt",
+        // Windows file names cannot hold `"`, `|` and the like; copy_unix_tests.rs covers those.
+        "it's `x` $HOME;&.txt",
         "-dash.txt",
         "--flag",
         "dir with space/sub/f",
