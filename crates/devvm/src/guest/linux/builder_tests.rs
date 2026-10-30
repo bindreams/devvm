@@ -3,9 +3,11 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256 as Sha2};
 
-use super::{LinuxBuilder, definition_hash_of};
+use super::{LinuxBuilder, definition_hash_of, probe_spec};
 use crate::backend::fake::FakeStorage;
 use crate::exit::NullProgress;
+use crate::guest::linux::LinuxGuest;
+use crate::guest::linux::seed::seed_files;
 use crate::guest::{BaseBuilder, BuildCtx};
 use crate::media::SeedFile;
 use crate::recipe::{PerArch, Pin, Source};
@@ -283,8 +285,25 @@ fn definition_hash_changes_when_the_seed_template_changes() {
 }
 
 #[skuld::test]
-fn the_builders_definition_hash_covers_the_real_seed_and_is_stable(#[fixture(unicode_home)] home: &Path) {
+fn the_builders_definition_hash_is_the_hash_of_the_real_seed_and_follows_its_inputs(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let builder = builder(home);
-    assert_eq!(builder.definition_hash(), builder.definition_hash());
-    assert_ne!(builder.definition_hash(), [0u8; 32]);
+    let hash = builder.definition_hash();
+    assert_eq!(hash, builder.definition_hash(), "stable");
+
+    // The builder hashes `seed_files` of its probe together with the guest's semantics version, nothing less.
+    let probe = probe_spec();
+    let version = LinuxGuest.semantics_version();
+    assert_eq!(hash, definition_hash_of(&seed_files(&probe).unwrap(), version));
+
+    // A change to a real seed input, or to the semantics version, changes the hash.
+    let mut other_hostname = probe_spec();
+    other_hostname.hostname.push('x');
+    let mut other_key = probe_spec();
+    other_key.keys.client_public.push('x');
+    for changed in [other_hostname, other_key] {
+        assert_ne!(hash, definition_hash_of(&seed_files(&changed).unwrap(), version));
+    }
+    assert_ne!(hash, definition_hash_of(&seed_files(&probe).unwrap(), version + 1));
 }
