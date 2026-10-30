@@ -36,6 +36,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "
 
 [dev-dependencies]
 skuld = { workspace = true }
+# Virtual time for the boot-gate test (`access/session_tests.rs`).
+tokio = { version = "1", features = ["test-util"] }
 
 # Windows directories and the ANSI code page come from the OS (`host/windows.rs`).
 [target.'cfg(windows)'.dependencies]

@@ -76,51 +76,63 @@ impl Keepalive {
     }
 }
 
-/// Fires when the VM process is gone.
+/// How the VM watcher ended.
+#[derive(Clone, Debug)]
+pub(crate) enum VmEnd {
+    /// The VM process is gone.
+    Exited,
+    /// The watcher could not tell: the reason it gives. A wait that cannot know whether the VM lives must not go on
+    /// as if it did.
+    Unwatched(String),
+}
+
+/// Fires when the VM process is gone, or when it can no longer be watched.
 #[derive(Clone)]
 pub(crate) struct VmExit {
-    gone: Option<watch::Receiver<bool>>,
+    ended: Option<watch::Receiver<Option<VmEnd>>>,
 }
 
 impl VmExit {
     /// Watches `process` from a thread that blocks in `VmProcess::wait`. The thread lives as long as the VM.
     pub(crate) fn watch(process: VmProcess) -> VmExit {
-        VmExit::when(move || process.wait().is_ok())
+        VmExit::when(move || process.wait().map_err(|e| e.message().to_owned()))
     }
 
-    /// Fires when `wait`, which blocks until the VM is gone, returns `true`. A `false` means the VM's end could not be
-    /// observed, and the watcher then never fires.
-    pub(crate) fn when(wait: impl FnOnce() -> bool + Send + 'static) -> VmExit {
-        let (sender, receiver) = watch::channel(false);
+    /// Fires when `wait`, which blocks until the VM is gone, returns. An `Err` is the reason the VM's end could not be
+    /// observed; waits then end with it.
+    pub(crate) fn when(wait: impl FnOnce() -> std::result::Result<(), String> + Send + 'static) -> VmExit {
+        let (sender, receiver) = watch::channel(None);
         std::thread::Builder::new()
             .name("devvm-vm-exit".to_owned())
             .spawn(move || {
-                if wait() {
-                    let _ = sender.send(true);
-                }
+                let end = match wait() {
+                    Ok(()) => VmEnd::Exited,
+                    Err(why) => VmEnd::Unwatched(why),
+                };
+                let _ = sender.send(Some(end));
             })
             .expect("the OS can start a thread");
-        VmExit { gone: Some(receiver) }
+        VmExit { ended: Some(receiver) }
     }
 
     /// A watcher that never fires: for a machine whose process is not watched.
     pub(crate) fn never() -> VmExit {
-        VmExit { gone: None }
+        VmExit { ended: None }
     }
 
-    /// Resolves once the VM is gone; never for [`VmExit::never`].
-    pub(crate) async fn gone(&self) {
-        let Some(receiver) = &self.gone else {
+    /// Resolves once the VM is gone or unwatchable; never for [`VmExit::never`].
+    pub(crate) async fn gone(&self) -> VmEnd {
+        let Some(receiver) = &self.ended else {
             return std::future::pending().await;
         };
         let mut receiver = receiver.clone();
         loop {
-            if *receiver.borrow_and_update() {
-                return;
+            if let Some(end) = receiver.borrow_and_update().clone() {
+                return end;
             }
             if receiver.changed().await.is_err() {
-                // The watcher ended without seeing the VM go.
-                return std::future::pending().await;
+                // The watcher thread died without a verdict (it panicked).
+                return VmEnd::Unwatched("the thread that watches the VM process ended without a result".to_owned());
             }
         }
     }
@@ -138,6 +150,40 @@ impl BootBound {
         BootBound {
             limit,
             deadline: Instant::now() + limit,
+        }
+    }
+}
+
+/// The boot bound of a session while the guest is booting. Waits in flight follow changes to it.
+struct BootGate(watch::Sender<Option<BootBound>>);
+
+impl BootGate {
+    fn new(bound: Option<BootBound>) -> BootGate {
+        BootGate(watch::channel(bound).0)
+    }
+
+    /// From now on no wait is ended by the bound, the ones in flight included.
+    fn finish(&self) {
+        self.0.send_replace(None);
+    }
+
+    /// Resolves with the bound once its deadline passes; never while there is none.
+    async fn passed(&self) -> BootBound {
+        let mut receiver = self.0.subscribe();
+        loop {
+            let bound = *receiver.borrow_and_update();
+            match bound {
+                Some(bound) => {
+                    tokio::select! {
+                        () = sleep_until(bound.deadline.into()) => return bound,
+                        _ = receiver.changed() => {}
+                    }
+                }
+                None => {
+                    // The sender lives in `self`, so this does not fail while `self` is borrowed.
+                    let _ = receiver.changed().await;
+                }
+            }
         }
     }
 }
@@ -234,8 +280,14 @@ impl Context {
         )
     }
 
-    fn vm_exited(&self, awaiting: &str) -> Error {
-        self.lost(awaiting, "the VM process exited")
+    fn vm_ended(&self, awaiting: &str, end: &VmEnd) -> Error {
+        match end {
+            VmEnd::Exited => self.lost(awaiting, "the VM process exited"),
+            VmEnd::Unwatched(why) => self.lost(
+                awaiting,
+                &format!("it cannot be told whether the VM process is still running ({why})"),
+            ),
+        }
     }
 
     fn bound_passed(&self, awaiting: &str, limit: Duration) -> Error {
@@ -293,7 +345,7 @@ pub(super) struct Inner {
     pub(super) ctx: Context,
     transport: Arc<Transport>,
     vm: VmExit,
-    boot: Mutex<Option<BootBound>>,
+    boot: BootGate,
 }
 
 /// A connection to a guest's SSH server.
@@ -302,18 +354,7 @@ pub(crate) struct SshSession {
     pub(super) inner: Arc<Inner>,
 }
 
-async fn until(deadline: Option<Instant>) {
-    match deadline {
-        Some(deadline) => sleep_until(deadline.into()).await,
-        None => std::future::pending().await,
-    }
-}
-
 impl Inner {
-    fn boot_bound(&self) -> Option<BootBound> {
-        *self.boot.lock().unwrap()
-    }
-
     /// Runs `operation`, ending it early when the VM process exits, when a booting guest passes its boot bound and,
     /// if `watch_transport`, when the connection ends. `awaiting` names the operation in those errors.
     ///
@@ -325,7 +366,6 @@ impl Inner {
         watch_transport: bool,
         operation: impl Future<Output = Result<T>>,
     ) -> Result<T> {
-        let bound = self.boot_bound();
         let transport_ended = async {
             if watch_transport {
                 self.transport.ended().await
@@ -336,10 +376,8 @@ impl Inner {
         tokio::select! {
             biased;
             result = operation => result,
-            () = self.vm.gone() => Err(self.ctx.vm_exited(awaiting)),
-            () = until(bound.map(|b| b.deadline)) => {
-                Err(self.ctx.bound_passed(awaiting, bound.map_or(Duration::ZERO, |b| b.limit)))
-            }
+            end = self.vm.gone() => Err(self.ctx.vm_ended(awaiting, &end)),
+            bound = self.boot.passed() => Err(self.ctx.bound_passed(awaiting, bound.limit)),
             reason = transport_ended => Err(self.ctx.lost(awaiting, &reason)),
         }
     }
@@ -417,7 +455,7 @@ impl Connect {
                 ctx: self.ctx,
                 transport,
                 vm: self.vm,
-                boot: Mutex::new(self.boot),
+                boot: BootGate::new(self.boot),
             }),
         }
     }
@@ -429,7 +467,7 @@ impl Connect {
         let bound = self.ka.handshake_bound();
         let outcome = tokio::select! {
             outcome = timeout(bound, self.attempt(&config)) => outcome,
-            () = self.vm.gone() => return Err(self.ctx.vm_exited(&awaiting)),
+            end = self.vm.gone() => return Err(self.ctx.vm_ended(&awaiting, &end)),
         };
         match outcome {
             Ok(Ok(parts)) => Ok(self.session(parts)),
@@ -456,12 +494,12 @@ impl Connect {
                         last = Some(failure);
                     }
                 },
-                () = self.vm.gone() => return Err(self.ctx.vm_exited(&awaiting)),
+                end = self.vm.gone() => return Err(self.ctx.vm_ended(&awaiting, &end)),
                 () = sleep_until(bound.deadline.into()) => return Err(self.out_of_time(last, &awaiting, bound)),
             }
             tokio::select! {
                 () = sleep(RETRY_PAUSE) => {}
-                () = self.vm.gone() => return Err(self.ctx.vm_exited(&awaiting)),
+                end = self.vm.gone() => return Err(self.ctx.vm_ended(&awaiting, &end)),
                 () = sleep_until(bound.deadline.into()) => return Err(self.out_of_time(last, &awaiting, bound)),
             }
         }
@@ -497,6 +535,13 @@ impl SshSession {
         boot: Option<BootBound>,
         progress: &dyn Progress,
     ) -> Result<SshSession> {
+        // SSH treats a limit of 0 as "never give up on a silent peer".
+        if ka.max_missed == 0 {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "a keepalive that tolerates no missed probes would never fire; max_missed must be at least 1",
+            ));
+        }
         let pinned = PublicKey::from_openssh(&target.host_public)
             .map_err(|e| key_error("the pinned host key is not an OpenSSH public key", e))?;
         let key = PrivateKey::from_openssh(&target.client_private)
@@ -525,7 +570,7 @@ impl SshSession {
 
     /// Ends the boot phase: from now on the boot bound no longer ends a wait.
     pub(crate) fn finish_boot(&self) {
-        *self.inner.boot.lock().unwrap() = None;
+        self.inner.boot.finish();
     }
 
     /// Runs `command` through the guest's SSH `exec`, copying guest stdout and stderr to `out` and `err` as they

@@ -7,7 +7,8 @@ use std::time::Duration;
 use russh::keys::{HashAlg, PublicKey};
 
 use crate::ErrorKind;
-use crate::access::{BootBound, ExecEnd, SshSession, VmExit};
+use crate::access::session::BootGate;
+use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, VmExit};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::exit::{ExitStatus, ExitWidth, NullProgress};
@@ -135,10 +136,12 @@ fn all_256_byte_values_arrive_intact_on_both_streams(#[fixture(unicode_home)] ho
 fn a_vm_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().is_ok());
+    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string()));
     let session = rig.connect_with(vm, None).unwrap();
     std::thread::scope(|scope| {
         let running = scope.spawn(|| session.exec_collect("hold"));
+        // The command is in flight on the server, so the exit ends a wait that is running, not one about to start.
+        rig.sshd.wait_for_commands(1);
         fire.send(()).unwrap();
         let error = running.join().unwrap().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
@@ -161,11 +164,47 @@ fn a_process_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)
     let session = rig.connect_with(VmExit::watch(process), None).unwrap();
     std::thread::scope(|scope| {
         let running = scope.spawn(|| session.exec_collect("hold"));
+        rig.sshd.wait_for_commands(1);
         sleeper.finish();
         let error = running.join().unwrap().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
         assert!(error.message().contains("VM process exited"), "{error}");
     });
+}
+
+#[skuld::test]
+fn a_vm_watcher_that_cannot_wait_ends_the_wait_with_its_reason(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let (fire, wait) = mpsc::channel::<()>();
+    let vm = VmExit::when(move || {
+        let _ = wait.recv();
+        Err("the handle is gone".to_owned())
+    });
+    let session = rig.connect_with(vm, None).unwrap();
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| session.exec_collect("hold"));
+        rig.sshd.wait_for_commands(1);
+        fire.send(()).unwrap();
+        let error = running.join().unwrap().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+        assert!(error.message().contains("the handle is gone"), "{error}");
+        assert!(!error.message().contains("VM process exited"), "{error}");
+    });
+}
+
+#[skuld::test]
+fn a_keepalive_that_tolerates_no_missed_probe_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let ka = Keepalive {
+        interval: Duration::from_millis(100),
+        max_missed: 0,
+    };
+    let error = SshSession::connect(&rig.target(), ka, VmExit::never(), None, &NullProgress)
+        .err()
+        .expect("the connect fails");
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("max_missed"), "{error}");
+    assert_eq!(rig.sshd.connections(), 0, "refused before any connection");
 }
 
 // Connecting ==========================================================================================================
@@ -177,7 +216,7 @@ fn connect_retries_while_refused_and_stops_when_the_vm_exits(#[fixture(unicode_h
     target.addr = refused_addr();
     let (progress, messages) = ChannelProgress::new();
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().is_ok());
+    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string()));
     let error = std::thread::scope(|scope| {
         let connecting = scope.spawn(|| {
             SshSession::connect(
@@ -233,12 +272,19 @@ fn a_connect_without_a_boot_bound_to_a_refused_port_is_connection_lost_at_once(#
 fn host_key_mismatch_is_retried_while_the_vm_lives_then_reported_with_both_fingerprints_at_the_boot_bound(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    // A wrong key for good: retried until the bound, then `host-key` naming both fingerprints.
-    let rig = Rig::with(home, |options| options.wrong_host_key_connections = usize::MAX);
-    let error = rig
-        .connect_with(VmExit::never(), Some(BootBound::start(Duration::from_millis(500))))
-        .err()
-        .expect("the connect fails");
+    // A wrong key for good: retried until the bound, then `host-key` naming both fingerprints. The bound is the thing
+    // under test, so it is short. A connect so slow that no attempt finished within it ends as `connection-lost`
+    // without a fingerprint and says nothing about the code: such a run is repeated with a fresh server.
+    let (rig, error) = loop {
+        let rig = Rig::with(home, |options| options.wrong_host_key_connections = usize::MAX);
+        let error = rig
+            .connect_with(VmExit::never(), Some(BootBound::start(Duration::from_millis(500))))
+            .err()
+            .expect("the connect fails");
+        if error.kind() != ErrorKind::ConnectionLost {
+            break (rig, error);
+        }
+    };
     assert_eq!(error.kind(), ErrorKind::HostKey, "{error}");
     assert!(
         error.message().contains(&fingerprint(&rig.sshd.host_public())),
@@ -248,9 +294,8 @@ fn host_key_mismatch_is_retried_while_the_vm_lives_then_reported_with_both_finge
         error.message().contains(&fingerprint(&rig.sshd.wrong_host_public())),
         "{error}"
     );
-    assert!(rig.sshd.connections() > 1, "the mismatch was retried");
 
-    // A server that fixes its key after three connections: the session comes up.
+    // A server that fixes its key after three connections: the session comes up, so the mismatch was retried.
     let rig = Rig::with(home, |options| options.wrong_host_key_connections = 3);
     let session = rig
         .connect_with(VmExit::never(), Some(BootBound::start(Duration::from_secs(3600))))
@@ -292,15 +337,24 @@ fn a_rejected_client_key_is_retried_while_booting_and_final_otherwise(#[fixture(
 
 // The boot bound ======================================================================================================
 
-/// The boot bound of the next two tests: long enough that connecting always finishes first.
-const BOOT_BOUND: Duration = Duration::from_secs(2);
+/// Starts the boot bound of `session` now, as the engine does when it resumes the VM. The tests start it after the
+/// connect, so how long the connect took cannot matter.
+fn arm_boot_bound(session: &SshSession, limit: Duration) -> BootBound {
+    let bound = BootBound::start(limit);
+    session.inner.boot.0.send_replace(Some(bound));
+    bound
+}
 
 #[skuld::test]
 fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
+    let one_hour = Duration::from_secs(3600);
     let session = rig
-        .connect_with(VmExit::never(), Some(BootBound::start(BOOT_BOUND)))
+        .connect_with(VmExit::never(), Some(BootBound::start(one_hour)))
         .expect("connects within the bound");
+    // The bound a connect was given is the session's.
+    assert_eq!(session.inner.boot.0.borrow().map(|bound| bound.limit), Some(one_hour));
+    arm_boot_bound(&session, Duration::from_millis(200));
     let error = session.exec_collect("hold").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("boot bound"), "{error}");
@@ -314,20 +368,49 @@ fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)]
 #[skuld::test]
 fn a_finished_boot_is_no_longer_ended_by_the_boot_bound(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
-    let bound = BootBound::start(BOOT_BOUND);
     let (fire, wait) = mpsc::channel::<()>();
     let session = rig
-        .connect_with(VmExit::when(move || wait.recv().is_ok()), Some(bound))
-        .expect("connects within the bound");
+        .connect_with(VmExit::when(move || wait.recv().map_err(|e| e.to_string())), None)
+        .expect("connects");
+    // A bound that has already passed: were it still armed, it would end the command at once.
+    arm_boot_bound(&session, Duration::ZERO);
     session.finish_boot();
     std::thread::scope(|scope| {
         let running = scope.spawn(|| session.exec_collect("hold"));
-        // Let the bound pass: a clock fact, not a bet on the other thread. A bound that was still armed would have
-        // ended the command by now; the VM exit is what ends it.
-        std::thread::sleep(BOOT_BOUND);
+        rig.sshd.wait_for_commands(1);
         fire.send(()).unwrap();
         let error = running.join().unwrap().unwrap_err();
         assert!(error.message().contains("VM process exited"), "{error}");
+    });
+}
+
+#[skuld::test]
+fn the_boot_gate_follows_changes_while_a_wait_is_in_flight() {
+    // Virtual time: the deadlines below pass without anyone waiting for them.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let gate = BootGate::new(Some(BootBound::start(Duration::from_secs(10))));
+        let mut passed = std::pin::pin!(gate.passed());
+        let quiet = |seconds| tokio::time::sleep(Duration::from_secs(seconds));
+
+        tokio::select! {
+            _ = &mut passed => panic!("the bound passed early"),
+            () = quiet(5) => {}
+        }
+        // Finishing the boot disarms the wait that is already in flight.
+        gate.finish();
+        tokio::select! {
+            _ = &mut passed => panic!("a finished boot was ended by its bound"),
+            () = quiet(60) => {}
+        }
+        // A bound armed later governs it again.
+        gate.0.send_replace(Some(BootBound::start(Duration::from_secs(1))));
+        let bound = passed.await;
+        assert_eq!(bound.limit, Duration::from_secs(1));
     });
 }
 
