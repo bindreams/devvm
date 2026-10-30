@@ -26,8 +26,9 @@ pub(crate) trait GuestOs: Send + Sync {
     fn instance_seed(&self, seed: &SeedSpec) -> Result<SeedMedia>;
     /// A command whose output is the guest's boot id.
     fn boot_id_command(&self) -> Command;
-    /// The final string the guest's shell executes for `cmd`.
-    fn wrap(&self, cmd: &Command) -> String;
+    /// The final string the guest's shell executes for `cmd`; `usage` for a command no shell string can carry (an empty
+    /// argv, a bad environment variable name, a NUL byte).
+    fn wrap(&self, cmd: &Command) -> Result<String>;
     /// `guest_path` as the guest's SFTP server expects it.
     fn sftp_path(&self, guest_path: &str, home: &str) -> String;
     /// The guest path that `sftp_path` turned into `sftp_path`, for a message that names the path as the user wrote it.
@@ -42,7 +43,9 @@ pub(crate) trait GuestOs: Send + Sync {
     /// Bumped whenever `wrap`, `user:`, `cwd:` or elevation behavior changes; part of every layer key.
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;
-    fn wait_ready(&self, ssh: &SshSession) -> Result<()>;
+    /// Blocks until the guest's first boot has finished. An unfinished or failed boot is an error; a boot that finished
+    /// with recoverable problems is [`Readiness::Degraded`], for the caller to report.
+    fn wait_ready(&self, ssh: &SshSession) -> Result<Readiness>;
     /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
     /// the guest does not have is a `recipe` error.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>>;
@@ -91,6 +94,14 @@ pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
         }
     }
     Ok(posix_root(path))
+}
+
+/// How a finished first boot went.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Readiness {
+    Ready,
+    /// The guest is usable, but its first boot finished with recoverable problems; the text names them.
+    Degraded(String),
 }
 
 pub(crate) trait BaseBuilder: Send + Sync {

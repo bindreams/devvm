@@ -1,6 +1,7 @@
 //! Telling from `cloud-init status` whether a first boot has finished.
 
 use crate::exit::{ExitStatus, Output};
+use crate::guest::Readiness;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -9,13 +10,6 @@ mod ready_tests;
 
 /// Blocks until cloud-init has finished, and prints its state as JSON.
 pub(super) const CLOUD_INIT_STATUS: &str = "cloud-init status --wait --format json";
-
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum Readiness {
-    Ready,
-    /// cloud-init finished with recoverable errors (it exits 2); the guest is usable.
-    Degraded,
-}
 
 /// Reads the reply of [`CLOUD_INIT_STATUS`]. Anything but `done` is an error that quotes the reply.
 pub(super) fn readiness(output: &Output) -> Result<Readiness> {
@@ -38,11 +32,16 @@ pub(super) fn readiness(output: &Output) -> Result<Readiness> {
     };
     match status {
         "done" => {
+            // cloud-init exits 2 for a `done` that recorded recoverable errors; the guest is usable.
             let extended = reply.get("extended_status").and_then(serde_json::Value::as_str);
-            Ok(if extended.is_some_and(|text| text.starts_with("degraded")) {
-                Readiness::Degraded
-            } else {
-                Readiness::Ready
+            Ok(match extended {
+                Some(text) if text.starts_with("degraded") => {
+                    Readiness::Degraded(match reply.get("recoverable_errors") {
+                        Some(errors) => format!("{text}: {errors}"),
+                        None => text.to_owned(),
+                    })
+                }
+                _ => Readiness::Ready,
             })
         }
         other => Err(failure(&format!("its status is `{other}`"))),
