@@ -6,6 +6,7 @@ use crate::media::write_cidata_image;
 use crate::recipe::Shell;
 use crate::{Command, Error, ErrorKind, Result};
 
+pub(crate) mod builder;
 mod ready;
 mod seed;
 mod wrap;
