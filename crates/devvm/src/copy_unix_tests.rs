@@ -3,7 +3,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use crate::ErrorKind;
-use crate::copy::copy_tests::{add_all, git, new_repo, put, read_tar, take};
+use crate::copy::copy_tests::{add_all, git, new_repo, paths, put, read_tar, take};
 use crate::recipe::hash::EntryContent;
 use crate::test_support::fixtures::unicode_home;
 
@@ -54,4 +54,61 @@ fn non_utf8_names_are_refused_naming_them(#[fixture(unicode_home)] home: &Path) 
         .expect("a non-UTF-8 name cannot be copied");
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(error.message().contains("bad-"), "{error}");
+}
+
+#[skuld::test]
+fn names_with_characters_windows_forbids(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    let names = [
+        "\"quoted\".txt",
+        "a|b",
+        "what?*",
+        "<angle>",
+        "colon:name",
+        "back\\slash",
+        "line\nbreak",
+    ];
+    for (i, name) in names.iter().enumerate() {
+        put(&repo, name, format!("content {i}").as_bytes());
+    }
+    add_all(&repo);
+    let taken = take(&repo, false, home).unwrap();
+    let mut expected: Vec<&str> = names.to_vec();
+    expected.sort_by_key(|name| name.as_bytes());
+    assert_eq!(paths(&taken.snapshot), expected);
+    for entry in read_tar(&taken.snapshot.archive) {
+        let i = names.iter().position(|name| *name == entry.path).unwrap();
+        assert_eq!(entry.bytes, format!("content {i}").as_bytes(), "{}", entry.path);
+    }
+}
+
+#[skuld::test]
+fn a_tracked_path_below_a_symlink_leaving_the_repository_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let outside = home.join("outside");
+    put(&outside, "f.txt", b"a host file that is not in the repository");
+    let repo = new_repo(home, "repo");
+    put(&repo, "dir/f.txt", b"x");
+    add_all(&repo);
+    std::fs::remove_dir_all(repo.join("dir")).unwrap();
+    std::os::unix::fs::symlink(&outside, repo.join("dir")).unwrap();
+    let error = take(&repo, false, home)
+        .err()
+        .expect("a file outside the repository must not be copied");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("dir/f.txt"), "{error}");
+}
+
+#[skuld::test]
+fn a_tracked_path_below_a_deeper_symlink_is_refused_even_when_it_stays_inside(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "real/f.txt", b"x");
+    put(&repo, "a/b/f.txt", b"y");
+    add_all(&repo);
+    std::fs::remove_dir_all(repo.join("a").join("b")).unwrap();
+    std::os::unix::fs::symlink(repo.join("real"), repo.join("a").join("b")).unwrap();
+    let error = take(&repo, false, home)
+        .err()
+        .expect("git refuses to go beyond a symbolic link, and so does the copy");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("a/b/f.txt"), "{error}");
 }

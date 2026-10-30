@@ -229,10 +229,7 @@ impl Fetcher {
             Plan::Complete => unreachable!("handled above"),
         };
 
-        let mut writer = self
-            .opener
-            .open(&part, from > 0)
-            .map_err(|e| self.write_error(&part, e))?;
+        let mut writer = self.opener.open(&part, from > 0).map_err(|e| Error::write(&part, e))?;
         if fresh {
             // After the truncation: a failed open must leave the old validator beside the old part.
             self.write_sidecar(artifact, response.validator.clone())?;
@@ -261,9 +258,7 @@ impl Fetcher {
                     .with_source(e));
                 }
             };
-            writer
-                .write_all(&buffer[..read])
-                .map_err(|e| self.write_error(&part, e))?;
+            writer.write_all(&buffer[..read]).map_err(|e| Error::write(&part, e))?;
             hasher.update(&buffer[..read]);
             let before = done;
             done += read as u64;
@@ -275,7 +270,7 @@ impl Fetcher {
                 ));
             }
         }
-        writer.sync().map_err(|e| self.write_error(&part, e))?;
+        writer.sync().map_err(|e| Error::write(&part, e))?;
         drop(writer);
 
         if let Some(length) = response.content_length
@@ -401,7 +396,7 @@ impl Fetcher {
         let json = serde_json::to_vec(&sidecar).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
         std::fs::write(&temp, json)
             .and_then(|()| std::fs::rename(&temp, &path))
-            .map_err(|e| self.write_error(&path, e))
+            .map_err(|e| Error::write(&path, e))
     }
 
     fn verify_and_publish(
@@ -435,20 +430,6 @@ impl Fetcher {
             )
         })?;
         remove_if_present(&self.sidecar_path(artifact))
-    }
-
-    fn write_error(&self, path: &Path, e: std::io::Error) -> Error {
-        match e.kind() {
-            std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => Error::new(
-                ErrorKind::DiskFull,
-                format!(
-                    "no space left to write {}: {e}; free some space and run again to resume",
-                    path.display()
-                ),
-            )
-            .with_source(e),
-            _ => Error::io(ErrorKind::Io, format!("cannot write {}", path.display()), e),
-        }
     }
 }
 

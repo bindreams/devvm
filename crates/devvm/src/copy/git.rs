@@ -25,6 +25,8 @@ pub(super) struct Tracked {
     /// Relative to the work tree root, `/`-separated.
     pub path: String,
     pub kind: Kind,
+    /// The blob (hex) in the index: for a symlink, its link text.
+    pub object: String,
 }
 
 #[derive(Debug)]
@@ -96,9 +98,9 @@ pub(super) fn list(host: &dyn Host, root: &Path) -> Result<Listing> {
         uninitialized_submodules: Vec::new(),
     };
     for record in out.stdout.split(|&b| b == 0).filter(|record| !record.is_empty()) {
-        let (path, kind) = parse_record(record)?;
+        let (path, kind, object) = parse_record(record)?;
         match kind {
-            Some(kind) => listing.tracked.push(Tracked { path, kind }),
+            Some(kind) => listing.tracked.push(Tracked { path, kind, object }),
             None => listing.uninitialized_submodules.push(path),
         }
     }
@@ -106,7 +108,7 @@ pub(super) fn list(host: &dyn Host, root: &Path) -> Result<Listing> {
 }
 
 /// `<mode> <object> <stage>\t<path>`. A submodule that is still listed is one git could not enter, so `None`.
-fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>)> {
+fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>, String)> {
     let malformed = || {
         Error::new(
             ErrorKind::Internal,
@@ -129,8 +131,8 @@ fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>)> {
     })?;
     let meta = std::str::from_utf8(meta).map_err(|_| malformed())?;
     let mut fields = meta.split(' ');
-    let (mode, _object, stage) = (fields.next(), fields.next(), fields.next());
-    let (Some(mode), Some(stage)) = (mode, stage) else {
+    let (mode, object, stage) = (fields.next(), fields.next(), fields.next());
+    let (Some(mode), Some(object), Some(stage)) = (mode, object, stage) else {
         return Err(malformed());
     };
     if stage != "0" {
@@ -157,5 +159,32 @@ fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>)> {
             ));
         }
     };
-    Ok((path, kind))
+    Ok((path, kind, object.to_owned()))
+}
+
+/// The link text of the tracked symlink `item`, as git stores it: the same on every host, where a link read back
+/// from disk can have its separators changed. Git runs in the directory that holds the link, so a symlink in a
+/// submodule is looked up in the submodule's repository.
+pub(super) fn link_text(host: &dyn Host, root: &Path, item: &Tracked) -> Result<String> {
+    let on_disk = root.join(&item.path);
+    let dir = on_disk.parent().expect("a tracked path is below the root");
+    let mut cmd = command(host, dir);
+    cmd.args(["cat-file", "blob", &item.object]);
+    let out = run(cmd)?;
+    if !out.status.success() {
+        return Err(Error::new(
+            ErrorKind::Recipe,
+            format!(
+                "cannot read the link text of `{}` from git: {}",
+                item.path.escape_debug(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ));
+    }
+    String::from_utf8(out.stdout).map_err(|_| {
+        Error::new(
+            ErrorKind::Recipe,
+            format!("cannot copy `{}`: its link text is not UTF-8", item.path.escape_debug()),
+        )
+    })
 }
