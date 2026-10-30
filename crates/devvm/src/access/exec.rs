@@ -14,10 +14,15 @@ use crate::{Error, ErrorKind, Result};
 pub(crate) enum ExecEnd {
     /// The command ended with this status.
     Finished(ExitStatus),
-    /// The host side of the output closed (the error is the failed write or flush). The channel was closed, so the guest
-    /// process loses its output pipe and ends by its own SIGPIPE or SIGHUP; devvm does not wait for a status that may
-    /// never come, since nothing else would stop a `yes`. The caller decides what that means.
-    HostOutputClosed(std::io::Error),
+    /// The host side of the output closed. The channel was closed, so the guest process loses its output pipe and
+    /// ends by its own SIGPIPE or SIGHUP; devvm does not wait for a status that may never come, since nothing else
+    /// would stop a `yes`. The caller decides what that means.
+    HostOutputClosed {
+        /// The failed write or flush.
+        error: std::io::Error,
+        /// The command's status, when it had already ended and only the final flush failed.
+        status: Option<ExitStatus>,
+    },
 }
 
 /// What the task running the command tells the thread that called `exec`.

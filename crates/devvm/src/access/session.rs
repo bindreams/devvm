@@ -598,7 +598,10 @@ impl SshSession {
                     let flushed = out.flush().and_then(|()| err.flush());
                     return match (result, flushed) {
                         (Ok(status), Ok(())) => Ok(ExecEnd::Finished(status)),
-                        (Ok(_), Err(e)) => Ok(ExecEnd::HostOutputClosed(e)),
+                        (Ok(status), Err(error)) => Ok(ExecEnd::HostOutputClosed {
+                            error,
+                            status: Some(status),
+                        }),
                         (Err(e), _) => Err(e),
                     };
                 }
@@ -613,7 +616,7 @@ impl SshSession {
             if let Err(e) = sink.write_all(&chunk) {
                 // Dropping the receiver tells the task to close the channel.
                 drop(receiver);
-                return Ok(ExecEnd::HostOutputClosed(e));
+                return Ok(ExecEnd::HostOutputClosed { error: e, status: None });
             }
         }
     }
@@ -623,7 +626,9 @@ impl SshSession {
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         match self.exec(command, &mut stdout, &mut stderr)? {
             ExecEnd::Finished(status) => Ok(Output { status, stdout, stderr }),
-            ExecEnd::HostOutputClosed(e) => Err(Error::io(ErrorKind::Internal, "a memory sink refused output", e)),
+            ExecEnd::HostOutputClosed { error, .. } => {
+                Err(Error::io(ErrorKind::Internal, "a memory sink refused output", error))
+            }
         }
     }
 

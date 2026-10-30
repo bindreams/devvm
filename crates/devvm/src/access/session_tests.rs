@@ -421,7 +421,10 @@ fn a_closed_host_output_closes_the_channel_and_returns_host_output_closed(#[fixt
     let mut stderr = Vec::new();
     let end = session.exec("write-forever", &mut RefusesWrites, &mut stderr).unwrap();
     match end {
-        ExecEnd::HostOutputClosed(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            assert_eq!(status, None, "the command had not ended");
+        }
         ExecEnd::Finished(status) => panic!("a command that never ends finished: {status:?}"),
     }
     // The server saw the channel close, so its `yes` loses its pipe.
@@ -438,7 +441,7 @@ fn a_closed_host_output_closes_the_channel_of_a_command_that_went_quiet(#[fixtur
     let end = session
         .exec("write-once-and-hold", &mut RefusesWrites, &mut stderr)
         .unwrap();
-    assert!(matches!(end, ExecEnd::HostOutputClosed(_)), "{end:?}");
+    assert!(matches!(end, ExecEnd::HostOutputClosed { status: None, .. }), "{end:?}");
     rig.sshd.wait_for_channel_close();
 }
 
@@ -580,13 +583,16 @@ impl Write for FailsToFlush {
 }
 
 #[skuld::test]
-fn a_flush_that_fails_at_the_end_is_a_closed_host_output(#[fixture(unicode_home)] home: &Path) {
+fn a_flush_that_fails_at_the_end_is_a_closed_host_output_that_keeps_the_status(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let session = rig.connect();
     let mut stderr = Vec::new();
     let end = session.exec("echo hi", &mut FailsToFlush, &mut stderr).unwrap();
     match end {
-        ExecEnd::HostOutputClosed(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            assert_eq!(status, Some(ExitStatus::Code(0)), "the command's result is not lost");
+        }
         other => panic!("{other:?}"),
     }
 }
