@@ -317,12 +317,23 @@ fn rename_and_chmod_change_the_manifest_key() {
 #[skuld::test]
 fn manifest_constructor_rejects_bad_paths() {
     for path in [
-        "", "/abs", "a//b", ".", "..", "a/../b", "a/./b", "a/", "a\\b", "a\0b", "../x", "x/..",
+        "", "/abs", "a//b", ".", "..", "a/../b", "a/./b", "a/", "a\0b", "../x", "x/..",
     ] {
         let error = CopyManifest::new(vec![file(path, 0o100644, 1)]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Recipe, "{path:?}");
     }
-    for path in ["a", "a/b", "dir/файл with space.txt", "..a", "a..", ".hidden/.x"] {
+    // A backslash is a legal byte in a POSIX file name, and git stores such a name.
+    for path in [
+        "a",
+        "a/b",
+        "dir/файл with space.txt",
+        "..a",
+        "a..",
+        ".hidden/.x",
+        "a\\b",
+        "back\\slash/file",
+        "a\nb",
+    ] {
         assert!(CopyManifest::new(vec![file(path, 0o100644, 1)]).is_ok(), "{path:?}");
     }
 }

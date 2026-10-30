@@ -93,15 +93,13 @@ impl Error {
         Error::new(kind, format!("{}: {source}", context.into())).with_source(source)
     }
 
-    /// A failed write to `path`: `disk-full` when the device or quota is full, otherwise `io`.
-    pub(crate) fn write(path: &Path, source: std::io::Error) -> Error {
+    /// A failed write to `path`: `disk-full` when the device or quota is full, otherwise `io`. `hint` says what to
+    /// do about a full disk and ends the `disk-full` message.
+    pub(crate) fn write(path: &Path, source: std::io::Error, hint: &str) -> Error {
         match source.kind() {
             std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => Error::new(
                 ErrorKind::DiskFull,
-                format!(
-                    "no space left to write {}: {source}; free some space and run again",
-                    path.display()
-                ),
+                format!("no space left to write {}: {source}; {hint}", path.display()),
             )
             .with_source(source),
             _ => Error::io(ErrorKind::Io, format!("cannot write {}", path.display()), source),

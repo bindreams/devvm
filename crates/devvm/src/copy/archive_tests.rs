@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use crate::ErrorKind;
-use crate::copy::archive::append_file;
+use crate::copy::archive::{append_file, check_one_component_per_segment};
 
 const NAME: &str = "dir/\u{416}.txt";
 const DEST: &str = "out/devvm-copy-x.tar";
@@ -55,6 +55,25 @@ fn a_file_that_grows_while_it_is_read_is_an_error_naming_it() {
     let error = append(3, b"longer than declared").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io);
     assert!(error.message().contains(NAME), "{error}");
+}
+
+#[skuld::test]
+fn a_name_the_host_reads_as_one_component_per_slash_segment_is_accepted() {
+    for name in ["a", "a/b", "dir/\u{416}.txt", "a b/c d", "-dash/x"] {
+        assert!(check_one_component_per_segment(name).is_ok(), "{name:?}");
+    }
+}
+
+#[skuld::test]
+fn a_backslash_is_refused_only_on_a_host_where_it_separates_components() {
+    let result = check_one_component_per_segment("dir\\file");
+    if std::path::MAIN_SEPARATOR == '\\' {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Recipe);
+        assert!(error.message().contains(r"dir\\file"), "{error}");
+    } else {
+        assert!(result.is_ok());
+    }
 }
 
 #[skuld::test]

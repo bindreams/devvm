@@ -55,3 +55,23 @@ fn error_is_send_sync_static() {
     fn assert_bounds<T: Send + Sync + 'static>() {}
     assert_bounds::<Error>();
 }
+
+#[skuld::test]
+fn a_full_disk_write_is_disk_full_and_carries_the_callers_hint() {
+    for kind in [std::io::ErrorKind::StorageFull, std::io::ErrorKind::QuotaExceeded] {
+        let cause = std::io::Error::new(kind, "the device is full");
+        let error = Error::write(std::path::Path::new("out/x.part"), cause, "free space, then resume");
+        assert_eq!(error.kind(), ErrorKind::DiskFull, "{kind:?}");
+        assert!(error.message().contains("out/x.part"), "{error}");
+        assert!(error.message().ends_with("; free space, then resume"), "{error}");
+        assert!(error.source().is_some());
+    }
+}
+
+#[skuld::test]
+fn another_failed_write_is_io_naming_the_path() {
+    let cause = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+    let error = Error::write(std::path::Path::new("out/x.part"), cause, "free space, then resume");
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.message(), "cannot write out/x.part: access denied");
+}

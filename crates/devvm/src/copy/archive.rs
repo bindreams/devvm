@@ -2,11 +2,12 @@
 
 use std::collections::HashSet;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Component, Path};
 
 use sha2::{Digest, Sha256 as Hasher};
 use tar::{Builder, EntryType, Header};
 
+use super::FULL_DISK_HINT;
 use super::git::{self, Kind, Tracked};
 use crate::host::Host;
 use crate::recipe::hash::{EntryContent, ManifestEntry};
@@ -34,6 +35,7 @@ pub(super) fn write(
     let mut entries = Vec::with_capacity(tracked.len());
     let mut real_directories = HashSet::new();
     for item in tracked {
+        check_one_component_per_segment(&item.path)?;
         check_parents(root, &item.path, &mut real_directories)?;
         let on_disk = root.join(&item.path);
         let meta = match std::fs::symlink_metadata(&on_disk) {
@@ -87,8 +89,25 @@ pub(super) fn write(
         };
         entries.push(entry);
     }
-    builder.finish().map_err(|e| Error::write(dest, e))?;
+    builder.finish().map_err(|e| Error::write(dest, e, FULL_DISK_HINT))?;
     Ok(entries)
+}
+
+/// Fails when this host reads `path` (`/`-separated, as git lists it) as other than one component per segment. A
+/// backslash is a legal byte in a POSIX file name, but on Windows it separates components: reading or archiving
+/// the name there would reach a different file.
+pub(super) fn check_one_component_per_segment(path: &str) -> Result<()> {
+    let components = Path::new(path).components();
+    if components.clone().all(|c| matches!(c, Component::Normal(_))) && components.count() == path.split('/').count() {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorKind::Recipe,
+        format!(
+            "cannot copy `{}`: this host cannot hold a file with that name",
+            path.escape_debug()
+        ),
+    ))
 }
 
 /// Fails when a directory above `path` (relative to `root`, `/`-separated) is a symlink, as git does. A missing
@@ -168,7 +187,7 @@ fn append_symlink<W: Write>(builder: &mut Builder<W>, dest: &Path, path: &str, t
     let mut header = header(EntryType::Symlink, 0o777, 0);
     builder
         .append_link(&mut header, path, target)
-        .map_err(|e| Error::write(dest, e))
+        .map_err(|e| Error::write(dest, e, FULL_DISK_HINT))
 }
 
 /// Counts and hashes what passes through, and notes whether the source failed: the tar reports that and its own
@@ -226,7 +245,7 @@ pub(super) fn append_file<W: Write, R: Read>(
         if hashing.read_failed {
             Error::io(ErrorKind::Io, format!("cannot read `{}`", path.escape_debug()), e)
         } else {
-            Error::write(dest, e)
+            Error::write(dest, e, FULL_DISK_HINT)
         }
     })?;
     if hashing.count != size {
