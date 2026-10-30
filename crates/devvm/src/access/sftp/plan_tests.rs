@@ -10,20 +10,20 @@ fn where_a_source_lands_depends_only_on_the_source_the_slash_and_the_destination
     use Beyond::{Dir as ToDir, NotDir};
     use Place::{At, Inside, Root};
     use Present::{Dir, File, Link, Nothing};
-    let follow = |follow| Root { follow };
     // (source, slash, destination, result)
     let table: &[(Source, bool, Present, Result<Place, Conflict>)] = &[
         // A directory becomes the destination, whatever is there, and never nests.
-        (Source::Dir, false, Nothing, Ok(follow(false))),
-        (Source::Dir, true, Nothing, Ok(follow(false))),
-        (Source::Dir, false, Dir, Ok(follow(false))),
-        (Source::Dir, true, Dir, Ok(follow(false))),
+        (Source::Dir, false, Nothing, Ok(Root)),
+        (Source::Dir, true, Nothing, Ok(Root)),
+        (Source::Dir, false, Dir, Ok(Root)),
+        (Source::Dir, true, Dir, Ok(Root)),
         (Source::Dir, false, File, Err(Conflict::DirOntoNonDir)),
         (Source::Dir, true, File, Err(Conflict::DirOntoNonDir)),
-        // A link at the destination is replaced, unless the user wrote a slash and it leads to a directory.
-        (Source::Dir, false, Link(ToDir), Ok(follow(false))),
-        (Source::Dir, true, Link(ToDir), Ok(follow(true))),
-        (Source::Dir, false, Link(NotDir), Ok(follow(false))),
+        // A destination that is a link counts as what it leads to: a directory is followed, with or without a slash,
+        // and anything else is a file.
+        (Source::Dir, false, Link(ToDir), Ok(Root)),
+        (Source::Dir, true, Link(ToDir), Ok(Root)),
+        (Source::Dir, false, Link(NotDir), Err(Conflict::DirOntoNonDir)),
         (Source::Dir, true, Link(NotDir), Err(Conflict::DirOntoNonDir)),
         // An entry goes inside a directory, and is the destination otherwise.
         (Source::Entry, false, Dir, Ok(Inside)),
@@ -153,17 +153,16 @@ fn a_clash_is_looked_for_only_below_what_the_copy_does_not_create() {
 }
 
 #[skuld::test]
-fn the_root_of_a_merged_tree_is_fresh_when_missing_or_a_link_the_copy_replaces() {
+fn the_root_of_a_merged_tree_is_fresh_only_when_missing() {
     use Beyond::{Dir as ToDir, NotDir};
     use Present::{Dir, File, Link, Nothing};
-    for (present, follow, fresh) in [
-        (Nothing, false, true),
-        (Dir, false, false),
-        (Link(ToDir), false, true),
-        (Link(ToDir), true, false),
-        (Link(NotDir), false, true),
-        (File, false, false),
+    for (present, fresh) in [
+        (Nothing, true),
+        (Dir, false),
+        (Link(ToDir), false),
+        (Link(NotDir), false),
+        (File, false),
     ] {
-        assert_eq!(super::root_is_fresh(present, follow), fresh, "{present:?} {follow}");
+        assert_eq!(super::root_is_fresh(present), fresh, "{present:?}");
     }
 }

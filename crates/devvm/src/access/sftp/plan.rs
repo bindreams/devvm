@@ -82,9 +82,9 @@ pub(super) enum Beyond {
 /// Where the source lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Place {
-    /// The destination becomes the directory and the contents merge into it. `follow`: a symlink at the destination is
-    /// followed (the user wrote a trailing `/`), not replaced.
-    Root { follow: bool },
+    /// The destination becomes the directory and the contents merge into it. A symlink to a directory at the
+    /// destination is followed, not replaced (owner, 2026-10-30).
+    Root,
     /// The entry is the destination path.
     At,
     /// The entry goes inside the destination directory, as `<destination>/<name>`.
@@ -101,14 +101,12 @@ pub(super) enum Conflict {
 }
 
 /// Where a copy of `source` lands when the destination is `dest`, written with a trailing `/` when `slash`. The result
-/// never depends on anything but these three, so a rerun lands where the first run did.
+/// never depends on anything but these three, so a rerun lands where the first run did. A destination that is a
+/// symlink counts as what it leads to: a directory is followed, anything else is a file.
 pub(super) fn place(source: Source, slash: bool, dest: Present) -> std::result::Result<Place, Conflict> {
     match (source, dest) {
-        (Source::Dir, Present::Nothing | Present::Dir) => Ok(Place::Root { follow: false }),
-        (Source::Dir, Present::File) => Err(Conflict::DirOntoNonDir),
-        (Source::Dir, Present::Link(Beyond::Dir)) => Ok(Place::Root { follow: slash }),
-        (Source::Dir, Present::Link(Beyond::NotDir)) if slash => Err(Conflict::DirOntoNonDir),
-        (Source::Dir, Present::Link(Beyond::NotDir)) => Ok(Place::Root { follow: false }),
+        (Source::Dir, Present::Nothing | Present::Dir | Present::Link(Beyond::Dir)) => Ok(Place::Root),
+        (Source::Dir, Present::File | Present::Link(Beyond::NotDir)) => Err(Conflict::DirOntoNonDir),
         (Source::Entry, Present::Dir | Present::Link(Beyond::Dir)) => Ok(Place::Inside),
         (Source::Entry, Present::Nothing) if slash => Ok(Place::Inside),
         (Source::Entry, Present::File | Present::Link(Beyond::NotDir)) if slash => Err(Conflict::SlashOnNonDir),
@@ -159,13 +157,10 @@ pub(super) fn link_refusal(rules: &Rules, link: &str, cause: &str) -> Error {
     )
 }
 
-/// Whether the root of a merged tree starts out empty: missing, or a symlink that the copy replaces.
-pub(super) fn root_is_fresh(present: Present, follow: bool) -> bool {
-    match present {
-        Present::Nothing => true,
-        Present::Link(_) => !follow,
-        Present::Dir | Present::File => false,
-    }
+/// Whether the root of a merged tree starts out empty: it is missing. A symlink to a directory is followed, so what is
+/// behind it is not known to be empty.
+pub(super) fn root_is_fresh(present: Present) -> bool {
+    present == Present::Nothing
 }
 
 /// Refuses an entry of the tree that would land on something of the wrong kind: a directory on a file, anything else

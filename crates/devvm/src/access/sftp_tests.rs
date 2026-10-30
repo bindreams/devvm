@@ -554,6 +554,140 @@ fn a_symlink_child_met_while_merging_is_replaced_never_written_through(#[fixture
     assert!(tree(&outside_dir).is_empty(), "nothing was written through `sub`");
 }
 
+// A destination that is a symlink =====================================================================================
+
+/// The typed destination that is a link to a directory is followed, for a directory and a file source, with and without
+/// `/` (owner, 2026-10-30). The link stays; a link met inside the merged tree is still replaced.
+#[skuld::test]
+fn a_destination_that_is_a_symlink_to_a_directory_is_followed_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("t/a.txt", b"new a");
+    env.host_file("t/sub/b.txt", b"new b");
+    let file = env.host_file("f.txt", b"new f");
+    env.guest_file("outside.txt", b"keep");
+    // (source is a directory, spelling of the destination)
+    let cases = [(true, ""), (true, "/"), (false, ""), (false, "/")];
+    for (n, (is_dir, spelling)) in cases.into_iter().enumerate() {
+        let (real, lnk) = (format!("/real{n}"), format!("/lnk{n}"));
+        env.guest_file(&format!("real{n}/old.txt"), b"old");
+        env.rig.sshd.add_symlink(&format!("{real}/a.txt"), "/outside.txt");
+        env.rig.sshd.add_symlink(&lnk, &real);
+        let src = if is_dir { env.local.join("t") } else { file.clone() };
+        env.copy_in(&src, &format!("{lnk}{spelling}")).unwrap();
+        // A directory replaces the link child `a.txt` with its own file; a file leaves it alone.
+        let want: &[&str] = if is_dir {
+            &["a.txt", "old.txt", "sub/", "sub/b.txt"]
+        } else {
+            &["a.txt -> /outside.txt", "f.txt", "old.txt"]
+        };
+        assert_eq!(
+            env.guest_tree(&real),
+            want,
+            "in, {lnk}{spelling}, directory source {is_dir}"
+        );
+        assert_eq!(
+            env.rig.sshd.link_target(&lnk),
+            Some(real),
+            "the link stays: {lnk}{spelling}"
+        );
+        assert_eq!(
+            std::fs::read(env.root().join("outside.txt")).unwrap(),
+            b"keep",
+            "{lnk}{spelling}"
+        );
+    }
+
+    env.guest_file("g/a.txt", b"guest a");
+    env.guest_file("g/sub/b.txt", b"guest b");
+    env.guest_file("g.txt", b"guest f");
+    let outside = env.host_file("outside.txt", b"keep");
+    let held = format!("a.txt -> {}", outside.display().to_string().replace('\\', "/"));
+    for (n, (is_dir, spelling)) in cases.into_iter().enumerate() {
+        let (real, lnk) = (env.local.join(format!("hreal{n}")), env.local.join(format!("hlnk{n}")));
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("old.txt"), b"old").unwrap();
+        symlink(&outside, &real.join("a.txt"));
+        symlink(&real, &lnk);
+        let dest = if spelling.is_empty() {
+            lnk.clone()
+        } else {
+            with_slash(&lnk)
+        };
+        env.copy_out(if is_dir { "/g" } else { "/g.txt" }, &dest).unwrap();
+        let want: Vec<&str> = if is_dir {
+            vec!["a.txt", "old.txt", "sub/", "sub/b.txt"]
+        } else {
+            vec![&held, "g.txt", "old.txt"]
+        };
+        assert_eq!(tree(&real), want, "out, {}, directory source {is_dir}", dest.display());
+        assert!(
+            std::fs::symlink_metadata(&lnk).unwrap().file_type().is_symlink(),
+            "the link stays: {}",
+            dest.display()
+        );
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep", "{}", dest.display());
+    }
+}
+
+/// A typed destination that is a link to a file (or to nothing) counts as a file: a directory onto it is an error
+/// naming both paths and leaves it alone; a file onto it replaces the link.
+#[skuld::test]
+fn a_destination_that_is_a_symlink_to_a_file_counts_as_a_file_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let dir = env.local.join("t");
+    env.host_file("t/a.txt", b"a");
+    let file = env.host_file("f.txt", b"new");
+    env.guest_file("target.txt", b"keep");
+    env.rig.sshd.add_symlink("/to-file", "/target.txt");
+    env.rig.sshd.add_symlink("/dangling", "/nowhere");
+    for lnk in ["/to-file", "/to-file/", "/dangling", "/dangling/"] {
+        let error = env.copy_in(&dir, lnk).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{lnk}: {error}");
+        assert!(error.message().contains(&dir.display().to_string()), "{lnk}: {error}");
+        assert!(error.message().contains(lnk.trim_end_matches('/')), "{lnk}: {error}");
+    }
+    assert_eq!(env.rig.sshd.link_target("/to-file"), Some("/target.txt".to_owned()));
+    assert_eq!(env.rig.sshd.link_target("/dangling"), Some("/nowhere".to_owned()));
+    assert_eq!(std::fs::read(env.root().join("target.txt")).unwrap(), b"keep");
+    // A file replaces the link without a slash, and a slash after a link to a file is an error.
+    let error = env.copy_in(&file, "/to-file/").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    env.copy_in(&file, "/to-file").unwrap();
+    assert_eq!(env.rig.sshd.link_target("/to-file"), None);
+    assert_eq!(std::fs::read(env.root().join("to-file")).unwrap(), b"new");
+    assert_eq!(std::fs::read(env.root().join("target.txt")).unwrap(), b"keep");
+
+    // Out.
+    env.guest_file("g/a.txt", b"guest a");
+    env.guest_file("g.txt", b"guest f");
+    let target = env.host_file("target.txt", b"keep");
+    symlink(&target, &env.local.join("to-file"));
+    symlink(Path::new("nowhere"), &env.local.join("dangling"));
+    for name in ["to-file", "dangling"] {
+        let link = env.local.join(name);
+        for dest in [link.clone(), with_slash(&link)] {
+            let error = env.copy_out("/g", &dest).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Io, "{}: {error}", dest.display());
+            assert!(error.message().contains("/g"), "{}: {error}", dest.display());
+            assert!(
+                error.message().contains(&link.display().to_string()),
+                "{}: {error}",
+                dest.display()
+            );
+            assert!(
+                std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+                "the link stays"
+            );
+        }
+    }
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    let link = env.local.join("to-file");
+    env.copy_out("/g.txt", &link).unwrap();
+    assert!(std::fs::read_link(&link).is_err(), "the link itself was replaced");
+    assert_eq!(std::fs::read(&link).unwrap(), b"guest f");
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+}
+
 // Metadata ============================================================================================================
 
 #[skuld::test]

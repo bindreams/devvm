@@ -6,7 +6,9 @@
 //!   it never nests, so a rerun gives the same layout.
 //! - A file goes inside a destination that is a directory or ends in `/`, and is the destination otherwise.
 //! - Symlinks are copied as links, never followed; a source path that is itself a link is copied as a link unless it
-//!   ends in `/`. A host or guest that cannot store a link is an error naming it.
+//!   ends in `/`. A destination that is a link to a directory is followed, with or without `/`; one that is a link to a
+//!   file counts as a file. Links met inside the merged tree are replaced. A host or guest that cannot store a link is
+//!   an error naming it.
 //! - Contents, the execute bit and the modification time of files are kept (through [`Host`] where the host decides).
 //! - Every file and link is written to `.devvm-partial-<random>` beside its target and renamed over it (on the guest
 //!   side with `posix-rename@openssh.com`), so a failure leaves no partial file at the final path, a read-only target
@@ -218,7 +220,7 @@ impl Sftp {
             .map_err(|conflict| conflict_error(conflict, &what, "guest", &dest))?;
         // Where a file or link goes, and the one entry that stands for it in the checks.
         let single = match placed {
-            Place::Root { .. } => None,
+            Place::Root => None,
             Place::At => Some((dest.clone(), Vec::new())),
             Place::Inside => {
                 let name = local::without_trailing_separator(src)
@@ -244,10 +246,7 @@ impl Sftp {
         };
         let (checked, root_fresh) = match &single {
             Some((_, entries)) => (entries, false),
-            None => (
-                &items,
-                matches!(placed, Place::Root { follow } if plan::root_is_fresh(present, follow)),
-            ),
+            None => (&items, plan::root_is_fresh(present)),
         };
         plan::check_clashes(
             checked,
@@ -281,13 +280,13 @@ impl Sftp {
             progress.message(&note);
         }
         match placed {
-            Place::Root { follow } => {
+            Place::Root => {
                 // The directories the copy made and the times they get once their contents are written. A directory
                 // that was already there keeps its time: setting one needs ownership the user may not have.
                 let mut made = Vec::new();
                 let root_made = self.call(&format!("creating the guest directory {dest}"), {
                     let dest = dest.clone();
-                    move |remote| remote.put_dir(dest, follow, what)
+                    move |remote| remote.put_dir(dest, true, what)
                 })?;
                 if let (true, Kind::Dir { mtime: Some(seconds) }) = (root_made, &top) {
                     made.push((dest.clone(), *seconds));
@@ -373,7 +372,7 @@ impl Sftp {
             .map_err(|conflict| conflict_error(conflict, &what, "host", &dest.display().to_string()))?;
         // Where a file or link goes, and the one entry that stands for it in the checks.
         let single = match placed {
-            Place::Root { .. } => None,
+            Place::Root => None,
             Place::At => Some((dest.clone(), Vec::new())),
             Place::Inside => {
                 let name = plan::base_name(&src)
@@ -396,10 +395,7 @@ impl Sftp {
         let host_path = |rel: &[String]| rel.iter().fold(dest.clone(), |path, part| path.join(part));
         let (checked, root_fresh) = match &single {
             Some((_, entries)) => (entries, false),
-            None => (
-                &items,
-                matches!(placed, Place::Root { follow } if plan::root_is_fresh(present, follow)),
-            ),
+            None => (&items, plan::root_is_fresh(present)),
         };
         plan::check_clashes(
             checked,
@@ -424,10 +420,10 @@ impl Sftp {
             progress.message(&note);
         }
         match placed {
-            Place::Root { follow } => {
+            Place::Root => {
                 // As in `copy_in`: only a directory the copy made gets the source's time.
                 let mut made = Vec::new();
-                if let (true, Kind::Dir { mtime: Some(seconds) }) = (local::put_dir(&dest, follow, &what)?, &top) {
+                if let (true, Kind::Dir { mtime: Some(seconds) }) = (local::put_dir(&dest, true, &what)?, &top) {
                     made.push((dest.clone(), *seconds));
                 }
                 for item in &items {

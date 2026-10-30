@@ -257,7 +257,8 @@ impl SftpFs {
     }
 
     fn rename_path(&self, old: &str, new: &str, replace: bool) -> Result<(), StatusReply> {
-        let (old, new) = (normalize(old), normalize(new));
+        // The directories on the way are followed, as the OS does; the last name is not.
+        let (old, new) = (self.resolve(old, false)?, self.resolve(new, false)?);
         if self.is_locked(&new) || self.is_locked(&old) {
             return Err(StatusCode::PermissionDenied.into());
         }
@@ -542,18 +543,20 @@ impl Handler for SftpFs {
     }
 
     async fn mkdir(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, StatusReply> {
-        if self.is_locked(&normalize(&path)) {
+        let path = self.resolve(&path, false)?;
+        if self.is_locked(&path) {
             return Err(StatusCode::PermissionDenied.into());
         }
         if self.attributes(&path, false).is_ok() {
             return Err(failure("File exists"));
         }
-        std::fs::create_dir(self.real(&normalize(&path))).map_err(from_io)?;
+        std::fs::create_dir(self.real(&path)).map_err(from_io)?;
         Ok(ok(id))
     }
 
     async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, StatusReply> {
-        std::fs::remove_dir(self.real(&normalize(&path))).map_err(from_io)?;
+        let path = self.resolve(&path, false)?;
+        std::fs::remove_dir(self.real(&path)).map_err(from_io)?;
         Ok(ok(id))
     }
 
@@ -583,7 +586,7 @@ impl Handler for SftpFs {
     /// As OpenSSH's sftp-server reads it, whatever the draft says: the first string is what the link holds, the second
     /// is where it is made.
     async fn symlink(&mut self, id: u32, target: String, link: String) -> Result<Status, StatusReply> {
-        let link = normalize(&link);
+        let link = self.resolve(&link, false)?;
         if self.state.options.no_symlinks {
             return Err(StatusCode::OpUnsupported.into());
         }
