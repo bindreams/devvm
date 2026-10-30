@@ -1,6 +1,6 @@
 # /// script
-# requires-python = ">=3.9"
-# dependencies = ["pyyaml>=6,<7"]
+# requires-python = "==3.12.*"
+# dependencies = ["pyyaml==6.0.1"]
 # ///
 """Loads cloud-init seeds the way cloud-init does (PyYAML, SafeLoader) and checks every field reads back exactly.
 
