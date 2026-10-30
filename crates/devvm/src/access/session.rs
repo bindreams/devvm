@@ -78,7 +78,7 @@ impl Keepalive {
 
 /// How the VM watcher ended.
 #[derive(Clone, Debug)]
-pub(crate) enum VmEnd {
+pub(crate) enum WatchEnd {
     /// The VM process is gone.
     Exited,
     /// The watcher could not tell: the reason it gives. A wait that cannot know whether the VM lives must not go on
@@ -89,7 +89,7 @@ pub(crate) enum VmEnd {
 /// Fires when the VM process is gone, or when it can no longer be watched.
 #[derive(Clone)]
 pub(crate) struct VmExit {
-    ended: Option<watch::Receiver<Option<VmEnd>>>,
+    ended: Option<watch::Receiver<Option<WatchEnd>>>,
 }
 
 impl VmExit {
@@ -106,8 +106,8 @@ impl VmExit {
             .name("devvm-vm-exit".to_owned())
             .spawn(move || {
                 let end = match wait() {
-                    Ok(()) => VmEnd::Exited,
-                    Err(why) => VmEnd::Unwatched(why),
+                    Ok(()) => WatchEnd::Exited,
+                    Err(why) => WatchEnd::Unwatched(why),
                 };
                 let _ = sender.send(Some(end));
             })
@@ -121,7 +121,7 @@ impl VmExit {
     }
 
     /// Resolves once the VM is gone or unwatchable; never for [`VmExit::never`].
-    pub(crate) async fn gone(&self) -> VmEnd {
+    pub(crate) async fn gone(&self) -> WatchEnd {
         let Some(receiver) = &self.ended else {
             return std::future::pending().await;
         };
@@ -132,7 +132,7 @@ impl VmExit {
             }
             if receiver.changed().await.is_err() {
                 // The watcher thread died without a verdict (it panicked).
-                return VmEnd::Unwatched("the thread that watches the VM process ended without a result".to_owned());
+                return WatchEnd::Unwatched("the thread that watches the VM process ended without a result".to_owned());
             }
         }
     }
@@ -280,10 +280,10 @@ impl Context {
         )
     }
 
-    fn vm_ended(&self, awaiting: &str, end: &VmEnd) -> Error {
+    fn vm_ended(&self, awaiting: &str, end: &WatchEnd) -> Error {
         match end {
-            VmEnd::Exited => self.lost(awaiting, "the VM process exited"),
-            VmEnd::Unwatched(why) => self.lost(
+            WatchEnd::Exited => self.lost(awaiting, "the VM process exited"),
+            WatchEnd::Unwatched(why) => self.lost(
                 awaiting,
                 &format!("it cannot be told whether the VM process is still running ({why})"),
             ),
