@@ -77,3 +77,43 @@ fn a_cloud_init_killed_by_a_signal_is_not_ready_whatever_it_printed() {
 fn the_status_command_waits_and_asks_for_json() {
     assert_eq!(CLOUD_INIT_STATUS, "cloud-init status --wait --format json");
 }
+
+#[skuld::test]
+fn a_done_reply_is_trusted_only_with_cloud_inits_documented_exit_codes() {
+    let done = r#"{"errors": [], "extended_status": "done", "status": "done"}"#;
+    for code in [1, 3, 127, 255, -1] {
+        let error = readiness(&reply(code, done)).expect_err(&format!("exit code {code} is not a normal finish"));
+        assert_eq!(error.kind(), ErrorKind::Io);
+        assert!(
+            error.message().contains(&format!("exit code {code}")),
+            "{code}: {}",
+            error.message()
+        );
+        assert!(error.message().contains(r#""status": "done""#), "the reply is quoted");
+    }
+
+    // 2 is cloud-init's "recoverable errors", whatever else the reply says.
+    let Readiness::Degraded(what) = readiness(&reply(2, done)).unwrap() else {
+        panic!("exit code 2 is a degraded finish");
+    };
+    assert!(what.contains("recoverable"), "{what}");
+}
+
+#[skuld::test]
+fn a_done_reply_with_errors_is_an_error_and_with_recoverable_errors_is_degraded() {
+    let with_errors = r#"{"errors": ["boom"], "extended_status": "done", "status": "done"}"#;
+    let error = readiness(&reply(0, with_errors)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(error.message().contains("boom"), "{}", error.message());
+
+    let recoverable =
+        r#"{"errors": [], "extended_status": "done", "recoverable_errors": {"WARNING": ["w"]}, "status": "done"}"#;
+    let Readiness::Degraded(what) = readiness(&reply(0, recoverable)).unwrap() else {
+        panic!("recoverable errors are a degraded finish even with exit code 0");
+    };
+    assert!(what.contains("WARNING"), "{what}");
+
+    // Empty containers are not errors.
+    let empty = r#"{"errors": [], "extended_status": "done", "recoverable_errors": {}, "status": "done"}"#;
+    assert_eq!(readiness(&reply(0, empty)).unwrap(), Readiness::Ready);
+}
