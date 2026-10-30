@@ -1,9 +1,11 @@
 //! Turning a `Command` into the string the guest account's shell runs.
 //!
 //! The string is `bash -lc '<script>'`: a login shell, so tools an earlier step installed (rustup's `~/.cargo/env`,
-//! sourced from `~/.profile`) are on `PATH`. The script is `cd`, `export`, then `exec --`. `env(1)` is not used: it reads
-//! a leading `-` in the program name as an option and a name containing `=` as an assignment, and `--` does not
-//! prevent either. `exec --` ends the builtin's own option parsing, so `-x` and `a=b` are program names.
+//! sourced from `~/.profile`) are on `PATH`. The script is `cd`, `export`, then `exec --`. The `cd` is
+//! `CDPATH= cd --`: the profile's `CDPATH` must not redirect a relative directory or make `cd` print the one it
+//! chose. `env(1)` is not used: it reads a leading `-` in the program name as an option and a name containing `=` as
+//! an assignment, and `--` does not prevent either. `exec --` ends the builtin's own option parsing, so `-x` and
+//! `a=b` are program names.
 //!
 //! Elevated commands run as `exec sudo -n -- bash -c '<the same script>'`: the `cd`, the `export`s and the program all
 //! run inside the root shell, so sudo's `env_reset` cannot drop the variables and a directory only root can enter
@@ -35,7 +37,10 @@ fn user_script(cmd: &Command) -> Result<String> {
     }
     let mut steps = Vec::new();
     if let Some(cwd) = &cmd.cwd {
-        steps.push(format!("cd {}", quote_checked("the working directory", cwd)?));
+        steps.push(format!(
+            "CDPATH= cd -- {}",
+            quote_checked("the working directory", &cd_operand(cwd))?
+        ));
     }
     if !cmd.env.is_empty() {
         let mut export = String::from("export");
@@ -44,6 +49,12 @@ fn user_script(cmd: &Command) -> Result<String> {
                 return Err(Error::new(
                     ErrorKind::Usage,
                     format!("`{name}` is not a valid environment variable name (expected [A-Za-z_][A-Za-z0-9_]*)"),
+                ));
+            }
+            if READONLY_VARIABLES.contains(&name.as_str()) {
+                return Err(Error::new(
+                    ErrorKind::Usage,
+                    format!("`{name}` is a readonly variable in bash and cannot be set for a command"),
                 ));
             }
             export.push_str(&format!(" {name}={}", quote_checked("an environment value", value)?));
@@ -57,6 +68,19 @@ fn user_script(cmd: &Command) -> Result<String> {
     }
     steps.push(exec);
     Ok(steps.join(" && "))
+}
+
+/// The variables a fresh bash 5.2 marks readonly (`readonly -p`): `export` of one fails, and the command never runs.
+const READONLY_VARIABLES: [&str; 6] = ["BASHOPTS", "BASH_VERSINFO", "EUID", "PPID", "SHELLOPTS", "UID"];
+
+/// `cwd` as the operand of `cd --`. `cd -- -` still means `$OLDPWD`, so a value starting with `-` is written as an
+/// explicit relative path.
+fn cd_operand(cwd: &str) -> String {
+    if cwd.starts_with('-') {
+        format!("./{cwd}")
+    } else {
+        cwd.to_owned()
+    }
 }
 
 fn is_variable_name(name: &str) -> bool {
