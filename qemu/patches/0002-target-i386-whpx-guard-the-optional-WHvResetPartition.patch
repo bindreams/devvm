@@ -20,7 +20,7 @@ devvm-only; applies after 0001.
 -            error_report("WHPX: Failed to reset partition, hr=%08lx", hr);
 +        /* Optional export, absent before Windows 11. */
 +        if (!whp_dispatch.WHvResetPartition) {
-+            /* Every VM start resets once; warn once, atomically. */
++            /* Every VM start resets once. */
 +            static bool warned;
 +
 +            if (!qatomic_xchg(&warned, true)) {

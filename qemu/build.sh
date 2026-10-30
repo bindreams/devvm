@@ -4,8 +4,8 @@
 # Input env:  STAGE  output directory (receives bin/, share/, licenses/qemu/, BUILD-INFO.txt)
 #             WORK   scratch directory (receives the verified tarball, signature and source tree)
 # DLLs are bundled afterwards by pe_deps.py; THIRD-PARTY.txt and SOURCE.txt by third_party.py.
-# qemu/patches/*.patch are applied to the source in name order (-p1). Put unmerged upstream fixes and devvm's own
-# changes there; delete a patch once the pinned QEMU contains it. A patch that no longer applies fails the build.
+# qemu/patches/*.patch are applied to the source in name order: unmerged upstream fixes and devvm's own changes.
+# Delete a patch once the pinned QEMU contains it.
 set -Eeuxo pipefail
 exec 2>&1
 
