@@ -34,14 +34,14 @@ pub(super) trait CopySide {
     /// `name` as this side's file system compares names.
     fn name_key(&self, name: &str) -> String;
 
-    // As a source ---------------------------------------------------------------------------------------------------
+    // As a source -----------------------------------------------------------------------------------------------------
 
     /// The source `path`: a symlink is a link unless `follow`. A path that does not exist is an error.
     fn inspect(&self, path: &Self::Path, follow: bool) -> Result<Kind>;
     /// The tree below the directory `path`, parents before children, symlinks as links.
     fn walk(&self, path: &Self::Path) -> Result<Vec<Item>>;
 
-    // As a destination ----------------------------------------------------------------------------------------------
+    // As a destination ------------------------------------------------------------------------------------------------
 
     /// What `path` is. A symlink is reported as leading to a directory only when `follow` is set, which looks where
     /// it leads (and fails when that cannot be told); without it, every link is `Link(Beyond::NotDir)`, for a link that
