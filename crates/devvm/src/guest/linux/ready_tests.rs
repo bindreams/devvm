@@ -1,0 +1,72 @@
+use super::{CLOUD_INIT_STATUS, Readiness, readiness};
+use crate::ErrorKind;
+use crate::exit::{ExitStatus, Output};
+
+fn reply(code: i32, stdout: &str) -> Output {
+    Output {
+        status: ExitStatus::Code(code),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: Vec::new(),
+    }
+}
+
+#[skuld::test]
+fn cloud_init_status_replies_map_to_ready_degraded_and_error() {
+    let done =
+        r#"{"boot_status_code": "enabled-by-generator", "errors": [], "extended_status": "done", "status": "done"}"#;
+    assert_eq!(readiness(&reply(0, done)).unwrap(), Readiness::Ready);
+
+    let degraded = r#"{"errors": [], "extended_status": "degraded done", "recoverable_errors": {"WARNING": ["x"]}, "status": "done"}"#;
+    assert_eq!(readiness(&reply(2, degraded)).unwrap(), Readiness::Degraded);
+
+    let error = r#"{"errors": ["boom"], "extended_status": "error", "status": "error"}"#;
+    let failed = readiness(&reply(1, error)).unwrap_err();
+    assert_eq!(failed.kind(), ErrorKind::Io);
+    assert!(
+        failed.message().contains("boom"),
+        "the reply is quoted: {}",
+        failed.message()
+    );
+
+    let running = r#"{"extended_status": "running", "status": "running"}"#;
+    let unfinished = readiness(&reply(0, running)).unwrap_err();
+    assert!(unfinished.message().contains("running"), "{}", unfinished.message());
+}
+
+#[skuld::test]
+fn an_unreadable_reply_is_an_error_carrying_the_output() {
+    for (output, quoted) in [
+        (reply(0, "not json at all"), "not json at all"),
+        (reply(1, ""), "exit code 1"),
+        (reply(0, r#"{"detail": "no status field"}"#), "no status field"),
+        (reply(0, r#"{"status": 7}"#), r#"{"status": 7}"#),
+        (reply(0, "[]"), "[]"),
+    ] {
+        let error = readiness(&output).unwrap_err();
+        assert!(error.message().contains(quoted), "{quoted}: {}", error.message());
+    }
+
+    let mut with_stderr = reply(127, "");
+    with_stderr.stderr = b"cloud-init: command not found".to_vec();
+    let error = readiness(&with_stderr).unwrap_err();
+    assert!(error.message().contains("command not found"), "{}", error.message());
+}
+
+#[skuld::test]
+fn a_cloud_init_killed_by_a_signal_is_not_ready_whatever_it_printed() {
+    let output = Output {
+        status: ExitStatus::Signal {
+            name: "KILL".to_owned(),
+            core_dumped: false,
+        },
+        stdout: br#"{"status": "done"}"#.to_vec(),
+        stderr: Vec::new(),
+    };
+    let error = readiness(&output).unwrap_err();
+    assert!(error.message().contains("KILL"), "{}", error.message());
+}
+
+#[skuld::test]
+fn the_status_command_waits_and_asks_for_json() {
+    assert_eq!(CLOUD_INIT_STATUS, "cloud-init status --wait --format json");
+}
