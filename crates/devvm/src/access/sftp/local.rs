@@ -1,6 +1,7 @@
 //! The host side of a copy: reading a source tree, and writing a destination. It runs on the calling thread; every
 //! platform difference goes through [`Host`].
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -30,6 +31,42 @@ pub(super) fn without_trailing_separator(path: &Path) -> PathBuf {
     } else {
         PathBuf::from(trimmed)
     }
+}
+
+/// `path` with its `.` segments dropped and each `..` cancelled against the name before it, by name only: a symlink
+/// before a `..` is not followed. A `..` at a root stays at the root; one with nothing before it stays; no segment left
+/// is `.`. This is how a destination like `new/.` or `a/../b` is created exactly as it reads, before any directory is
+/// made.
+pub(super) fn lexically_normal(path: &Path) -> PathBuf {
+    let mut parts: Vec<Component> = Vec::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => match parts.last() {
+                Some(Component::Normal(_)) => {
+                    parts.pop();
+                }
+                Some(Component::RootDir) => {}
+                _ => parts.push(part),
+            },
+            other => parts.push(other),
+        }
+    }
+    if parts.is_empty() {
+        return PathBuf::from(".");
+    }
+    // Spelled out, not pushed: `PathBuf::push` reads a name like `a:b` as a drive on Windows and drops what came before.
+    let mut text = OsString::new();
+    for (i, part) in parts.iter().enumerate() {
+        if matches!(
+            i.checked_sub(1).map(|before| parts[before]),
+            Some(Component::Normal(_) | Component::ParentDir)
+        ) {
+            text.push(std::path::MAIN_SEPARATOR_STR);
+        }
+        text.push(part.as_os_str());
+    }
+    PathBuf::from(text)
 }
 
 /// The parts of the host path `path` from the outermost, for [`super::plan::check_destination`]: each with the path
@@ -139,16 +176,30 @@ pub(super) fn walk(dir: &Path, host: &dyn Host) -> Result<Vec<Item>> {
 
 // Writing =============================================================================================================
 
-/// What the destination `path` is.
-pub(super) fn present(path: &Path) -> Result<Present> {
+/// What the destination `path` is. A symlink is reported as leading to a directory only when `follow` is set, which
+/// looks where it leads (and fails when that cannot be told); without it, every link is `Link(Beyond::NotDir)`, for a
+/// link that the copy replaces whatever is behind it.
+pub(super) fn present(path: &Path, follow: bool) -> Result<Present> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            Ok(Present::Link(if path.is_dir() { Beyond::Dir } else { Beyond::NotDir }))
-        }
+        Ok(metadata) if metadata.file_type().is_symlink() => Ok(Present::Link(if follow && leads_to_dir(path)? {
+            Beyond::Dir
+        } else {
+            Beyond::NotDir
+        })),
         Ok(metadata) if metadata.is_dir() => Ok(Present::Dir),
         Ok(_) => Ok(Present::File),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Present::Nothing),
         Err(e) => Err(local_error("cannot inspect", path, e)),
+    }
+}
+
+/// Whether the symlink `path` leads to a directory. A dangling link leads to none; a target that cannot be looked at (a
+/// loop, no permission) is an error.
+fn leads_to_dir(path: &Path) -> Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(local_error("cannot inspect where the symlink leads at", path, e)),
     }
 }
 
@@ -163,7 +214,7 @@ pub(super) fn put_dir(path: &Path, follow: bool, what: &str) -> Result<bool> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => make_dirs(path).map(|()| true),
         Err(e) => Err(local_error("cannot inspect", path, e)),
         Ok(metadata) if metadata.is_dir() => Ok(false),
-        Ok(metadata) if metadata.file_type().is_symlink() && follow && path.is_dir() => Ok(false),
+        Ok(metadata) if metadata.file_type().is_symlink() && follow && leads_to_dir(path)? => Ok(false),
         Ok(metadata) if metadata.file_type().is_symlink() && !follow => {
             // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
             std::fs::remove_file(path)

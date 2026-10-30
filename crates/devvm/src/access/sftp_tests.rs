@@ -251,6 +251,40 @@ fn a_destination_with_a_missing_parent_gets_its_parents(#[fixture(unicode_home)]
     assert_eq!(std::fs::read(&out).unwrap(), b"x");
 }
 
+/// `.` and `..` in a typed destination are read by name, so the destination is made as written and no stray directory
+/// is left by the `a` of `a/../b`.
+#[skuld::test]
+fn a_destination_with_dot_and_dotdot_segments_is_created_as_it_reads(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let proj = project(&env);
+    let file = env.host_file("f.txt", b"x");
+    env.copy_in(&proj, "/new/.").unwrap();
+    assert_eq!(env.guest_tree("/new"), PROJECT);
+    env.copy_in(&proj, "/a/../b").unwrap();
+    assert_eq!(env.guest_tree("/b"), PROJECT);
+    assert!(!env.root().join("a").exists(), "a stray `a` was made");
+    env.copy_in(&file, "/d/e/../f.txt").unwrap();
+    assert_eq!(std::fs::read(env.root().join("d/f.txt")).unwrap(), b"x");
+    assert!(!env.root().join("d/e").exists(), "a stray `e` was made");
+    env.copy_in(&file, "/slash/./").unwrap();
+    assert_eq!(std::fs::read(env.root().join("slash/f.txt")).unwrap(), b"x");
+    env.copy_in(&proj, "~/home/.").unwrap();
+    assert_eq!(env.guest_tree("/home"), PROJECT);
+
+    guest_project(&env);
+    env.guest_file("g.txt", b"y");
+    env.copy_out("/proj", &env.local.join("new").join(".")).unwrap();
+    assert_eq!(tree(&env.local.join("new")), PROJECT);
+    env.copy_out("/proj", &env.local.join("a").join("..").join("b"))
+        .unwrap();
+    assert_eq!(tree(&env.local.join("b")), PROJECT);
+    assert!(!env.local.join("a").exists(), "a stray `a` was made");
+    env.copy_out("/g.txt", &env.local.join("d").join("e").join("..").join("g.txt"))
+        .unwrap();
+    assert_eq!(std::fs::read(env.local.join("d/g.txt")).unwrap(), b"y");
+    assert!(!env.local.join("d/e").exists(), "a stray `e` was made");
+}
+
 // Files ===============================================================================================================
 
 #[skuld::test]
@@ -309,11 +343,17 @@ fn a_slash_after_a_file_destination_is_an_error(#[fixture(unicode_home)] home: &
     let error = env.copy_in(&src, "/plain.txt/").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("/plain.txt"), "{error}");
+    assert!(
+        error.message().contains(&src.display().to_string()),
+        "names the source: {error}"
+    );
     assert_eq!(std::fs::read(env.root().join("plain.txt")).unwrap(), b"old");
 
     let there = env.host_file("there.txt", b"old");
     let error = env.copy_out("/plain.txt", &with_slash(&there)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("/plain.txt"), "names the source: {error}");
+    assert!(error.message().contains("there.txt"), "names the destination: {error}");
     assert_eq!(std::fs::read(&there).unwrap(), b"old");
 }
 
@@ -686,6 +726,67 @@ fn a_destination_that_is_a_symlink_to_a_file_counts_as_a_file_in_both_directions
     assert!(std::fs::read_link(&link).is_err(), "the link itself was replaced");
     assert_eq!(std::fs::read(&link).unwrap(), b"guest f");
     assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+}
+
+/// A file onto a link to nothing replaces the link; with a `/` it is an error, in both directions.
+#[skuld::test]
+fn a_file_onto_a_dangling_link_replaces_it_and_with_a_slash_is_an_error(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"new");
+    env.rig.sshd.add_symlink("/dangling", "/nowhere");
+    let error = env.copy_in(&file, "/dangling/").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains(&file.display().to_string()), "{error}");
+    assert_eq!(env.rig.sshd.link_target("/dangling"), Some("/nowhere".to_owned()));
+    env.copy_in(&file, "/dangling").unwrap();
+    assert_eq!(env.rig.sshd.link_target("/dangling"), None);
+    assert_eq!(std::fs::read(env.root().join("dangling")).unwrap(), b"new");
+
+    env.guest_file("g.txt", b"guest");
+    let link = env.local.join("dangling");
+    symlink(Path::new("nowhere"), &link);
+    let error = env.copy_out("/g.txt", &with_slash(&link)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("/g.txt"), "{error}");
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    env.copy_out("/g.txt", &link).unwrap();
+    assert!(std::fs::read_link(&link).is_err(), "the link itself was replaced");
+    assert_eq!(std::fs::read(&link).unwrap(), b"guest");
+}
+
+/// A destination link whose target cannot be looked at (a loop here) is an error naming it and the cause, not a link to
+/// a file that a file replaces or a directory refuses as "not a directory".
+#[skuld::test]
+fn a_destination_link_that_cannot_be_looked_at_is_an_error_naming_it_and_the_cause(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    let dir = env.local.join("t");
+    env.host_file("t/a.txt", b"a");
+    let file = env.host_file("f.txt", b"new");
+    env.rig.sshd.add_symlink("/loop-a", "/loop-b");
+    env.rig.sshd.add_symlink("/loop-b", "/loop-a");
+    for src in [&dir, &file] {
+        let error = env.copy_in(src, "/loop-a").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{}: {error}", src.display());
+        assert!(error.message().contains("/loop-a"), "{error}");
+        assert!(error.message().contains("symbolic links"), "the cause: {error}");
+        assert!(!error.message().contains("not a directory"), "{error}");
+        assert_eq!(env.rig.sshd.link_target("/loop-a"), Some("/loop-b".to_owned()));
+    }
+
+    env.guest_file("g/a.txt", b"a");
+    env.guest_file("g.txt", b"guest");
+    let (a, b) = (env.local.join("loop-a"), env.local.join("loop-b"));
+    symlink(&b, &a);
+    symlink(&a, &b);
+    for src in ["/g", "/g.txt"] {
+        let error = env.copy_out(src, &a).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{src}: {error}");
+        assert!(error.message().contains(&a.display().to_string()), "{error}");
+        assert!(!error.message().contains("not a directory"), "{error}");
+        assert!(std::fs::symlink_metadata(&a).unwrap().file_type().is_symlink());
+    }
 }
 
 // Metadata ============================================================================================================
@@ -1245,7 +1346,7 @@ fn a_guest_time_before_1970_is_named_and_the_copy_goes_on(#[fixture(unicode_home
     let year_2100 = 4_102_444_800;
     assert!(
         mtime(&out.join("early.txt")) < year_2100,
-        "the wrapped time was applied"
+        "the time is past 2100: the wrapped time was applied"
     );
 }
 

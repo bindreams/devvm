@@ -7,15 +7,18 @@
 //! - A file goes inside a destination that is a directory or ends in `/`, and is the destination otherwise.
 //! - Symlinks are copied as links, never followed; a source path that is itself a link is copied as a link unless it
 //!   ends in `/`. A destination that is a link to a directory is followed, with or without `/`; one that is a link to a
-//!   file counts as a file. Links met inside the merged tree are replaced. A host or guest that cannot store a link is
-//!   an error naming it.
+//!   file or to nothing counts as a file, and one whose target cannot be looked at (a loop, no permission) is an error.
+//!   Links met inside the merged tree are replaced. A host or guest that cannot store a link is an error naming it.
+//! - `.` and `..` in the destination are read by name before anything is made (a symlink before a `..` is not
+//!   followed), so `new/.` is `new` and `a/../b` is `b`, with no stray `a`.
 //! - Contents, the execute bit and the modification time of files are kept (through [`Host`] where the host decides).
 //! - Every file and link is written to `.devvm-partial-<random>` beside its target and renamed over it (on the guest
 //!   side with `posix-rename@openssh.com`), so a failure leaves no partial file at the final path, a read-only target
 //!   is replaced, and a symlink at the destination is replaced, never written through.
 //! - Directories the copy creates keep their modification time too, set after their contents are written; one that was
-//!   already there keeps its own, since setting a time needs ownership. A time SFTP cannot carry (before 1970, after
-//!   2106, or none shown; from a guest, after 2038 as well) is named in a line and the copy goes on.
+//!   already there keeps its own, since setting a time needs ownership. A time SFTP cannot carry for a file or a
+//!   directory the copy creates (before 1970, after 2106, or none shown; from a guest, after 2038 as well) is named in
+//!   a line and the copy goes on.
 //! - The whole source is walked before anything is written: a name the target cannot store (the destination's own
 //!   included), an entry that would land on something of the wrong kind, and a link the target cannot make fail the
 //!   copy, naming it. Nothing at the destination is deleted.
@@ -105,7 +108,9 @@ fn conflict_error(conflict: Conflict, what: &str, side: &str, dest: &str) -> Err
         Conflict::DirOntoNonDir => {
             format!("cannot copy {what} onto the {side} path {dest}, which is not a directory")
         }
-        Conflict::SlashOnNonDir => format!("the {side} destination {dest} ends in `/` but is not a directory"),
+        Conflict::SlashOnNonDir => {
+            format!("cannot copy {what} to the {side} destination {dest}: it ends in `/` but is not a directory")
+        }
     };
     Error::new(ErrorKind::Io, message)
 }
@@ -174,11 +179,17 @@ impl Sftp {
         self.call("asking the guest for its home directory", Remote::home)
     }
 
-    /// The guest path as the guest's SFTP server expects it.
-    fn guest_path(&self, path: &str, guest: &dyn GuestOs) -> Result<String> {
+    /// The guest path `path` with `~` expanded, and the guest's home.
+    fn expanded(&self, path: &str) -> Result<(String, String)> {
         check_guest_path(path)?;
         let home = self.home()?;
-        Ok(guest.sftp_path(&expand_guest_path(path, &home), &home))
+        Ok((expand_guest_path(path, &home), home))
+    }
+
+    /// The guest path as the guest's SFTP server expects it.
+    fn guest_path(&self, path: &str, guest: &dyn GuestOs) -> Result<String> {
+        let (expanded, home) = self.expanded(path)?;
+        Ok(guest.sftp_path(&expanded, &home))
     }
 
     /// Copies the host file, symlink or directory `src` to the guest path `dest`.
@@ -191,7 +202,8 @@ impl Sftp {
         progress: &dyn Progress,
     ) -> Result<()> {
         let slash = dest.ends_with('/');
-        let dest = without_slash(&self.guest_path(dest, guest)?);
+        let (expanded, home) = self.expanded(dest)?;
+        let dest = without_slash(&guest.sftp_path(&plan::normalize(&expanded), &home));
         let top = local::inspect(src, host)?;
         let items = if top.is_dir() {
             local::walk(src, host)?
@@ -203,19 +215,20 @@ impl Sftp {
             to: "the guest",
             problem: &|name| guest.file_name_problem(name),
             key: &|name| guest.name_key(name),
+            times: "1970 to 2106",
         };
         plan::check_names(&items, &rules)?;
         plan::check_destination(&plan::chain(&dest), &rules, &mut |path| {
             self.call(&format!("inspecting the guest path {path}"), {
                 let path = path.clone();
-                move |remote| remote.present(path)
+                move |remote| remote.present(path, false)
             })
         })?;
         let present = self.call(&format!("inspecting the guest path {dest}"), {
             let dest = dest.clone();
-            move |remote| remote.present(dest)
+            move |remote| remote.present(dest, true)
         })?;
-        let what = format!("the host directory {}", src.display());
+        let what = format!("the host {} {}", top.noun(), src.display());
         let placed = plan::place(source_of(&top), slash, present)
             .map_err(|conflict| conflict_error(conflict, &what, "guest", &dest))?;
         // Where a file or link goes, and the one entry that stands for it in the checks.
@@ -248,14 +261,14 @@ impl Sftp {
             Some((_, entries)) => (entries, false),
             None => (&items, plan::root_is_fresh(present)),
         };
-        plan::check_clashes(
+        let created = plan::check_clashes(
             checked,
             root_fresh,
             &rules,
             &mut |rel| {
                 let path = plan::join_all(&dest, rel);
                 self.call(&format!("inspecting the guest path {path}"), move |remote| {
-                    remote.present(path)
+                    remote.present(path, false)
                 })
             },
             &|rel| (source_path(rel), plan::join_all(&dest, rel)),
@@ -276,7 +289,7 @@ impl Sftp {
             src.display(),
             total(&top, &items)
         ));
-        for note in plan::time_notes(&top, &items, &source_path) {
+        for note in plan::time_notes(&rules, &top, &items, &created, &source_path) {
             progress.message(&note);
         }
         match placed {
@@ -341,7 +354,7 @@ impl Sftp {
         progress: &dyn Progress,
     ) -> Result<()> {
         let slash = local::ends_with_separator(dest);
-        let dest = local::without_trailing_separator(dest);
+        let dest = local::lexically_normal(&local::without_trailing_separator(dest));
         let follow = src.ends_with('/');
         let src = self.guest_path(src, guest)?;
         let top = self
@@ -363,11 +376,12 @@ impl Sftp {
             to: "this host",
             problem: &|name| host.file_name_problem(name),
             key: &|name| host.name_key(name),
+            times: "1970 to 2038",
         };
         plan::check_names(&items, &rules)?;
-        plan::check_destination(&local::chain(&dest), &rules, &mut |path| local::present(path))?;
-        let present = local::present(&dest)?;
-        let what = format!("the guest directory {src}");
+        plan::check_destination(&local::chain(&dest), &rules, &mut |path| local::present(path, false))?;
+        let present = local::present(&dest, true)?;
+        let what = format!("the guest {} {src}", top.noun());
         let placed = plan::place(source_of(&top), slash, present)
             .map_err(|conflict| conflict_error(conflict, &what, "host", &dest.display().to_string()))?;
         // Where a file or link goes, and the one entry that stands for it in the checks.
@@ -397,11 +411,11 @@ impl Sftp {
             Some((_, entries)) => (entries, false),
             None => (&items, plan::root_is_fresh(present)),
         };
-        plan::check_clashes(
+        let created = plan::check_clashes(
             checked,
             root_fresh,
             &rules,
-            &mut |rel| local::present(&host_path(rel)),
+            &mut |rel| local::present(&host_path(rel), false),
             &|rel| (source_path(rel), host_path(rel).display().to_string()),
         )?;
         // Last: the probe makes a link, which no failing check may leave behind.
@@ -416,7 +430,7 @@ impl Sftp {
             target.display(),
             total(&top, &items)
         ));
-        for note in plan::time_notes(&top, &items, &source_path) {
+        for note in plan::time_notes(&rules, &top, &items, &created, &source_path) {
             progress.message(&note);
         }
         match placed {

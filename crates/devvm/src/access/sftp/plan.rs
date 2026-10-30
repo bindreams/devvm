@@ -35,7 +35,7 @@ impl Kind {
         matches!(self, Kind::Dir { .. })
     }
 
-    fn noun(&self) -> &'static str {
+    pub fn noun(&self) -> &'static str {
         match self {
             Kind::Dir { .. } => "directory",
             Kind::File { .. } => "file",
@@ -124,16 +124,28 @@ pub(super) fn entries<'a>(top: &'a Kind, items: &'a [Item]) -> impl Iterator<Ite
     std::iter::once((&[][..], top)).chain(items.iter().map(|item| (item.rel.as_slice(), &item.kind)))
 }
 
-/// A line for each entry whose modification time is not kept: SFTP carries seconds from 1970 to 2106 only, and a
-/// server may show none.
-pub(super) fn time_notes(top: &Kind, items: &[Item], path: PathOf) -> Vec<String> {
+/// A line for each entry whose modification time the copy would set and cannot: a file always (it is written), a
+/// directory only when the copy creates it (`created`, from [`check_clashes`]; the root is the empty path). A directory
+/// that is already there keeps its own time. SFTP carries seconds within `rules.times` only, and a server may show
+/// none.
+pub(super) fn time_notes(
+    rules: &Rules,
+    top: &Kind,
+    items: &[Item],
+    created: &HashSet<Vec<String>>,
+    path: PathOf,
+) -> Vec<String> {
     entries(top, items)
-        .filter(|(_, kind)| matches!(kind, Kind::File { mtime: None, .. } | Kind::Dir { mtime: None }))
+        .filter(|(rel, kind)| match kind {
+            Kind::File { mtime, .. } => mtime.is_none(),
+            Kind::Dir { mtime } => mtime.is_none() && created.contains(*rel),
+            Kind::Link { .. } => false,
+        })
         .map(|(rel, _)| {
             format!(
-                "the modification time of {} is not kept: it is missing or cannot be told from a time outside 1970 to \
-                 2038, which SFTP carries in 32 bits",
-                path(rel)
+                "the modification time of {} is not kept: it is missing or outside {}, which is all SFTP carries",
+                path(rel),
+                rules.times
             )
         })
         .collect()
@@ -166,14 +178,15 @@ pub(super) fn root_is_fresh(present: Present) -> bool {
 /// Refuses an entry of the tree that would land on something of the wrong kind: a directory on a file, anything else
 /// on a directory. Entries below one that the copy creates or replaces meet nothing, so they are not looked up.
 /// `present` looks up the destination of the entry at the given relative path; `paths` spells the source and the
-/// destination of that entry.
+/// destination of that entry. Returns the directories the copy creates, the root (the empty path) among them when
+/// `root_fresh`.
 pub(super) fn check_clashes(
     items: &[Item],
     root_fresh: bool,
     rules: &Rules,
     present: &mut dyn FnMut(&[String]) -> Result<Present>,
     paths: &dyn Fn(&[String]) -> (String, String),
-) -> Result<()> {
+) -> Result<HashSet<Vec<String>>> {
     let mut fresh: HashSet<&[String]> = HashSet::new();
     for item in items {
         let (parent, _) = item.rel.split_at(item.rel.len() - 1);
@@ -212,7 +225,11 @@ pub(super) fn check_clashes(
             ));
         }
     }
-    Ok(())
+    let mut created: HashSet<Vec<String>> = fresh.into_iter().map(<[String]>::to_vec).collect();
+    if root_fresh {
+        created.insert(Vec::new());
+    }
+    Ok(created)
 }
 
 // Names ===============================================================================================================
@@ -225,6 +242,8 @@ pub(super) struct Rules<'a> {
     pub to: &'a str,
     pub problem: &'a dyn Fn(&str) -> Option<String>,
     pub key: &'a dyn Fn(&str) -> String,
+    /// The span of times that a source of this side can give SFTP, in words: `1970 to 2106`.
+    pub times: &'a str,
 }
 
 /// Refuses a name of the destination the user typed that the copy would create and the target cannot store. `chain`
@@ -353,6 +372,32 @@ pub(super) fn parent_of(path: &str) -> String {
         Some(i) => trimmed[..i].to_owned(),
         None if trimmed.is_empty() => "/".to_owned(),
         None => ".".to_owned(),
+    }
+}
+
+/// The guest path `path` with its `.` segments dropped and each `..` cancelled against the name before it, by name only
+/// (a symlink before a `..` is not followed), so a destination is created exactly as it reads. A `..` at the root stays
+/// at the root; one with nothing before it stays; no segment left is `.`.
+pub(super) fn normalize(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => match parts.last() {
+                Some(&last) if last != ".." => {
+                    parts.pop();
+                }
+                _ if absolute => {}
+                _ => parts.push(part),
+            },
+            _ => parts.push(part),
+        }
+    }
+    match (absolute, parts.is_empty()) {
+        (true, _) => format!("/{}", parts.join("/")),
+        (false, true) => ".".to_owned(),
+        (false, false) => parts.join("/"),
     }
 }
 

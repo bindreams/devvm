@@ -108,8 +108,15 @@ impl Remote {
         }
     }
 
-    /// Whether the symlink `path` leads to a directory. A loop and a dangling link lead to none.
+    /// Whether the symlink `path` leads to a directory. A dangling link leads to none; a target that cannot be looked at
+    /// (a loop, no permission) is an error.
     async fn leads_to_dir(&self, path: &str) -> Result<bool> {
+        Ok(self.stat(path).await?.is_some_and(|attrs| attrs.file_type().is_dir()))
+    }
+
+    /// Whether the symlink `path` of a source tree leads to a directory, as far as the guest says: the link is copied
+    /// as it is, so a target that cannot be looked at (a loop, no permission) counts as none.
+    async fn source_leads_to_dir(&self, path: &str) -> Result<bool> {
         match self.session.metadata(path).await {
             Ok(attrs) => Ok(attrs.file_type().is_dir()),
             Err(SftpError::Status(_)) => Ok(false),
@@ -117,14 +124,16 @@ impl Remote {
         }
     }
 
-    /// What the destination `path` is.
-    pub(super) async fn present(self, path: String) -> Result<Present> {
+    /// What the destination `path` is. A symlink is reported as leading to a directory only when `follow` is set, which
+    /// looks where it leads (and fails when that cannot be told); without it, every link is `Link(Beyond::NotDir)`, for
+    /// a link that the copy replaces whatever is behind it.
+    pub(super) async fn present(self, path: String, follow: bool) -> Result<Present> {
         let Some(attrs) = self.lstat(&path).await? else {
             return Ok(Present::Nothing);
         };
         Ok(match attrs.file_type() {
             FileType::Dir => Present::Dir,
-            FileType::Symlink if self.leads_to_dir(&path).await? => Present::Link(Beyond::Dir),
+            FileType::Symlink if follow && self.leads_to_dir(&path).await? => Present::Link(Beyond::Dir),
             FileType::Symlink => Present::Link(Beyond::NotDir),
             FileType::File | FileType::Other => Present::File,
         })
@@ -157,7 +166,7 @@ impl Remote {
                         ),
                     ));
                 }
-                let to_dir = self.leads_to_dir(path).await?;
+                let to_dir = self.source_leads_to_dir(path).await?;
                 Ok(Kind::Link { target, to_dir })
             }
             FileType::Other => Err(Error::new(

@@ -1,7 +1,9 @@
 use super::{
-    Beyond, Conflict, Item, Kind, Place, Present, Rules, Source, base_name, check_listing, check_names, parent_of,
-    place,
+    Beyond, Conflict, Item, Kind, Place, Present, Rules, Source, base_name, check_listing, check_names, normalize,
+    parent_of, place, time_notes,
 };
+use std::collections::HashSet;
+
 use crate::ErrorKind;
 use crate::host::names;
 
@@ -59,6 +61,7 @@ fn a_target_refuses_the_names_it_cannot_store_and_two_names_it_takes_for_one() {
         to: "the guest",
         problem: &names::windows_problem,
         key: &names::windows_key,
+        times: "",
     };
     check_names(&items(&["a", "a/b", "c.txt"]), &rules).unwrap();
     for (paths, expect) in [
@@ -79,6 +82,7 @@ fn a_target_refuses_the_names_it_cannot_store_and_two_names_it_takes_for_one() {
         to: "this host",
         problem: &names::posix_problem,
         key: &|name| name.to_owned(),
+        times: "",
     };
     check_names(&items(&["Readme", "README", "con", "a?b"]), &posix).unwrap();
 }
@@ -113,6 +117,7 @@ fn a_clash_is_looked_for_only_below_what_the_copy_does_not_create() {
         to: "the guest",
         problem: &|_| None,
         key: &|name| name.to_owned(),
+        times: "",
     };
     let file = |path: &str| Item {
         rel: path.split('/').map(str::to_owned).collect(),
@@ -125,17 +130,19 @@ fn a_clash_is_looked_for_only_below_what_the_copy_does_not_create() {
     let dir = |path: &str| items(&[path]).pop().unwrap();
     // `d` is a directory, `d/f` a file; what the destination holds at each path, and which paths are looked up.
     let tree = [dir("d"), file("d/f")];
-    // (root starts empty, what is at `d`, what is at `d/f`, paths looked up, error expected)
-    let table: &[(bool, Present, Present, &[&str], bool)] = &[
-        (true, Dir, Dir, &[], false),
-        (false, Nothing, Dir, &["d"], false),
-        (false, Link(ToDir), Dir, &["d"], false),
-        (false, Dir, Nothing, &["d", "d/f"], false),
-        (false, Dir, Link(ToDir), &["d", "d/f"], false),
-        (false, Dir, Dir, &["d", "d/f"], true),
-        (false, File, Nothing, &["d"], true),
+    // (root starts empty, what is at `d`, what is at `d/f`, paths looked up, directories the copy creates or None for
+    // an error). The root is the empty path.
+    #[allow(clippy::type_complexity)]
+    let table: &[(bool, Present, Present, &[&str], Option<&[&str]>)] = &[
+        (true, Dir, Dir, &[], Some(&["", "d"])),
+        (false, Nothing, Dir, &["d"], Some(&["d"])),
+        (false, Link(ToDir), Dir, &["d"], Some(&["d"])),
+        (false, Dir, Nothing, &["d", "d/f"], Some(&[])),
+        (false, Dir, Link(ToDir), &["d", "d/f"], Some(&[])),
+        (false, Dir, Dir, &["d", "d/f"], None),
+        (false, File, Nothing, &["d"], None),
     ];
-    for (root_fresh, at_d, at_f, looked_up, fails) in table {
+    for (root_fresh, at_d, at_f, looked_up, creates) in table {
         let mut asked = Vec::new();
         let result = super::check_clashes(
             &tree,
@@ -148,7 +155,14 @@ fn a_clash_is_looked_for_only_below_what_the_copy_does_not_create() {
             &|rel| (rel.join("/"), format!("/dest/{}", rel.join("/"))),
         );
         assert_eq!(asked, *looked_up, "{root_fresh} {at_d:?} {at_f:?}");
-        assert_eq!(result.is_err(), *fails, "{root_fresh} {at_d:?} {at_f:?}: {result:?}");
+        match creates {
+            None => assert!(result.is_err(), "{root_fresh} {at_d:?} {at_f:?}: {result:?}"),
+            Some(creates) => {
+                let want: HashSet<String> = creates.iter().map(|path| (*path).to_owned()).collect();
+                let got: HashSet<String> = result.unwrap().iter().map(|rel| rel.join("/")).collect();
+                assert_eq!(got, want, "{root_fresh} {at_d:?} {at_f:?}");
+            }
+        }
     }
 }
 
@@ -165,4 +179,82 @@ fn the_root_of_a_merged_tree_is_fresh_only_when_missing() {
     ] {
         assert_eq!(super::root_is_fresh(present), fresh, "{present:?}");
     }
+}
+
+#[skuld::test]
+fn a_guest_destination_is_resolved_by_name() {
+    for (given, want) in [
+        ("/h/new/.", "/h/new"),
+        ("/h/a/../b", "/h/b"),
+        ("/h/a/b/../../c", "/h/c"),
+        ("/h/./x//y", "/h/x/y"),
+        ("/h/a/..", "/h"),
+        ("/..", "/"),
+        ("/a/../..", "/"),
+        ("/", "/"),
+        ("new/.", "new"),
+        ("a/../b", "b"),
+        ("a/..", "."),
+        (".", "."),
+        ("..", ".."),
+        ("../a", "../a"),
+        ("a/../../b", "../b"),
+        ("/.hidden/..x", "/.hidden/..x"),
+    ] {
+        assert_eq!(normalize(given), want, "{given}");
+    }
+}
+
+#[skuld::test]
+fn a_time_that_is_not_kept_is_named_only_for_what_the_copy_sets() {
+    let rules = Rules {
+        from: "host",
+        to: "the guest",
+        problem: &|_| None,
+        key: &|name| name.to_owned(),
+        times: "1970 to 2106",
+    };
+    let file = |path: &str, mtime| Item {
+        rel: path.split('/').map(str::to_owned).collect(),
+        kind: Kind::File {
+            executable: false,
+            mtime,
+            size: 0,
+        },
+    };
+    let dir = |path: &str, mtime| Item {
+        rel: path.split('/').map(str::to_owned).collect(),
+        kind: Kind::Dir { mtime },
+    };
+    let top = Kind::Dir { mtime: None };
+    let tree = [
+        dir("made", None),
+        dir("kept", None),
+        dir("set", Some(5)),
+        file("made/lost.txt", None),
+        file("made/fine.txt", Some(5)),
+    ];
+    let path = |rel: &[String]| format!("/src/{}", rel.join("/"));
+    let notes = |created: &[&[&str]]| {
+        let created: HashSet<Vec<String>> = created
+            .iter()
+            .map(|rel| rel.iter().map(|part| (*part).to_owned()).collect())
+            .collect();
+        time_notes(&rules, &top, &tree, &created, &path).join(
+            "
+",
+        )
+    };
+    // A directory the copy does not create keeps its own time, so nothing is said about it; a file is always written.
+    let said = notes(&[&["made"]]);
+    assert!(said.contains("of /src/made is not kept"), "{said}");
+    assert!(said.contains("of /src/made/lost.txt is not kept"), "{said}");
+    assert!(!said.contains("/src/kept"), "{said}");
+    assert!(!said.contains("/src/set"), "{said}");
+    assert!(!said.contains("/src/made/fine.txt"), "{said}");
+    assert!(!said.contains("of /src/ is not kept"), "the root is not made: {said}");
+    assert!(said.contains("outside 1970 to 2106"), "{said}");
+    // The root is the empty path.
+    let said = notes(&[&[]]);
+    assert!(said.contains("of /src/ is not kept"), "{said}");
 }
