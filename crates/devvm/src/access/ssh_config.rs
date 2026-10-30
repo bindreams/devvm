@@ -71,19 +71,28 @@ fn ssh_path(path: &Path) -> Result<String> {
     Ok(out)
 }
 
-/// `path` as ssh reads it back unchanged from a value it expands: `IdentityFile`, `UserKnownHostsFile` and `Include`
-/// treat `%x` as a token (`%%` is a literal `%`) and `${NAME}` as an environment variable, which has no escape.
-fn expansion_literal(path: &str) -> Result<String> {
+/// Refuses a `path` with `${`: ssh_config reads it as an environment variable in `IdentityFile`,
+/// `UserKnownHostsFile` and `Include`, and it has no escape.
+fn check_no_variable(path: &str) -> Result<()> {
     if path.contains("${") {
         return Err(Error::new(
             ErrorKind::Io,
             format!("{path:?} contains `${{`, which ssh_config reads as an environment variable and cannot escape"),
         ));
     }
+    Ok(())
+}
+
+/// `path` as ssh reads it back unchanged from `IdentityFile` or `UserKnownHostsFile`, which treat `%x` as a token:
+/// `%%` is a literal `%`.
+fn value_literal(path: &str) -> Result<String> {
+    check_no_variable(path)?;
     Ok(path.replace('%', "%%"))
 }
 
-/// `path` as a glob that matches only that path: each of `[`, `]`, `*` and `?` in a one-character class.
+/// `path` as a glob that matches only that path: each of `[`, `]`, `*` and `?` in a one-character class. A `%`
+/// becomes `?`: OpenSSH 10 expands `%` tokens in an `Include` and older versions do not, so no spelling of a literal
+/// `%` works in both, while a pattern without one does.
 fn glob_literal(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for c in path.chars() {
@@ -93,6 +102,7 @@ fn glob_literal(path: &str) -> String {
                 out.push(c);
                 out.push(']');
             }
+            '%' => out.push('?'),
             other => out.push(other),
         }
     }
@@ -127,8 +137,8 @@ fn conf_text(e: &SshConfigEntry) -> Result<String> {
          \x20   StrictHostKeyChecking yes\n",
         name = e.name,
         port = e.port,
-        identity = quoted(&expansion_literal(&ssh_path(&e.identity)?)?),
-        known_hosts = quoted(&expansion_literal(&ssh_path(&e.known_hosts)?)?),
+        identity = quoted(&value_literal(&ssh_path(&e.identity)?)?),
+        known_hosts = quoted(&value_literal(&ssh_path(&e.known_hosts)?)?),
         id = e.id,
     ))
 }
@@ -211,7 +221,9 @@ impl SshConfigDir {
 
     /// Writes the static `config` that includes every `<name>.conf`, unless it is already exactly that.
     pub(crate) fn ensure_top_level(&self) -> Result<()> {
-        let dir = glob_literal(&expansion_literal(&ssh_path(&self.dir)?)?);
+        let dir = ssh_path(&self.dir)?;
+        check_no_variable(&dir)?;
+        let dir = glob_literal(&dir);
         let glob = format!("{dir}/*{CONF_SUFFIX}");
         let text = format!("Include {}\n", quoted(&glob));
         let _lock = self.lock()?;

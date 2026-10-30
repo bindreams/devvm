@@ -334,8 +334,13 @@ fn check_system_ssh(base: &Path) {
     assert_eq!(value("user"), "user");
     assert_eq!(value("stricthostkeychecking"), "true");
     assert_eq!(value("hostkeyalias"), format!("devvm-{ID}"));
-    assert_eq!(value("identityfile"), slashed(&e.identity));
-    assert_eq!(value("userknownhostsfile"), slashed(&e.known_hosts));
+    // `ssh -G` prints these as written or expanded, depending on the version: `%%` or `%`.
+    for (key, path) in [("identityfile", &e.identity), ("userknownhostsfile", &e.known_hosts)] {
+        let literal = slashed(path);
+        let escaped = literal.replace('%', "%%");
+        let printed = value(key);
+        assert!(printed == literal || printed == escaped, "{key}: {printed}");
+    }
 }
 
 #[skuld::test]
@@ -367,7 +372,7 @@ fn percent_signs_and_glob_characters_in_paths_are_escaped(#[fixture(unicode_home
         "{text}"
     );
     let config = std::fs::read_to_string(dir.path().join("config")).unwrap();
-    let state = slashed(dir.path()).replace('%', "%%").replace("[w]", "[[]w[]]");
+    let state = slashed(dir.path()).replace('%', "?").replace("[w]", "[[]w[]]");
     assert_eq!(
         config,
         format!(
@@ -380,6 +385,8 @@ fn percent_signs_and_glob_characters_in_paths_are_escaped(#[fixture(unicode_home
 #[skuld::test]
 fn glob_literal_matches_only_itself() {
     assert_eq!(glob_literal("a*b?c[d]e"), "a[*]b[?]c[[]d[]]e");
+    // No `%` is left for ssh to read as a token; a wildcard stands for it.
+    assert_eq!(glob_literal("50%/x"), "50?/x");
     assert_eq!(glob_literal("plain/path"), "plain/path");
 }
 
