@@ -71,8 +71,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # The windows-latest image's ANSI code page is 1252 (not UTF-8), so this job claims it: the claim test fails if
+      # the image changes it. The other OSes leave it empty, which the test treats as no claim.
       - name: Test
         run: cargo test --workspace --locked
+        env:
+          DEVVM_COVERS_ACP: ${{ runner.os == 'Windows' && '1252' || '' }}
 
       # The packaged crate must carry every file the library includes (the embedded recipes).
       - name: Package
