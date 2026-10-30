@@ -11,6 +11,10 @@ use crate::host::Host;
 use crate::store::layers::LayerDir;
 use crate::{Arch, Error, ErrorKind, Result};
 
+#[cfg(test)]
+#[path = "storage_tests.rs"]
+mod storage_tests;
+
 /// The disk file of a layer and of an instance's staging.
 pub(crate) const DISK: &str = "disk.qcow2";
 /// A layer's UEFI variables, and the copy each instance boots from.
@@ -83,8 +87,25 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
     })
 }
 
+/// `dir/vars.fd`, which every machine boots with: `Store` naming it when `dir` has none. A copy that skipped it would
+/// make a machine QEMU refuses to start, found only at its first boot.
+fn require_vars(dir: &Path, what: &str) -> Result<PathBuf> {
+    let vars = dir.join(VARS);
+    if vars.is_file() {
+        return Ok(vars);
+    }
+    Err(Error::new(
+        ErrorKind::Store,
+        format!(
+            "{what} {} has no {VARS}, the firmware variables a machine needs to boot",
+            dir.display()
+        ),
+    ))
+}
+
 impl Storage for QemuStorage {
     fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: u64) -> Result<()> {
+        let vars = require_vars(layer.path(), "the layer")?;
         let backing = layer.path().join(DISK);
         self.qemu_img(&[
             "create".as_ref(),
@@ -97,12 +118,8 @@ impl Storage for QemuStorage {
             into.as_os_str(),
             size.to_string().as_ref(),
         ])?;
-        let vars = layer.path().join(VARS);
-        if vars.is_file() {
-            let beside = into.parent().unwrap_or(Path::new("")).join(VARS);
-            copy_file(&vars, &beside)?;
-        }
-        Ok(())
+        let beside = into.parent().unwrap_or(Path::new("")).join(VARS);
+        copy_file(&vars, &beside)
     }
 
     /// The layer is a copy of the instance disk, which is only read. Its backing file stays the absolute path the
@@ -110,6 +127,10 @@ impl Storage for QemuStorage {
     /// level of the chain would add `../../<key>/<generation>/` to it, and a chain of four layers outgrows Windows'
     /// 260-character path limit, which QEMU does not lift.
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()> {
+        let vars = require_vars(
+            instance_disk.parent().unwrap_or(Path::new("")),
+            "the instance directory",
+        )?;
         let info = self.info(instance_disk)?;
         if info.get("full-backing-filename").is_none() {
             return Err(Error::new(
@@ -121,11 +142,7 @@ impl Storage for QemuStorage {
             ));
         }
         copy_file(instance_disk, &staging.path().join(DISK))?;
-        let vars = instance_disk.parent().unwrap_or(Path::new("")).join(VARS);
-        if vars.is_file() {
-            copy_file(&vars, &staging.path().join(VARS))?;
-        }
-        Ok(())
+        copy_file(&vars, &staging.path().join(VARS))
     }
 
     fn import_base(&self, image: &Path, arch: Arch, staging: &LayerDir) -> Result<()> {
