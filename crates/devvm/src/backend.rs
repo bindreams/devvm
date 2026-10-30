@@ -21,6 +21,7 @@ mod backend_tests;
 pub(crate) mod contract;
 #[cfg(test)]
 pub(crate) mod fake;
+pub(crate) mod qemu;
 
 pub(crate) trait Backend: Send + Sync {
     /// Starts a machine and returns it **frozen**: its identity is known (`Machine::record`) but it has not run. The

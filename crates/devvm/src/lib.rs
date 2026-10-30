@@ -64,6 +64,10 @@ mod test_helpers {
         ("layer-builder", crate::store::layers::cross_tests::layer_builder),
         ("lease-holder", crate::store::layers::gc_tests::lease_holder),
         ("fetch-artifact", crate::store::fetch::http_tests::fetch_artifact),
+        (
+            "qemu-extract",
+            crate::backend::qemu::sidecar::sidecar_tests::extract_and_wait,
+        ),
     ];
 
     pub fn run_if_requested() {
