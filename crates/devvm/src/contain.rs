@@ -224,10 +224,18 @@ impl VmProcess {
 
     /// Blocks until the process has exited, with no time limit.
     pub(crate) fn wait(&self) -> Result<()> {
+        (self.exit_waiter())()
+    }
+
+    /// What blocks until this process has exited, for a thread of its own. It holds the identity and nothing else, so
+    /// it outlives this value.
+    pub(crate) fn exit_waiter(&self) -> impl FnOnce() -> Result<()> + Send + 'static {
         let id = self.id();
-        cosca::Process::from_id(id)
-            .wait()
-            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e))
+        move || {
+            cosca::Process::from_id(id)
+                .wait()
+                .map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e))
+        }
     }
 
     /// Kills the process and returns only after it has exited. A frozen process never runs. An already-dead process

@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use super::os::{self, Watch};
 use crate::backend::contract::{self, ContractTarget};
 use crate::backend::qemu::backend::QemuBackend;
+use crate::backend::qemu::exit_watch::ExitWatch;
 use crate::backend::qemu::qmp::{Qmp, QmpEndpoint};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::{DISK, QemuStorage, VARS};
@@ -286,13 +287,13 @@ fn is_running(record: &MachineRecord) -> bool {
 /// The host port QEMU has bound for the machine's first forward, read over QMP.
 fn forwarded_host_port(record: &MachineRecord) -> u16 {
     let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &|| true, &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(&endpoint, &ExitWatch::new(), &MemoryProgress::default()).unwrap();
     qmp.forwarded_ports().unwrap()[0].host
 }
 
 fn run_state(record: &MachineRecord) -> String {
     let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &|| true, &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(&endpoint, &ExitWatch::new(), &MemoryProgress::default()).unwrap();
     qmp.query_status().unwrap().state
 }
 
@@ -622,7 +623,7 @@ fn vm_qemu_shutdown_of_a_paused_machine_fails_naming_the_state_and_returns(
     let record = machine.record();
     {
         let endpoint = QmpEndpoint::from_record(&record.qmp);
-        Qmp::connect(&endpoint, &|| true, &MemoryProgress::default())
+        Qmp::connect(&endpoint, &ExitWatch::new(), &MemoryProgress::default())
             .unwrap()
             .stop()
             .unwrap();
@@ -651,7 +652,7 @@ fn vm_qemu_reset_of_a_paused_machine_fails_naming_the_state_and_returns(
     machine.resume().unwrap();
     {
         let endpoint = QmpEndpoint::from_record(&machine.record().qmp);
-        Qmp::connect(&endpoint, &|| true, &MemoryProgress::default())
+        Qmp::connect(&endpoint, &ExitWatch::new(), &MemoryProgress::default())
             .unwrap()
             .stop()
             .unwrap();

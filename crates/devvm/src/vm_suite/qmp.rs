@@ -19,10 +19,9 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let mut qemu = BareQemu::spawn(install, home);
+    let qemu = BareQemu::spawn(install, home);
     let endpoint = qemu.sock.endpoint.clone();
-    let alive = std::sync::Mutex::new(&mut qemu);
-    let mut session = Qmp::connect(&endpoint, &|| alive.lock().unwrap().alive(), &MemoryProgress::default()).unwrap();
+    let mut session = Qmp::connect(&endpoint, &qemu.exit, &MemoryProgress::default()).unwrap();
 
     // The machine is frozen (-S), and `info usernet` lists the forward with the port QEMU chose.
     assert_eq!(session.query_status().unwrap().state, "prelaunch");

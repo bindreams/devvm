@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use qapi::qmp::{self, QapiCapabilities};
 use qapi::{Command, Execute};
 
+use super::exit_watch::{End, ExitWatch, Registration};
 use super::ports::{Forward, parse_usernet};
 use super::uds::UnixStream;
 use crate::exit::Progress;
@@ -118,6 +119,8 @@ pub(crate) struct Qmp {
     writer: UnixStream,
     events: VecDeque<QmpEvent>,
     endpoint: QmpEndpoint,
+    /// Declared before the lock so that it lets go of the connection before the lock is released.
+    registration: Registration,
     _lock: FileLock,
 }
 
@@ -133,17 +136,25 @@ fn lost(endpoint: &QmpEndpoint, what: &str) -> Error {
 
 impl Qmp {
     /// Connects to the socket, negotiates, and holds the lock file. It waits for the QEMU process to listen for as long
-    /// as `alive()` says the process lives, re-checking at every attempt: the listener is up about 30 ms after spawn.
-    /// A machine that is not alive on entry fails before a lock file is touched.
-    pub(crate) fn connect(ep: &QmpEndpoint, alive: &dyn Fn() -> bool, progress: &dyn Progress) -> Result<Qmp> {
-        let gone = |why: &str| {
-            Error::new(
+    /// as `exit` does not report the process gone, trying again every few milliseconds: the listener is up about 30 ms
+    /// after spawn. The process exiting ends the wait, and also any later read or write on the session. A machine
+    /// that has exited fails before a lock file is touched.
+    pub(crate) fn connect(ep: &QmpEndpoint, exit: &ExitWatch, progress: &dyn Progress) -> Result<Qmp> {
+        let stopped = |end: End, when: &str| match end {
+            End::Exited => Error::new(
                 ErrorKind::ConnectionLost,
-                format!("cannot reach QEMU at {}: {why}", ep.path().display()),
-            )
+                format!(
+                    "cannot reach QEMU at {}: the QEMU process exited {when}",
+                    ep.path().display()
+                ),
+            ),
+            End::Unwatchable(why) => Error::new(
+                ErrorKind::Io,
+                format!("cannot wait for the QEMU process at {}: {why}", ep.path().display()),
+            ),
         };
-        if !alive() {
-            return Err(gone("the QEMU process is not running"));
+        if let Some(end) = exit.ended() {
+            return Err(stopped(end, "before devvm connected"));
         }
         let mut lock = FileLock::open(&ep.lock_path())?;
         lock.lock(
@@ -158,12 +169,9 @@ impl Qmp {
             match UnixStream::connect(ep.path()) {
                 Ok(stream) => break stream,
                 Err(e) if is_not_listening(&e) => {
-                    if !alive() {
-                        return Err(gone(
-                            "the QEMU process exited before its control socket accepted a connection",
-                        ));
+                    if let Some(end) = exit.pause() {
+                        return Err(stopped(end, "before its control socket accepted a connection"));
                     }
-                    std::thread::yield_now();
                 }
                 Err(e) => {
                     return Err(Error::io(
@@ -174,18 +182,25 @@ impl Qmp {
                 }
             }
         };
-        let reader = stream.try_clone().map_err(|e| {
-            Error::io(
-                ErrorKind::Io,
-                format!("cannot duplicate the connection to {}", ep.path().display()),
-                e,
-            )
-        })?;
+        let duplicate = |what: &str| {
+            stream.try_clone().map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot duplicate the connection to {} {what}", ep.path().display()),
+                    e,
+                )
+            })
+        };
+        let reader = duplicate("for reading")?;
+        let registration = exit
+            .register(duplicate("for the exit watch")?)
+            .map_err(|end| stopped(end, "while devvm was connecting"))?;
         let mut qmp = Qmp {
             reader: BufReader::new(reader),
             writer: stream,
             events: VecDeque::new(),
             endpoint: ep.clone(),
+            registration,
             _lock: lock,
         };
         qmp.negotiate()?;
@@ -209,8 +224,9 @@ impl Qmp {
         let mut line = String::new();
         let read = match self.reader.read_line(&mut line) {
             Ok(read) => read,
-            // A QEMU that exits resets the connection on Windows instead of closing it: either way, it is gone.
-            Err(e) if is_closed(&e) => 0,
+            // A QEMU that exits resets the connection on Windows instead of closing it, and the exit watch shuts it
+            // down: either way, it is gone.
+            Err(e) if is_closed(&e) || self.registration.exited() => 0,
             Err(e) => {
                 return Err(Error::io(
                     ErrorKind::Io,
@@ -260,7 +276,7 @@ impl Qmp {
             .and_then(|()| self.writer.flush())
             .map_err(|e| {
                 Error::io(
-                    if is_closed(&e) {
+                    if is_closed(&e) || self.registration.exited() {
                         ErrorKind::ConnectionLost
                     } else {
                         ErrorKind::Io

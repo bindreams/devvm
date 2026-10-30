@@ -9,3 +9,13 @@ use uds_windows as platform;
 #[cfg(test)]
 pub(crate) use platform::UnixListener;
 pub(crate) use platform::UnixStream;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub(crate) use windows::interrupt;
+
+#[cfg(not(windows))]
+mod other;
+#[cfg(not(windows))]
+pub(crate) use other::interrupt;

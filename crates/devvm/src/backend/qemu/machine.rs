@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::args::guest_port;
+use super::exit_watch::ExitWatch;
 use super::qmp::{Qmp, QmpEndpoint, VmEnd};
 use crate::backend::{Endpoint, Machine, MachineRecord, SshEndpoint};
 use crate::contain::VmProcess;
@@ -34,6 +35,8 @@ pub(super) struct QemuMachine {
     /// The forwards this machine was launched with; their host ports are read back once it runs.
     forwards: Vec<Endpoint>,
     endpoint: QmpEndpoint,
+    /// The process's exit, so that a session blocked on a dead QEMU wakes.
+    exit: ExitWatch,
     /// Where QEMU's output goes: `launch` was given the directory, `attach` has only the record's serial log.
     log: PathBuf,
     /// What the guest is, for the host to say whether it can reset one; `None` for a machine found with `attach`, which
@@ -60,6 +63,7 @@ impl QemuMachine {
     ) -> QemuMachine {
         QemuMachine {
             endpoint: QmpEndpoint::from_record(&record.qmp),
+            exit: ExitWatch::watching(vm.exit_waiter()),
             log,
             arch: Some(arch),
             vm,
@@ -82,6 +86,7 @@ impl QemuMachine {
     ) -> QemuMachine {
         QemuMachine {
             endpoint: QmpEndpoint::from_record(&record.qmp),
+            exit: ExitWatch::watching(vm.exit_waiter()),
             log: qemu_log(record.serial_log.parent().unwrap_or(Path::new(""))),
             arch: None,
             ssh: record.ssh.iter().map(|e| (e.endpoint, e.addr)).collect(),
@@ -97,9 +102,7 @@ impl QemuMachine {
 
     /// A session with QEMU. `ConnectionLost` means QEMU is gone or going.
     fn open(&self) -> Result<Qmp> {
-        // A process whose liveness cannot be established is treated as alive: the connect keeps trying.
-        let alive = || self.vm.is_alive().unwrap_or(true);
-        Qmp::connect(&self.endpoint, &alive, &*self.progress)
+        Qmp::connect(&self.endpoint, &self.exit, &*self.progress)
     }
 
     fn connect(&self) -> Result<Qmp> {

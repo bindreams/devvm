@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::Dirs;
 use crate::backend::qemu::args::escape_option_value;
+use crate::backend::qemu::exit_watch::ExitWatch;
 use crate::backend::qemu::qmp::QmpEndpoint;
 use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
 use crate::config::Config;
@@ -85,6 +86,8 @@ impl Drop for Sock {
 pub struct BareQemu {
     child: Child,
     pub sock: Sock,
+    /// Reports when the process exits.
+    pub exit: ExitWatch,
 }
 
 impl BareQemu {
@@ -123,7 +126,19 @@ impl BareQemu {
         let child = command
             .spawn()
             .unwrap_or_else(|e| panic!("cannot start {}: {e}", install.tool("qemu-system-x86_64").display()));
-        BareQemu { child, sock }
+        let pid = child.id();
+        let exit = ExitWatch::watching(move || match cosca::Process::from_pid(pid) {
+            cosca::identity::Resolved::Found(process) => process
+                .wait()
+                .map_err(|e| crate::Error::new(crate::ErrorKind::Io, format!("cannot wait for QEMU {pid}: {e}"))),
+            // Exited before it was looked up.
+            cosca::identity::Resolved::Gone => Ok(()),
+            cosca::identity::Resolved::Unknown => Err(crate::Error::new(
+                crate::ErrorKind::Io,
+                format!("the OS refused to identify QEMU {pid}"),
+            )),
+        });
+        BareQemu { child, sock, exit }
     }
 
     /// Whether the process is still running.

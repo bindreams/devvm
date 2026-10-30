@@ -1,0 +1,146 @@
+//! Whether a QEMU process has exited, learned from the process and not from its control socket.
+//!
+//! Windows can lose the end of an AF_UNIX stream: a reader blocked on a socket whose peer died may never wake. One
+//! thread per machine waits for the process to exit and, when it does, interrupts the connection devvm holds to it, so
+//! a blocked read or write returns at once. The wait is the OS's, not a timer.
+
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+use super::uds::{UnixStream, interrupt};
+use crate::Result;
+
+#[cfg(test)]
+#[path = "exit_watch_tests.rs"]
+mod exit_watch_tests;
+
+/// How long a wait for the control socket to appear lasts before it tries again. An exit ends the wait at once.
+const RETRY: Duration = Duration::from_millis(10);
+
+/// Why a watch ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum End {
+    /// The process exited.
+    Exited,
+    /// The OS would not say when the process exits (the text says why); it may be alive.
+    Unwatchable(String),
+}
+
+/// The exit of one process. Clones share it.
+#[derive(Clone)]
+pub(crate) struct ExitWatch {
+    shared: Arc<Shared>,
+}
+
+struct Shared {
+    state: Mutex<State>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct State {
+    end: Option<End>,
+    /// The connection to wake on exit: a clone of the live session's socket, owned by the watch until the session
+    /// unregisters or the exit interrupts it. Both take it out of this slot under the mutex, so the interrupt never runs
+    /// on a closed handle and a closing session never races it.
+    connection: Option<UnixStream>,
+}
+
+impl ExitWatch {
+    /// A watch that reports an exit only when told to (`report_exit`).
+    pub(crate) fn new() -> ExitWatch {
+        ExitWatch {
+            shared: Arc::new(Shared {
+                state: Mutex::default(),
+                changed: Condvar::new(),
+            }),
+        }
+    }
+
+    /// A watch of the process `wait` blocks on. The thread it starts ends when `wait` returns, which is when the process
+    /// exits; it holds nothing of the machine.
+    pub(crate) fn watching(wait: impl FnOnce() -> Result<()> + Send + 'static) -> ExitWatch {
+        let watch = ExitWatch::new();
+        let thread_watch = watch.clone();
+        let started = std::thread::Builder::new()
+            .name("qemu-exit-watch".to_owned())
+            .spawn(move || match wait() {
+                Ok(()) => thread_watch.report_exit(),
+                Err(e) => thread_watch.report_unwatchable(e.to_string()),
+            });
+        if let Err(e) = started {
+            watch.report_unwatchable(format!("cannot start the thread that waits for the process: {e}"));
+        }
+        watch
+    }
+
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.shared.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Records the exit and wakes everything that waits on it: the registered connection is interrupted, so a read
+    /// blocked on it returns, and a connect wait ends.
+    pub(crate) fn report_exit(&self) {
+        let mut state = self.lock();
+        state.end.get_or_insert(End::Exited);
+        if let Some(connection) = state.connection.take() {
+            interrupt(&connection);
+        }
+        self.shared.changed.notify_all();
+    }
+
+    fn report_unwatchable(&self, why: String) {
+        self.lock().end.get_or_insert(End::Unwatchable(why));
+        self.shared.changed.notify_all();
+    }
+
+    /// How the watch ended, if it has.
+    pub(crate) fn ended(&self) -> Option<End> {
+        self.lock().end.clone()
+    }
+
+    /// Waits for the watch to end or for `RETRY` to pass, whichever is first; the caller re-checks its own condition.
+    pub(crate) fn pause(&self) -> Option<End> {
+        let state = self.lock();
+        if state.end.is_some() {
+            return state.end.clone();
+        }
+        let (state, _) = self
+            .shared
+            .changed
+            .wait_timeout(state, RETRY)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.end.clone()
+    }
+
+    /// Hands `connection` (a clone of the session's socket) to the watch, to be interrupted if the process exits. Fails
+    /// with how the watch ended when it has. One session at a time: the control socket's lock file guarantees it.
+    pub(crate) fn register(&self, connection: UnixStream) -> std::result::Result<Registration, End> {
+        let mut state = self.lock();
+        if let Some(end) = state.end.clone() {
+            return Err(end);
+        }
+        debug_assert!(state.connection.is_none(), "two sessions on one control socket");
+        state.connection = Some(connection);
+        Ok(Registration { watch: self.clone() })
+    }
+}
+
+/// A session's place in the watch. Dropping it takes the connection back out, so the watch never holds a socket open
+/// past its session.
+pub(crate) struct Registration {
+    watch: ExitWatch,
+}
+
+impl Registration {
+    /// Whether the process is known to have exited.
+    pub(crate) fn exited(&self) -> bool {
+        self.watch.ended() == Some(End::Exited)
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.watch.lock().connection = None;
+    }
+}

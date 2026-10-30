@@ -1,6 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -8,6 +7,7 @@ use serde_json::{Value, json};
 
 use super::{Qmp, QmpEndpoint, VmEnd};
 use crate::ErrorKind;
+use crate::backend::qemu::exit_watch::ExitWatch;
 use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::{UnixListener, UnixStream};
 use crate::instance::record::InstanceId;
@@ -124,7 +124,7 @@ impl Sock {
     }
 
     fn connect(&self) -> crate::Result<Qmp> {
-        Qmp::connect(&self.endpoint, &|| true, &MemoryProgress::default())
+        Qmp::connect(&self.endpoint, &ExitWatch::new(), &MemoryProgress::default())
     }
 }
 
@@ -202,54 +202,13 @@ fn four_sequential_clients_each_get_the_greeting() {
     server.join().unwrap();
 }
 
-/// A liveness predicate that tells the test each time it is asked.
-fn watched(alive: &Arc<AtomicBool>) -> (Box<dyn Fn() -> bool + Send + Sync>, mpsc::Receiver<()>) {
-    let (sender, receiver) = mpsc::channel();
-    let sender = Mutex::new(sender);
-    let alive = alive.clone();
-    (
-        Box::new(move || {
-            let _ = sender.lock().unwrap().send(());
-            alive.load(Ordering::SeqCst)
-        }),
-        receiver,
-    )
-}
-
-#[skuld::test]
-fn connect_gives_up_when_the_vm_dies_while_nothing_listens() {
-    let sock = sock();
-    let alive = Arc::new(AtomicBool::new(true));
-    let (predicate, asked) = watched(&alive);
-
-    let error = std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &predicate, &MemoryProgress::default()));
-        // Once for the entry check and once after the first refused attempt: the loop is running.
-        asked.recv().unwrap();
-        asked.recv().unwrap();
-        alive.store(false, Ordering::SeqCst);
-        client
-            .join()
-            .unwrap()
-            .err()
-            .expect("connect must fail once the VM is dead")
-    });
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("exited"), "{error}");
-}
-
 #[skuld::test]
 fn connect_waits_for_the_listener() {
     let sock = sock();
-    let alive = Arc::new(AtomicBool::new(true));
-    let (predicate, asked) = watched(&alive);
+    let exit = ExitWatch::new();
 
     std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &predicate, &MemoryProgress::default()).map(drop));
-        asked.recv().unwrap();
-        asked.recv().unwrap();
-        // The listener appears after the client has tried and failed.
+        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).map(drop));
         let (server, _) = serve(sock.listen(), 1, |_, _| {});
         client.join().unwrap().unwrap();
         server.join().unwrap();
@@ -257,13 +216,53 @@ fn connect_waits_for_the_listener() {
 }
 
 #[skuld::test]
-fn a_machine_that_is_not_alive_fails_before_a_lock_file_is_touched() {
+fn a_machine_that_has_exited_fails_before_a_lock_file_is_touched() {
     let sock = sock();
-    let error = Qmp::connect(&sock.endpoint, &|| false, &MemoryProgress::default())
+    let exit = ExitWatch::new();
+    exit.report_exit();
+    let error = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default())
         .err()
         .unwrap();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(!sock.endpoint.lock_path().exists());
+}
+
+/// A watch whose process is a channel: it exits when the sender is dropped.
+fn fake_process() -> (mpsc::Sender<()>, ExitWatch) {
+    let (sender, receiver) = mpsc::channel::<()>();
+    let watch = ExitWatch::watching(move || {
+        let _ = receiver.recv();
+        Ok(())
+    });
+    (sender, watch)
+}
+
+#[skuld::test]
+fn a_process_that_exits_while_connect_waits_for_the_listener_ends_the_wait() {
+    let sock = sock();
+    let (process, exit) = fake_process();
+
+    let error = std::thread::scope(|scope| {
+        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()));
+        drop(process);
+        client.join().unwrap().err().expect("nothing ever listens")
+    });
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("exited"), "{error}");
+}
+
+#[skuld::test]
+fn a_process_that_cannot_be_watched_fails_connect_naming_why() {
+    let sock = sock();
+    let exit = ExitWatch::watching(|| Err(crate::Error::new(ErrorKind::Io, "the wait was refused")));
+
+    let error = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default())
+        .err()
+        .expect("nothing ever listens");
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("the wait was refused"), "{error}");
 }
 
 #[skuld::test]
@@ -284,7 +283,7 @@ fn the_qmp_lock_serializes_two_processes() {
 
     let (progress, messages) = ChannelProgress::new();
     std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &|| true, &*progress).map(drop));
+        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &ExitWatch::new(), &*progress).map(drop));
         let message = messages.recv().unwrap();
         assert!(message.starts_with("waiting for "), "{message}");
         // Releasing the lock is what lets the second connect proceed.
@@ -605,6 +604,51 @@ fn a_server_that_closes_after_query_status_loses_the_next_command() {
     let error = qmp.system_powerdown().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+}
+
+#[skuld::test]
+fn a_process_that_exits_while_a_read_is_blocked_ends_the_read() {
+    let sock = sock();
+    let (process, exit) = fake_process();
+    let (asked, asked_rx) = mpsc::channel();
+    let (finished, finished_rx) = mpsc::channel::<()>();
+    // The server takes the command and never answers; it keeps the connection open until the client is done, so the
+    // read can end only because the process exited.
+    let (server, _) = serve(sock.listen(), 1, move |session, _| {
+        let (name, _) = session.command().unwrap();
+        asked.send(name).unwrap();
+        let _ = finished_rx.recv();
+    });
+    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
+
+    let error = std::thread::scope(|scope| {
+        let client = scope.spawn(move || qmp.query_status());
+        assert_eq!(asked_rx.recv().unwrap(), "query-status");
+        drop(process);
+        client.join().unwrap().unwrap_err()
+    });
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    finished.send(()).unwrap();
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn a_command_sent_after_the_process_exited_is_a_lost_connection() {
+    let sock = sock();
+    let exit = ExitWatch::new();
+    let (finished, finished_rx) = mpsc::channel::<()>();
+    let (server, _) = serve(sock.listen(), 1, move |_, _| {
+        let _ = finished_rx.recv();
+    });
+    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
+
+    exit.report_exit();
+    let error = qmp.stop().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    finished.send(()).unwrap();
+    server.join().unwrap();
 }
 
 /// Not a socket test: Windows' AF_UNIX sockets sometimes never deliver the end of the stream to a reader after the peer
