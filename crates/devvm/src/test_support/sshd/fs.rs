@@ -204,6 +204,12 @@ impl SftpFs {
         } else {
             let metadata = std::fs::metadata(self.real(&path)).map_err(from_io)?;
             attrs.size = Some(metadata.len());
+            attrs.mtime = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|since| u32::try_from(since.as_secs()).ok());
+            attrs.atime = attrs.mtime;
             attrs.permissions = Some(if metadata.is_dir() {
                 0o040000 | mode.unwrap_or(0o755)
             } else {
@@ -251,6 +257,21 @@ impl SftpFs {
         if exists && !replace {
             return Err(failure("the destination exists"));
         }
+        let moved_link = self.state.links.lock().unwrap().remove(&old);
+        if let Some(target) = moved_link {
+            // A link replaces a file, a link or nothing, never a directory.
+            if self.real(&new).is_dir() {
+                self.state.links.lock().unwrap().insert(old, target);
+                return Err(failure("the destination is a directory"));
+            }
+            if self.real(&new).is_file() {
+                std::fs::remove_file(self.real(&new)).map_err(from_io)?;
+            }
+            self.state.links.lock().unwrap().insert(new, target);
+            return Ok(());
+        }
+        // A file takes the place of a link, as rename(2) replaces the link itself.
+        self.state.links.lock().unwrap().remove(&new);
         if self.state.sinks.lock().unwrap().contains_key(&old) {
             self.move_records(&old, &new);
             return Ok(());
@@ -295,6 +316,10 @@ impl Handler for SftpFs {
         let path = self.resolve(&filename, true)?;
         let writing = pflags.contains(OpenFlags::WRITE);
         if pflags.contains(OpenFlags::CREATE) && self.is_locked(&path) && !self.real(&path).exists() {
+            return Err(StatusCode::PermissionDenied.into());
+        }
+        let mode = self.state.modes.lock().unwrap().get(&path).copied();
+        if writing && mode.is_some_and(|mode| mode & 0o222 == 0) && self.real(&path).exists() {
             return Err(StatusCode::PermissionDenied.into());
         }
         let generated = self.state.generated.lock().unwrap().get(&path).copied();
@@ -430,6 +455,18 @@ impl Handler for SftpFs {
 
     async fn setstat(&mut self, id: u32, path: String, attrs: FileAttributes) -> Result<Status, StatusReply> {
         let path = self.resolve(&path, true)?;
+        if let Some(mtime) = attrs.mtime {
+            // Generated and discarded files have no time to set.
+            let real = self.real(&path);
+            if real.is_file() {
+                let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(mtime));
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&real)
+                    .and_then(|file| file.set_modified(time))
+                    .map_err(from_io)?;
+            }
+        }
         if let Some(permissions) = attrs.permissions {
             self.state.modes.lock().unwrap().insert(path, permissions & 0o7777);
         }
@@ -503,6 +540,9 @@ impl Handler for SftpFs {
         if self.is_locked(&normalize(&path)) {
             return Err(StatusCode::PermissionDenied.into());
         }
+        if self.attributes(&path, false).is_ok() {
+            return Err(failure("File exists"));
+        }
         std::fs::create_dir(self.real(&normalize(&path))).map_err(from_io)?;
         Ok(ok(id))
     }
@@ -535,12 +575,17 @@ impl Handler for SftpFs {
         }
     }
 
-    async fn symlink(&mut self, id: u32, linkpath: String, targetpath: String) -> Result<Status, StatusReply> {
-        self.state
-            .links
-            .lock()
-            .unwrap()
-            .insert(normalize(&linkpath), targetpath);
+    /// As OpenSSH's sftp-server reads it, whatever the draft says: the first string is what the link holds, the second
+    /// is where it is made.
+    async fn symlink(&mut self, id: u32, target: String, link: String) -> Result<Status, StatusReply> {
+        let link = normalize(&link);
+        if self.is_locked(&link) {
+            return Err(StatusCode::PermissionDenied.into());
+        }
+        if self.attributes(&link, false).is_ok() {
+            return Err(failure("File exists"));
+        }
+        self.state.links.lock().unwrap().insert(link, target);
         Ok(ok(id))
     }
 

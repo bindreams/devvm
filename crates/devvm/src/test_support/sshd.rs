@@ -207,6 +207,31 @@ impl TestSshd {
             .insert(path.to_owned(), target.to_owned());
     }
 
+    /// The permission bits of `path`, as if a client had set them. A file without a write bit refuses to be opened for
+    /// writing.
+    pub fn set_mode(&self, path: &str, mode: u32) {
+        self.state.modes.lock().unwrap().insert(path.to_owned(), mode);
+    }
+
+    /// What the symlink `path` points to, if it is one.
+    pub fn link_target(&self, path: &str) -> Option<String> {
+        self.state.links.lock().unwrap().get(path).cloned()
+    }
+
+    /// Every symlink as `(path, target)`, sorted by path.
+    pub fn links(&self) -> Vec<(String, String)> {
+        let mut links: Vec<_> = self
+            .state
+            .links
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(path, target)| (path.clone(), target.clone()))
+            .collect();
+        links.sort();
+        links
+    }
+
     /// The permission bits a client set on `path` when it created it.
     pub fn mode_of(&self, path: &str) -> Option<u32> {
         self.state.modes.lock().unwrap().get(path).copied()
