@@ -83,16 +83,29 @@ fn check_no_variable(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuses an `Include` path with `%`: OpenSSH 10 expands `%` tokens there and older versions do not, so no spelling
+/// of a literal `%` reads the same in both, and a wildcard in its place would also match a sibling directory's confs.
+fn check_no_percent(path: &str) -> Result<()> {
+    if path.contains('%') {
+        return Err(Error::new(
+            ErrorKind::Io,
+            format!(
+                "{path:?} contains `%`, which ssh cannot include portably; set XDG_STATE_HOME to a path without one"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// `path` as ssh reads it back unchanged from `IdentityFile` or `UserKnownHostsFile`, which treat `%x` as a token:
-/// `%%` is a literal `%`.
+/// `%%` is a literal `%` on every OpenSSH.
 fn value_literal(path: &str) -> Result<String> {
     check_no_variable(path)?;
     Ok(path.replace('%', "%%"))
 }
 
-/// `path` as a glob that matches only that path: each of `[`, `]`, `*` and `?` in a one-character class. A `%`
-/// becomes `?`: OpenSSH 10 expands `%` tokens in an `Include` and older versions do not, so no spelling of a literal
-/// `%` works in both, while a pattern without one does.
+/// `path` as a glob that matches only that path: each of `[`, `]`, `*` and `?` in a one-character class. `path` has
+/// no `%` (`check_no_percent`).
 fn glob_literal(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for c in path.chars() {
@@ -102,7 +115,6 @@ fn glob_literal(path: &str) -> String {
                 out.push(c);
                 out.push(']');
             }
-            '%' => out.push('?'),
             other => out.push(other),
         }
     }
@@ -223,6 +235,7 @@ impl SshConfigDir {
     pub(crate) fn ensure_top_level(&self) -> Result<()> {
         let dir = ssh_path(&self.dir)?;
         check_no_variable(&dir)?;
+        check_no_percent(&dir)?;
         let dir = glob_literal(&dir);
         let glob = format!("{dir}/*{CONF_SUFFIX}");
         let text = format!("Include {}\n", quoted(&glob));

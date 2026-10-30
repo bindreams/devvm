@@ -299,11 +299,11 @@ fn top_level_config_is_static_and_idempotent(#[fixture(unicode_home)] home: &Pat
     assert_eq!(std::fs::read_to_string(&config).unwrap(), want);
 }
 
-/// What `ssh -G` makes of the config for `web`, with the entry's files below `base`. Runs the real OpenSSH; fails
-/// naming it when it is not on `PATH`.
-fn check_system_ssh(base: &Path) {
-    let dir = SshConfigDir::new(base.join("ssh"));
-    let e = entry(base, "web", 2222);
+/// What `ssh -G` makes of the config for `web`, with the ssh directory below `state` and the entry's files below
+/// `files`. Runs the real OpenSSH; fails naming it when it is not on `PATH`.
+fn check_system_ssh(state: &Path, files: &Path) {
+    let dir = SshConfigDir::new(state.join("ssh"));
+    let e = entry(files, "web", 2222);
     dir.write_entry(&e, &host_public()).unwrap();
     dir.ensure_top_level().unwrap();
     let mut cmd = Command::new("ssh");
@@ -345,22 +345,32 @@ fn check_system_ssh(base: &Path) {
 
 #[skuld::test]
 fn system_ssh_accepts_the_generated_config(#[fixture(unicode_home)] home: &Path) {
-    check_system_ssh(home);
+    check_system_ssh(home, home);
 }
 
-/// `%` is a token and `[`, `]` are glob syntax to ssh; a state directory can hold all of them.
+/// `[` and `]` are glob syntax and `$` starts a variable to ssh; a state directory can hold them (`*` and `?` cannot
+/// be created on Windows, so `glob_literal_matches_only_itself` covers those).
 #[skuld::test]
-fn system_ssh_reads_a_state_directory_with_percent_and_glob_characters(#[fixture(unicode_home)] home: &Path) {
-    let base = home.join("50% [work] $HOME{x}");
+fn system_ssh_reads_a_state_directory_with_glob_characters_and_a_dollar(#[fixture(unicode_home)] home: &Path) {
+    let base = home.join("[work] $HOME{x}");
     std::fs::create_dir(&base).unwrap();
-    check_system_ssh(&base);
+    check_system_ssh(&base, &base);
+}
+
+/// `%` is a token in `IdentityFile` and `UserKnownHostsFile`, where `%%` is a literal one on every OpenSSH.
+#[skuld::test]
+fn system_ssh_reads_key_files_below_a_directory_with_a_percent(#[fixture(unicode_home)] home: &Path) {
+    let files = home.join("50% keys");
+    std::fs::create_dir(&files).unwrap();
+    check_system_ssh(home, &files);
 }
 
 #[skuld::test]
-fn percent_signs_and_glob_characters_in_paths_are_escaped(#[fixture(unicode_home)] home: &Path) {
-    let base = home.join("50% [w]");
-    let dir = SshConfigDir::new(base.join("ssh"));
-    let e = entry(&base, "web", 22);
+fn percent_signs_in_key_paths_and_glob_characters_in_the_state_path_are_escaped(#[fixture(unicode_home)] home: &Path) {
+    let state = home.join("[w]");
+    let files = home.join("50% keys");
+    let dir = SshConfigDir::new(state.join("ssh"));
+    let e = entry(&files, "web", 22);
     dir.write_entry(&e, &host_public()).unwrap();
     dir.ensure_top_level().unwrap();
     let text = std::fs::read_to_string(conf(&dir, "web")).unwrap();
@@ -372,7 +382,7 @@ fn percent_signs_and_glob_characters_in_paths_are_escaped(#[fixture(unicode_home
         "{text}"
     );
     let config = std::fs::read_to_string(dir.path().join("config")).unwrap();
-    let state = slashed(dir.path()).replace('%', "?").replace("[w]", "[[]w[]]");
+    let state = slashed(dir.path()).replace("[w]", "[[]w[]]");
     assert_eq!(
         config,
         format!(
@@ -385,8 +395,6 @@ fn percent_signs_and_glob_characters_in_paths_are_escaped(#[fixture(unicode_home
 #[skuld::test]
 fn glob_literal_matches_only_itself() {
     assert_eq!(glob_literal("a*b?c[d]e"), "a[*]b[?]c[[]d[]]e");
-    // No `%` is left for ssh to read as a token; a wildcard stands for it.
-    assert_eq!(glob_literal("50%/x"), "50?/x");
     assert_eq!(glob_literal("plain/path"), "plain/path");
 }
 
@@ -401,4 +409,18 @@ fn a_path_ssh_would_read_as_an_environment_variable_is_refused(#[fixture(unicode
     let error = dir.ensure_top_level().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(!dir.path().join("config").exists());
+}
+
+/// No spelling of a literal `%` in an `Include` reads the same on OpenSSH 9 and 10, and a wildcard in its place would
+/// also match a sibling directory's confs, so the directory is refused.
+#[skuld::test]
+fn a_state_directory_with_a_percent_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let base = home.join("50% done");
+    let dir = SshConfigDir::new(base.join("ssh"));
+    let error = dir.ensure_top_level().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    let message = error.message();
+    assert!(message.contains("50% done"), "names the path: {message}");
+    assert!(message.contains("XDG_STATE_HOME"), "says what to set: {message}");
+    assert!(!dir.path().join("config").exists(), "nothing was written");
 }
