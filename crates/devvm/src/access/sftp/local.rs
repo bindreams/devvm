@@ -31,7 +31,7 @@ fn sftp_seconds(time: std::io::Result<SystemTime>) -> Option<u32> {
     u32::try_from(since.as_secs()).ok()
 }
 
-// Reading ==============================================================================================================
+// Reading =============================================================================================================
 
 /// The tree entry that `metadata` describes at `path`, or `None` for a directory's contents to be walked.
 fn kind_of(path: &Path, metadata: &std::fs::Metadata, host: &dyn Host) -> Result<Kind> {
@@ -112,7 +112,7 @@ pub(super) fn walk(dir: &Path, host: &dyn Host) -> Result<Vec<Item>> {
     Ok(items)
 }
 
-// Writing ==============================================================================================================
+// Writing =============================================================================================================
 
 /// What the destination `path` is.
 pub(super) fn present(path: &Path) -> Result<Present> {

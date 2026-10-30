@@ -34,7 +34,7 @@ pub(super) struct Item {
     pub kind: Kind,
 }
 
-// What lands where =====================================================================================================
+// What lands where ====================================================================================================
 
 /// The source of a copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,7 +99,7 @@ pub(super) fn place(source: Source, slash: bool, dest: Present) -> std::result::
     }
 }
 
-// Names ================================================================================================================
+// Names ===============================================================================================================
 
 /// Which names a target can store, and how it compares them.
 pub(super) struct Rules<'a> {
@@ -174,7 +174,7 @@ pub(super) fn check_listing(dir: &str, names: &[String]) -> Result<()> {
     Ok(())
 }
 
-// Guest paths ==========================================================================================================
+// Guest paths =========================================================================================================
 
 pub(super) fn join(base: &str, name: &str) -> String {
     if base.ends_with('/') {
