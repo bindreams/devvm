@@ -244,13 +244,22 @@ fn a_cleaned_up_partial_file_leaves_the_write_error_as_it_was(#[fixture(unicode_
 /// The variable a CI job sets to claim that its runs cover this ANSI code page.
 const COVERS_ACP: &str = "DEVVM_COVERS_ACP";
 
+/// Set in the pinned child to the locale its manifest asks for, so the child does not start a child of its own and its
+/// claim test knows the pin is what it is checking.
+const PINNED_CHILD: &str = "DEVVM_PINNED_CHILD";
+
+/// The locale whose ANSI code page is 1252 on every host, whatever the host's own locale.
+const PINNED_LOCALE: &str = "en-US";
+
+const CLAIM_TEST: &str = "the_host_code_page_is_the_one_this_run_claims";
+
 /// Runs the claim test only where a job claims a code page. Without a claim the test is ignored and the reason says
 /// which code page this host has and where the others are covered, so a local run never reads as covering 1252.
 fn code_page_claimed() -> Result<(), String> {
     match std::env::var(COVERS_ACP) {
         Ok(claimed) if !claimed.is_empty() => Ok(()),
         _ => Err(format!(
-            "no code page claimed; this host's ACP is {}; 1252 is covered by CI (Test job on windows-latest, vm job)",
+            "no code page claimed; this host's ACP is {}; 1252 is covered by CI (Test job on windows-latest)",
             current()
                 .ansi_code_page()
                 .map_or_else(|| "not applicable".to_owned(), |acp| acp.to_string()),
@@ -262,11 +271,15 @@ fn code_page_claimed() -> Result<(), String> {
 fn the_host_code_page_is_the_one_this_run_claims() {
     let claimed = std::env::var(COVERS_ACP).unwrap();
     let actual = current().ansi_code_page();
+    let why = match std::env::var(PINNED_CHILD) {
+        Ok(locale) => format!("the manifest's activeCodePage={locale} did not pin the process to ANSI code page {claimed}"),
+        Err(_) => "the Test job on windows-latest claims 1252, and a runner image that changed its code page no longer                    covers it"
+            .to_owned(),
+    };
     assert_eq!(
         actual.map(|acp| acp.to_string()),
         Some(claimed.clone()),
-        "{COVERS_ACP}={claimed} but this host's ANSI code page is {actual:?}: the Test job and the vm job on \
-         windows-latest claim 1252, and a runner image that changed its code page no longer covers it",
+        "{COVERS_ACP}={claimed} but this process's ANSI code page is {actual:?}: {why}",
     );
 }
 
@@ -276,20 +289,21 @@ fn ansi_code_page_is_some_on_windows_and_none_elsewhere() {
     assert_eq!(UnsupportedHost.ansi_code_page(), None);
 }
 
-/// Set in the pinned child, so it does not start a child of its own.
-const PINNED_CHILD: &str = "DEVVM_PINNED_CHILD";
-
-/// A manifest that gives the process its locale's legacy ANSI code page. Windows reads `<exe>.manifest` for an
-/// executable that has no embedded manifest, which the lib test binary does not.
-const LEGACY_ACP_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+/// A manifest that gives the process the ANSI code page of a locale. Windows reads `<exe>.manifest` for an executable
+/// that has no embedded manifest, which the lib test binary does not.
+fn pinning_manifest(locale: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
-      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">Legacy</activeCodePage>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">{locale}</activeCodePage>
     </windowsSettings>
   </application>
 </assembly>
-"#;
+"#
+    )
+}
 
 fn can_pin_code_page_1252() -> Result<(), String> {
     if std::env::var_os(PINNED_CHILD).is_some() {
@@ -302,29 +316,49 @@ fn can_pin_code_page_1252() -> Result<(), String> {
     }
 }
 
+/// Whether the libtest report in `stdout` lists `test` as passed (`test <name> ... ok`, padded between the words).
+fn reports_passed(stdout: &str, test: &str) -> bool {
+    stdout.lines().any(|line| {
+        let words: Vec<_> = line.split_whitespace().collect();
+        words == ["test", test, "...", "ok"]
+    })
+}
+
 /// Covers 1252 on a host whose own code page is another (this PC's is UTF-8): the whole lib suite runs again in a copy
-/// of this binary whose manifest asks for the legacy code page. The child also runs the claim test, so a pin that did
-/// not take fails the run.
+/// of this binary whose manifest asks for the code page of `en-US`. The child also runs the claim test, and this test
+/// requires the child's report to list it as passed, so a pin that did not take fails the run.
 #[skuld::test(requires = [can_pin_code_page_1252])]
 fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
     let dir = skuld::TempDir::new().unwrap();
     let exe = dir.join("devvm-lib-acp-1252.exe");
     std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
-    std::fs::write(dir.join("devvm-lib-acp-1252.exe.manifest"), LEGACY_ACP_MANIFEST).unwrap();
+    std::fs::write(
+        dir.join("devvm-lib-acp-1252.exe.manifest"),
+        pinning_manifest(PINNED_LOCALE),
+    )
+    .unwrap();
 
     let mut cmd = std::process::Command::new(&exe);
     cmd.env("DEVVM_SKIP_VM_TESTS", "1")
         .env(COVERS_ACP, "1252")
-        .env(PINNED_CHILD, "1")
+        .env(PINNED_CHILD, PINNED_LOCALE)
+        .env_remove("SKULD_LABELS")
         .env_remove(helper::HELPER_VAR);
     current().quiet(&mut cmd);
     let output = cmd.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
         output.status.success(),
-        "the lib suite failed at ANSI code page 1252 ({}):\n{}\n{}",
+        "the lib suite failed at ANSI code page 1252 (manifest activeCodePage={PINNED_LOCALE}; {}):
+{stdout}
+{}",
         output.status,
-        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        reports_passed(&stdout, CLAIM_TEST),
+        "the pinned run exited 0 but did not report {CLAIM_TEST} as passed, so it did not run at 1252:
+{stdout}",
     );
 }
