@@ -5,14 +5,15 @@ use std::sync::Arc;
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
 use crate::guest::{BaseBuilder, GuestOs, Guests, SeedMedia, SeedSpec};
+use crate::host::names;
 use crate::recipe::Shell;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
 pub(crate) struct FakeGuests;
 
 impl Guests for FakeGuests {
-    fn os(&self, _kind: GuestKind) -> Result<Arc<dyn GuestOs>> {
-        Ok(Arc::new(FakeGuestOs))
+    fn os(&self, kind: GuestKind) -> Result<Arc<dyn GuestOs>> {
+        Ok(Arc::new(FakeGuestOs { kind }))
     }
 
     fn builder(&self, kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
@@ -23,7 +24,10 @@ impl Guests for FakeGuests {
     }
 }
 
-struct FakeGuestOs;
+/// A guest whose file names follow the rules of its kind: a Windows guest refuses what Windows refuses.
+struct FakeGuestOs {
+    kind: GuestKind,
+}
 
 impl GuestOs for FakeGuestOs {
     /// A file in `seed.dir` naming the host.
@@ -90,5 +94,19 @@ impl GuestOs for FakeGuestOs {
             .map(|part| (*part).to_owned())
             .chain([script.to_owned()])
             .collect())
+    }
+
+    fn file_name_problem(&self, name: &str) -> Option<String> {
+        match self.kind {
+            GuestKind::Windows => names::windows_problem(name),
+            GuestKind::Linux | GuestKind::Macos => names::posix_problem(name),
+        }
+    }
+
+    fn name_key(&self, name: &str) -> String {
+        match self.kind {
+            GuestKind::Windows => names::windows_key(name),
+            GuestKind::Linux | GuestKind::Macos => name.to_owned(),
+        }
     }
 }

@@ -56,6 +56,18 @@ impl Host for TestHost {
     fn name_key(&self, name: &str) -> String {
         host::current().name_key(name)
     }
+
+    fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        host::current().replace_file(from, to)
+    }
+
+    fn read_link(&self, path: &Path) -> std::io::Result<String> {
+        host::current().read_link(path)
+    }
+
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
+        host::current().make_symlink(target, link, to_dir)
+    }
 }
 
 /// What [`NoAccelHost`] says is missing.
@@ -110,6 +122,18 @@ impl Host for NoAccelHost {
     fn name_key(&self, name: &str) -> String {
         TestHost.name_key(name)
     }
+
+    fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        TestHost.replace_file(from, to)
+    }
+
+    fn read_link(&self, path: &Path) -> std::io::Result<String> {
+        TestHost.read_link(path)
+    }
+
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
+        TestHost.make_symlink(target, link, to_dir)
+    }
 }
 
 /// [`TestHost`] that records the file-permission calls and can be told to fail a private write, to report files as
@@ -118,6 +142,7 @@ impl Host for NoAccelHost {
 #[derive(Default)]
 pub struct RecordingHost {
     windows_names: bool,
+    no_symlinks: bool,
     private_writes: Mutex<Vec<PathBuf>>,
     fail_private_write_at: Mutex<Option<usize>>,
     executable: Mutex<HashSet<PathBuf>>,
@@ -134,6 +159,15 @@ impl RecordingHost {
     pub fn with_windows_names() -> RecordingHost {
         RecordingHost {
             windows_names: true,
+            ..RecordingHost::default()
+        }
+    }
+
+    /// A host that cannot make symlinks, as a Windows host without the privilege: `make_symlink` fails with
+    /// `PermissionDenied`.
+    pub fn without_symlinks() -> RecordingHost {
+        RecordingHost {
+            no_symlinks: true,
             ..RecordingHost::default()
         }
     }
@@ -219,5 +253,23 @@ impl Host for RecordingHost {
             return names::windows_key(name);
         }
         TestHost.name_key(name)
+    }
+
+    fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        TestHost.replace_file(from, to)
+    }
+
+    fn read_link(&self, path: &Path) -> std::io::Result<String> {
+        TestHost.read_link(path)
+    }
+
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
+        if self.no_symlinks {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "the test host cannot make symlinks",
+            ));
+        }
+        TestHost.make_symlink(target, link, to_dir)
     }
 }

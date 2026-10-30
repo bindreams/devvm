@@ -62,4 +62,16 @@ impl Host for UnsupportedHost {
     fn name_key(&self, name: &str) -> String {
         name.to_owned()
     }
+
+    fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
+    fn read_link(&self, path: &Path) -> std::io::Result<String> {
+        perm::read_link(path)
+    }
+
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
+        perm::make_symlink(target, link, to_dir)
+    }
 }

@@ -34,6 +34,11 @@ pub(crate) trait GuestOs: Send + Sync {
     /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
     /// the guest does not have is a `recipe` error.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>>;
+    /// Why `name`, a file name taken from the host, cannot be one file name in a guest directory (a Windows guest
+    /// refuses `a?b` and device names); `None` when it can.
+    fn file_name_problem(&self, name: &str) -> Option<String>;
+    /// `name` the way the guest's file system compares names: two names with the same key are one file there.
+    fn name_key(&self, name: &str) -> String;
 }
 
 pub(crate) trait BaseBuilder: Send + Sync {

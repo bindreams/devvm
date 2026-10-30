@@ -93,6 +93,19 @@ pub(crate) trait Host: Send + Sync {
     /// `name` the way this host's file system compares names: two names with the same key are one file here, so
     /// writing both overwrites the first.
     fn name_key(&self, name: &str) -> String;
+
+    /// Moves the file or symlink `from` over `to`, replacing what is there even when it is read-only (Windows refuses
+    /// to rename over a read-only file). A directory at `to` is an error.
+    fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+
+    /// What the symlink at `path` points to, spelled with `/` as SFTP and Unix guests do; fails with `InvalidData` when
+    /// the target is not valid Unicode.
+    fn read_link(&self, path: &Path) -> std::io::Result<String>;
+
+    /// Creates the symlink `link` pointing to `target`, a `/`-separated text taken from a guest. `to_dir` says whether
+    /// the target is a directory, which Windows needs to know. Fails with `PermissionDenied`, naming the cause, where
+    /// this host cannot make symlinks (Windows without Developer Mode or an elevated token).
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
 }
 
 /// Creates `path` with `options` and writes `bytes`. A file whose write failed is removed, so a half-written secret

@@ -15,6 +15,9 @@ use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
+/// `ERROR_PRIVILEGE_NOT_HELD`: the user may not create symlinks.
+const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
 fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
     let mut buffer = vec![0u16; 260];
@@ -83,5 +86,58 @@ impl Host for WindowsHost {
 
     fn name_key(&self, name: &str) -> String {
         windows_key(name)
+    }
+
+    /// Renaming over a read-only file fails with access denied, so the flag is cleared first and put back if the rename
+    /// still fails.
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "on Windows the flag is the read-only attribute, not Unix mode bits"
+    )]
+    fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let metadata = std::fs::symlink_metadata(to)?;
+                let mut permissions = metadata.permissions();
+                if metadata.file_type().is_symlink() || !permissions.readonly() {
+                    return Err(e);
+                }
+                permissions.set_readonly(false);
+                std::fs::set_permissions(to, permissions.clone())?;
+                std::fs::rename(from, to).inspect_err(|_| {
+                    permissions.set_readonly(true);
+                    let _ = std::fs::set_permissions(to, permissions);
+                })
+            }
+            other => other,
+        }
+    }
+
+    fn read_link(&self, path: &Path) -> std::io::Result<String> {
+        let target = std::fs::read_link(path)?;
+        match target.to_str() {
+            Some(text) => Ok(text.replace('\\', "/")),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("the symlink target {target:?} is not valid Unicode"),
+            )),
+        }
+    }
+
+    /// A target written with `/` is not followed by Windows, so it is stored with `\`.
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
+        let target = target.replace('/', "\\");
+        let made = if to_dir {
+            std::os::windows::fs::symlink_dir(&target, link)
+        } else {
+            std::os::windows::fs::symlink_file(&target, link)
+        };
+        made.map_err(|e| match e.raw_os_error() {
+            Some(ERROR_PRIVILEGE_NOT_HELD) => std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Windows lets only Developer Mode or an elevated token create symlinks",
+            ),
+            _ => e,
+        })
     }
 }
