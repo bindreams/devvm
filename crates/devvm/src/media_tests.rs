@@ -140,3 +140,27 @@ fn an_unwritable_destination_is_an_io_error(#[fixture(unicode_home)] home: &Path
     assert_eq!(error.kind(), crate::ErrorKind::Io);
     assert!(error.message().contains("seed.img"), "{}", error.message());
 }
+
+#[skuld::test]
+fn a_repeated_name_is_refused_whatever_its_case(#[fixture(unicode_home)] home: &Path) {
+    // FAT looks names up case-insensitively, so `USER-DATA` and `user-data` are one directory entry.
+    for (first, second) in [
+        ("user-data", "user-data"),
+        ("user-data", "USER-DATA"),
+        ("\u{e9}", "\u{c9}"),
+    ] {
+        let image = home.join("seed.img");
+        let error = write_cidata_image(
+            &[file(first, b"one"), file("meta-data", b"m"), file(second, b"two")],
+            &image,
+        )
+        .expect_err("two files cannot share a FAT name");
+        assert_eq!(error.kind(), crate::ErrorKind::Internal, "{first} {second}");
+        assert!(
+            error.message().contains(first) && error.message().contains(second),
+            "both names are reported: {}",
+            error.message()
+        );
+        assert!(!image.exists(), "nothing is written for a refused set");
+    }
+}

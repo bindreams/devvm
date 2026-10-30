@@ -32,6 +32,7 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id.
 pub(crate) fn write_cidata_image(files: &[SeedFile], into: &Path) -> Result<Media> {
+    refuse_repeated_names(files)?;
     let image = fat_image(files).map_err(|e| {
         Error::io(
             ErrorKind::Io,
@@ -52,6 +53,26 @@ pub(crate) fn write_cidata_image(files: &[SeedFile], into: &Path) -> Result<Medi
         boot_index: None,
         readonly: true,
     })
+}
+
+/// FAT looks names up case-insensitively, and `fatfs` opens an existing file without truncating it, so two files with
+/// one name would leave the first one's tail behind the second one's bytes.
+fn refuse_repeated_names(files: &[SeedFile]) -> Result<()> {
+    let mut seen: Vec<(String, &str)> = Vec::new();
+    for file in files {
+        let folded = file.name.to_uppercase();
+        if let Some((_, first)) = seen.iter().find(|(name, _)| *name == folded) {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!(
+                    "the seed image would hold `{first}` and `{}` under one FAT name",
+                    file.name
+                ),
+            ));
+        }
+        seen.push((folded, &file.name));
+    }
+    Ok(())
 }
 
 fn fat_image(files: &[SeedFile]) -> std::io::Result<Vec<u8>> {
