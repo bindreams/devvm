@@ -1,0 +1,71 @@
+From: "Doug Cook (WINDOWS)" <dcook@microsoft.com>
+Date: Tue, 18 Aug 2026 17:58:12 +0000
+Subject: [PATCH] target/i386/whpx: handle processor reset
+Message-ID: <LVXPR21MB70093ED095A01CADE104F3A8ADA62@LVXPR21MB7009.namprd21.prod.outlook.com>
+
+WHPX is not properly handling processor reset:
+
+- Does not reset partition, so several registers (e.g. Hypercall,
+  GuestOsId) carry values forward as "Locked" into the next session.
+- Does not clear hypervisor-managed TSC deadline (live-lock).
+- Does not re-arm the wait-for-SIPI trigger, so all CPUs start running
+  immediately after reset.
+
+Some firmware may tolerate this, but OVMF does not. Typical result is
+that boot hangs or ends in triple-fault, e.g.
+
+  qemu-system-x86_64: WHPX: Unexpected VP exit code 4
+
+After this patch, I am able to boot to Windows desktop, reset, and boot
+back to Windows desktop. Tried many times in sequence with no problems.
+Used several different reset mechanisms (OS shutdown menu, external
+"reset", watchdog reset) with no problems.
+
+Resolves: https://gitlab.com/qemu-project/qemu/-/work_items/2402
+Signed-off-by: Doug Cook <dcook@microsoft.com>
+---
+ target/i386/whpx/whpx-all.c | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/target/i386/whpx/whpx-all.c b/target/i386/whpx/whpx-all.c
+index 634d542821..54f9b50536 100644
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -528,6 +528,35 @@ void whpx_set_registers(CPUState *cpu, WHPXStateLevel level)
+ 
+     assert(cpu_is_stopped(cpu) || qemu_cpu_is_self(cpu));
+ 
++    /* Assumes that cpu_synchronize_all_post_reset() runs cpu 0 first. */
++    if (level == WHPX_LEVEL_RESET_STATE && cpu->cpu_index == 0) {
++        hr = whp_dispatch.WHvResetPartition(whpx->partition);
++        if (FAILED(hr)) {
++            error_report("WHPX: Failed to reset partition, hr=%08lx", hr);
++        }
++    }
++
++    /* Reset hypervisor-owned TSC deadline. */
++    if (level == WHPX_LEVEL_RESET_STATE) {
++        WHV_REGISTER_VALUE tsc_deadline = {};
++
++        whpx_set_reg(cpu, WHvX64RegisterTscDeadline, tsc_deadline);
++    }
++
++    /*
++     * Re-arm partition's wait-for-SIPI state.
++     * whpx_vcpu_run() ignores cpu->halted, depends on SIPI for this.
++     * This must follow WHvResetPartition.
++     */
++    if (level == WHPX_LEVEL_RESET_STATE && whpx_irqchip_in_kernel()) {
++        WHV_REGISTER_VALUE activity = {};
++
++        whpx_get_reg(cpu, WHvRegisterInternalActivityState, &activity);
++        activity.InternalActivity.StartupSuspend = !cpu_is_bsp(x86_cpu);
++        activity.InternalActivity.HaltSuspend = 0;
++        whpx_set_reg(cpu, WHvRegisterInternalActivityState, activity);
++    }
++
+     /*
+      * Following MSRs have side effects on the guest or are too heavy for
+      * runtime. Limit them to full state update.
+-- 
+2.55.0.vfs.0.3
