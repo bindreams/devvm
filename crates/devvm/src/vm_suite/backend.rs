@@ -23,11 +23,12 @@ use crate::backend::{
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::exit::StderrProgress;
-use crate::host::{self, Accel, Host, SystemDirs, Unavailable};
+use crate::host::{self, Host};
 use crate::instance::record::InstanceId;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
+use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::qemu::{lazy_at, qemu_img, qemu_sidecar, socket_dir};
 use crate::{Arch, ErrorKind, Network, Result};
 
@@ -580,58 +581,6 @@ fn vm_qemu_a_machine_found_with_attach_can_be_reset(
 
     assert_eq!(run_state(&machine.record()), "running");
     machine.kill().unwrap();
-}
-
-/// A host like this one that cannot reset a running guest (Windows 10).
-struct NoGuestReset;
-
-static NO_GUEST_RESET: NoGuestReset = NoGuestReset;
-
-const WINDOWS_11: &str =
-    "rebooting a guest needs Windows 11 or later (this host's WinHvPlatform.dll has no WHvResetPartition)";
-
-impl Host for NoGuestReset {
-    fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable> {
-        host::current().accelerator(arch)
-    }
-
-    fn guest_reset(&self, _arch: Arch) -> std::result::Result<(), Unavailable> {
-        Err(Unavailable {
-            missing: WINDOWS_11.to_owned(),
-        })
-    }
-
-    fn ansi_code_page(&self) -> Option<u32> {
-        host::current().ansi_code_page()
-    }
-
-    fn detach(&self, cmd: &mut cosca::Command) -> Result<()> {
-        host::current().detach(cmd)
-    }
-
-    fn exit_width(&self) -> crate::exit::ExitWidth {
-        host::current().exit_width()
-    }
-
-    fn quiet(&self, cmd: &mut std::process::Command) {
-        host::current().quiet(cmd)
-    }
-
-    fn system_dirs(&self) -> Option<SystemDirs> {
-        host::current().system_dirs()
-    }
-
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        host::current().write_private(path, bytes)
-    }
-
-    fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
-        host::current().is_executable(path)
-    }
-
-    fn set_executable(&self, path: &Path) -> std::io::Result<()> {
-        host::current().set_executable(path)
-    }
 }
 
 #[skuld::test]

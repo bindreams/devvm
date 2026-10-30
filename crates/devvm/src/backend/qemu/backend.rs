@@ -68,7 +68,8 @@ impl Backend for QemuBackend {
             .env_clear()
             .envs(install.environment(self.host.system_dirs().as_ref())?)
             .current_dir(&cwd);
-        let vm = VmProcess::spawn_frozen(self.host, command, spec.lifetime, &qemu_log(&spec.serial_log))?;
+        let log = qemu_log(&spec.dir);
+        let vm = VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?;
 
         let record = MachineRecord {
             process: vm.record()?,
@@ -81,6 +82,8 @@ impl Backend for QemuBackend {
             vm,
             record,
             spec.forwards.clone(),
+            log,
+            spec.arch,
             self.host,
             self.progress.clone(),
         )))

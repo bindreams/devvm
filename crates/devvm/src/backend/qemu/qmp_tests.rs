@@ -33,15 +33,17 @@ impl Session {
     fn send(&mut self, value: Value) {
         let mut line = value.to_string();
         line.push('\n');
+        self.send_raw(line.as_bytes());
+    }
+
+    /// Writes `bytes` as they are: a line that is not JSON, or not text, or has no end.
+    pub(crate) fn send_raw(&mut self, bytes: &[u8]) {
         // The client may be gone already; a script that cares reads first.
-        let _ = self
-            .writer
-            .write_all(line.as_bytes())
-            .and_then(|()| self.writer.flush());
+        let _ = self.writer.write_all(bytes).and_then(|()| self.writer.flush());
     }
 
     /// The next command as `(name, arguments)`; `None` when the client closed the connection.
-    fn command(&mut self) -> Option<(String, Value)> {
+    pub(crate) fn command(&mut self) -> Option<(String, Value)> {
         let mut line = String::new();
         if self.reader.read_line(&mut line).ok()? == 0 {
             return None;
@@ -53,7 +55,7 @@ impl Session {
         ))
     }
 
-    fn reply(&mut self, value: Value) {
+    pub(crate) fn reply(&mut self, value: Value) {
         self.send(json!({ "return": value }));
     }
 
@@ -70,7 +72,7 @@ impl Session {
     }
 
     /// Replies to the next command with `value` and returns its name.
-    fn answer(&mut self, value: Value) -> String {
+    pub(crate) fn answer(&mut self, value: Value) -> String {
         let (name, _) = self.command().expect("a command was expected");
         self.reply(value);
         name
@@ -88,10 +90,10 @@ fn greeting() -> Value {
 }
 
 /// What the server received, in order.
-type Log = Arc<Mutex<Vec<String>>>;
+pub(crate) type Log = Arc<Mutex<Vec<String>>>;
 
 /// Accepts `clients` connections in turn. Each gets QEMU's greeting and `qmp_capabilities`, then `script(session)`.
-fn serve(
+pub(crate) fn serve(
     listener: UnixListener,
     clients: usize,
     script: impl Fn(&mut Session, &Log) + Send + 'static,
@@ -117,7 +119,7 @@ fn sock() -> Sock {
 }
 
 impl Sock {
-    fn listen(&self) -> UnixListener {
+    pub(crate) fn listen(&self) -> UnixListener {
         UnixListener::bind(self.endpoint.path()).unwrap()
     }
 
@@ -611,8 +613,7 @@ fn a_partial_last_line_followed_by_the_end_of_the_stream_is_a_closed_stream() {
     let (server, _) = serve(sock.listen(), 1, |session, _| {
         session.command().unwrap();
         // QEMU killed in the middle of a reply: no newline, then the end.
-        session.writer.write_all(br#"{"return": {"stat"#).unwrap();
-        session.writer.flush().unwrap();
+        session.send_raw(br#"{"return": {"stat"#);
     });
 
     let error = sock.connect().unwrap().query_status().unwrap_err();
@@ -626,8 +627,7 @@ fn a_line_that_is_not_text_is_an_io_error_and_not_a_lost_connection() {
     let sock = sock();
     let (server, _) = serve(sock.listen(), 1, |session, _| {
         session.command().unwrap();
-        session.writer.write_all(b"\xff\xfe\n").unwrap();
-        session.writer.flush().unwrap();
+        session.send_raw(b"\xff\xfe\n");
         // The peer stays up: the process behind it is alive.
         while session.command().is_some() {}
     });
