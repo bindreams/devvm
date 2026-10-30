@@ -205,6 +205,33 @@ fn reset_of_an_attached_machine_sends_only_the_target_query_before_the_host_answ
 }
 
 #[skuld::test]
+fn reset_of_a_machine_that_exits_during_the_state_check_quotes_the_log(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home);
+    std::fs::write(world.dir.join("qemu.log"), "qemu: out of memory").unwrap();
+    let qemu = world.qemu.clone();
+    let clients = std::sync::atomic::AtomicUsize::new(0);
+    let (server, _) = serve(world.sock.listen(), 2, move |session: &mut Session, _| {
+        if clients.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            // An attached machine asks for its architecture first; aarch64 is one every host can reset.
+            session.answer(json!({ "arch": "aarch64" }));
+            while session.command().is_some() {}
+        } else {
+            // QEMU dies on the state check.
+            session.command().expect("query-status");
+            qemu.lock().unwrap().kill().unwrap();
+        }
+    });
+    let mut machine = world.attached();
+
+    let error = machine.reset().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("out of memory"), "{error}");
+    drop(machine);
+    server.join().unwrap();
+}
+
+#[skuld::test]
 fn the_log_a_launched_machine_quotes_is_the_one_it_was_given(#[fixture(unicode_home)] home: &Path) {
     let world = world(home);
     let elsewhere = home.join("elsewhere");

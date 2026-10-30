@@ -237,6 +237,17 @@ fn fake_process() -> (mpsc::Sender<()>, ExitWatch) {
     (sender, watch)
 }
 
+/// Ends the fake process once `server` is done, from a thread of its own, while the calling thread reads the connection.
+fn end_process_after<T>(server: std::thread::JoinHandle<()>, process: mpsc::Sender<()>, read: impl FnOnce() -> T) -> T {
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            server.join().unwrap();
+            drop(process);
+        });
+        read()
+    })
+}
+
 #[skuld::test]
 fn a_process_that_exits_while_connect_waits_for_the_listener_ends_the_wait() {
     let sock = sock();
@@ -528,17 +539,22 @@ fn system_reset_of_a_no_reboot_qemu_is_an_error_naming_no_reboot() {
 #[skuld::test]
 fn wait_for_end_returns_exited_when_the_server_closes_after_shutdown() {
     let sock = sock();
-    let (server, _) = serve(sock.listen(), 1, |session, _| {
+    let (process, exit) = fake_process();
+    let (acked, acked_rx) = mpsc::channel::<()>();
+    let (server, _) = serve(sock.listen(), 1, move |session, _| {
         session.answer(json!({}));
         session.event("POWERDOWN", None);
         session.event("SHUTDOWN", Some(json!({ "guest": true, "reason": "guest-shutdown" })));
+        // The connection closes once the client has its reply.
+        let _ = acked_rx.recv();
     });
 
-    let mut qmp = sock.connect().unwrap();
+    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
     qmp.system_powerdown().unwrap();
-    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
+    acked.send(()).unwrap();
+    let end = end_process_after(server, process, || qmp.wait_for_end());
 
-    server.join().unwrap();
+    assert_eq!(end.unwrap(), VmEnd::Exited);
 }
 
 #[skuld::test]
@@ -561,22 +577,32 @@ fn wait_for_end_reports_a_stop_event_as_paused_with_the_run_state() {
 #[skuld::test]
 fn a_stop_event_in_a_normal_state_does_not_end_the_wait() {
     let sock = sock();
+    let (process, exit) = fake_process();
     let (server, _) = serve(sock.listen(), 1, |session, _| {
         session.event("STOP", None);
         session.answer(json!({ "status": "shutdown", "running": false }));
     });
 
-    let mut qmp = sock.connect().unwrap();
-    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
+    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
+    let end = end_process_after(server, process, || qmp.wait_for_end());
 
-    server.join().unwrap();
+    // The exit can pre-empt the reply to the status query that the `STOP` triggers; either way the wait did not
+    // report a pause.
+    match end {
+        Ok(VmEnd::Exited) => {}
+        Err(e) if e.kind() == ErrorKind::ConnectionLost => {}
+        other => panic!("expected the end of the VM, not {other:?}"),
+    }
 }
 
 // A QEMU that goes away, or a socket that fails, at the wrong moment --------------------------------------------------
 
+/// Windows can lose the end of the stream when a server writes and closes (measured), so these tests end the fake
+/// process once the server is done: a lost end of stream is woken by the exit watch instead of hanging the test.
 #[skuld::test]
 fn a_server_that_closes_after_the_greeting_is_a_lost_connection() {
     let sock = sock();
+    let (process, exit) = fake_process();
     let listener = sock.listen();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
@@ -585,22 +611,27 @@ fn a_server_that_closes_after_the_greeting_is_a_lost_connection() {
         // Dropped before `qmp_capabilities` is answered.
     });
 
-    let error = sock.connect().err().expect("the handshake cannot finish");
+    let error = end_process_after(server, process, || {
+        Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default())
+            .err()
+            .expect("the handshake cannot finish")
+    });
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    server.join().unwrap();
 }
 
 #[skuld::test]
 fn a_server_that_closes_after_query_status_loses_the_next_command() {
     let sock = sock();
+    let (process, exit) = fake_process();
     let (server, _) = serve(sock.listen(), 1, |session, _| {
         session.answer(json!({ "status": "running", "running": true }));
     });
 
-    let mut qmp = sock.connect().unwrap();
+    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
     assert_eq!(qmp.query_status().unwrap().state, "running");
     server.join().unwrap();
+    drop(process);
     let error = qmp.system_powerdown().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
@@ -627,6 +658,28 @@ fn a_process_that_exits_while_a_read_is_blocked_ends_the_read() {
         drop(process);
         client.join().unwrap().unwrap_err()
     });
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    finished.send(()).unwrap();
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn a_read_that_starts_after_the_process_exited_ends_at_once() {
+    let sock = sock();
+    let exit = ExitWatch::new();
+    let (finished, finished_rx) = mpsc::channel::<()>();
+    // The server keeps the connection open and says nothing, so a read can end only because the process exited.
+    let (server, _) = serve(sock.listen(), 1, move |_, _| {
+        let _ = finished_rx.recv();
+    });
+    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
+
+    // The exit comes before the first read, so there is nothing blocked for the interrupt to wake.
+    exit.report_exit();
+    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
+    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited, "a second read");
+    let error = qmp.query_status().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     finished.send(()).unwrap();

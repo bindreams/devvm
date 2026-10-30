@@ -310,59 +310,70 @@ fn find(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
     }
 }
 
+/// What becomes of an entry whose name points out of the extraction directory.
+#[derive(Clone, Copy)]
+enum Outcome {
+    /// The archive is refused, naming the entry.
+    Refused,
+    /// The archive is accepted and the entry is unpacked at this path under the install.
+    Unpacked(&'static str),
+    /// Refused where the OS gives the name a special meaning (Windows), otherwise unpacked at the path it names.
+    UnpackedOrRefused(&'static str),
+}
+
 /// Entry names that point out of the extraction directory by one route or another.
-const ESCAPES: &[&str] = &[
-    "../escaped.txt",
-    "bin/../../escaped.txt",
-    "bin/../../../escaped.txt",
-    "..\\escaped.txt",
-    "bin\\..\\..\\escaped.txt",
-    "/escaped.txt",
-    "\\escaped.txt",
-    "C:\\escaped.txt",
-    "C:/escaped.txt",
-    "//server/share/escaped.txt",
-    "escaped.txt:stream",
-    "bin/NUL/escaped.txt",
+const ESCAPES: &[(&str, Outcome)] = &[
+    ("../escaped.txt", Outcome::Refused),
+    ("bin/../../escaped.txt", Outcome::Refused),
+    ("bin/../../../escaped.txt", Outcome::Refused),
+    ("..\\escaped.txt", Outcome::Refused),
+    ("bin\\..\\..\\escaped.txt", Outcome::Refused),
+    // The zip crate drops the root or the drive of an absolute name, and the entry lands inside the install.
+    ("/escaped.txt", Outcome::Unpacked("escaped.txt")),
+    ("\\escaped.txt", Outcome::Unpacked("escaped.txt")),
+    ("C:\\escaped.txt", Outcome::Unpacked("escaped.txt")),
+    ("C:/escaped.txt", Outcome::Unpacked("escaped.txt")),
+    ("//server/share/escaped.txt", Outcome::Unpacked("escaped.txt")),
+    ("escaped.txt:stream", Outcome::UnpackedOrRefused("escaped.txt:stream")),
+    ("bin/NUL/escaped.txt", Outcome::UnpackedOrRefused("bin/NUL/escaped.txt")),
 ];
 
-/// An archive holding an entry that points out of the extraction directory is refused, or the entry is unpacked inside
-/// the published install: it is never a file anywhere else.
+/// An archive holding an entry that points out of the extraction directory is refused naming the entry, or the entry is
+/// unpacked at the exact path inside the published install; it is never a file anywhere else, and never dropped.
 #[skuld::test]
 fn a_zip_entry_that_points_out_of_the_extraction_directory_never_lands_outside_the_install(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    for (index, name) in ESCAPES.iter().enumerate() {
+    for (index, (name, outcome)) in ESCAPES.iter().enumerate() {
         let mut files = files();
         files.push(((*name).to_owned(), b"x".to_vec()));
         let sub = home.join(format!("escape-{index}"));
         std::fs::create_dir_all(&sub).unwrap();
         let world = world(&sub, zip_of(&files));
-
-        let result = world.source.resolve();
-
         let qemu = world.dirs.qemu();
+
+        let landed = match (outcome, world.source.resolve()) {
+            (Outcome::Unpacked(path) | Outcome::UnpackedOrRefused(path), Ok(install)) => {
+                let file = install.bin.parent().unwrap().join(path);
+                assert!(file.is_file(), "{name:?} was not unpacked at {}", file.display());
+                Some(file)
+            }
+            (Outcome::Refused | Outcome::UnpackedOrRefused(_), Err(error)) => {
+                assert_eq!(error.kind(), ErrorKind::Store, "{name:?}: {error}");
+                assert!(error.message().contains("escaped.txt"), "{name:?}: {error}");
+                assert!(visible(&qemu).is_empty(), "{name:?} left {:?}", entries(&qemu));
+                None
+            }
+            (Outcome::Refused, Ok(_)) => panic!("{name:?} was accepted"),
+            (Outcome::Unpacked(_), Err(error)) => panic!("{name:?} was refused: {error}"),
+        };
+
         let mut found = Vec::new();
         find(&sub, "escaped.txt", &mut found);
-        for path in &found {
-            // `<qemu>/<published install>/...`: at least the install directory and the file below it.
-            let relative = path.strip_prefix(&qemu).ok();
-            let inside = relative.is_some_and(|relative| {
-                relative.components().count() >= 2
-                    && relative
-                        .components()
-                        .next()
-                        .is_some_and(|first| !first.as_os_str().to_string_lossy().starts_with('.'))
-            });
-            assert!(inside, "{name:?} was unpacked to {}", path.display());
-        }
-        match result {
-            Err(error) => {
-                assert_eq!(error.kind(), ErrorKind::Store, "{name:?}: {error}");
-                assert!(visible(&qemu).is_empty(), "{name:?} left {:?}", entries(&qemu));
-            }
-            Ok(install) => assert!(install.tool("qemu-img").is_file(), "{name:?}"),
-        }
+        assert!(
+            found.iter().all(|path| Some(path) == landed.as_ref()),
+            "{name:?} was unpacked to {found:?}, not only to {landed:?}"
+        );
     }
 }
 
@@ -570,6 +581,7 @@ fn a_relative_qemu_path_is_unavailable_naming_the_setting(#[fixture(unicode_home
         assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
         assert!(error.message().contains("qemu.path"), "{error}");
         assert!(error.message().contains(&relative.display().to_string()), "{error}");
+        assert!(!error.message().contains("  "), "a run of spaces in {error}");
     }
     assert_eq!(world.transport.gets(), 0);
 }

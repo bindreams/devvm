@@ -255,7 +255,8 @@ impl Machine for QemuMachine {
             .guest_reset(arch)
             .map_err(|unavailable| Error::new(ErrorKind::Unavailable, unavailable.to_string()))?;
         let mut qmp = self.connect()?;
-        qmp.require_state(&["running"], "reset the VM", &self.record.serial_log)?;
+        qmp.require_state(&["running"], "reset the VM", &self.record.serial_log)
+            .map_err(|e| self.explain(e))?;
         qmp.system_reset().map_err(|e| self.explain(e))
     }
 

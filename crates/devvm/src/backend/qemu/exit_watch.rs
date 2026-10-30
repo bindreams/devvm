@@ -22,7 +22,8 @@ const RETRY: Duration = Duration::from_millis(10);
 pub(crate) enum End {
     /// The process exited.
     Exited,
-    /// The OS would not say when the process exits (the text says why); it may be alive.
+    /// The OS would not say when the process exits (the text says why); it may be alive. This fails closed: a session
+    /// on such a watch could hang on a dead QEMU with nothing to wake it, so `Qmp::connect` refuses it.
     Unwatchable(String),
 }
 

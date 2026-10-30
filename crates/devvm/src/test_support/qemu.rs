@@ -140,11 +140,6 @@ impl BareQemu {
         });
         BareQemu { child, sock, exit }
     }
-
-    /// Whether the process is still running.
-    pub fn alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
-    }
 }
 
 impl Drop for BareQemu {

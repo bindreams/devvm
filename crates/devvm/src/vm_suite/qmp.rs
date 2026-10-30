@@ -8,6 +8,7 @@ use std::sync::Arc;
 use qapi::Command;
 use qapi::qmp;
 
+use crate::ErrorKind;
 use crate::backend::qemu::qmp::{Qmp, VmEnd};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::uds::UnixStream;
@@ -43,7 +44,12 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
     // `RESET` is awaited by the call itself.
     session.system_reset().unwrap();
 
-    session.quit().unwrap();
+    // QEMU exits right after the reply, and the exit watch can end the read before the reply is read.
+    match session.quit() {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::ConnectionLost => {}
+        Err(e) => panic!("quit failed: {e}"),
+    }
     // `SHUTDOWN` arrives, then QEMU closes the socket.
     assert_eq!(session.wait_for_end().unwrap(), VmEnd::Exited);
 }
@@ -68,18 +74,18 @@ fn every_command_devvm_sends_exists_in_the_live_schema(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let mut qemu = BareQemu::spawn(install, home);
+    let qemu = BareQemu::spawn(install, home);
     // A bare session: `query-qmp-schema` is not a command devvm sends.
     let stream = loop {
         match UnixStream::connect(qemu.sock.endpoint.path()) {
             Ok(stream) => break stream,
+            // The wait ends when the process exits, or after a short pause to ask again.
             Err(e) => assert!(
-                qemu.alive(),
+                qemu.exit.pause().is_none(),
                 "QEMU exited before its control socket accepted a connection ({e}); its output is in {}",
                 home.join("qemu.log").display()
             ),
         }
-        std::thread::yield_now();
     };
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;

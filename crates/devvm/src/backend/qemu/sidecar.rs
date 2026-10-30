@@ -308,7 +308,8 @@ fn configured(dir: &Path) -> Result<QemuInstall> {
         return Err(Error::new(
             ErrorKind::Unavailable,
             format!(
-                "the setting qemu.path is {}, which is not an absolute path: QEMU runs in an empty working directory,                  so a relative path would not find its firmware",
+                "the setting qemu.path is {}, which is not an absolute path: QEMU runs in an empty working directory, \
+                 so a relative path would not find its firmware",
                 dir.display()
             ),
         ));
