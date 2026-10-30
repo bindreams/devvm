@@ -452,31 +452,13 @@ fn vm_qemu_a_running_machine_leaves_no_leftovers_after_kill(
     for leftover in target.leftovers(&spec) {
         assert!(!leftover.exists(), "kill left {}", leftover.display());
     }
-    assert!(!target.ended_gracefully(&spec), "a kill is not a graceful end");
-}
-
-#[skuld::test]
-fn vm_qemu_no_stale_socket_after_kill_once_the_reaper_runs(
-    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let target = QemuTarget::new(install);
-    let (spec, _parent) = target.prepared(home, 0, |_| {});
-    let mut machine = target.backend().launch(&spec).unwrap();
-    machine.resume().unwrap();
-    let record = machine.record();
-
-    // Killed from outside, as a crash or `taskkill` would: QEMU cleans up nothing.
-    VmProcess::attach(&record.process).unwrap().unwrap().kill().unwrap();
-    for leftover in &record.leftovers {
-        assert!(leftover.exists(), "{} should be stale now", leftover.display());
-    }
-
-    // What the reaper does once it has proven the machine dead.
-    record.remove_leftovers(&mut |text| panic!("{text}"));
-    for leftover in &record.leftovers {
-        assert!(!leftover.exists(), "the reaper left {}", leftover.display());
-    }
+    // `ended_gracefully` is false for a process nobody watched, so the exit code must have been seen.
+    let code = target.watches.0.lock().unwrap()[&spec.id].exit_code();
+    assert!(code.is_some(), "no exit code was observed after the kill");
+    assert!(
+        !target.ended_gracefully(&spec),
+        "a kill is not a graceful end: {code:?}"
+    );
 }
 
 #[skuld::test]

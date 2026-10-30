@@ -69,13 +69,18 @@ fn every_command_devvm_sends_exists_in_the_live_schema(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let qemu = BareQemu::spawn(install, home);
+    let mut qemu = BareQemu::spawn(install, home);
     // A bare session: `query-qmp-schema` is not a command devvm sends.
     let stream = loop {
         match UnixStream::connect(qemu.sock.endpoint.path()) {
             Ok(stream) => break stream,
-            Err(_) => std::thread::yield_now(),
+            Err(e) => assert!(
+                qemu.alive(),
+                "QEMU exited before its control socket accepted a connection ({e}); its output is in {}",
+                home.join("qemu.log").display()
+            ),
         }
+        std::thread::yield_now();
     };
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;

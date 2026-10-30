@@ -16,7 +16,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # No CI job can boot a VM; the VM tests fail by default and this is the explicit opt-out.
+  # The Test job leaves the VM tests out (the vm job runs them); this is the explicit opt-out.
   DEVVM_SKIP_VM_TESTS: "1"
 
 jobs:

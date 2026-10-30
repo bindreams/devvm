@@ -10,6 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
 use crate::Dirs;
+use crate::backend::qemu::args::escape_option_value;
 use crate::backend::qemu::qmp::QmpEndpoint;
 use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
 use crate::config::Config;
@@ -108,7 +109,7 @@ impl BareQemu {
             .arg("-chardev")
             .arg(format!(
                 "socket,id=qmp,path={},server=on,wait=off",
-                sock.endpoint.path().display()
+                escape_option_value(sock.endpoint.path()).unwrap()
             ))
             .args(["-object", "monitor-qmp,id=qmp0,chardev=qmp"])
             .args(["-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:0-:22"])
