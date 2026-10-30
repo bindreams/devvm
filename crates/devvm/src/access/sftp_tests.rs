@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::access::SshSession;
-use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
+use crate::access::sftp::{CHUNK, Failed, Sftp, check_listing, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
@@ -506,12 +506,30 @@ fn a_guest_name_that_is_not_valid_utf8_is_refused_by_name_not_called_dangling(#[
     assert!(!env.local.join("out").exists());
 }
 
+/// The library hands over the bytes `a\xffb` and the text `a\u{fffd}b` as the same string, so a listing cannot say
+/// which one it holds, and a name with U+FFFD is refused even when it exists.
 #[skuld::test]
-fn a_guest_name_with_a_real_replacement_character_is_copied(#[fixture(unicode_home)] home: &Path) {
+fn a_guest_name_with_a_replacement_character_is_refused_even_when_it_exists(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     env.guest_file("t/a\u{fffd}b", b"x");
-    env.copy_out("/t", &env.local.join("out")).unwrap();
-    assert_eq!(tree(&env.local.join("out")), ["a\u{fffd}b"]);
+    let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(
+        error.message().contains("not valid UTF-8 or contains U+FFFD"),
+        "{error}"
+    );
+    assert!(error.message().contains("a\u{fffd}b"), "{error}");
+    assert!(!env.local.join("out").exists());
+}
+
+/// No real file system lists a name twice, so the fake server cannot be made to; the check is tested directly.
+#[skuld::test]
+fn a_listing_that_names_one_entry_twice_is_refused() {
+    let names = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+    check_listing("/t", &names(&["a", "b", "c"])).unwrap();
+    let error = check_listing("/t", &names(&["a", "b", "b", "c"])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("\"b\" twice"), "{error}");
 }
 
 #[skuld::test]

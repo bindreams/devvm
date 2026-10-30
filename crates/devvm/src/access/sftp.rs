@@ -125,9 +125,26 @@ where
     }
 }
 
-/// Whether the last part of `rel` has the character a lossy decoding leaves for bytes that are not UTF-8.
-fn name_has_replacement(rel: &[String]) -> bool {
-    rel.last().is_some_and(|name| name.contains('\u{fffd}'))
+/// Refuses a listing of `dir` whose names cannot be told apart. The library decodes names lossily, so the bytes
+/// `a\xffb` and the text `a\u{fffd}b` both arrive as `a\u{fffd}b`, and a name with U+FFFD may be either. `names` is
+/// sorted.
+fn check_listing(dir: &str, names: &[String]) -> Result<()> {
+    if let Some(name) = names.iter().find(|name| name.contains('\u{fffd}')) {
+        return Err(Error::new(
+            ErrorKind::Io,
+            format!(
+                "the guest path {:?} has a name that is not valid UTF-8 or contains U+FFFD, which SFTP cannot tell apart",
+                join(dir, name)
+            ),
+        ));
+    }
+    if let Some(pair) = names.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(Error::new(
+            ErrorKind::Io,
+            format!("the listing of the guest directory {dir} names {:?} twice", pair[0]),
+        ));
+    }
+    Ok(())
 }
 
 /// Whether copying `path` means copying what is in it, as `cp -r dir/. dest` does: a name that is `.` or `..`, or no
@@ -452,20 +469,17 @@ impl Remote {
                 .map_err(|e| self.error(&awaiting, e))?;
             let mut entries: Vec<_> = listing.map(|entry| entry.file_name()).collect();
             entries.sort();
+            check_listing(&frame.path, &entries)?;
             for name in entries.into_iter().rev() {
                 let path = join(&frame.path, &name);
                 let mut rel = frame.rel.clone();
                 rel.push(name);
                 // `stat`, not the listing's attributes: those describe a symlink, not what it points to.
                 let Some(attrs) = self.stat(&path).await? else {
-                    // The library decodes names lossily: a name that is not valid UTF-8 comes back with U+FFFD in
-                    // it and names nothing on the guest.
-                    let why = if name_has_replacement(&rel) {
-                        format!("the guest path {path:?} has a name that is not valid UTF-8, which SFTP cannot carry")
-                    } else {
-                        format!("the guest path {path} is a dangling symlink")
-                    };
-                    return Err(Error::new(ErrorKind::Io, why));
+                    return Err(Error::new(
+                        ErrorKind::Io,
+                        format!("the guest path {path} is a dangling symlink"),
+                    ));
                 };
                 if attrs.is_dir() {
                     items.push(Item {
