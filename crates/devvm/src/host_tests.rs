@@ -244,8 +244,8 @@ fn a_cleaned_up_partial_file_leaves_the_write_error_as_it_was(#[fixture(unicode_
 /// The variable a CI job sets to claim that its runs cover this ANSI code page.
 const COVERS_ACP: &str = "DEVVM_COVERS_ACP";
 
-/// Set in the pinned child to the locale its manifest asks for, so the child does not start a child of its own and its
-/// claim test knows the pin is what it is checking.
+/// Set in the pinned child to its manifest's locale: stops it from spawning another child and tells its claim test the
+/// pin is under test.
 const PINNED_CHILD: &str = "DEVVM_PINNED_CHILD";
 
 /// The locale whose ANSI code page is 1252 on every host, whatever the host's own locale.
@@ -327,19 +327,19 @@ fn reports_passed(stdout: &str, test: &str) -> bool {
     })
 }
 
-/// Covers 1252 on a host whose own code page is another (this PC's is UTF-8): the whole lib suite runs again in a copy
-/// of this binary whose manifest asks for the code page of `en-US`. The child also runs the claim test, and this test
-/// requires the child's report to list it as passed, so a pin that did not take fails the run.
+/// Covers 1252 on a host whose own code page is another: runs the whole lib suite in a copy of this binary whose
+/// manifest pins `en-US`. Requires the child's report to list the claim test as passed, so a pin that did not take
+/// fails.
 #[skuld::test(requires = [can_pin_code_page_1252])]
 fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
     let dir = skuld::TempDir::new().unwrap();
     let exe = dir.join("devvm-lib-acp-1252.exe");
-    std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
-    std::fs::write(
-        dir.join("devvm-lib-acp-1252.exe.manifest"),
-        pinning_manifest(PINNED_LOCALE),
-    )
-    .unwrap();
+    let this_exe = std::env::current_exe().unwrap_or_else(|e| panic!("cannot find the path of this test binary: {e}"));
+    std::fs::copy(&this_exe, &exe)
+        .unwrap_or_else(|e| panic!("cannot copy {} to {}: {e}", this_exe.display(), exe.display()));
+    let manifest = dir.join("devvm-lib-acp-1252.exe.manifest");
+    std::fs::write(&manifest, pinning_manifest(PINNED_LOCALE))
+        .unwrap_or_else(|e| panic!("cannot write the manifest {}: {e}", manifest.display()));
 
     let mut cmd = std::process::Command::new(&exe);
     cmd.env("DEVVM_SKIP_VM_TESTS", "1")

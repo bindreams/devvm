@@ -34,8 +34,7 @@ RUN_BOUND = 120  # seconds for one QEMU tool invocation
 QEMU_BOUND = 180  # seconds for one QEMU system emulator session
 ERROR_PIPE_BUSY = 231
 
-# Spelled with escapes so no editor can normalise it. U+00E9 is in code page 1252, U+0416 is not, U+4E16 is in no
-# single-byte code page, U+1F600 is a UTF-16 surrogate pair.
+# Spelled with escapes so no editor can normalise it; same name as the lib's `UNICODE_DIR`.
 UNICODE_DIR = "unicode-\u00e9 \u0416 \u4e16 \U0001f600"
 
 

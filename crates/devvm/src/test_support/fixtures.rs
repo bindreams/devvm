@@ -3,6 +3,9 @@
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+#[path = "fixtures_tests.rs"]
+mod fixtures_tests;
+
 /// The name of the Unicode test directory. Each character is a case: `\u{e9}` is in code page 1252, `\u{416}` is
 /// not (1251 has it), `\u{4e16}` is in no single-byte code page, `\u{1f600}` is a UTF-16 surrogate pair, and the
 /// spaces split arguments. Spelled with escapes so no editor can normalise `\u{e9}` to `e` + U+0301.
