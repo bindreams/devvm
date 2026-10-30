@@ -275,7 +275,9 @@ fn the_host_code_page_is_the_one_this_run_claims() {
         Ok(locale) => {
             format!("the manifest's activeCodePage={locale} did not pin the process to ANSI code page {claimed}")
         }
-        Err(_) => format!("the CI job that claims {claimed} runs on a host whose code page is no longer {claimed}"),
+        Err(_) => {
+            "this host's code page differs from the claim; if CI set the claim, its runner image changed".to_owned()
+        }
     };
     assert_eq!(
         actual.map(|acp| acp.to_string()),
@@ -365,7 +367,7 @@ fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
     );
     assert!(
         reports_passed(&stdout, CLAIM_TEST),
-        "the pinned run exited 0 but did not report {CLAIM_TEST} as passed, so it did not run at 1252:
-{stdout}",
+        "the pinned run (manifest activeCodePage={PINNED_LOCALE}) exited 0 but its report does not list {CLAIM_TEST} \
+         as passed, so nothing shows it ran at 1252:\n{stdout}",
     );
 }
