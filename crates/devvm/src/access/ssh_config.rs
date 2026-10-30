@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::exit::{NullProgress, Progress};
 use crate::instance::name::InstanceName;
-use crate::instance::record::{InstanceId, write_file};
+use crate::instance::record::{InstanceId, is_write_file_temporary, write_file};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -20,8 +20,6 @@ mod ssh_config_tests;
 
 const CONFIG: &str = "config";
 const CONF_SUFFIX: &str = ".conf";
-/// What `write_file` appends to a name for the file it writes first.
-const TEMP_MARK: &str = ".tmp-";
 
 /// What `<name>.conf` says about one instance.
 pub(crate) struct SshConfigEntry {
@@ -284,7 +282,7 @@ impl SshConfigDir {
                     _ => false,
                 }
             } else {
-                file_name.contains(&format!("{CONF_SUFFIX}{TEMP_MARK}"))
+                is_write_file_temporary(file_name)
             };
             if remove && let Err(e) = std::fs::remove_file(entry.path()) {
                 warnings.push(io("remove", &entry.path(), e).message().to_owned());
