@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::access::SshSession;
-use crate::access::sftp::Sftp;
+use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
@@ -395,15 +395,216 @@ fn a_dropped_connection_mid_copy_leaves_no_partial_file_at_the_final_path(#[fixt
 }
 
 #[skuld::test]
-fn copy_in_over_a_read_only_guest_file_reports_the_guest_error(#[fixture(unicode_home)] home: &Path) {
+fn copy_in_into_a_read_only_guest_directory_reports_the_guest_error(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
-    env.guest_file("ro.txt", b"keep");
-    env.rig.sshd.make_read_only("/ro.txt");
+    std::fs::create_dir(env.root().join("ro")).unwrap();
+    env.rig.sshd.make_dir_read_only("/ro");
     let src = env.host_file("src.txt", b"new");
-    let error = env.copy_in(&src, "/ro.txt").unwrap_err();
+    let error = env.copy_in(&src, "/ro/x.txt").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("Permission denied"), "{error}");
-    assert!(error.message().contains("/ro.txt"), "{error}");
-    assert_eq!(std::fs::read(env.root().join("ro.txt")).unwrap(), b"keep");
-    assert_eq!(tree(env.root()), ["ro.txt"], "the partial file was removed");
+    assert!(error.message().contains("/ro"), "{error}");
+    assert!(tree(&env.root().join("ro")).is_empty());
+}
+
+// Which side is named =================================================================================================
+
+#[skuld::test]
+fn a_guest_write_failure_names_the_guest_not_the_host_file(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    std::fs::create_dir(env.root().join("full")).unwrap();
+    env.rig.sshd.fail_data_in("/full");
+    // A small file fails when the handle is closed; one larger than the requests in flight also fails a write that
+    // is still being queued.
+    for (i, size) in [4096usize, 4 << 20].into_iter().enumerate() {
+        let src = env.host_file(&format!("src{i}.txt"), &vec![1u8; size]);
+        let error = env.copy_in(&src, &format!("/full/x{i}.txt")).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{size}: {error}");
+        assert!(error.message().contains("No space left on device"), "{size}: {error}");
+        assert!(error.message().contains("the guest"), "{size}: {error}");
+        assert!(error.message().contains("/full/"), "{size}: {error}");
+        assert!(
+            !error.message().contains(&src.display().to_string()),
+            "{size}: the host source is not at fault: {error}"
+        );
+        assert!(
+            tree(&env.root().join("full")).is_empty(),
+            "{size}: the partial file was removed"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_guest_read_failure_names_the_guest_not_the_host_file(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("full/x.bin", &vec![1u8; 4096]);
+    env.rig.sshd.fail_data_in("/full");
+    let out = env.local.join("out.bin");
+    let error = env.copy_out("/full/x.bin", &out).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("No space left on device"), "{error}");
+    assert!(error.message().contains("/full/x.bin"), "{error}");
+    assert!(
+        !error.message().contains(".devvm-partial"),
+        "the host temporary file is not at fault: {error}"
+    );
+    assert!(tree(&env.local).is_empty(), "nothing is left on the host");
+}
+
+#[skuld::test]
+fn pump_tells_which_side_failed() {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    struct Broken;
+    impl AsyncRead for Broken {
+        fn poll_read(self: Pin<&mut Self>, _: &mut Context<'_>, _: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::Error::other("read")))
+        }
+    }
+    impl AsyncWrite for Broken {
+        fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8]) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Err(std::io::Error::other("write")))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let data = vec![9u8; 3 * CHUNK + 5];
+    let outcome = crate::access::runtime::run("pumping", async move {
+        let mut copied = Vec::new();
+        let ok = pump(&data[..], &mut copied).await;
+        let read = pump(Broken, &mut Vec::new()).await;
+        let write = pump(&data[..], Broken).await;
+        (ok.is_ok() && copied == data, read, write)
+    })
+    .unwrap();
+    assert!(outcome.0, "the bytes arrive unchanged");
+    assert!(matches!(outcome.1, Err(Failed::Read(_))), "{:?}", outcome.1);
+    assert!(matches!(outcome.2, Err(Failed::Write(_))), "{:?}", outcome.2);
+}
+
+// Guest names =========================================================================================================
+
+#[skuld::test]
+fn a_guest_name_that_is_not_valid_utf8_is_refused_by_name_not_called_dangling(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    std::fs::create_dir(env.root().join("t")).unwrap();
+    // The SFTP library decodes such a name lossily, so the listing holds U+FFFD where the bytes were, and a stat of
+    // that name finds nothing.
+    env.rig.sshd.list_phantom("/t/bad\u{fffd}name");
+    let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("not valid UTF-8"), "{error}");
+    assert!(error.message().contains("bad"), "{error}");
+    assert!(!error.message().contains("dangling"), "{error}");
+    assert!(!env.local.join("out").exists());
+}
+
+#[skuld::test]
+fn a_guest_name_with_a_real_replacement_character_is_copied(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("t/a\u{fffd}b", b"x");
+    env.copy_out("/t", &env.local.join("out")).unwrap();
+    assert_eq!(tree(&env.local.join("out")), ["a\u{fffd}b"]);
+}
+
+#[skuld::test]
+fn cp_out_refuses_a_guest_name_a_windows_host_cannot_hold(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::with_windows_names();
+    let names = ["a\\b", "..\\x", "C:\\z", "con", "x.", "a:b", "q?"];
+    for (i, name) in names.iter().enumerate() {
+        std::fs::create_dir(env.root().join(format!("t{i}"))).unwrap();
+        env.rig.sshd.add_generated_file(&format!("/t{i}/{name}"), 3);
+        let out = env.local.join(format!("out{i}"));
+        let error = env.copy_out(&format!("/t{i}"), &out).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{name}: {error}");
+        assert!(error.message().contains(&format!("{name:?}")), "{name}: {error}");
+        assert!(!out.exists(), "{name}: refused before anything was created");
+    }
+}
+
+#[skuld::test]
+fn cp_out_refuses_two_guest_names_a_case_insensitive_host_takes_for_one(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::with_windows_names();
+    std::fs::create_dir(env.root().join("t")).unwrap();
+    env.rig.sshd.add_generated_file("/t/Readme", 3);
+    env.rig.sshd.add_generated_file("/t/README", 3);
+    let out = env.local.join("out");
+    let error = env.copy_out("/t", &out).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("Readme"), "{error}");
+    assert!(error.message().contains("README"), "{error}");
+    assert!(!out.exists(), "refused before anything was created");
+}
+
+#[skuld::test]
+fn cp_out_into_a_directory_checks_the_name_it_takes_from_the_guest_path(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::with_windows_names();
+    env.rig.sshd.add_generated_file("/con", 3);
+    let dest = env.local.join("dest");
+    std::fs::create_dir(&dest).unwrap();
+    let error = env.copy_out("/con", &dest).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("\"con\""), "{error}");
+    assert!(tree(&dest).is_empty());
+}
+
+// `cp -r` of a directory's contents ===================================================================================
+
+fn project(env: &Env) -> PathBuf {
+    env.host_file("proj/a.txt", b"a");
+    env.host_file("proj/sub/b.txt", b"b");
+    env.local.join("proj")
+}
+
+#[skuld::test]
+fn cp_in_of_dir_slash_dot_and_dir_slash_dotdot_copies_the_contents_into_an_existing_directory(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    let proj = project(&env);
+    std::fs::create_dir(env.root().join("dest")).unwrap();
+    env.copy_in(&proj.join("."), "/dest").unwrap();
+    assert_eq!(tree(&env.root().join("dest")), ["a.txt", "sub/", "sub/b.txt"]);
+
+    std::fs::create_dir(env.root().join("dest2")).unwrap();
+    env.copy_in(&proj.join("sub").join(".."), "/dest2").unwrap();
+    assert_eq!(tree(&env.root().join("dest2")), ["a.txt", "sub/", "sub/b.txt"]);
+
+    // A destination that does not exist is created and holds the contents too.
+    env.copy_in(&proj.join("."), "/fresh").unwrap();
+    assert_eq!(tree(&env.root().join("fresh")), ["a.txt", "sub/", "sub/b.txt"]);
+}
+
+#[skuld::test]
+fn cp_out_of_dir_slash_dot_dotdot_and_the_root_copies_the_contents_into_an_existing_directory(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    env.guest_file("proj/a.txt", b"a");
+    env.guest_file("proj/sub/b.txt", b"b");
+    for (i, src) in ["/proj/.", "/proj/sub/..", "/proj/"].into_iter().enumerate() {
+        let dest = env.local.join(format!("dest{i}"));
+        std::fs::create_dir(&dest).unwrap();
+        env.copy_out(src, &dest).unwrap();
+        let want: &[&str] = if src == "/proj/" {
+            &["proj/", "proj/a.txt", "proj/sub/", "proj/sub/b.txt"]
+        } else {
+            &["a.txt", "sub/", "sub/b.txt"]
+        };
+        assert_eq!(tree(&dest), want, "{src}");
+    }
+    let dest = env.local.join("root");
+    std::fs::create_dir(&dest).unwrap();
+    env.copy_out("/", &dest).unwrap();
+    assert_eq!(tree(&dest), ["proj/", "proj/a.txt", "proj/sub/", "proj/sub/b.txt"]);
 }

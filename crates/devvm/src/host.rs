@@ -13,6 +13,7 @@ use crate::{Arch, Result};
 #[path = "host_tests.rs"]
 mod host_tests;
 
+pub(crate) mod names;
 #[cfg_attr(windows, allow(dead_code))]
 mod unsupported;
 #[cfg(windows)]
@@ -84,6 +85,14 @@ pub(crate) trait Host: Send + Sync {
 
     /// Adds execute where read is set; does nothing on Windows.
     fn set_executable(&self, path: &Path) -> std::io::Result<()>;
+
+    /// Why `name`, a file name taken from a guest, cannot be one file name in a directory on this host (a Windows
+    /// host refuses `a\b`, `C:\z`, device names and more); `None` when it can.
+    fn file_name_problem(&self, name: &str) -> Option<String>;
+
+    /// `name` the way this host's file system compares names: two names with the same key are one file here, so
+    /// writing both overwrites the first.
+    fn name_key(&self, name: &str) -> String;
 }
 
 /// Creates `path` with `options` and writes `bytes`. A file whose write failed is removed, so a half-written secret

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::exit::ExitWidth;
-use crate::host::{self, Accel, Host, SystemDirs, Unavailable};
+use crate::host::{self, Accel, Host, SystemDirs, Unavailable, names};
 use crate::{Arch, Result};
 
 /// Reports TCG as the accelerator and delegates everything else to the real host, so the real `detach` is the one the
@@ -47,6 +47,14 @@ impl Host for TestHost {
 
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
         host::current().set_executable(path)
+    }
+
+    fn file_name_problem(&self, name: &str) -> Option<String> {
+        host::current().file_name_problem(name)
+    }
+
+    fn name_key(&self, name: &str) -> String {
+        host::current().name_key(name)
     }
 }
 
@@ -94,12 +102,22 @@ impl Host for NoAccelHost {
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
         TestHost.set_executable(path)
     }
+
+    fn file_name_problem(&self, name: &str) -> Option<String> {
+        TestHost.file_name_problem(name)
+    }
+
+    fn name_key(&self, name: &str) -> String {
+        TestHost.name_key(name)
+    }
 }
 
-/// [`TestHost`] that records the file-permission calls and can be told to fail a private write or to report files as
-/// executable, so code that goes through [`Host`] can be tested on every OS.
+/// [`TestHost`] that records the file-permission calls and can be told to fail a private write, to report files as
+/// executable or to apply a Windows host's file-name rules, so code that goes through [`Host`] can be tested on every
+/// OS.
 #[derive(Default)]
 pub struct RecordingHost {
+    windows_names: bool,
     private_writes: Mutex<Vec<PathBuf>>,
     fail_private_write_at: Mutex<Option<usize>>,
     executable: Mutex<HashSet<PathBuf>>,
@@ -109,6 +127,15 @@ pub struct RecordingHost {
 impl RecordingHost {
     pub fn new() -> RecordingHost {
         RecordingHost::default()
+    }
+
+    /// A host whose file names follow the rules of Windows (forbidden characters, device names, case-insensitive
+    /// comparison), whatever OS the test runs on.
+    pub fn with_windows_names() -> RecordingHost {
+        RecordingHost {
+            windows_names: true,
+            ..RecordingHost::default()
+        }
     }
 
     /// Makes the `index`-th (from 0) call of `write_private` fail.
@@ -178,5 +205,19 @@ impl Host for RecordingHost {
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
         self.set_executable_calls.lock().unwrap().push(path.to_owned());
         TestHost.set_executable(path)
+    }
+
+    fn file_name_problem(&self, name: &str) -> Option<String> {
+        if self.windows_names {
+            return names::windows_problem(name);
+        }
+        TestHost.file_name_problem(name)
+    }
+
+    fn name_key(&self, name: &str) -> String {
+        if self.windows_names {
+            return names::windows_key(name);
+        }
+        TestHost.name_key(name)
     }
 }

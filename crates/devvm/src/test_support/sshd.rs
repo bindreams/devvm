@@ -19,8 +19,8 @@
 //! | `echo ...` | prints the rest of the line, exits 0 |
 //!
 //! Options make connections misbehave: a host key other than the advertised one, a refused client key, a peer that
-//! accepts the connection and never speaks. The SFTP part serves a directory, with virtual symlinks, modes and
-//! read-only files that tests declare, and files that are generated or discarded so a multi-GiB copy needs no disk.
+//! accepts the connection and never speaks. The SFTP part serves a directory, with virtual symlinks, modes,
+//! read-only directories and data failures that tests declare, and files that are generated or discarded so a multi-GiB copy needs no disk.
 
 mod fs;
 
@@ -77,7 +77,9 @@ pub(crate) struct State {
     pub(crate) root: PathBuf,
     pub(crate) links: Mutex<HashMap<String, String>>,
     pub(crate) modes: Mutex<HashMap<String, u32>>,
-    pub(crate) read_only: Mutex<HashSet<String>>,
+    pub(crate) read_only_dirs: Mutex<HashSet<String>>,
+    pub(crate) failing_data: Mutex<HashSet<String>>,
+    pub(crate) phantoms: Mutex<HashSet<String>>,
     pub(crate) discarding: Mutex<HashSet<String>>,
     pub(crate) generated: Mutex<HashMap<String, u64>>,
     pub(crate) sinks: Mutex<HashMap<String, (u64, String)>>,
@@ -119,7 +121,9 @@ impl TestSshd {
             root,
             links: Mutex::default(),
             modes: Mutex::default(),
-            read_only: Mutex::default(),
+            read_only_dirs: Mutex::default(),
+            failing_data: Mutex::default(),
+            phantoms: Mutex::default(),
             discarding: Mutex::default(),
             generated: Mutex::default(),
             sinks: Mutex::default(),
@@ -208,9 +212,21 @@ impl TestSshd {
         self.state.modes.lock().unwrap().get(path).copied()
     }
 
-    /// Writes to `path`, and renames onto it, fail with permission denied.
-    pub fn make_read_only(&self, path: &str) {
-        self.state.read_only.lock().unwrap().insert(path.to_owned());
+    /// Creating, removing and renaming entries in `dir` fail with permission denied; files already in it stay
+    /// writable, as in a directory the user cannot write to.
+    pub fn make_dir_read_only(&self, dir: &str) {
+        self.state.read_only_dirs.lock().unwrap().insert(dir.to_owned());
+    }
+
+    /// A directory listing names `path`, which cannot be inspected: how a file whose name is not valid UTF-8 looks to
+    /// a client that decodes names lossily.
+    pub fn list_phantom(&self, path: &str) {
+        self.state.phantoms.lock().unwrap().insert(path.to_owned());
+    }
+
+    /// Reads and writes of the files in `dir` fail with a status error, as a full disk or a quota does.
+    pub fn fail_data_in(&self, dir: &str) {
+        self.state.failing_data.lock().unwrap().insert(dir.to_owned());
     }
 
     /// Files written in `dir` are hashed and dropped: see [`TestSshd::sink_result`].

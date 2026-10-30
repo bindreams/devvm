@@ -128,6 +128,14 @@ fn parent(path: &str) -> String {
     }
 }
 
+/// The error a data operation on the open file `path` gets, if its directory is declared failing.
+fn data_failure(state: &State, path: &str) -> Result<(), StatusReply> {
+    if state.failing_data.lock().unwrap().contains(&parent(path)) {
+        return Err(failure("No space left on device"));
+    }
+    Ok(())
+}
+
 impl SftpFs {
     pub(super) fn new(state: Arc<State>, drop_now: Arc<Notify>) -> SftpFs {
         SftpFs {
@@ -170,8 +178,9 @@ impl SftpFs {
         Err(failure("too many levels of symbolic links"))
     }
 
-    fn is_read_only(&self, path: &str) -> bool {
-        self.state.read_only.lock().unwrap().contains(path)
+    /// Whether the entries of the directory holding `path` cannot be changed.
+    fn is_locked(&self, path: &str) -> bool {
+        self.state.read_only_dirs.lock().unwrap().contains(&parent(path))
     }
 
     fn is_discarding(&self, path: &str) -> bool {
@@ -235,7 +244,7 @@ impl SftpFs {
 
     fn rename_path(&self, old: &str, new: &str, replace: bool) -> Result<(), StatusReply> {
         let (old, new) = (normalize(old), normalize(new));
-        if self.is_read_only(&new) {
+        if self.is_locked(&new) || self.is_locked(&old) {
             return Err(StatusCode::PermissionDenied.into());
         }
         let exists = self.attributes(&new, false).is_ok();
@@ -285,7 +294,7 @@ impl Handler for SftpFs {
     ) -> Result<Handle, StatusReply> {
         let path = self.resolve(&filename, true)?;
         let writing = pflags.contains(OpenFlags::WRITE);
-        if writing && self.is_read_only(&path) {
+        if pflags.contains(OpenFlags::CREATE) && self.is_locked(&path) && !self.real(&path).exists() {
             return Err(StatusCode::PermissionDenied.into());
         }
         let generated = self.state.generated.lock().unwrap().get(&path).copied();
@@ -342,7 +351,8 @@ impl Handler for SftpFs {
                 }
                 data
             }
-            Some(Open::File { file, .. }) => {
+            Some(Open::File { file, path }) => {
+                data_failure(&self.state, path)?;
                 file.seek(SeekFrom::Start(offset)).map_err(from_io)?;
                 let mut buffer = vec![0u8; len as usize];
                 let read = file.read(&mut buffer).map_err(from_io)?;
@@ -376,7 +386,8 @@ impl Handler for SftpFs {
                 }
                 *len += data.len() as u64;
             }
-            Some(Open::File { file, .. }) => {
+            Some(Open::File { file, path }) => {
+                data_failure(&self.state, path)?;
                 file.seek(SeekFrom::Start(offset)).map_err(from_io)?;
                 file.write_all(&data).map_err(from_io)?;
             }
@@ -437,6 +448,8 @@ impl Handler for SftpFs {
         names.extend(self.state.links.lock().unwrap().keys().filter_map(child));
         names.extend(self.state.generated.lock().unwrap().keys().filter_map(child));
         names.extend(self.state.sinks.lock().unwrap().keys().filter_map(child));
+        let phantoms: Vec<String> = self.state.phantoms.lock().unwrap().iter().filter_map(child).collect();
+        names.extend(phantoms.iter().cloned());
         let mut entries = Vec::new();
         for name in names {
             let full = if dir == "/" {
@@ -444,7 +457,12 @@ impl Handler for SftpFs {
             } else {
                 format!("{dir}/{name}")
             };
-            entries.push(File::new(name, self.attributes(&full, false)?));
+            let attrs = if phantoms.contains(&name) {
+                FileAttributes::default()
+            } else {
+                self.attributes(&full, false)?
+            };
+            entries.push(File::new(name, attrs));
         }
         Ok(Handle {
             id,
@@ -468,7 +486,7 @@ impl Handler for SftpFs {
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, StatusReply> {
         let path = self.resolve(&filename, false)?;
-        if self.is_read_only(&path) {
+        if self.is_locked(&path) {
             return Err(StatusCode::PermissionDenied.into());
         }
         if self.state.links.lock().unwrap().remove(&path).is_some()
@@ -482,6 +500,9 @@ impl Handler for SftpFs {
     }
 
     async fn mkdir(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, StatusReply> {
+        if self.is_locked(&normalize(&path)) {
+            return Err(StatusCode::PermissionDenied.into());
+        }
         std::fs::create_dir(self.real(&normalize(&path))).map_err(from_io)?;
         Ok(ok(id))
     }

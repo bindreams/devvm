@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use super::names::posix_problem;
 use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -52,5 +53,13 @@ impl Host for UnsupportedHost {
 
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
         perm::set_executable(path)
+    }
+
+    fn file_name_problem(&self, name: &str) -> Option<String> {
+        posix_problem(name)
+    }
+
+    fn name_key(&self, name: &str) -> String {
+        name.to_owned()
     }
 }

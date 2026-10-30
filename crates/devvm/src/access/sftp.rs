@@ -14,6 +14,7 @@
 //! The host side of a transfer (what exists, symlinks, modes, the temporary file and the final rename) runs on the
 //! calling thread; each remote step runs on the runtime, bounded by [`Inner::guarded`].
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use std::sync::Arc;
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::{Config, RawSftpSession, SftpSession};
 use russh_sftp::protocol::{FileAttributes, OpenFlags, Packet, StatusCode};
-use tokio::io::{AsyncWriteExt, BufReader, BufWriter, copy_buf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::access::paths::{check_guest_path, expand_guest_path};
 use crate::access::runtime;
@@ -39,8 +40,9 @@ const POSIX_RENAME: &str = "posix-rename@openssh.com";
 /// How much of a file is read or written in one go; the SFTP library splits it into packets and keeps several in
 /// flight.
 const CHUNK: usize = 256 * 1024;
-/// SFTP requests have no time limit of their own: a dead peer is found by the keepalive and the VM watcher.
-const NO_REQUEST_LIMIT_SECS: u64 = 10 * 365 * 24 * 3600;
+/// SFTP requests have no time limit of their own: a dead peer is found by the keepalive and the VM watcher. The
+/// library adds this to the current time, and a sum that overflows is "no deadline".
+const NO_REQUEST_LIMIT_SECS: u64 = u64::MAX;
 
 /// What the guest side of a transfer holds. Cheap to clone; every remote step gets one.
 #[derive(Clone)]
@@ -97,6 +99,86 @@ fn partial_name() -> String {
     let mut random = [0u8; 6];
     getrandom::fill(&mut random).expect("the OS random number generator is available");
     format!(".devvm-partial-{}", hex::encode(random))
+}
+
+/// Which end of a [`pump`] failed.
+#[derive(Debug)]
+enum Failed {
+    Read(std::io::Error),
+    Write(std::io::Error),
+}
+
+/// Copies `reader` to `writer` in chunks of [`CHUNK`]. The SFTP library reports a failed guest read or write as a
+/// plain `io::Error` with no mark of whose fault it was, so the end that failed is known by where the call was.
+async fn pump<R, W>(mut reader: R, mut writer: W) -> std::result::Result<(), Failed>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut chunk = vec![0u8; CHUNK];
+    loop {
+        let read = reader.read(&mut chunk).await.map_err(Failed::Read)?;
+        if read == 0 {
+            return Ok(());
+        }
+        writer.write_all(&chunk[..read]).await.map_err(Failed::Write)?;
+    }
+}
+
+/// Whether the last part of `rel` has the character a lossy decoding leaves for bytes that are not UTF-8.
+fn name_has_replacement(rel: &[String]) -> bool {
+    rel.last().is_some_and(|name| name.contains('\u{fffd}'))
+}
+
+/// Whether copying `path` means copying what is in it, as `cp -r dir/. dest` does: a name that is `.` or `..`, or no
+/// name at all (a root).
+fn host_contents_only(path: &Path) -> bool {
+    let text = path.as_os_str().to_string_lossy();
+    match text.rsplit(std::path::is_separator).find(|part| !part.is_empty()) {
+        None | Some("." | "..") => true,
+        Some(_) => path.file_name().is_none(),
+    }
+}
+
+/// [`host_contents_only`] for a guest path.
+fn guest_contents_only(path: &str) -> bool {
+    base_name(path).is_none_or(|name| name == "." || name == "..")
+}
+
+/// Refuses a guest `name` the host cannot hold as one file name.
+fn check_host_name(name: &str, host: &dyn Host) -> Result<()> {
+    match host.file_name_problem(name) {
+        None => Ok(()),
+        Some(problem) => Err(Error::new(
+            ErrorKind::Io,
+            format!("the guest name {name:?} {problem}, so it cannot be copied to this host"),
+        )),
+    }
+}
+
+/// Refuses guest names the host cannot hold, and two names it takes for one (so the second would overwrite the first).
+fn check_host_names(items: &[Item], host: &dyn Host) -> Result<()> {
+    let mut seen: HashMap<Vec<String>, &[String]> = HashMap::new();
+    for item in items {
+        for part in &item.rel {
+            check_host_name(part, host)?;
+        }
+        let key = item.rel.iter().map(|part| host.name_key(part)).collect();
+        if let Some(first) = seen.insert(key, &item.rel)
+            && first != item.rel.as_slice()
+        {
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!(
+                    "the guest paths {:?} and {:?} are one name on this host, whose file system ignores case, \
+                     so copying both would overwrite the first",
+                    first.join("/"),
+                    item.rel.join("/")
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn local_error(what: &str, path: &Path, source: std::io::Error) -> Error {
@@ -215,11 +297,11 @@ impl Remote {
         }
     }
 
-    /// An `io::Error` out of a copy loop: the guest's side if it carries an SFTP error, else the host's.
-    fn copy_error(&self, awaiting: &str, local: &Path, e: std::io::Error) -> Error {
+    /// An `io::Error` out of a guest file read, write or close.
+    fn guest_io(&self, awaiting: &str, e: std::io::Error) -> Error {
         match e.get_ref().and_then(|inner| inner.downcast_ref::<SftpError>()) {
             Some(remote) => self.error(awaiting, remote.clone()),
-            None => local_error("cannot copy", local, e),
+            None => Error::io(ErrorKind::Io, format!("{awaiting}: the guest side failed: {e}"), e),
         }
     }
 
@@ -300,11 +382,12 @@ impl Remote {
         let source = tokio::fs::File::open(local)
             .await
             .map_err(|e| local_error("cannot read", local, e))?;
-        copy_buf(&mut BufReader::with_capacity(CHUNK, source), &mut file)
-            .await
-            .map_err(|e| self.copy_error(&awaiting, local, e))?;
+        pump(source, &mut file).await.map_err(|failed| match failed {
+            Failed::Read(e) => local_error("cannot read", local, e),
+            Failed::Write(e) => self.guest_io(&awaiting, e),
+        })?;
         // Shutting down flushes and closes the handle: a failed write may only show here.
-        file.shutdown().await.map_err(|e| self.copy_error(&awaiting, local, e))
+        file.shutdown().await.map_err(|e| self.guest_io(&awaiting, e))
     }
 
     /// Streams the guest file `remote` into the new host file `temp`.
@@ -315,17 +398,17 @@ impl Remote {
             .open(remote.as_str())
             .await
             .map_err(|e| self.error(&awaiting, e))?;
-        let local = tokio::fs::OpenOptions::new()
+        let mut local = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp)
             .await
             .map_err(|e| local_error("cannot create", &temp, e))?;
-        let mut writer = BufWriter::with_capacity(CHUNK, local);
-        copy_buf(&mut BufReader::with_capacity(CHUNK, file), &mut writer)
-            .await
-            .map_err(|e| self.copy_error(&awaiting, &temp, e))?;
-        writer
+        pump(file, &mut local).await.map_err(|failed| match failed {
+            Failed::Read(e) => self.guest_io(&awaiting, e),
+            Failed::Write(e) => local_error("cannot write", &temp, e),
+        })?;
+        local
             .shutdown()
             .await
             .map_err(|e| local_error("cannot finish", &temp, e))
@@ -375,10 +458,14 @@ impl Remote {
                 rel.push(name);
                 // `stat`, not the listing's attributes: those describe a symlink, not what it points to.
                 let Some(attrs) = self.stat(&path).await? else {
-                    return Err(Error::new(
-                        ErrorKind::Io,
-                        format!("the guest path {path} is a dangling symlink"),
-                    ));
+                    // The library decodes names lossily: a name that is not valid UTF-8 comes back with U+FFFD in
+                    // it and names nothing on the guest.
+                    let why = if name_has_replacement(&rel) {
+                        format!("the guest path {path:?} has a name that is not valid UTF-8, which SFTP cannot carry")
+                    } else {
+                        format!("the guest path {path} is a dangling symlink")
+                    };
+                    return Err(Error::new(ErrorKind::Io, why));
                 };
                 if attrs.is_dir() {
                     items.push(Item {
@@ -522,6 +609,7 @@ impl Sftp {
             ));
         }
         let root = match &existing {
+            Some(attrs) if attrs.is_dir() && host_contents_only(src) => dest.clone(),
             Some(attrs) if attrs.is_dir() => join(&dest, &name()?),
             Some(_) => {
                 return Err(Error::new(
@@ -579,12 +667,14 @@ impl Sftp {
             Err(e) => return Err(local_error("the host destination", dest, e)),
         };
         let name = || {
-            base_name(&src).map(str::to_owned).ok_or_else(|| {
+            let name = base_name(&src).map(str::to_owned).ok_or_else(|| {
                 Error::new(
                     ErrorKind::Usage,
                     format!("the guest path {src} has no file name to copy"),
                 )
-            })
+            })?;
+            check_host_name(&name, host)?;
+            Ok::<_, Error>(name)
         };
         let check_parent = |path: &Path| -> Result<()> {
             let parent = match path.parent() {
@@ -618,6 +708,7 @@ impl Sftp {
             );
         }
         let root = match &existing {
+            Some(metadata) if metadata.is_dir() && guest_contents_only(&src) => dest.to_owned(),
             Some(metadata) if metadata.is_dir() => dest.join(name()?),
             Some(_) => {
                 return Err(Error::new(
@@ -637,6 +728,7 @@ impl Sftp {
             let src = src.clone();
             move |remote| async move { remote.walk(src).await }
         })?;
+        check_host_names(&items, host)?;
         ensure_host_dir(&root)?;
         for item in items {
             let remote_path = item.rel.iter().fold(src.clone(), |base, part| join(&base, part));
