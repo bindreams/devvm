@@ -50,24 +50,32 @@ fn signal_name(signal: &Sig) -> String {
 /// closed: the channel is closed and nothing more is sent.
 pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::Sender<Event>) {
     let awaiting = format!("the command `{command}`");
+    // Kept here, not in `run`: the guard drops `run` when the VM exits or the boot bound passes, and a status that had
+    // arrived is still the command's result.
+    let mut status = None;
     // The channel's end is the authority on whether the connection died, so the guard does not watch the transport.
     let outcome = inner
-        .guarded(&awaiting, false, run(&inner, &command, &awaiting, &events))
+        .guarded(&awaiting, false, run(&inner, &command, &awaiting, &events, &mut status))
         .await;
-    match outcome {
-        Ok(Some(status)) => {
+    match (outcome, status) {
+        (Ok(None), _) => {} // The host side went away; there is nobody to tell.
+        (Ok(Some(status)), _) | (Err(_), Some(status)) => {
             let _ = events.send(Event::End(Ok(status))).await;
         }
-        // The host side went away; there is nobody to tell.
-        Ok(None) => {}
-        Err(e) => {
+        (Err(e), None) => {
             let _ = events.send(Event::End(Err(e))).await;
         }
     }
 }
 
-/// `Ok(None)` when the host output closed.
-async fn run(inner: &Inner, command: &str, awaiting: &str, events: &mpsc::Sender<Event>) -> Result<Option<ExitStatus>> {
+/// `Ok(None)` when the host output closed. `status` is set as soon as the command's status arrives.
+async fn run(
+    inner: &Inner,
+    command: &str,
+    awaiting: &str,
+    events: &mpsc::Sender<Event>,
+    status: &mut Option<ExitStatus>,
+) -> Result<Option<ExitStatus>> {
     let mut channel = inner
         .handle
         .channel_open_session()
@@ -77,7 +85,6 @@ async fn run(inner: &Inner, command: &str, awaiting: &str, events: &mpsc::Sender
         .exec(true, command.as_bytes())
         .await
         .map_err(|_| inner.connection_ended(awaiting))?;
-    let mut status = None;
     loop {
         let message = tokio::select! {
             message = channel.wait() => message,
@@ -90,13 +97,13 @@ async fn run(inner: &Inner, command: &str, awaiting: &str, events: &mpsc::Sender
         let Some(message) = message else {
             // The channel's sender is gone without a close: the connection ended under it. A status that arrived
             // first is still the command's result.
-            return status.map(Some).ok_or_else(|| inner.connection_ended(awaiting));
+            return status.take().map(Some).ok_or_else(|| inner.connection_ended(awaiting));
         };
         let event = match message {
             ChannelMsg::Data { data } => Event::Out(data.to_vec()),
             ChannelMsg::ExtendedData { data, ext: 1 } => Event::Err(data.to_vec()),
             ChannelMsg::ExitStatus { exit_status } => {
-                status = Some(ExitStatus::Code(exit_status as i32));
+                *status = Some(ExitStatus::Code(exit_status as i32));
                 continue;
             }
             ChannelMsg::ExitSignal {
@@ -104,7 +111,7 @@ async fn run(inner: &Inner, command: &str, awaiting: &str, events: &mpsc::Sender
                 core_dumped,
                 ..
             } => {
-                status = Some(ExitStatus::Signal {
+                *status = Some(ExitStatus::Signal {
                     name: signal_name(&signal),
                     core_dumped,
                 });
@@ -117,7 +124,7 @@ async fn run(inner: &Inner, command: &str, awaiting: &str, events: &mpsc::Sender
                 ));
             }
             ChannelMsg::Close => {
-                return status.map(Some).ok_or_else(|| {
+                return status.take().map(Some).ok_or_else(|| {
                     Error::new(
                         ErrorKind::NoExitStatus,
                         format!(

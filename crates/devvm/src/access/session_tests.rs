@@ -490,6 +490,68 @@ fn an_exit_status_that_arrived_is_the_result_even_if_the_connection_dies_before_
     }
 }
 
+/// A sink that runs `action` when it receives output.
+struct RunsOnWrite<F: Fn()>(F);
+
+impl<F: Fn()> Write for RunsOnWrite<F> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        (self.0)();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[skuld::test]
+fn an_exit_status_that_arrived_is_the_result_even_if_the_vm_exits_before_the_close(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let rig = Rig::new(home);
+    let (fire, wait) = mpsc::channel::<()>();
+    let session = rig
+        .connect_with(VmExit::when(move || wait.recv().map_err(|e| e.to_string())), None)
+        .unwrap();
+    let mut stderr = Vec::new();
+    // The marker follows the status on the wire, so the status has been read when the sink sees the marker.
+    let end = session
+        .exec(
+            "status-then-marker",
+            &mut RunsOnWrite(|| drop(fire.send(()))),
+            &mut stderr,
+        )
+        .unwrap();
+    match end {
+        ExecEnd::Finished(status) => assert_eq!(status, ExitStatus::Code(7)),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[skuld::test]
+fn an_exit_status_that_arrived_is_the_result_even_if_the_boot_bound_passes_before_the_close(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let rig = Rig::new(home);
+    let session = rig
+        .connect_with(VmExit::never(), Some(BootBound::start(Duration::from_secs(3600))))
+        .unwrap();
+    let mut stderr = Vec::new();
+    let end = session
+        .exec(
+            "status-then-marker",
+            &mut RunsOnWrite(|| {
+                arm_boot_bound(&session, Duration::ZERO);
+            }),
+            &mut stderr,
+        )
+        .unwrap();
+    match end {
+        ExecEnd::Finished(status) => assert_eq!(status, ExitStatus::Code(7)),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// Counts flushes and refuses nothing.
 #[derive(Default)]
 struct CountsFlushes {
