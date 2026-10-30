@@ -49,9 +49,15 @@ pub struct Sock {
     pub endpoint: QmpEndpoint,
 }
 
-/// The shared directory control sockets go in during tests (created if need be).
+/// The shared directory control sockets go in during tests (created if need be): `<temp>/<UNICODE_DIR>`, or, where the
+/// temporary directory is too long for a socket path (macOS), `/tmp/<UNICODE_DIR>`.
 pub fn socket_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(UNICODE_DIR);
+    let fits = |dir: &Path| QmpEndpoint::for_instance(dir, &InstanceId::random()).is_ok();
+    let dir = [std::env::temp_dir(), PathBuf::from("/tmp")]
+        .into_iter()
+        .map(|base| base.join(UNICODE_DIR))
+        .find(|dir| fits(dir))
+        .unwrap_or_else(|| panic!("no short directory for a control socket under the temporary directory"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

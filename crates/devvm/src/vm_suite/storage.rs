@@ -106,6 +106,7 @@ fn a_child_layer_backs_onto_its_parents_disk_by_a_relative_path(
     let first = home.join("first").join("disk.img");
     std::fs::create_dir_all(first.parent().unwrap()).unwrap();
     storage.create_instance_disk(base.tip().dir(), &first, 8 << 20).unwrap();
+    let first_before = std::fs::read(&first).unwrap();
     let child = world
         .store
         .build(&request(key(2)), Some(&base), |staging| {
@@ -116,7 +117,11 @@ fn a_child_layer_backs_onto_its_parents_disk_by_a_relative_path(
             Ok(Built::default())
         })
         .unwrap();
-    assert!(!first.exists(), "the instance disk became the layer");
+    assert_eq!(
+        std::fs::read(&first).unwrap(),
+        first_before,
+        "the instance disk is only read; the layer is a copy"
+    );
 
     // The staging directory was renamed to its final name; the relative path still resolves.
     let chain = qemu_img_info(install, &disk_of(&child), true);

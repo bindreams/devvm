@@ -93,23 +93,6 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
     })
 }
 
-/// Moves `from` to `to`, copying when they are on different volumes.
-fn move_file(from: &Path, to: &Path) -> Result<()> {
-    match std::fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
-            copy_file(from, to)?;
-            std::fs::remove_file(from)
-                .map_err(|e| Error::io(ErrorKind::Io, format!("cannot remove {}", from.display()), e))
-        }
-        Err(e) => Err(Error::io(
-            ErrorKind::Io,
-            format!("cannot move {} to {}", from.display(), to.display()),
-            e,
-        )),
-    }
-}
-
 /// `target` as a path relative to the directory `from_dir`, with `/` separators (which `qemu-img` reads on every
 /// platform). `None` when they share no root (another drive), or a part is not Unicode.
 pub(crate) fn relative_path(from_dir: &Path, target: &Path) -> Option<String> {
@@ -176,8 +159,9 @@ impl Storage for QemuStorage {
                 ),
             )
         })?;
+        // A copy: the instance disk is only read, whatever happens to the instance after.
         let disk = staging.path().join(DISK);
-        move_file(instance_disk, &disk)?;
+        copy_file(instance_disk, &disk)?;
         // A relative backing path stays valid when the staging directory is renamed to its final name next to its
         // siblings, because both sit at the same depth of the layer store.
         let backing = match relative_path(staging.path(), Path::new(parent)) {
