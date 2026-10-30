@@ -732,8 +732,9 @@ pub(crate) fn act_as_qemu_img_when_installed_as_one() {
     }
     let cwd = std::env::current_dir().unwrap();
     let mut env: Vec<String> = std::env::vars_os()
-        // Windows keeps per-drive working directories in variables named `=C:`.
-        .filter(|(name, _)| !name.to_string_lossy().starts_with('='))
+        // Windows keeps per-drive working directories in variables named `=C:`, and macOS adds its text encoding to every
+        // process it starts: neither is something the parent set.
+        .filter(|(name, _)| !name.to_string_lossy().starts_with('=') && name != "__CF_USER_TEXT_ENCODING")
         .map(|(name, value)| format!("env {}={}", name.to_string_lossy(), value.to_string_lossy()))
         .collect();
     env.sort();
