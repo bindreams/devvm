@@ -383,6 +383,33 @@ fn a_unc_prefix_is_spelled_with_forward_slashes() {
     assert_eq!(ssh_path(Path::new(r"\\server\share\x\y")).unwrap(), want);
 }
 
+/// `path` on the same drive as a UNC path through the administrative share: `C:\x` is `\\localhost\C$\x`.
+#[cfg(windows)]
+fn through_the_admin_share(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+    let mut components = path.components();
+    let drive = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => char::from(letter),
+            other => panic!("{} is not on a drive: {other:?}", path.display()),
+        },
+        _ => panic!("{} has no drive", path.display()),
+    };
+    let mut unc = PathBuf::from(format!("\\\\localhost\\{drive}$\\"));
+    unc.extend(components.filter(|component| !matches!(component, Component::RootDir)));
+    unc
+}
+
+/// A state directory on a UNC path, spelled `//localhost/C$/...` in the config: the real `ssh -G` must read the
+/// `Include` and the key paths. Measured on the CI runners, where the administrative share exists; the test fails
+/// there, with what ssh printed, if ssh cannot read such a path.
+#[cfg(windows)]
+#[skuld::test]
+fn system_ssh_reads_a_state_directory_on_a_unc_path(#[fixture(unicode_home)] home: &Path) {
+    let unc = through_the_admin_share(home);
+    check_system_ssh(&unc, &unc);
+}
+
 /// `%` is a token in `IdentityFile` and `UserKnownHostsFile`, where `%%` is a literal one on every OpenSSH.
 #[skuld::test]
 fn system_ssh_reads_key_files_below_a_directory_with_a_percent(#[fixture(unicode_home)] home: &Path) {
