@@ -1,6 +1,7 @@
-use super::{CLOUD_INIT_STATUS, Readiness, readiness};
+use super::{CLOUD_INIT_STATUS, readiness};
 use crate::ErrorKind;
 use crate::exit::{ExitStatus, Output};
+use crate::guest::Readiness;
 
 fn reply(code: i32, stdout: &str) -> Output {
     Output {
@@ -17,7 +18,13 @@ fn cloud_init_status_replies_map_to_ready_degraded_and_error() {
     assert_eq!(readiness(&reply(0, done)).unwrap(), Readiness::Ready);
 
     let degraded = r#"{"errors": [], "extended_status": "degraded done", "recoverable_errors": {"WARNING": ["x"]}, "status": "done"}"#;
-    assert_eq!(readiness(&reply(2, degraded)).unwrap(), Readiness::Degraded);
+    let Readiness::Degraded(what) = readiness(&reply(2, degraded)).unwrap() else {
+        panic!("a degraded `done` is not plain readiness");
+    };
+    assert!(
+        what.contains("degraded done") && what.contains("WARNING"),
+        "the degradation is named: {what}"
+    );
 
     let error = r#"{"errors": ["boom"], "extended_status": "error", "status": "error"}"#;
     let failed = readiness(&reply(1, error)).unwrap_err();

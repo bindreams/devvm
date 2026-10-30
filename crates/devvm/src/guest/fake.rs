@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
 use crate::guest::linux::LinuxGuest;
-use crate::guest::{BaseBuilder, GuestOs, Guests, SeedMedia, SeedSpec};
+use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedMedia, SeedSpec};
 use crate::recipe::Shell;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
@@ -49,8 +49,11 @@ impl GuestOs for FakeGuestOs {
         LinuxGuest.boot_id_command()
     }
 
-    fn wrap(&self, cmd: &Command) -> String {
-        cmd.argv.join(" ")
+    fn wrap(&self, cmd: &Command) -> Result<String> {
+        if cmd.argv.is_empty() {
+            return Err(Error::new(ErrorKind::Usage, "a command needs a non-empty argv"));
+        }
+        Ok(cmd.argv.join(" "))
     }
 
     fn sftp_path(&self, guest_path: &str, _home: &str) -> String {
@@ -69,8 +72,8 @@ impl GuestOs for FakeGuestOs {
         }
     }
 
-    fn wait_ready(&self, _ssh: &SshSession) -> Result<()> {
-        Ok(())
+    fn wait_ready(&self, _ssh: &SshSession) -> Result<Readiness> {
+        Ok(Readiness::Ready)
     }
 
     /// As in a Linux guest.

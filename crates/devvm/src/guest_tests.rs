@@ -1,8 +1,8 @@
-use crate::ErrorKind;
 use crate::GuestKind;
 use crate::guest::fake::FakeGuests;
 use crate::guest::{BuiltinGuests, Guests};
 use crate::recipe::Shell;
+use crate::{Command, ErrorKind};
 
 #[skuld::test]
 fn builtin_guests_name_the_missing_guest() {
@@ -34,4 +34,12 @@ fn a_linux_guest_wraps_a_script_for_its_shell_and_refuses_cmd() {
     let error = os.shell_argv(Some(Shell::Cmd), "dir").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(error.message().contains("cmd"), "{}", error.message());
+}
+
+#[skuld::test]
+fn a_guest_refuses_to_wrap_an_empty_argv() {
+    let os = FakeGuests.os(GuestKind::Linux).unwrap();
+    let error = os.wrap(&Command::new(Vec::<String>::new())).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Usage);
+    assert_eq!(os.wrap(&Command::new(["echo", "hi"])).unwrap(), "echo hi");
 }
