@@ -135,3 +135,20 @@ fn of_concurrent_writers_one_wins_and_the_rest_see_the_set_exists(#[fixture(unic
     assert_eq!(InstanceKeys::read(&dir).unwrap(), winners[0].1);
     assert!(temporary_directories(home).is_empty());
 }
+
+#[skuld::test]
+fn a_leftover_that_cannot_be_removed_is_reported_and_does_not_block_the_write(#[fixture(unicode_home)] home: &Path) {
+    // A regular file where a temporary directory should be: `remove_dir_all` fails on it.
+    let stuck = home.join(".keys-stuck");
+    std::fs::write(&stuck, "not a directory").unwrap();
+    let keys = InstanceKeys::generate().unwrap();
+    let warnings = keys.write(&TestHost, &home.join("keys")).unwrap();
+    assert_eq!(InstanceKeys::read(&home.join("keys")).unwrap(), keys);
+    assert!(stuck.exists(), "it could not be removed");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(".keys-stuck"), "{warnings:?}");
+    // The next write meets the same leftover and still goes through.
+    let second = InstanceKeys::generate().unwrap();
+    second.write(&TestHost, &home.join("keys2")).unwrap();
+    assert_eq!(InstanceKeys::read(&home.join("keys2")).unwrap(), second);
+}

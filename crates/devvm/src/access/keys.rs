@@ -46,18 +46,23 @@ fn generate_pair() -> Result<(String, String)> {
     Ok((private.to_string(), public))
 }
 
-/// Removes the `.keys-*` directories in `parent`: every writer holds the lock, so none of them is in use.
-fn sweep_temporaries(parent: &Path) -> Result<()> {
+/// Removes the `.keys-*` directories in `parent`: every writer holds the lock, so none of them is in use. One that
+/// cannot be removed (an antivirus holds a file of it, or it is not a directory) is returned as a warning: it must not
+/// stop every later write.
+fn sweep_temporaries(parent: &Path) -> Result<Vec<String>> {
     let io =
         |what: &str, path: &Path, source| Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), source);
+    let mut warnings = Vec::new();
     for entry in std::fs::read_dir(parent).map_err(|e| io("list", parent, e))? {
         let entry = entry.map_err(|e| io("list", parent, e))?;
         if entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
             let path = entry.path();
-            std::fs::remove_dir_all(&path).map_err(|e| io("remove the leftover", &path, e))?;
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                warnings.push(io("remove the leftover", &path, e).message().to_owned());
+            }
         }
     }
-    Ok(())
+    Ok(warnings)
 }
 
 impl InstanceKeys {
@@ -77,8 +82,9 @@ impl InstanceKeys {
     /// to a temporary directory beside `dir`, which is then renamed into place: a failure or a kill leaves no
     /// `dir`, and an existing `dir` is `AlreadyExists`, never replaced. Writers of one parent directory take turns
     /// under a lock there (`.keys.lock`), so of several at once exactly one wins, and a temporary directory a killed
-    /// writer left (`.keys-*`) is removed by the next. The private files go through [`Host::write_private`].
-    pub(crate) fn write(&self, host: &dyn Host, dir: &Path) -> Result<()> {
+    /// writer left (`.keys-*`) is removed by the next; one that cannot be removed is returned as a warning. The
+    /// private files go through [`Host::write_private`].
+    pub(crate) fn write(&self, host: &dyn Host, dir: &Path) -> Result<Vec<String>> {
         let io = |what: &str, path: &Path, source| {
             Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), source)
         };
@@ -97,7 +103,7 @@ impl InstanceKeys {
                 format!("the keys directory {} already exists", dir.display()),
             ));
         }
-        sweep_temporaries(parent)?;
+        let warnings = sweep_temporaries(parent)?;
         // Removed on drop unless it is renamed into place.
         let temp = tempfile::Builder::new()
             .prefix(TEMP_PREFIX)
@@ -122,7 +128,8 @@ impl InstanceKeys {
         std::fs::rename(&temp, dir).map_err(|e| {
             let _ = std::fs::remove_dir_all(&temp);
             io("move the keys into place at", dir, e)
-        })
+        })?;
+        Ok(warnings)
     }
 
     /// Reads the set `write` made. `NotFound` when `dir` has no keys.
