@@ -10,6 +10,10 @@ use crate::{Error, ErrorKind, Result};
 #[path = "seed_tests.rs"]
 mod seed_tests;
 
+#[cfg(test)]
+#[path = "seed_pyyaml_tests.rs"]
+mod seed_pyyaml_tests;
+
 /// The guest account every command runs as.
 pub(super) const ACCOUNT: &str = "user";
 
@@ -81,14 +85,18 @@ pub(super) fn seed_files(spec: &SeedSpec) -> Result<Vec<SeedFile>> {
 /// decides what to quote by the 1.2 rules.
 ///
 /// `serde_json` escapes only U+0000 to U+001F, `"` and `\`. PyYAML rejects U+007F, U+0080 to U+009F, U+FFFE and U+FFFF
-/// raw, and folds U+0085 (NEL) into a space, so those are written as `\uXXXX`. Outside strings the text is ASCII, so
-/// the pass touches nothing else.
+/// raw, and treats U+0085 (NEL), U+2028 and U+2029 as line breaks that fold into a space or end the scalar, so those
+/// are written as `\uXXXX`. Outside strings the text is ASCII, so the pass touches nothing else. The exhaustive PyYAML
+/// test (`seed_pyyaml_tests.rs`) checks that no other scalar value needs this.
 fn document(value: &impl Serialize) -> Result<String> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot write the cloud-init seed: {e}")))?;
     let mut out = String::with_capacity(text.len() + 1);
     for c in text.chars() {
-        if matches!(c, '\u{7f}'..='\u{9f}' | '\u{fffe}' | '\u{ffff}') {
+        if matches!(
+            c,
+            '\u{7f}'..='\u{9f}' | '\u{2028}' | '\u{2029}' | '\u{fffe}' | '\u{ffff}'
+        ) {
             out.push_str(&format!("\\u{:04x}", c as u32));
         } else {
             out.push(c);

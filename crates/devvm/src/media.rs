@@ -1,6 +1,6 @@
 //! Writing the small disk images a guest reads at first boot.
 
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
@@ -30,16 +30,11 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 /// writer. It is attached as a virtio-blk disk. Unmeasured: that Ubuntu 24.04 mounts it that way; the first guest boot
 /// decides, and the fallback is an ISO9660 image with Joliet and Rock Ridge names (the format measured as an `ide-cd`).
 ///
-/// The image is a pure function of `files`: no timestamps, a fixed volume id.
+/// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
+/// the finished image before anything is written; an image that does not hold exactly `files` is an error.
 pub(crate) fn write_cidata_image(files: &[SeedFile], into: &Path) -> Result<Media> {
-    refuse_unusable_names(files)?;
-    let image = fat_image(files).map_err(|e| {
-        Error::io(
-            ErrorKind::Io,
-            format!("cannot build the seed image {}", into.display()),
-            e,
-        )
-    })?;
+    refuse_path_names(files)?;
+    let image = fat_image(files, into)?;
     std::fs::write(into, image).map_err(|e| {
         Error::io(
             ErrorKind::Io,
@@ -55,44 +50,42 @@ pub(crate) fn write_cidata_image(files: &[SeedFile], into: &Path) -> Result<Medi
     })
 }
 
-/// `fatfs` trims `/` from a name and walks the rest as a path, so `a/` is `a` and `a/b` needs a directory; an empty name
-/// is no file. Refusing those leaves plain names, where FAT looks up case-insensitively and `fatfs` opens an existing
-/// file without truncating it: two files with one name would leave the first one's tail behind the second one's bytes.
-fn refuse_unusable_names(files: &[SeedFile]) -> Result<()> {
-    let mut seen: Vec<(String, &str)> = Vec::new();
+/// `fatfs` trims `/` from a name and walks the rest as a path, so `a/` is `a` and `a/b` needs a directory; `.` and `..`
+/// are no files. Names that merely collide or that FAT cannot store are caught by [`require_files_as_asked`].
+fn refuse_path_names(files: &[SeedFile]) -> Result<()> {
     for file in files {
-        if file.name.is_empty() || file.name.contains(['/', '\\']) {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                format!(
-                    "`{}` cannot be a file name in the seed image: it is empty or has a path separator",
-                    file.name
-                ),
+        if file.name.is_empty() || file.name == "." || file.name == ".." || file.name.contains(['/', '\\']) {
+            return Err(unusable_name(
+                &file.name,
+                "it is empty, `.` or `..`, or has a path separator",
             ));
         }
-        let folded = file.name.to_uppercase();
-        if let Some((_, first)) = seen.iter().find(|(name, _)| *name == folded) {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                format!(
-                    "the seed image would hold `{first}` and `{}` under one FAT name",
-                    file.name
-                ),
-            ));
-        }
-        seen.push((folded, &file.name));
     }
     Ok(())
 }
 
-fn fat_image(files: &[SeedFile]) -> std::io::Result<Vec<u8>> {
+fn unusable_name(name: &str, why: &str) -> Error {
+    Error::new(
+        ErrorKind::Internal,
+        format!("`{name}` cannot be a file name in the seed image: {why}"),
+    )
+}
+
+fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
+    let io = |e: std::io::Error| {
+        Error::io(
+            ErrorKind::Io,
+            format!("cannot build the seed image {}", into.display()),
+            e,
+        )
+    };
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
     let size = (MIN_IMAGE + 2 * contents).next_multiple_of(u64::from(SECTOR));
     let total_sectors = u32::try_from(size / u64::from(SECTOR)).map_err(|_| {
-        std::io::Error::new(
+        io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "the seed files do not fit a FAT volume",
-        )
+        ))
     })?;
 
     let mut disk = Cursor::new(vec![0u8; size as usize]);
@@ -103,15 +96,65 @@ fn fat_image(files: &[SeedFile]) -> std::io::Result<Vec<u8>> {
             .total_sectors(total_sectors)
             .volume_id(VOLUME_ID)
             .volume_label(*b"CIDATA     "),
-    )?;
+    )
+    .map_err(io)?;
     {
-        let fs = FileSystem::new(&mut disk, FsOptions::new())?;
+        let fs = FileSystem::new(&mut disk, FsOptions::new()).map_err(io)?;
         for file in files {
-            let mut out = fs.root_dir().create_file(&file.name)?;
-            out.write_all(&file.bytes)?;
-            out.flush()?;
+            let mut out = fs
+                .root_dir()
+                .create_file(&file.name)
+                .map_err(|e| unusable_name(&file.name, &e.to_string()))?;
+            out.write_all(&file.bytes).map_err(io)?;
+            out.flush().map_err(io)?;
         }
-        fs.unmount()?;
+        fs.unmount().map_err(io)?;
     }
+    require_files_as_asked(&mut disk, files, io)?;
     Ok(disk.into_inner())
+}
+
+/// Reads the root directory of the finished image back and requires exactly `files`: the same long names, the same
+/// count, the same contents.
+///
+/// `fatfs` merges names whose generated 8.3 short names, trailing dots or U+FFFF padding collide, and renames some, so
+/// no list of name patterns closes the class; only the image says what it holds.
+fn require_files_as_asked(
+    disk: &mut Cursor<Vec<u8>>,
+    files: &[SeedFile],
+    io: impl Fn(std::io::Error) -> Error,
+) -> Result<()> {
+    disk.set_position(0);
+    let fs = FileSystem::new(disk, FsOptions::new()).map_err(&io)?;
+    let mut held = Vec::new();
+    for entry in fs.root_dir().iter() {
+        let entry = entry.map_err(&io)?;
+        let mut bytes = Vec::new();
+        if entry.is_file() {
+            entry.to_file().read_to_end(&mut bytes).map_err(&io)?;
+        }
+        held.push((entry.file_name(), bytes));
+    }
+
+    let mut held_names: Vec<&str> = held.iter().map(|(name, _)| name.as_str()).collect();
+    let mut asked_names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
+    held_names.sort_unstable();
+    asked_names.sort_unstable();
+    if held_names != asked_names {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            format!(
+                "the seed image would hold {held_names:?} where {asked_names:?} were asked: FAT keeps one entry for \
+                 names it treats as equal and rewrites names it cannot store as they are"
+            ),
+        ));
+    }
+    for file in files {
+        if let Some((_, bytes)) = held.iter().find(|(name, _)| *name == file.name)
+            && *bytes != file.bytes
+        {
+            return Err(unusable_name(&file.name, "the image holds other bytes under that name"));
+        }
+    }
+    Ok(())
 }

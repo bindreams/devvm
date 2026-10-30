@@ -168,7 +168,7 @@ fn a_repeated_name_is_refused_whatever_its_case(#[fixture(unicode_home)] home: &
 #[skuld::test]
 fn a_name_fatfs_would_split_or_trim_is_refused(#[fixture(unicode_home)] home: &Path) {
     // `fatfs` trims `/` and walks the rest as a path, so `user-data/` is `user-data` and `a/b` needs a directory.
-    for bad in ["", "/", "user-data/", "/user-data", "a/b", "a\\b"] {
+    for bad in ["", ".", "..", "/", "user-data/", "/user-data", "a/b", "a\\b"] {
         let image = home.join("seed.img");
         let error = write_cidata_image(&[file("user-data", b"one"), file(bad, b"two")], &image)
             .expect_err("the name is not a plain FAT file name");
@@ -179,5 +179,76 @@ fn a_name_fatfs_would_split_or_trim_is_refused(#[fixture(unicode_home)] home: &P
             error.message()
         );
         assert!(!image.exists(), "nothing is written for a refused set");
+    }
+}
+
+#[skuld::test]
+fn name_sets_fatfs_would_merge_or_rename_are_refused(#[fixture(unicode_home)] home: &Path) {
+    // Each set is written by `fatfs` as fewer files than asked, or under another name: a generated 8.3 short name
+    // matches a long name, a trailing dot is dropped, U+FFFF is LFN padding.
+    let sets: [&[&str]; 11] = [
+        &["user-data", "USER-D~1"],
+        &["meta-data", "META-D~1"],
+        &["abcdefghij", "ABCDEF~1"],
+        &["a b", "AB~1"],
+        &["a.b.c", "AB~1.C"],
+        &["abcdefghij.txt", "ABCDEF~1.TXT"],
+        &["a.", "a"],
+        &["a.", "A"],
+        &["a", "a\u{ffff}"],
+        &["a\u{ffff}", "a"],
+        &["\u{ffff}"],
+    ];
+    for names in sets {
+        let image = home.join("seed.img");
+        let files: Vec<SeedFile> = names.iter().map(|name| file(name, b"x")).collect();
+        let error = write_cidata_image(&files, &image).expect_err("fatfs would not write these names as asked");
+        assert_eq!(error.kind(), crate::ErrorKind::Internal, "{names:?}");
+        for name in names {
+            assert!(
+                error.message().contains(&format!("{name:?}")),
+                "{names:?}: {name:?} is not named: {}",
+                error.message()
+            );
+        }
+        assert!(!image.exists(), "nothing is written for a refused set");
+    }
+}
+
+#[skuld::test]
+fn a_name_fatfs_rejects_is_refused_by_name(#[fixture(unicode_home)] home: &Path) {
+    let too_long = "a".repeat(256);
+    for bad in ["a:b", "a*", "a\tb", "a\0b", "\u{1f600}", too_long.as_str()] {
+        let image = home.join("seed.img");
+        let error = write_cidata_image(&[file("user-data", b"one"), file(bad, b"two")], &image)
+            .expect_err("fatfs refuses the name");
+        assert_eq!(error.kind(), crate::ErrorKind::Internal, "{bad:?}");
+        assert!(
+            error.message().contains(&format!("`{bad}`")),
+            "{bad:?}: {}",
+            error.message()
+        );
+        assert!(!image.exists(), "nothing is written for a refused set");
+    }
+}
+
+#[skuld::test]
+fn names_fatfs_keeps_apart_are_written_as_asked(#[fixture(unicode_home)] home: &Path) {
+    let image = home.join("seed.img");
+    let names = [
+        "user-data",
+        "meta-data",
+        "a.b",
+        "\u{e9}",
+        "\u{4e16}\u{754c}",
+        "with space",
+        "a.b.c.d",
+    ];
+    let files: Vec<SeedFile> = names.iter().map(|name| file(name, name.as_bytes())).collect();
+    write_cidata_image(&files, &image).unwrap();
+
+    let fs = open(&image);
+    for name in names {
+        assert_eq!(read_file(&fs, name), name.as_bytes(), "{name}");
     }
 }
