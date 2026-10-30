@@ -124,6 +124,20 @@ fn run_in_bash(script: &str, path_first: Option<&Path>) -> std::process::Output 
     child.wait_with_output().unwrap()
 }
 
+/// Which `bash` the tests start, for a failure message.
+fn bash_identity() -> String {
+    let run = |program: &str, args: &[&str]| match std::process::Command::new(program).args(args).output() {
+        Ok(out) => format!(
+            "{program} {args:?}: {:?} stdout {:?} stderr {:?}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(e) => format!("{program} {args:?}: {e}"),
+    };
+    format!("{}; {}", run("bash", &["--version"]), run("where", &["bash"]))
+}
+
 /// A script `name` in `dir`, executable, that runs `body` with bash.
 fn write_script(dir: &Path, name: &str, body: &str) {
     let path = dir.join(name);
@@ -157,8 +171,9 @@ fn wrap_round_trips_hostile_arguments_through_a_real_sh() {
     assert_eq!(
         out.status.code(),
         Some(0),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "stderr: {}; {}",
+        String::from_utf8_lossy(&out.stderr),
+        bash_identity()
     );
     let mut seen: Vec<&[u8]> = out.stdout.split(|byte| *byte == 0).collect();
     assert_eq!(seen.pop(), Some(&b""[..]), "every argument ends with a NUL");
@@ -172,7 +187,7 @@ fn a_program_called_dash_x_or_a_equals_b_is_a_program_name() {
         let out = run_in_bash(&wrap(&cmd(&[name])).unwrap(), None);
         let stderr = String::from_utf8_lossy(&out.stderr);
         // 127 is "no such program"; an option would give 2, and an assignment would leave `exec` with no program.
-        assert_eq!(out.status.code(), Some(127), "{name}: {stderr}");
+        assert_eq!(out.status.code(), Some(127), "{name}: {stderr}; {}", bash_identity());
         assert!(stderr.contains(name), "{name}: {stderr}");
     }
 }
