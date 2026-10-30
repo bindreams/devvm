@@ -24,6 +24,11 @@ fn open(image: &Path) -> FileSystem<Cursor<Vec<u8>>> {
     FileSystem::new(Cursor::new(bytes), FsOptions::new()).unwrap()
 }
 
+/// The contents of the file `name` in the seed image at `image`.
+pub(crate) fn read_image_file(image: &Path, name: &str) -> Vec<u8> {
+    read_file(&open(image), name)
+}
+
 fn read_file(fs: &FileSystem<Cursor<Vec<u8>>>, name: &str) -> Vec<u8> {
     let mut content = Vec::new();
     fs.root_dir()

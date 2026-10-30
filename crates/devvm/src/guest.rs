@@ -19,6 +19,7 @@ mod guest_tests;
 
 #[cfg(test)]
 pub(crate) mod fake;
+pub(crate) mod linux;
 
 pub(crate) trait GuestOs: Send + Sync {
     /// The per-instance first-boot media (account, keys, hostname).

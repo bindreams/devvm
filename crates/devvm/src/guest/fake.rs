@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
+use crate::guest::linux::LinuxGuest;
 use crate::guest::{BaseBuilder, GuestOs, Guests, SeedMedia, SeedSpec, posix_root, windows_root};
 use crate::host::names;
 use crate::recipe::Shell;
@@ -81,7 +82,7 @@ impl GuestOs for FakeGuestOs {
     }
 
     fn boot_id_command(&self) -> Command {
-        Command::new(["cat", "/proc/sys/kernel/random/boot_id"])
+        LinuxGuest.boot_id_command()
     }
 
     fn wrap(&self, cmd: &Command) -> String {
@@ -149,24 +150,9 @@ impl GuestOs for FakeGuestOs {
         Ok(())
     }
 
-    /// As on Linux: `bash` by default, `cmd` does not exist.
+    /// As in a Linux guest.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>> {
-        let program: &[&str] = match shell {
-            None | Some(Shell::Bash) => &["bash", "-c"],
-            Some(Shell::Sh) => &["sh", "-c"],
-            Some(Shell::Pwsh) => &["pwsh", "-NoProfile", "-Command"],
-            Some(Shell::Cmd) => {
-                return Err(Error::new(
-                    ErrorKind::Recipe,
-                    "the shell `cmd` does not exist in this guest",
-                ));
-            }
-        };
-        Ok(program
-            .iter()
-            .map(|part| (*part).to_owned())
-            .chain([script.to_owned()])
-            .collect())
+        LinuxGuest.shell_argv(shell, script)
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {

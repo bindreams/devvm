@@ -10,7 +10,7 @@ use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "media_tests.rs"]
-mod media_tests;
+pub(crate) mod media_tests;
 
 /// A file to put in a seed image.
 pub(crate) struct SeedFile {
