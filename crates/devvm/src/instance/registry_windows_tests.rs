@@ -4,10 +4,10 @@ use std::path::Path;
 use crate::ErrorKind;
 use crate::instance::registry::registry_tests::{create, fixture, lock_files, new_instance};
 use crate::store::layers::layers_tests::names;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
-fn destroy_with_a_refused_rename_deletes_nothing_and_the_retry_succeeds(#[fixture(anna_home)] home: &Path) {
+fn destroy_with_a_refused_rename_deletes_nothing_and_the_retry_succeeds(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     // Another process has a file inside open without sharing: Windows refuses to rename the directory.
@@ -63,7 +63,7 @@ impl crate::backend::Storage for HoldsItsDisk {
 }
 
 #[skuld::test]
-fn a_failed_create_that_cannot_delete_its_half_built_directory_says_so(#[fixture(anna_home)] home: &Path) {
+fn a_failed_create_that_cannot_delete_its_half_built_directory_says_so(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let storage = HoldsItsDisk {
         held: std::sync::Mutex::new(None),
@@ -100,7 +100,7 @@ fn a_failed_create_that_cannot_delete_its_half_built_directory_says_so(#[fixture
 }
 
 #[skuld::test]
-fn destroy_warns_but_succeeds_when_the_renamed_tree_cannot_be_deleted(#[fixture(anna_home)] home: &Path) {
+fn destroy_warns_but_succeeds_when_the_renamed_tree_cannot_be_deleted(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let dead = fx.env.dirs.instances().join(format!(".dead-{}", dir.id()));

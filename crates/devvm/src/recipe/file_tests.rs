@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::recipe::{CopyFrom, PerArch, Pin, Recipe, Setting, Shell, Source, Step, UacMode};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::{Arch, ErrorKind, RunAs};
 
 const SHA_A: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -72,7 +72,7 @@ fn each_from_variant_parses() {
 }
 
 #[skuld::test]
-fn relative_from_resolves_against_the_recipe_directory(#[fixture(anna_home)] home: &Path) {
+fn relative_from_resolves_against_the_recipe_directory(#[fixture(unicode_home)] home: &Path) {
     let file = home.join("a b").join("x.devvm.yaml");
     let recipe = Recipe::parse("from: ../base.devvm.yaml", &file).unwrap();
     assert_eq!(
@@ -90,7 +90,7 @@ fn relative_from_resolves_against_the_recipe_directory(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn from_file_reads_the_file(#[fixture(anna_home)] home: &Path) {
+fn from_file_reads_the_file(#[fixture(unicode_home)] home: &Path) {
     let file = home.join("x.devvm.yaml");
     std::fs::write(&file, "from: ubuntu-24.04\n").unwrap();
     let recipe = Recipe::from_file(&file).unwrap();

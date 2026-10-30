@@ -193,7 +193,7 @@ fn cp_sides() {
         (":x", local(":x")),
         (r"box:C:\Users\user\a", guest("box", r"C:\Users\user\a")),
         ("box:path with spaces/Ж", guest("box", "path with spaces/Ж")),
-        ("/home/Anna Ж/file", local("/home/Anna Ж/file")),
+        ("/home/unicode-é Ж 世 😀/file", local("/home/unicode-é Ж 世 😀/file")),
     ];
     for (text, expected) in table {
         assert_eq!(parse_cp_side(text), expected, "{text}");

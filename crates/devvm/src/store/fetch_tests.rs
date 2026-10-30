@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use sha2::{Digest, Sha256 as Sha2};
 
 use crate::store::fetch::{Artifact, ContentRange, Fetcher, PartOpener, PartWriter, Response, Resume, Transport};
-use crate::test_support::fixtures::{MemoryProgress, anna_home};
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
 const URL: &str = "https://example.test/files/disk.img";
@@ -154,7 +154,7 @@ fn sidecar(setup: &Setup, artifact: &Artifact) -> PathBuf {
 // Happy path ==========================================================================================================
 
 #[skuld::test]
-fn fetch_verifies_publishes_and_reuses(#[fixture(anna_home)] home: &Path) {
+fn fetch_verifies_publishes_and_reuses(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(300_000, 1);
     let transport = Script::serving(data.clone());
     let setup = setup(home, transport.clone());
@@ -177,7 +177,7 @@ fn fetch_verifies_publishes_and_reuses(#[fixture(anna_home)] home: &Path) {
 // Failures that end in a deleted partial ==============================================================================
 
 #[skuld::test]
-fn wrong_sha256_deletes_the_partial_and_reports_url_expected_and_actual(#[fixture(anna_home)] home: &Path) {
+fn wrong_sha256_deletes_the_partial_and_reports_url_expected_and_actual(#[fixture(unicode_home)] home: &Path) {
     let served = bytes(10_000, 1);
     let expected = bytes(10_000, 2);
     let setup = setup(home, Script::serving(served.clone()));
@@ -193,7 +193,7 @@ fn wrong_sha256_deletes_the_partial_and_reports_url_expected_and_actual(#[fixtur
 }
 
 #[skuld::test]
-fn truncated_artifact_is_a_checksum_error_and_leaves_no_entry(#[fixture(anna_home)] home: &Path) {
+fn truncated_artifact_is_a_checksum_error_and_leaves_no_entry(#[fixture(unicode_home)] home: &Path) {
     let full = bytes(50_000, 3);
     let short = full[..20_000].to_vec();
     // The server reports a complete, shorter body: the hash is what notices.
@@ -208,7 +208,7 @@ fn truncated_artifact_is_a_checksum_error_and_leaves_no_entry(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn remote_change_between_attempts_is_a_checksum_error_with_no_partial(#[fixture(anna_home)] home: &Path) {
+fn remote_change_between_attempts_is_a_checksum_error_with_no_partial(#[fixture(unicode_home)] home: &Path) {
     let original = bytes(100_000, 4);
     let changed = bytes(100_000, 5);
     let (first, second) = (original.clone(), changed.clone());
@@ -242,7 +242,7 @@ fn remote_change_between_attempts_is_a_checksum_error_with_no_partial(#[fixture(
 }
 
 #[skuld::test]
-fn server_ignoring_if_range_and_sending_206_of_new_content_is_caught_by_the_hash(#[fixture(anna_home)] home: &Path) {
+fn server_ignoring_if_range_and_sending_206_of_new_content_is_caught_by_the_hash(#[fixture(unicode_home)] home: &Path) {
     let original = bytes(100_000, 4);
     let changed = bytes(100_000, 5);
     let (first, second) = (original.clone(), changed.clone());
@@ -262,7 +262,7 @@ fn server_ignoring_if_range_and_sending_206_of_new_content_is_caught_by_the_hash
 // Interruptions keep the partial ======================================================================================
 
 #[skuld::test]
-fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(anna_home)] home: &Path) {
+fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(2_000_000, 6);
     let served = Arc::new(AtomicUsize::new(0));
     let (handler_data, handler_served) = (data.clone(), served.clone());
@@ -312,7 +312,7 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(anna_
 }
 
 #[skuld::test]
-fn connection_dropped_mid_body_is_an_interruption_not_a_checksum_error(#[fixture(anna_home)] home: &Path) {
+fn connection_dropped_mid_body_is_an_interruption_not_a_checksum_error(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(60_000, 7);
     let short = data[..10_000].to_vec();
     // The body ends cleanly but short of the declared length.
@@ -327,7 +327,7 @@ fn connection_dropped_mid_body_is_an_interruption_not_a_checksum_error(#[fixture
 }
 
 #[skuld::test]
-fn unexpected_http_status_is_a_download_error_naming_url_and_status(#[fixture(anna_home)] home: &Path) {
+fn unexpected_http_status_is_a_download_error_naming_url_and_status(#[fixture(unicode_home)] home: &Path) {
     for status in [404u16, 500] {
         let sub = home.join(status.to_string());
         std::fs::create_dir(&sub).unwrap();
@@ -345,7 +345,7 @@ fn unexpected_http_status_is_a_download_error_naming_url_and_status(#[fixture(an
 }
 
 #[skuld::test]
-fn unexpected_status_on_resume_keeps_the_part(#[fixture(anna_home)] home: &Path) {
+fn unexpected_status_on_resume_keeps_the_part(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(100_000, 8);
     let first = data.clone();
     let transport = Script::new(move |n, _| match n {
@@ -362,7 +362,7 @@ fn unexpected_status_on_resume_keeps_the_part(#[fixture(anna_home)] home: &Path)
 }
 
 #[skuld::test]
-fn a_cached_entry_clears_a_stale_sidecar(#[fixture(anna_home)] home: &Path) {
+fn a_cached_entry_clears_a_stale_sidecar(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(10_000, 6);
     let wanted = artifact(&data);
     let setup = setup(home, Script::serving(data.clone()));
@@ -388,7 +388,7 @@ fn seed_part(setup: &Setup, artifact: &Artifact, data: &[u8], have: usize, url: 
 }
 
 #[skuld::test]
-fn complete_part_with_416_is_verified_and_published(#[fixture(anna_home)] home: &Path) {
+fn complete_part_with_416_is_verified_and_published(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let transport = Script::serving(data.clone());
     let setup = setup(home, transport.clone());
@@ -407,7 +407,7 @@ fn complete_part_with_416_is_verified_and_published(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn a_416_with_a_different_total_restarts(#[fixture(anna_home)] home: &Path) {
+fn a_416_with_a_different_total_restarts(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let handler_data = data.clone();
     let transport = Script::new(move |n, resume| match (n, resume) {
@@ -428,7 +428,7 @@ fn a_416_with_a_different_total_restarts(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn content_range_start_mismatch_restarts(#[fixture(anna_home)] home: &Path) {
+fn content_range_start_mismatch_restarts(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let handler_data = data.clone();
     let transport = Script::new(move |n, resume| match (n, resume) {
@@ -452,7 +452,7 @@ fn content_range_start_mismatch_restarts(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn a_part_from_another_url_is_not_resumed(#[fixture(anna_home)] home: &Path) {
+fn a_part_from_another_url_is_not_resumed(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let transport = Script::serving(data.clone());
     let setup = setup(home, transport.clone());
@@ -475,7 +475,7 @@ fn abandonments(setup: &Setup) -> Vec<String> {
 }
 
 #[skuld::test]
-fn a_part_without_a_sidecar_is_restarted_and_says_why(#[fixture(anna_home)] home: &Path) {
+fn a_part_without_a_sidecar_is_restarted_and_says_why(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let setup = setup(home, Script::serving(data.clone()));
     let wanted = artifact(&data);
@@ -488,7 +488,7 @@ fn a_part_without_a_sidecar_is_restarted_and_says_why(#[fixture(anna_home)] home
 }
 
 #[skuld::test]
-fn an_unreadable_sidecar_is_restarted_and_says_why(#[fixture(anna_home)] home: &Path) {
+fn an_unreadable_sidecar_is_restarted_and_says_why(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let setup = setup(home, Script::serving(data.clone()));
     let wanted = artifact(&data);
@@ -504,7 +504,7 @@ fn an_unreadable_sidecar_is_restarted_and_says_why(#[fixture(anna_home)] home: &
 }
 
 #[skuld::test]
-fn a_part_from_another_url_is_restarted_and_says_so(#[fixture(anna_home)] home: &Path) {
+fn a_part_from_another_url_is_restarted_and_says_so(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let setup = setup(home, Script::serving(data.clone()));
     let wanted = artifact(&data);
@@ -516,7 +516,7 @@ fn a_part_from_another_url_is_restarted_and_says_so(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn a_server_that_answers_a_resume_with_the_whole_file_is_reported(#[fixture(anna_home)] home: &Path) {
+fn a_server_that_answers_a_resume_with_the_whole_file_is_reported(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let handler_data = data.clone();
     let setup = setup(home, Script::new(move |_, _| Ok(serve(&handler_data, None))));
@@ -529,7 +529,7 @@ fn a_server_that_answers_a_resume_with_the_whole_file_is_reported(#[fixture(anna
 }
 
 #[skuld::test]
-fn a_mismatched_206_or_416_is_reported_when_the_part_is_discarded(#[fixture(anna_home)] home: &Path) {
+fn a_mismatched_206_or_416_is_reported_when_the_part_is_discarded(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     type Answer = (&'static str, fn(&[u8]) -> Response);
     let answers: Vec<Answer> = vec![
@@ -570,7 +570,7 @@ fn a_mismatched_206_or_416_is_reported_when_the_part_is_discarded(#[fixture(anna
 }
 
 #[skuld::test]
-fn header_oddities_the_transport_noticed_reach_the_progress_sink(#[fixture(anna_home)] home: &Path) {
+fn header_oddities_the_transport_noticed_reach_the_progress_sink(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(5_000, 9);
     let handler_data = data.clone();
     let setup = setup(
@@ -641,7 +641,7 @@ impl PartOpener for FullOpener {
 }
 
 #[skuld::test]
-fn disk_full_is_a_clear_error_and_publishes_nothing(#[fixture(anna_home)] home: &Path) {
+fn disk_full_is_a_clear_error_and_publishes_nothing(#[fixture(unicode_home)] home: &Path) {
     for kind in [std::io::ErrorKind::StorageFull, std::io::ErrorKind::QuotaExceeded] {
         let sub = home.join(format!("{kind:?}"));
         std::fs::create_dir(&sub).unwrap();
@@ -676,7 +676,7 @@ const WINDOWS_DEVICES: [&str; 22] = [
 ];
 
 #[skuld::test]
-fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(anna_home)] home: &Path) {
+fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(unicode_home)] home: &Path) {
     let hundred_dots = format!("{}.", "a".repeat(99));
     let devices = WINDOWS_DEVICES.iter().flat_map(|device| {
         [
@@ -758,7 +758,7 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(anna_home)] home
 // Progress ============================================================================================================
 
 #[skuld::test]
-fn progress_lines_name_the_url_and_bytes(#[fixture(anna_home)] home: &Path) {
+fn progress_lines_name_the_url_and_bytes(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(2_621_440, 11);
     let setup = setup(home, Script::serving(data.clone()));
     setup.fetcher.fetch(&artifact(&data)).unwrap();
@@ -792,7 +792,7 @@ impl PartOpener for DenyOpener {
 }
 
 #[skuld::test]
-fn failed_restart_keeps_the_old_validator_with_the_old_part(#[fixture(anna_home)] home: &Path) {
+fn failed_restart_keeps_the_old_validator_with_the_old_part(#[fixture(unicode_home)] home: &Path) {
     let stale = bytes(100_000, 4);
     let good = bytes(100_000, 5);
     let (stale_head, current) = (stale.clone(), good.clone());

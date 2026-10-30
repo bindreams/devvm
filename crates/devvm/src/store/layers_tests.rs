@@ -8,7 +8,7 @@ use crate::store::layers::{
     BuildRequest, Built, ChainLease, Clock, Generation, IdSource, LayerMeta, LayerRef, LayerStore,
 };
 use crate::store::lock::{FileLock, Mode};
-use crate::test_support::fixtures::{FakeClock, MemoryProgress, anna_home};
+use crate::test_support::fixtures::{FakeClock, MemoryProgress, unicode_home};
 use crate::{Dirs, ErrorKind};
 
 pub struct Env {
@@ -88,7 +88,7 @@ pub fn names(dir: &Path) -> Vec<String> {
 }
 
 #[skuld::test]
-fn build_then_lookup_hits_and_a_second_build_is_not_run(#[fixture(anna_home)] home: &Path) {
+fn build_then_lookup_hits_and_a_second_build_is_not_run(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let calls = std::sync::atomic::AtomicUsize::new(0);
     let builder = |staging: &crate::store::layers::Staging<'_>| {
@@ -114,13 +114,13 @@ fn build_then_lookup_hits_and_a_second_build_is_not_run(#[fixture(anna_home)] ho
 }
 
 #[skuld::test]
-fn lookup_of_unknown_key_is_a_miss(#[fixture(anna_home)] home: &Path) {
+fn lookup_of_unknown_key_is_a_miss(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     assert!(env.store.lookup(&key(9)).unwrap().is_none());
 }
 
 #[skuld::test]
-fn staging_is_a_sibling_of_the_generation_dir(#[fixture(anna_home)] home: &Path) {
+fn staging_is_a_sibling_of_the_generation_dir(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let key_dir = env.dirs.layers().join(key(1).to_string());
     let mut staging_depth = 0;
@@ -141,7 +141,7 @@ fn staging_is_a_sibling_of_the_generation_dir(#[fixture(anna_home)] home: &Path)
 }
 
 #[skuld::test]
-fn builder_error_leaves_no_staging_and_no_current(#[fixture(anna_home)] home: &Path) {
+fn builder_error_leaves_no_staging_and_no_current(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let result = env.store.build(&request(key(1)), None, |staging| {
         std::fs::write(staging.dir.path().join("half"), b"x").unwrap();
@@ -158,7 +158,7 @@ fn builder_error_leaves_no_staging_and_no_current(#[fixture(anna_home)] home: &P
 }
 
 #[skuld::test]
-fn builder_panic_leaves_no_staging_and_no_current(#[fixture(anna_home)] home: &Path) {
+fn builder_panic_leaves_no_staging_and_no_current(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = env.store.build(&request(key(1)), None, |staging| {
@@ -173,7 +173,7 @@ fn builder_panic_leaves_no_staging_and_no_current(#[fixture(anna_home)] home: &P
 }
 
 #[skuld::test]
-fn failed_publish_after_the_rename_does_not_report_a_missing_staging_dir(#[fixture(anna_home)] home: &Path) {
+fn failed_publish_after_the_rename_does_not_report_a_missing_staging_dir(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let key_dir = env.dirs.layers().join(key(1).to_string());
     // A directory named `current` makes the final rename fail, after staging became the generation directory.
@@ -186,7 +186,7 @@ fn failed_publish_after_the_rename_does_not_report_a_missing_staging_dir(#[fixtu
 }
 
 #[skuld::test]
-fn sweep_reports_a_directory_it_cannot_list(#[fixture(anna_home)] home: &Path) {
+fn sweep_reports_a_directory_it_cannot_list(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let not_a_dir = home.join("plain-file");
     std::fs::write(&not_a_dir, b"x").unwrap();
@@ -201,7 +201,7 @@ fn sweep_reports_a_directory_it_cannot_list(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn build_sweeps_leftover_current_temp_files(#[fixture(anna_home)] home: &Path) {
+fn build_sweeps_leftover_current_temp_files(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let key_dir = env.dirs.layers().join(key(1).to_string());
     std::fs::create_dir_all(&key_dir).unwrap();
@@ -213,7 +213,7 @@ fn build_sweeps_leftover_current_temp_files(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn child_records_parent_key_and_generation(#[fixture(anna_home)] home: &Path) {
+fn child_records_parent_key_and_generation(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let parent = build(&env, key(1), None);
     let child = build(&env, key(2), Some(&parent));
@@ -229,7 +229,7 @@ fn child_records_parent_key_and_generation(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn child_build_refuses_a_parent_whose_generation_is_gone(#[fixture(anna_home)] home: &Path) {
+fn child_build_refuses_a_parent_whose_generation_is_gone(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let parent = build(&env, key(1), None);
     drop(build(&env, key(2), Some(&parent)));
@@ -252,7 +252,7 @@ fn child_build_refuses_a_parent_whose_generation_is_gone(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn meta_round_trips_times_and_ids(#[fixture(anna_home)] home: &Path) {
+fn meta_round_trips_times_and_ids(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let created = t0() + Duration::new(0, 123_456_789);
     env.clock.set(created);
@@ -300,7 +300,7 @@ impl IdSource for ProbingIds {
 }
 
 #[skuld::test]
-fn generation_ids_are_allocated_only_under_the_build_lock(#[fixture(anna_home)] home: &Path) {
+fn generation_ids_are_allocated_only_under_the_build_lock(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let ids = Arc::new(ProbingIds {
         lock_path: dirs.layers().join(".locks").join(format!("{}.build", key(1))),
@@ -349,7 +349,7 @@ fn current_of(env: &Env, key: LayerKey) -> String {
 }
 
 #[skuld::test]
-fn near_expiry_base_and_child_both_miss_and_rebuild_as_new_generations(#[fixture(anna_home)] home: &Path) {
+fn near_expiry_base_and_child_both_miss_and_rebuild_as_new_generations(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let base = build_expiring(&env, key(1), None, Some(t0() + days(90)));
     let child = build_expiring(&env, key(2), Some(&base), Some(t0() + days(120)));
@@ -378,7 +378,7 @@ fn near_expiry_base_and_child_both_miss_and_rebuild_as_new_generations(#[fixture
 }
 
 #[skuld::test]
-fn lookup_boundary_is_exactly_ten_days(#[fixture(anna_home)] home: &Path) {
+fn lookup_boundary_is_exactly_ten_days(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let expires = t0() + days(100);
     drop(build_expiring(&env, key(1), None, Some(expires)));
@@ -392,7 +392,7 @@ fn lookup_boundary_is_exactly_ten_days(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn child_expiry_is_the_minimum_of_own_and_parent(#[fixture(anna_home)] home: &Path) {
+fn child_expiry_is_the_minimum_of_own_and_parent(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let parent = build_expiring(&env, key(1), None, Some(t0() + days(90)));
     let later = build_expiring(&env, key(2), Some(&parent), Some(t0() + days(200)));
@@ -404,7 +404,7 @@ fn child_expiry_is_the_minimum_of_own_and_parent(#[fixture(anna_home)] home: &Pa
 }
 
 #[skuld::test]
-fn born_expired_build_fails_with_expired_base_and_publishes_nothing(#[fixture(anna_home)] home: &Path) {
+fn born_expired_build_fails_with_expired_base_and_publishes_nothing(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let calls = std::sync::atomic::AtomicUsize::new(0);
     let expires = t0() + days(3);
@@ -424,7 +424,7 @@ fn born_expired_build_fails_with_expired_base_and_publishes_nothing(#[fixture(an
 }
 
 #[skuld::test]
-fn failed_expiry_triggered_rebuild_is_an_error_not_the_old_generation(#[fixture(anna_home)] home: &Path) {
+fn failed_expiry_triggered_rebuild_is_an_error_not_the_old_generation(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let old = build_expiring(&env, key(1), None, Some(t0() + days(90)));
     let old_generation = old.tip().meta().generation;
@@ -454,7 +454,7 @@ impl Clock for StepClock {
 }
 
 #[skuld::test]
-fn a_layer_expiring_between_the_stamp_and_the_read_back_is_still_returned(#[fixture(anna_home)] home: &Path) {
+fn a_layer_expiring_between_the_stamp_and_the_read_back_is_still_returned(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let store = LayerStore::open(
         &dirs,
@@ -479,7 +479,7 @@ impl Progress for ChannelProgress {
 }
 
 #[skuld::test]
-fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(anna_home)] home: &Path) {
+fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let clock = Arc::new(FakeClock::new(t0()));
     let (messages, waiting) = std::sync::mpsc::channel();
@@ -539,7 +539,7 @@ fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(anna_home)] home: &Pat
 }
 
 #[skuld::test]
-fn waiter_whose_layer_was_built_meanwhile_does_not_build_again(#[fixture(anna_home)] home: &Path) {
+fn waiter_whose_layer_was_built_meanwhile_does_not_build_again(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let (messages, waiting) = std::sync::mpsc::channel();
     let store = LayerStore::open(

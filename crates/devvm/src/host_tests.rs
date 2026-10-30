@@ -5,7 +5,7 @@ use super::{Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
 use crate::test_support::file_mode;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::test_support::host::TestHost;
 #[cfg(windows)]
@@ -161,7 +161,7 @@ fn windows_host_system_dirs_come_from_the_os_and_not_the_environment(#[fixture(e
 }
 
 #[skuld::test]
-fn write_private_is_create_new_and_owner_only(#[fixture(anna_home)] home: &Path) {
+fn write_private_is_create_new_and_owner_only(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("private key");
     current().write_private(&path, b"secret").unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"secret");
@@ -177,7 +177,7 @@ fn write_private_is_create_new_and_owner_only(#[fixture(anna_home)] home: &Path)
 }
 
 #[skuld::test]
-fn executable_bit_round_trips_on_unix_and_is_inert_on_windows(#[fixture(anna_home)] home: &Path) {
+fn executable_bit_round_trips_on_unix_and_is_inert_on_windows(#[fixture(unicode_home)] home: &Path) {
     let tool = home.join("tool");
     std::fs::write(&tool, b"#!/bin/sh").unwrap();
     file_mode::set_mode(&tool, 0o644);
@@ -202,7 +202,7 @@ fn executable_bit_round_trips_on_unix_and_is_inert_on_windows(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn a_failed_cleanup_of_a_partial_file_is_named_next_to_the_write_error(#[fixture(anna_home)] home: &Path) {
+fn a_failed_cleanup_of_a_partial_file_is_named_next_to_the_write_error(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("key");
     let write_error = std::io::Error::new(std::io::ErrorKind::StorageFull, "the disk is full");
 
@@ -227,7 +227,7 @@ fn a_failed_cleanup_of_a_partial_file_is_named_next_to_the_write_error(#[fixture
 }
 
 #[skuld::test]
-fn a_cleaned_up_partial_file_leaves_the_write_error_as_it_was(#[fixture(anna_home)] home: &Path) {
+fn a_cleaned_up_partial_file_leaves_the_write_error_as_it_was(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("key");
     std::fs::write(&path, b"half").unwrap();
 

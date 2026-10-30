@@ -5,7 +5,7 @@ use crate::engine::engine_tests::dead_machine;
 use crate::instance::record::InstanceId;
 use crate::instance::registry::registry_tests::{create, fixture, fixture_with};
 use crate::store::layers::layers_tests::names;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 
 fn open_without_sharing(path: &Path) -> std::fs::File {
@@ -13,7 +13,7 @@ fn open_without_sharing(path: &Path) -> std::fs::File {
 }
 
 #[skuld::test]
-fn a_failed_delete_is_a_warning_and_the_next_reap_finishes_it(#[fixture(anna_home)] home: &Path) {
+fn a_failed_delete_is_a_warning_and_the_next_reap_finishes_it(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dead = fx.env.dirs.instances().join(format!(".dead-{}", InstanceId::random()));
     std::fs::create_dir_all(&dead).unwrap();
@@ -32,7 +32,7 @@ fn a_failed_delete_is_a_warning_and_the_next_reap_finishes_it(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn a_refused_quarantine_rename_is_a_warning_and_the_next_reap_moves_it(#[fixture(anna_home)] home: &Path) {
+fn a_refused_quarantine_rename_is_a_warning_and_the_next_reap_moves_it(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     drop(create(&fx, Some("foo")));
     let dir = fx.env.dirs.instances().join("foo");
@@ -53,7 +53,7 @@ fn a_refused_quarantine_rename_is_a_warning_and_the_next_reap_moves_it(#[fixture
 
 #[skuld::test]
 fn an_instance_whose_files_cannot_be_updated_or_removed_is_warned_about_and_reaped_next_time(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let stub = StubBackend::new(Attach::Running);
     let fx = fixture_with(home, Some(stub.clone()));

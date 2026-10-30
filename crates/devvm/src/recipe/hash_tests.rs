@@ -6,7 +6,7 @@ use crate::recipe::hash::{
     root_key, root_key_with, step_key, step_key_with,
 };
 use crate::recipe::{CopyFrom, Recipe, Setting, Shell, Step, UacMode};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::{Arch, ErrorKind, RunAs, Sha256};
 
 fn sha(byte: u8) -> Sha256 {
@@ -386,7 +386,7 @@ fn crlf_and_bom_recipe_gives_the_same_key() {
 }
 
 #[skuld::test]
-fn child_disk_override_changes_every_layer_key_of_the_chain(#[fixture(anna_home)] home: &Path) {
+fn child_disk_override_changes_every_layer_key_of_the_chain(#[fixture(unicode_home)] home: &Path) {
     std::fs::write(
         home.join("parent.devvm.yaml"),
         "from: ubuntu-24.04\nresources: { disk: 20GiB }\nsteps:\n  - run: one\n  - run: two\n",

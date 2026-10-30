@@ -6,7 +6,7 @@ use std::sync::mpsc;
 
 use crate::exit::{NullProgress, Progress};
 use crate::store::lock::{FileLock, Mode};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 
 /// Helper process: takes an exclusive lock on `args[0]`, prints `held`, then blocks until stdin closes.
@@ -19,7 +19,7 @@ pub fn hold_lock(args: &[String]) {
 }
 
 #[skuld::test]
-fn exclusive_excludes_exclusive_and_shared_in_one_process(#[fixture(anna_home)] home: &Path) {
+fn exclusive_excludes_exclusive_and_shared_in_one_process(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("locks").join("a.lock");
     let mut first = FileLock::open(&path).unwrap();
     let mut second = FileLock::open(&path).unwrap();
@@ -32,7 +32,7 @@ fn exclusive_excludes_exclusive_and_shared_in_one_process(#[fixture(anna_home)] 
 }
 
 #[skuld::test]
-fn shared_locks_coexist(#[fixture(anna_home)] home: &Path) {
+fn shared_locks_coexist(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");
     let mut first = FileLock::open(&path).unwrap();
     let mut second = FileLock::open(&path).unwrap();
@@ -49,7 +49,7 @@ impl Progress for Capture {
 }
 
 #[skuld::test]
-fn contention_message_is_emitted_before_blocking(#[fixture(anna_home)] home: &Path) {
+fn contention_message_is_emitted_before_blocking(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");
     let mut holder = FileLock::open(&path).unwrap();
     assert!(holder.try_lock(Mode::Exclusive).unwrap());
@@ -68,7 +68,7 @@ fn contention_message_is_emitted_before_blocking(#[fixture(anna_home)] home: &Pa
 }
 
 #[skuld::test]
-fn uncontended_lock_emits_no_message(#[fixture(anna_home)] home: &Path) {
+fn uncontended_lock_emits_no_message(#[fixture(unicode_home)] home: &Path) {
     let (sender, receiver) = mpsc::channel();
     let progress = Capture(Mutex::new(sender));
     FileLock::open(&home.join("a.lock"))
@@ -80,7 +80,7 @@ fn uncontended_lock_emits_no_message(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn lock_is_released_when_holder_process_is_killed(#[fixture(anna_home)] home: &Path) {
+fn lock_is_released_when_holder_process_is_killed(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");
     let mut child = helper::command("hold-lock", &[path.to_str().unwrap()])
         .stdin(Stdio::piped())
@@ -142,7 +142,7 @@ fn other_errors_are_not_retried() {
 }
 
 #[skuld::test]
-fn open_existing_returns_none_for_a_missing_file_and_does_not_create_it(#[fixture(anna_home)] home: &Path) {
+fn open_existing_returns_none_for_a_missing_file_and_does_not_create_it(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("missing").join("a.lock");
     assert!(FileLock::open_existing(&path).unwrap().is_none());
     assert!(!path.exists());
@@ -150,7 +150,7 @@ fn open_existing_returns_none_for_a_missing_file_and_does_not_create_it(#[fixtur
 }
 
 #[skuld::test]
-fn open_existing_locks_like_open(#[fixture(anna_home)] home: &Path) {
+fn open_existing_locks_like_open(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");
     drop(FileLock::open(&path).unwrap());
     let mut existing = FileLock::open_existing(&path).unwrap().expect("the file exists");

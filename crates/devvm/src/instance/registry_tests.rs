@@ -9,7 +9,7 @@ use crate::instance::record::{InstanceRecord, MarkerRead, Owner, RecordRead, rea
 use crate::instance::registry::{CreateSeams, NewInstance, Owned, Registry};
 use crate::store::layers::layers_tests::{Env, build, env, key, names};
 use crate::store::layers::{ChainLease, LayerDir};
-use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
+use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::{Arch, Dirs, ErrorKind, GuestKind, Network, Result};
 
@@ -108,7 +108,7 @@ pub(crate) fn lock_files_in(dirs: &Dirs) -> Vec<String> {
 }
 
 #[skuld::test]
-fn create_makes_a_listed_instance_with_chain_disk_and_creation_dir(#[fixture(anna_home)] home: &Path) {
+fn create_makes_a_listed_instance_with_chain_disk_and_creation_dir(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("Foo"));
     let record = owned.dir().record().unwrap();
@@ -138,7 +138,7 @@ fn create_makes_a_listed_instance_with_chain_disk_and_creation_dir(#[fixture(ann
 }
 
 #[skuld::test]
-fn create_on_a_taken_name_fails_and_leaves_it_untouched(#[fixture(anna_home)] home: &Path) {
+fn create_on_a_taken_name_fails_and_leaves_it_untouched(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let first = create(&fx, Some("foo"));
     let before = std::fs::read(instances(&fx).join("foo").join("record.json")).unwrap();
@@ -164,7 +164,7 @@ fn create_on_a_taken_name_fails_and_leaves_it_untouched(#[fixture(anna_home)] ho
 }
 
 #[skuld::test]
-fn concurrent_creates_of_one_name_have_exactly_one_winner(#[fixture(anna_home)] home: &Path) {
+fn concurrent_creates_of_one_name_have_exactly_one_winner(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let (parked, at_rename) = mpsc::channel::<()>();
     let (go, proceed) = mpsc::channel::<()>();
@@ -197,7 +197,7 @@ fn concurrent_creates_of_one_name_have_exactly_one_winner(#[fixture(anna_home)] 
 }
 
 #[skuld::test]
-fn create_with_a_failing_storage_leaves_nothing(#[fixture(anna_home)] home: &Path) {
+fn create_with_a_failing_storage_leaves_nothing(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let guard = fx.env.store.begin_record().unwrap();
     let error = fx
@@ -211,7 +211,7 @@ fn create_with_a_failing_storage_leaves_nothing(#[fixture(anna_home)] home: &Pat
 }
 
 #[skuld::test]
-fn two_creates_without_names_get_different_valid_names(#[fixture(anna_home)] home: &Path) {
+fn two_creates_without_names_get_different_valid_names(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let first = create(&fx, None);
     let second = create(&fx, None);
@@ -224,7 +224,7 @@ fn two_creates_without_names_get_different_valid_names(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn make_ownerless_disarms_first_then_flips_while_the_lock_is_held(#[fixture(anna_home)] home: &Path) {
+fn make_ownerless_disarms_first_then_flips_while_the_lock_is_held(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let dir = instances(&fx).join("foo");
@@ -259,7 +259,7 @@ fn make_ownerless_disarms_first_then_flips_while_the_lock_is_held(#[fixture(anna
 }
 
 #[skuld::test]
-fn make_ownerless_with_a_failing_disarm_flips_nothing(#[fixture(anna_home)] home: &Path) {
+fn make_ownerless_with_a_failing_disarm_flips_nothing(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let dir = instances(&fx).join("foo");
@@ -283,7 +283,7 @@ fn make_ownerless_with_a_failing_disarm_flips_nothing(#[fixture(anna_home)] home
 }
 
 #[skuld::test]
-fn a_bad_name_is_rejected_by_parse_and_the_state_directory_is_never_created(#[fixture(anna_home)] home: &Path) {
+fn a_bad_name_is_rejected_by_parse_and_the_state_directory_is_never_created(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let registry = Registry::new(&dirs, Arc::new(MemoryProgress::default()), None);
     for text in ["../x", "con", "a*", &"a".repeat(64)] {
@@ -296,7 +296,7 @@ fn a_bad_name_is_rejected_by_parse_and_the_state_directory_is_never_created(#[fi
 }
 
 #[skuld::test]
-fn list_skips_dot_dirs_and_warns_about_an_unreadable_record(#[fixture(anna_home)] home: &Path) {
+fn list_skips_dot_dirs_and_warns_about_an_unreadable_record(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let good = create(&fx, Some("good"));
     let broken = create(&fx, Some("broken"));
@@ -315,7 +315,7 @@ fn list_skips_dot_dirs_and_warns_about_an_unreadable_record(#[fixture(anna_home)
 }
 
 #[skuld::test]
-fn open_of_a_missing_instance_is_not_found(#[fixture(anna_home)] home: &Path) {
+fn open_of_a_missing_instance_is_not_found(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let error = fx
         .registry
@@ -327,7 +327,7 @@ fn open_of_a_missing_instance_is_not_found(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn update_rewrites_the_record_under_the_op_lock(#[fixture(anna_home)] home: &Path) {
+fn update_rewrites_the_record_under_the_op_lock(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let dir = owned.dir();
@@ -340,7 +340,7 @@ fn update_rewrites_the_record_under_the_op_lock(#[fixture(anna_home)] home: &Pat
 }
 
 #[skuld::test]
-fn destroy_removes_the_dir_and_both_lock_files(#[fixture(anna_home)] home: &Path) {
+fn destroy_removes_the_dir_and_both_lock_files(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let ownerless = owned.make_ownerless(&mut || Ok(())).unwrap();
@@ -352,7 +352,7 @@ fn destroy_removes_the_dir_and_both_lock_files(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn a_waiter_on_the_op_lock_of_a_removed_and_recreated_name_gets_not_found(#[fixture(anna_home)] home: &Path) {
+fn a_waiter_on_the_op_lock_of_a_removed_and_recreated_name_gets_not_found(#[fixture(unicode_home)] home: &Path) {
     let (progress, messages) = ChannelProgress::new();
     let env = env(home);
     let chain = build(&env, key(1), None);
@@ -392,7 +392,7 @@ fn a_waiter_on_the_op_lock_of_a_removed_and_recreated_name_gets_not_found(#[fixt
 }
 
 #[skuld::test]
-fn a_handle_whose_name_now_belongs_to_another_instance_gets_not_found(#[fixture(anna_home)] home: &Path) {
+fn a_handle_whose_name_now_belongs_to_another_instance_gets_not_found(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let first = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     // The first instance's directory is replaced, but its lock files stay: only the id check can tell.
@@ -410,7 +410,7 @@ fn a_handle_whose_name_now_belongs_to_another_instance_gets_not_found(#[fixture(
 }
 
 #[skuld::test]
-fn update_and_destroy_refuse_a_guard_of_another_instance(#[fixture(anna_home)] home: &Path) {
+fn update_and_destroy_refuse_a_guard_of_another_instance(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let a = create(&fx, Some("a")).make_ownerless(&mut || Ok(())).unwrap();
     let b = create(&fx, Some("b")).make_ownerless(&mut || Ok(())).unwrap();
@@ -422,7 +422,7 @@ fn update_and_destroy_refuse_a_guard_of_another_instance(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn a_shared_guard_lets_readers_coexist_but_excludes_the_exclusive_op(#[fixture(anna_home)] home: &Path) {
+fn a_shared_guard_lets_readers_coexist_but_excludes_the_exclusive_op(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let first = dir.op_shared().unwrap();
@@ -433,7 +433,7 @@ fn a_shared_guard_lets_readers_coexist_but_excludes_the_exclusive_op(#[fixture(a
 }
 
 #[skuld::test]
-fn placing_a_new_instance_waits_for_readers_of_instance_files(#[fixture(anna_home)] home: &Path) {
+fn placing_a_new_instance_waits_for_readers_of_instance_files(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let existing = create(&fx, Some("bar")).make_ownerless(&mut || Ok(())).unwrap();
     let (contended, contention) = mpsc::channel::<()>();
@@ -470,7 +470,7 @@ fn placing_a_new_instance_waits_for_readers_of_instance_files(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn an_rm_during_the_handover_waits_for_the_marker_write(#[fixture(anna_home)] home: &Path) {
+fn an_rm_during_the_handover_waits_for_the_marker_write(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let remover = fx.registry.open(&InstanceName::parse("foo").unwrap()).unwrap();
@@ -503,7 +503,7 @@ fn an_rm_during_the_handover_waits_for_the_marker_write(#[fixture(anna_home)] ho
 }
 
 #[skuld::test]
-fn a_handover_never_writes_into_an_instance_that_took_the_name(#[fixture(anna_home)] home: &Path) {
+fn a_handover_never_writes_into_an_instance_that_took_the_name(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let remover = fx.registry.open(&InstanceName::parse("foo").unwrap()).unwrap();
@@ -534,7 +534,7 @@ fn a_handover_never_writes_into_an_instance_that_took_the_name(#[fixture(anna_ho
 
 #[skuld::test]
 fn a_named_create_whose_name_is_freed_right_after_the_failed_rename_still_says_already_exists(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let fx = fixture(home);
     let existing = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
@@ -565,7 +565,7 @@ fn a_named_create_whose_name_is_freed_right_after_the_failed_rename_still_says_a
 }
 
 #[skuld::test]
-fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(anna_home)] home: &Path) {
+fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let existing = create(&fx, Some("taken")).make_ownerless(&mut || Ok(())).unwrap();
     let guard = fx.env.store.begin_record().unwrap();
@@ -596,7 +596,7 @@ fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(a
 }
 
 #[skuld::test]
-fn an_entry_whose_type_cannot_be_read_is_skipped_with_a_warning_naming_it(#[fixture(anna_home)] home: &Path) {
+fn an_entry_whose_type_cannot_be_read_is_skipped_with_a_warning_naming_it(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let path = instances(&fx).join("foo");
 
@@ -617,7 +617,7 @@ fn an_entry_whose_type_cannot_be_read_is_skipped_with_a_warning_naming_it(#[fixt
 }
 
 #[skuld::test]
-fn an_unreadable_hidden_entry_is_not_worth_a_word(#[fixture(anna_home)] home: &Path) {
+fn an_unreadable_hidden_entry_is_not_worth_a_word(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let path = instances(&fx).join(".new-x");
 

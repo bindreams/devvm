@@ -7,7 +7,7 @@ use crate::exit::NullProgress;
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::record::InstanceId;
 use crate::store::lock::{FileLock, Mode};
-use crate::test_support::fixtures::{ChannelProgress, anna_home};
+use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::helper;
 
 fn locks(home: &Path) -> Locks {
@@ -15,7 +15,7 @@ fn locks(home: &Path) -> Locks {
 }
 
 #[skuld::test]
-fn acquire_creates_both_files_and_holds_the_owner_lock(#[fixture(anna_home)] home: &Path) {
+fn acquire_creates_both_files_and_holds_the_owner_lock(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     let owner = locks.acquire_owner_new(&id).unwrap();
@@ -27,7 +27,7 @@ fn acquire_creates_both_files_and_holds_the_owner_lock(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn owner_held_by_another_process_reads_held_and_free_after_it_dies(#[fixture(anna_home)] home: &Path) {
+fn owner_held_by_another_process_reads_held_and_free_after_it_dies(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
@@ -57,7 +57,7 @@ fn owner_held_by_another_process_reads_held_and_free_after_it_dies(#[fixture(ann
 }
 
 #[skuld::test]
-fn try_owner_never_creates_the_file(#[fixture(anna_home)] home: &Path) {
+fn try_owner_never_creates_the_file(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     assert!(matches!(locks.try_owner(&id).unwrap(), Probe::Gone));
@@ -69,7 +69,7 @@ fn try_owner_never_creates_the_file(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn try_owner_on_a_file_unlinked_after_the_open_is_gone(#[fixture(anna_home)] home: &Path) {
+fn try_owner_on_a_file_unlinked_after_the_open_is_gone(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
@@ -84,7 +84,7 @@ fn try_owner_on_a_file_unlinked_after_the_open_is_gone(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn acquire_retries_when_the_file_is_unlinked_before_verification(#[fixture(anna_home)] home: &Path) {
+fn acquire_retries_when_the_file_is_unlinked_before_verification(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     let path = locks.owner_path(&id);
@@ -105,7 +105,7 @@ fn acquire_retries_when_the_file_is_unlinked_before_verification(#[fixture(anna_
 }
 
 #[skuld::test]
-fn op_exclusive_waits_for_the_holder_and_says_so_first(#[fixture(anna_home)] home: &Path) {
+fn op_exclusive_waits_for_the_holder_and_says_so_first(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
@@ -121,7 +121,7 @@ fn op_exclusive_waits_for_the_holder_and_says_so_first(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn op_wait_that_wakes_on_an_unlinked_file_is_not_found(#[fixture(anna_home)] home: &Path) {
+fn op_wait_that_wakes_on_an_unlinked_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
     for shared in [false, true] {
         let locks = locks(home);
         let id = InstanceId::random();
@@ -148,7 +148,7 @@ fn op_wait_that_wakes_on_an_unlinked_file_is_not_found(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn op_on_a_missing_instance_is_not_found(#[fixture(anna_home)] home: &Path) {
+fn op_on_a_missing_instance_is_not_found(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     assert_eq!(
@@ -162,7 +162,7 @@ fn op_on_a_missing_instance_is_not_found(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn op_shared_holders_coexist_and_exclude_exclusive(#[fixture(anna_home)] home: &Path) {
+fn op_shared_holders_coexist_and_exclude_exclusive(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
@@ -176,7 +176,7 @@ fn op_shared_holders_coexist_and_exclude_exclusive(#[fixture(anna_home)] home: &
 }
 
 #[skuld::test]
-fn remove_deletes_both_files_and_ids_lists_only_present_ones(#[fixture(anna_home)] home: &Path) {
+fn remove_deletes_both_files_and_ids_lists_only_present_ones(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     assert!(locks.ids().unwrap().is_empty(), "no directory means no ids");
     let (first, second) = (InstanceId::random(), InstanceId::random());
@@ -197,7 +197,7 @@ fn remove_deletes_both_files_and_ids_lists_only_present_ones(#[fixture(anna_home
 }
 
 #[skuld::test]
-fn renaming_waits_for_a_reader_and_the_reader_never_waits_for_another_reader(#[fixture(anna_home)] home: &Path) {
+fn renaming_waits_for_a_reader_and_the_reader_never_waits_for_another_reader(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
     let path = home.join("locks").join("instances.dir");
@@ -230,7 +230,7 @@ fn renaming_waits_for_a_reader_and_the_reader_never_waits_for_another_reader(#[f
 }
 
 #[skuld::test]
-fn a_reader_cannot_start_while_a_directory_is_renamed(#[fixture(anna_home)] home: &Path) {
+fn a_reader_cannot_start_while_a_directory_is_renamed(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
     let path = home.join("locks").join("instances.dir");
@@ -243,7 +243,7 @@ fn a_reader_cannot_start_while_a_directory_is_renamed(#[fixture(anna_home)] home
 }
 
 #[skuld::test]
-fn reading_an_absent_directory_reads_nothing_and_creates_nothing(#[fixture(anna_home)] home: &Path) {
+fn reading_an_absent_directory_reads_nothing_and_creates_nothing(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     assert!(
         locks
@@ -256,7 +256,7 @@ fn reading_an_absent_directory_reads_nothing_and_creates_nothing(#[fixture(anna_
 
 #[skuld::test]
 fn a_reader_that_stalls_after_seeing_a_directory_still_reads_under_the_lock_of_a_first_create(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let locks = locks(home);
     let dir = home.join("instances").join("foo");
@@ -281,7 +281,7 @@ fn a_reader_that_stalls_after_seeing_a_directory_still_reads_under_the_lock_of_a
 }
 
 #[skuld::test]
-fn a_reader_that_saw_a_directory_but_finds_no_lock_file_recreates_it_and_reads(#[fixture(anna_home)] home: &Path) {
+fn a_reader_that_saw_a_directory_but_finds_no_lock_file_recreates_it_and_reads(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let dir = home.join("instances").join("foo");
     std::fs::create_dir_all(&dir).unwrap();
@@ -300,7 +300,7 @@ fn a_reader_that_saw_a_directory_but_finds_no_lock_file_recreates_it_and_reads(#
 }
 
 #[skuld::test]
-fn probes_racing_the_unlink_of_the_lock_files_see_present_or_gone_never_an_error(#[fixture(anna_home)] home: &Path) {
+fn probes_racing_the_unlink_of_the_lock_files_see_present_or_gone_never_an_error(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     let finished = std::sync::atomic::AtomicBool::new(false);
@@ -333,7 +333,7 @@ fn probes_racing_the_unlink_of_the_lock_files_see_present_or_gone_never_an_error
 }
 
 #[skuld::test]
-fn a_probe_waits_while_the_lock_files_are_unlinked_and_then_finds_them_gone(#[fixture(anna_home)] home: &Path) {
+fn a_probe_waits_while_the_lock_files_are_unlinked_and_then_finds_them_gone(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let locks = &locks;
     let id = InstanceId::random();
@@ -361,7 +361,7 @@ fn a_probe_waits_while_the_lock_files_are_unlinked_and_then_finds_them_gone(#[fi
 }
 
 #[skuld::test]
-fn unlinking_the_lock_files_waits_for_whoever_is_opening_one(#[fixture(anna_home)] home: &Path) {
+fn unlinking_the_lock_files_waits_for_whoever_is_opening_one(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let locks = &locks;
     let id = InstanceId::random();
@@ -389,7 +389,7 @@ fn unlinking_the_lock_files_waits_for_whoever_is_opening_one(#[fixture(anna_home
 }
 
 #[skuld::test]
-fn a_failed_unlink_of_the_op_file_leaves_the_owner_file_for_the_sweep(#[fixture(anna_home)] home: &Path) {
+fn a_failed_unlink_of_the_op_file_leaves_the_owner_file_for_the_sweep(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());

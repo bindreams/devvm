@@ -13,6 +13,10 @@ use devvm::{Dirs, Error, ErrorKind, Result, Sha256};
 use devvm_cli::Deps;
 use serde_json::Value;
 
+#[path = "support/unicode.rs"]
+mod unicode;
+use unicode::UNICODE_DIR;
+
 const HELPER_VAR: &str = "DEVVM_CLI_TEST_HELPER";
 
 fn main() {
@@ -125,7 +129,7 @@ fn layer_key() -> LayerKey {
 
 fn temp() -> skuld::TempDir {
     let dir = skuld::TempDir::new().unwrap();
-    std::fs::create_dir(dir.join("Anna Ж")).unwrap();
+    std::fs::create_dir(dir.join(UNICODE_DIR)).unwrap();
     dir
 }
 
@@ -154,7 +158,7 @@ fn one_error_line(output: &Output, kind: &str) -> String {
 #[skuld::test]
 fn a_bad_flag_exits_125_with_one_error_line_and_a_status_file() {
     let dir = temp();
-    let file = dir.join("Anna Ж").join("status.json");
+    let file = dir.join(UNICODE_DIR).join("status.json");
     let output = devvm(
         &dir,
         &["--status-file", file.to_str().unwrap(), "build", "--bogus"],
@@ -172,7 +176,7 @@ fn a_bad_flag_exits_125_with_one_error_line_and_a_status_file() {
 #[skuld::test]
 fn a_missing_recipe_file_exits_125_with_one_error_line_and_a_status_file() {
     let dir = temp();
-    let file = dir.join("Anna Ж").join("status.json");
+    let file = dir.join(UNICODE_DIR).join("status.json");
     let output = devvm(
         &dir,
         &["--status-file", file.to_str().unwrap(), "build", "nothere.devvm.yaml"],
@@ -202,8 +206,8 @@ fn build_of_an_embedded_recipe_ends_in_one_devvm_error_line() {
 #[skuld::test]
 fn a_panic_on_a_worker_thread_exits_125_with_one_error_line_and_a_status_file() {
     let dir = temp();
-    let file = dir.join("Anna Ж").join("status.json");
-    let downloads = dir.join("Anna Ж").join("downloads");
+    let file = dir.join(UNICODE_DIR).join("status.json");
+    let downloads = dir.join(UNICODE_DIR).join("downloads");
     let output = Command::new(std::env::current_exe().unwrap())
         .env(HELPER_VAR, "panic-on-worker")
         .args([
@@ -231,8 +235,8 @@ fn a_panic_on_a_worker_thread_exits_125_with_one_error_line_and_a_status_file() 
 #[skuld::test]
 fn simultaneous_panics_print_one_line() {
     let dir = temp();
-    let file = dir.join("Anna Ж").join("status.json");
-    let downloads = dir.join("Anna Ж").join("downloads");
+    let file = dir.join(UNICODE_DIR).join("status.json");
+    let downloads = dir.join(UNICODE_DIR).join("downloads");
     let output = Command::new(std::env::current_exe().unwrap())
         .env(HELPER_VAR, "panic-on-two-workers")
         .args([
@@ -252,7 +256,7 @@ fn simultaneous_panics_print_one_line() {
 #[skuld::test]
 fn status_file_env_var_is_used_without_the_flag() {
     let dir = temp();
-    let file = dir.join("Anna Ж").join("from-env.json");
+    let file = dir.join(UNICODE_DIR).join("from-env.json");
     let output = devvm(&dir, &["build", "--bogus"], &[("DEVVM_STATUS_FILE", &file)]);
     assert_eq!(output.status.code(), Some(125));
     assert_eq!(status(&file)["devvm"]["kind"], "usage");
@@ -291,7 +295,7 @@ fn an_unwritable_status_file_still_exits_125_with_one_line() {
 #[skuld::test]
 fn a_builder_panic_leaves_its_staging_dir_for_the_next_build_to_sweep() {
     let dir = temp();
-    let home = dir.join("Anna Ж");
+    let home = dir.join(UNICODE_DIR);
     let file = home.join("status.json");
     let output = Command::new(std::env::current_exe().unwrap())
         .env(HELPER_VAR, "panic-in-builder")

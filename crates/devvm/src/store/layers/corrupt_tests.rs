@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ErrorKind;
 use crate::store::layers::LayerRef;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 
 use super::layers_tests::{Env, build, env, key, names};
 
@@ -16,7 +16,7 @@ fn quarantined(env: &Env) -> Vec<PathBuf> {
 }
 
 #[skuld::test]
-fn corrupt_meta_is_a_miss_then_quarantined_and_rebuilt(#[fixture(anna_home)] home: &Path) {
+fn corrupt_meta_is_a_miss_then_quarantined_and_rebuilt(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let first = build(&env, key(1), None);
     let old = first.tip().layer_ref();
@@ -44,7 +44,7 @@ fn corrupt_meta_is_a_miss_then_quarantined_and_rebuilt(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn quarantined_data_is_kept(#[fixture(anna_home)] home: &Path) {
+fn quarantined_data_is_kept(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let first = build(&env, key(1), None);
     let old = first.tip().layer_ref();
@@ -65,7 +65,7 @@ fn quarantined_data_is_kept(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn corrupt_meta_of_a_leased_generation_is_not_moved(#[fixture(anna_home)] home: &Path) {
+fn corrupt_meta_of_a_leased_generation_is_not_moved(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let live = build(&env, key(1), None);
     let old = live.tip().layer_ref();
@@ -88,7 +88,7 @@ fn corrupt_meta_of_a_leased_generation_is_not_moved(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn torn_current_file_is_quarantined(#[fixture(anna_home)] home: &Path) {
+fn torn_current_file_is_quarantined(#[fixture(unicode_home)] home: &Path) {
     let torn: [&[u8]; 4] = [b"", b"not hex at all", b"abcd", b"0123456789abcdef0123456789abcdef00"];
     for (i, bytes) in torn.into_iter().enumerate() {
         let sub = home.join(format!("case {i}"));
@@ -110,7 +110,7 @@ fn torn_current_file_is_quarantined(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn newer_schema_is_an_error_and_left_in_place(#[fixture(anna_home)] home: &Path) {
+fn newer_schema_is_an_error_and_left_in_place(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let first = build(&env, key(1), None);
     let old = first.tip().layer_ref();
@@ -139,7 +139,7 @@ fn newer_schema_is_an_error_and_left_in_place(#[fixture(anna_home)] home: &Path)
 }
 
 #[skuld::test]
-fn a_record_naming_another_layer_is_a_miss(#[fixture(anna_home)] home: &Path) {
+fn a_record_naming_another_layer_is_a_miss(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let first = build(&env, key(1), None);
     let old = first.tip().layer_ref();

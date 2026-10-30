@@ -5,7 +5,7 @@ use crate::instance::name::InstanceName;
 use crate::instance::reaper::ReapReport;
 use crate::instance::registry::registry_tests::{create, fixture};
 use crate::store::layers::layers_tests::names;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 
 fn instance_is_intact(path: &Path) {
     assert!(path.join("record.json").is_file() && path.join("owner.json").is_file());
@@ -13,7 +13,7 @@ fn instance_is_intact(path: &Path) {
 }
 
 #[skuld::test]
-fn a_stale_verdict_without_an_id_never_moves_a_valid_instance_that_took_the_name(#[fixture(anna_home)] home: &Path) {
+fn a_stale_verdict_without_an_id_never_moves_a_valid_instance_that_took_the_name(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     // The verdict "unreadable, id unknown" was taken when `foo` was being removed; another agent has since created a
     // new `foo`, whose owner holds its lock.
@@ -33,7 +33,7 @@ fn a_stale_verdict_without_an_id_never_moves_a_valid_instance_that_took_the_name
 }
 
 #[skuld::test]
-fn a_stale_verdict_with_another_id_never_moves_the_instance_at_the_path(#[fixture(anna_home)] home: &Path) {
+fn a_stale_verdict_with_another_id_never_moves_the_instance_at_the_path(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let old = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let old_id = *old.id();
@@ -54,7 +54,7 @@ fn a_stale_verdict_with_another_id_never_moves_the_instance_at_the_path(#[fixtur
 }
 
 #[skuld::test]
-fn a_stale_verdict_for_a_directory_that_is_now_valid_moves_nothing(#[fixture(anna_home)] home: &Path) {
+fn a_stale_verdict_for_a_directory_that_is_now_valid_moves_nothing(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let path = fx.env.dirs.instances().join("foo");
@@ -71,7 +71,7 @@ fn a_stale_verdict_for_a_directory_that_is_now_valid_moves_nothing(#[fixture(ann
 }
 
 #[skuld::test]
-fn a_vanished_path_is_success_with_no_warning(#[fixture(anna_home)] home: &Path) {
+fn a_vanished_path_is_success_with_no_warning(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let id = *dir.id();
@@ -99,7 +99,7 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 #[skuld::test]
-fn a_moved_instance_directory_is_quarantined_not_trusted(#[fixture(anna_home)] home: &Path) {
+fn a_moved_instance_directory_is_quarantined_not_trusted(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let root = fx.env.dirs.instances();
@@ -126,7 +126,7 @@ fn a_moved_instance_directory_is_quarantined_not_trusted(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn a_copied_instance_directory_is_quarantined_and_the_original_keeps_working(#[fixture(anna_home)] home: &Path) {
+fn a_copied_instance_directory_is_quarantined_and_the_original_keeps_working(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let root = fx.env.dirs.instances();

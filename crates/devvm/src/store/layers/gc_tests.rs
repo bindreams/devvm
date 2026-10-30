@@ -8,7 +8,7 @@ use crate::exit::{NullProgress, Progress};
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Clock, GcReport, Generation, LayerRef, LayerStore, Reachability, SystemClock};
 use crate::store::lock::Mode;
-use crate::test_support::fixtures::{FakeClock, anna_home};
+use crate::test_support::fixtures::{FakeClock, unicode_home};
 use crate::test_support::helper;
 use crate::{Dirs, Error, ErrorKind, Result};
 
@@ -66,7 +66,7 @@ fn exists(env: &Env, layer: &LayerRef) -> bool {
 }
 
 #[skuld::test]
-fn gc_deletes_only_unreachable_generations(#[fixture(anna_home)] home: &Path) {
+fn gc_deletes_only_unreachable_generations(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [oldest, middle, newest] = three_generations(&env, 1);
     let report = env.store.gc(&Fixed(vec![vec![middle]])).unwrap();
@@ -90,7 +90,7 @@ fn gc_deletes_only_unreachable_generations(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn gc_never_deletes_a_generation_held_by_a_live_image_handle(#[fixture(anna_home)] home: &Path) {
+fn gc_never_deletes_a_generation_held_by_a_live_image_handle(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [oldest, _middle, _newest] = three_generations(&env, 1);
     let guard = env.store.begin_record().unwrap();
@@ -109,7 +109,7 @@ fn gc_never_deletes_a_generation_held_by_a_live_image_handle(#[fixture(anna_home
 }
 
 #[skuld::test]
-fn gc_respects_a_lease_held_by_another_process(#[fixture(anna_home)] home: &Path) {
+fn gc_respects_a_lease_held_by_another_process(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [oldest, _middle, _newest] = three_generations(&env, 1);
     let mut child = helper::command(
@@ -146,7 +146,7 @@ fn gc_respects_a_lease_held_by_another_process(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn gc_keeps_the_parent_chain_of_a_reachable_layer(#[fixture(anna_home)] home: &Path) {
+fn gc_keeps_the_parent_chain_of_a_reachable_layer(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let parent_v1 = build_expiring(&env, key(1), None, Some(t0() + days(90)));
     let parent_v1_ref = parent_v1.tip().layer_ref();
@@ -169,7 +169,7 @@ fn gc_keeps_the_parent_chain_of_a_reachable_layer(#[fixture(anna_home)] home: &P
 }
 
 #[skuld::test]
-fn gc_aborts_before_deleting_when_reachability_fails(#[fixture(anna_home)] home: &Path) {
+fn gc_aborts_before_deleting_when_reachability_fails(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [oldest, _middle, _newest] = three_generations(&env, 1);
     let error = env.store.gc(&Failing).unwrap_err();
@@ -181,7 +181,7 @@ fn gc_aborts_before_deleting_when_reachability_fails(#[fixture(anna_home)] home:
 }
 
 #[skuld::test]
-fn gc_skips_a_key_with_a_live_builder_and_sweeps_a_dead_one(#[fixture(anna_home)] home: &Path) {
+fn gc_skips_a_key_with_a_live_builder_and_sweeps_a_dead_one(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let markers = home.join("markers");
     std::fs::create_dir(&markers).unwrap();
@@ -212,7 +212,7 @@ fn gc_skips_a_key_with_a_live_builder_and_sweeps_a_dead_one(#[fixture(anna_home)
 }
 
 #[skuld::test]
-fn gc_sweeps_leftover_current_temp_files_of_a_kept_key(#[fixture(anna_home)] home: &Path) {
+fn gc_sweeps_leftover_current_temp_files_of_a_kept_key(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let layer = build_expiring(&env, key(1), None, None).tip().layer_ref();
     let key_dir = env.dirs.layers().join(key(1).to_string());
@@ -224,7 +224,7 @@ fn gc_sweeps_leftover_current_temp_files_of_a_kept_key(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn lease_chain_refuses_a_chain_with_a_missing_link(#[fixture(anna_home)] home: &Path) {
+fn lease_chain_refuses_a_chain_with_a_missing_link(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let parent = build_expiring(&env, key(1), None, None);
     let child = build_expiring(&env, key(2), Some(&parent), None);
@@ -240,7 +240,7 @@ fn lease_chain_refuses_a_chain_with_a_missing_link(#[fixture(anna_home)] home: &
 }
 
 #[skuld::test]
-fn lease_chain_works_for_an_expired_layer(#[fixture(anna_home)] home: &Path) {
+fn lease_chain_works_for_an_expired_layer(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let layer = build_expiring(&env, key(1), None, Some(t0() + days(90)))
         .tip()
@@ -264,7 +264,7 @@ impl Progress for ChannelProgress {
 }
 
 #[skuld::test]
-fn record_guard_blocks_gc_until_dropped(#[fixture(anna_home)] home: &Path) {
+fn record_guard_blocks_gc_until_dropped(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let clock = Arc::new(FakeClock::new(t0()));
     let (messages, waiting) = mpsc::channel();
@@ -301,7 +301,7 @@ fn record_guard_blocks_gc_until_dropped(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn generation_dirs_and_noise_are_told_apart(#[fixture(anna_home)] home: &Path) {
+fn generation_dirs_and_noise_are_told_apart(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [oldest, middle, newest] = three_generations(&env, 1);
     let key_dir = env.dirs.layers().join(oldest.key.to_string());
@@ -368,7 +368,9 @@ fn as_current(key: LayerKey) -> String {
 }
 
 #[skuld::test]
-fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancestors(#[fixture(anna_home)] home: &Path) {
+fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancestors(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let env = env(home);
     let (old_parent, child) = child_of_an_aged_parent(&env);
     std::fs::write(env.store.generation_dir(&child).join("meta.json"), b"{ torn").unwrap();
@@ -388,7 +390,7 @@ fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancest
 }
 
 #[skuld::test]
-fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(anna_home)] home: &Path) {
+fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let (old_parent, child) = child_of_an_aged_parent(&env);
     std::fs::remove_file(env.store.generation_dir(&child).join("meta.json")).unwrap();
@@ -404,7 +406,7 @@ fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(anna_home)] home: &P
 }
 
 #[skuld::test]
-fn gc_names_the_child_that_keeps_a_non_current_parent_with_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
+fn gc_names_the_child_that_keeps_a_non_current_parent_with_a_corrupt_record(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let (old_parent, child) = child_of_an_aged_parent(&env);
     std::fs::write(env.store.generation_dir(&old_parent).join("meta.json"), b"{ torn").unwrap();
@@ -420,7 +422,9 @@ fn gc_names_the_child_that_keeps_a_non_current_parent_with_a_corrupt_record(#[fi
 }
 
 #[skuld::test]
-fn gc_names_the_instance_that_keeps_a_non_current_generation_with_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
+fn gc_names_the_instance_that_keeps_a_non_current_generation_with_a_corrupt_record(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let env = env(home);
     let [oldest, _middle, _newest] = three_generations(&env, 1);
     std::fs::write(env.store.generation_dir(&oldest).join("meta.json"), b"{ torn").unwrap();
@@ -432,7 +436,7 @@ fn gc_names_the_instance_that_keeps_a_non_current_generation_with_a_corrupt_reco
 }
 
 #[skuld::test]
-fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(anna_home)] home: &Path) {
+fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [oldest, _middle, newest] = three_generations(&env, 1);
     let current = env.dirs.layers().join(key(1).to_string()).join("current");
@@ -444,7 +448,7 @@ fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn gc_ignores_a_current_that_names_a_generation_that_is_gone(#[fixture(anna_home)] home: &Path) {
+fn gc_ignores_a_current_that_names_a_generation_that_is_gone(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [oldest, _middle, newest] = three_generations(&env, 1);
     std::fs::remove_dir_all(env.store.generation_dir(&newest)).unwrap();
@@ -453,7 +457,9 @@ fn gc_ignores_a_current_that_names_a_generation_that_is_gone(#[fixture(anna_home
 }
 
 #[skuld::test]
-fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting_it(#[fixture(anna_home)] home: &Path) {
+fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting_it(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let env = env(home);
     let [oldest, middle, newest] = three_generations(&env, 1);
     std::fs::write(env.store.generation_dir(&oldest).join("meta.json"), b"{ torn").unwrap();
@@ -478,7 +484,7 @@ fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting
 }
 
 #[skuld::test]
-fn gc_skips_directories_whose_names_are_not_canonical_lowercase_hex(#[fixture(anna_home)] home: &Path) {
+fn gc_skips_directories_whose_names_are_not_canonical_lowercase_hex(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [_oldest, _middle, _newest] = three_generations(&env, 1);
     // An uppercase generation directory inside a real key, and an uppercase key directory: neither is devvm's.

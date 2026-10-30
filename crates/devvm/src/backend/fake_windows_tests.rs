@@ -11,7 +11,7 @@ use crate::backend::{Backend, Endpoint, Machine, MachineRecord, MachineSpec, Sto
 use crate::contain::VmProcess;
 use crate::store::layers::{ChainLease, LayerStore};
 use crate::test_support::fake_vm::{STARTED, answer, connect_when_up};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 
 /// The processes of the machines that `await_booted` was called for.
 type Awaited = Arc<Mutex<HashSet<u32>>>;
@@ -314,7 +314,7 @@ fn fails_and_leaves_no_machine(target: &FailingTarget, home: &Path, function: fn
 }
 
 #[skuld::test]
-fn a_failing_shutdown_helper_fails_its_function_and_leaves_no_machine(#[fixture(anna_home)] home: &Path) {
+fn a_failing_shutdown_helper_fails_its_function_and_leaves_no_machine(#[fixture(unicode_home)] home: &Path) {
     fails_and_leaves_no_machine(
         &FailingTarget::new(Fault::ShutdownFails),
         home,
@@ -324,7 +324,7 @@ fn a_failing_shutdown_helper_fails_its_function_and_leaves_no_machine(#[fixture(
 
 #[skuld::test]
 fn a_shutdown_that_returns_before_the_process_exits_fails_its_function_and_leaves_no_machine(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     fails_and_leaves_no_machine(
         &FailingTarget::new(Fault::ShutdownReturnsEarly),
@@ -341,7 +341,7 @@ fn the_function_fails(fault: Fault, home: &Path, function: fn(&dyn ContractTarge
 }
 
 #[skuld::test]
-fn a_target_that_names_no_leftovers_fails_the_leftover_function(#[fixture(anna_home)] home: &Path) {
+fn a_target_that_names_no_leftovers_fails_the_leftover_function(#[fixture(unicode_home)] home: &Path) {
     the_function_fails(
         Fault::NamesNoLeftovers,
         home,
@@ -350,7 +350,7 @@ fn a_target_that_names_no_leftovers_fails_the_leftover_function(#[fixture(anna_h
 }
 
 #[skuld::test]
-fn a_machine_whose_files_never_exist_fails_the_leftover_function(#[fixture(anna_home)] home: &Path) {
+fn a_machine_whose_files_never_exist_fails_the_leftover_function(#[fixture(unicode_home)] home: &Path) {
     the_function_fails(
         Fault::LeftoversNeverExist,
         home,
@@ -359,7 +359,7 @@ fn a_machine_whose_files_never_exist_fails_the_leftover_function(#[fixture(anna_
 }
 
 #[skuld::test]
-fn a_shutdown_that_is_a_kill_fails_the_shutdown_functions(#[fixture(anna_home)] home: &Path) {
+fn a_shutdown_that_is_a_kill_fails_the_shutdown_functions(#[fixture(unicode_home)] home: &Path) {
     the_function_fails(
         Fault::ShutdownIsAKill,
         &home.join("a"),
@@ -373,7 +373,7 @@ fn a_shutdown_that_is_a_kill_fails_the_shutdown_functions(#[fixture(anna_home)] 
 }
 
 #[skuld::test]
-fn the_fake_shuts_down_by_asking_the_vm_and_kill_never_asks(#[fixture(anna_home)] home: &Path) {
+fn the_fake_shuts_down_by_asking_the_vm_and_kill_never_asks(#[fixture(unicode_home)] home: &Path) {
     let target = FakeTarget::new();
     let env = crate::store::layers::layers_tests::env(home);
     let parent = target.parent_layer(&env.store);
@@ -400,7 +400,7 @@ fn the_fake_shuts_down_by_asking_the_vm_and_kill_never_asks(#[fixture(anna_home)
 }
 
 #[skuld::test]
-fn a_failing_assertion_after_a_release_leaves_no_machine(#[fixture(anna_home)] home: &Path) {
+fn a_failing_assertion_after_a_release_leaves_no_machine(#[fixture(unicode_home)] home: &Path) {
     fails_and_leaves_no_machine(
         &FailingTarget::new(Fault::BootFails),
         home,
@@ -409,7 +409,7 @@ fn a_failing_assertion_after_a_release_leaves_no_machine(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn no_contract_function_reads_an_endpoint_before_resume(#[fixture(anna_home)] home: &Path) {
+fn no_contract_function_reads_an_endpoint_before_resume(#[fixture(unicode_home)] home: &Path) {
     let target = StrictTarget::new();
     let functions: [fn(&dyn ContractTarget, &Path); 8] = [
         contract::launch_reports_a_live_process_and_loopback_endpoints,
@@ -427,7 +427,7 @@ fn no_contract_function_reads_an_endpoint_before_resume(#[fixture(anna_home)] ho
 }
 
 #[skuld::test]
-fn the_shutdown_functions_wait_for_a_boot_before_the_first_shutdown(#[fixture(anna_home)] home: &Path) {
+fn the_shutdown_functions_wait_for_a_boot_before_the_first_shutdown(#[fixture(unicode_home)] home: &Path) {
     let target = StrictTarget::new();
     contract::shutdown_stops_the_process(&target, &home.join("a"));
     assert_eq!(target.booted_waits.load(Ordering::SeqCst), 1);
@@ -440,7 +440,7 @@ fn the_shutdown_functions_wait_for_a_boot_before_the_first_shutdown(#[fixture(an
 }
 
 #[skuld::test]
-fn a_shutdown_before_the_boot_was_awaited_fails_the_strict_target(#[fixture(anna_home)] home: &Path) {
+fn a_shutdown_before_the_boot_was_awaited_fails_the_strict_target(#[fixture(unicode_home)] home: &Path) {
     let target = StrictTarget::new();
     let env = crate::store::layers::layers_tests::env(home);
     let parent = target.parent_layer(&env.store);
@@ -464,7 +464,7 @@ fn a_shutdown_before_the_boot_was_awaited_fails_the_strict_target(#[fixture(anna
 }
 
 #[skuld::test]
-fn fake_has_run_only_after_the_process_runs(#[fixture(anna_home)] home: &Path) {
+fn fake_has_run_only_after_the_process_runs(#[fixture(unicode_home)] home: &Path) {
     let target = FakeTarget::new();
     let env = crate::store::layers::layers_tests::env(home);
     let parent = target.parent_layer(&env.store);
@@ -495,12 +495,12 @@ fn fake_has_run_only_after_the_process_runs(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn fake_launch_reports_a_live_process_and_loopback_endpoints(#[fixture(anna_home)] home: &Path) {
+fn fake_launch_reports_a_live_process_and_loopback_endpoints(#[fixture(unicode_home)] home: &Path) {
     contract::launch_reports_a_live_process_and_loopback_endpoints(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_a_frozen_machine_has_not_run_and_kill_leaves_nothing(#[fixture(anna_home)] home: &Path) {
+fn fake_a_frozen_machine_has_not_run_and_kill_leaves_nothing(#[fixture(unicode_home)] home: &Path) {
     let target = FakeTarget::new();
     contract::a_frozen_machine_has_not_run_and_kill_leaves_nothing(&target, home);
     let state_dir = target.spec(home, 0).serial_log.parent().unwrap().to_path_buf();
@@ -511,42 +511,42 @@ fn fake_a_frozen_machine_has_not_run_and_kill_leaves_nothing(#[fixture(anna_home
 }
 
 #[skuld::test]
-fn fake_a_released_machine_outlives_its_launcher_and_attach_finds_it(#[fixture(anna_home)] home: &Path) {
+fn fake_a_released_machine_outlives_its_launcher_and_attach_finds_it(#[fixture(unicode_home)] home: &Path) {
     contract::a_released_machine_outlives_its_launcher_and_attach_finds_it(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_shutdown_from_another_process_stops_the_machine(#[fixture(anna_home)] home: &Path) {
+fn fake_shutdown_from_another_process_stops_the_machine(#[fixture(unicode_home)] home: &Path) {
     contract::shutdown_from_another_process_stops_the_machine(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_kill_returns_only_after_the_process_has_exited(#[fixture(anna_home)] home: &Path) {
+fn fake_kill_returns_only_after_the_process_has_exited(#[fixture(unicode_home)] home: &Path) {
     contract::kill_returns_only_after_the_process_has_exited(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_attach_to_a_dead_machine_fails(#[fixture(anna_home)] home: &Path) {
+fn fake_attach_to_a_dead_machine_fails(#[fixture(unicode_home)] home: &Path) {
     contract::attach_to_a_dead_machine_fails(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_shutdown_stops_the_process(#[fixture(anna_home)] home: &Path) {
+fn fake_shutdown_stops_the_process(#[fixture(unicode_home)] home: &Path) {
     contract::shutdown_stops_the_process(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(#[fixture(anna_home)] home: &Path) {
+fn fake_a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(#[fixture(unicode_home)] home: &Path) {
     contract::a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_concurrent_launches_get_distinct_processes_and_endpoints(#[fixture(anna_home)] home: &Path) {
+fn fake_concurrent_launches_get_distinct_processes_and_endpoints(#[fixture(unicode_home)] home: &Path) {
     contract::concurrent_launches_get_distinct_processes_and_endpoints(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_counts_every_launch(#[fixture(anna_home)] home: &Path) {
+fn fake_counts_every_launch(#[fixture(unicode_home)] home: &Path) {
     let target = FakeTarget::new();
     assert_eq!(target.launches(), 0);
     contract::launch_reports_a_live_process_and_loopback_endpoints(&target, home);
@@ -554,7 +554,7 @@ fn fake_counts_every_launch(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn a_relaunch_in_the_same_directory_reads_only_its_own_run(#[fixture(anna_home)] home: &Path) {
+fn a_relaunch_in_the_same_directory_reads_only_its_own_run(#[fixture(unicode_home)] home: &Path) {
     let target = FakeTarget::new();
     let env = crate::store::layers::layers_tests::env(home);
     let parent = target.parent_layer(&env.store);

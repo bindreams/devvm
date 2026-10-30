@@ -17,7 +17,7 @@ use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::{build_expiring, days, key, names, t0};
 use crate::test_support::fake_vm::{STARTED, answer, connect_when_up};
-use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
+use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::helper;
 use crate::vm::vm_tests::{queued, step_name};
 use crate::{ErrorKind, Instance, InstanceState, ListFilter};
@@ -52,7 +52,7 @@ fn assert_answers_as(machine: &MachineRecord) {
 }
 
 #[skuld::test]
-fn start_launches_once_and_records_the_machine(#[fixture(anna_home)] home: &Path) {
+fn start_launches_once_and_records_the_machine(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -69,7 +69,7 @@ fn start_launches_once_and_records_the_machine(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn a_second_start_does_not_launch_again(#[fixture(anna_home)] home: &Path) {
+fn a_second_start_does_not_launch_again(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -82,7 +82,7 @@ fn a_second_start_does_not_launch_again(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn concurrent_starts_launch_exactly_once(#[fixture(anna_home)] home: &Path) {
+fn concurrent_starts_launch_exactly_once(#[fixture(unicode_home)] home: &Path) {
     let (progress, messages) = ChannelProgress::new();
     let fx = engine_fixture(home, progress);
     let dir = instance_in(&fx, "foo", home);
@@ -104,7 +104,7 @@ fn concurrent_starts_launch_exactly_once(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn start_and_remove_queued_together_end_with_no_instance_and_no_process(#[fixture(anna_home)] home: &Path) {
+fn start_and_remove_queued_together_end_with_no_instance_and_no_process(#[fixture(unicode_home)] home: &Path) {
     let (progress, messages) = ChannelProgress::new();
     let fx = engine_fixture(home, progress);
     let dir = instance_in(&fx, "foo", home);
@@ -137,7 +137,7 @@ fn start_and_remove_queued_together_end_with_no_instance_and_no_process(#[fixtur
 }
 
 #[skuld::test]
-fn stop_then_start_gives_a_new_process(#[fixture(anna_home)] home: &Path) {
+fn stop_then_start_gives_a_new_process(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -158,7 +158,7 @@ fn stop_then_start_gives_a_new_process(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn remove_after_start_kills_the_machine_and_deletes_everything(#[fixture(anna_home)] home: &Path) {
+fn remove_after_start_kills_the_machine_and_deletes_everything(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -176,7 +176,7 @@ fn remove_after_start_kills_the_machine_and_deletes_everything(#[fixture(anna_ho
 }
 
 #[skuld::test]
-fn ops_work_on_a_machine_started_by_another_process(#[fixture(anna_home)] home: &Path) {
+fn ops_work_on_a_machine_started_by_another_process(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     instance_in(&fx, "foo", home);
     let output = helper::command("fake-cli-start", &[&home.display().to_string(), "foo"])
@@ -263,22 +263,22 @@ fn a_cli_killed_at(step: LaunchStep, home: &Path) {
 }
 
 #[skuld::test]
-fn a_cli_killed_after_the_spawn_leaves_no_vm(#[fixture(anna_home)] home: &Path) {
+fn a_cli_killed_after_the_spawn_leaves_no_vm(#[fixture(unicode_home)] home: &Path) {
     a_cli_killed_at(LaunchStep::Spawned, home);
 }
 
 #[skuld::test]
-fn a_cli_killed_after_the_record_leaves_no_vm(#[fixture(anna_home)] home: &Path) {
+fn a_cli_killed_after_the_record_leaves_no_vm(#[fixture(unicode_home)] home: &Path) {
     a_cli_killed_at(LaunchStep::Recorded, home);
 }
 
 #[skuld::test]
-fn a_cli_killed_after_the_resume_leaves_no_vm(#[fixture(anna_home)] home: &Path) {
+fn a_cli_killed_after_the_resume_leaves_no_vm(#[fixture(unicode_home)] home: &Path) {
     a_cli_killed_at(LaunchStep::Resumed, home);
 }
 
 #[skuld::test]
-fn a_stopped_instance_on_a_superseded_generation_survives_gc_and_starts(#[fixture(anna_home)] home: &Path) {
+fn a_stopped_instance_on_a_superseded_generation_survives_gc_and_starts(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     let chain = build_expiring(&fx.env, key(5), None, Some(t0() + days(90)));
     let first = chain.tip().layer_ref();
@@ -314,7 +314,7 @@ fn a_stopped_instance_on_a_superseded_generation_survives_gc_and_starts(#[fixtur
 }
 
 #[skuld::test]
-fn start_tells_the_backend_the_instance_id_and_directory(#[fixture(anna_home)] home: &Path) {
+fn start_tells_the_backend_the_instance_id_and_directory(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     let dir = instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -414,7 +414,7 @@ impl LaunchHooks for SeesRecord {
 }
 
 #[skuld::test]
-fn start_records_the_machine_again_after_it_resumed(#[fixture(anna_home)] home: &Path) {
+fn start_records_the_machine_again_after_it_resumed(#[fixture(unicode_home)] home: &Path) {
     let hooks = Arc::new(SeesRecord {
         instance_dir: std::sync::OnceLock::new(),
         seen: std::sync::Mutex::new(Vec::new()),
@@ -442,7 +442,7 @@ fn start_records_the_machine_again_after_it_resumed(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn start_gives_the_seed_the_instance_id(#[fixture(anna_home)] home: &Path) {
+fn start_gives_the_seed_the_instance_id(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     let dir = instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -455,7 +455,7 @@ fn start_gives_the_seed_the_instance_id(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn stop_deletes_the_leftovers_of_a_running_machine(#[fixture(anna_home)] home: &Path) {
+fn stop_deletes_the_leftovers_of_a_running_machine(#[fixture(unicode_home)] home: &Path) {
     let fx = leaking_fixture(home, Arc::new(MemoryProgress::default()));
     instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -477,7 +477,7 @@ fn stop_deletes_the_leftovers_of_a_running_machine(#[fixture(anna_home)] home: &
 }
 
 #[skuld::test]
-fn start_over_a_stale_record_deletes_the_old_machines_leftovers(#[fixture(anna_home)] home: &Path) {
+fn start_over_a_stale_record_deletes_the_old_machines_leftovers(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     let dir = instance_in(&fx, "foo", home);
     let sleeper = Sleeper::spawn();
@@ -733,7 +733,7 @@ impl Machine for NotesOpLockMachine {
 }
 
 #[skuld::test]
-fn start_releases_the_machine_while_it_holds_the_op_lock(#[fixture(anna_home)] home: &Path) {
+fn start_releases_the_machine_while_it_holds_the_op_lock(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     let dir = Arc::new(instance_in(&fx, "foo", home));
     let held_at_release = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -751,7 +751,7 @@ fn start_releases_the_machine_while_it_holds_the_op_lock(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn a_release_that_fails_kills_the_machine_and_clears_the_record(#[fixture(anna_home)] home: &Path) {
+fn a_release_that_fails_kills_the_machine_and_clears_the_record(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     let dir = Arc::new(instance_in(&fx, "foo", home));
     let held_at_release = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -794,7 +794,7 @@ fn notes_op_lock_engine(
 }
 
 #[skuld::test]
-fn a_record_write_that_fails_after_the_spawn_kills_the_unrecorded_machine(#[fixture(anna_home)] home: &Path) {
+fn a_record_write_that_fails_after_the_spawn_kills_the_unrecorded_machine(#[fixture(unicode_home)] home: &Path) {
     let hooks = HoldsRecordFrom::new(LaunchStep::Spawned);
     let (wrap, kills) = Spied::wrap(false);
     let fx = engine_fixture_with(home, Arc::new(MemoryProgress::default()), hooks.clone(), wrap);
@@ -818,7 +818,7 @@ fn a_record_write_that_fails_after_the_spawn_kills_the_unrecorded_machine(#[fixt
 
 #[skuld::test]
 fn a_resume_that_fails_kills_the_machine_clears_the_record_and_deletes_its_leftovers(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let (wrap, kills) = Spied::wrap(true);
     let fx = engine_fixture_from(
@@ -848,7 +848,7 @@ fn a_resume_that_fails_kills_the_machine_clears_the_record_and_deletes_its_lefto
 }
 
 #[skuld::test]
-fn a_second_record_write_that_fails_kills_the_machine_and_deletes_its_leftovers(#[fixture(anna_home)] home: &Path) {
+fn a_second_record_write_that_fails_kills_the_machine_and_deletes_its_leftovers(#[fixture(unicode_home)] home: &Path) {
     let hooks = HoldsRecordFrom::new(LaunchStep::Resumed);
     let progress = Arc::new(MemoryProgress::default());
     let (wrap, kills) = Spied::wrap(false);
@@ -900,7 +900,7 @@ impl Drop for KillsOnDrop {
 
 #[skuld::test]
 fn a_resume_that_fails_with_a_machine_that_cannot_be_killed_keeps_the_record_and_names_both_errors(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let (wrap, kills) = Spied::wrap_with(true, true);
     let fx = engine_fixture_with(
@@ -935,7 +935,7 @@ fn a_resume_that_fails_with_a_machine_that_cannot_be_killed_keeps_the_record_and
 }
 
 #[skuld::test]
-fn an_unrecorded_machine_that_cannot_be_killed_is_named_in_the_error(#[fixture(anna_home)] home: &Path) {
+fn an_unrecorded_machine_that_cannot_be_killed_is_named_in_the_error(#[fixture(unicode_home)] home: &Path) {
     let hooks = HoldsRecordFrom::new(LaunchStep::Spawned);
     let (wrap, kills) = Spied::wrap_with(false, true);
     let fx = engine_fixture_with(home, Arc::new(MemoryProgress::default()), hooks.clone(), wrap);

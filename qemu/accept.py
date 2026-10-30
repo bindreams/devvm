@@ -5,10 +5,10 @@
 # ///
 """Acceptance checks for the QEMU release zip: `accept.py <zip> <work-dir>`.
 
-Extracts the zip into `<work-dir>/Anna Ж/qemu zip` (a space and a non-ASCII character in every path) and runs every
-check with QEMU children on a reduced PATH (System32 and the Windows directory only). Prints one `ok:` or `FAIL:` line
-per check and exits non-zero if any failed. Meant for a runner whose ANSI code page is not UTF-8: the first check
-fails on 65001, since the rest would then prove nothing.
+Extracts the zip into `<work-dir>/unicode-é Ж 世 😀/qemu zip` (spaces, non-ASCII characters and a surrogate pair in
+every path) and runs every check with QEMU children on a reduced PATH (System32 and the Windows directory only). Prints
+one `ok:` or `FAIL:` line per check and exits non-zero if any failed. Meant for a runner whose ANSI code page is not
+UTF-8: the first check fails on 65001, since the rest would then prove nothing.
 """
 
 import itertools
@@ -34,6 +34,10 @@ RUN_BOUND = 120  # seconds for one QEMU tool invocation
 QEMU_BOUND = 180  # seconds for one QEMU system emulator session
 ERROR_PIPE_BUSY = 231
 
+# Spelled with escapes so no editor can normalise it. U+00E9 is in code page 1252, U+0416 is not, U+4E16 is in no
+# single-byte code page, U+1F600 is a UTF-16 surrogate pair.
+UNICODE_DIR = "unicode-\u00e9 \u0416 \u4e16 \U0001f600"
+
 
 def check(func):
     CHECKS.append(func)
@@ -44,7 +48,7 @@ class Zip:
     """The extracted zip and the environment QEMU children run in."""
 
     def __init__(self, archive: Path, work: Path):
-        self.user_dir = work / "Anna Ж"
+        self.user_dir = work / UNICODE_DIR
         self.root = self.user_dir / "qemu zip"
         if self.user_dir.exists():
             shutil.rmtree(self.user_dir)

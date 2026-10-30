@@ -7,7 +7,7 @@ use crate::engine::engine_tests::{EngineFixture, dead_machine, engine_fixture, i
 use crate::instance::record::InstanceId;
 use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::store::layers::layers_tests::names;
-use crate::test_support::fixtures::{MemoryProgress, anna_home};
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, TestHost};
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::Handle;
@@ -18,7 +18,7 @@ fn memory() -> Arc<MemoryProgress> {
 }
 
 #[skuld::test]
-fn image_create_leaves_a_stopped_ownerless_instance(#[fixture(anna_home)] home: &Path) {
+fn image_create_leaves_a_stopped_ownerless_instance(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let image = image_of(&fx.engine);
     let opts = StartOptions {
@@ -46,7 +46,7 @@ fn image_create_leaves_a_stopped_ownerless_instance(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn image_create_reaps_a_dead_creators_leftovers_first(#[fixture(anna_home)] home: &Path) {
+fn image_create_reaps_a_dead_creators_leftovers_first(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let image = image_of(&fx.engine);
     // A creator that died: its `.new-` directory is left, and nobody holds its owner lock.
@@ -61,7 +61,7 @@ fn image_create_reaps_a_dead_creators_leftovers_first(#[fixture(anna_home)] home
 }
 
 #[skuld::test]
-fn a_bad_instance_name_is_rejected_before_anything_is_created(#[fixture(anna_home)] home: &Path) {
+fn a_bad_instance_name_is_rejected_before_anything_is_created(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let image = image_of(&fx.engine);
 
@@ -81,7 +81,7 @@ fn image_vm_and_instance_are_send_and_sync() {
 }
 
 #[skuld::test]
-fn guest_methods_are_not_supported_until_the_access_layer(#[fixture(anna_home)] home: &Path) {
+fn guest_methods_are_not_supported_until_the_access_layer(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let instance = image_of(&fx.engine).create("foo", &StartOptions::default()).unwrap();
 
@@ -134,7 +134,7 @@ fn stub_machine(stub: &StubBackend) -> Box<dyn Machine> {
 }
 
 #[skuld::test]
-fn a_vm_without_a_machine_cannot_be_handed_over(#[fixture(anna_home)] home: &Path) {
+fn a_vm_without_a_machine_cannot_be_handed_over(#[fixture(unicode_home)] home: &Path) {
     let (fx, _, _) = stub_fixture(home, Attach::Running);
     let vm = vm_with_machine(&fx, None);
 
@@ -145,7 +145,7 @@ fn a_vm_without_a_machine_cannot_be_handed_over(#[fixture(anna_home)] home: &Pat
 }
 
 #[skuld::test]
-fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(anna_home)] home: &Path) {
+fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     let instance = image_of(&fx.engine).create("foo", &StartOptions::default()).unwrap();
     let vm = Vm {
@@ -163,7 +163,7 @@ fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(anna_home)] 
 }
 
 #[skuld::test]
-fn a_handover_runs_its_callback_before_the_owner_marker_is_flipped(#[fixture(anna_home)] home: &Path) {
+fn a_handover_runs_its_callback_before_the_owner_marker_is_flipped(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     let vm = vm_with_machine(&fx, Some(stub_machine(&stub)));
     let path = vm.instance().dir().path().to_path_buf();
@@ -187,7 +187,7 @@ fn a_handover_runs_its_callback_before_the_owner_marker_is_flipped(#[fixture(ann
 }
 
 #[skuld::test]
-fn dropping_a_vm_whose_machine_cannot_be_killed_leaves_the_instance_and_says_so(#[fixture(anna_home)] home: &Path) {
+fn dropping_a_vm_whose_machine_cannot_be_killed_leaves_the_instance_and_says_so(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, progress) = stub_fixture(home, Attach::Running);
     stub.fail_stops();
     let vm = vm_with_machine(&fx, Some(stub_machine(&stub)));

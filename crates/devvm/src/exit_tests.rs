@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use crate::exit::{
     DEVVM_ERROR_EXIT, ExitStatus, ExitWidth, Report, finish, format_error_line, status_json, write_status_file,
 };
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::{Error, ErrorKind};
 
 const WIDTHS: [ExitWidth; 2] = [ExitWidth::Full32, ExitWidth::LowByte];
@@ -77,7 +77,7 @@ fn status_json_shapes_match_the_contract() {
 }
 
 #[skuld::test]
-fn error_line_is_one_line(#[fixture(anna_home)] home: &Path) {
+fn error_line_is_one_line(#[fixture(unicode_home)] home: &Path) {
     let message = "a\nb\r\nc\td\u{1b}e";
     let error = Error::new(ErrorKind::Io, message);
     let line = format_error_line(&error);
@@ -98,7 +98,7 @@ fn run_finish(status_file: Option<&Path>, outcome: crate::Result<ExitStatus>, wi
 }
 
 #[skuld::test]
-fn finish_writes_status_file_and_returns_125_for_devvm_errors(#[fixture(anna_home)] home: &Path) {
+fn finish_writes_status_file_and_returns_125_for_devvm_errors(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("s.json");
     for width in WIDTHS {
         let (exit, stderr) = run_finish(Some(&path), Err(Error::new(ErrorKind::Checksum, "bad")), width);
@@ -110,7 +110,7 @@ fn finish_writes_status_file_and_returns_125_for_devvm_errors(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn finish_returns_guest_code_for_guest_status(#[fixture(anna_home)] home: &Path) {
+fn finish_returns_guest_code_for_guest_status(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("s.json");
     let (exit, stderr) = run_finish(Some(&path), Ok(ExitStatus::Code(0x1_0000)), ExitWidth::LowByte);
     assert_eq!((exit, stderr.as_str()), (1, ""));
@@ -123,7 +123,7 @@ fn finish_returns_guest_code_for_guest_status(#[fixture(anna_home)] home: &Path)
 }
 
 #[skuld::test]
-fn unwritable_status_file_gives_125_and_one_line(#[fixture(anna_home)] home: &Path) {
+fn unwritable_status_file_gives_125_and_one_line(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("missing dir").join("s.json");
     let (exit, stderr) = run_finish(Some(&path), Ok(ExitStatus::Code(0)), ExitWidth::LowByte);
     assert_eq!(exit, DEVVM_ERROR_EXIT);
@@ -146,7 +146,7 @@ fn unwritable_status_file_gives_125_and_one_line(#[fixture(anna_home)] home: &Pa
 }
 
 #[skuld::test]
-fn status_file_replace_is_atomic_for_readers(#[fixture(anna_home)] home: &Path) {
+fn status_file_replace_is_atomic_for_readers(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("s.json");
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
