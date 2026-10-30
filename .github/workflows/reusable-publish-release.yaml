@@ -96,9 +96,10 @@ jobs:
           fi
 
           # The repository-wide invariant, checked on every publish whatever tag holds the badge: Latest belongs to a
-          # `latest: true` track's release, or is the only published full release (GitHub then picks it whatever
-          # make_latest says). One GraphQL read gives the holder and the count together; `/releases/latest` is
-          # eventually consistent. A stale read is caught by the next publish.
+          # `latest: true` track's release, or to a never-Latest track's while no published full release of a
+          # `latest: true` track exists (GitHub then picks the newest full release whatever make_latest says). One
+          # GraphQL read gives the holder and the count together; `/releases/latest` is eventually consistent. A stale
+          # read is caught by the next publish.
           releases="$(gh api graphql --paginate -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}"             -f query='query($owner: String!, $name: String!, $endCursor: String) {
               repository(owner: $owner, name: $name) {
                 releases(first: 100, after: $endCursor) {
@@ -107,7 +108,30 @@ jobs:
                 }
               }
             }' --jq '.data.repository.releases.nodes[] | "\(.tagName) \(.isDraft) \(.isPrerelease) \(.isLatest)"')"
-          published=0
+          # Exit status 0 if the tag is on a never-Latest track, printing the pattern.
+          matching_non_latest_pattern() {
+            local tag="$1" pattern
+            while IFS=$' \t\r' read -r pattern _; do
+              if [[ -n "$pattern" && "$tag" == $pattern ]]; then
+                echo "$pattern"
+                return 0
+              fi
+            done <<< "$NON_LATEST_PATTERNS"
+            return 1
+          }
+
+          # `latest` and the patterns must agree about this tag's own track.
+          if pattern="$(matching_non_latest_pattern "$TAG")"; then
+            if [[ "$LATEST" == "true" ]]; then
+              echo "::error::${TAG} is published with latest: true, but it matches the never-Latest pattern ${pattern}"
+              exit 1
+            fi
+          elif [[ "$LATEST" != "true" ]]; then
+            echo "::error::${TAG} is published with latest: false, but it matches no never-Latest pattern"
+            exit 1
+          fi
+
+          latest_taking=0
           this_published=false
           holders=()
           while IFS=' ' read -r name is_draft is_prerelease is_latest; do
@@ -115,8 +139,8 @@ jobs:
               if [[ "$name" == "$TAG" ]]; then
                 this_published=true
               fi
-              if [[ "$is_prerelease" == "false" ]]; then
-                published=$((published + 1))
+              if [[ "$is_prerelease" == "false" ]] && ! matching_non_latest_pattern "$name" > /dev/null; then
+                latest_taking=$((latest_taking + 1))
               fi
             fi
             if [[ "$is_latest" == "true" ]]; then
@@ -137,16 +161,12 @@ jobs:
             echo "::error::${TAG} must be the repository's Latest release, but it is '${holder}'"
             exit 1
           fi
-          if [[ -n "$holder" ]]; then
-            while IFS= read -r pattern; do
-              if [[ -n "$pattern" && "$holder" == $pattern ]]; then
-                if (( published == 1 )); then
-                  echo "::notice::${holder} is Latest because it is the only published full release"
-                else
-                  echo "::error::${holder} is the repository's Latest release, but its track never takes Latest (${pattern}) and ${published} full releases are published"
-                  exit 1
-                fi
-              fi
-            done <<< "$NON_LATEST_PATTERNS"
+          if [[ -n "$holder" ]] && pattern="$(matching_non_latest_pattern "$holder")"; then
+            if (( latest_taking == 0 )); then
+              echo "::notice::${holder} is Latest because no release of a Latest-taking track is published"
+            else
+              echo "::error::${holder} is the repository's Latest release, but its track never takes Latest (${pattern}) and ${latest_taking} full release(s) of a Latest-taking track are published"
+              exit 1
+            fi
           fi
           echo "Release published: https://github.com/${GH_REPO}/releases/tag/${TAG}" | tee -a "$GITHUB_STEP_SUMMARY"
