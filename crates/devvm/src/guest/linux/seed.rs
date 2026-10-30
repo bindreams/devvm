@@ -79,9 +79,21 @@ pub(super) fn seed_files(spec: &SeedSpec) -> Result<Vec<SeedFile>> {
 /// `value` as a document cloud-init reads. JSON is YAML, and it quotes every string. cloud-init reads the seed with
 /// PyYAML (YAML 1.1), where an unquoted `yes`, `off` or `2024-01-15` is a boolean or a date, and a YAML writer
 /// decides what to quote by the 1.2 rules.
+///
+/// `serde_json` escapes only U+0000 to U+001F, `"` and `\`. PyYAML rejects U+007F, U+0080 to U+009F, U+FFFE and U+FFFF
+/// raw, and folds U+0085 (NEL) into a space, so those are written as `\uXXXX`. Outside strings the text is ASCII, so
+/// the pass touches nothing else.
 fn document(value: &impl Serialize) -> Result<String> {
-    let mut text = serde_json::to_string_pretty(value)
+    let text = serde_json::to_string_pretty(value)
         .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot write the cloud-init seed: {e}")))?;
-    text.push('\n');
-    Ok(text)
+    let mut out = String::with_capacity(text.len() + 1);
+    for c in text.chars() {
+        if matches!(c, '\u{7f}'..='\u{9f}' | '\u{fffe}' | '\u{ffff}') {
+            out.push_str(&format!("\\u{:04x}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\n');
+    Ok(out)
 }

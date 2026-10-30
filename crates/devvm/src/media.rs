@@ -32,7 +32,7 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id.
 pub(crate) fn write_cidata_image(files: &[SeedFile], into: &Path) -> Result<Media> {
-    refuse_repeated_names(files)?;
+    refuse_unusable_names(files)?;
     let image = fat_image(files).map_err(|e| {
         Error::io(
             ErrorKind::Io,
@@ -55,11 +55,21 @@ pub(crate) fn write_cidata_image(files: &[SeedFile], into: &Path) -> Result<Medi
     })
 }
 
-/// FAT looks names up case-insensitively, and `fatfs` opens an existing file without truncating it, so two files with
-/// one name would leave the first one's tail behind the second one's bytes.
-fn refuse_repeated_names(files: &[SeedFile]) -> Result<()> {
+/// `fatfs` trims `/` from a name and walks the rest as a path, so `a/` is `a` and `a/b` needs a directory; an empty name
+/// is no file. Refusing those leaves plain names, where FAT looks up case-insensitively and `fatfs` opens an existing
+/// file without truncating it: two files with one name would leave the first one's tail behind the second one's bytes.
+fn refuse_unusable_names(files: &[SeedFile]) -> Result<()> {
     let mut seen: Vec<(String, &str)> = Vec::new();
     for file in files {
+        if file.name.is_empty() || file.name.contains(['/', '\\']) {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!(
+                    "`{}` cannot be a file name in the seed image: it is empty or has a path separator",
+                    file.name
+                ),
+            ));
+        }
         let folded = file.name.to_uppercase();
         if let Some((_, first)) = seen.iter().find(|(name, _)| *name == folded) {
             return Err(Error::new(
