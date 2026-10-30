@@ -164,3 +164,20 @@ fn a_repeated_name_is_refused_whatever_its_case(#[fixture(unicode_home)] home: &
         assert!(!image.exists(), "nothing is written for a refused set");
     }
 }
+
+#[skuld::test]
+fn a_name_fatfs_would_split_or_trim_is_refused(#[fixture(unicode_home)] home: &Path) {
+    // `fatfs` trims `/` and walks the rest as a path, so `user-data/` is `user-data` and `a/b` needs a directory.
+    for bad in ["", "/", "user-data/", "/user-data", "a/b", "a\\b"] {
+        let image = home.join("seed.img");
+        let error = write_cidata_image(&[file("user-data", b"one"), file(bad, b"two")], &image)
+            .expect_err("the name is not a plain FAT file name");
+        assert_eq!(error.kind(), crate::ErrorKind::Internal, "{bad:?}");
+        assert!(
+            error.message().contains(&format!("`{bad}`")),
+            "{bad:?}: {}",
+            error.message()
+        );
+        assert!(!image.exists(), "nothing is written for a refused set");
+    }
+}

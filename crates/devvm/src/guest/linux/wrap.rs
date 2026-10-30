@@ -37,6 +37,9 @@ fn user_script(cmd: &Command) -> Result<String> {
     }
     let mut steps = Vec::new();
     if let Some(cwd) = &cmd.cwd {
+        if cwd.is_empty() {
+            return Err(Error::new(ErrorKind::Usage, "the working directory is empty"));
+        }
         steps.push(format!(
             "CDPATH= cd -- {}",
             quote_checked("the working directory", &cd_operand(cwd))?

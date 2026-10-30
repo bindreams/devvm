@@ -141,3 +141,62 @@ fn every_string_in_the_seed_is_quoted(#[fixture(unicode_home)] home: &Path) {
         assert_eq!(user["ssh_keys"]["ed25519_private"].as_str(), Some(HOST_PRIVATE));
     }
 }
+
+/// Characters PyYAML (YAML 1.1) rejects (`ReaderError`) or folds (NEL) when written raw in a double-quoted scalar.
+const UNREADABLE_RAW: [char; 7] = ['\u{7f}', '\u{80}', '\u{85}', '\u{9f}', '\u{fffe}', '\u{ffff}', '\u{8d}'];
+
+#[skuld::test]
+fn characters_yaml_cannot_carry_raw_are_escaped_in_every_key(#[fixture(unicode_home)] home: &Path) {
+    for c in UNREADABLE_RAW {
+        let mut keyed = spec(home, 1);
+        keyed.keys.client_public = format!("ssh-ed25519 AAAAclient a{c}b");
+        keyed.keys.host_private = format!("{HOST_PRIVATE}{c}");
+        keyed.keys.host_public = format!("{c}ssh-ed25519 AAAAhost");
+        let media = LinuxGuest.instance_seed(&keyed).unwrap().media;
+        let user = String::from_utf8(read_image_file(&media.path, "user-data")).unwrap();
+
+        assert!(!user.contains(c), "U+{:04X} is written raw", c as u32);
+        assert!(
+            user.contains(&format!("\\u{:04x}", c as u32)),
+            "U+{:04X}: {user}",
+            c as u32
+        );
+
+        // JSON is YAML: the same text must read back as the input through both parsers.
+        let body = user.split_once('\n').unwrap().1;
+        let json: serde_json::Value = serde_json::from_str(body).unwrap();
+        let yaml: Value = yaml_serde::from_str(&user).unwrap();
+        assert_eq!(
+            json["users"][0]["ssh_authorized_keys"][0].as_str(),
+            Some(keyed.keys.client_public.as_str())
+        );
+        assert_eq!(
+            field(&field(&yaml, "users").as_sequence().unwrap()[0], "ssh_authorized_keys")[0].as_str(),
+            Some(keyed.keys.client_public.as_str())
+        );
+        for (parsed, expected) in [
+            (&json["ssh_keys"]["ed25519_private"], keyed.keys.host_private.as_str()),
+            (&json["ssh_keys"]["ed25519_public"], keyed.keys.host_public.as_str()),
+        ] {
+            assert_eq!(parsed.as_str(), Some(expected));
+        }
+        let host_keys = field(&yaml, "ssh_keys");
+        assert_eq!(
+            field(host_keys, "ed25519_private").as_str(),
+            Some(keyed.keys.host_private.as_str())
+        );
+        assert_eq!(
+            field(host_keys, "ed25519_public").as_str(),
+            Some(keyed.keys.host_public.as_str())
+        );
+    }
+}
+
+#[skuld::test]
+fn printable_non_ascii_stays_raw(#[fixture(unicode_home)] home: &Path) {
+    let mut keyed = spec(home, 1);
+    keyed.keys.client_public = "ssh-ed25519 AAAAclient \u{e9}\u{416}\u{4e16}\u{1f600}\u{a0}".to_owned();
+    let media = LinuxGuest.instance_seed(&keyed).unwrap().media;
+    let user = String::from_utf8(read_image_file(&media.path, "user-data")).unwrap();
+    assert!(user.contains(&keyed.keys.client_public), "{user}");
+}

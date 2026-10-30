@@ -120,6 +120,19 @@ fn an_empty_argv_and_a_bad_env_name_are_usage_errors() {
 }
 
 #[skuld::test]
+fn an_empty_working_directory_is_a_usage_error() {
+    // `cd -- ''` is a silent no-op in bash, so the command would run somewhere the caller did not ask for.
+    for run_as in [RunAs::User, RunAs::Elevated] {
+        let mut command = cmd(&["pwd"]);
+        command.run_as = run_as;
+        command.cwd = Some(String::new());
+        let error = wrap(&command).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage);
+        assert!(error.message().contains("working directory"), "{}", error.message());
+    }
+}
+
+#[skuld::test]
 fn a_nul_byte_cannot_travel_in_a_shell_string() {
     let nul = "a\0b";
     let mut in_argv = cmd(&["echo", nul]);
