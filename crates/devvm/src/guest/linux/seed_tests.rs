@@ -115,3 +115,29 @@ fn the_seed_media_is_a_readonly_disk_in_the_scratch_directory(#[fixture(unicode_
     assert_eq!(media.kind, crate::backend::MediaKind::Disk);
     assert!(media.readonly);
 }
+
+/// Hostnames PyYAML (YAML 1.1, which cloud-init uses) would read as a boolean or a date if left unquoted.
+const AMBIGUOUS_NAMES: [&str; 9] = ["yes", "no", "on", "off", "y", "n", "2024-01-15", "1e3", "0o17"];
+
+#[skuld::test]
+fn every_string_in_the_seed_is_quoted(#[fixture(unicode_home)] home: &Path) {
+    for name in AMBIGUOUS_NAMES {
+        let mut named = spec(home, 1);
+        named.hostname = name.to_owned();
+        let files = LinuxGuest.instance_seed(&named).unwrap();
+        let media = files.media;
+        let meta = String::from_utf8(read_image_file(&media.path, "meta-data")).unwrap();
+        let user = String::from_utf8(read_image_file(&media.path, "user-data")).unwrap();
+
+        // JSON is YAML, and a JSON parser accepts a scalar only if it is quoted: `yes` is no JSON value.
+        let meta: serde_json::Value = serde_json::from_str(&meta).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(meta["local-hostname"].as_str(), Some(name));
+        let (header, body) = user.split_once('\n').unwrap();
+        assert_eq!(header, "#cloud-config");
+        let user: serde_json::Value = serde_json::from_str(body).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(user["hostname"].as_str(), Some(name));
+        assert_eq!(user["users"][0]["name"].as_str(), Some("user"));
+        assert_eq!(user["ssh_pwauth"].as_bool(), Some(false), "booleans stay booleans");
+        assert_eq!(user["ssh_keys"]["ed25519_private"].as_str(), Some(HOST_PRIVATE));
+    }
+}

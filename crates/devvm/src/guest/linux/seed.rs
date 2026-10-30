@@ -67,16 +67,21 @@ pub(super) fn seed_files(spec: &SeedSpec) -> Result<Vec<SeedFile>> {
     Ok(vec![
         SeedFile {
             name: "meta-data".to_owned(),
-            bytes: yaml(&meta)?.into_bytes(),
+            bytes: document(&meta)?.into_bytes(),
         },
         SeedFile {
             name: "user-data".to_owned(),
-            bytes: format!("#cloud-config\n{}", yaml(&user)?).into_bytes(),
+            bytes: format!("#cloud-config\n{}", document(&user)?).into_bytes(),
         },
     ])
 }
 
-fn yaml(value: &impl Serialize) -> Result<String> {
-    yaml_serde::to_string(value)
-        .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot write the cloud-init seed: {e}")))
+/// `value` as a document cloud-init reads. JSON is YAML, and it quotes every string. cloud-init reads the seed with
+/// PyYAML (YAML 1.1), where an unquoted `yes`, `off` or `2024-01-15` is a boolean or a date, and a YAML writer
+/// decides what to quote by the 1.2 rules.
+fn document(value: &impl Serialize) -> Result<String> {
+    let mut text = serde_json::to_string_pretty(value)
+        .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot write the cloud-init seed: {e}")))?;
+    text.push('\n');
+    Ok(text)
 }
