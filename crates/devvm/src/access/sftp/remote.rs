@@ -437,22 +437,6 @@ impl Remote {
             .await
             .map_err(|e| self.error(&format!("cannot set the time of the guest directory {path}"), e))
     }
-
-    /// Makes `path` the tree entry `kind` copied from `local` (described as `what` in errors); a directory merges.
-    /// Returns whether it made a directory.
-    pub(super) async fn put_item(self, kind: Kind, local: PathBuf, path: String) -> Result<bool> {
-        match kind {
-            Kind::Dir { .. } => {
-                let what = format!("the host directory {}", local.display());
-                self.put_dir(path, false, what).await
-            }
-            Kind::File { executable, mtime, .. } => self.put_file(local, path, executable, mtime).await.map(|()| false),
-            Kind::Link { target, .. } => {
-                let what = format!("the host symlink {}", local.display());
-                self.put_link(target, path, what).await.map(|()| false)
-            }
-        }
-    }
 }
 
 // Reading =============================================================================================================

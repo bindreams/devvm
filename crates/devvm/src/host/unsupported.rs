@@ -1,5 +1,7 @@
-//! The host for operating systems devvm 0.1.0 does not run VMs on (Linux, macOS).
+//! What every host devvm 0.1.0 does not run VMs on (Linux, macOS) shares. A host type supplies only what differs, the
+//! file modes ([`FileModes`]), and is a [`Host`] through the blanket impl below.
 
+use std::fs::OpenOptions;
 use std::path::Path;
 
 use super::names::posix_problem;
@@ -7,16 +9,21 @@ use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
-#[cfg(unix)]
-#[path = "unsupported/perm_unix.rs"]
-mod perm;
-#[cfg(not(unix))]
-#[path = "unsupported/perm_other.rs"]
-mod perm;
+/// How a host that cannot run VMs treats file modes and symlinks.
+pub(super) trait FileModes: Send + Sync {
+    /// Options that create a file readable and writable by its owner only, from the first moment it exists.
+    fn private_options(&self) -> OpenOptions;
 
-pub(super) struct UnsupportedHost;
+    fn is_executable(&self, path: &Path) -> std::io::Result<bool>;
 
-impl Host for UnsupportedHost {
+    fn set_executable(&self, path: &Path) -> std::io::Result<()>;
+
+    fn read_link(&self, path: &Path) -> std::io::Result<String>;
+
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
+}
+
+impl<M: FileModes> Host for M {
     fn accelerator(&self, _arch: Arch) -> std::result::Result<Accel, Unavailable> {
         Err(Unavailable {
             missing: format!("{} hosts are not supported in devvm 0.1.0", std::env::consts::OS),
@@ -44,15 +51,15 @@ impl Host for UnsupportedHost {
 
     /// Mode `0600` is set when the file is created, so there is no moment with wider permissions.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        create_new_with(perm::private_options(), path, bytes)
+        create_new_with(self.private_options(), path, bytes)
     }
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
-        perm::is_executable(path)
+        FileModes::is_executable(self, path)
     }
 
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
-        perm::set_executable(path)
+        FileModes::set_executable(self, path)
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
@@ -68,10 +75,10 @@ impl Host for UnsupportedHost {
     }
 
     fn read_link(&self, path: &Path) -> std::io::Result<String> {
-        perm::read_link(path)
+        FileModes::read_link(self, path)
     }
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
-        perm::make_symlink(target, link, to_dir)
+        FileModes::make_symlink(self, target, link, to_dir)
     }
 }

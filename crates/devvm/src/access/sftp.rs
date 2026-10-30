@@ -23,20 +23,24 @@
 //!   included), an entry that would land on something of the wrong kind, and a link the target cannot make fail the
 //!   copy, naming it. Nothing at the destination is deleted.
 //!
-//! The host side of a transfer ([`local`]) runs on the calling thread; each remote step ([`remote`]) runs on the
-//! runtime, bounded by [`Inner::guarded`].
+//! One algorithm ([`copy`]) serves both directions over the two ends of a copy: the host ([`local`]), which runs on the
+//! calling thread, and the guest ([`guest`]), whose steps ([`remote`]) run on the runtime, bounded by
+//! [`Inner::guarded`].
 
+mod copy;
+mod guest;
 mod local;
 mod plan;
 mod remote;
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use self::plan::{Conflict, Item, Kind, Place, Rules, Source};
+use self::guest::GuestSide;
+use self::local::HostSide;
 use self::remote::Remote;
 use crate::access::paths::{check_guest_path, expand_guest_path};
 use crate::access::runtime;
@@ -100,43 +104,6 @@ fn local_error(what: &str, path: &Path, source: std::io::Error) -> Error {
         ErrorKind::Io
     };
     Error::io(kind, format!("{what} {}", path.display()), source)
-}
-
-/// What the destination being in the way means, in words.
-fn conflict_error(conflict: Conflict, what: &str, side: &str, dest: &str) -> Error {
-    let message = match conflict {
-        Conflict::DirOntoNonDir => {
-            format!("cannot copy {what} onto the {side} path {dest}, which is not a directory")
-        }
-        Conflict::SlashOnNonDir => {
-            format!("cannot copy {what} to the {side} destination {dest}: it ends in `/` but is not a directory")
-        }
-    };
-    Error::new(ErrorKind::Io, message)
-}
-
-/// The announcement of a copy: what the walk found.
-fn total(top: &Kind, items: &[Item]) -> String {
-    let (mut files, mut dirs, mut links, mut bytes) = (0u64, 0u64, 0u64, 0u64);
-    for kind in std::iter::once(top).chain(items.iter().map(|item| &item.kind)) {
-        match kind {
-            Kind::Dir { .. } => dirs += 1,
-            Kind::File { size, .. } => {
-                files += 1;
-                bytes += size;
-            }
-            Kind::Link { .. } => links += 1,
-        }
-    }
-    format!(
-        "{files} files ({}), {links} symlinks, {} directories",
-        bytesize::ByteSize(bytes),
-        dirs.saturating_sub(u64::from(top.is_dir()))
-    )
-}
-
-fn source_of(top: &Kind) -> Source {
-    if top.is_dir() { Source::Dir } else { Source::Entry }
 }
 
 /// `path` without a trailing `/`, a lone `/` excepted.
@@ -204,144 +171,16 @@ impl Sftp {
         let slash = dest.ends_with('/');
         let (expanded, home) = self.expanded(dest)?;
         let dest = without_slash(&guest.sftp_path(&plan::normalize(&expanded), &home));
-        let top = local::inspect(src, host)?;
-        let items = if top.is_dir() {
-            local::walk(src, host)?
-        } else {
-            Vec::new()
-        };
-        let rules = Rules {
-            from: "host",
-            to: "the guest",
-            problem: &|name| guest.file_name_problem(name),
-            key: &|name| guest.name_key(name),
-            times: "1970 to 2106",
-        };
-        plan::check_names(&items, &rules)?;
-        plan::check_destination(&plan::chain(&dest), &rules, &mut |path| {
-            self.call(&format!("inspecting the guest path {path}"), {
-                let path = path.clone();
-                move |remote| remote.present(path, false)
-            })
-        })?;
-        let present = self.call(&format!("inspecting the guest path {dest}"), {
-            let dest = dest.clone();
-            move |remote| remote.present(dest, true)
-        })?;
-        let what = format!("the host {} {}", top.noun(), src.display());
-        let placed = plan::place(source_of(&top), slash, present)
-            .map_err(|conflict| conflict_error(conflict, &what, "guest", &dest))?;
-        // Where a file or link goes, and the one entry that stands for it in the checks.
-        let single = match placed {
-            Place::Root => None,
-            Place::At => Some((dest.clone(), Vec::new())),
-            Place::Inside => {
-                let name = local::without_trailing_separator(src)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::to_owned)
-                    .ok_or_else(|| {
-                        Error::new(ErrorKind::Usage, format!("{} has no usable file name", src.display()))
-                    })?;
-                plan::check_name(&name, &rules)?;
-                let entry = Item {
-                    rel: vec![name.clone()],
-                    kind: top.clone(),
-                };
-                Some((plan::join(&dest, &name), vec![entry]))
-            }
-        };
-        let source_path = |rel: &[String]| {
-            rel.iter()
-                .fold(src.to_owned(), |base, part| base.join(part))
-                .display()
-                .to_string()
-        };
-        let (checked, root_fresh) = match &single {
-            Some((_, entries)) => (entries, false),
-            None => (&items, plan::root_is_fresh(present)),
-        };
-        let created = plan::check_clashes(
-            checked,
-            root_fresh,
-            &rules,
-            &mut |rel| {
-                let path = plan::join_all(&dest, rel);
-                self.call(&format!("inspecting the guest path {path}"), move |remote| {
-                    remote.present(path, false)
-                })
-            },
-            &|rel| (source_path(rel), plan::join_all(&dest, rel)),
-        )?;
-        // Last: the probe makes a link, which no failing check may leave behind.
-        if let Some(link) = plan::first_link(&top, &items, &source_path) {
-            let refused = self.call(&format!("testing symlinks in the guest path {dest}"), {
-                let dest = dest.clone();
-                move |remote| remote.probe_links(dest)
-            })?;
-            if let Some(cause) = refused {
-                return Err(plan::link_refusal(&rules, &link, &cause));
-            }
-        }
-        let target = single.as_ref().map_or(&dest, |(target, _)| target);
-        progress.message(&format!(
-            "copying {} to the guest ({target}): {}",
-            src.display(),
-            total(&top, &items)
-        ));
-        for note in plan::time_notes(&rules, &top, &items, &created, &source_path) {
-            progress.message(&note);
-        }
-        match placed {
-            Place::Root => {
-                // The directories the copy made and the times they get once their contents are written. A directory
-                // that was already there keeps its time: setting one needs ownership the user may not have.
-                let mut made = Vec::new();
-                let root_made = self.call(&format!("creating the guest directory {dest}"), {
-                    let dest = dest.clone();
-                    move |remote| remote.put_dir(dest, true, what)
-                })?;
-                if let (true, Kind::Dir { mtime: Some(seconds) }) = (root_made, &top) {
-                    made.push((dest.clone(), *seconds));
-                }
-                for item in &items {
-                    let remote_path = plan::join_all(&dest, &item.rel);
-                    let local_path = item.rel.iter().fold(src.to_owned(), |base, part| base.join(part));
-                    let kind = item.kind.clone();
-                    let item_made = self.call(
-                        &format!("copying {} to the guest path {remote_path}", local_path.display()),
-                        {
-                            let remote_path = remote_path.clone();
-                            move |remote| remote.put_item(kind, local_path, remote_path)
-                        },
-                    )?;
-                    if let (true, Kind::Dir { mtime: Some(seconds) }) = (item_made, &item.kind) {
-                        made.push((remote_path, *seconds));
-                    }
-                }
-                // Deepest first: a directory is listed before its children.
-                for (path, seconds) in made.into_iter().rev() {
-                    self.call(
-                        &format!("setting the time of the guest directory {path}"),
-                        move |remote| remote.set_dir_time(path, seconds),
-                    )?;
-                }
-            }
-            Place::At | Place::Inside => {
-                let target = target.clone();
-                let dir = plan::parent_of(&target);
-                self.call(
-                    &format!("creating the guest directory {dir}"),
-                    move |remote| async move { remote.make_dirs(&dir).await },
-                )?;
-                let local_path = src.to_owned();
-                self.call(
-                    &format!("copying {} to the guest path {target}", src.display()),
-                    move |remote| remote.put_item(top, local_path, target),
-                )?;
-            }
-        }
-        Ok(())
+        let follow = local::ends_with_separator(src);
+        copy::copy(
+            &HostSide { host },
+            &src.to_owned(),
+            follow,
+            &GuestSide { sftp: self, guest },
+            &dest,
+            slash,
+            progress,
+        )
     }
 
     /// Copies the guest file, symlink or directory `src` to the host path `dest`.
@@ -357,135 +196,14 @@ impl Sftp {
         let dest = local::lexically_normal(&local::without_trailing_separator(dest));
         let follow = src.ends_with('/');
         let src = self.guest_path(src, guest)?;
-        let top = self
-            .call(&format!("inspecting the guest path {src}"), {
-                let src = src.clone();
-                move |remote| remote.inspect(src, follow)
-            })?
-            .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("the guest source {src} does not exist")))?;
-        let items = if top.is_dir() {
-            self.call(&format!("listing the guest directory {src}"), {
-                let src = src.clone();
-                move |remote| remote.walk(src)
-            })?
-        } else {
-            Vec::new()
-        };
-        let rules = Rules {
-            from: "guest",
-            to: "this host",
-            problem: &|name| host.file_name_problem(name),
-            key: &|name| host.name_key(name),
-            times: "1970 to 2038",
-        };
-        plan::check_names(&items, &rules)?;
-        plan::check_destination(&local::chain(&dest), &rules, &mut |path| local::present(path, false))?;
-        let present = local::present(&dest, true)?;
-        let what = format!("the guest {} {src}", top.noun());
-        let placed = plan::place(source_of(&top), slash, present)
-            .map_err(|conflict| conflict_error(conflict, &what, "host", &dest.display().to_string()))?;
-        // Where a file or link goes, and the one entry that stands for it in the checks.
-        let single = match placed {
-            Place::Root => None,
-            Place::At => Some((dest.clone(), Vec::new())),
-            Place::Inside => {
-                let name = plan::base_name(&src)
-                    .ok_or_else(|| {
-                        Error::new(
-                            ErrorKind::Usage,
-                            format!("the guest path {src} has no file name to copy"),
-                        )
-                    })?
-                    .to_owned();
-                plan::check_name(&name, &rules)?;
-                let entry = Item {
-                    rel: vec![name.clone()],
-                    kind: top.clone(),
-                };
-                Some((dest.join(&name), vec![entry]))
-            }
-        };
-        let source_path = |rel: &[String]| plan::join_all(&src, rel);
-        let host_path = |rel: &[String]| rel.iter().fold(dest.clone(), |path, part| path.join(part));
-        let (checked, root_fresh) = match &single {
-            Some((_, entries)) => (entries, false),
-            None => (&items, plan::root_is_fresh(present)),
-        };
-        let created = plan::check_clashes(
-            checked,
-            root_fresh,
-            &rules,
-            &mut |rel| local::present(&host_path(rel), false),
-            &|rel| (source_path(rel), host_path(rel).display().to_string()),
-        )?;
-        // Last: the probe makes a link, which no failing check may leave behind.
-        if let Some(link) = plan::first_link(&top, &items, &source_path)
-            && let Some(cause) = local::probe_links(host, &dest)?
-        {
-            return Err(plan::link_refusal(&rules, &link, &cause));
-        }
-        let target = single.as_ref().map_or(&dest, |(target, _)| target);
-        progress.message(&format!(
-            "copying the guest path {src} to {}: {}",
-            target.display(),
-            total(&top, &items)
-        ));
-        for note in plan::time_notes(&rules, &top, &items, &created, &source_path) {
-            progress.message(&note);
-        }
-        match placed {
-            Place::Root => {
-                // As in `copy_in`: only a directory the copy made gets the source's time.
-                let mut made = Vec::new();
-                if let (true, Kind::Dir { mtime: Some(seconds) }) = (local::put_dir(&dest, true, &what)?, &top) {
-                    made.push((dest.clone(), *seconds));
-                }
-                for item in &items {
-                    let remote_path = plan::join_all(&src, &item.rel);
-                    let path = host_path(&item.rel);
-                    let item_made = self.put_local(host, item.kind.clone(), &remote_path, &path)?;
-                    if let (true, Kind::Dir { mtime: Some(seconds) }) = (item_made, &item.kind) {
-                        made.push((path, *seconds));
-                    }
-                }
-                // Deepest first: a directory is listed before its children.
-                for (path, seconds) in made.into_iter().rev() {
-                    local::set_dir_time(&path, seconds)?;
-                }
-            }
-            Place::At | Place::Inside => {
-                let target = target.clone();
-                if let Some(dir) = target.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-                    local::make_dirs(dir)?;
-                }
-                self.put_local(host, top, &src, &target)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Makes the host `target` the tree entry `kind` copied from the guest path `remote`. Returns whether it made a
-    /// directory.
-    fn put_local(&self, host: &dyn Host, kind: Kind, remote: &str, target: &Path) -> Result<bool> {
-        match kind {
-            Kind::Dir { .. } => local::put_dir(target, false, &format!("the guest directory {remote}")),
-            Kind::Link { target: text, to_dir } => {
-                local::put_link(host, &text, to_dir, target, &format!("the guest symlink {remote}")).map(|()| false)
-            }
-            Kind::File { executable, mtime, .. } => {
-                let temp: PathBuf = local::temp_beside(target);
-                let downloaded = self.call(&format!("copying the guest file {remote} to {}", target.display()), {
-                    let (remote, temp) = (remote.to_owned(), temp.clone());
-                    move |remote_side| remote_side.download(remote, temp)
-                });
-                match downloaded {
-                    Ok(()) => local::finish_file(&temp, target, executable, mtime, host).map(|()| false),
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&temp);
-                        Err(e)
-                    }
-                }
-            }
-        }
+        copy::copy(
+            &GuestSide { sftp: self, guest },
+            &src,
+            follow,
+            &HostSide { host },
+            &dest,
+            slash,
+            progress,
+        )
     }
 }

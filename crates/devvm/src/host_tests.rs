@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::unsupported::UnsupportedHost;
+use super::other::OtherHost;
 use super::{Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
@@ -13,12 +13,12 @@ use skuld::env;
 
 #[skuld::test]
 fn unsupported_host_exit_width_is_low_byte() {
-    assert_eq!(UnsupportedHost.exit_width(), ExitWidth::LowByte);
+    assert_eq!(OtherHost.exit_width(), ExitWidth::LowByte);
 }
 
 #[skuld::test]
 fn unsupported_host_names_itself_in_unavailable() {
-    let missing = UnsupportedHost.accelerator(Arch::host()).unwrap_err().missing;
+    let missing = OtherHost.accelerator(Arch::host()).unwrap_err().missing;
     assert!(missing.contains(std::env::consts::OS), "{missing}");
     assert!(missing.contains("0.1.0"), "{missing}");
 }
@@ -70,7 +70,7 @@ fn undetached_control() -> ConsoleFacts {
 fn unsupported_host_detach_changes_nothing() {
     let mut cmd = console_window_command();
     cmd.no_window();
-    UnsupportedHost.detach(&mut cmd).unwrap();
+    OtherHost.detach(&mut cmd).unwrap();
     assert_eq!(console_facts(cmd), undetached_control());
 }
 
@@ -141,7 +141,7 @@ fn quiet_leaves_a_command_runnable() {
 
 #[skuld::test]
 fn unsupported_host_has_no_system_dirs() {
-    assert!(UnsupportedHost.system_dirs().is_none());
+    assert!(OtherHost.system_dirs().is_none());
 }
 
 #[cfg(windows)]
@@ -289,7 +289,7 @@ fn the_host_code_page_is_the_one_this_run_claims() {
 #[skuld::test]
 fn ansi_code_page_is_some_on_windows_and_none_elsewhere() {
     assert_eq!(current().ansi_code_page().is_some(), cfg!(windows));
-    assert_eq!(UnsupportedHost.ansi_code_page(), None);
+    assert_eq!(OtherHost.ansi_code_page(), None);
 }
 
 /// A manifest that gives the process the ANSI code page of a locale. Windows reads `<exe>.manifest` for an executable

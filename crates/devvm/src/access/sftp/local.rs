@@ -5,6 +5,8 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::copy::{CopySide, Receives};
+use super::guest::GuestSide;
 use super::plan::{Beyond, Item, Kind, Present};
 use super::{local_error, partial_name};
 use crate::host::Host;
@@ -69,22 +71,6 @@ pub(super) fn lexically_normal(path: &Path) -> PathBuf {
     PathBuf::from(text)
 }
 
-/// The parts of the host path `path` from the outermost, for [`super::plan::check_destination`]: each with the path
-/// that ends in it.
-pub(super) fn chain(path: &Path) -> Vec<(Option<String>, PathBuf)> {
-    let mut so_far = PathBuf::new();
-    path.components()
-        .map(|component| {
-            so_far.push(component.as_os_str());
-            let name = match component {
-                Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
-                _ => None,
-            };
-            (name, so_far.clone())
-        })
-        .collect()
-}
-
 /// Seconds since 1970 as SFTP carries them; `None` for a time before 1970 or after 2106, which is then not kept.
 fn sftp_seconds(time: std::io::Result<SystemTime>) -> Option<u32> {
     let since = time.ok()?.duration_since(UNIX_EPOCH).ok()?;
@@ -125,73 +111,7 @@ fn kind_of(path: &Path, metadata: &std::fs::Metadata, host: &dyn Host) -> Result
     }
 }
 
-/// The source `path`: a symlink is a link unless the path ends in a separator, which follows it once.
-pub(super) fn inspect(path: &Path, host: &dyn Host) -> Result<Kind> {
-    let metadata = if ends_with_separator(path) {
-        std::fs::metadata(path)
-    } else {
-        std::fs::symlink_metadata(path)
-    }
-    .map_err(|e| local_error("the host source", path, e))?;
-    kind_of(path, &metadata, host)
-}
-
-/// The host tree below `dir`, parents before children, symlinks as links.
-pub(super) fn walk(dir: &Path, host: &dyn Host) -> Result<Vec<Item>> {
-    let mut items = Vec::new();
-    let mut pending = vec![(dir.to_owned(), Vec::<String>::new())];
-    while let Some((path, rel)) = pending.pop() {
-        let mut names = Vec::new();
-        for entry in std::fs::read_dir(&path).map_err(|e| local_error("cannot list", &path, e))? {
-            let entry = entry.map_err(|e| local_error("cannot list", &path, e))?;
-            names.push(entry.file_name());
-        }
-        names.sort();
-        let mut dirs = Vec::new();
-        for name in names {
-            let child = path.join(&name);
-            let Some(text) = name.to_str() else {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    format!(
-                        "{} has a name that is not valid Unicode, which SFTP cannot carry",
-                        child.display()
-                    ),
-                ));
-            };
-            let metadata = std::fs::symlink_metadata(&child).map_err(|e| local_error("cannot read", &child, e))?;
-            let kind = kind_of(&child, &metadata, host)?;
-            let mut child_rel = rel.clone();
-            child_rel.push(text.to_owned());
-            if kind.is_dir() {
-                dirs.push((child, child_rel.clone()));
-            }
-            items.push(Item { rel: child_rel, kind });
-        }
-        // Pushed in reverse so the first directory is walked first.
-        pending.extend(dirs.into_iter().rev());
-    }
-    Ok(items)
-}
-
 // Writing =============================================================================================================
-
-/// What the destination `path` is. A symlink is reported as leading to a directory only when `follow` is set, which
-/// looks where it leads (and fails when that cannot be told); without it, every link is `Link(Beyond::NotDir)`, for a
-/// link that the copy replaces whatever is behind it.
-pub(super) fn present(path: &Path, follow: bool) -> Result<Present> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Ok(Present::Link(if follow && leads_to_dir(path)? {
-            Beyond::Dir
-        } else {
-            Beyond::NotDir
-        })),
-        Ok(metadata) if metadata.is_dir() => Ok(Present::Dir),
-        Ok(_) => Ok(Present::File),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Present::Nothing),
-        Err(e) => Err(local_error("cannot inspect", path, e)),
-    }
-}
 
 /// Whether the symlink `path` leads to a directory. A dangling link leads to none; a target that cannot be looked at (a
 /// loop, no permission) is an error.
@@ -203,37 +123,8 @@ fn leads_to_dir(path: &Path) -> Result<bool> {
     }
 }
 
-pub(super) fn make_dirs(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).map_err(|e| local_error("cannot create the directory", path, e))
-}
-
-/// Makes `path` a directory for the tree entry `what`: a missing one is made with its parents, a symlink is replaced
-/// by a directory (or followed, when `follow`), a file is an error. Returns whether it made the directory.
-pub(super) fn put_dir(path: &Path, follow: bool, what: &str) -> Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => make_dirs(path).map(|()| true),
-        Err(e) => Err(local_error("cannot inspect", path, e)),
-        Ok(metadata) if metadata.is_dir() => Ok(false),
-        Ok(metadata) if metadata.file_type().is_symlink() && follow && leads_to_dir(path)? => Ok(false),
-        Ok(metadata) if metadata.file_type().is_symlink() && !follow => {
-            // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
-            std::fs::remove_file(path)
-                .or_else(|_| std::fs::remove_dir(path))
-                .map_err(|e| local_error("cannot replace the symlink", path, e))?;
-            make_dirs(path).map(|()| true)
-        }
-        Ok(_) => Err(Error::new(
-            ErrorKind::Io,
-            format!(
-                "cannot copy {what} onto the host path {}, which is not a directory",
-                path.display()
-            ),
-        )),
-    }
-}
-
 /// The temporary name for a file that will replace `target`: beside it, so the rename stays on one file system.
-pub(super) fn temp_beside(target: &Path) -> PathBuf {
+fn temp_beside(target: &Path) -> PathBuf {
     match target.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.join(partial_name()),
         _ => PathBuf::from(partial_name()),
@@ -249,13 +140,7 @@ fn replace(host: &dyn Host, temp: &Path, target: &Path) -> Result<()> {
 }
 
 /// Makes the downloaded `temp` the file `target`, with the modification time and execute bit of the guest file.
-pub(super) fn finish_file(
-    temp: &Path,
-    target: &Path,
-    executable: bool,
-    mtime: Option<u32>,
-    host: &dyn Host,
-) -> Result<()> {
+fn finish_file(temp: &Path, target: &Path, executable: bool, mtime: Option<u32>, host: &dyn Host) -> Result<()> {
     if let Some(seconds) = mtime {
         let time = UNIX_EPOCH + Duration::from_secs(u64::from(seconds));
         std::fs::OpenOptions::new()
@@ -275,44 +160,210 @@ pub(super) fn finish_file(
     Ok(())
 }
 
-/// Whether this host can make symlinks where a copy to `dest` would: `None` when it can, else what it said. The probe
-/// is a link made and removed in the nearest directory that exists.
-pub(super) fn probe_links(host: &dyn Host, dest: &Path) -> Result<Option<String>> {
-    let dir = dest
-        .ancestors()
-        .map(|path| {
-            if path.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                path
-            }
-        })
-        .find(|path| path.is_dir())
-        .ok_or_else(|| Error::new(ErrorKind::Io, format!("no directory above {} exists", dest.display())))?;
-    let probe = dir.join(partial_name());
-    if let Err(e) = host.make_symlink(".", &probe, false) {
-        return Ok(Some(e.to_string()));
+// The side ============================================================================================================
+
+/// The host end of a copy.
+pub(super) struct HostSide<'a> {
+    pub(super) host: &'a dyn Host,
+}
+
+impl CopySide for HostSide<'_> {
+    type Path = PathBuf;
+
+    const NAME: &'static str = "host";
+    const AS_DESTINATION: &'static str = "this host";
+    const SOURCE_TIMES: &'static str = "1970 to 2106";
+
+    fn show(&self, path: &PathBuf) -> String {
+        path.display().to_string()
     }
-    std::fs::remove_file(&probe).map_err(|e| local_error("cannot remove the test symlink", &probe, e))?;
-    Ok(None)
+
+    fn join(&self, base: &PathBuf, name: &str) -> PathBuf {
+        base.join(name)
+    }
+
+    fn parent(&self, path: &PathBuf) -> Option<PathBuf> {
+        path.parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(Path::to_owned)
+    }
+
+    fn file_name(&self, path: &PathBuf) -> Result<String> {
+        without_trailing_separator(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .ok_or_else(|| Error::new(ErrorKind::Usage, format!("{} has no usable file name", path.display())))
+    }
+
+    fn chain(&self, path: &PathBuf) -> Vec<(Option<String>, PathBuf)> {
+        let mut so_far = PathBuf::new();
+        path.components()
+            .map(|component| {
+                so_far.push(component.as_os_str());
+                let name = match component {
+                    Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                    _ => None,
+                };
+                (name, so_far.clone())
+            })
+            .collect()
+    }
+
+    fn file_name_problem(&self, name: &str) -> Option<String> {
+        self.host.file_name_problem(name)
+    }
+
+    fn name_key(&self, name: &str) -> String {
+        self.host.name_key(name)
+    }
+
+    fn inspect(&self, path: &PathBuf, follow: bool) -> Result<Kind> {
+        let metadata = if follow {
+            std::fs::metadata(path)
+        } else {
+            std::fs::symlink_metadata(path)
+        }
+        .map_err(|e| local_error("the host source", path, e))?;
+        kind_of(path, &metadata, self.host)
+    }
+
+    fn walk(&self, dir: &PathBuf) -> Result<Vec<Item>> {
+        let mut items = Vec::new();
+        let mut pending = vec![(dir.to_owned(), Vec::<String>::new())];
+        while let Some((path, rel)) = pending.pop() {
+            let mut names = Vec::new();
+            for entry in std::fs::read_dir(&path).map_err(|e| local_error("cannot list", &path, e))? {
+                let entry = entry.map_err(|e| local_error("cannot list", &path, e))?;
+                names.push(entry.file_name());
+            }
+            names.sort();
+            let mut dirs = Vec::new();
+            for name in names {
+                let child = path.join(&name);
+                let Some(text) = name.to_str() else {
+                    return Err(Error::new(
+                        ErrorKind::Io,
+                        format!(
+                            "{} has a name that is not valid Unicode, which SFTP cannot carry",
+                            child.display()
+                        ),
+                    ));
+                };
+                let metadata = std::fs::symlink_metadata(&child).map_err(|e| local_error("cannot read", &child, e))?;
+                let kind = kind_of(&child, &metadata, self.host)?;
+                let mut child_rel = rel.clone();
+                child_rel.push(text.to_owned());
+                if kind.is_dir() {
+                    dirs.push((child, child_rel.clone()));
+                }
+                items.push(Item { rel: child_rel, kind });
+            }
+            // Pushed in reverse so the first directory is walked first.
+            pending.extend(dirs.into_iter().rev());
+        }
+        Ok(items)
+    }
+
+    fn present(&self, path: &PathBuf, follow: bool) -> Result<Present> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Ok(Present::Link(if follow && leads_to_dir(path)? {
+                Beyond::Dir
+            } else {
+                Beyond::NotDir
+            })),
+            Ok(metadata) if metadata.is_dir() => Ok(Present::Dir),
+            Ok(_) => Ok(Present::File),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Present::Nothing),
+            Err(e) => Err(local_error("cannot inspect", path, e)),
+        }
+    }
+
+    fn make_dirs(&self, path: &PathBuf) -> Result<()> {
+        std::fs::create_dir_all(path).map_err(|e| local_error("cannot create the directory", path, e))
+    }
+
+    fn put_dir(&self, path: &PathBuf, follow: bool, what: &str) -> Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.make_dirs(path).map(|()| true),
+            Err(e) => Err(local_error("cannot inspect", path, e)),
+            Ok(metadata) if metadata.is_dir() => Ok(false),
+            Ok(metadata) if metadata.file_type().is_symlink() && follow && leads_to_dir(path)? => Ok(false),
+            Ok(metadata) if metadata.file_type().is_symlink() && !follow => {
+                // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
+                std::fs::remove_file(path)
+                    .or_else(|_| std::fs::remove_dir(path))
+                    .map_err(|e| local_error("cannot replace the symlink", path, e))?;
+                self.make_dirs(path).map(|()| true)
+            }
+            Ok(_) => Err(Error::new(
+                ErrorKind::Io,
+                format!(
+                    "cannot copy {what} onto the host path {}, which is not a directory",
+                    path.display()
+                ),
+            )),
+        }
+    }
+
+    fn probe_links(&self, dest: &PathBuf) -> Result<Option<String>> {
+        let dir = dest
+            .ancestors()
+            .map(|path| {
+                if path.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    path
+                }
+            })
+            .find(|path| path.is_dir())
+            .ok_or_else(|| Error::new(ErrorKind::Io, format!("no directory above {} exists", dest.display())))?;
+        let probe = dir.join(partial_name());
+        if let Err(e) = self.host.make_symlink(".", &probe, false) {
+            return Ok(Some(e.to_string()));
+        }
+        std::fs::remove_file(&probe).map_err(|e| local_error("cannot remove the test symlink", &probe, e))?;
+        Ok(None)
+    }
+
+    fn set_dir_time(&self, path: &PathBuf, seconds: u32) -> Result<()> {
+        filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(i64::from(seconds), 0))
+            .map_err(|e| local_error("cannot set the time of", path, e))
+    }
+
+    fn put_link(&self, text: &str, to_dir: bool, target: &PathBuf, what: &str) -> Result<()> {
+        let temp = temp_beside(target);
+        self.host.make_symlink(text, &temp, to_dir).map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot copy {what} to {} on this host: {e}", target.display()),
+                e,
+            )
+        })?;
+        replace(self.host, &temp, target)
+    }
 }
 
-/// Sets the modification time of the directory `path`, after its children are written.
-pub(super) fn set_dir_time(path: &Path, seconds: u32) -> Result<()> {
-    filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(i64::from(seconds), 0))
-        .map_err(|e| local_error("cannot set the time of", path, e))
-}
+impl Receives<GuestSide<'_>> for HostSide<'_> {
+    fn put_file(
+        &self,
+        source: &GuestSide<'_>,
+        from: &String,
+        executable: bool,
+        mtime: Option<u32>,
+        to: &PathBuf,
+    ) -> Result<()> {
+        let temp = temp_beside(to);
+        match source.download(from, &temp, to) {
+            Ok(()) => finish_file(&temp, to, executable, mtime, self.host),
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                Err(e)
+            }
+        }
+    }
 
-/// Makes `target` a symlink holding `text` (a guest path, `/`-separated), in place of whatever file or symlink is
-/// there. `what` names the guest entry.
-pub(super) fn put_link(host: &dyn Host, text: &str, to_dir: bool, target: &Path, what: &str) -> Result<()> {
-    let temp = temp_beside(target);
-    host.make_symlink(text, &temp, to_dir).map_err(|e| {
-        Error::io(
-            ErrorKind::Io,
-            format!("cannot copy {what} to {} on this host: {e}", target.display()),
-            e,
-        )
-    })?;
-    replace(host, &temp, target)
+    fn announce(&self, from: &str, to: &str, total: &str) -> String {
+        format!("copying the guest path {from} to {to}: {total}")
+    }
 }

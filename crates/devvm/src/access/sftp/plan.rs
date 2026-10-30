@@ -360,11 +360,6 @@ pub(super) fn chain(path: &str) -> Vec<(Option<String>, String)> {
         .collect()
 }
 
-/// `base` below which `rel` lies.
-pub(super) fn join_all(base: &str, rel: &[String]) -> String {
-    rel.iter().fold(base.to_owned(), |path, part| join(&path, part))
-}
-
 pub(super) fn parent_of(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     match trimmed.rfind('/') {

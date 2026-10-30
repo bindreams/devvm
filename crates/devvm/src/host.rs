@@ -1,5 +1,5 @@
-//! What differs between host operating systems, behind one trait. The only `cfg` in devvm's logic is at the top of this
-//! file, where the implementation is chosen.
+//! What differs between host operating systems, behind one trait. The implementation is chosen here and only here, by
+//! the `cfg`s on the module declarations and on [`Current`] below; no code under `host/` selects one.
 
 use std::fmt;
 use std::fs::OpenOptions;
@@ -14,13 +14,24 @@ use crate::{Arch, Result};
 mod host_tests;
 
 pub(crate) mod names;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(
+    any(unix, windows),
+    allow(
+        dead_code,
+        reason = "the host on neither Unix nor Windows; the tests use it everywhere"
+    )
+)]
+mod other;
+#[cfg(unix)]
+mod unix;
 mod unsupported;
 #[cfg(windows)]
 mod windows;
 
-#[cfg(not(windows))]
-use unsupported::UnsupportedHost as Current;
+#[cfg(not(any(unix, windows)))]
+use other::OtherHost as Current;
+#[cfg(unix)]
+use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
 
