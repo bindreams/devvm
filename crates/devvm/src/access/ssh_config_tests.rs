@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::{Arc, Barrier};
 
 use crate::ErrorKind;
-use crate::access::ssh_config::{SshConfigDir, SshConfigEntry, glob_literal};
+use crate::access::ssh_config::{SshConfigDir, SshConfigEntry, glob_literal, ssh_path};
 use crate::host::Host;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceId;
@@ -357,6 +357,27 @@ fn system_ssh_reads_a_state_directory_with_glob_characters_and_a_dollar(#[fixtur
     check_system_ssh(&base, &base);
 }
 
+/// A backslash is the escape character of the `Include` glob. Windows cannot create such a directory (the backslash is
+/// a separator there), so on Windows this makes a nested one.
+#[skuld::test]
+fn system_ssh_reads_a_state_directory_with_a_backslash(#[fixture(unicode_home)] home: &Path) {
+    let base = home.join(r"back\slash");
+    std::fs::create_dir_all(&base).unwrap();
+    check_system_ssh(&base, &base);
+}
+
+/// A UNC path keeps its backslashes out of the glob by being spelled with `/`; elsewhere a backslash is an ordinary
+/// character.
+#[skuld::test]
+fn a_unc_prefix_is_spelled_with_forward_slashes() {
+    let want = if cfg!(windows) {
+        "//server/share/x/y"
+    } else {
+        r"\\server\share\x\y"
+    };
+    assert_eq!(ssh_path(Path::new(r"\\server\share\x\y")).unwrap(), want);
+}
+
 /// `%` is a token in `IdentityFile` and `UserKnownHostsFile`, where `%%` is a literal one on every OpenSSH.
 #[skuld::test]
 fn system_ssh_reads_key_files_below_a_directory_with_a_percent(#[fixture(unicode_home)] home: &Path) {
@@ -395,6 +416,8 @@ fn percent_signs_in_key_paths_and_glob_characters_in_the_state_path_are_escaped(
 #[skuld::test]
 fn glob_literal_matches_only_itself() {
     assert_eq!(glob_literal("a*b?c[d]e"), "a[*]b[?]c[[]d[]]e");
+    // A backslash quotes the next character in a glob, so a literal one is quoted itself.
+    assert_eq!(glob_literal(r"a\b"), r"a\\b");
     assert_eq!(glob_literal("plain/path"), "plain/path");
 }
 
@@ -423,4 +446,23 @@ fn a_state_directory_with_a_percent_is_refused(#[fixture(unicode_home)] home: &P
     assert!(message.contains("50% done"), "names the path: {message}");
     assert!(message.contains("XDG_STATE_HOME"), "says what to set: {message}");
     assert!(!dir.path().join("config").exists(), "nothing was written");
+}
+
+/// A line break would end the `IdentityFile` line and start another one: an injected ssh_config directive.
+#[skuld::test]
+fn a_line_break_in_a_path_is_refused(#[fixture(unicode_home)] home: &Path) {
+    for breaker in ["\n", "\r", "\r\n"] {
+        let base = home.join(format!("x{breaker}ProxyCommand evil"));
+        let dir = SshConfigDir::new(home.join("ssh"));
+        let error = dir.write_entry(&entry(&base, "web", 22), &host_public()).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{breaker:?}: {error}");
+        assert!(error.message().contains("line break"), "{breaker:?}: {error}");
+        assert!(!conf(&dir, "web").exists(), "nothing was written");
+
+        let dir = SshConfigDir::new(base.join("ssh"));
+        let error = dir.ensure_top_level().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{breaker:?}: {error}");
+        assert!(error.message().contains("line break"), "{breaker:?}: {error}");
+        assert!(!dir.path().join("config").exists());
+    }
 }

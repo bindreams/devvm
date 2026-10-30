@@ -45,7 +45,8 @@ fn io(what: &str, path: &Path, source: std::io::Error) -> Error {
 }
 
 /// `path` as ssh_config spells it: separators are `/` (OpenSSH for Windows reads both, and a backslash would need
-/// escaping), and a non-Unicode path is refused.
+/// escaping, in the config and in a glob), and a path that is not Unicode or holds a line break (it would end the
+/// ssh_config line and start another one) is refused.
 fn ssh_path(path: &Path) -> Result<String> {
     let unicode = |s: &std::ffi::OsStr| {
         s.to_str().map(str::to_owned).ok_or_else(|| {
@@ -58,7 +59,7 @@ fn ssh_path(path: &Path) -> Result<String> {
     let mut out = String::new();
     for component in path.components() {
         match component {
-            Component::Prefix(prefix) => out.push_str(&unicode(prefix.as_os_str())?),
+            Component::Prefix(prefix) => out.push_str(&unicode(prefix.as_os_str())?.replace('\\', "/")),
             Component::RootDir => out.push('/'),
             other => {
                 if !out.is_empty() && !out.ends_with('/') {
@@ -67,6 +68,12 @@ fn ssh_path(path: &Path) -> Result<String> {
                 out.push_str(&unicode(other.as_os_str())?);
             }
         }
+    }
+    if out.contains(['\n', '\r']) {
+        return Err(Error::new(
+            ErrorKind::Io,
+            format!("{out:?} contains a line break, which would end its ssh_config line"),
+        ));
     }
     Ok(out)
 }
@@ -104,8 +111,8 @@ fn value_literal(path: &str) -> Result<String> {
     Ok(path.replace('%', "%%"))
 }
 
-/// `path` as a glob that matches only that path: each of `[`, `]`, `*` and `?` in a one-character class. `path` has
-/// no `%` (`check_no_percent`).
+/// `path` as a glob that matches only that path: each of `[`, `]`, `*` and `?` in a one-character class, and `\`, the
+/// glob's escape, quoted. `path` has no `%` (`check_no_percent`).
 fn glob_literal(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for c in path.chars() {
@@ -115,6 +122,7 @@ fn glob_literal(path: &str) -> String {
                 out.push(c);
                 out.push(']');
             }
+            '\\' => out.push_str("\\\\"),
             other => out.push(other),
         }
     }
