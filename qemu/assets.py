@@ -132,15 +132,16 @@ def cmd_stanza(args: argparse.Namespace) -> int:
 def cmd_notes(args: argparse.Namespace) -> int:
     version = tag_version(args.tag)
     verify = VERIFY.format(repo=args.repo)
-    print(f"""QEMU {version} for devvm, built from the upstream release tarball in CI.
+    print(f"""QEMU {version} for devvm, built in CI from the upstream release tarball plus `qemu/patches/`.
 
 **Assets**
 
 - `{args.tag}-<target triple>.zip` and `.sha256`: the build (`x86_64-pc-windows-msvc`). Self-contained: QEMU, every
   non-system DLL, the edk2 UEFI firmware, licences, `BUILD-INFO.txt`, `THIRD-PARTY.txt`, `SOURCE.txt`.
-- `qemu-{version}.tar.xz` and `.sig`: the exact upstream source the build was made from. QEMU is GPL-2.0 as a whole;
-  individual files carry their own terms (`licenses/qemu/LICENSE` in the zip).
-- `{args.tag}-build-scripts.tar.gz`: the build scripts and workflow at the build commit.
+- `qemu-{version}.tar.xz` and `.sig`: the upstream source the build started from, unpatched. QEMU is GPL-2.0 as a
+  whole; individual files carry their own terms (`licenses/qemu/LICENSE` in the zip).
+- `{args.tag}-build-scripts.tar.gz`: the build scripts, the patches (`qemu/patches/`) applied to the
+  tarball, and the workflow at the build commit.
 - `{args.tag}-qapi.zip`: QEMU's QAPI schema (`qapi/*.json`).
 - `*.src.tar.zst`: the source archives of the bundled LGPL/GPL MSYS2 libraries, exactly the versions in the zip.
 - `qemu-manifest.toml`: the devvm manifest entry for this build.

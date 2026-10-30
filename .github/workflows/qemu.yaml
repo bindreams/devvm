@@ -91,6 +91,7 @@ jobs:
             xz
             bzip2
             diffutils
+            patch
 
       - name: Build QEMU
         shell: msys2 {0}

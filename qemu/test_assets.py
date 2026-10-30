@@ -103,3 +103,25 @@ def test_a_release_page_of_another_tag_is_rejected(tmp_path, capsys):
     zip_path = release_zip(tmp_path, f"\nSee also {other}\n")
     assert check_urls(zip_path, release_assets(zip_path)) == 1
     assert other in capsys.readouterr().out
+
+
+# notes ----------------------------------------------------------------------------------------------------------------
+
+
+def release_notes(capsys) -> str:
+    assets.cmd_notes(argparse.Namespace(tag=TAG, repo=REPO))
+    return capsys.readouterr().out
+
+
+def notes_bullet(notes: str, start: str) -> str:
+    """The bullet of the release notes that begins with `start`, continuation lines included."""
+    (bullet,) = [b for b in notes.split("\n- ") if b.startswith(start)]
+    return bullet
+
+
+def test_the_notes_call_the_tarball_unpatched_and_the_build_scripts_the_home_of_the_patches(capsys):
+    notes = release_notes(capsys)
+    assert "qemu/patches" in notes.splitlines()[0]
+    assert "unpatched" in notes_bullet(notes, f"`qemu-{third_party.QEMU_VERSION}.tar.xz`")
+    assert "qemu/patches/" in notes_bullet(notes, "`" + TAG + "-build-scripts.tar.gz`")
+    assert "exact upstream source the build was made from" not in notes

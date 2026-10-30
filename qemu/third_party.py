@@ -67,6 +67,8 @@ HERE = Path(__file__).resolve().parent
 QEMU_VERSION = dict(line.split("=", 1) for line in (HERE / "pin.env").read_text().splitlines() if "=" in line)[
     "QEMU_VERSION"
 ]
+# The line of BUILD-INFO.txt that lists the applied patches; build.sh writes it, the texts below point readers at it.
+PATCHES_LABEL = "Patches applied:"
 
 
 class Failure(Exception):
@@ -320,7 +322,8 @@ def write_third_party(stage: Path, packages: list[Package], tag: str, repo: str,
         "=========================================",
         "",
         f"QEMU ({QEMU_LICENCE})",
-        f"  Source: {release}/qemu-{QEMU_VERSION}.tar.xz, the exact tarball this build was made from.",
+        f"  Source: {release}/qemu-{QEMU_VERSION}.tar.xz, the tarball the build started from;",
+        f"  the `{PATCHES_LABEL}` line of BUILD-INFO.txt lists the patches applied to it.",
         "",
         "Firmware, ROMs and keymaps (share/): prebuilt files that ship inside the QEMU tarball, not rebuilt here.",
         "Each line names the file in the tarball and the tarball directory that holds its source. That directory",
@@ -361,10 +364,11 @@ The complete corresponding source of everything in this archive is attached to t
   {release}
 
   - qemu-{QEMU_VERSION}.tar.xz and .sig: the upstream QEMU source (GPL-2.0 as a whole), signature included. The build
-    patches this tarball in one place only: qemu/build.sh adds devvm.manifest to the source root and one line to
-    version.rc (it embeds the UTF-8 application manifest).
+    patches this tarball in two ways: qemu/build.sh adds devvm.manifest to the source root and one line to
+    version.rc (it embeds the UTF-8 application manifest), and it applies qemu/patches/*.patch in name order
+    (the `{PATCHES_LABEL}` line of BUILD-INFO.txt lists them with their hashes).
   - {tag}-build-scripts.tar.gz: qemu/ and .github/workflows/qemu.yaml at the commit that built it (BUILD-INFO.txt
-    names the commit): the pin, the build script, the configure options and the workflow.
+    names the commit): the pin, the build script, the patches, the configure options and the workflow.
   - The source archives of the bundled LGPL/GPL libraries, exactly the versions in bin/:
 {chr(10).join(f"      {name}" for name in mirrored) or "      (none)"}
   - {tag}-qapi.zip: QEMU's QAPI schema (qapi/*.json).

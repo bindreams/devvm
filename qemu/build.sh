@@ -4,10 +4,13 @@
 # Input env:  STAGE  output directory (receives bin/, share/, licenses/qemu/, BUILD-INFO.txt)
 #             WORK   scratch directory (receives the verified tarball, signature and source tree)
 # DLLs are bundled afterwards by pe_deps.py; THIRD-PARTY.txt and SOURCE.txt by third_party.py.
+# qemu/patches/*.patch are applied to the source in name order: unmerged upstream fixes and devvm's own changes.
+# Delete a patch once the pinned QEMU contains it.
 set -Eeuxo pipefail
 exec 2>&1
 
 stage_name="start"
+applied_patches=()
 trap 'echo "build.sh: stage \"${stage_name}\" failed at line ${LINENO} (exit $?)" >&2' ERR
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -127,6 +130,19 @@ embed_manifest() {
     if ! cmp -s "$here/devvm.manifest" "$src/devvm.manifest"; then
         fail "devvm.manifest was not copied into the source root"
     fi
+}
+
+apply_patches() {
+    stage "e2: patches"
+    # --forward: a patch the source already contains fails instead of being applied reversed. --fuzz=0: a hunk whose
+    # context moved fails instead of landing in the wrong place.
+    local patch_file patch_sha
+    for patch_file in "$here"/patches/*.patch; do
+        [[ -e "$patch_file" ]] || continue
+        patch -p1 --forward --batch --fuzz=0 --no-backup-if-mismatch -d "$src" -i "$patch_file"
+        patch_sha="$(sha256sum < "$patch_file")"
+        applied_patches+=("$(basename "$patch_file") sha256:${patch_sha%% *}")
+    done
 }
 
 configure() {
@@ -252,6 +268,7 @@ write_build_info() {
         echo "Signing key: ${QEMU_SIGNING_KEY}"
         echo "Build scripts commit: ${GITHUB_SHA:-unknown}"
         echo "Configure: ${configure_args[*]}"
+        echo "Patches applied: ${applied_patches[*]:-none}"
         echo
         echo "Symlinks of the tarball not extracted (not read by this build):"
         cat "$WORK/symlinks.txt"
@@ -271,6 +288,7 @@ main() {
     verify_signature
     extract
     embed_manifest
+    apply_patches
     configure
     compile
     install_to_destdir
