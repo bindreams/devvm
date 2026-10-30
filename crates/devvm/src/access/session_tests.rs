@@ -269,32 +269,7 @@ fn a_connect_without_a_boot_bound_to_a_refused_port_is_connection_lost_at_once(#
 }
 
 #[skuld::test]
-fn host_key_mismatch_is_retried_while_the_vm_lives_then_reported_with_both_fingerprints_at_the_boot_bound(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    // A wrong key for good: retried until the bound, then `host-key` naming both fingerprints. The bound is the thing
-    // under test, so it is short. A connect so slow that no attempt finished within it ends as `connection-lost`
-    // without a fingerprint and says nothing about the code: such a run is repeated with a fresh server.
-    let (rig, error) = loop {
-        let rig = Rig::with(home, |options| options.wrong_host_key_connections = usize::MAX);
-        let error = rig
-            .connect_with(VmExit::never(), Some(BootBound::start(Duration::from_millis(500))))
-            .err()
-            .expect("the connect fails");
-        if error.kind() != ErrorKind::ConnectionLost {
-            break (rig, error);
-        }
-    };
-    assert_eq!(error.kind(), ErrorKind::HostKey, "{error}");
-    assert!(
-        error.message().contains(&fingerprint(&rig.sshd.host_public())),
-        "{error}"
-    );
-    assert!(
-        error.message().contains(&fingerprint(&rig.sshd.wrong_host_public())),
-        "{error}"
-    );
-
+fn a_host_key_mismatch_is_retried_while_booting(#[fixture(unicode_home)] home: &Path) {
     // A server that fixes its key after three connections: the session comes up, so the mismatch was retried.
     let rig = Rig::with(home, |options| options.wrong_host_key_connections = 3);
     let session = rig
@@ -305,13 +280,21 @@ fn host_key_mismatch_is_retried_while_the_vm_lives_then_reported_with_both_finge
 }
 
 #[skuld::test]
-fn a_host_key_mismatch_is_final_without_a_boot_bound(#[fixture(unicode_home)] home: &Path) {
+fn a_host_key_mismatch_is_final_without_a_boot_bound_and_names_both_fingerprints(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::with(home, |options| options.wrong_host_key_connections = usize::MAX);
     let error = rig
         .connect_with(VmExit::never(), None)
         .err()
         .expect("the connect fails");
     assert_eq!(error.kind(), ErrorKind::HostKey, "{error}");
+    assert!(
+        error.message().contains(&fingerprint(&rig.sshd.host_public())),
+        "{error}"
+    );
+    assert!(
+        error.message().contains(&fingerprint(&rig.sshd.wrong_host_public())),
+        "{error}"
+    );
     assert_eq!(rig.sshd.connections(), 1);
 }
 
@@ -518,7 +501,9 @@ fn an_exit_status_that_arrived_is_the_result_even_if_the_vm_exits_before_the_clo
     let end = session
         .exec(
             "status-then-marker",
-            &mut RunsOnWrite(|| drop(fire.send(()))),
+            &mut RunsOnWrite(|| {
+                let _ = fire.send(());
+            }),
             &mut stderr,
         )
         .unwrap();
