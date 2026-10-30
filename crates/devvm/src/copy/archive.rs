@@ -9,6 +9,7 @@ use tar::{Builder, EntryType, Header};
 
 use super::FULL_DISK_HINT;
 use super::git::{self, Kind, Tracked};
+use crate::exit::Progress;
 use crate::host::Host;
 use crate::recipe::hash::{EntryContent, ManifestEntry};
 use crate::{Error, ErrorKind, Result, Sha256};
@@ -21,10 +22,12 @@ mod archive_tests;
 const MTIME: u64 = 946_684_800;
 
 /// Writes the files `tracked` (sorted by path) found under `root` to `out`, which is the file `dest`, and returns
-/// their manifest entries in the same order. A tracked path that is gone from disk is left out. A tracked path
-/// below a directory that is a symlink is a `recipe` error: the file it names may not be in the repository.
+/// their manifest entries in the same order. A tracked path that is gone from disk, or is a directory now, is left
+/// out (a directory is noted to `progress`). A tracked path below a directory that is a symlink is a `recipe`
+/// error: the file it names may not be in the repository. So is a tracked file that is a symlink now.
 pub(super) fn write(
     host: &dyn Host,
+    progress: &dyn Progress,
     root: &Path,
     tracked: &[Tracked],
     read_only: bool,
@@ -49,6 +52,14 @@ pub(super) fn write(
                 ));
             }
         };
+        if meta.is_dir() {
+            progress.message(&format!(
+                "skipping `{}`: git tracks a {} there, but it is a directory now",
+                item.path.escape_debug(),
+                if item.kind == Kind::Symlink { "symlink" } else { "file" }
+            ));
+            continue;
+        }
         let entry = match item.kind {
             Kind::Symlink => {
                 check_stands_for_link(&on_disk, &meta, &item.path)?;
@@ -62,10 +73,15 @@ pub(super) fn write(
             }
             Kind::File | Kind::Executable => {
                 if !meta.is_file() {
+                    let found = if meta.file_type().is_symlink() {
+                        "a symbolic link"
+                    } else {
+                        "neither a file nor a directory"
+                    };
                     return Err(Error::new(
                         ErrorKind::Recipe,
                         format!(
-                            "cannot copy `{}`: git tracks a file but {} is not one",
+                            "cannot copy `{}`: git tracks a file there but {} is {found} (commit the change or restore the file)",
                             item.path.escape_debug(),
                             on_disk.display()
                         ),
@@ -183,11 +199,37 @@ fn check_stands_for_link(on_disk: &Path, meta: &std::fs::Metadata, path: &str) -
     ))
 }
 
-fn append_symlink<W: Write>(builder: &mut Builder<W>, dest: &Path, path: &str, target: &str) -> Result<()> {
-    let mut header = header(EntryType::Symlink, 0o777, 0);
-    builder
-        .append_link(&mut header, path, target)
-        .map_err(|e| Error::write(dest, e, FULL_DISK_HINT))
+/// The size of a tar header's link name field. A text this long or longer goes in a GNU `K` entry.
+const LINK_NAME_FIELD: usize = 100;
+
+/// Appends the symlink `path` with the link text `target`, byte for byte: the tar's own link name handling would
+/// rewrite `a//b`, `a/./b` and (on Windows) a backslash, and the archive would then differ from the manifest.
+pub(super) fn append_symlink<W: Write>(builder: &mut Builder<W>, dest: &Path, path: &str, target: &str) -> Result<()> {
+    let write_error = |e| Error::write(dest, e, FULL_DISK_HINT);
+    let mut link = header(EntryType::Symlink, 0o777, 0);
+    if target.contains('\0') {
+        return Err(Error::new(
+            ErrorKind::Recipe,
+            format!("cannot copy `{}`: its link text contains a NUL", path.escape_debug()),
+        ));
+    }
+    if target.len() < LINK_NAME_FIELD {
+        link.set_link_name_literal(target).map_err(write_error)?;
+    } else {
+        // The header keeps the start of the text, cut at a character so that it stays valid UTF-8.
+        let cut = (0..LINK_NAME_FIELD)
+            .rev()
+            .find(|&i| target.is_char_boundary(i))
+            .unwrap_or(0);
+        link.set_link_name_literal(&target[..cut]).map_err(write_error)?;
+        let mut long = header(EntryType::GNULongLink, 0o644, target.len() as u64 + 1);
+        let name = b"././@LongLink";
+        long.as_gnu_mut().expect("a GNU header").name[..name.len()].copy_from_slice(name);
+        long.set_cksum();
+        let text = target.as_bytes().chain(io::repeat(0).take(1));
+        builder.append(&long, text).map_err(write_error)?;
+    }
+    builder.append_data(&mut link, path, io::empty()).map_err(write_error)
 }
 
 /// Counts and hashes what passes through, and notes whether the source failed: the tar reports that and its own
@@ -201,7 +243,11 @@ struct Hashing<R> {
 
 impl<R: Read> Read for Hashing<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.inner.read(buf).inspect_err(|_| self.read_failed = true)?;
+        // `io::copy` retries an interrupted read, so that one is not a failure of the source.
+        let n = self
+            .inner
+            .read(buf)
+            .inspect_err(|e| self.read_failed |= e.kind() != io::ErrorKind::Interrupted)?;
         self.hasher.update(&buf[..n]);
         self.count += n as u64;
         Ok(n)

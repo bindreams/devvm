@@ -125,9 +125,8 @@ pub(crate) fn read_tar(archive: &Path) -> Vec<TarEntry> {
             let mut entry = entry.unwrap();
             let path = entry.path().unwrap().to_str().expect("UTF-8 path").to_owned();
             let link = entry
-                .link_name()
-                .unwrap()
-                .map(|l| l.to_str().expect("UTF-8 link").to_owned());
+                .link_name_bytes()
+                .map(|l| String::from_utf8(l.into_owned()).expect("UTF-8 link"));
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
             TarEntry {
@@ -549,6 +548,18 @@ fn not_a_repository_is_a_recipe_error(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
+fn a_from_dir_that_is_not_a_directory_is_a_recipe_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let missing = home.join("no such directory");
+    let file = home.join("a file");
+    std::fs::write(&file, b"x").unwrap();
+    for from in [missing, file] {
+        let error = take(&from, false, home).err().expect("there is no directory to copy");
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
+        assert!(error.message().contains(from.to_str().unwrap()), "{error}");
+    }
+}
+
+#[skuld::test]
 fn a_directory_inside_the_git_directory_is_a_recipe_error(#[fixture(unicode_home)] home: &Path) {
     let repo = new_repo(home, "repo");
     let error = take(&repo.join(".git"), false, home)
@@ -574,17 +585,153 @@ fn unmerged_paths_are_refused_naming_them(#[fixture(unicode_home)] home: &Path) 
 }
 
 #[skuld::test]
-fn a_tracked_file_replaced_by_a_directory_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+fn a_tracked_file_or_symlink_that_is_now_a_directory_is_skipped_with_a_note_naming_it(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let repo = new_repo(home, "repo");
+    put(&repo, "keep", b"k");
     put(&repo, "thing", b"x");
+    put(&repo, "link", b"keep");
     add_all(&repo);
+    track_as_symlink(&repo, "link");
     std::fs::remove_file(repo.join("thing")).unwrap();
     put(&repo, "thing/inner", b"y");
+    std::fs::remove_file(repo.join("link")).unwrap();
+    put(&repo, "link/inner", b"y");
+    let taken = take(&repo, false, home).unwrap();
+    assert_eq!(paths(&taken.snapshot), ["keep"]);
+    assert_eq!(taken.notes.len(), 2, "{:?}", taken.notes);
+    assert!(
+        taken.notes[0].contains("`link`") && taken.notes[0].contains("directory"),
+        "{:?}",
+        taken.notes
+    );
+    assert!(
+        taken.notes[1].contains("`thing`") && taken.notes[1].contains("directory"),
+        "{:?}",
+        taken.notes
+    );
+}
+
+#[skuld::test]
+fn a_symlink_text_is_copied_byte_for_byte_whatever_the_host_would_make_of_it(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    let long = format!("{}/target", "d".repeat(150));
+    let texts = [
+        ("l0", "a//b"),
+        ("l1", "a/./b"),
+        ("l2", r"a\b"),
+        ("l3", r"C:\x"),
+        ("l4", long.as_str()),
+    ];
+    for (link, text) in texts {
+        put(&repo, link, text.as_bytes());
+    }
+    for (link, _) in texts {
+        track_as_symlink(&repo, link);
+    }
+    let taken = take(&repo, false, home).unwrap();
+    let entries = read_tar(&taken.snapshot.archive);
+    for (link, text) in texts {
+        let manifest = taken
+            .snapshot
+            .manifest
+            .entries()
+            .iter()
+            .find(|e| e.path == link)
+            .unwrap();
+        assert_eq!(manifest.content, EntryContent::SymlinkTarget(text.into()), "{link}");
+        let entry = entries.iter().find(|e| e.path == link).unwrap();
+        assert_eq!(entry.link.as_deref(), Some(text), "{link}");
+    }
+}
+
+#[skuld::test]
+fn a_failed_snapshot_leaves_nothing_in_the_output_directory(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "a", b"a");
+    put(&repo, "b", b"text");
+    add_all(&repo);
+    // Index only: git has no such blob, so the link text of `b` cannot be read after `a` is archived.
+    git(
+        &repo,
+        &[
+            "update-index",
+            "--cacheinfo",
+            "120000,1111111111111111111111111111111111111111,b",
+        ],
+    );
+    let error = take(&repo, false, home).err().expect("the link text is not in git");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains('b'), "{error}");
+    let left: Vec<_> = std::fs::read_dir(home.join("out")).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[skuld::test]
+fn a_repository_inside_the_repository_that_git_does_not_list_is_refused_naming_it(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "top.txt", b"top");
+    let nested = new_repo(&repo, "nested");
+    put(&nested, "f.txt", b"f");
+    add_all(&nested);
+    git(&nested, &["commit", "-q", "-m", "x"]);
+    add_all(&repo);
     let error = take(&repo, false, home)
         .err()
-        .expect("a directory is not the tracked file");
+        .expect("an embedded repository is neither included nor skipped");
     assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert!(error.message().contains("thing"), "{error}");
+    assert!(error.message().contains("`nested`"), "{error}");
+    assert!(error.message().contains("submodule"), "{error}");
+}
+
+#[skuld::test]
+fn a_submodule_inside_a_submodule_is_included_and_an_uninitialised_sibling_is_noted(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let deep = new_repo(home, "deep");
+    put(&deep, "deep.txt", b"deep");
+    add_all(&deep);
+    git(&deep, &["commit", "-q", "-m", "x"]);
+    let unused = new_repo(home, "unused");
+    put(&unused, "unused.txt", b"unused");
+    add_all(&unused);
+    git(&unused, &["commit", "-q", "-m", "x"]);
+
+    let middle = new_repo(home, "middle");
+    put(&middle, "middle.txt", b"middle");
+    add_all(&middle);
+    git(&middle, &["submodule", "add", "-q", deep.to_str().unwrap(), "deep"]);
+    git(&middle, &["submodule", "add", "-q", unused.to_str().unwrap(), "unused"]);
+    git(&middle, &["commit", "-q", "-m", "x"]);
+
+    let outer = new_repo(home, "outer");
+    put(&outer, "top.txt", b"top");
+    add_all(&outer);
+    git(
+        &outer,
+        &["submodule", "add", "-q", middle.to_str().unwrap(), "vendor/middle"],
+    );
+    git(&outer, &["commit", "-q", "-m", "x"]);
+    // `submodule add` leaves `middle` without its own submodules: initialise only `deep` inside it.
+    let inside = outer.join("vendor").join("middle");
+    git(&inside, &["submodule", "update", "-q", "--init", "deep"]);
+
+    let taken = take(&outer, false, home).unwrap();
+    assert_eq!(
+        paths(&taken.snapshot),
+        [
+            ".gitmodules",
+            "top.txt",
+            "vendor/middle/.gitmodules",
+            "vendor/middle/deep/deep.txt",
+            "vendor/middle/middle.txt",
+        ]
+    );
+    assert_eq!(taken.notes.len(), 1, "{:?}", taken.notes);
+    assert!(taken.notes[0].contains("vendor/middle/unused"), "{:?}", taken.notes);
 }
 
 #[skuld::test]

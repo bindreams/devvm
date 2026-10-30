@@ -34,8 +34,10 @@ pub(crate) struct Snapshot {
 /// Snapshots the files git tracks in the repository that contains `from_dir`, as they are on disk.
 ///
 /// - Entries come from the index. A tracked file missing on disk is skipped, so a pending delete leaves the
-///   copy without it. An initialized submodule is included recursively; an uninitialized one is skipped with a
-///   `progress` line. A symlink stays a symlink. File contents are not converted (no `core.autocrlf`).
+///   copy without it; so is one that is a directory now, with a `progress` line. An initialized submodule is
+///   included recursively; an uninitialized one (no work tree in its directory) is skipped with a `progress`
+///   line. A symlink stays a symlink, with git's link text. File contents are not converted (no
+///   `core.autocrlf`).
 /// - Each file is read once, and the same bytes go into the tar and into the manifest hash.
 /// - `read_only` clears the write bits of the files in the tar. The tar has no directory entries, so extraction
 ///   leaves directories writable.
@@ -43,7 +45,8 @@ pub(crate) struct Snapshot {
 ///   give equal bytes.
 ///
 /// Fails with `recipe` when `from_dir` is not in a work tree, a tracked path is not UTF-8, the index holds an
-/// unresolved merge conflict, or a tracked file was replaced by something that is not a file.
+/// unresolved merge conflict, a tracked file is a symlink now (or something else that is not a file), or a
+/// directory holds a repository that git neither lists nor treats as a submodule.
 pub(crate) fn snapshot(
     host: &dyn Host,
     from_dir: &Path,
@@ -54,7 +57,10 @@ pub(crate) fn snapshot(
     let root = git::work_tree_root(host, from_dir)?;
     let mut listing = git::list(host, &root)?;
     for submodule in &listing.uninitialized_submodules {
-        progress.message(&format!("skipping uninitialized submodule `{submodule}`"));
+        progress.message(&format!(
+            "skipping uninitialized submodule `{}`",
+            submodule.escape_debug()
+        ));
     }
     listing.tracked.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
 
@@ -64,7 +70,15 @@ pub(crate) fn snapshot(
         .tempfile_in(into)
         .map_err(|e| Error::write(into, e, FULL_DISK_HINT))?;
     let mut out = BufWriter::new(file.as_file());
-    let entries = archive::write(host, &root, &listing.tracked, read_only, file.path(), &mut out)?;
+    let entries = archive::write(
+        host,
+        progress,
+        &root,
+        &listing.tracked,
+        read_only,
+        file.path(),
+        &mut out,
+    )?;
     out.flush().map_err(|e| Error::write(file.path(), e, FULL_DISK_HINT))?;
     drop(out);
     let manifest = CopyManifest::new(entries)?;
