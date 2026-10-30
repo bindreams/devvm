@@ -18,7 +18,7 @@ use crate::instance::record::InstanceRecord;
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fake_vm::connect_when_up;
-use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, anna_home};
+use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, TestHost};
 use crate::test_support::stub_backend::Attach;
 use crate::{Dirs, ErrorKind, Instance, StartOptions};
@@ -34,7 +34,7 @@ pub(crate) fn queued(messages: &Receiver<String>, count: usize) {
 }
 
 #[skuld::test]
-fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[fixture(anna_home)] home: &Path) {
+fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
     let dir = instance_in(&fx, "foo", home);
     let sleeper = Sleeper::spawn();
@@ -64,7 +64,7 @@ fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[
 }
 
 #[skuld::test]
-fn remove_deletes_the_leftovers_of_the_machine(#[fixture(anna_home)] home: &Path) {
+fn remove_deletes_the_leftovers_of_the_machine(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
     let dir = instance_in(&fx, "foo", home);
     let sleeper = Sleeper::spawn();
@@ -86,7 +86,7 @@ fn remove_deletes_the_leftovers_of_the_machine(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn stop_deletes_the_leftovers_of_a_machine_that_is_already_gone(#[fixture(anna_home)] home: &Path) {
+fn stop_deletes_the_leftovers_of_a_machine_that_is_already_gone(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
     let dir = instance_in(&fx, "foo", home);
     let sleeper = Sleeper::spawn();
@@ -108,7 +108,7 @@ fn stop_deletes_the_leftovers_of_a_machine_that_is_already_gone(#[fixture(anna_h
 }
 
 #[skuld::test]
-fn remove_and_remove_queued_together_have_one_winner(#[fixture(anna_home)] home: &Path) {
+fn remove_and_remove_queued_together_have_one_winner(#[fixture(unicode_home)] home: &Path) {
     let (progress, messages) = ChannelProgress::new();
     let fx = engine_fixture(home, progress);
     let dir = instance_in(&fx, "foo", home);
@@ -135,7 +135,7 @@ fn remove_and_remove_queued_together_have_one_winner(#[fixture(anna_home)] home:
 }
 
 #[skuld::test]
-fn a_remove_queued_behind_a_holder_does_not_remove_a_recreated_name(#[fixture(anna_home)] home: &Path) {
+fn a_remove_queued_behind_a_holder_does_not_remove_a_recreated_name(#[fixture(unicode_home)] home: &Path) {
     let (progress, messages) = ChannelProgress::new();
     let fx = engine_fixture(home, progress);
     let first = instance_in(&fx, "foo", home);
@@ -161,7 +161,7 @@ fn a_remove_queued_behind_a_holder_does_not_remove_a_recreated_name(#[fixture(an
 }
 
 #[skuld::test]
-fn a_start_queued_behind_a_remove_does_not_start_a_recreated_name(#[fixture(anna_home)] home: &Path) {
+fn a_start_queued_behind_a_remove_does_not_start_a_recreated_name(#[fixture(unicode_home)] home: &Path) {
     let (progress, messages) = ChannelProgress::new();
     let fx = engine_fixture(home, progress);
     let first = instance_in(&fx, "foo", home);
@@ -186,7 +186,7 @@ fn a_start_queued_behind_a_remove_does_not_start_a_recreated_name(#[fixture(anna
 }
 
 #[skuld::test]
-fn stop_is_idempotent(#[fixture(anna_home)] home: &Path) {
+fn stop_is_idempotent(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, Arc::new(MemoryProgress::default()));
     instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -195,7 +195,7 @@ fn stop_is_idempotent(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn stop_and_remove_queued_together_end_with_nothing_left(#[fixture(anna_home)] home: &Path) {
+fn stop_and_remove_queued_together_end_with_nothing_left(#[fixture(unicode_home)] home: &Path) {
     let (progress, messages) = ChannelProgress::new();
     let fx = engine_fixture(home, progress);
     let dir = instance_in(&fx, "foo", home);
@@ -222,7 +222,7 @@ fn stop_and_remove_queued_together_end_with_nothing_left(#[fixture(anna_home)] h
 // The machine is found and ended through the backend ==================================================================
 
 #[skuld::test]
-fn remove_ends_the_machine_through_the_backend(#[fixture(anna_home)] home: &Path) {
+fn remove_ends_the_machine_through_the_backend(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     let dir = instance_in(&fx, "foo", home);
     let socket = home.join("machine.sock");
@@ -238,7 +238,7 @@ fn remove_ends_the_machine_through_the_backend(#[fixture(anna_home)] home: &Path
 
 #[skuld::test]
 fn remove_of_a_machine_the_backend_reports_gone_deletes_the_instance_and_the_leftovers(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let (fx, stub, _) = stub_fixture(home, Attach::Gone);
     let dir = instance_in(&fx, "foo", home);
@@ -254,7 +254,7 @@ fn remove_of_a_machine_the_backend_reports_gone_deletes_the_instance_and_the_lef
 }
 
 #[skuld::test]
-fn remove_that_cannot_kill_the_machine_keeps_the_instance_and_its_record(#[fixture(anna_home)] home: &Path) {
+fn remove_that_cannot_kill_the_machine_keeps_the_instance_and_its_record(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     stub.fail_stops();
     let dir = instance_in(&fx, "foo", home);
@@ -279,7 +279,7 @@ fn remove_that_cannot_kill_the_machine_keeps_the_instance_and_its_record(#[fixtu
 }
 
 #[skuld::test]
-fn remove_when_the_backend_cannot_look_keeps_the_instance(#[fixture(anna_home)] home: &Path) {
+fn remove_when_the_backend_cannot_look_keeps_the_instance(#[fixture(unicode_home)] home: &Path) {
     let (fx, _, _) = stub_fixture(home, Attach::Fails(ErrorKind::Io));
     let dir = instance_in(&fx, "foo", home);
     record_machine(&dir, &dead_machine(Vec::new()));
@@ -294,7 +294,7 @@ fn remove_when_the_backend_cannot_look_keeps_the_instance(#[fixture(anna_home)] 
 }
 
 #[skuld::test]
-fn stop_shuts_the_machine_down_through_the_backend(#[fixture(anna_home)] home: &Path) {
+fn stop_shuts_the_machine_down_through_the_backend(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     let dir = instance_in(&fx, "foo", home);
     let socket = home.join("machine.sock");
@@ -309,7 +309,7 @@ fn stop_shuts_the_machine_down_through_the_backend(#[fixture(anna_home)] home: &
 }
 
 #[skuld::test]
-fn stop_that_cannot_shut_the_machine_down_keeps_the_record(#[fixture(anna_home)] home: &Path) {
+fn stop_that_cannot_shut_the_machine_down_keeps_the_record(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     stub.fail_stops();
     let dir = instance_in(&fx, "foo", home);
@@ -329,7 +329,7 @@ fn stop_that_cannot_shut_the_machine_down_keeps_the_record(#[fixture(anna_home)]
 }
 
 #[skuld::test]
-fn stop_when_the_backend_cannot_look_keeps_the_record(#[fixture(anna_home)] home: &Path) {
+fn stop_when_the_backend_cannot_look_keeps_the_record(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Fails(ErrorKind::Io));
     let dir = instance_in(&fx, "foo", home);
     record_machine(&dir, &dead_machine(Vec::new()));
@@ -345,7 +345,7 @@ fn stop_when_the_backend_cannot_look_keeps_the_record(#[fixture(anna_home)] home
 }
 
 #[skuld::test]
-fn start_asks_the_backend_whether_the_recorded_machine_runs(#[fixture(anna_home)] home: &Path) {
+fn start_asks_the_backend_whether_the_recorded_machine_runs(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     let dir = instance_in(&fx, "foo", home);
     record_machine(&dir, &dead_machine(Vec::new()));
@@ -360,7 +360,7 @@ fn start_asks_the_backend_whether_the_recorded_machine_runs(#[fixture(anna_home)
 }
 
 #[skuld::test]
-fn start_when_the_backend_cannot_look_fails_and_launches_nothing(#[fixture(anna_home)] home: &Path) {
+fn start_when_the_backend_cannot_look_fails_and_launches_nothing(#[fixture(unicode_home)] home: &Path) {
     let (fx, _, _) = stub_fixture(home, Attach::Fails(ErrorKind::Io));
     let dir = instance_in(&fx, "foo", home);
     record_machine(&dir, &dead_machine(Vec::new()));
@@ -375,7 +375,7 @@ fn start_when_the_backend_cannot_look_fails_and_launches_nothing(#[fixture(anna_
 }
 
 #[skuld::test]
-fn start_in_a_build_without_a_backend_is_not_supported(#[fixture(anna_home)] home: &Path) {
+fn start_in_a_build_without_a_backend_is_not_supported(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
     instance_in(&fx, "foo", home);
     let engine = engine_over(&fx, &TestHost, None, std::sync::Arc::new(MemoryProgress::default()));
@@ -391,7 +391,7 @@ fn start_in_a_build_without_a_backend_is_not_supported(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn start_on_a_host_without_a_hypervisor_is_unavailable_and_launches_nothing(#[fixture(anna_home)] home: &Path) {
+fn start_on_a_host_without_a_hypervisor_is_unavailable_and_launches_nothing(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
     let dir = instance_in(&fx, "foo", home);
     let engine = engine_over(

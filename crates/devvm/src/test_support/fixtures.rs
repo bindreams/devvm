@@ -3,13 +3,21 @@
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-/// A fresh directory named `Anna Ж` (a space and a non-ASCII character), removed on drop.
-pub struct AnnaHome {
+#[path = "fixtures_tests.rs"]
+mod fixtures_tests;
+
+/// The name of the Unicode test directory. Each character is a case: `\u{e9}` is in code page 1252, `\u{416}` is
+/// not (1251 has it), `\u{4e16}` is in no single-byte code page, `\u{1f600}` is a UTF-16 surrogate pair, and the
+/// spaces split arguments. Spelled with escapes so no editor can normalise `\u{e9}` to `e` + U+0301.
+pub const UNICODE_DIR: &str = "unicode-\u{e9} \u{416} \u{4e16} \u{1f600}";
+
+/// A fresh directory named [`UNICODE_DIR`], removed on drop.
+pub struct UnicodeHome {
     path: PathBuf,
     _tmp: skuld::TempDir,
 }
 
-impl Deref for AnnaHome {
+impl Deref for UnicodeHome {
     type Target = Path;
 
     fn deref(&self) -> &Path {
@@ -17,14 +25,14 @@ impl Deref for AnnaHome {
     }
 }
 
-/// Every test that touches the file system works under this directory, so a path with a space and a non-ASCII
-/// character is the normal case, not an edge case.
+/// Every test that touches the file system works under this directory, so a path with spaces, non-ASCII characters
+/// and a surrogate pair is the normal case, not an edge case.
 #[skuld::fixture(deref)]
-pub fn anna_home() -> Result<AnnaHome, String> {
+pub fn unicode_home() -> Result<UnicodeHome, String> {
     let tmp = skuld::TempDir::new().map_err(|e| format!("cannot create a temp dir: {e}"))?;
-    let path = tmp.join("Anna Ж");
+    let path = tmp.join(UNICODE_DIR);
     std::fs::create_dir(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-    Ok(AnnaHome { path, _tmp: tmp })
+    Ok(UnicodeHome { path, _tmp: tmp })
 }
 
 // Fakes ===============================================================================================================

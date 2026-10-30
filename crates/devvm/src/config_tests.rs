@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::{Dirs, ErrorKind};
 
 fn origin() -> &'static Path {
@@ -9,13 +9,13 @@ fn origin() -> &'static Path {
 }
 
 #[skuld::test]
-fn missing_file_is_the_default_config(#[fixture(anna_home)] home: &Path) {
+fn missing_file_is_the_default_config(#[fixture(unicode_home)] home: &Path) {
     let config = Config::load(&Dirs::under(home)).unwrap();
     assert_eq!(config, Config::default());
 }
 
 #[skuld::test]
-fn load_reads_config_yaml_from_the_config_dir(#[fixture(anna_home)] home: &Path) {
+fn load_reads_config_yaml_from_the_config_dir(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     std::fs::create_dir_all(&dirs.config).unwrap();
     let text = format!("qemu:\n  path: {}\n", r"C:\Program Files\qemu\qemu.exe");
@@ -64,7 +64,7 @@ fn bom_and_crlf_are_accepted() {
 }
 
 #[skuld::test]
-fn unreadable_config_is_an_io_error_naming_the_path(#[fixture(anna_home)] home: &Path) {
+fn unreadable_config_is_an_io_error_naming_the_path(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     // A directory where the file should be.
     std::fs::create_dir_all(dirs.config.join("config.yaml")).unwrap();

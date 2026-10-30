@@ -6,7 +6,7 @@ use cosca::identity::ProcessIdRecord;
 
 use crate::contain::{Lifetime, VmProcess};
 use crate::test_support::fake_vm::{self, STARTED, await_port, connect_when_up};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::{ErrorKind, host};
 
@@ -33,7 +33,7 @@ fn first_record(owner: &mut std::process::Child) -> ProcessIdRecord {
 }
 
 #[skuld::test]
-fn a_frozen_vm_has_not_run_until_it_is_resumed(#[fixture(anna_home)] home: &Path) {
+fn a_frozen_vm_has_not_run_until_it_is_resumed(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::DiesWithOwner);
     assert!(vm.is_alive().unwrap(), "a frozen VM exists");
     assert!(!home.join(STARTED).exists(), "a frozen VM listens on nothing");
@@ -46,7 +46,7 @@ fn a_frozen_vm_has_not_run_until_it_is_resumed(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn dropping_a_frozen_vm_kills_it_and_it_never_ran(#[fixture(anna_home)] home: &Path) {
+fn dropping_a_frozen_vm_kills_it_and_it_never_ran(#[fixture(unicode_home)] home: &Path) {
     let vm = frozen(home, Lifetime::OutlivesOwner);
     let record = vm.record().unwrap();
     drop(vm);
@@ -60,7 +60,7 @@ fn dropping_a_frozen_vm_kills_it_and_it_never_ran(#[fixture(anna_home)] home: &P
 }
 
 #[skuld::test]
-fn a_failed_resume_leaves_no_process(#[fixture(anna_home)] home: &Path) {
+fn a_failed_resume_leaves_no_process(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::OutlivesOwner);
     // Something else kills the frozen process before the resume.
     let mut other = VmProcess::attach(&vm.record().unwrap()).unwrap().unwrap();
@@ -80,7 +80,7 @@ fn a_failed_resume_leaves_no_process(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn kill_of_a_frozen_vm_returns_after_it_has_exited_and_it_never_ran(#[fixture(anna_home)] home: &Path) {
+fn kill_of_a_frozen_vm_returns_after_it_has_exited_and_it_never_ran(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::OutlivesOwner);
     let record = vm.record().unwrap();
 
@@ -96,7 +96,7 @@ fn kill_of_a_frozen_vm_returns_after_it_has_exited_and_it_never_ran(#[fixture(an
 }
 
 #[skuld::test]
-fn release_before_resume_is_an_internal_error(#[fixture(anna_home)] home: &Path) {
+fn release_before_resume_is_an_internal_error(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::OutlivesOwner);
     assert_eq!(vm.release().unwrap_err().kind(), ErrorKind::Internal);
     vm.resume().unwrap();
@@ -110,7 +110,7 @@ fn release_before_resume_is_an_internal_error(#[fixture(anna_home)] home: &Path)
 }
 
 #[skuld::test]
-fn a_dies_with_owner_vm_refuses_release_and_stays_contained(#[fixture(anna_home)] home: &Path) {
+fn a_dies_with_owner_vm_refuses_release_and_stays_contained(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::DiesWithOwner);
     vm.resume().unwrap();
     let port = await_port(&vm, home);
@@ -124,7 +124,7 @@ fn a_dies_with_owner_vm_refuses_release_and_stays_contained(#[fixture(anna_home)
 }
 
 #[skuld::test]
-fn resume_twice_is_an_internal_error(#[fixture(anna_home)] home: &Path) {
+fn resume_twice_is_an_internal_error(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::DiesWithOwner);
     vm.resume().unwrap();
     assert_eq!(vm.resume().unwrap_err().kind(), ErrorKind::Internal);
@@ -132,7 +132,7 @@ fn resume_twice_is_an_internal_error(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn a_contained_vm_dies_when_its_owner_is_killed(#[fixture(anna_home)] home: &Path) {
+fn a_contained_vm_dies_when_its_owner_is_killed(#[fixture(unicode_home)] home: &Path) {
     let mut owner = owner("contain-owner", home);
     let record = first_record(&mut owner);
     let vm = VmProcess::attach(&record)
@@ -147,7 +147,7 @@ fn a_contained_vm_dies_when_its_owner_is_killed(#[fixture(anna_home)] home: &Pat
 }
 
 #[skuld::test]
-fn a_released_vm_survives_its_owner_exiting(#[fixture(anna_home)] home: &Path) {
+fn a_released_vm_survives_its_owner_exiting(#[fixture(unicode_home)] home: &Path) {
     let mut owner = owner("release-owner", home);
     let record = first_record(&mut owner);
     assert!(owner.wait().unwrap().success());
@@ -161,7 +161,7 @@ fn a_released_vm_survives_its_owner_exiting(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn a_released_vm_does_not_hold_the_owners_pipes(#[fixture(anna_home)] home: &Path) {
+fn a_released_vm_does_not_hold_the_owners_pipes(#[fixture(unicode_home)] home: &Path) {
     let mut owner = owner("release-owner", home);
     let mut output = String::new();
     // EOF arrives only when every holder of the pipe's write end is gone: the owner, and the VM if it inherited it.
@@ -176,7 +176,7 @@ fn a_released_vm_does_not_hold_the_owners_pipes(#[fixture(anna_home)] home: &Pat
 }
 
 #[skuld::test]
-fn kill_of_a_running_vm_returns_only_after_exit(#[fixture(anna_home)] home: &Path) {
+fn kill_of_a_running_vm_returns_only_after_exit(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::DiesWithOwner);
     vm.resume().unwrap();
     connect_when_up(&vm, await_port(&vm, home));
@@ -192,7 +192,7 @@ fn kill_of_a_running_vm_returns_only_after_exit(#[fixture(anna_home)] home: &Pat
 }
 
 #[skuld::test]
-fn an_unreleased_vm_reports_kill_on_close_and_a_released_one_does_not(#[fixture(anna_home)] home: &Path) {
+fn an_unreleased_vm_reports_kill_on_close_and_a_released_one_does_not(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::OutlivesOwner);
     vm.resume().unwrap();
     let port = await_port(&vm, home);
@@ -204,7 +204,7 @@ fn an_unreleased_vm_reports_kill_on_close_and_a_released_one_does_not(#[fixture(
 }
 
 #[skuld::test]
-fn an_outlives_owner_vm_has_no_console(#[fixture(anna_home)] home: &Path) {
+fn an_outlives_owner_vm_has_no_console(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::OutlivesOwner);
     vm.resume().unwrap();
     assert!(connect_when_up(&vm, await_port(&vm, home)).ends_with("console=0"));
@@ -212,7 +212,7 @@ fn an_outlives_owner_vm_has_no_console(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn a_dies_with_owner_vm_has_no_console_either(#[fixture(anna_home)] home: &Path) {
+fn a_dies_with_owner_vm_has_no_console_either(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::DiesWithOwner);
     vm.resume().unwrap();
     assert!(connect_when_up(&vm, await_port(&vm, home)).ends_with("console=0"));
@@ -220,7 +220,7 @@ fn a_dies_with_owner_vm_has_no_console_either(#[fixture(anna_home)] home: &Path)
 }
 
 #[skuld::test]
-fn a_vms_stdout_and_stderr_go_to_the_log_file_whatever_its_lifetime(#[fixture(anna_home)] home: &Path) {
+fn a_vms_stdout_and_stderr_go_to_the_log_file_whatever_its_lifetime(#[fixture(unicode_home)] home: &Path) {
     for lifetime in [Lifetime::DiesWithOwner, Lifetime::OutlivesOwner] {
         let state = home.join(format!("{lifetime:?}"));
         std::fs::create_dir_all(&state).unwrap();
@@ -242,7 +242,7 @@ fn a_vms_stdout_and_stderr_go_to_the_log_file_whatever_its_lifetime(#[fixture(an
 }
 
 #[skuld::test]
-fn fake_vms_bind_their_own_port_and_report_it_once_they_listen(#[fixture(anna_home)] home: &Path) {
+fn fake_vms_bind_their_own_port_and_report_it_once_they_listen(#[fixture(unicode_home)] home: &Path) {
     let (first_dir, second_dir) = (home.join("first"), home.join("second"));
     let mut vms = Vec::new();
     for state in [&first_dir, &second_dir] {

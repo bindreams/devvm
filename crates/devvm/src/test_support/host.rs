@@ -15,6 +15,10 @@ impl Host for TestHost {
         Ok(Accel::Tcg)
     }
 
+    fn ansi_code_page(&self) -> Option<u32> {
+        host::current().ansi_code_page()
+    }
+
     fn detach(&self, cmd: &mut cosca::Command) -> Result<()> {
         host::current().detach(cmd)
     }
@@ -55,6 +59,10 @@ impl Host for NoAccelHost {
         Err(Unavailable {
             missing: NO_ACCELERATOR.to_owned(),
         })
+    }
+
+    fn ansi_code_page(&self) -> Option<u32> {
+        TestHost.ansi_code_page()
     }
 
     fn detach(&self, cmd: &mut cosca::Command) -> Result<()> {

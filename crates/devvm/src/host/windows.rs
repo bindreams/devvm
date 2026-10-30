@@ -6,6 +6,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 
+use windows_sys::Win32::Globalization::GetACP;
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
@@ -34,6 +35,11 @@ impl Host for WindowsHost {
         Err(Unavailable {
             missing: "WHPX detection is not implemented".to_owned(),
         })
+    }
+
+    fn ansi_code_page(&self) -> Option<u32> {
+        // SAFETY: `GetACP` takes no arguments and cannot fail.
+        Some(unsafe { GetACP() })
     }
 
     /// `DETACHED_PROCESS`: the VM has no console, so no console control event can reach it.

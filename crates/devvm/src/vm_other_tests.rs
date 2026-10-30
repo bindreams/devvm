@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::engine::engine_tests::{engine_fixture, instance_in};
-use crate::test_support::fixtures::{MemoryProgress, anna_home};
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::{ErrorKind, Instance};
 
 #[skuld::test]
 fn start_on_a_host_that_cannot_freeze_a_process_is_not_supported_and_records_nothing(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let fx = engine_fixture(home, Arc::new(MemoryProgress::default()));
     let dir = instance_in(&fx, "foo", home);

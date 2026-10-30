@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::instance::registry::registry_tests::{create, fixture};
 use crate::store::layers::Reachability;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
-fn destroy_never_fails_because_other_devvm_readers_run(#[fixture(anna_home)] home: &Path) {
+fn destroy_never_fails_because_other_devvm_readers_run(#[fixture(unicode_home)] home: &Path) {
     const ROUNDS: usize = 200;
     let fx = fixture(home);
     let done = AtomicBool::new(false);
@@ -47,7 +47,7 @@ fn destroy_never_fails_because_other_devvm_readers_run(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn destroy_waits_for_a_reader_that_has_a_file_open(#[fixture(anna_home)] home: &Path) {
+fn destroy_waits_for_a_reader_that_has_a_file_open(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let op = dir.op_exclusive().unwrap();
@@ -72,7 +72,7 @@ fn destroy_waits_for_a_reader_that_has_a_file_open(#[fixture(anna_home)] home: &
 }
 
 #[skuld::test]
-fn two_deleters_of_one_dead_tree_do_not_warn(#[fixture(anna_home)] home: &Path) {
+fn two_deleters_of_one_dead_tree_do_not_warn(#[fixture(unicode_home)] home: &Path) {
     const ROUNDS: usize = 40;
     let fx = fixture(home);
     let done = AtomicBool::new(false);
@@ -102,7 +102,7 @@ fn two_deleters_of_one_dead_tree_do_not_warn(#[fixture(anna_home)] home: &Path) 
 }
 
 #[skuld::test]
-fn destroy_deletes_its_own_tree_even_while_another_deletion_runs(#[fixture(anna_home)] home: &Path) {
+fn destroy_deletes_its_own_tree_even_while_another_deletion_runs(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let dead = fx.env.dirs.instances().join(format!(".dead-{}", dir.id()));
@@ -160,7 +160,7 @@ pub(crate) fn destroy_while_a_deletion_runs<T: Send>(
 }
 
 #[skuld::test]
-fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(anna_home)] home: &Path) {
+fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let op_file = fx.registry.locks().op_path(dir.id());
@@ -184,7 +184,7 @@ fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(an
 
 #[skuld::test]
 fn handing_over_an_instance_with_a_corrupt_record_reports_the_record_and_writes_nothing(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));

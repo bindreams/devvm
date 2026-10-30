@@ -5,7 +5,7 @@ use crate::instance::reach::entry_is_dir;
 use crate::instance::registry::registry_tests::{Fixture, TestStorage, create, fixture, new_instance};
 use crate::store::layers::layers_tests::{build, build_expiring, days, key, t0};
 use crate::store::layers::{LayerRef, Reachability};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 
 fn sorted(mut chains: Vec<Vec<LayerRef>>) -> Vec<Vec<LayerRef>> {
     chains.sort_by_key(|chain| {
@@ -18,7 +18,7 @@ fn sorted(mut chains: Vec<Vec<LayerRef>>) -> Vec<Vec<LayerRef>> {
 }
 
 #[skuld::test]
-fn chains_lists_every_instance_chain_running_or_stopped(#[fixture(anna_home)] home: &Path) {
+fn chains_lists_every_instance_chain_running_or_stopped(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let base = fx.chain.refs();
     let child = build(&fx.env, key(2), Some(&fx.chain));
@@ -47,7 +47,7 @@ fn chains_lists_every_instance_chain_running_or_stopped(#[fixture(anna_home)] ho
 }
 
 #[skuld::test]
-fn chains_keeps_an_instance_whose_dir_lock_file_was_deleted_from_outside(#[fixture(anna_home)] home: &Path) {
+fn chains_keeps_an_instance_whose_dir_lock_file_was_deleted_from_outside(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     std::fs::remove_file(fx.env.dirs.instance_locks().join("instances.dir")).unwrap();
@@ -78,7 +78,7 @@ fn an_entry_whose_type_cannot_be_read_fails_the_call_instead_of_being_skipped() 
 }
 
 #[skuld::test]
-fn an_entry_that_is_a_directory_is_one_and_a_file_is_not(#[fixture(anna_home)] home: &Path) {
+fn an_entry_that_is_a_directory_is_one_and_a_file_is_not(#[fixture(unicode_home)] home: &Path) {
     let file = home.join("file");
     std::fs::write(&file, b"x").unwrap();
     for (path, expected) in [(home.to_path_buf(), true), (file, false)] {
@@ -90,7 +90,7 @@ fn an_entry_that_is_a_directory_is_one_and_a_file_is_not(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn chains_does_not_wait_on_held_locks(#[fixture(anna_home)] home: &Path) {
+fn chains_does_not_wait_on_held_locks(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let dir = fx
@@ -104,7 +104,7 @@ fn chains_does_not_wait_on_held_locks(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn chains_fails_naming_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
+fn chains_fails_naming_a_corrupt_record(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     drop(create(&fx, Some("foo")));
     std::fs::write(fx.env.dirs.instances().join("foo").join("record.json"), "{ torn").unwrap();
@@ -114,7 +114,7 @@ fn chains_fails_naming_a_corrupt_record(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn chains_keeps_the_chain_of_a_quarantined_instance(#[fixture(anna_home)] home: &Path) {
+fn chains_keeps_the_chain_of_a_quarantined_instance(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     drop(create(&fx, Some("foo")));
     std::fs::remove_file(fx.env.dirs.instances().join("foo").join("owner.json")).unwrap();
@@ -130,7 +130,7 @@ fn chains_keeps_the_chain_of_a_quarantined_instance(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn chains_fails_naming_a_quarantined_instance_whose_record_is_unreadable(#[fixture(anna_home)] home: &Path) {
+fn chains_fails_naming_a_quarantined_instance_whose_record_is_unreadable(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     drop(create(&fx, Some("foo")));
     std::fs::write(fx.env.dirs.instances().join("foo").join("record.json"), "{ torn").unwrap();
@@ -148,7 +148,7 @@ fn chains_fails_naming_a_quarantined_instance_whose_record_is_unreadable(#[fixtu
 }
 
 #[skuld::test]
-fn chains_fails_naming_a_quarantined_instance_whose_record_is_missing(#[fixture(anna_home)] home: &Path) {
+fn chains_fails_naming_a_quarantined_instance_whose_record_is_missing(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     drop(create(&fx, Some("foo")));
     std::fs::remove_file(fx.env.dirs.instances().join("foo").join("record.json")).unwrap();
@@ -170,7 +170,7 @@ fn chains_fails_naming_a_quarantined_instance_whose_record_is_missing(#[fixture(
 }
 
 #[skuld::test]
-fn chains_fails_on_a_record_from_a_newer_devvm(#[fixture(anna_home)] home: &Path) {
+fn chains_fails_on_a_record_from_a_newer_devvm(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     drop(create(&fx, Some("foo")));
     std::fs::write(
@@ -184,7 +184,7 @@ fn chains_fails_on_a_record_from_a_newer_devvm(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn chains_ignores_dot_dirs_and_directories_without_a_record(#[fixture(anna_home)] home: &Path) {
+fn chains_ignores_dot_dirs_and_directories_without_a_record(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let root = fx.env.dirs.instances();
     std::fs::create_dir_all(root.join(".new-00")).unwrap();
@@ -194,7 +194,7 @@ fn chains_ignores_dot_dirs_and_directories_without_a_record(#[fixture(anna_home)
 }
 
 #[skuld::test]
-fn gc_keeps_the_generations_of_an_instance_on_a_superseded_generation(#[fixture(anna_home)] home: &Path) {
+fn gc_keeps_the_generations_of_an_instance_on_a_superseded_generation(#[fixture(unicode_home)] home: &Path) {
     let Fixture {
         env,
         chain: unrelated,

@@ -59,6 +59,9 @@ pub(crate) trait Host: Send + Sync {
     /// The accelerator for guests of `arch`, or what is missing.
     fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable>;
 
+    /// The ANSI code page of this process (`GetACP`); `None` off Windows.
+    fn ansi_code_page(&self) -> Option<u32>;
+
     /// Starts `cmd` without a console, so no console control event reaches the VM. It never breaks the process away
     /// from an enclosing job: whatever the outer process installed is not devvm's business.
     fn detach(&self, cmd: &mut cosca::Command) -> Result<()>;

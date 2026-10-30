@@ -15,7 +15,7 @@ use crate::instance::reaper::{Entries, ReapReport};
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
 use crate::instance::registry::registry_tests::{Fixture, create, fixture, fixture_with, lock_files};
 use crate::store::layers::layers_tests::names;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 
@@ -50,7 +50,7 @@ fn alive(record: &MachineRecord) -> bool {
 }
 
 #[skuld::test]
-fn an_owned_instance_with_a_dead_owner_is_reaped_with_its_vm(#[fixture(anna_home)] home: &Path) {
+fn an_owned_instance_with_a_dead_owner_is_reaped_with_its_vm(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let sleeper = Sleeper::spawn();
     let owned = create(&fx, Some("foo"));
@@ -69,7 +69,7 @@ fn an_owned_instance_with_a_dead_owner_is_reaped_with_its_vm(#[fixture(anna_home
 }
 
 #[skuld::test]
-fn the_vm_of_a_dead_owner_is_found_and_killed_through_the_backend(#[fixture(anna_home)] home: &Path) {
+fn the_vm_of_a_dead_owner_is_found_and_killed_through_the_backend(#[fixture(unicode_home)] home: &Path) {
     let stub = StubBackend::new(Attach::Running);
     let fx = fixture_with(home, Some(stub.clone()));
     let socket = home.join("machine.sock");
@@ -86,7 +86,7 @@ fn the_vm_of_a_dead_owner_is_found_and_killed_through_the_backend(#[fixture(anna
 }
 
 #[skuld::test]
-fn an_instance_whose_vm_cannot_be_killed_is_left_for_the_next_pass(#[fixture(anna_home)] home: &Path) {
+fn an_instance_whose_vm_cannot_be_killed_is_left_for_the_next_pass(#[fixture(unicode_home)] home: &Path) {
     let stub = StubBackend::new(Attach::Running);
     stub.fail_stops();
     let fx = fixture_with(home, Some(stub.clone()));
@@ -113,7 +113,7 @@ fn an_instance_whose_vm_cannot_be_killed_is_left_for_the_next_pass(#[fixture(ann
 }
 
 #[skuld::test]
-fn an_instance_whose_vm_cannot_be_looked_for_is_left_for_the_next_pass(#[fixture(anna_home)] home: &Path) {
+fn an_instance_whose_vm_cannot_be_looked_for_is_left_for_the_next_pass(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture_with(home, Some(StubBackend::new(Attach::Fails(ErrorKind::Io))));
     let owned = create(&fx, Some("foo"));
     set_machine(owned.dir(), dead_machine(Vec::new()));
@@ -134,7 +134,7 @@ fn an_instance_whose_vm_cannot_be_looked_for_is_left_for_the_next_pass(#[fixture
 }
 
 #[skuld::test]
-fn an_instance_with_a_recorded_vm_is_left_alone_when_the_build_has_no_backend(#[fixture(anna_home)] home: &Path) {
+fn an_instance_with_a_recorded_vm_is_left_alone_when_the_build_has_no_backend(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture_with(home, None);
     let owned = create(&fx, Some("foo"));
     set_machine(owned.dir(), dead_machine(Vec::new()));
@@ -155,7 +155,7 @@ fn an_instance_with_a_recorded_vm_is_left_alone_when_the_build_has_no_backend(#[
 }
 
 #[skuld::test]
-fn a_live_owner_is_never_reaped(#[fixture(anna_home)] home: &Path) {
+fn a_live_owner_is_never_reaped(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let sleeper = Sleeper::spawn();
     let owned = create(&fx, Some("foo"));
@@ -173,7 +173,7 @@ fn a_live_owner_is_never_reaped(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn an_ownerless_instance_is_never_reaped(#[fixture(anna_home)] home: &Path) {
+fn an_ownerless_instance_is_never_reaped(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let sleeper = Sleeper::spawn();
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
@@ -187,7 +187,7 @@ fn an_ownerless_instance_is_never_reaped(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn a_recorded_pid_with_another_start_token_is_not_killed(#[fixture(anna_home)] home: &Path) {
+fn a_recorded_pid_with_another_start_token_is_not_killed(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let sleeper = Sleeper::spawn();
     let mut forged = machine(&sleeper);
@@ -205,7 +205,7 @@ fn a_recorded_pid_with_another_start_token_is_not_killed(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn a_dead_creators_new_dir_and_lock_files_are_removed(#[fixture(anna_home)] home: &Path) {
+fn a_dead_creators_new_dir_and_lock_files_are_removed(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let id = InstanceId::random();
     let locks = fx.registry.locks();
@@ -226,7 +226,7 @@ fn a_dead_creators_new_dir_and_lock_files_are_removed(#[fixture(anna_home)] home
 }
 
 #[skuld::test]
-fn a_new_dir_placed_after_the_listing_keeps_its_lock_files(#[fixture(anna_home)] home: &Path) {
+fn a_new_dir_placed_after_the_listing_keeps_its_lock_files(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let id = *dir.id();
@@ -244,7 +244,7 @@ fn a_new_dir_placed_after_the_listing_keeps_its_lock_files(#[fixture(anna_home)]
 }
 
 #[skuld::test]
-fn a_new_dir_with_no_lock_file_is_removed(#[fixture(anna_home)] home: &Path) {
+fn a_new_dir_with_no_lock_file_is_removed(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let new_dir = root(&fx).join(format!(".new-{}", InstanceId::random()));
     std::fs::create_dir_all(&new_dir).unwrap();
@@ -253,7 +253,7 @@ fn a_new_dir_with_no_lock_file_is_removed(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn an_orphan_lock_file_is_swept_but_an_ownerless_instances_locks_are_not(#[fixture(anna_home)] home: &Path) {
+fn an_orphan_lock_file_is_swept_but_an_ownerless_instances_locks_are_not(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let orphan = InstanceId::random();
     drop(fx.registry.locks().acquire_owner_new(&orphan).unwrap());
@@ -268,7 +268,9 @@ fn an_orphan_lock_file_is_swept_but_an_ownerless_instances_locks_are_not(#[fixtu
 }
 
 #[skuld::test]
-fn the_lock_sweep_lists_the_instance_directories_once_however_many_locks_there_are(#[fixture(anna_home)] home: &Path) {
+fn the_lock_sweep_lists_the_instance_directories_once_however_many_locks_there_are(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let fx = fixture(home);
     let orphans: Vec<InstanceId> = (0..10).map(|_| InstanceId::random()).collect();
     for id in &orphans {
@@ -286,7 +288,7 @@ fn the_lock_sweep_lists_the_instance_directories_once_however_many_locks_there_a
 }
 
 #[skuld::test]
-fn a_dead_dir_is_deleted(#[fixture(anna_home)] home: &Path) {
+fn a_dead_dir_is_deleted(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dead = root(&fx).join(format!(".dead-{}", InstanceId::random()));
     std::fs::create_dir_all(dead.join("sub")).unwrap();
@@ -296,7 +298,7 @@ fn a_dead_dir_is_deleted(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn corrupt_record_missing_marker_and_torn_marker_are_quarantined_not_deleted(#[fixture(anna_home)] home: &Path) {
+fn corrupt_record_missing_marker_and_torn_marker_are_quarantined_not_deleted(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let cases: [(&str, &str, Option<&str>); 3] = [
         ("bad-record", "record.json", Some("{ torn")),
@@ -328,7 +330,7 @@ fn corrupt_record_missing_marker_and_torn_marker_are_quarantined_not_deleted(#[f
 }
 
 #[skuld::test]
-fn a_corrupt_record_under_a_held_owner_lock_is_not_moved(#[fixture(anna_home)] home: &Path) {
+fn a_corrupt_record_under_a_held_owner_lock_is_not_moved(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     std::fs::write(root(&fx).join("foo").join("record.json"), "{ torn").unwrap();
@@ -344,7 +346,7 @@ fn a_corrupt_record_under_a_held_owner_lock_is_not_moved(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn a_record_or_marker_from_a_newer_devvm_is_left_alone_with_a_warning(#[fixture(anna_home)] home: &Path) {
+fn a_record_or_marker_from_a_newer_devvm_is_left_alone_with_a_warning(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let sleeper = Sleeper::spawn();
     for (name, file) in [("newer-record", "record.json"), ("newer-marker", "owner.json")] {
@@ -374,7 +376,7 @@ fn a_record_or_marker_from_a_newer_devvm_is_left_alone_with_a_warning(#[fixture(
 }
 
 #[skuld::test]
-fn an_op_lock_held_defers_the_reap_without_a_warning(#[fixture(anna_home)] home: &Path) {
+fn an_op_lock_held_defers_the_reap_without_a_warning(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let dir = fx.registry.open(&InstanceName::parse("foo").unwrap()).unwrap();
@@ -389,7 +391,7 @@ fn an_op_lock_held_defers_the_reap_without_a_warning(#[fixture(anna_home)] home:
 }
 
 #[skuld::test]
-fn an_owned_instance_whose_lock_files_are_gone_is_still_reaped(#[fixture(anna_home)] home: &Path) {
+fn an_owned_instance_whose_lock_files_are_gone_is_still_reaped(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let owned = create(&fx, Some("foo"));
     let id = *owned.dir().id();
@@ -403,7 +405,7 @@ fn an_owned_instance_whose_lock_files_are_gone_is_still_reaped(#[fixture(anna_ho
 }
 
 #[skuld::test]
-fn an_ownerless_instance_whose_lock_files_are_gone_gets_them_back(#[fixture(anna_home)] home: &Path) {
+fn an_ownerless_instance_whose_lock_files_are_gone_gets_them_back(#[fixture(unicode_home)] home: &Path) {
     for (case, gone) in [("owner", 1), ("op", 2), ("both", 3)] {
         let fx = fixture(&home.join(case));
         let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
@@ -429,7 +431,7 @@ fn an_ownerless_instance_whose_lock_files_are_gone_gets_them_back(#[fixture(anna
 }
 
 #[skuld::test]
-fn create_in_a_loop_while_a_reaper_loop_runs_never_loses_a_live_instance(#[fixture(anna_home)] home: &Path) {
+fn create_in_a_loop_while_a_reaper_loop_runs_never_loses_a_live_instance(#[fixture(unicode_home)] home: &Path) {
     const INSTANCES: usize = 40;
     let fx = fixture(home);
     let done = AtomicBool::new(false);
@@ -479,7 +481,7 @@ fn create_in_a_loop_while_a_reaper_loop_runs_never_loses_a_live_instance(#[fixtu
 }
 
 #[skuld::test]
-fn reaping_deletes_the_leftovers_of_the_killed_machine(#[fixture(anna_home)] home: &Path) {
+fn reaping_deletes_the_leftovers_of_the_killed_machine(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let sleeper = Sleeper::spawn();
     let (socket, lock) = (home.join("machine.sock"), home.join("machine.sock.lock"));
@@ -506,7 +508,7 @@ fn reaping_deletes_the_leftovers_of_the_killed_machine(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn the_leftovers_of_a_machine_that_already_exited_are_deleted(#[fixture(anna_home)] home: &Path) {
+fn the_leftovers_of_a_machine_that_already_exited_are_deleted(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let sleeper = Sleeper::spawn();
     let socket = home.join("machine.sock");
@@ -526,7 +528,7 @@ fn the_leftovers_of_a_machine_that_already_exited_are_deleted(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn a_leftover_that_cannot_be_deleted_is_a_warning_and_the_instance_still_goes(#[fixture(anna_home)] home: &Path) {
+fn a_leftover_that_cannot_be_deleted_is_a_warning_and_the_instance_still_goes(#[fixture(unicode_home)] home: &Path) {
     // A backend that does not clean up after a kill: the reaper's own step meets the stuck file.
     let fx = fixture_with(
         home,
@@ -554,7 +556,7 @@ fn a_leftover_that_cannot_be_deleted_is_a_warning_and_the_instance_still_goes(#[
 }
 
 #[skuld::test]
-fn a_live_owners_machine_keeps_its_leftovers(#[fixture(anna_home)] home: &Path) {
+fn a_live_owners_machine_keeps_its_leftovers(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let sleeper = Sleeper::spawn();
     let socket = home.join("machine.sock");
@@ -574,7 +576,7 @@ fn a_live_owners_machine_keeps_its_leftovers(#[fixture(anna_home)] home: &Path) 
 }
 
 #[skuld::test]
-fn a_new_directory_whose_name_is_not_an_id_is_reported_and_left_alone(#[fixture(anna_home)] home: &Path) {
+fn a_new_directory_whose_name_is_not_an_id_is_reported_and_left_alone(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let stray = root(&fx).join(".new-not-an-id");
     std::fs::create_dir_all(&stray).unwrap();
@@ -593,7 +595,7 @@ fn a_new_directory_whose_name_is_not_an_id_is_reported_and_left_alone(#[fixture(
 }
 
 #[skuld::test]
-fn an_entry_whose_type_cannot_be_read_is_warned_about_and_blocks_the_lock_sweep(#[fixture(anna_home)] home: &Path) {
+fn an_entry_whose_type_cannot_be_read_is_warned_about_and_blocks_the_lock_sweep(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let mut entries = Entries::default();
     entries.push(
@@ -624,7 +626,7 @@ fn an_entry_whose_type_cannot_be_read_is_warned_about_and_blocks_the_lock_sweep(
 }
 
 #[skuld::test]
-fn a_placed_directory_nobody_can_attribute_keeps_every_lock_file(#[fixture(anna_home)] home: &Path) {
+fn a_placed_directory_nobody_can_attribute_keeps_every_lock_file(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let orphan = InstanceId::random();
     drop(fx.registry.locks().acquire_owner_new(&orphan).unwrap());
@@ -645,7 +647,7 @@ fn a_placed_directory_nobody_can_attribute_keeps_every_lock_file(#[fixture(anna_
 
 #[skuld::test]
 fn an_instance_whose_record_turns_unreadable_after_the_op_lock_is_left_for_the_next_pass(
-    #[fixture(anna_home)] home: &Path,
+    #[fixture(unicode_home)] home: &Path,
 ) {
     let fx = fixture(home);
     drop(create(&fx, Some("foo")));

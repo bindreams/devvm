@@ -6,13 +6,17 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
+#[path = "support/unicode.rs"]
+mod unicode;
+use unicode::UNICODE_DIR;
+
 fn main() {
     skuld::run_all();
 }
 
 // Helpers =============================================================================================================
 
-/// A temp dir holding `Anna Ж`, where the four XDG directories and the project directories live.
+/// A temp dir holding the Unicode test directory, where the four XDG directories and the project directories live.
 struct Home {
     _tmp: skuld::TempDir,
     root: PathBuf,
@@ -20,7 +24,7 @@ struct Home {
 
 fn home() -> Home {
     let tmp = skuld::TempDir::new().unwrap();
-    let root = tmp.join("Anna Ж");
+    let root = tmp.join(UNICODE_DIR);
     std::fs::create_dir(&root).unwrap();
     Home { _tmp: tmp, root }
 }

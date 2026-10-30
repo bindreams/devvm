@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::recipe::embedded;
 use crate::recipe::{Recipe, Source, Step};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::{ErrorKind, GuestKind};
 
 fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
@@ -32,7 +32,7 @@ fn commands(flat: &crate::recipe::Flattened) -> Vec<String> {
 }
 
 #[skuld::test]
-fn child_inherits_parent_steps_in_order(#[fixture(anna_home)] home: &Path) {
+fn child_inherits_parent_steps_in_order(#[fixture(unicode_home)] home: &Path) {
     write(
         home,
         "a b/base.devvm.yaml",
@@ -55,7 +55,7 @@ fn child_inherits_parent_steps_in_order(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn leaf_resources_override_per_field(#[fixture(anna_home)] home: &Path) {
+fn leaf_resources_override_per_field(#[fixture(unicode_home)] home: &Path) {
     write(
         home,
         "base.devvm.yaml",
@@ -73,7 +73,7 @@ fn leaf_resources_override_per_field(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn disk_override_comes_from_the_leaf_for_the_whole_chain(#[fixture(anna_home)] home: &Path) {
+fn disk_override_comes_from_the_leaf_for_the_whole_chain(#[fixture(unicode_home)] home: &Path) {
     let base = write(
         home,
         "base.devvm.yaml",
@@ -94,7 +94,7 @@ fn disk_override_comes_from_the_leaf_for_the_whole_chain(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn cycle_is_an_error_naming_the_loop(#[fixture(anna_home)] home: &Path) {
+fn cycle_is_an_error_naming_the_loop(#[fixture(unicode_home)] home: &Path) {
     let a = write(home, "a.devvm.yaml", "from: b.devvm.yaml\n");
     write(home, "b.devvm.yaml", "from: a.devvm.yaml\n");
     let error = Recipe::from_file(&a).unwrap().flatten().unwrap_err();
@@ -115,7 +115,7 @@ fn cycle_is_an_error_naming_the_loop(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn from_ref_distinguishes_path_from_embedded_name(#[fixture(anna_home)] home: &Path) {
+fn from_ref_distinguishes_path_from_embedded_name(#[fixture(unicode_home)] home: &Path) {
     // A `.devvm.yaml` reference is a path relative to cwd, never an embedded name.
     let error = Recipe::from_ref("ubuntu-24.04.devvm.yaml", home).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NotFound);
@@ -140,7 +140,7 @@ fn unknown_embedded_name_lists_known_names() {
 }
 
 #[skuld::test]
-fn missing_parent_file_names_both_files(#[fixture(anna_home)] home: &Path) {
+fn missing_parent_file_names_both_files(#[fixture(unicode_home)] home: &Path) {
     let child = write(home, "child.devvm.yaml", "from: gone.devvm.yaml\n");
     let error = Recipe::from_file(&child).unwrap().flatten().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NotFound);
@@ -149,7 +149,7 @@ fn missing_parent_file_names_both_files(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn guest_kind_follows_the_root(#[fixture(anna_home)] home: &Path) {
+fn guest_kind_follows_the_root(#[fixture(unicode_home)] home: &Path) {
     let iso = write(
         home,
         "w.devvm.yaml",
@@ -198,7 +198,7 @@ fn flattened_and_recipe_are_send_and_sync() {
 }
 
 #[skuld::test]
-fn a_recipe_path_that_cannot_be_canonicalized_is_an_error_not_a_fallback(#[fixture(anna_home)] home: &Path) {
+fn a_recipe_path_that_cannot_be_canonicalized_is_an_error_not_a_fallback(#[fixture(unicode_home)] home: &Path) {
     // Falling back to the spelled path would let two spellings of one file defeat cycle detection.
     let error = crate::recipe::chain_key(&home.join("gone.devvm.yaml")).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io);

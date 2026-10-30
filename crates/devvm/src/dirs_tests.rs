@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ErrorKind;
 use crate::dirs::Dirs;
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use skuld::env;
 
 fn lookup<'a>(vars: &'a [(&'a str, OsString)]) -> impl Fn(&str) -> Option<OsString> + 'a {
@@ -15,7 +15,7 @@ fn lookup<'a>(vars: &'a [(&'a str, OsString)]) -> impl Fn(&str) -> Option<OsStri
 }
 
 #[skuld::test]
-fn xdg_overrides_are_honored_for_all_four(#[fixture(anna_home)] home: &Path) {
+fn xdg_overrides_are_honored_for_all_four(#[fixture(unicode_home)] home: &Path) {
     let base = home.join("x y");
     let vars = [
         ("XDG_CONFIG_HOME", base.join("c").into_os_string()),
@@ -31,7 +31,7 @@ fn xdg_overrides_are_honored_for_all_four(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn defaults_are_linux_style_under_home(#[fixture(anna_home)] home: &Path) {
+fn defaults_are_linux_style_under_home(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::from_lookup(Some(home.to_path_buf()), &lookup(&[])).unwrap();
     assert_eq!(dirs.config, home.join(".config").join("devvm"));
     assert_eq!(dirs.data, home.join(".local").join("share").join("devvm"));
@@ -40,7 +40,7 @@ fn defaults_are_linux_style_under_home(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn empty_or_relative_xdg_values_are_ignored(#[fixture(anna_home)] home: &Path) {
+fn empty_or_relative_xdg_values_are_ignored(#[fixture(unicode_home)] home: &Path) {
     let vars = [
         ("XDG_DATA_HOME", OsString::new()),
         ("XDG_CACHE_HOME", OsString::from("rel/dir")),
@@ -62,7 +62,7 @@ fn no_home_and_no_xdg_is_an_error() {
 }
 
 #[skuld::test]
-fn no_home_is_fine_when_every_xdg_variable_is_set(#[fixture(anna_home)] home: &Path) {
+fn no_home_is_fine_when_every_xdg_variable_is_set(#[fixture(unicode_home)] home: &Path) {
     let vars = [
         ("XDG_CONFIG_HOME", home.join("c").into_os_string()),
         ("XDG_DATA_HOME", home.join("d").into_os_string()),
@@ -73,7 +73,7 @@ fn no_home_is_fine_when_every_xdg_variable_is_set(#[fixture(anna_home)] home: &P
 }
 
 #[skuld::test]
-fn under_places_all_four_below_the_root_and_names_subdirectories(#[fixture(anna_home)] home: &Path) {
+fn under_places_all_four_below_the_root_and_names_subdirectories(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     for dir in [&dirs.config, &dirs.data, &dirs.cache, &dirs.state] {
         assert!(dir.starts_with(home), "{}", dir.display());
@@ -90,7 +90,7 @@ fn under_places_all_four_below_the_root_and_names_subdirectories(#[fixture(anna_
 }
 
 #[skuld::test]
-fn from_env_reads_the_process_environment(#[fixture(env)] env: &skuld::EnvGuard, #[fixture(anna_home)] home: &Path) {
+fn from_env_reads_the_process_environment(#[fixture(env)] env: &skuld::EnvGuard, #[fixture(unicode_home)] home: &Path) {
     let state = home.join("st");
     env.set("XDG_STATE_HOME", state.to_str().unwrap());
     let dirs = Dirs::from_env().unwrap();
@@ -98,7 +98,7 @@ fn from_env_reads_the_process_environment(#[fixture(env)] env: &skuld::EnvGuard,
 }
 
 #[skuld::test]
-fn dirs_instance_paths_live_under_state(#[fixture(anna_home)] home: &Path) {
+fn dirs_instance_paths_live_under_state(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     assert_eq!(dirs.instances(), dirs.state.join("instances"));
     assert_eq!(dirs.instance_locks(), dirs.state.join("locks"));
@@ -107,7 +107,7 @@ fn dirs_instance_paths_live_under_state(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn dirs_qemu_is_under_cache_and_ssh_under_state(#[fixture(anna_home)] home: &Path) {
+fn dirs_qemu_is_under_cache_and_ssh_under_state(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     assert_eq!(dirs.qemu(), dirs.cache.join("qemu"));
     assert_eq!(dirs.ssh(), dirs.state.join("ssh"));

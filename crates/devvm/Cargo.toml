@@ -31,9 +31,9 @@ cosca = { version = "0.6.0", features = ["serde"] }
 [dev-dependencies]
 skuld = { workspace = true }
 
-# Windows directories come from the OS (`host/windows.rs`).
+# Windows directories and the ANSI code page come from the OS (`host/windows.rs`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 # The fake VM reports its own job and console to the tests (`test_support/fake_vm`).
 [target.'cfg(windows)'.dev-dependencies]

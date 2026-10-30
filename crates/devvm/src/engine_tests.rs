@@ -16,7 +16,7 @@ use crate::instance::registry::registry_tests::new_instance_on;
 use crate::recipe::{Flattened, Resources, Source};
 use crate::store::layers::layers_tests::{Env, build, env, key, names, t0};
 use crate::store::layers::{ChainLease, SystemClock};
-use crate::test_support::fixtures::{MemoryProgress, anna_home};
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::{Arch, ErrorKind, GuestKind, Image, Instance};
@@ -169,7 +169,7 @@ pub(crate) fn memory() -> Arc<MemoryProgress> {
 }
 
 #[skuld::test]
-fn invalid_names_are_rejected_before_any_filesystem_operation(#[fixture(anna_home)] home: &Path) {
+fn invalid_names_are_rejected_before_any_filesystem_operation(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     for text in ["../x", "con", "a*", ""] {
         let error = Instance::open_in(&fx.engine, text).err().unwrap();
@@ -182,7 +182,7 @@ fn invalid_names_are_rejected_before_any_filesystem_operation(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn instance_open_of_a_missing_instance_is_not_found(#[fixture(anna_home)] home: &Path) {
+fn instance_open_of_a_missing_instance_is_not_found(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let error = Instance::open_in(&fx.engine, "nothing").err().unwrap();
     assert_eq!(error.kind(), ErrorKind::NotFound);
@@ -190,7 +190,7 @@ fn instance_open_of_a_missing_instance_is_not_found(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn open_in_reaps_first_even_when_the_name_is_missing(#[fixture(anna_home)] home: &Path) {
+fn open_in_reaps_first_even_when_the_name_is_missing(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     // A creator that died: its `.new-` directory is left, and nobody holds its owner lock.
     let id = crate::instance::record::InstanceId::random();
@@ -212,20 +212,20 @@ fn info_names(infos: &[InstanceInfo]) -> Vec<&str> {
 }
 
 #[skuld::test]
-fn list_filters_by_creation_dir_and_all_lists_everything(#[fixture(anna_home)] home: &Path) {
+fn list_filters_by_creation_dir_and_all_lists_everything(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let here = home.join("projects").join("here");
-    let anna = home.join("projects").join("Ж with space");
+    let project_dir = home.join("projects").join("Ж with space");
     std::fs::create_dir_all(&here).unwrap();
-    std::fs::create_dir_all(&anna).unwrap();
+    std::fs::create_dir_all(&project_dir).unwrap();
     instance_in(&fx, "a", &here);
-    instance_in(&fx, "b", &anna);
+    instance_in(&fx, "b", &project_dir);
     instance_in(&fx, "c", &here);
     instance_in(&fx, "gone", &home.join("deleted-since"));
 
     let listed = fx.engine.list(ListFilter::CreatedIn(here.clone())).unwrap();
     assert_eq!(info_names(&listed), ["a", "c"]);
-    let listed = fx.engine.list(ListFilter::CreatedIn(anna.clone())).unwrap();
+    let listed = fx.engine.list(ListFilter::CreatedIn(project_dir.clone())).unwrap();
     assert_eq!(info_names(&listed), ["b"]);
     let listed = fx
         .engine
@@ -243,7 +243,7 @@ fn list_filters_by_creation_dir_and_all_lists_everything(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn list_matches_a_creation_dir_given_in_another_spelling_of_the_same_directory(#[fixture(anna_home)] home: &Path) {
+fn list_matches_a_creation_dir_given_in_another_spelling_of_the_same_directory(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let here = home.join("projects").join("here");
     let elsewhere = home.join("projects").join("elsewhere");
@@ -261,7 +261,7 @@ fn list_matches_a_creation_dir_given_in_another_spelling_of_the_same_directory(#
 }
 
 #[skuld::test]
-fn list_marks_running_by_recorded_identity(#[fixture(anna_home)] home: &Path) {
+fn list_marks_running_by_recorded_identity(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let dir = instance_in(&fx, "foo", home);
     let sleeper = Sleeper::spawn();
@@ -327,7 +327,7 @@ fn to_json_line_is_one_line_with_the_documented_keys() {
 }
 
 #[skuld::test]
-fn list_ignores_a_directory_that_is_not_an_instance_name(#[fixture(anna_home)] home: &Path) {
+fn list_ignores_a_directory_that_is_not_an_instance_name(#[fixture(unicode_home)] home: &Path) {
     let memory = memory();
     let fx = engine_fixture(home, memory.clone());
     instance_in(&fx, "ok", home);
@@ -339,7 +339,7 @@ fn list_ignores_a_directory_that_is_not_an_instance_name(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn list_says_nothing_about_an_instance_removed_while_it_lists(#[fixture(anna_home)] home: &Path) {
+fn list_says_nothing_about_an_instance_removed_while_it_lists(#[fixture(unicode_home)] home: &Path) {
     let progress = memory();
     let fx = engine_fixture(home, progress.clone());
     instance_in(&fx, "foo", home);
@@ -357,7 +357,7 @@ fn list_says_nothing_about_an_instance_removed_while_it_lists(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn list_still_warns_about_an_instance_with_an_unreadable_marker(#[fixture(anna_home)] home: &Path) {
+fn list_still_warns_about_an_instance_with_an_unreadable_marker(#[fixture(unicode_home)] home: &Path) {
     let progress = memory();
     let fx = engine_fixture(home, progress.clone());
     let dir = instance_in(&fx, "foo", home);
@@ -373,7 +373,7 @@ fn list_still_warns_about_an_instance_with_an_unreadable_marker(#[fixture(anna_h
 }
 
 #[skuld::test]
-fn list_names_why_a_marker_is_unusable(#[fixture(anna_home)] home: &Path) {
+fn list_names_why_a_marker_is_unusable(#[fixture(unicode_home)] home: &Path) {
     let progress = memory();
     let fx = engine_fixture(home, progress.clone());
     let torn = instance_in(&fx, "torn", home);
@@ -404,7 +404,7 @@ fn list_names_why_a_marker_is_unusable(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn list_says_nothing_about_an_instance_whose_name_was_reused_while_it_lists(#[fixture(anna_home)] home: &Path) {
+fn list_says_nothing_about_an_instance_whose_name_was_reused_while_it_lists(#[fixture(unicode_home)] home: &Path) {
     let progress = memory();
     let fx = engine_fixture(home, progress.clone());
     instance_in(&fx, "foo", home);
@@ -435,7 +435,7 @@ fn from_env_waits_ten_minutes_for_a_boot() {
 }
 
 #[skuld::test]
-fn with_parts_keeps_the_boot_bound_it_is_given(#[fixture(anna_home)] home: &Path) {
+fn with_parts_keeps_the_boot_bound_it_is_given(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let engine = Engine::with_parts(EngineParts {
         dirs: env.dirs.clone(),
@@ -451,7 +451,7 @@ fn with_parts_keeps_the_boot_bound_it_is_given(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn list_asks_the_backend_whether_a_recorded_machine_runs(#[fixture(anna_home)] home: &Path) {
+fn list_asks_the_backend_whether_a_recorded_machine_runs(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     let dir = instance_in(&fx, "foo", home);
     record_machine(&dir, &dead_machine(Vec::new()));
@@ -467,7 +467,7 @@ fn list_asks_the_backend_whether_a_recorded_machine_runs(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn list_cannot_tell_when_the_backend_cannot_look(#[fixture(anna_home)] home: &Path) {
+fn list_cannot_tell_when_the_backend_cannot_look(#[fixture(unicode_home)] home: &Path) {
     let (fx, _, progress) = stub_fixture(home, Attach::Fails(ErrorKind::Io));
     let dir = instance_in(&fx, "foo", home);
     record_machine(&dir, &dead_machine(Vec::new()));
@@ -486,7 +486,7 @@ fn list_cannot_tell_when_the_backend_cannot_look(#[fixture(anna_home)] home: &Pa
 }
 
 #[skuld::test]
-fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixture(anna_home)] home: &Path) {
+fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let dir = instance_in(&fx, "foo", home);
     record_machine(&dir, &dead_machine(Vec::new()));

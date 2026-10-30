@@ -10,7 +10,7 @@ use crate::instance::record::{
 };
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::{Arch, ErrorKind, GuestKind, Network};
 
 fn id() -> InstanceId {
@@ -113,7 +113,7 @@ fn read_valid(dir: &Path) -> InstanceRecord {
 }
 
 #[skuld::test]
-fn record_round_trips_every_field(#[fixture(anna_home)] home: &Path) {
+fn record_round_trips_every_field(#[fixture(unicode_home)] home: &Path) {
     let original = record(PathBuf::from("/work/project"));
     original.write(home).unwrap();
     assert_eq!(read_valid(home), original);
@@ -153,7 +153,7 @@ fn golden_with_layer(field: &str, value: &str) -> String {
 }
 
 #[skuld::test]
-fn a_record_with_a_field_that_means_nothing_is_corrupt_and_says_which(#[fixture(anna_home)] home: &Path) {
+fn a_record_with_a_field_that_means_nothing_is_corrupt_and_says_which(#[fixture(unicode_home)] home: &Path) {
     let cases = [
         ("an empty chain", golden_with("chain", serde_json::json!([])), "chain"),
         ("an uppercase name", golden_with("name", "FOO".into()), "lowercase"),
@@ -193,7 +193,7 @@ fn a_record_with_a_field_that_means_nothing_is_corrupt_and_says_which(#[fixture(
 }
 
 #[skuld::test]
-fn record_json_is_stable(#[fixture(anna_home)] home: &Path) {
+fn record_json_is_stable(#[fixture(unicode_home)] home: &Path) {
     record(PathBuf::from("/work/project")).write(home).unwrap();
     let written = std::fs::read_to_string(home.join("record.json")).unwrap();
     assert_eq!(written, GOLDEN);
@@ -202,7 +202,7 @@ fn record_json_is_stable(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn garbage_truncated_empty_and_wrong_typed_records_are_corrupt_not_errors(#[fixture(anna_home)] home: &Path) {
+fn garbage_truncated_empty_and_wrong_typed_records_are_corrupt_not_errors(#[fixture(unicode_home)] home: &Path) {
     let wrong_type = GOLDEN.replace("\"cpus\": 2", "\"cpus\": \"two\"");
     let bad_name = GOLDEN.replace("\"name\": \"foo\"", "\"name\": \"../x\"");
     let bad_id = GOLDEN.replace("000102030405060708090a0b0c0d0e0f", "zz");
@@ -232,12 +232,12 @@ fn garbage_truncated_empty_and_wrong_typed_records_are_corrupt_not_errors(#[fixt
 }
 
 #[skuld::test]
-fn an_absent_record_is_absent(#[fixture(anna_home)] home: &Path) {
+fn an_absent_record_is_absent(#[fixture(unicode_home)] home: &Path) {
     assert!(matches!(InstanceRecord::read(home).unwrap(), RecordRead::Absent));
 }
 
 #[skuld::test]
-fn a_newer_schema_is_a_store_error(#[fixture(anna_home)] home: &Path) {
+fn a_newer_schema_is_a_store_error(#[fixture(unicode_home)] home: &Path) {
     // Whatever else it holds, a record from a newer devvm is recognized by its schema alone.
     std::fs::write(home.join("record.json"), r#"{"schema": 2, "something": ["new"]}"#).unwrap();
     let error = InstanceRecord::read(home).err().expect("a newer schema is refused");
@@ -247,7 +247,7 @@ fn a_newer_schema_is_a_store_error(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn write_replaces_atomically_while_a_reader_has_the_file_open(#[fixture(anna_home)] home: &Path) {
+fn write_replaces_atomically_while_a_reader_has_the_file_open(#[fixture(unicode_home)] home: &Path) {
     let first = record(PathBuf::from("/work/project"));
     first.write(home).unwrap();
     let held = std::fs::File::open(home.join("record.json")).unwrap();
@@ -270,7 +270,7 @@ fn write_replaces_atomically_while_a_reader_has_the_file_open(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn non_ascii_created_from_round_trips(#[fixture(anna_home)] home: &Path) {
+fn non_ascii_created_from_round_trips(#[fixture(unicode_home)] home: &Path) {
     let original = record(home.join("projects").join("Ж"));
     original.write(home).unwrap();
     assert_eq!(read_valid(home).created_from, home.join("projects").join("Ж"));
@@ -289,7 +289,7 @@ fn non_unicode_path() -> PathBuf {
 }
 
 #[skuld::test]
-fn a_non_unicode_created_from_is_refused_naming_the_path(#[fixture(anna_home)] home: &Path) {
+fn a_non_unicode_created_from_is_refused_naming_the_path(#[fixture(unicode_home)] home: &Path) {
     let bad = non_unicode_path();
     let error = record(bad.clone()).write(home).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io);
@@ -303,7 +303,7 @@ fn a_non_unicode_created_from_is_refused_naming_the_path(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn marker_round_trips_and_a_torn_marker_is_corrupt(#[fixture(anna_home)] home: &Path) {
+fn marker_round_trips_and_a_torn_marker_is_corrupt(#[fixture(unicode_home)] home: &Path) {
     assert!(matches!(read_marker(home).unwrap(), MarkerRead::Absent));
     for owner in [Owner::Process, Owner::None] {
         let marker = Marker { owner, id: id() };
@@ -329,7 +329,7 @@ fn marker_round_trips_and_a_torn_marker_is_corrupt(#[fixture(anna_home)] home: &
 }
 
 #[skuld::test]
-fn a_marker_from_a_newer_devvm_is_a_store_error(#[fixture(anna_home)] home: &Path) {
+fn a_marker_from_a_newer_devvm_is_a_store_error(#[fixture(unicode_home)] home: &Path) {
     std::fs::write(home.join("owner.json"), r#"{"schema":2,"owner":"cluster"}"#).unwrap();
     let error = read_marker(home).err().expect("a newer schema is refused");
     assert_eq!(error.kind(), ErrorKind::Store);

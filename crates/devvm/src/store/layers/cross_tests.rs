@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::exit::StderrProgress;
 use crate::store::layers::{BuildRequest, Built, LayerStore, SystemClock};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::{Dirs, Error, ErrorKind};
 
@@ -97,7 +97,7 @@ impl Builder {
 }
 
 #[skuld::test]
-fn two_processes_building_one_layer_run_one_builder(#[fixture(anna_home)] home: &Path) {
+fn two_processes_building_one_layer_run_one_builder(#[fixture(unicode_home)] home: &Path) {
     let markers = home.join("markers");
     std::fs::create_dir(&markers).unwrap();
     let key_hex = key(1).to_string();
@@ -116,7 +116,7 @@ fn two_processes_building_one_layer_run_one_builder(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn killing_the_builder_lets_the_waiter_build_in_a_fresh_staging_dir(#[fixture(anna_home)] home: &Path) {
+fn killing_the_builder_lets_the_waiter_build_in_a_fresh_staging_dir(#[fixture(unicode_home)] home: &Path) {
     let markers = home.join("markers");
     std::fs::create_dir(&markers).unwrap();
     let key_hex = key(1).to_string();

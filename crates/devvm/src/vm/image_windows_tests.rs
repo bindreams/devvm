@@ -11,7 +11,7 @@ use crate::instance::record::{MarkerRead, Owner};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fake_vm::{STARTED, connect_when_up};
-use crate::test_support::fixtures::{MemoryProgress, anna_home};
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::helper;
 use crate::{Command, ErrorKind, Guest, Instance, InstanceState, ListFilter, StartOptions};
 
@@ -36,7 +36,7 @@ fn nothing_is_left(fx: &EngineFixture) {
 }
 
 #[skuld::test]
-fn image_start_makes_an_owned_instance_with_a_running_vm(#[fixture(anna_home)] home: &Path) {
+fn image_start_makes_an_owned_instance_with_a_running_vm(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
 
@@ -53,7 +53,7 @@ fn image_start_makes_an_owned_instance_with_a_running_vm(#[fixture(anna_home)] h
 }
 
 #[skuld::test]
-fn vm_drop_kills_the_machine_and_removes_the_instance(#[fixture(anna_home)] home: &Path) {
+fn vm_drop_kills_the_machine_and_removes_the_instance(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
     let machine = vm.instance().dir().record().unwrap().machine.unwrap();
@@ -65,7 +65,7 @@ fn vm_drop_kills_the_machine_and_removes_the_instance(#[fixture(anna_home)] home
 }
 
 #[skuld::test]
-fn vm_drop_deletes_the_leftovers_of_the_machine(#[fixture(anna_home)] home: &Path) {
+fn vm_drop_deletes_the_leftovers_of_the_machine(#[fixture(unicode_home)] home: &Path) {
     let fx = leaking_fixture(home, Arc::new(MemoryProgress::default()));
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
     let leftovers = vm.instance().dir().record().unwrap().machine.unwrap().leftovers;
@@ -80,7 +80,7 @@ fn vm_drop_deletes_the_leftovers_of_the_machine(#[fixture(anna_home)] home: &Pat
 }
 
 #[skuld::test]
-fn vm_drop_during_a_panic_unwinds_and_destroys(#[fixture(anna_home)] home: &Path) {
+fn vm_drop_during_a_panic_unwinds_and_destroys(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let image = image_of(&fx.engine);
 
@@ -97,7 +97,7 @@ fn vm_drop_during_a_panic_unwinds_and_destroys(#[fixture(anna_home)] home: &Path
 }
 
 #[skuld::test]
-fn vm_drop_never_fails_when_the_instance_is_busy_and_the_next_reap_finishes_it(#[fixture(anna_home)] home: &Path) {
+fn vm_drop_never_fails_when_the_instance_is_busy_and_the_next_reap_finishes_it(#[fixture(unicode_home)] home: &Path) {
     let (fx, progress) = memory_fixture(home);
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
     let name = vm.name().to_owned();
@@ -143,7 +143,7 @@ fn cli_run(home: &Path) -> (Child, String, MachineRecord) {
 }
 
 #[skuld::test]
-fn an_owner_killed_while_its_vm_runs_is_reaped_with_the_vm(#[fixture(anna_home)] home: &Path) {
+fn an_owner_killed_while_its_vm_runs_is_reaped_with_the_vm(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let (mut cli, name, machine) = cli_run(home);
     assert!(running(&machine));
@@ -158,7 +158,7 @@ fn an_owner_killed_while_its_vm_runs_is_reaped_with_the_vm(#[fixture(anna_home)]
 }
 
 #[skuld::test]
-fn image_start_reaps_a_killed_owners_leftover_instance(#[fixture(anna_home)] home: &Path) {
+fn image_start_reaps_a_killed_owners_leftover_instance(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let (mut cli, name, machine) = cli_run(home);
     cli.kill().unwrap();
@@ -217,27 +217,27 @@ fn an_up_killed_at(step: &str, home: &Path) {
 }
 
 #[skuld::test]
-fn an_up_killed_after_the_spawn_is_reaped_with_its_vm(#[fixture(anna_home)] home: &Path) {
+fn an_up_killed_after_the_spawn_is_reaped_with_its_vm(#[fixture(unicode_home)] home: &Path) {
     an_up_killed_at("spawned", home);
 }
 
 #[skuld::test]
-fn an_up_killed_after_the_record_is_reaped_with_its_vm(#[fixture(anna_home)] home: &Path) {
+fn an_up_killed_after_the_record_is_reaped_with_its_vm(#[fixture(unicode_home)] home: &Path) {
     an_up_killed_at("recorded", home);
 }
 
 #[skuld::test]
-fn an_up_killed_after_the_resume_is_reaped_with_its_vm(#[fixture(anna_home)] home: &Path) {
+fn an_up_killed_after_the_resume_is_reaped_with_its_vm(#[fixture(unicode_home)] home: &Path) {
     an_up_killed_at("resumed", home);
 }
 
 #[skuld::test]
-fn an_up_killed_after_the_disarm_is_reaped_with_its_vm(#[fixture(anna_home)] home: &Path) {
+fn an_up_killed_after_the_disarm_is_reaped_with_its_vm(#[fixture(unicode_home)] home: &Path) {
     an_up_killed_at("disarmed", home);
 }
 
 #[skuld::test]
-fn an_ownerless_instance_survives_the_cli_and_only_remove_deletes_it(#[fixture(anna_home)] home: &Path) {
+fn an_ownerless_instance_survives_the_cli_and_only_remove_deletes_it(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     // The helper reads `kill-on-close=false` from the VM before it exits, so survival does not rest on timing.
     let output = helper::command("fake-cli-up", &[&home.display().to_string()])
@@ -281,7 +281,7 @@ fn an_ownerless_instance_survives_the_cli_and_only_remove_deletes_it(#[fixture(a
 }
 
 #[skuld::test]
-fn a_vm_that_dies_with_its_owner_cannot_be_handed_over(#[fixture(anna_home)] home: &Path) {
+fn a_vm_that_dies_with_its_owner_cannot_be_handed_over(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
     let machine = vm.instance().dir().record().unwrap().machine.unwrap();
@@ -297,7 +297,7 @@ fn a_vm_that_dies_with_its_owner_cannot_be_handed_over(#[fixture(anna_home)] hom
 }
 
 #[skuld::test]
-fn vm_guest_methods_are_not_supported_until_the_access_layer(#[fixture(anna_home)] home: &Path) {
+fn vm_guest_methods_are_not_supported_until_the_access_layer(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
 

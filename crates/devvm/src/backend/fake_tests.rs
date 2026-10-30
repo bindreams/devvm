@@ -4,16 +4,16 @@ use super::FakeTarget;
 use crate::backend::contract::{self, ContractTarget};
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{env, key, request};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::{Arch, ErrorKind};
 
 #[skuld::test]
-fn fake_storage_writes_only_into_staging(#[fixture(anna_home)] home: &Path) {
+fn fake_storage_writes_only_into_staging(#[fixture(unicode_home)] home: &Path) {
     contract::storage_writes_only_into_staging(&FakeTarget::new(), home);
 }
 
 #[skuld::test]
-fn fake_launch_names_the_layer_a_disk_sits_on_when_it_is_gone(#[fixture(anna_home)] home: &Path) {
+fn fake_launch_names_the_layer_a_disk_sits_on_when_it_is_gone(#[fixture(unicode_home)] home: &Path) {
     let target = FakeTarget::new();
     let env = env(home);
     let parent = target.parent_layer(&env.store);
@@ -33,7 +33,7 @@ fn fake_launch_names_the_layer_a_disk_sits_on_when_it_is_gone(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn fake_import_base_makes_the_image_the_layers_disk(#[fixture(anna_home)] home: &Path) {
+fn fake_import_base_makes_the_image_the_layers_disk(#[fixture(unicode_home)] home: &Path) {
     let target = FakeTarget::new();
     let env = env(home);
     let image = home.join("downloaded.img");
@@ -64,7 +64,7 @@ fn fake_import_base_makes_the_image_the_layers_disk(#[fixture(anna_home)] home: 
 }
 
 #[skuld::test]
-fn fake_import_base_of_a_missing_image_is_an_io_error(#[fixture(anna_home)] home: &Path) {
+fn fake_import_base_of_a_missing_image_is_an_io_error(#[fixture(unicode_home)] home: &Path) {
     let target = FakeTarget::new();
     let env = env(home);
     let built = env.store.build(&request(key(5)), None, |staging| {

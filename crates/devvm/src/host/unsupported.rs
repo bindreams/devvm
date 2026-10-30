@@ -22,6 +22,10 @@ impl Host for UnsupportedHost {
         })
     }
 
+    fn ansi_code_page(&self) -> Option<u32> {
+        None
+    }
+
     /// A plain spawn already outlives its parent; the host is refused earlier by `accelerator`.
     fn detach(&self, _cmd: &mut cosca::Command) -> Result<()> {
         Ok(())

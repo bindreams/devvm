@@ -58,7 +58,7 @@ use sha2::{Digest, Sha256 as Sha2};
 
 use super::{Artifact, Fetcher, HttpTransport};
 use crate::exit::{NullProgress, StderrProgress};
-use crate::test_support::fixtures::anna_home;
+use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::test_support::http::{Behavior, TestServer};
 use crate::{Dirs, ErrorKind, Sha256};
@@ -141,7 +141,7 @@ impl Child2 {
 }
 
 #[skuld::test]
-fn http_transport_resumes_with_range_and_if_range(#[fixture(anna_home)] home: &Path) {
+fn http_transport_resumes_with_range_and_if_range(#[fixture(unicode_home)] home: &Path) {
     let body = data(300_000);
     let server = TestServer::start(body.clone(), ETAG);
     server.script(vec![Behavior::AbortAfter(81_920)]);
@@ -168,7 +168,7 @@ fn http_transport_resumes_with_range_and_if_range(#[fixture(anna_home)] home: &P
 }
 
 #[skuld::test]
-fn concurrent_first_fetch_downloads_once(#[fixture(anna_home)] home: &Path) {
+fn concurrent_first_fetch_downloads_once(#[fixture(unicode_home)] home: &Path) {
     let body = data(1_000_000);
     let server = TestServer::start(body.clone(), ETAG);
     let (paused_tx, paused_rx) = mpsc::channel();
@@ -196,7 +196,7 @@ fn concurrent_first_fetch_downloads_once(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn ctrl_c_mid_download_resumes(#[fixture(anna_home)] home: &Path) {
+fn ctrl_c_mid_download_resumes(#[fixture(unicode_home)] home: &Path) {
     const MIB: usize = 1024 * 1024;
     let body = data(4 * MIB + 123);
     let server = TestServer::start(body.clone(), ETAG);
@@ -238,7 +238,7 @@ fn ctrl_c_mid_download_resumes(#[fixture(anna_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn a_stall_mid_body_is_reported_as_a_stall_and_keeps_the_part(#[fixture(anna_home)] home: &Path) {
+fn a_stall_mid_body_is_reported_as_a_stall_and_keeps_the_part(#[fixture(unicode_home)] home: &Path) {
     let body = data(300_000);
     let server = TestServer::start(body.clone(), ETAG);
     let (paused_tx, paused_rx) = mpsc::channel();
@@ -268,7 +268,7 @@ fn a_stall_mid_body_is_reported_as_a_stall_and_keeps_the_part(#[fixture(anna_hom
 }
 
 #[skuld::test]
-fn a_weak_etag_is_never_sent_as_if_range(#[fixture(anna_home)] home: &Path) {
+fn a_weak_etag_is_never_sent_as_if_range(#[fixture(unicode_home)] home: &Path) {
     let body = data(300_000);
     let server = TestServer::start(body.clone(), "W/\"weak-1\"");
     server.script(vec![Behavior::AbortAfter(81_920)]);
