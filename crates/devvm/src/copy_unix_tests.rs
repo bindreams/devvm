@@ -112,3 +112,43 @@ fn a_tracked_path_below_a_deeper_symlink_is_refused_even_when_it_stays_inside(#[
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(error.message().contains("a/b/f.txt"), "{error}");
 }
+
+#[skuld::test]
+fn a_tracked_file_that_is_now_a_symlink_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "thing", b"x");
+    put(&repo, "other", b"y");
+    add_all(&repo);
+    std::fs::remove_file(repo.join("thing")).unwrap();
+    std::os::unix::fs::symlink("other", repo.join("thing")).unwrap();
+    let error = take(&repo, false, home)
+        .err()
+        .expect("a symlink is not the tracked file");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("`thing`"), "{error}");
+    assert!(error.message().contains("symbolic link"), "{error}");
+    assert!(error.message().contains("git tracks a file"), "{error}");
+    let left: Vec<_> = std::fs::read_dir(home.join("out")).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[skuld::test]
+fn the_path_of_a_skipped_submodule_is_escaped_in_the_note(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "top.txt", b"top");
+    add_all(&repo);
+    // A gitlink with no directory on disk, as an uninitialised submodule leaves it.
+    git(
+        &repo,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,line\nbreak",
+        ],
+    );
+    let taken = take(&repo, false, home).unwrap();
+    assert_eq!(taken.notes.len(), 1, "{:?}", taken.notes);
+    assert!(!taken.notes[0].contains('\n'), "{:?}", taken.notes);
+    assert!(taken.notes[0].contains(r"line\nbreak"), "{:?}", taken.notes);
+}

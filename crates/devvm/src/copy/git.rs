@@ -1,5 +1,6 @@
 //! Asking `git` which files a repository tracks.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -53,8 +54,31 @@ fn run(mut command: Command) -> Result<Output> {
         .map_err(|e| Error::io(ErrorKind::Io, "cannot run `git` (is it installed and on PATH?)", e))
 }
 
+fn not_a_directory(from_dir: &Path) -> Error {
+    Error::new(
+        ErrorKind::Recipe,
+        format!(
+            "`{}` is not a directory, so `copy: git-tracked` has nothing to copy",
+            from_dir.display()
+        ),
+    )
+}
+
 /// The root of the work tree that contains `from_dir`.
 pub(super) fn work_tree_root(host: &dyn Host, from_dir: &Path) -> Result<PathBuf> {
+    // Git cannot start in a directory that is not there, and `run` would blame git for it.
+    match std::fs::metadata(from_dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Err(not_a_directory(from_dir)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(not_a_directory(from_dir)),
+        Err(e) => {
+            return Err(Error::io(
+                ErrorKind::Io,
+                format!("cannot read {}", from_dir.display()),
+                e,
+            ));
+        }
+    }
     let mut cmd = command(host, from_dir);
     cmd.args(["rev-parse", "--is-inside-work-tree", "--show-cdup"]);
     let out = run(cmd)?;
@@ -101,10 +125,32 @@ pub(super) fn list(host: &dyn Host, root: &Path) -> Result<Listing> {
         let (path, kind, object) = parse_record(record)?;
         match kind {
             Some(kind) => listing.tracked.push(Tracked { path, kind, object }),
-            None => listing.uninitialized_submodules.push(path),
+            None => {
+                refuse_unlisted_work_tree(root, &path)?;
+                listing.uninitialized_submodules.push(path);
+            }
         }
     }
     Ok(listing)
+}
+
+/// Fails when the gitlink `path` holds a work tree although git listed no files of it: an embedded repository, or a
+/// submodule git considers inactive. Skipping it as "uninitialized" would leave files that are on disk out.
+fn refuse_unlisted_work_tree(root: &Path, path: &str) -> Result<()> {
+    let marker = root.join(path).join(".git");
+    let present = marker
+        .try_exists()
+        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot read {}", marker.display()), e))?;
+    if !present {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorKind::Recipe,
+        format!(
+            "cannot copy `{}`: it is a git repository, but git does not list its files (make it a submodule, or remove it from the index)",
+            path.escape_debug()
+        ),
+    ))
 }
 
 /// `<mode> <object> <stage>\t<path>`. A submodule that is still listed is one git could not enter, so `None`.
