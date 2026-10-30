@@ -113,7 +113,15 @@ def release_notes(capsys) -> str:
     return capsys.readouterr().out
 
 
-def test_the_notes_say_the_build_applies_patches_to_the_tarball(capsys):
+def notes_bullet(notes: str, start: str) -> str:
+    """The bullet of the release notes that begins with `start`, continuation lines included."""
+    (bullet,) = [b for b in notes.split("\n- ") if b.startswith(start)]
+    return bullet
+
+
+def test_the_notes_call_the_tarball_unpatched_and_the_build_scripts_the_home_of_the_patches(capsys):
     notes = release_notes(capsys)
-    assert "qemu/patches" in notes
+    assert "qemu/patches" in notes.splitlines()[0]
+    assert "unpatched" in notes_bullet(notes, f"`qemu-{third_party.QEMU_VERSION}.tar.xz`")
+    assert "qemu/patches/" in notes_bullet(notes, "`" + TAG + "-build-scripts.tar.gz`")
     assert "exact upstream source the build was made from" not in notes

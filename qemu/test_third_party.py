@@ -198,6 +198,32 @@ def test_the_source_offer_names_the_patches_applied_to_the_tarball(tmp_path):
     assert "qemu/patches/*.patch" in (tmp_path / "SOURCE.txt").read_text(encoding="utf-8")
 
 
+def test_the_released_texts_send_readers_to_the_patch_line_build_sh_writes(tmp_path):
+    write_third_party(tmp_path, [], "qemu-1.2.3-1", "o/r", [])
+    write_source_offer(tmp_path, [], "qemu-1.2.3-1", "o/r")
+    build_sh = (Path(third_party.__file__).parent / "build.sh").read_text(encoding="utf-8")
+    assert f'echo "{third_party.PATCHES_LABEL} ' in build_sh
+    for name in ("THIRD-PARTY.txt", "SOURCE.txt"):
+        assert third_party.PATCHES_LABEL in (tmp_path / name).read_text(encoding="utf-8")
+
+
+def test_third_party_names_the_tarball_and_the_file_that_lists_its_patches(tmp_path):
+    write_third_party(tmp_path, [], "qemu-1.2.3-1", "o/r", [])
+    lines = (tmp_path / "THIRD-PARTY.txt").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("  Source:"))
+    line = " ".join(lines[start : start + 2])
+    assert f"/releases/download/qemu-1.2.3-1/qemu-{third_party.QEMU_VERSION}.tar.xz" in line
+    assert "BUILD-INFO.txt" in line
+    assert "SOURCE.txt" not in line
+
+
+def test_the_source_offer_describes_the_build_scripts_as_carrying_the_patches(tmp_path):
+    write_source_offer(tmp_path, [], "qemu-1.2.3-1", "o/r")
+    text = (tmp_path / "SOURCE.txt").read_text(encoding="utf-8")
+    (bullet,) = [b for b in text.split("\n  - ") if b.startswith("qemu-1.2.3-1-build-scripts.tar.gz")]
+    assert "the patches" in bullet
+
+
 def test_qemu_is_gpl_2_as_a_whole_not_or_later(tmp_path):
     write_third_party(tmp_path, [], "qemu-1.2.3-1", "o/r", [])
     write_source_offer(tmp_path, [], "qemu-1.2.3-1", "o/r")
