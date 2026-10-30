@@ -332,7 +332,7 @@ fn reports_passed(stdout: &str, test: &str) -> bool {
 /// fails.
 #[skuld::test(requires = [can_pin_code_page_1252])]
 fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
-    let dir = skuld::TempDir::new().unwrap();
+    let dir = skuld::TempDir::new().unwrap_or_else(|e| panic!("cannot create a temp dir for the pinned binary: {e}"));
     let exe = dir.join("devvm-lib-acp-1252.exe");
     let this_exe = std::env::current_exe().unwrap_or_else(|e| panic!("cannot find the path of this test binary: {e}"));
     std::fs::copy(&this_exe, &exe)

@@ -37,6 +37,17 @@ fn literal(source: &str, definition: &str, escapes: Escapes) -> Result<String, S
     decode(body, escapes)
 }
 
+/// Python's `\u` and `\U` take exactly 4 and 8 digits.
+fn python_digits(chars: &mut std::str::Chars<'_>, count: usize, body: &str) -> Result<String, String> {
+    let digits: String = chars.by_ref().take(count).collect();
+    if digits.chars().count() != count {
+        return Err(format!(
+            "an escape needs {count} hex digits, got `{digits}` in `{body}`"
+        ));
+    }
+    Ok(digits)
+}
+
 fn decode(body: &str, escapes: Escapes) -> Result<String, String> {
     let mut out = String::new();
     let mut chars = body.chars();
@@ -52,10 +63,14 @@ fn decode(body: &str, escapes: Escapes) -> Result<String, String> {
                 }
                 chars.by_ref().take_while(|&h| h != '}').collect()
             }
-            (Escapes::Python, Some('u')) => chars.by_ref().take(4).collect(),
-            (Escapes::Python, Some('U')) => chars.by_ref().take(8).collect(),
+            (Escapes::Python, Some('u')) => python_digits(&mut chars, 4, body)?,
+            (Escapes::Python, Some('U')) => python_digits(&mut chars, 8, body)?,
             (_, other) => return Err(format!("unsupported escape `\\{}` in `{body}`", other.unwrap_or(' '))),
         };
+        // `from_str_radix` takes a leading `+`, which neither language does.
+        if hex.is_empty() || !hex.chars().all(|h| h.is_ascii_hexdigit()) {
+            return Err(format!("`{hex}` is not hex in `{body}`"));
+        }
         let code = u32::from_str_radix(&hex, 16).map_err(|e| format!("`{hex}` is not hex in `{body}`: {e}"))?;
         out.push(char::from_u32(code).ok_or_else(|| format!("U+{code:X} is not a character in `{body}`"))?);
     }
