@@ -133,7 +133,8 @@ pub(super) fn time_notes(top: &Kind, items: &[Item], path: PathOf) -> Vec<String
         .filter(|(_, kind)| matches!(kind, Kind::File { mtime: None, .. } | Kind::Dir { mtime: None }))
         .map(|(rel, _)| {
             format!(
-                "the modification time of {} is not kept: it is missing or outside 1970 to 2106, which SFTP carries",
+                "the modification time of {} is not kept: it is missing or cannot be told from a time outside 1970 to \
+                 2038, which SFTP carries in 32 bits",
                 path(rel)
             )
         })
@@ -231,6 +232,36 @@ pub(super) struct Rules<'a> {
     pub key: &'a dyn Fn(&str) -> String,
 }
 
+/// Refuses a name of the destination the user typed that the copy would create and the target cannot store. `chain`
+/// holds the destination's names from the outermost, each with the path that ends in it (`None` for a part that is no
+/// name: a root, `.`, `..`). Names are looked up from the innermost, and the first that exists ends the check: the
+/// target stores what it holds.
+pub(super) fn check_destination<P>(
+    chain: &[(Option<String>, P)],
+    rules: &Rules,
+    present: &mut dyn FnMut(&P) -> Result<Present>,
+) -> Result<()> {
+    for (name, path) in chain.iter().rev() {
+        let Some(name) = name else { continue };
+        let found = present(path);
+        if matches!(found, Ok(found) if found != Present::Nothing) {
+            break;
+        }
+        // A target that cannot look a name up is refusing it too, and says so less plainly.
+        if let Some(problem) = (rules.problem)(name) {
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!(
+                    "the destination name {name:?} {problem}, so it cannot be created on {}",
+                    rules.to
+                ),
+            ));
+        }
+        found?;
+    }
+    Ok(())
+}
+
 /// Refuses `name` when the target cannot hold it as one file name.
 pub(super) fn check_name(name: &str, rules: &Rules) -> Result<()> {
     match (rules.problem)(name) {
@@ -302,6 +333,17 @@ pub(super) fn join(base: &str, name: &str) -> String {
     } else {
         format!("{base}/{name}")
     }
+}
+
+/// The parts of the guest path `path` from the outermost, for [`check_destination`]: each with the path that ends in it.
+pub(super) fn chain(path: &str) -> Vec<(Option<String>, String)> {
+    let parts: Vec<&str> = path.split('/').collect();
+    (0..parts.len())
+        .map(|i| {
+            let name = (!matches!(parts[i], "" | "." | "..")).then(|| parts[i].to_owned());
+            (name, parts[..=i].join("/"))
+        })
+        .collect()
 }
 
 /// `base` below which `rel` lies.

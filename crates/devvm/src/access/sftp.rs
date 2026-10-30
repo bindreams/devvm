@@ -11,11 +11,12 @@
 //! - Every file and link is written to `.devvm-partial-<random>` beside its target and renamed over it (on the guest
 //!   side with `posix-rename@openssh.com`), so a failure leaves no partial file at the final path, a read-only target
 //!   is replaced, and a symlink at the destination is replaced, never written through.
-//! - Directories keep their modification time too, set after their contents are written. A time SFTP cannot carry
-//!   (before 1970, after 2106, or none shown) is named in a line and the copy goes on.
-//! - The whole source is walked before anything is written: a name the target cannot store, a link the target cannot
-//!   make, and an entry that would land on something of the wrong kind fail the copy, naming it. Nothing at the
-//!   destination is deleted.
+//! - Directories the copy creates keep their modification time too, set after their contents are written; one that was
+//!   already there keeps its own, since setting a time needs ownership. A time SFTP cannot carry (before 1970, after
+//!   2106, or none shown; from a guest, after 2038 as well) is named in a line and the copy goes on.
+//! - The whole source is walked before anything is written: a name the target cannot store (the destination's own
+//!   included), an entry that would land on something of the wrong kind, and a link the target cannot make fail the
+//!   copy, naming it. Nothing at the destination is deleted.
 //!
 //! The host side of a transfer ([`local`]) runs on the calling thread; each remote step ([`remote`]) runs on the
 //! runtime, bounded by [`Inner::guarded`].
@@ -202,6 +203,12 @@ impl Sftp {
             key: &|name| guest.name_key(name),
         };
         plan::check_names(&items, &rules)?;
+        plan::check_destination(&plan::chain(&dest), &rules, &mut |path| {
+            self.call(&format!("inspecting the guest path {path}"), {
+                let path = path.clone();
+                move |remote| remote.present(path)
+            })
+        })?;
         let present = self.call(&format!("inspecting the guest path {dest}"), {
             let dest = dest.clone();
             move |remote| remote.present(dest)
@@ -235,15 +242,6 @@ impl Sftp {
                 .display()
                 .to_string()
         };
-        if let Some(link) = plan::first_link(&top, &items, &source_path) {
-            let refused = self.call(&format!("testing symlinks in the guest path {dest}"), {
-                let dest = dest.clone();
-                move |remote| remote.probe_links(dest)
-            })?;
-            if let Some(cause) = refused {
-                return Err(plan::link_refusal(&rules, &link, &cause));
-            }
-        }
         let (checked, root_fresh) = match &single {
             Some((_, entries)) => (entries, false),
             None => (
@@ -263,6 +261,16 @@ impl Sftp {
             },
             &|rel| (source_path(rel), plan::join_all(&dest, rel)),
         )?;
+        // Last: the probe makes a link, which no failing check may leave behind.
+        if let Some(link) = plan::first_link(&top, &items, &source_path) {
+            let refused = self.call(&format!("testing symlinks in the guest path {dest}"), {
+                let dest = dest.clone();
+                move |remote| remote.probe_links(dest)
+            })?;
+            if let Some(cause) = refused {
+                return Err(plan::link_refusal(&rules, &link, &cause));
+            }
+        }
         let target = single.as_ref().map_or(&dest, |(target, _)| target);
         progress.message(&format!(
             "copying {} to the guest ({target}): {}",
@@ -274,32 +282,37 @@ impl Sftp {
         }
         match placed {
             Place::Root { follow } => {
-                self.call(&format!("creating the guest directory {dest}"), {
+                // The directories the copy made and the times they get once their contents are written. A directory
+                // that was already there keeps its time: setting one needs ownership the user may not have.
+                let mut made = Vec::new();
+                let root_made = self.call(&format!("creating the guest directory {dest}"), {
                     let dest = dest.clone();
                     move |remote| remote.put_dir(dest, follow, what)
                 })?;
+                if let (true, Kind::Dir { mtime: Some(seconds) }) = (root_made, &top) {
+                    made.push((dest.clone(), *seconds));
+                }
                 for item in &items {
                     let remote_path = plan::join_all(&dest, &item.rel);
                     let local_path = item.rel.iter().fold(src.to_owned(), |base, part| base.join(part));
                     let kind = item.kind.clone();
-                    self.call(
+                    let item_made = self.call(
                         &format!("copying {} to the guest path {remote_path}", local_path.display()),
-                        move |remote| remote.put_item(kind, local_path, remote_path),
+                        {
+                            let remote_path = remote_path.clone();
+                            move |remote| remote.put_item(kind, local_path, remote_path)
+                        },
                     )?;
+                    if let (true, Kind::Dir { mtime: Some(seconds) }) = (item_made, &item.kind) {
+                        made.push((remote_path, *seconds));
+                    }
                 }
                 // Deepest first: a directory is listed before its children.
-                let dirs = items
-                    .iter()
-                    .rev()
-                    .map(|item| (plan::join_all(&dest, &item.rel), &item.kind))
-                    .chain(std::iter::once((dest.clone(), &top)));
-                for (path, kind) in dirs {
-                    if let Kind::Dir { mtime: Some(seconds) } = *kind {
-                        self.call(
-                            &format!("setting the time of the guest directory {path}"),
-                            move |remote| remote.set_dir_time(path, seconds),
-                        )?;
-                    }
+                for (path, seconds) in made.into_iter().rev() {
+                    self.call(
+                        &format!("setting the time of the guest directory {path}"),
+                        move |remote| remote.set_dir_time(path, seconds),
+                    )?;
                 }
             }
             Place::At | Place::Inside => {
@@ -353,6 +366,7 @@ impl Sftp {
             key: &|name| host.name_key(name),
         };
         plan::check_names(&items, &rules)?;
+        plan::check_destination(&local::chain(&dest), &rules, &mut |path| local::present(path))?;
         let present = local::present(&dest)?;
         let what = format!("the guest directory {src}");
         let placed = plan::place(source_of(&top), slash, present)
@@ -380,11 +394,6 @@ impl Sftp {
         };
         let source_path = |rel: &[String]| plan::join_all(&src, rel);
         let host_path = |rel: &[String]| rel.iter().fold(dest.clone(), |path, part| path.join(part));
-        if let Some(link) = plan::first_link(&top, &items, &source_path)
-            && let Some(cause) = local::probe_links(host, &dest)?
-        {
-            return Err(plan::link_refusal(&rules, &link, &cause));
-        }
         let (checked, root_fresh) = match &single {
             Some((_, entries)) => (entries, false),
             None => (
@@ -399,6 +408,12 @@ impl Sftp {
             &mut |rel| local::present(&host_path(rel)),
             &|rel| (source_path(rel), host_path(rel).display().to_string()),
         )?;
+        // Last: the probe makes a link, which no failing check may leave behind.
+        if let Some(link) = plan::first_link(&top, &items, &source_path)
+            && let Some(cause) = local::probe_links(host, &dest)?
+        {
+            return Err(plan::link_refusal(&rules, &link, &cause));
+        }
         let target = single.as_ref().map_or(&dest, |(target, _)| target);
         progress.message(&format!(
             "copying the guest path {src} to {}: {}",
@@ -410,21 +425,22 @@ impl Sftp {
         }
         match placed {
             Place::Root { follow } => {
-                local::put_dir(&dest, follow, &what)?;
+                // As in `copy_in`: only a directory the copy made gets the source's time.
+                let mut made = Vec::new();
+                if let (true, Kind::Dir { mtime: Some(seconds) }) = (local::put_dir(&dest, follow, &what)?, &top) {
+                    made.push((dest.clone(), *seconds));
+                }
                 for item in &items {
                     let remote_path = plan::join_all(&src, &item.rel);
-                    self.put_local(host, item.kind.clone(), &remote_path, &host_path(&item.rel))?;
+                    let path = host_path(&item.rel);
+                    let item_made = self.put_local(host, item.kind.clone(), &remote_path, &path)?;
+                    if let (true, Kind::Dir { mtime: Some(seconds) }) = (item_made, &item.kind) {
+                        made.push((path, *seconds));
+                    }
                 }
                 // Deepest first: a directory is listed before its children.
-                let dirs = items
-                    .iter()
-                    .rev()
-                    .map(|item| (host_path(&item.rel), &item.kind))
-                    .chain(std::iter::once((dest.clone(), &top)));
-                for (path, kind) in dirs {
-                    if let Kind::Dir { mtime: Some(seconds) } = *kind {
-                        local::set_dir_time(&path, seconds)?;
-                    }
+                for (path, seconds) in made.into_iter().rev() {
+                    local::set_dir_time(&path, seconds)?;
                 }
             }
             Place::At | Place::Inside => {
@@ -438,12 +454,13 @@ impl Sftp {
         Ok(())
     }
 
-    /// Makes the host `target` the tree entry `kind` copied from the guest path `remote`.
-    fn put_local(&self, host: &dyn Host, kind: Kind, remote: &str, target: &Path) -> Result<()> {
+    /// Makes the host `target` the tree entry `kind` copied from the guest path `remote`. Returns whether it made a
+    /// directory.
+    fn put_local(&self, host: &dyn Host, kind: Kind, remote: &str, target: &Path) -> Result<bool> {
         match kind {
             Kind::Dir { .. } => local::put_dir(target, false, &format!("the guest directory {remote}")),
             Kind::Link { target: text, to_dir } => {
-                local::put_link(host, &text, to_dir, target, &format!("the guest symlink {remote}"))
+                local::put_link(host, &text, to_dir, target, &format!("the guest symlink {remote}")).map(|()| false)
             }
             Kind::File { executable, mtime, .. } => {
                 let temp: PathBuf = local::temp_beside(target);
@@ -452,7 +469,7 @@ impl Sftp {
                     move |remote_side| remote_side.download(remote, temp)
                 });
                 match downloaded {
-                    Ok(()) => local::finish_file(&temp, target, executable, mtime, host),
+                    Ok(()) => local::finish_file(&temp, target, executable, mtime, host).map(|()| false),
                     Err(e) => {
                         let _ = std::fs::remove_file(&temp);
                         Err(e)

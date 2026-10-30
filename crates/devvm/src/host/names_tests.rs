@@ -44,6 +44,8 @@ fn windows_refuses_what_is_not_one_file_name() {
         "com1",
         "LPT9.x",
         "co\u{7}",
+        "a\u{1}",
+        "a\u{1f}b",
         "",
         ".",
         "..",
@@ -66,6 +68,10 @@ fn windows_refuses_what_is_not_one_file_name() {
         "a.b",
         ".hidden",
         "\u{1f600}",
+        // NTFS holds DEL and the C1 controls; only U+0001 to U+001F are illegal.
+        "a\u{7f}",
+        "\u{85}x",
+        "\u{9f}",
     ] {
         assert_eq!(windows_problem(name), None, "{name:?}");
     }

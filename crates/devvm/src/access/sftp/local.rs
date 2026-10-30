@@ -1,7 +1,7 @@
 //! The host side of a copy: reading a source tree, and writing a destination. It runs on the calling thread; every
 //! platform difference goes through [`Host`].
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::plan::{Beyond, Item, Kind, Present};
@@ -9,20 +9,43 @@ use super::{local_error, partial_name};
 use crate::host::Host;
 use crate::{Error, ErrorKind, Result};
 
+#[cfg(test)]
+#[path = "local_tests.rs"]
+mod local_tests;
+
 /// Whether `path` is written with a trailing separator, as `dir/`.
 pub(super) fn ends_with_separator(path: &Path) -> bool {
     path.as_os_str().to_string_lossy().ends_with(std::path::is_separator)
 }
 
-/// `path` without trailing separators (a path made only of them is left as it is).
+/// `path` without trailing separators. A root is left as it is: `C:` would name the current directory of the drive, and
+/// `\?\C:` the volume itself.
 pub(super) fn without_trailing_separator(path: &Path) -> PathBuf {
     let text = path.as_os_str().to_string_lossy();
     let trimmed = text.trim_end_matches(std::path::is_separator);
-    if trimmed.is_empty() || trimmed.len() == text.len() {
+    let is_root =
+        trimmed.is_empty() || matches!(Path::new(trimmed).components().next_back(), Some(Component::Prefix(_)));
+    if is_root || trimmed.len() == text.len() {
         path.to_owned()
     } else {
         PathBuf::from(trimmed)
     }
+}
+
+/// The parts of the host path `path` from the outermost, for [`super::plan::check_destination`]: each with the path
+/// that ends in it.
+pub(super) fn chain(path: &Path) -> Vec<(Option<String>, PathBuf)> {
+    let mut so_far = PathBuf::new();
+    path.components()
+        .map(|component| {
+            so_far.push(component.as_os_str());
+            let name = match component {
+                Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                _ => None,
+            };
+            (name, so_far.clone())
+        })
+        .collect()
 }
 
 /// Seconds since 1970 as SFTP carries them; `None` for a time before 1970 or after 2106, which is then not kept.
@@ -134,19 +157,19 @@ pub(super) fn make_dirs(path: &Path) -> Result<()> {
 }
 
 /// Makes `path` a directory for the tree entry `what`: a missing one is made with its parents, a symlink is replaced
-/// by a directory (or followed, when `follow`), a file is an error.
-pub(super) fn put_dir(path: &Path, follow: bool, what: &str) -> Result<()> {
+/// by a directory (or followed, when `follow`), a file is an error. Returns whether it made the directory.
+pub(super) fn put_dir(path: &Path, follow: bool, what: &str) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => make_dirs(path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => make_dirs(path).map(|()| true),
         Err(e) => Err(local_error("cannot inspect", path, e)),
-        Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(metadata) if metadata.file_type().is_symlink() && follow && path.is_dir() => Ok(()),
+        Ok(metadata) if metadata.is_dir() => Ok(false),
+        Ok(metadata) if metadata.file_type().is_symlink() && follow && path.is_dir() => Ok(false),
         Ok(metadata) if metadata.file_type().is_symlink() && !follow => {
             // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
             std::fs::remove_file(path)
                 .or_else(|_| std::fs::remove_dir(path))
                 .map_err(|e| local_error("cannot replace the symlink", path, e))?;
-            make_dirs(path)
+            make_dirs(path).map(|()| true)
         }
         Ok(_) => Err(Error::new(
             ErrorKind::Io,

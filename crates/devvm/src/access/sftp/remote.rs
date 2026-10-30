@@ -132,11 +132,14 @@ impl Remote {
 
     /// The tree entry at `path`, given its attributes (not followed through a symlink).
     pub(super) async fn kind_of(&self, path: &str, attrs: &FileAttributes) -> Result<Kind> {
+        // OpenSSH sends a time before 1970 as the 32-bit two's complement of its seconds, which reads as a date after
+        // 2038. The two cannot be told apart, so a time past 2038 is not trusted.
+        let mtime = attrs.mtime.filter(|seconds| i32::try_from(*seconds).is_ok());
         match attrs.file_type() {
-            FileType::Dir => Ok(Kind::Dir { mtime: attrs.mtime }),
+            FileType::Dir => Ok(Kind::Dir { mtime }),
             FileType::File => Ok(Kind::File {
                 executable: attrs.permissions.is_some_and(|mode| mode & 0o111 != 0),
-                mtime: attrs.mtime,
+                mtime,
                 size: attrs.len(),
             }),
             FileType::Symlink => {
@@ -255,19 +258,19 @@ impl Remote {
     }
 
     /// Makes `path` a directory for the tree entry `what`: a missing one is made with its parents, a symlink is
-    /// replaced by a directory (or followed, when `follow`), a file is an error.
-    pub(super) async fn put_dir(self, path: String, follow: bool, what: String) -> Result<()> {
+    /// replaced by a directory (or followed, when `follow`), a file is an error. Returns whether it made the directory.
+    pub(super) async fn put_dir(self, path: String, follow: bool, what: String) -> Result<bool> {
         match self.lstat(&path).await? {
-            None => self.make_dirs(&path).await,
+            None => self.make_dirs(&path).await.map(|()| true),
             Some(attrs) => match attrs.file_type() {
-                FileType::Dir => Ok(()),
-                FileType::Symlink if follow && self.leads_to_dir(&path).await? => Ok(()),
+                FileType::Dir => Ok(false),
+                FileType::Symlink if follow && self.leads_to_dir(&path).await? => Ok(false),
                 FileType::Symlink if !follow => {
                     self.session
                         .remove_file(path.as_str())
                         .await
                         .map_err(|e| self.error(&format!("cannot replace the guest symlink {path}"), e))?;
-                    self.make_dirs(&path).await
+                    self.make_dirs(&path).await.map(|()| true)
                 }
                 _ => Err(Error::new(
                     ErrorKind::Io,
@@ -427,16 +430,17 @@ impl Remote {
     }
 
     /// Makes `path` the tree entry `kind` copied from `local` (described as `what` in errors); a directory merges.
-    pub(super) async fn put_item(self, kind: Kind, local: PathBuf, path: String) -> Result<()> {
+    /// Returns whether it made a directory.
+    pub(super) async fn put_item(self, kind: Kind, local: PathBuf, path: String) -> Result<bool> {
         match kind {
             Kind::Dir { .. } => {
                 let what = format!("the host directory {}", local.display());
                 self.put_dir(path, false, what).await
             }
-            Kind::File { executable, mtime, .. } => self.put_file(local, path, executable, mtime).await,
+            Kind::File { executable, mtime, .. } => self.put_file(local, path, executable, mtime).await.map(|()| false),
             Kind::Link { target, .. } => {
                 let what = format!("the host symlink {}", local.display());
-                self.put_link(target, path, what).await
+                self.put_link(target, path, what).await.map(|()| false)
             }
         }
     }

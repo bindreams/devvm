@@ -25,7 +25,7 @@ pub(crate) fn posix_problem(name: &str) -> Option<String> {
     common_problem(name)
 }
 
-/// The rules of NTFS and Win32: no `\ : < > " | ? *`, no control characters, no trailing dot or space, no device names.
+/// The rules of NTFS and Win32: no `\ : < > " | ? *`, no characters below U+0020, no trailing dot or space, no device names.
 pub(crate) fn windows_problem(name: &str) -> Option<String> {
     if let Some(problem) = common_problem(name) {
         return Some(problem);
@@ -36,7 +36,8 @@ pub(crate) fn windows_problem(name: &str) -> Option<String> {
     {
         return Some(format!("contains `{c}`, which Windows file names cannot have"));
     }
-    if name.chars().any(char::is_control) {
+    // NTFS holds DEL and the C1 controls.
+    if name.chars().any(|c| ('\u{1}'..='\u{1f}').contains(&c)) {
         return Some("contains a control character, which Windows file names cannot have".to_owned());
     }
     if name.ends_with('.') || name.ends_with(' ') {

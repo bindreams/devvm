@@ -84,6 +84,7 @@ pub(crate) struct State {
     pub(crate) phantoms: Mutex<HashSet<String>>,
     pub(crate) discarding: Mutex<HashSet<String>>,
     pub(crate) generated: Mutex<HashMap<String, u64>>,
+    pub(crate) specials: Mutex<HashSet<String>>,
     pub(crate) sinks: Mutex<HashMap<String, (u64, String)>>,
     pub(crate) transferred: AtomicU64,
     pub(crate) kill: Notify,
@@ -126,6 +127,7 @@ impl TestSshd {
             read_only_dirs: Mutex::default(),
             failing_data: Mutex::default(),
             phantoms: Mutex::default(),
+            specials: Mutex::default(),
             discarding: Mutex::default(),
             generated: Mutex::default(),
             sinks: Mutex::default(),
@@ -264,6 +266,11 @@ impl TestSshd {
     /// The length and SHA-256 (hex) of what was uploaded to the discarded file `path`.
     pub fn sink_result(&self, path: &str) -> Option<(u64, String)> {
         self.state.sinks.lock().unwrap().get(path).cloned()
+    }
+
+    /// `path` is neither a regular file, a directory nor a symlink (a FIFO, say).
+    pub fn add_special_file(&self, path: &str) {
+        self.state.specials.lock().unwrap().insert(path.to_owned());
     }
 
     /// `path` is a file of `size` bytes whose byte at offset `o` is [`pattern_byte`]`(o)`.

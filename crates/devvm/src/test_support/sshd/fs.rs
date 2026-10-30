@@ -195,6 +195,9 @@ impl SftpFs {
         if let Some(target) = self.state.links.lock().unwrap().get(&path) {
             attrs.size = Some(target.len() as u64);
             attrs.permissions = Some(0o120777);
+        } else if self.state.specials.lock().unwrap().contains(&path) {
+            attrs.size = Some(0);
+            attrs.permissions = Some(0o010644);
         } else if let Some(size) = self.state.generated.lock().unwrap().get(&path) {
             attrs.size = Some(*size);
             attrs.permissions = Some(0o100000 | mode.unwrap_or(0o644));
@@ -207,8 +210,13 @@ impl SftpFs {
             attrs.mtime = metadata
                 .modified()
                 .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .and_then(|since| u32::try_from(since.as_secs()).ok());
+                .and_then(|time| match time.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(since) => u32::try_from(since.as_secs()).ok(),
+                    // OpenSSH sends a time before 1970 as the 32-bit two's complement of its seconds.
+                    Err(before) => u32::try_from(before.duration().as_secs())
+                        .ok()
+                        .map(|seconds| 0u32.wrapping_sub(seconds)),
+                });
             attrs.atime = attrs.mtime;
             attrs.permissions = Some(if metadata.is_dir() {
                 0o040000 | mode.unwrap_or(0o755)
@@ -481,6 +489,7 @@ impl Handler for SftpFs {
         names.extend(self.state.links.lock().unwrap().keys().filter_map(child));
         names.extend(self.state.generated.lock().unwrap().keys().filter_map(child));
         names.extend(self.state.sinks.lock().unwrap().keys().filter_map(child));
+        names.extend(self.state.specials.lock().unwrap().iter().filter_map(child));
         let phantoms: Vec<String> = self.state.phantoms.lock().unwrap().iter().filter_map(child).collect();
         names.extend(phantoms.iter().cloned());
         let mut entries = Vec::new();

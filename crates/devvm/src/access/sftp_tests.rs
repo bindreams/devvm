@@ -703,9 +703,7 @@ fn a_name_a_windows_guest_cannot_store_is_refused_before_anything_is_written(#[f
 }
 
 #[skuld::test]
-fn directory_times_are_kept_in_both_directions_over_a_fresh_and_a_merged_destination(
-    #[fixture(unicode_home)] home: &Path,
-) {
+fn directory_times_are_kept_in_both_directions_over_a_fresh_destination(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     project(&env);
     env.guest_file("g/a.txt", b"a");
@@ -716,14 +714,12 @@ fn directory_times_are_kept_in_both_directions_over_a_fresh_and_a_merged_destina
     set_mtime(&src, MTIME + 2);
     set_mtime(&env.root().join("g/sub"), MTIME + 3);
     set_mtime(&env.root().join("g"), MTIME + 4);
-    for _ in 0..2 {
-        env.copy_in(&src, "/proj").unwrap();
-        assert_eq!(mtime(&env.root().join("proj/sub")), MTIME + 1);
-        assert_eq!(mtime(&env.root().join("proj")), MTIME + 2);
-        env.copy_out("/g", &env.local.join("back")).unwrap();
-        assert_eq!(mtime(&env.local.join("back/sub")), MTIME + 3);
-        assert_eq!(mtime(&env.local.join("back")), MTIME + 4);
-    }
+    env.copy_in(&src, "/proj").unwrap();
+    assert_eq!(mtime(&env.root().join("proj/sub")), MTIME + 1);
+    assert_eq!(mtime(&env.root().join("proj")), MTIME + 2);
+    env.copy_out("/g", &env.local.join("back")).unwrap();
+    assert_eq!(mtime(&env.local.join("back/sub")), MTIME + 3);
+    assert_eq!(mtime(&env.local.join("back")), MTIME + 4);
 }
 
 #[skuld::test]
@@ -831,6 +827,12 @@ fn the_link_probe_leaves_nothing_behind(#[fixture(unicode_home)] home: &Path) {
     env.rig.sshd.add_symlink("/g/ln", "a.txt");
     env.copy_out("/g", &env.local.join("out")).unwrap();
     assert_eq!(tree(&env.local.join("out")), ["a.txt", "ln -> a.txt"]);
+    // The destination did not exist, so the host probe was made in `local`, beside it.
+    let beside: Vec<String> = tree(&env.local)
+        .into_iter()
+        .filter(|entry| entry.contains(".devvm-partial"))
+        .collect();
+    assert!(beside.is_empty(), "the probe link is still there: {beside:?}");
 }
 
 #[skuld::test]
@@ -904,6 +906,213 @@ fn what_the_copy_replaces_is_not_checked_for_clashes_below_it(#[fixture(unicode_
     env.copy_out("/g", &out).unwrap();
     assert_eq!(tree(&out), ["lnk/", "lnk/f/", "lnk/f/g"]);
     assert_eq!(std::fs::read(env.local.join("real/f")).unwrap(), b"keep");
+}
+
+/// The link probe makes a link at the destination, so it runs after the checks that can fail the copy.
+#[skuld::test]
+fn a_clash_is_reported_before_the_guest_link_probe_makes_anything(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.no_symlinks = true);
+    env.host_file("t/x", b"file");
+    symlink(Path::new("x"), &env.local.join("t").join("ln"));
+    std::fs::create_dir_all(env.root().join("d").join("x")).unwrap();
+    let error = env.copy_in(&env.local.join("t"), "/d").unwrap_err();
+    assert!(error.message().contains("/d/x"), "{error}");
+    assert!(!error.message().contains("cannot make symlinks"), "{error}");
+}
+
+#[skuld::test]
+fn a_clash_is_reported_before_the_host_link_probe_makes_anything(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::without_symlinks();
+    env.guest_file("g/x", b"file");
+    env.rig.sshd.add_symlink("/g/ln", "x");
+    let out = env.local.join("out");
+    std::fs::create_dir_all(out.join("x")).unwrap();
+    let error = env.copy_out("/g", &out).unwrap_err();
+    assert!(
+        error.message().contains(&out.join("x").display().to_string()),
+        "{error}"
+    );
+    assert!(!error.message().contains("cannot make symlinks"), "{error}");
+}
+
+// Directory times of a merge ------------------------------------------------------------------------------------------
+
+/// Setting a time needs ownership, and the user may not own a directory they merge into (`/tmp`, `/var/www`). Only a
+/// directory the copy made gets the source's time.
+#[skuld::test]
+fn a_directory_the_copy_did_not_create_keeps_its_own_time(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("proj/a.txt", b"a");
+    env.host_file("proj/sub/b.txt", b"b");
+    env.host_file("proj/sub/new/c.txt", b"c");
+    let src = env.local.join("proj");
+    set_mtime(&src.join("sub/new"), MTIME + 3);
+    set_mtime(&src.join("sub"), MTIME + 1);
+    set_mtime(&src, MTIME + 2);
+    env.guest_file("dest/sub/old.txt", b"o");
+    env.copy_in(&src, "/dest").unwrap();
+    assert_eq!(mtime(&env.root().join("dest/sub/new")), MTIME + 3, "made by the copy");
+    assert_ne!(mtime(&env.root().join("dest/sub")), MTIME + 1, "merged into");
+    assert_ne!(mtime(&env.root().join("dest")), MTIME + 2, "merged into");
+
+    env.guest_file("g/a.txt", b"a");
+    env.guest_file("g/sub/b.txt", b"b");
+    env.guest_file("g/sub/new/c.txt", b"c");
+    set_mtime(&env.root().join("g/sub/new"), MTIME + 3);
+    set_mtime(&env.root().join("g/sub"), MTIME + 1);
+    set_mtime(&env.root().join("g"), MTIME + 2);
+    let out = env.local.join("out");
+    std::fs::create_dir_all(out.join("sub")).unwrap();
+    std::fs::write(out.join("sub/old.txt"), b"o").unwrap();
+    env.copy_out("/g", &out).unwrap();
+    assert_eq!(mtime(&out.join("sub/new")), MTIME + 3, "made by the copy");
+    assert_ne!(mtime(&out.join("sub")), MTIME + 1, "merged into");
+    assert_ne!(mtime(&out), MTIME + 2, "merged into");
+}
+
+// Special files -------------------------------------------------------------------------------------------------------
+
+/// A FIFO sorts after the regular file, so the refusal comes late in the walk and nothing may have been written.
+#[cfg(unix)]
+#[skuld::test]
+fn a_host_special_file_fails_the_copy_naming_it_and_nothing_is_written(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("t/a.txt", b"a");
+    let fifo = env.local.join("t").join("z");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("the test needs the `mkfifo` command");
+    assert!(made.success(), "mkfifo failed");
+    for (src, dest) in [(env.local.join("t"), "/dest"), (fifo.clone(), "/lone")] {
+        let error = env.copy_in(&src, dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+        assert!(error.message().contains(&fifo.display().to_string()), "{error}");
+        assert!(error.message().contains("neither a regular file"), "{error}");
+        assert!(tree(env.root()).is_empty(), "nothing was written");
+    }
+}
+
+#[skuld::test]
+fn a_guest_special_file_fails_the_copy_naming_it_and_nothing_is_written(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("g/a.txt", b"a");
+    env.rig.sshd.add_special_file("/g/z");
+    for (src, dest) in [("/g", "out"), ("/g/z", "lone")] {
+        let dest = env.local.join(dest);
+        let error = env.copy_out(src, &dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+        assert!(error.message().contains("/g/z"), "{error}");
+        assert!(error.message().contains("neither a regular file"), "{error}");
+        assert!(!dest.exists(), "nothing was written");
+    }
+}
+
+// Names of the destination --------------------------------------------------------------------------------------------
+
+/// What the user typed is checked like the names of the tree: the target would drop the dot or read the colon as a
+/// stream.
+#[skuld::test]
+fn a_destination_name_a_windows_guest_cannot_store_is_refused_before_anything_is_written(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let mut env = Env::new(home);
+    env.guest = FakeGuests.os(GuestKind::Windows).unwrap();
+    let file = env.host_file("t/f.txt", b"f");
+    let dir = env.local.join("t");
+    for (src, dest, name) in [
+        (&file, "/out.", "out."),
+        (&dir, "/out.", "out."),
+        (&file, "/a:b", "a:b"),
+        (&dir, "/new./deeper/dest", "new."),
+        (&file, "/ok/new./f", "new."),
+    ] {
+        let error = env.copy_in(src, dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{dest}: {error}");
+        assert!(error.message().contains(&format!("{name:?}")), "{dest}: {error}");
+        assert!(tree(env.root()).is_empty(), "{dest}: nothing was created");
+    }
+    // A component that exists is not checked: the target already stores it.
+    std::fs::create_dir(env.root().join("there")).unwrap();
+    env.copy_in(&file, "/there/f.txt").unwrap();
+    assert_eq!(env.guest_tree("/there"), ["f.txt"]);
+}
+
+#[skuld::test]
+fn a_destination_name_a_windows_host_cannot_store_is_refused_before_anything_is_written(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::with_windows_names();
+    env.guest_file("g/a.txt", b"a");
+    let local = env.local.clone();
+    for (src, dest, name) in [
+        ("/g/a.txt", local.join("out."), "out."),
+        ("/g", local.join("out "), "out "),
+        // Spelled as a string: `join` would read `a:` as a drive on Windows.
+        ("/g/a.txt", PathBuf::from(format!("{}/a:b", local.display())), "a:b"),
+        ("/g", local.join("new.").join("deeper").join("dest"), "new."),
+    ] {
+        let error = env.copy_out(src, &dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{}: {error}", dest.display());
+        assert!(
+            error.message().contains(&format!("{name:?}")),
+            "{}: {error}",
+            dest.display()
+        );
+        assert!(tree(&local).is_empty(), "{}: nothing was created", dest.display());
+    }
+    // A component that exists is not checked: the target already stores it.
+    std::fs::create_dir(local.join("there")).unwrap();
+    env.copy_out("/g/a.txt", &local.join("there").join("f.txt")).unwrap();
+    assert_eq!(tree(&local.join("there")), ["f.txt"]);
+}
+
+// Name rules ----------------------------------------------------------------------------------------------------------
+
+/// The guest's rules apply to the host's names through the guest, so a case pair is one name on a Windows guest. A host
+/// that folds case (Windows, macOS) cannot hold the pair to begin with.
+#[cfg(target_os = "linux")]
+#[skuld::test]
+fn a_windows_guest_takes_two_host_names_differing_in_case_for_one(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.guest = FakeGuests.os(GuestKind::Windows).unwrap();
+    env.host_file("t/Readme", b"1");
+    env.host_file("t/README", b"2");
+    let error = env.copy_in(&env.local.join("t"), "/d").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("Readme"), "{error}");
+    assert!(error.message().contains("README"), "{error}");
+    assert!(tree(env.root()).is_empty(), "nothing was created");
+}
+
+/// SFTP v3 carries 32-bit seconds, and OpenSSH sends a time before 1970 as their two's complement: a date after 2038.
+/// It cannot be told from a real date that late, so it is named, not applied.
+#[skuld::test]
+fn a_guest_time_before_1970_is_named_and_the_copy_goes_on(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    set_time(&env.guest_file("g/early.txt", b"e"), -86_400);
+    env.guest_file("g/ok.txt", b"o");
+    std::fs::create_dir(env.root().join("g/d")).unwrap();
+    set_time(&env.root().join("g/d"), -86_400);
+    let out = env.local.join("out");
+    env.copy_out("/g", &out).unwrap();
+    assert_eq!(tree(&out), ["d/", "early.txt", "ok.txt"]);
+    let notes: Vec<String> = env
+        .progress
+        .messages()
+        .into_iter()
+        .filter(|line| line.contains("modification time"))
+        .collect();
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes.iter().any(|line| line.contains("/g/early.txt")), "{notes:?}");
+    assert!(notes.iter().any(|line| line.contains("/g/d")), "{notes:?}");
+    let year_2100 = 4_102_444_800;
+    assert!(
+        mtime(&out.join("early.txt")) < year_2100,
+        "the wrapped time was applied"
+    );
 }
 
 // Failures ============================================================================================================
