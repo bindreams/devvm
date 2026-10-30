@@ -12,7 +12,7 @@ use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::exit::{ExitStatus, ExitWidth, NullProgress};
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
-use crate::test_support::sshd::{FAST_KEEPALIVE as FAST, Rig};
+use crate::test_support::sshd::{FAST_KEEPALIVE as FAST, Rig, TestSshd};
 
 fn finished(session: &SshSession, command: &str) -> (ExitStatus, Vec<u8>, Vec<u8>) {
     let output = session.exec_collect(command).unwrap();
@@ -360,6 +360,105 @@ fn a_closed_host_output_closes_the_channel_and_returns_host_output_closed(#[fixt
     }
     // The server saw the channel close, so its `yes` loses its pipe.
     rig.sshd.wait_for_channel_close();
+}
+
+#[skuld::test]
+fn a_closed_host_output_closes_the_channel_of_a_command_that_went_quiet(#[fixture(unicode_home)] home: &Path) {
+    // `tail -f log | head -1`: the guest wrote once, the host output closed, and the guest says nothing more. Only the
+    // close wakes the task that owns the channel.
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let mut stderr = Vec::new();
+    let end = session
+        .exec("write-once-and-hold", &mut RefusesWrites, &mut stderr)
+        .unwrap();
+    assert!(matches!(end, ExecEnd::HostOutputClosed(_)), "{end:?}");
+    rig.sshd.wait_for_channel_close();
+}
+
+/// A sink that drops every connection of `sshd` when it receives output.
+struct DropsConnections<'a>(&'a TestSshd);
+
+impl Write for DropsConnections<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.drop_connections();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[skuld::test]
+fn an_exit_status_that_arrived_is_the_result_even_if_the_connection_dies_before_the_close(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The marker follows the status on the wire, so the status has been read when the sink sees the marker.
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let mut stderr = Vec::new();
+    let end = session
+        .exec("status-then-marker", &mut DropsConnections(&rig.sshd), &mut stderr)
+        .unwrap();
+    match end {
+        ExecEnd::Finished(status) => assert_eq!(status, ExitStatus::Code(7)),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Counts flushes and refuses nothing.
+#[derive(Default)]
+struct CountsFlushes {
+    flushes: usize,
+}
+
+impl Write for CountsFlushes {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes += 1;
+        Ok(())
+    }
+}
+
+#[skuld::test]
+fn exec_flushes_both_host_writers_when_the_command_ends(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let (mut out, mut err) = (CountsFlushes::default(), CountsFlushes::default());
+    session.exec("echo hi", &mut out, &mut err).unwrap();
+    assert!((out.flushes, err.flushes) >= (1, 1), "{} {}", out.flushes, err.flushes);
+}
+
+/// A sink whose flush fails.
+struct FailsToFlush;
+
+impl Write for FailsToFlush {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "the reader is gone",
+        ))
+    }
+}
+
+#[skuld::test]
+fn a_flush_that_fails_at_the_end_is_a_closed_host_output(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let mut stderr = Vec::new();
+    let end = session.exec("echo hi", &mut FailsToFlush, &mut stderr).unwrap();
+    match end {
+        ExecEnd::HostOutputClosed(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+        other => panic!("{other:?}"),
+    }
 }
 
 // The facade ==========================================================================================================

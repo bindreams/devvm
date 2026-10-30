@@ -529,7 +529,7 @@ impl SshSession {
     }
 
     /// Runs `command` through the guest's SSH `exec`, copying guest stdout and stderr to `out` and `err` as they
-    /// arrive. A guest that outpaces the writers is slowed down, not buffered. See [`ExecEnd`] for the two ways it
+    /// arrive, and flushing both when the command ends. A guest that outpaces the writers is slowed down, not buffered. See [`ExecEnd`] for the two ways it
     /// ends. Environment is never sent as SSH `env` requests: the command string carries it.
     ///
     /// Failures: `connection-lost` (keepalive expiry, a dropped connection, the VM exiting, the boot bound),
@@ -548,7 +548,15 @@ impl SshSession {
             let (to_stderr, chunk) = match runtime::wait(receiver.recv()) {
                 Some(Event::Out(chunk)) => (false, chunk),
                 Some(Event::Err(chunk)) => (true, chunk),
-                Some(Event::End(result)) => return result.map(ExecEnd::Finished),
+                Some(Event::End(result)) => {
+                    // A partial line the host writers still buffer (a prompt) would otherwise be lost.
+                    let flushed = out.flush().and_then(|()| err.flush());
+                    return match (result, flushed) {
+                        (Ok(status), Ok(())) => Ok(ExecEnd::Finished(status)),
+                        (Ok(_), Err(e)) => Ok(ExecEnd::HostOutputClosed(e)),
+                        (Err(e), _) => Err(e),
+                    };
+                }
                 None => {
                     return Err(Error::new(
                         ErrorKind::Internal,

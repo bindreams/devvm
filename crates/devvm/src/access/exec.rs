@@ -14,7 +14,7 @@ use crate::{Error, ErrorKind, Result};
 pub(crate) enum ExecEnd {
     /// The command ended with this status.
     Finished(ExitStatus),
-    /// The host side of the output closed (the error is the failed write). The channel was closed, so the guest
+    /// The host side of the output closed (the error is the failed write or flush). The channel was closed, so the guest
     /// process loses its output pipe and ends by its own SIGPIPE or SIGHUP; devvm does not wait for a status that may
     /// never come, since nothing else would stop a `yes`. The caller decides what that means.
     HostOutputClosed(std::io::Error),
@@ -79,9 +79,18 @@ async fn run(inner: &Inner, command: &str, awaiting: &str, events: &mpsc::Sender
         .map_err(|_| inner.connection_ended(awaiting))?;
     let mut status = None;
     loop {
-        let Some(message) = channel.wait().await else {
-            // The channel's sender is gone without a close: the connection ended under it.
-            return Err(inner.connection_ended(awaiting));
+        let message = tokio::select! {
+            message = channel.wait() => message,
+            // The host output closed while the guest is quiet: nothing else would wake this task to close the channel.
+            () = events.closed() => {
+                let _ = channel.close().await;
+                return Ok(None);
+            }
+        };
+        let Some(message) = message else {
+            // The channel's sender is gone without a close: the connection ended under it. A status that arrived
+            // first is still the command's result.
+            return status.map(Some).ok_or_else(|| inner.connection_ended(awaiting));
         };
         let event = match message {
             ChannelMsg::Data { data } => Event::Out(data.to_vec()),

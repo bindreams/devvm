@@ -14,6 +14,8 @@
 //! | `stdout-mib MiB` | writes MiB MiB of the pattern to stdout, then exits 0 |
 //! | `write-forever` | writes to stdout until the client closes the channel |
 //! | `hold` | does nothing and never answers: no output, no status |
+//! | `write-once-and-hold` | writes one line to stdout, then does nothing and never answers |
+//! | `status-then-marker` | sends `exit-status 7`, then the line `marker`, and never closes the channel |
 //! | `echo ...` | prints the rest of the line, exits 0 |
 //!
 //! Options make connections misbehave: a host key other than the advertised one, a refused client key, a peer that
@@ -68,6 +70,9 @@ pub(crate) struct State {
     connections: AtomicUsize,
     closed: Mutex<HashSet<ChannelId>>,
     closed_notify: Notify,
+    /// How many `exec` commands the server has received.
+    started: AtomicUsize,
+    started_notify: Notify,
     // The SFTP part.
     pub(crate) root: PathBuf,
     pub(crate) links: Mutex<HashMap<String, String>>,
@@ -109,6 +114,8 @@ impl TestSshd {
             connections: AtomicUsize::new(0),
             closed: Mutex::default(),
             closed_notify: Notify::new(),
+            started: AtomicUsize::new(0),
+            started_notify: Notify::new(),
             root,
             links: Mutex::default(),
             modes: Mutex::default(),
@@ -164,6 +171,27 @@ impl TestSshd {
                 notified.await;
             }
         })
+    }
+
+    /// Blocks until the server has received `count` `exec` commands in total: the commands are then in flight on the
+    /// server, which is what a test that acts on a running command waits for.
+    pub fn wait_for_commands(&self, count: usize) {
+        runtime::wait(async {
+            loop {
+                let notified = self.state.started_notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.state.started.load(Ordering::SeqCst) >= count {
+                    return;
+                }
+                notified.await;
+            }
+        })
+    }
+
+    /// Drops every open connection without a word.
+    pub fn drop_connections(&self) {
+        self.state.kill.notify_waiters();
     }
 
     /// `path` (a path in the served tree, `/`-separated) is a symlink to `target`.
@@ -321,6 +349,8 @@ impl Handler for Connection {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
+        self.state.started.fetch_add(1, Ordering::SeqCst);
+        self.state.started_notify.notify_waiters();
         let command = String::from_utf8_lossy(data).into_owned();
         let handle = session.handle();
         let words: Vec<&str> = command.split_whitespace().collect();
@@ -421,6 +451,27 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
             }
         }
         ["hold"] => {}
+        ["status-then-marker"] => {
+            let _ = handle.exit_status_request(channel, 7).await;
+            let _ = handle
+                .data(
+                    channel,
+                    b"marker
+"
+                    .to_vec(),
+                )
+                .await;
+        }
+        ["write-once-and-hold"] => {
+            let _ = handle
+                .data(
+                    channel,
+                    b"first
+"
+                    .to_vec(),
+                )
+                .await;
+        }
         ["echo", rest @ ..] => {
             let _ = handle.data(channel, format!("{}\n", rest.join(" ")).into_bytes()).await;
             finish(&handle, channel, 0).await;
