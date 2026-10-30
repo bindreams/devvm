@@ -136,11 +136,12 @@ apply_patches() {
     stage "e2: patches"
     # --forward: a patch the source already contains fails instead of being applied reversed. --fuzz=0: a hunk whose
     # context moved fails instead of landing in the wrong place.
-    local patch_file
+    local patch_file patch_sha
     for patch_file in "$here"/patches/*.patch; do
         [[ -e "$patch_file" ]] || continue
         patch -p1 --forward --batch --fuzz=0 --no-backup-if-mismatch -d "$src" -i "$patch_file"
-        applied_patches+=("$(basename "$patch_file") sha256:$(sha256sum < "$patch_file" | cut -d' ' -f1)")
+        patch_sha="$(sha256sum < "$patch_file")"
+        applied_patches+=("$(basename "$patch_file") sha256:${patch_sha%% *}")
     done
 }
 
