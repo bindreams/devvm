@@ -2,7 +2,7 @@
 //! overlay of the tip layer. Everything goes through the sidecar's `qemu-img`.
 
 use std::ffi::OsStr;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -11,10 +11,6 @@ use crate::backend::Storage;
 use crate::host::Host;
 use crate::store::layers::LayerDir;
 use crate::{Arch, Error, ErrorKind, Result};
-
-#[cfg(test)]
-#[path = "storage_tests.rs"]
-mod storage_tests;
 
 /// The disk file of a layer and of an instance's staging.
 pub(crate) const DISK: &str = "disk.qcow2";
@@ -93,39 +89,6 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
     })
 }
 
-/// `target` as a path relative to the directory `from_dir`, with `/` separators (which `qemu-img` reads on every
-/// platform). `None` when they share no root (another drive), or a part is not Unicode.
-pub(crate) fn relative_path(from_dir: &Path, target: &Path) -> Option<String> {
-    let mut from = from_dir.components().peekable();
-    let mut to = target.components().peekable();
-    let mut shared = 0;
-    while let (Some(a), Some(b)) = (from.peek(), to.peek()) {
-        if a != b {
-            break;
-        }
-        shared += 1;
-        from.next();
-        to.next();
-    }
-    if shared == 0 {
-        return None;
-    }
-    let mut parts: Vec<&str> = Vec::new();
-    for component in from {
-        match component {
-            Component::Normal(_) => parts.push(".."),
-            _ => return None,
-        }
-    }
-    for component in to {
-        match component {
-            Component::Normal(name) => parts.push(name.to_str()?),
-            _ => return None,
-        }
-    }
-    Some(parts.join("/"))
-}
-
 impl Storage for QemuStorage {
     fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: u64) -> Result<()> {
         let backing = layer.path().join(DISK);
@@ -148,35 +111,22 @@ impl Storage for QemuStorage {
         Ok(())
     }
 
+    /// The layer is a copy of the instance disk, which is only read. Its backing file stays the absolute path the
+    /// instance disk was created over: a relative path would be resolved against the child's path as written, so each
+    /// level of the chain would add `../../<key>/<generation>/` to it, and a chain of four layers outgrows Windows'
+    /// 260-character path limit, which QEMU does not lift.
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()> {
         let info = self.info(instance_disk)?;
-        let parent = info["full-backing-filename"].as_str().ok_or_else(|| {
-            Error::new(
+        if info.get("full-backing-filename").is_none() {
+            return Err(Error::new(
                 ErrorKind::Internal,
                 format!(
                     "the instance disk {} has no backing file to commit onto",
                     instance_disk.display()
                 ),
-            )
-        })?;
-        // A copy: the instance disk is only read, whatever happens to the instance after.
-        let disk = staging.path().join(DISK);
-        copy_file(instance_disk, &disk)?;
-        // A relative backing path stays valid when the staging directory is renamed to its final name next to its
-        // siblings, because both sit at the same depth of the layer store.
-        let backing = match relative_path(staging.path(), Path::new(parent)) {
-            Some(relative) => relative,
-            None => parent.to_owned(),
-        };
-        self.qemu_img(&[
-            "rebase".as_ref(),
-            "-u".as_ref(),
-            "-b".as_ref(),
-            backing.as_ref(),
-            "-F".as_ref(),
-            "qcow2".as_ref(),
-            disk.as_os_str(),
-        ])?;
+            ));
+        }
+        copy_file(instance_disk, &staging.path().join(DISK))?;
         let vars = instance_disk.parent().unwrap_or(Path::new("")).join(VARS);
         if vars.is_file() {
             copy_file(&vars, &staging.path().join(VARS))?;

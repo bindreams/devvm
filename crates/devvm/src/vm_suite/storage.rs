@@ -92,67 +92,58 @@ fn disk_size_larger_than_the_backing_image_is_accepted(
     assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], 64 << 20);
 }
 
+/// Six layers on the root: each one's backing path is absolute, so the chain does not grow a path with its depth. (A
+/// relative backing path is resolved against the child's path as written, and a chain of four layers outgrew Windows'
+/// 260-character path limit under it.)
 #[skuld::test]
-fn a_child_layer_backs_onto_its_parents_disk_by_a_relative_path(
+fn a_chain_of_layers_resolves_however_deep_it_is(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
     let world = env(home);
     let storage = storage(install);
     let base = base_layer(&world, &storage, home);
-    let parent_before = std::fs::read(disk_of(&base)).unwrap();
+    let base_before = std::fs::read(disk_of(&base)).unwrap();
 
-    // A first-level child: the instance writes nothing, so it reads what the base holds.
-    let first = home.join("first").join("disk.img");
-    std::fs::create_dir_all(first.parent().unwrap()).unwrap();
-    storage.create_instance_disk(base.tip().dir(), &first, 8 << 20).unwrap();
-    let first_before = std::fs::read(&first).unwrap();
-    let child = world
-        .store
-        .build(&request(key(2)), Some(&base), |staging| {
-            storage.commit_layer(&first, staging.dir)?;
-            // Nothing was written next to the parent, and the disk moved into staging.
-            assert!(staging.dir.path().join(DISK).is_file());
-            assert!(staging.dir.path().join(VARS).is_file());
-            Ok(Built::default())
-        })
-        .unwrap();
+    let mut tip = base;
+    for depth in 1..=6u8 {
+        let instance = home.join(format!("instance-{depth}")).join("disk.img");
+        std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+        storage
+            .create_instance_disk(tip.tip().dir(), &instance, 8 << 20)
+            .unwrap();
+        let instance_before = std::fs::read(&instance).unwrap();
+        tip = world
+            .store
+            .build(&request(key(10 + depth)), Some(&tip), |staging| {
+                storage.commit_layer(&instance, staging.dir)?;
+                assert!(staging.dir.path().join(DISK).is_file());
+                assert!(staging.dir.path().join(VARS).is_file());
+                Ok(Built::default())
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&instance).unwrap(),
+            instance_before,
+            "the instance disk is only read; the layer is a copy"
+        );
+
+        let chain = qemu_img_info(install, &disk_of(&tip), true);
+        let chain = chain.as_array().unwrap();
+        assert_eq!(chain.len(), depth as usize + 1, "{chain:?}");
+        let backing = chain[0]["backing-filename"].as_str().unwrap();
+        assert!(Path::new(backing).is_absolute(), "{backing}");
+        assert_eq!(
+            read_through(install, &disk_of(&tip), home)[..BASE_LEN],
+            pattern(BASE_LEN, 1)[..],
+            "depth {depth}"
+        );
+    }
+
+    let root = tip.layers().first().expect("a chain has a root");
     assert_eq!(
-        std::fs::read(&first).unwrap(),
-        first_before,
-        "the instance disk is only read; the layer is a copy"
-    );
-
-    // The staging directory was renamed to its final name; the relative path still resolves.
-    let chain = qemu_img_info(install, &disk_of(&child), true);
-    let chain = chain.as_array().unwrap();
-    assert_eq!(chain.len(), 2, "{chain:?}");
-    let backing = chain[0]["backing-filename"].as_str().unwrap();
-    assert!(backing.starts_with("../../") && !backing.contains('\\'), "{backing}");
-    assert_eq!(
-        read_through(install, &disk_of(&child), home)[..BASE_LEN],
-        pattern(BASE_LEN, 1)[..]
-    );
-
-    // A second level, to be sure the chain is followed all the way down.
-    let second = home.join("second").join("disk.img");
-    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
-    storage
-        .create_instance_disk(child.tip().dir(), &second, 8 << 20)
-        .unwrap();
-    let grandchild = world
-        .store
-        .build(&request(key(3)), Some(&child), |staging| {
-            storage.commit_layer(&second, staging.dir)?;
-            Ok(Built::default())
-        })
-        .unwrap();
-    let chain = qemu_img_info(install, &disk_of(&grandchild), true);
-    assert_eq!(chain.as_array().unwrap().len(), 3);
-
-    assert_eq!(
-        std::fs::read(disk_of(&base)).unwrap(),
-        parent_before,
+        std::fs::read(root.dir().path().join(DISK)).unwrap(),
+        base_before,
         "a parent layer is never written"
     );
 }

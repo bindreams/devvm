@@ -207,16 +207,21 @@ impl Qmp {
 
     fn read_value(&mut self) -> Result<Option<serde_json::Value>> {
         let mut line = String::new();
-        let read = self.reader.read_line(&mut line).map_err(|e| {
-            Error::io(
-                ErrorKind::ConnectionLost,
-                format!(
-                    "cannot read from the QEMU control socket {}",
-                    self.endpoint.path().display()
-                ),
-                e,
-            )
-        })?;
+        let read = match self.reader.read_line(&mut line) {
+            Ok(read) => read,
+            // A QEMU that exits resets the connection on Windows instead of closing it: either way, it is gone.
+            Err(e) if is_closed(&e) => 0,
+            Err(e) => {
+                return Err(Error::io(
+                    ErrorKind::ConnectionLost,
+                    format!(
+                        "cannot read from the QEMU control socket {}",
+                        self.endpoint.path().display()
+                    ),
+                    e,
+                ));
+            }
+        };
         if read == 0 {
             return Ok(None);
         }
@@ -407,6 +412,14 @@ impl Qmp {
             }
         }
     }
+}
+
+/// Whether a failed read means the peer has gone away.
+fn is_closed(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::BrokenPipe
+    )
 }
 
 /// Whether a failed connect means "nobody listens yet" and not "this can never work".
