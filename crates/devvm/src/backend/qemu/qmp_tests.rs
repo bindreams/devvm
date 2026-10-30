@@ -607,19 +607,16 @@ fn a_server_that_closes_after_query_status_loses_the_next_command() {
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
 }
 
+/// Not a socket test: Windows' AF_UNIX sockets sometimes never deliver the end of the stream to a reader after the peer
+/// wrote and closed (measured, minimal program: about one connection in two thousand, with a shutdown before the close
+/// as well), so a fake server that dies mid-line would hang the test run.
 #[skuld::test]
-fn a_partial_last_line_followed_by_the_end_of_the_stream_is_a_closed_stream() {
-    let sock = sock();
-    let (server, _) = serve(sock.listen(), 1, |session, _| {
-        session.command().unwrap();
-        // QEMU killed in the middle of a reply: no newline, then the end.
-        session.send_raw(br#"{"return": {"stat"#);
-    });
+fn a_line_cut_off_before_its_newline_is_the_end_of_the_stream() {
+    use super::is_whole_line;
 
-    let error = sock.connect().unwrap().query_status().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    server.join().unwrap();
+    assert!(!is_whole_line(0, ""), "nothing was read");
+    assert!(!is_whole_line(17, r#"{"return": {"stat"#), "QEMU died mid-write");
+    assert!(is_whole_line(3, "{}\n"));
 }
 
 #[skuld::test]

@@ -222,8 +222,7 @@ impl Qmp {
                 ));
             }
         };
-        // A line without its newline is what was in flight when QEMU died: the stream ended, there is no message.
-        if read == 0 || !line.ends_with('\n') {
+        if !is_whole_line(read, &line) {
             return Ok(None);
         }
         serde_json::from_str(&line).map(Some).map_err(|e| {
@@ -417,6 +416,12 @@ impl Qmp {
             }
         }
     }
+}
+
+/// Whether a read produced a message: nothing read is the end of the stream, and so is a line cut off before its newline,
+/// which is what a QEMU that died in the middle of a write leaves.
+fn is_whole_line(read: usize, line: &str) -> bool {
+    read > 0 && line.ends_with('\n')
 }
 
 /// Whether a failed read means the peer has gone away.
