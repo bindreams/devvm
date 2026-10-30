@@ -213,7 +213,7 @@ impl Qmp {
             Err(e) if is_closed(&e) => 0,
             Err(e) => {
                 return Err(Error::io(
-                    ErrorKind::ConnectionLost,
+                    ErrorKind::Io,
                     format!(
                         "cannot read from the QEMU control socket {}",
                         self.endpoint.path().display()
@@ -222,7 +222,8 @@ impl Qmp {
                 ));
             }
         };
-        if read == 0 {
+        // A line without its newline is what was in flight when QEMU died: the stream ended, there is no message.
+        if read == 0 || !line.ends_with('\n') {
             return Ok(None);
         }
         serde_json::from_str(&line).map(Some).map_err(|e| {
@@ -260,7 +261,11 @@ impl Qmp {
             .and_then(|()| self.writer.flush())
             .map_err(|e| {
                 Error::io(
-                    ErrorKind::ConnectionLost,
+                    if is_closed(&e) {
+                        ErrorKind::ConnectionLost
+                    } else {
+                        ErrorKind::Io
+                    },
                     format!(
                         "cannot send {} to the QEMU control socket {}",
                         C::NAME,
@@ -422,12 +427,13 @@ fn is_closed(error: &std::io::Error) -> bool {
     )
 }
 
-/// Whether a failed connect means "nobody listens yet" and not "this can never work".
+/// Whether a failed connect means "nobody listens yet" and not "this can never work": no socket, a socket nobody
+/// accepts on, or an attempt a starting or dying QEMU reset or aborted.
 fn is_not_listening(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-    )
+    ) || is_closed(error)
 }
 
 /// The event `value` is. The events devvm reads must parse as the `qapi` crate's `Event`; any other is kept by name.

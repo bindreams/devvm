@@ -77,6 +77,16 @@ impl Session {
     }
 }
 
+/// QEMU's greeting.
+fn greeting() -> Value {
+    json!({
+        "QMP": {
+            "version": { "qemu": { "micro": 2, "minor": 1, "major": 11 }, "package": "v11.1.2" },
+            "capabilities": ["oob"]
+        }
+    })
+}
+
 /// What the server received, in order.
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -92,12 +102,7 @@ fn serve(
         for _ in 0..clients {
             let (stream, _) = listener.accept().unwrap();
             let mut session = Session::new(stream);
-            session.send(json!({
-                "QMP": {
-                    "version": { "qemu": { "micro": 2, "minor": 1, "major": 11 }, "package": "v11.1.2" },
-                    "capabilities": ["oob"]
-                }
-            }));
+            session.send(greeting());
             let (name, _) = session.command().expect("qmp_capabilities");
             seen.lock().unwrap().push(name);
             session.reply(json!({}));
@@ -564,4 +569,94 @@ fn a_stop_event_in_a_normal_state_does_not_end_the_wait() {
     assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
 
     server.join().unwrap();
+}
+
+// A QEMU that goes away, or a socket that fails, at the wrong moment ------------------------------------------------
+
+#[skuld::test]
+fn a_server_that_closes_after_the_greeting_is_a_lost_connection() {
+    let sock = sock();
+    let listener = sock.listen();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut session = Session::new(stream);
+        session.send(greeting());
+        // Dropped before `qmp_capabilities` is answered.
+    });
+
+    let error = sock.connect().err().expect("the handshake cannot finish");
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn a_server_that_closes_after_query_status_loses_the_next_command() {
+    let sock = sock();
+    let (server, _) = serve(sock.listen(), 1, |session, _| {
+        session.answer(json!({ "status": "running", "running": true }));
+    });
+
+    let mut qmp = sock.connect().unwrap();
+    assert_eq!(qmp.query_status().unwrap().state, "running");
+    server.join().unwrap();
+    let error = qmp.system_powerdown().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+}
+
+#[skuld::test]
+fn a_partial_last_line_followed_by_the_end_of_the_stream_is_a_closed_stream() {
+    let sock = sock();
+    let (server, _) = serve(sock.listen(), 1, |session, _| {
+        session.command().unwrap();
+        // QEMU killed in the middle of a reply: no newline, then the end.
+        session.writer.write_all(br#"{"return": {"stat"#).unwrap();
+        session.writer.flush().unwrap();
+    });
+
+    let error = sock.connect().unwrap().query_status().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn a_line_that_is_not_text_is_an_io_error_and_not_a_lost_connection() {
+    let sock = sock();
+    let (server, _) = serve(sock.listen(), 1, |session, _| {
+        session.command().unwrap();
+        session.writer.write_all(b"\xff\xfe\n").unwrap();
+        session.writer.flush().unwrap();
+        // The peer stays up: the process behind it is alive.
+        while session.command().is_some() {}
+    });
+
+    let mut qmp = sock.connect().unwrap();
+    let error = qmp.query_status().unwrap_err();
+    drop(qmp);
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn only_a_closed_stream_means_the_peer_is_gone() {
+    use super::{is_closed, is_not_listening};
+    use std::io::{Error, ErrorKind::*};
+
+    for kind in [ConnectionReset, ConnectionAborted, BrokenPipe] {
+        assert!(is_closed(&Error::from(kind)), "{kind:?}");
+    }
+    for kind in [InvalidData, PermissionDenied, WouldBlock, TimedOut, Other] {
+        assert!(!is_closed(&Error::from(kind)), "{kind:?}");
+    }
+
+    // At connect time a peer that is still starting up refuses, or resets or aborts the attempt.
+    for kind in [NotFound, ConnectionRefused, ConnectionReset, ConnectionAborted] {
+        assert!(is_not_listening(&Error::from(kind)), "{kind:?}");
+    }
+    for kind in [PermissionDenied, InvalidData, InvalidInput] {
+        assert!(!is_not_listening(&Error::from(kind)), "{kind:?}");
+    }
 }
