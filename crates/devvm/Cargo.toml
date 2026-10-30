@@ -22,6 +22,8 @@ yaml_serde = "0.10"
 bytesize = "2.7.0"
 sha2 = "0.11.1"
 getrandom = "0.4.3"
+# Directory modification times (`access/sftp/local.rs`): `std` cannot open a directory for writing on Unix.
+filetime = "0.2"
 jiff = "0.2.38"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
 url = "2.5.8"

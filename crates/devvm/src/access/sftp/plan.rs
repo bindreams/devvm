@@ -1,7 +1,7 @@
 //! The decisions of a copy that do not depend on which side is the host: where the source lands, and which names the
 //! target cannot store. Both directions share them, so the rules are written once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{Error, ErrorKind, Result};
 
@@ -12,7 +12,10 @@ mod plan_tests;
 /// What one entry of a copied tree is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
-    Dir,
+    Dir {
+        /// Seconds since 1970, when the source has one SFTP can carry.
+        mtime: Option<u32>,
+    },
     File {
         executable: bool,
         /// Seconds since 1970, when the source has one SFTP can carry.
@@ -25,6 +28,20 @@ pub(super) enum Kind {
         /// Whether it leads to a directory: a Windows host makes the two kinds differently. Only a guest source knows.
         to_dir: bool,
     },
+}
+
+impl Kind {
+    pub fn is_dir(&self) -> bool {
+        matches!(self, Kind::Dir { .. })
+    }
+
+    fn noun(&self) -> &'static str {
+        match self {
+            Kind::Dir { .. } => "directory",
+            Kind::File { .. } => "file",
+            Kind::Link { .. } => "symlink",
+        }
+    }
 }
 
 /// One entry of a source tree, relative to its root.
@@ -97,6 +114,109 @@ pub(super) fn place(source: Source, slash: bool, dest: Present) -> std::result::
         (Source::Entry, Present::File | Present::Link(Beyond::NotDir)) if slash => Err(Conflict::SlashOnNonDir),
         (Source::Entry, _) => Ok(Place::At),
     }
+}
+
+// Checks before the first write =======================================================================================
+
+/// The path of the tree entry at the relative path `rel` (the source root when it is empty), in the words of its side.
+pub(super) type PathOf<'a> = &'a dyn Fn(&[String]) -> String;
+
+/// Where the entries of a tree are, for the checks that run before anything is written.
+pub(super) fn entries<'a>(top: &'a Kind, items: &'a [Item]) -> impl Iterator<Item = (&'a [String], &'a Kind)> {
+    std::iter::once((&[][..], top)).chain(items.iter().map(|item| (item.rel.as_slice(), &item.kind)))
+}
+
+/// A line for each entry whose modification time is not kept: SFTP carries seconds from 1970 to 2106 only, and a
+/// server may show none.
+pub(super) fn time_notes(top: &Kind, items: &[Item], path: PathOf) -> Vec<String> {
+    entries(top, items)
+        .filter(|(_, kind)| matches!(kind, Kind::File { mtime: None, .. } | Kind::Dir { mtime: None }))
+        .map(|(rel, _)| {
+            format!(
+                "the modification time of {} is not kept: it is missing or outside 1970 to 2106, which SFTP carries",
+                path(rel)
+            )
+        })
+        .collect()
+}
+
+/// The first symlink of the tree, if there is one.
+pub(super) fn first_link(top: &Kind, items: &[Item], path: PathOf) -> Option<String> {
+    entries(top, items)
+        .find(|(_, kind)| matches!(kind, Kind::Link { .. }))
+        .map(|(rel, _)| path(rel))
+}
+
+/// The error for a target that cannot make the symlink `link` of the source; `cause` is what it said.
+pub(super) fn link_refusal(rules: &Rules, link: &str, cause: &str) -> Error {
+    Error::new(
+        ErrorKind::Io,
+        format!(
+            "cannot copy the {} symlink {link}: {} cannot make symlinks ({cause})",
+            rules.from, rules.to
+        ),
+    )
+}
+
+/// Whether the root of a merged tree starts out empty: missing, or a symlink that the copy replaces.
+pub(super) fn root_is_fresh(present: Present, follow: bool) -> bool {
+    match present {
+        Present::Nothing => true,
+        Present::Link(_) => !follow,
+        Present::Dir | Present::File => false,
+    }
+}
+
+/// Refuses an entry of the tree that would land on something of the wrong kind: a directory on a file, anything else
+/// on a directory. Entries below one that the copy creates or replaces meet nothing, so they are not looked up.
+/// `present` looks up the destination of the entry at the given relative path; `paths` spells the source and the
+/// destination of that entry.
+pub(super) fn check_clashes(
+    items: &[Item],
+    root_fresh: bool,
+    rules: &Rules,
+    present: &mut dyn FnMut(&[String]) -> Result<Present>,
+    paths: &dyn Fn(&[String]) -> (String, String),
+) -> Result<()> {
+    let mut fresh: HashSet<&[String]> = HashSet::new();
+    for item in items {
+        let (parent, _) = item.rel.split_at(item.rel.len() - 1);
+        let parent_fresh = if parent.is_empty() {
+            root_fresh
+        } else {
+            fresh.contains(&parent)
+        };
+        if parent_fresh {
+            if item.kind.is_dir() {
+                fresh.insert(item.rel.as_slice());
+            }
+            continue;
+        }
+        let found = present(&item.rel)?;
+        let wrong = match (&item.kind, found) {
+            (Kind::Dir { .. }, Present::Nothing | Present::Link(_)) => {
+                fresh.insert(item.rel.as_slice());
+                None
+            }
+            (Kind::Dir { .. }, Present::Dir) => None,
+            (Kind::Dir { .. }, Present::File) => Some("which is not a directory"),
+            (_, Present::Dir) => Some("which is a directory"),
+            _ => None,
+        };
+        if let Some(wrong) = wrong {
+            let (src, dest) = paths(&item.rel);
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!(
+                    "cannot copy the {} {} {src} onto {dest} on {}, {wrong}",
+                    rules.from,
+                    item.kind.noun(),
+                    rules.to
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 // Names ===============================================================================================================

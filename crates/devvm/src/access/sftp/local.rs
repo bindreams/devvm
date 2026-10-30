@@ -42,7 +42,9 @@ fn kind_of(path: &Path, metadata: &std::fs::Metadata, host: &dyn Host) -> Result
             .map_err(|e| local_error("cannot read the symlink", path, e))?;
         Ok(Kind::Link { target, to_dir: false })
     } else if file_type.is_dir() {
-        Ok(Kind::Dir)
+        Ok(Kind::Dir {
+            mtime: sftp_seconds(metadata.modified()),
+        })
     } else if file_type.is_file() {
         let executable = host
             .is_executable(path)
@@ -101,7 +103,7 @@ pub(super) fn walk(dir: &Path, host: &dyn Host) -> Result<Vec<Item>> {
             let kind = kind_of(&child, &metadata, host)?;
             let mut child_rel = rel.clone();
             child_rel.push(text.to_owned());
-            if kind == Kind::Dir {
+            if kind.is_dir() {
                 dirs.push((child, child_rel.clone()));
             }
             items.push(Item { rel: child_rel, kind });
@@ -156,19 +158,6 @@ pub(super) fn put_dir(path: &Path, follow: bool, what: &str) -> Result<()> {
     }
 }
 
-/// Fails when `target` is a directory, which a file or a symlink would have to replace.
-pub(super) fn refuse_directory(target: &Path, what: &str) -> Result<()> {
-    match std::fs::symlink_metadata(target) {
-        Ok(metadata) if metadata.is_dir() => Err(Error::new(
-            ErrorKind::Io,
-            format!("cannot copy {what} onto the host directory {}", target.display()),
-        )),
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(local_error("cannot inspect", target, e)),
-    }
-}
-
 /// The temporary name for a file that will replace `target`: beside it, so the rename stays on one file system.
 pub(super) fn temp_beside(target: &Path) -> PathBuf {
     match target.parent() {
@@ -212,10 +201,37 @@ pub(super) fn finish_file(
     Ok(())
 }
 
+/// Whether this host can make symlinks where a copy to `dest` would: `None` when it can, else what it said. The probe
+/// is a link made and removed in the nearest directory that exists.
+pub(super) fn probe_links(host: &dyn Host, dest: &Path) -> Result<Option<String>> {
+    let dir = dest
+        .ancestors()
+        .map(|path| {
+            if path.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                path
+            }
+        })
+        .find(|path| path.is_dir())
+        .ok_or_else(|| Error::new(ErrorKind::Io, format!("no directory above {} exists", dest.display())))?;
+    let probe = dir.join(partial_name());
+    if let Err(e) = host.make_symlink(".", &probe, false) {
+        return Ok(Some(e.to_string()));
+    }
+    std::fs::remove_file(&probe).map_err(|e| local_error("cannot remove the test symlink", &probe, e))?;
+    Ok(None)
+}
+
+/// Sets the modification time of the directory `path`, after its children are written.
+pub(super) fn set_dir_time(path: &Path, seconds: u32) -> Result<()> {
+    filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(i64::from(seconds), 0))
+        .map_err(|e| local_error("cannot set the time of", path, e))
+}
+
 /// Makes `target` a symlink holding `text` (a guest path, `/`-separated), in place of whatever file or symlink is
 /// there. `what` names the guest entry.
 pub(super) fn put_link(host: &dyn Host, text: &str, to_dir: bool, target: &Path, what: &str) -> Result<()> {
-    refuse_directory(target, what)?;
     let temp = temp_beside(target);
     host.make_symlink(text, &temp, to_dir).map_err(|e| {
         Error::io(

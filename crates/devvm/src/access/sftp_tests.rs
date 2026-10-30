@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use crate::access::SshSession;
 use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
@@ -121,13 +121,13 @@ fn with_slash(path: &Path) -> PathBuf {
 
 const MTIME: u64 = 1_000_000_000;
 
+/// Sets the time of a file or a directory; negative is before 1970.
+fn set_time(path: &Path, secs: i64) {
+    filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(secs, 0)).unwrap();
+}
+
 fn set_mtime(path: &Path, secs: u64) {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
-        .unwrap();
+    set_time(path, secs as i64);
 }
 
 fn mtime(path: &Path) -> u64 {
@@ -700,6 +700,210 @@ fn a_name_a_windows_guest_cannot_store_is_refused_before_anything_is_written(#[f
     let error = env.copy_in(&file, "/dir").unwrap_err();
     assert!(error.message().contains("\"a?b\""), "{error}");
     assert!(tree(&env.root().join("dir")).is_empty());
+}
+
+#[skuld::test]
+fn directory_times_are_kept_in_both_directions_over_a_fresh_and_a_merged_destination(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    project(&env);
+    env.guest_file("g/a.txt", b"a");
+    env.guest_file("g/sub/b.txt", b"b");
+    // Set last: writing a child changes the time of its directory.
+    let src = env.local.join("proj");
+    set_mtime(&src.join("sub"), MTIME + 1);
+    set_mtime(&src, MTIME + 2);
+    set_mtime(&env.root().join("g/sub"), MTIME + 3);
+    set_mtime(&env.root().join("g"), MTIME + 4);
+    for _ in 0..2 {
+        env.copy_in(&src, "/proj").unwrap();
+        assert_eq!(mtime(&env.root().join("proj/sub")), MTIME + 1);
+        assert_eq!(mtime(&env.root().join("proj")), MTIME + 2);
+        env.copy_out("/g", &env.local.join("back")).unwrap();
+        assert_eq!(mtime(&env.local.join("back/sub")), MTIME + 3);
+        assert_eq!(mtime(&env.local.join("back")), MTIME + 4);
+    }
+}
+
+#[skuld::test]
+fn a_time_sftp_cannot_carry_is_named_and_the_copy_goes_on(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("t/ok.txt", b"o");
+    env.host_file("t/late.txt", b"l");
+    env.host_file("t/early.txt", b"e");
+    // Spelled as the copy spells them.
+    let [late, early, dir] = ["late.txt", "early.txt", "d"].map(|name| env.local.join("t").join(name));
+    std::fs::create_dir(&dir).unwrap();
+    set_time(&late, 5_000_000_000);
+    set_time(&early, -86_400);
+    set_time(&dir, 5_000_000_000);
+    env.copy_in(&env.local.join("t"), "/t").unwrap();
+    assert_eq!(env.guest_tree("/t"), ["d/", "early.txt", "late.txt", "ok.txt"]);
+    let notes: Vec<String> = env
+        .progress
+        .messages()
+        .into_iter()
+        .filter(|line| line.contains("modification time"))
+        .collect();
+    for named in [&late, &early, &dir] {
+        let named = named.display().to_string();
+        assert_eq!(
+            notes.iter().filter(|line| line.contains(&named)).count(),
+            1,
+            "{named}: {notes:?}"
+        );
+    }
+    assert_eq!(notes.len(), 3, "{notes:?}");
+    assert!(!notes.iter().any(|line| line.contains("ok.txt")), "{notes:?}");
+}
+
+#[skuld::test]
+fn a_guest_time_the_server_does_not_show_is_named_and_the_copy_goes_on(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    // The test server shows no time for a file past 2106.
+    set_mtime(&env.guest_file("g/late.txt", b"l"), 5_000_000_000);
+    env.guest_file("g/ok.txt", b"o");
+    let out = env.local.join("out");
+    env.copy_out("/g", &out).unwrap();
+    assert_eq!(tree(&out), ["late.txt", "ok.txt"]);
+    let notes: Vec<String> = env
+        .progress
+        .messages()
+        .into_iter()
+        .filter(|line| line.contains("modification time"))
+        .collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("/g/late.txt"), "{notes:?}");
+}
+
+// Checks before anything is written ===================================================================================
+
+#[skuld::test]
+fn links_a_guest_cannot_store_fail_the_copy_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.no_symlinks = true);
+    // The plain file sorts before the link and must not arrive.
+    env.host_file("t/a.txt", b"a");
+    let link = env.local.join("t").join("ln");
+    symlink(Path::new("a.txt"), &link);
+    let error = env.copy_in(&env.local.join("t"), "/dest").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains(&link.display().to_string()), "{error}");
+    assert!(error.message().contains("cannot make symlinks"), "{error}");
+    assert!(!env.root().join("dest").exists(), "nothing was created");
+    // A link given as the source is checked too.
+    let error = env.copy_in(&link, "/lone").unwrap_err();
+    assert!(error.message().contains("cannot make symlinks"), "{error}");
+    assert!(!env.root().join("lone").exists());
+    // A tree without links goes to the same guest.
+    env.copy_in(&project(&env), "/plain").unwrap();
+    assert_eq!(env.guest_tree("/plain"), PROJECT);
+}
+
+#[skuld::test]
+fn links_a_host_cannot_store_fail_the_copy_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::without_symlinks();
+    env.guest_file("g/a.txt", b"a");
+    env.rig.sshd.add_symlink("/g/ln", "a.txt");
+    let out = env.local.join("out");
+    let error = env.copy_out("/g", &out).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("/g/ln"), "{error}");
+    assert!(error.message().contains("cannot make symlinks"), "{error}");
+    assert!(!out.exists(), "nothing was created");
+    // A tree without links goes to the same host.
+    env.guest_file("p/a.txt", b"a");
+    env.copy_out("/p", &env.local.join("plain")).unwrap();
+    assert_eq!(tree(&env.local.join("plain")), ["a.txt"]);
+}
+
+#[skuld::test]
+fn the_link_probe_leaves_nothing_behind(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("t/a.txt", b"a");
+    symlink(Path::new("a.txt"), &env.local.join("t").join("ln"));
+    env.copy_in(&env.local.join("t"), "/new/deep/dest").unwrap();
+    assert_eq!(env.guest_tree("/new/deep/dest"), ["a.txt", "ln -> a.txt"]);
+    assert_eq!(env.rig.sshd.links().len(), 1);
+    assert_eq!(tree(&env.root().join("new/deep/dest")), ["a.txt"]);
+    env.guest_file("g/a.txt", b"a");
+    env.rig.sshd.add_symlink("/g/ln", "a.txt");
+    env.copy_out("/g", &env.local.join("out")).unwrap();
+    assert_eq!(tree(&env.local.join("out")), ["a.txt", "ln -> a.txt"]);
+}
+
+#[skuld::test]
+fn a_clash_found_late_in_the_merged_tree_fails_the_copy_before_anything_is_written(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    // `a.txt` sorts before the clashing `x` and `y`.
+    env.host_file("t/a.txt", b"a");
+    env.host_file("t/x", b"file");
+    env.host_file("t/y/inner", b"i");
+    std::fs::create_dir_all(env.root().join("d1").join("x")).unwrap();
+    let error = env.copy_in(&env.local.join("t"), "/d1").unwrap_err();
+    assert!(error.message().contains("/d1/x"), "{error}");
+    assert_eq!(tree(&env.root().join("d1")), ["x/"], "nothing was written");
+    env.guest_file("d2/y", b"a file");
+    let error = env.copy_in(&env.local.join("t"), "/d2").unwrap_err();
+    assert!(error.message().contains("/d2/y"), "{error}");
+    assert_eq!(tree(&env.root().join("d2")), ["y"], "nothing was written");
+
+    env.guest_file("g/a.txt", b"a");
+    env.guest_file("g/x", b"file");
+    let out = env.local.join("out");
+    std::fs::create_dir_all(out.join("x")).unwrap();
+    let error = env.copy_out("/g", &out).unwrap_err();
+    assert!(
+        error.message().contains(&out.join("x").display().to_string()),
+        "{error}"
+    );
+    assert_eq!(tree(&out), ["x/"], "nothing was written");
+}
+
+#[skuld::test]
+fn a_file_going_inside_a_directory_onto_a_directory_of_its_name_writes_nothing(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let file = env.host_file("plain.txt", b"p");
+    std::fs::create_dir_all(env.root().join("dir").join("plain.txt")).unwrap();
+    let error = env.copy_in(&file, "/dir").unwrap_err();
+    assert!(error.message().contains("/dir/plain.txt"), "{error}");
+    assert_eq!(tree(&env.root().join("dir")), ["plain.txt/"]);
+    env.guest_file("plain.txt", b"p");
+    let out = env.local.join("out");
+    std::fs::create_dir_all(out.join("plain.txt")).unwrap();
+    let error = env.copy_out("/plain.txt", &out).unwrap_err();
+    assert!(
+        error.message().contains(&out.join("plain.txt").display().to_string()),
+        "{error}"
+    );
+    assert_eq!(tree(&out), ["plain.txt/"]);
+}
+
+#[skuld::test]
+fn what_the_copy_replaces_is_not_checked_for_clashes_below_it(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    // The destination's `lnk` leads to a directory holding a file `f`. The copy replaces `lnk` by a directory, so the
+    // source's directory `lnk/f` meets nothing.
+    env.host_file("t/lnk/f/g", b"g");
+    env.guest_file("real/f", b"keep");
+    std::fs::create_dir(env.root().join("dest")).unwrap();
+    env.rig.sshd.add_symlink("/dest/lnk", "/real");
+    env.copy_in(&env.local.join("t"), "/dest").unwrap();
+    assert_eq!(env.guest_tree("/dest"), ["lnk/", "lnk/f/", "lnk/f/g"]);
+    assert_eq!(std::fs::read(env.root().join("real/f")).unwrap(), b"keep");
+
+    env.guest_file("g/lnk/f/g", b"g");
+    let out = env.local.join("out");
+    std::fs::create_dir_all(env.local.join("real")).unwrap();
+    std::fs::write(env.local.join("real/f"), b"keep").unwrap();
+    std::fs::create_dir(&out).unwrap();
+    symlink(&env.local.join("real"), &out.join("lnk"));
+    env.copy_out("/g", &out).unwrap();
+    assert_eq!(tree(&out), ["lnk/", "lnk/f/", "lnk/f/g"]);
+    assert_eq!(std::fs::read(env.local.join("real/f")).unwrap(), b"keep");
 }
 
 // Failures ============================================================================================================

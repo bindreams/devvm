@@ -47,7 +47,7 @@ fn items(paths: &[&str]) -> Vec<Item> {
         .iter()
         .map(|path| Item {
             rel: path.split('/').map(str::to_owned).collect(),
-            kind: Kind::Dir,
+            kind: Kind::Dir { mtime: None },
         })
         .collect()
 }
@@ -102,4 +102,68 @@ fn guest_path_pieces() {
     assert_eq!(parent_of("a"), ".");
     assert_eq!(base_name("/a/b/"), Some("b"));
     assert_eq!(base_name("/"), None);
+}
+
+#[skuld::test]
+fn a_clash_is_looked_for_only_below_what_the_copy_does_not_create() {
+    use Beyond::Dir as ToDir;
+    use Present::{Dir, File, Link, Nothing};
+    let rules = Rules {
+        from: "host",
+        to: "the guest",
+        problem: &|_| None,
+        key: &|name| name.to_owned(),
+    };
+    let file = |path: &str| Item {
+        rel: path.split('/').map(str::to_owned).collect(),
+        kind: Kind::File {
+            executable: false,
+            mtime: None,
+            size: 0,
+        },
+    };
+    let dir = |path: &str| items(&[path]).pop().unwrap();
+    // `d` is a directory, `d/f` a file; what the destination holds at each path, and which paths are looked up.
+    let tree = [dir("d"), file("d/f")];
+    // (root starts empty, what is at `d`, what is at `d/f`, paths looked up, error expected)
+    let table: &[(bool, Present, Present, &[&str], bool)] = &[
+        (true, Dir, Dir, &[], false),
+        (false, Nothing, Dir, &["d"], false),
+        (false, Link(ToDir), Dir, &["d"], false),
+        (false, Dir, Nothing, &["d", "d/f"], false),
+        (false, Dir, Link(ToDir), &["d", "d/f"], false),
+        (false, Dir, Dir, &["d", "d/f"], true),
+        (false, File, Nothing, &["d"], true),
+    ];
+    for (root_fresh, at_d, at_f, looked_up, fails) in table {
+        let mut asked = Vec::new();
+        let result = super::check_clashes(
+            &tree,
+            *root_fresh,
+            &rules,
+            &mut |rel| {
+                asked.push(rel.join("/"));
+                Ok(if rel.len() == 1 { *at_d } else { *at_f })
+            },
+            &|rel| (rel.join("/"), format!("/dest/{}", rel.join("/"))),
+        );
+        assert_eq!(asked, *looked_up, "{root_fresh} {at_d:?} {at_f:?}");
+        assert_eq!(result.is_err(), *fails, "{root_fresh} {at_d:?} {at_f:?}: {result:?}");
+    }
+}
+
+#[skuld::test]
+fn the_root_of_a_merged_tree_is_fresh_when_missing_or_a_link_the_copy_replaces() {
+    use Beyond::{Dir as ToDir, NotDir};
+    use Present::{Dir, File, Link, Nothing};
+    for (present, follow, fresh) in [
+        (Nothing, false, true),
+        (Dir, false, false),
+        (Link(ToDir), false, true),
+        (Link(ToDir), true, false),
+        (Link(NotDir), false, true),
+        (File, false, false),
+    ] {
+        assert_eq!(super::root_is_fresh(present, follow), fresh, "{present:?} {follow}");
+    }
 }

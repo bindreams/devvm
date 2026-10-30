@@ -133,7 +133,7 @@ impl Remote {
     /// The tree entry at `path`, given its attributes (not followed through a symlink).
     pub(super) async fn kind_of(&self, path: &str, attrs: &FileAttributes) -> Result<Kind> {
         match attrs.file_type() {
-            FileType::Dir => Ok(Kind::Dir),
+            FileType::Dir => Ok(Kind::Dir { mtime: attrs.mtime }),
             FileType::File => Ok(Kind::File {
                 executable: attrs.permissions.is_some_and(|mode| mode & 0o111 != 0),
                 mtime: attrs.mtime,
@@ -210,7 +210,7 @@ impl Remote {
                 let kind = self.kind_of(&child, &attrs).await?;
                 let mut child_rel = rel.clone();
                 child_rel.push(name);
-                if kind == Kind::Dir {
+                if kind.is_dir() {
                     dirs.push((child, child_rel.clone()));
                 }
                 items.push(Item { rel: child_rel, kind });
@@ -277,21 +277,6 @@ impl Remote {
         }
     }
 
-    /// Fails when `target` is a directory, which a file or a symlink would have to replace.
-    async fn refuse_directory(&self, target: &str, what: &str) -> Result<()> {
-        if self
-            .lstat(target)
-            .await?
-            .is_some_and(|attrs| attrs.file_type().is_dir())
-        {
-            return Err(Error::new(
-                ErrorKind::Io,
-                format!("cannot copy {what} onto the guest directory {target}"),
-            ));
-        }
-        Ok(())
-    }
-
     async fn posix_rename(&self, from: &str, to: &str) -> Result<()> {
         let mut data = Vec::new();
         for text in [from, to] {
@@ -334,8 +319,6 @@ impl Remote {
         executable: bool,
         mtime: Option<u32>,
     ) -> Result<()> {
-        self.refuse_directory(&target, &format!("the host file {}", local.display()))
-            .await?;
         self.replace_with(&target, |temp| self.upload_to(&local, temp, executable, mtime))
             .await
     }
@@ -380,7 +363,6 @@ impl Remote {
 
     /// Makes `target` a symlink holding `text`, in place of whatever file or symlink is there.
     pub(super) async fn put_link(self, text: String, target: String, what: String) -> Result<()> {
-        self.refuse_directory(&target, &what).await?;
         let awaiting = format!("cannot copy {what} to the guest symlink {target}");
         let this = &self;
         self.replace_with(&target, |temp| async move {
@@ -394,10 +376,60 @@ impl Remote {
         .await
     }
 
+    /// Whether the guest can make symlinks where a copy to `dest` would: `None` when it can, else what it said. The
+    /// probe is a link made and removed beside where the copy writes.
+    pub(super) async fn probe_links(self, dest: String) -> Result<Option<String>> {
+        let mut dir = dest;
+        loop {
+            match self.stat(&dir).await? {
+                Some(attrs) if attrs.file_type().is_dir() => break,
+                _ => {
+                    let parent = parent_of(&dir);
+                    if parent == dir {
+                        return Err(Error::new(
+                            ErrorKind::Io,
+                            format!("the guest has no existing directory above {dir}"),
+                        ));
+                    }
+                    dir = parent;
+                }
+            }
+        }
+        let probe = join(&dir, &partial_name());
+        match self.session.symlink(".", probe.as_str()).await {
+            Ok(()) => {}
+            Err(SftpError::Status(status)) => {
+                return Ok(Some(format!(
+                    "the guest said: {}: {}",
+                    status.status_code, status.error_message
+                )));
+            }
+            Err(e) => return Err(self.error(&format!("cannot test symlinks in the guest directory {dir}"), e)),
+        }
+        self.session
+            .remove_file(probe.as_str())
+            .await
+            .map_err(|e| self.error(&format!("cannot remove the test symlink {probe}"), e))?;
+        Ok(None)
+    }
+
+    /// Sets the modification time of the guest directory `path`, after its children are written.
+    pub(super) async fn set_dir_time(self, path: String, seconds: u32) -> Result<()> {
+        let times = FileAttributes {
+            atime: Some(seconds),
+            mtime: Some(seconds),
+            ..FileAttributes::default()
+        };
+        self.session
+            .set_metadata(path.as_str(), times)
+            .await
+            .map_err(|e| self.error(&format!("cannot set the time of the guest directory {path}"), e))
+    }
+
     /// Makes `path` the tree entry `kind` copied from `local` (described as `what` in errors); a directory merges.
     pub(super) async fn put_item(self, kind: Kind, local: PathBuf, path: String) -> Result<()> {
         match kind {
-            Kind::Dir => {
+            Kind::Dir { .. } => {
                 let what = format!("the host directory {}", local.display());
                 self.put_dir(path, false, what).await
             }

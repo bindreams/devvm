@@ -458,12 +458,8 @@ impl Handler for SftpFs {
         if let Some(mtime) = attrs.mtime {
             // Generated and discarded files have no time to set.
             let real = self.real(&path);
-            if real.is_file() {
-                let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(mtime));
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(&real)
-                    .and_then(|file| file.set_modified(time))
+            if real.is_file() || real.is_dir() {
+                filetime::set_file_mtime(&real, filetime::FileTime::from_unix_time(i64::from(mtime), 0))
                     .map_err(from_io)?;
             }
         }
@@ -579,6 +575,9 @@ impl Handler for SftpFs {
     /// is where it is made.
     async fn symlink(&mut self, id: u32, target: String, link: String) -> Result<Status, StatusReply> {
         let link = normalize(&link);
+        if self.state.options.no_symlinks {
+            return Err(StatusCode::OpUnsupported.into());
+        }
         if self.is_locked(&link) {
             return Err(StatusCode::PermissionDenied.into());
         }

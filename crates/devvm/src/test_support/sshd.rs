@@ -60,6 +60,8 @@ pub struct SshdOptions {
     pub root: Option<PathBuf>,
     /// Drop the connection once this many bytes were read or written over SFTP.
     pub kill_sftp_after: Option<u64>,
+    /// Refuse every `symlink` request, as a Windows guest does.
+    pub no_symlinks: bool,
 }
 
 pub(crate) struct State {
