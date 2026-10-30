@@ -68,20 +68,25 @@ impl BaseBuilder for LinuxBuilder {
 
     fn definition_hash(&self) -> [u8; 32] {
         // The seed of a fixed instance: any change to the templates or to the shape of the cloud-config changes it.
-        let probe = SeedSpec {
-            hostname: "hostname".to_owned(),
-            dir: Default::default(),
-            instance_id: "00000000000000000000000000000000"
-                .parse::<InstanceId>()
-                .expect("32 hex digits"),
-            keys: SeedKeys {
-                client_public: "client-public-key".to_owned(),
-                host_private: "host-private-key".to_owned(),
-                host_public: "host-public-key".to_owned(),
-            },
-        };
+        let probe = probe_spec();
         let files = seed::seed_files(&probe).expect("the seed templates serialize");
         definition_hash_of(&files, LinuxGuest.semantics_version())
+    }
+}
+
+/// The seed of a fixed instance, whose rendering [`BaseBuilder::definition_hash`] hashes.
+fn probe_spec() -> SeedSpec {
+    SeedSpec {
+        hostname: "hostname".to_owned(),
+        dir: Default::default(),
+        instance_id: "00000000000000000000000000000000"
+            .parse::<InstanceId>()
+            .expect("32 hex digits"),
+        keys: SeedKeys {
+            client_public: "client-public-key".to_owned(),
+            host_private: "host-private-key".to_owned(),
+            host_public: "host-public-key".to_owned(),
+        },
     }
 }
 
