@@ -56,7 +56,7 @@ fn scratch() -> tempfile::TempDir {
     tempfile::tempdir().expect("a temporary directory")
 }
 
-// Scenario: a slow writer ===========================================================================================
+// Scenario: a slow writer =============================================================================================
 
 /// A host writer slower than the server: 40 MiB/s. Its pace is the load of the test, not a synchronisation: the
 /// assertion is on the heap, and a session that buffered the stream holds most of it.
@@ -103,7 +103,7 @@ fn slow_writer() {
     assert!(peak < LIMIT, "peak heap {peak} bytes is not below {LIMIT}");
 }
 
-// Scenario: a file past 4 GiB =======================================================================================
+// Scenario: a file past 4 GiB =========================================================================================
 
 /// A host file of `BIG_SIZE` bytes: zeros, with the pattern in the sample windows.
 fn make_big_source(path: &Path) {
