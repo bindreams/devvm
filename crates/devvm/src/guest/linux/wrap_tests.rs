@@ -23,7 +23,7 @@ fn wrap_applies_cwd_env_and_elevation_in_order() {
     let mut user = cmd(&["echo", "a b"]);
     user.cwd = Some("/w".to_owned());
     user.env = vec![("K".to_owned(), "v'x".to_owned()), ("L".to_owned(), String::new())];
-    let user_script = r"cd '/w' && export K='v'\''x' L='' && exec -- 'echo' 'a b'";
+    let user_script = r"CDPATH= cd -- '/w' && export K='v'\''x' L='' && exec -- 'echo' 'a b'";
     assert_eq!(script(&user).unwrap(), user_script);
     assert_eq!(wrap(&user).unwrap(), format!("bash -lc {}", sq(user_script)));
 
@@ -52,7 +52,49 @@ fn wrap_keeps_env_and_cwd_inside_the_sudo_shell() {
         .split_once("bash -c ")
         .expect("the root shell is started by `bash -c`, never `sh -c`");
     assert_eq!(before_inner, "exec sudo -n -- ", "nothing runs before sudo");
-    assert_eq!(inner, sq("cd '/root' && export A='1' && exec -- 'id'"));
+    assert_eq!(inner, sq("CDPATH= cd -- '/root' && export A='1' && exec -- 'id'"));
+}
+
+#[skuld::test]
+fn a_working_directory_starting_with_a_dash_cannot_be_read_as_an_option_or_oldpwd() {
+    // `cd -- -` still means $OLDPWD, so a leading `-` is made explicitly relative.
+    for (cwd, written) in [("-", "./-"), ("-x", "./-x"), ("--", "./--"), ("-/a", "./-/a")] {
+        let mut command = cmd(&["true"]);
+        command.cwd = Some(cwd.to_owned());
+        assert_eq!(
+            script(&command).unwrap(),
+            format!("CDPATH= cd -- {} && exec -- 'true'", sq(written)),
+            "{cwd}"
+        );
+    }
+}
+
+#[skuld::test]
+fn names_bash_cannot_export_are_usage_errors_naming_the_variable() {
+    // Bash's readonly variables (`readonly -p` in a fresh bash 5.2): `export UID=5` fails with exit 1 at run time.
+    for name in ["UID", "EUID", "PPID", "BASHOPTS", "SHELLOPTS", "BASH_VERSINFO"] {
+        let mut command = cmd(&["true"]);
+        command.env = vec![(name.to_owned(), "5".to_owned())];
+        let error = wrap(&command).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage, "{name}");
+        assert!(error.message().contains(name), "{name}: {}", error.message());
+        assert!(error.message().contains("readonly"), "{name}: {}", error.message());
+    }
+    // Close names, and variables bash lets a script set, stay legal.
+    for name in [
+        "UIDS",
+        "uid",
+        "BASHPID",
+        "BASH_VERSION",
+        "SECONDS",
+        "RANDOM",
+        "PATH",
+        "HOME",
+    ] {
+        let mut command = cmd(&["true"]);
+        command.env = vec![(name.to_owned(), "5".to_owned())];
+        wrap(&command).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
 }
 
 #[skuld::test]
@@ -205,6 +247,39 @@ fn a_program_called_dash_x_or_a_equals_b_is_a_program_name() {
         // 127 is "no such program"; an option would give 2, and an assignment would leave `exec` with no program.
         assert_eq!(out.status.code(), Some(127), "{name}: {stderr}");
         assert!(stderr.contains(name), "{name}: {stderr}");
+    }
+}
+
+/// Runs `pwd` with working directory `cwd` through the wrapper's script, from `base` (the shell's directory), in a shell
+/// whose `CDPATH` is `cdpath`, as a guest's profile might export it. Returns stdout and the exit code.
+fn pwd_in(base: &Path, cdpath: &Path, cwd: &str) -> (String, Option<i32>) {
+    let mut command = cmd(&["pwd"]);
+    command.cwd = Some(cwd.to_owned());
+    let forward = |path: &Path| sq(&path.to_string_lossy().replace('\\', "/"));
+    let setup = format!("cd {} && export CDPATH={}", forward(base), forward(cdpath));
+    let out = run_in_bash(&format!("{setup}\n{}", script(&command).unwrap()), None);
+    (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code())
+}
+
+#[skuld::test]
+fn a_working_directory_is_entered_literally_whatever_cdpath_and_its_first_character_say() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let base = tmp.join("base");
+    let elsewhere = tmp.join("elsewhere");
+    for dir in ["sub", "-", "-x"] {
+        std::fs::create_dir_all(base.join(dir)).unwrap();
+        std::fs::create_dir_all(elsewhere.join(dir)).unwrap();
+    }
+
+    for dir in ["sub", "-", "-x"] {
+        let (stdout, code) = pwd_in(&base, &elsewhere, dir);
+        assert_eq!(code, Some(0), "{dir}: {stdout}");
+        // One line: bash prints the directory it chose when CDPATH picked it. The line is `pwd`'s, under `base`.
+        assert_eq!(stdout.lines().count(), 1, "{dir}: {stdout:?}");
+        assert!(
+            stdout.ends_with(&format!("/base/{dir}\n")),
+            "{dir} must resolve under the shell's directory, not CDPATH: {stdout:?}"
+        );
     }
 }
 
