@@ -103,3 +103,17 @@ def test_a_release_page_of_another_tag_is_rejected(tmp_path, capsys):
     zip_path = release_zip(tmp_path, f"\nSee also {other}\n")
     assert check_urls(zip_path, release_assets(zip_path)) == 1
     assert other in capsys.readouterr().out
+
+
+# notes ----------------------------------------------------------------------------------------------------------------
+
+
+def release_notes(capsys) -> str:
+    assets.cmd_notes(argparse.Namespace(tag=TAG, repo=REPO))
+    return capsys.readouterr().out
+
+
+def test_the_notes_say_the_build_applies_patches_to_the_tarball(capsys):
+    notes = release_notes(capsys)
+    assert "qemu/patches" in notes
+    assert "exact upstream source the build was made from" not in notes

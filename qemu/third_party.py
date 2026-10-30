@@ -365,7 +365,7 @@ The complete corresponding source of everything in this archive is attached to t
     version.rc (it embeds the UTF-8 application manifest), and it applies qemu/patches/*.patch in name order
     (BUILD-INFO.txt lists them with their hashes).
   - {tag}-build-scripts.tar.gz: qemu/ and .github/workflows/qemu.yaml at the commit that built it (BUILD-INFO.txt
-    names the commit): the pin, the build script, the configure options and the workflow.
+    names the commit): the pin, the build script, the patches, the configure options and the workflow.
   - The source archives of the bundled LGPL/GPL libraries, exactly the versions in bin/:
 {chr(10).join(f"      {name}" for name in mirrored) or "      (none)"}
   - {tag}-qapi.zip: QEMU's QAPI schema (qapi/*.json).
