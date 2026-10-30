@@ -21,7 +21,7 @@ use crate::test_support::fixtures::UNICODE_DIR;
 use crate::vm_gate::{VM, vm_tests_enabled};
 
 /// The directory holding a QEMU build's `bin/` and `share/`. When set, the VM tests use it instead of downloading the
-/// pinned build (a private repository's release assets cannot be fetched anonymously, so CI downloads them itself).
+/// pinned build.
 pub const QEMU_DIR_VAR: &str = "DEVVM_TEST_QEMU_DIR";
 
 /// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `DEVVM_SKIP_VM_TESTS=1`.

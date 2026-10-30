@@ -83,7 +83,8 @@ jobs:
         run: cargo package -p devvm --locked
 
   # The tests that boot QEMU, under the Windows Hypervisor Platform of a hosted runner. Every test labelled `vm` runs
-  # here; the Test job leaves them out (DEVVM_SKIP_VM_TESTS=1).
+  # here; the Test job leaves them out (DEVVM_SKIP_VM_TESTS=1). The tests fetch the pinned QEMU through devvm's own
+  # downloader, as a user's install does.
   vm:
     name: VM tests (windows-latest, WHPX)
     runs-on: windows-latest
@@ -105,26 +106,6 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: vm
-
-      # The pinned QEMU build, checked against the manifest. A release of this repository is not readable without the
-      # job's token, so the tests are pointed at this copy instead of downloading it themselves.
-      - name: Download the pinned QEMU
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          url=$(sed -n 's/^url = "\(.*\)"/\1/p' crates/devvm/qemu-manifest.toml)
-          want=$(sed -n 's/^sha256 = "\(.*\)"/\1/p' crates/devvm/qemu-manifest.toml)
-          tag=$(echo "$url" | sed 's|.*/download/\([^/]*\)/.*|\1|')
-          file=$(basename "$url")
-          mkdir -p "$RUNNER_TEMP/qemu-dl" "$RUNNER_TEMP/qemu"
-          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p "$file" -D "$RUNNER_TEMP/qemu-dl"
-          got=$(sha256sum "$RUNNER_TEMP/qemu-dl/$file" | cut -d' ' -f1)
-          got=${got#'\'}
-          test "$want" = "$got"
-          unzip -q "$RUNNER_TEMP/qemu-dl/$file" -d "$RUNNER_TEMP/qemu"
-          echo "DEVVM_TEST_QEMU_DIR=$RUNNER_TEMP/qemu" >> "$GITHUB_ENV"
 
       - name: Test
         run: cargo test -p devvm --lib --locked
