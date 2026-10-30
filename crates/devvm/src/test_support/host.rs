@@ -1,6 +1,8 @@
 //! Hosts for the tests: one whose accelerator always works, and one that has none.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::exit::ExitWidth;
 use crate::host::{self, Accel, Host, SystemDirs, Unavailable};
@@ -90,6 +92,91 @@ impl Host for NoAccelHost {
     }
 
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
+        TestHost.set_executable(path)
+    }
+}
+
+/// [`TestHost`] that records the file-permission calls and can be told to fail a private write or to report files as
+/// executable, so code that goes through [`Host`] can be tested on every OS.
+#[derive(Default)]
+pub struct RecordingHost {
+    private_writes: Mutex<Vec<PathBuf>>,
+    fail_private_write_at: Mutex<Option<usize>>,
+    executable: Mutex<HashSet<PathBuf>>,
+    set_executable_calls: Mutex<Vec<PathBuf>>,
+}
+
+impl RecordingHost {
+    pub fn new() -> RecordingHost {
+        RecordingHost::default()
+    }
+
+    /// Makes the `index`-th (from 0) call of `write_private` fail.
+    pub fn fail_private_write(&self, index: usize) {
+        *self.fail_private_write_at.lock().unwrap() = Some(index);
+    }
+
+    /// Makes `is_executable` say yes for `path`.
+    pub fn mark_executable(&self, path: &Path) {
+        self.executable.lock().unwrap().insert(path.to_owned());
+    }
+
+    /// The paths given to `write_private`, in call order, failed calls included.
+    pub fn private_writes(&self) -> Vec<PathBuf> {
+        self.private_writes.lock().unwrap().clone()
+    }
+
+    pub fn set_executable_calls(&self) -> Vec<PathBuf> {
+        self.set_executable_calls.lock().unwrap().clone()
+    }
+}
+
+impl Host for RecordingHost {
+    fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable> {
+        TestHost.accelerator(arch)
+    }
+
+    fn ansi_code_page(&self) -> Option<u32> {
+        TestHost.ansi_code_page()
+    }
+
+    fn detach(&self, cmd: &mut cosca::Command) -> Result<()> {
+        TestHost.detach(cmd)
+    }
+
+    fn exit_width(&self) -> ExitWidth {
+        TestHost.exit_width()
+    }
+
+    fn quiet(&self, cmd: &mut std::process::Command) {
+        TestHost.quiet(cmd)
+    }
+
+    fn system_dirs(&self) -> Option<SystemDirs> {
+        TestHost.system_dirs()
+    }
+
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let index = {
+            let mut writes = self.private_writes.lock().unwrap();
+            writes.push(path.to_owned());
+            writes.len() - 1
+        };
+        if *self.fail_private_write_at.lock().unwrap() == Some(index) {
+            return Err(std::io::Error::other("the test made this private write fail"));
+        }
+        TestHost.write_private(path, bytes)
+    }
+
+    fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
+        if self.executable.lock().unwrap().contains(path) {
+            return Ok(true);
+        }
+        TestHost.is_executable(path)
+    }
+
+    fn set_executable(&self, path: &Path) -> std::io::Result<()> {
+        self.set_executable_calls.lock().unwrap().push(path.to_owned());
         TestHost.set_executable(path)
     }
 }

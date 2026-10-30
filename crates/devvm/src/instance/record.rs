@@ -240,7 +240,7 @@ fn read_file<T>(
 
 /// Writes `text` to `dir/file` through a temp file and a rename, so a reader sees the old or the new content, never a
 /// mixture, and a crash leaves no half-written `file`.
-fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
+pub(crate) fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
     use std::io::Write;
     let mut suffix = [0u8; 4];
     getrandom::fill(&mut suffix).expect("the OS random number generator is available");

@@ -38,6 +38,11 @@ pub const TARGET: &str = env!("DEVVM_TARGET");
 #[cfg(test)]
 mod test_support;
 
+/// Counts live heap bytes for `test_support::alloc::peak_bytes`.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: test_support::alloc::CountingAllocator = test_support::alloc::CountingAllocator;
+
 #[cfg(test)]
 fn main() {
     test_helpers::run_if_requested();
@@ -64,6 +69,7 @@ mod test_helpers {
         ("layer-builder", crate::store::layers::cross_tests::layer_builder),
         ("lease-holder", crate::store::layers::gc_tests::lease_holder),
         ("fetch-artifact", crate::store::fetch::http_tests::fetch_artifact),
+        ("access-heap", crate::access::heap_tests::access_heap),
     ];
 
     pub fn run_if_requested() {
