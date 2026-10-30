@@ -15,6 +15,10 @@ impl Host for TestHost {
         Ok(Accel::Tcg)
     }
 
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        host::current().guest_reset(arch)
+    }
+
     fn ansi_code_page(&self) -> Option<u32> {
         host::current().ansi_code_page()
     }
@@ -59,6 +63,10 @@ impl Host for NoAccelHost {
         Err(Unavailable {
             missing: NO_ACCELERATOR.to_owned(),
         })
+    }
+
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        TestHost.guest_reset(arch)
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

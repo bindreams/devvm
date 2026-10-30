@@ -14,6 +14,8 @@ use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
+mod whpx;
+
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
 fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
     let mut buffer = vec![0u16; 260];
@@ -31,10 +33,12 @@ fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<Pat
 pub(super) struct WindowsHost;
 
 impl Host for WindowsHost {
-    fn accelerator(&self, _arch: Arch) -> std::result::Result<Accel, Unavailable> {
-        Err(Unavailable {
-            missing: "WHPX detection is not implemented".to_owned(),
-        })
+    fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable> {
+        whpx::accelerator(&whpx::WinHvPlatform, arch)
+    }
+
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        whpx::guest_reset(&whpx::WinHvPlatform, arch)
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

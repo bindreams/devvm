@@ -59,6 +59,10 @@ pub(crate) trait Host: Send + Sync {
     /// The accelerator for guests of `arch`, or what is missing.
     fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable>;
 
+    /// Whether a running guest of `arch` can be reset inside its VM process (a QMP `system_reset`). The error says what
+    /// the host lacks; nothing is sent to a VM to find out.
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable>;
+
     /// The ANSI code page of this process (`GetACP`); `None` off Windows.
     fn ansi_code_page(&self) -> Option<u32>;
 

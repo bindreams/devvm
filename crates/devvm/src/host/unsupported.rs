@@ -22,6 +22,10 @@ impl Host for UnsupportedHost {
         })
     }
 
+    fn guest_reset(&self, _arch: Arch) -> std::result::Result<(), Unavailable> {
+        Ok(())
+    }
+
     fn ansi_code_page(&self) -> Option<u32> {
         None
     }

@@ -5,5 +5,6 @@ use crate::vm_gate::VM;
 
 skuld::default_labels!(VM);
 
+mod host;
 mod qmp;
 mod storage;
