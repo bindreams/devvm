@@ -55,7 +55,7 @@ pub(crate) struct SshTarget {
 }
 
 /// SSH keepalive: after `interval` of silence a probe is sent, and the connection is dead once more than `max_missed`
-/// probes went unanswered.
+/// probes went unanswered. `max_missed` is at least 1: [`SshSession::connect`] refuses 0, which SSH reads as "never".
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Keepalive {
     pub interval: Duration,
@@ -568,7 +568,7 @@ impl SshSession {
         })?
     }
 
-    /// Ends the boot phase: from now on the boot bound no longer ends a wait.
+    /// Ends the boot phase: from now on the boot bound no longer ends a wait, one already in flight included.
     pub(crate) fn finish_boot(&self) {
         self.inner.boot.finish();
     }
