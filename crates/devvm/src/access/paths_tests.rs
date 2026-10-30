@@ -17,6 +17,10 @@ fn guest_path_cases() {
     }
     // A home with a trailing slash does not double it.
     assert_eq!(expand_guest_path("~/x", "/home/user/"), "/home/user/x");
+    // A home that is the root: `~` is `/`, never the empty path.
+    assert_eq!(expand_guest_path("~", "/"), "/");
+    assert_eq!(expand_guest_path("~/x", "/"), "/x");
+    assert_eq!(expand_guest_path("~/", "/"), "/");
     for path in ["~", "~/a b", "~/", "/abs", "rel", "a~b", ""] {
         check_guest_path(path).expect(path);
     }

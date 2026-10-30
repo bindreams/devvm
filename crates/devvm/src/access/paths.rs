@@ -26,8 +26,10 @@ pub(crate) fn check_guest_path(path: &str) -> Result<()> {
 /// `~` and `~/x` made relative to `home`; every other path, a `~user` one included, is returned as is. Total: call
 /// [`check_guest_path`] first to refuse `~user`.
 pub(crate) fn expand_guest_path(path: &str, home: &str) -> String {
+    // A home of `/` trims to nothing: `~` is then the root itself.
     let home = home.trim_end_matches('/');
     match path.strip_prefix('~') {
+        Some("") if home.is_empty() => "/".to_owned(),
         Some("") => home.to_owned(),
         Some(rest) if rest.starts_with('/') => format!("{home}{rest}"),
         _ => path.to_owned(),
