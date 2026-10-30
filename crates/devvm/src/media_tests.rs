@@ -136,8 +136,7 @@ fn fatfs_type(image: &Path) -> fatfs::FatType {
 #[skuld::test]
 fn an_unwritable_destination_is_an_io_error(#[fixture(unicode_home)] home: &Path) {
     let error = write_cidata_image(&[file("user-data", b"u")], &home.join("missing").join("seed.img"))
-        .err()
-        .expect("the directory does not exist");
+        .expect_err("the directory does not exist");
     assert_eq!(error.kind(), crate::ErrorKind::Io);
     assert!(error.message().contains("seed.img"), "{}", error.message());
 }
