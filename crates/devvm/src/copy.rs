@@ -11,6 +11,9 @@ use crate::{Error, ErrorKind, Result};
 mod archive;
 mod git;
 
+/// A full disk leaves nothing to resume: the copy starts over.
+const FULL_DISK_HINT: &str = "free some space and run again";
+
 #[cfg(test)]
 #[path = "copy_tests.rs"]
 pub(crate) mod copy_tests;
@@ -59,10 +62,10 @@ pub(crate) fn snapshot(
         .prefix("devvm-copy-")
         .suffix(".tar")
         .tempfile_in(into)
-        .map_err(|e| Error::write(into, e))?;
+        .map_err(|e| Error::write(into, e, FULL_DISK_HINT))?;
     let mut out = BufWriter::new(file.as_file());
     let entries = archive::write(host, &root, &listing.tracked, read_only, file.path(), &mut out)?;
-    out.flush().map_err(|e| Error::write(file.path(), e))?;
+    out.flush().map_err(|e| Error::write(file.path(), e, FULL_DISK_HINT))?;
     drop(out);
     let manifest = CopyManifest::new(entries)?;
     let (_, archive) = file.keep().map_err(|e| {

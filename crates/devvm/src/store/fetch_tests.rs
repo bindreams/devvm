@@ -659,6 +659,7 @@ fn disk_full_is_a_clear_error_and_publishes_nothing(#[fixture(unicode_home)] hom
         assert_eq!(error.kind(), ErrorKind::DiskFull, "{kind:?}: {error}");
         let part = downloads.join(format!("{}.part", wanted.sha256));
         assert!(error.message().contains(&part.display().to_string()), "{error}");
+        assert!(error.message().ends_with("run again to resume"), "{error}");
         assert_eq!(
             std::fs::metadata(&part).unwrap().len(),
             200_000,
