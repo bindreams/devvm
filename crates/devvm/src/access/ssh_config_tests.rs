@@ -28,9 +28,14 @@ fn entry(home: &Path, name: &str, port: u16) -> SshConfigEntry {
     }
 }
 
-/// The path as ssh_config spells it: with `/` separators.
+/// The path as ssh_config spells it: with `/` separators. A backslash in a Unix path is an ordinary character.
 fn slashed(path: &Path) -> String {
-    path.to_str().unwrap().replace('\\', "/")
+    let text = path.to_str().unwrap();
+    if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.to_owned()
+    }
 }
 
 fn conf(dir: &SshConfigDir, name: &str) -> PathBuf {
