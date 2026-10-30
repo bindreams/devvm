@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 
-use crate::access::ssh_config::{SshConfigDir, SshConfigEntry};
+use crate::ErrorKind;
+use crate::access::ssh_config::{SshConfigDir, SshConfigEntry, glob_literal};
 use crate::host::Host;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceId;
@@ -298,11 +299,11 @@ fn top_level_config_is_static_and_idempotent(#[fixture(unicode_home)] home: &Pat
     assert_eq!(std::fs::read_to_string(&config).unwrap(), want);
 }
 
-/// Runs the real `ssh -G` against the generated config. Needs OpenSSH on `PATH`; fails naming it when absent.
-#[skuld::test]
-fn system_ssh_accepts_the_generated_config(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
-    let e = entry(home, "web", 2222);
+/// What `ssh -G` makes of the config for `web`, with the entry's files below `base`. Runs the real OpenSSH; fails
+/// naming it when it is not on `PATH`.
+fn check_system_ssh(base: &Path) {
+    let dir = SshConfigDir::new(base.join("ssh"));
+    let e = entry(base, "web", 2222);
     dir.write_entry(&e, &host_public()).unwrap();
     dir.ensure_top_level().unwrap();
     let mut cmd = Command::new("ssh");
@@ -320,7 +321,12 @@ fn system_ssh_accepts_the_generated_config(#[fixture(unicode_home)] home: &Path)
     let value = |key: &str| -> String {
         text.lines()
             .find_map(|line| line.strip_prefix(&format!("{key} ")))
-            .unwrap_or_else(|| panic!("`ssh -G` printed no {key}:\n{text}"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "`ssh -G` printed no {key}:
+{text}"
+                )
+            })
             .to_owned()
     };
     assert_eq!(value("hostname"), "127.0.0.1");
@@ -330,4 +336,62 @@ fn system_ssh_accepts_the_generated_config(#[fixture(unicode_home)] home: &Path)
     assert_eq!(value("hostkeyalias"), format!("devvm-{ID}"));
     assert_eq!(value("identityfile"), slashed(&e.identity));
     assert_eq!(value("userknownhostsfile"), slashed(&e.known_hosts));
+}
+
+#[skuld::test]
+fn system_ssh_accepts_the_generated_config(#[fixture(unicode_home)] home: &Path) {
+    check_system_ssh(home);
+}
+
+/// `%` is a token and `[`, `]` are glob syntax to ssh; a state directory can hold all of them.
+#[skuld::test]
+fn system_ssh_reads_a_state_directory_with_percent_and_glob_characters(#[fixture(unicode_home)] home: &Path) {
+    let base = home.join("50% [work] $HOME{x}");
+    std::fs::create_dir(&base).unwrap();
+    check_system_ssh(&base);
+}
+
+#[skuld::test]
+fn percent_signs_and_glob_characters_in_paths_are_escaped(#[fixture(unicode_home)] home: &Path) {
+    let base = home.join("50% [w]");
+    let dir = SshConfigDir::new(base.join("ssh"));
+    let e = entry(&base, "web", 22);
+    dir.write_entry(&e, &host_public()).unwrap();
+    dir.ensure_top_level().unwrap();
+    let text = std::fs::read_to_string(conf(&dir, "web")).unwrap();
+    let identity = slashed(&e.identity).replace('%', "%%");
+    assert!(text.contains(&format!("IdentityFile \"{identity}\"")), "{text}");
+    let known_hosts = slashed(&e.known_hosts).replace('%', "%%");
+    assert!(
+        text.contains(&format!("UserKnownHostsFile \"{known_hosts}\"")),
+        "{text}"
+    );
+    let config = std::fs::read_to_string(dir.path().join("config")).unwrap();
+    let state = slashed(dir.path()).replace('%', "%%").replace("[w]", "[[]w[]]");
+    assert_eq!(
+        config,
+        format!(
+            "Include \"{state}/*.conf\"
+"
+        )
+    );
+}
+
+#[skuld::test]
+fn glob_literal_matches_only_itself() {
+    assert_eq!(glob_literal("a*b?c[d]e"), "a[*]b[?]c[[]d[]]e");
+    assert_eq!(glob_literal("plain/path"), "plain/path");
+}
+
+#[skuld::test]
+fn a_path_ssh_would_read_as_an_environment_variable_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let base = home.join("${HOME}");
+    let dir = SshConfigDir::new(base.join("ssh"));
+    let error = dir.write_entry(&entry(&base, "web", 22), &host_public()).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("${"), "{error}");
+    assert!(!conf(&dir, "web").exists(), "nothing was written");
+    let error = dir.ensure_top_level().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(!dir.path().join("config").exists());
 }
