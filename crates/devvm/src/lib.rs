@@ -38,10 +38,22 @@ pub const TARGET: &str = env!("DEVVM_TARGET");
 #[cfg(test)]
 mod test_support;
 
+/// The gate every VM-booting test goes through (shared with `tests/vm_gate.rs`).
+#[cfg(test)]
+#[path = "../tests/support/vm_gate.rs"]
+mod vm_gate;
+
+/// The tests that boot QEMU, and the contract suite against it. They need Windows: QEMU runs under WHPX there alone.
+#[cfg(all(test, windows))]
+mod vm_suite;
+
 #[cfg(test)]
 fn main() {
     test_helpers::run_if_requested();
-    skuld::run_all();
+    let mut runner = skuld::TestRunner::new();
+    // A mistyped label in SKULD_LABELS must fail, not select nothing.
+    runner.require_known_labels();
+    runner.run();
 }
 
 /// Registry of the lib's re-exec helpers (see `test_support::helper`).

@@ -6,4 +6,5 @@ pub mod fixtures;
 pub mod helper;
 pub mod host;
 pub mod http;
+pub mod qemu;
 pub mod stub_backend;
