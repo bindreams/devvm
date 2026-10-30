@@ -111,7 +111,7 @@ jobs:
           # Exit status 0 if the tag is on a never-Latest track, printing the pattern.
           matching_non_latest_pattern() {
             local tag="$1" pattern
-            while IFS= read -r pattern; do
+            while IFS=$' \t\r' read -r pattern _; do
               if [[ -n "$pattern" && "$tag" == $pattern ]]; then
                 echo "$pattern"
                 return 0
