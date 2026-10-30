@@ -68,15 +68,23 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
+      # The seed test reads the cloud-init seed with PyYAML through `uv run --script` (Linux only; see Test below).
+      - name: Install uv
+        if: runner.os == 'Linux'
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      # windows-latest's ANSI code page is 1252; the claim test fails if the image changes it.
+      # windows-latest's ANSI code page is 1252; the claim test fails if the image changes it. Only the Linux leg claims
+      # PyYAML: the other legs list the seed test as unavailable, and where it is claimed it fails if uv or PyYAML is
+      # missing.
       - name: Test
         run: cargo test --workspace --locked
         env:
           DEVVM_COVERS_ACP: ${{ runner.os == 'Windows' && '1252' || '' }}
           DEVVM_COVERS_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '' }}
+          DEVVM_COVERS_PYYAML: ${{ runner.os == 'Linux' && '1' || '' }}
 
       # The copy tests again, against OpenSSH's own sftp-server instead of the scripted one. The claim makes them fail,
       # not skip, if the run does not use it.

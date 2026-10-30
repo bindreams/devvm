@@ -142,8 +142,11 @@ fn every_string_in_the_seed_is_quoted(#[fixture(unicode_home)] home: &Path) {
     }
 }
 
-/// Characters PyYAML (YAML 1.1) rejects (`ReaderError`) or folds (NEL) when written raw in a double-quoted scalar.
-const UNREADABLE_RAW: [char; 7] = ['\u{7f}', '\u{80}', '\u{85}', '\u{9f}', '\u{fffe}', '\u{ffff}', '\u{8d}'];
+/// Characters PyYAML (YAML 1.1) rejects (`ReaderError`) or folds (NEL, LS, PS) when written raw in a double-quoted
+/// scalar. The exhaustive PyYAML test (`seed_pyyaml_tests.rs`) pins the class; this one runs everywhere.
+const UNREADABLE_RAW: [char; 9] = [
+    '\u{7f}', '\u{80}', '\u{85}', '\u{9f}', '\u{fffe}', '\u{ffff}', '\u{8d}', '\u{2028}', '\u{2029}',
+];
 
 #[skuld::test]
 fn characters_yaml_cannot_carry_raw_are_escaped_in_every_key(#[fixture(unicode_home)] home: &Path) {
