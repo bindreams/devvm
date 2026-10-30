@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use super::{script, wrap};
@@ -95,11 +95,42 @@ fn a_nul_byte_cannot_travel_in_a_shell_string() {
 
 // A real shell ========================================================================================================
 
-/// Runs `script` as the standard input of the host's `bash -s`, with `path_first` (if any) at the front of `PATH` and
-/// `LC_ALL=C.UTF-8`, so neither the host's code page nor its locale can change the bytes. The script travels as bytes on
-/// stdin, never as an argument.
+/// The `bash` the tests start, found from git rather than `PATH`: on Windows a bare `bash` can be the WSL launcher in
+/// `System32`, which prints a UTF-16 message and exits 1 when no distribution is installed. It is the first `bin/bash`
+/// in a directory above `git --exec-path` (Git for Windows: `<Git>/bin/bash.exe`; elsewhere `/usr/bin/bash` or
+/// `/bin/bash`). Panics naming what was looked for.
+fn bash_program() -> PathBuf {
+    let mut git = std::process::Command::new("git");
+    git.arg("--exec-path");
+    TestHost.quiet(&mut git);
+    let output = git
+        .output()
+        .unwrap_or_else(|e| panic!("these tests need `git` on PATH, to find its `bash`: {e}"));
+    assert!(
+        output.status.success(),
+        "`git --exec-path` failed: {:?} {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let exec_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let bash = format!("bin/bash{}", std::env::consts::EXE_SUFFIX);
+    exec_path
+        .ancestors()
+        .map(|dir| dir.join(&bash))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "these tests need git's `bash`: no `{bash}` above `git --exec-path` ({})",
+                exec_path.display()
+            )
+        })
+}
+
+/// Runs `script` as the standard input of the `bash -s` of [`bash_program`], with `path_first` (if any) at the front of
+/// `PATH` and `LC_ALL=C.UTF-8`, so neither the host's code page nor its locale can change the bytes. The script travels
+/// as bytes on stdin, never as an argument.
 fn run_in_bash(script: &str, path_first: Option<&Path>) -> std::process::Output {
-    let mut command = std::process::Command::new("bash");
+    let mut command = std::process::Command::new(bash_program());
     command
         .arg("-s")
         .env("LC_ALL", "C.UTF-8")
@@ -114,7 +145,7 @@ fn run_in_bash(script: &str, path_first: Option<&Path>) -> std::process::Output 
     TestHost.quiet(&mut command);
     let mut child = command
         .spawn()
-        .unwrap_or_else(|e| panic!("this test needs `bash` on PATH (Git's bash on Windows): {e}"));
+        .unwrap_or_else(|e| panic!("this test needs to start git's `bash`: {e}"));
     child
         .stdin
         .take()
@@ -122,20 +153,6 @@ fn run_in_bash(script: &str, path_first: Option<&Path>) -> std::process::Output 
         .write_all(format!("{script}\n").as_bytes())
         .unwrap();
     child.wait_with_output().unwrap()
-}
-
-/// Which `bash` the tests start, for a failure message.
-fn bash_identity() -> String {
-    let run = |program: &str, args: &[&str]| match std::process::Command::new(program).args(args).output() {
-        Ok(out) => format!(
-            "{program} {args:?}: {:?} stdout {:?} stderr {:?}",
-            out.status,
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-        Err(e) => format!("{program} {args:?}: {e}"),
-    };
-    format!("{}; {}", run("bash", &["--version"]), run("where", &["bash"]))
 }
 
 /// A script `name` in `dir`, executable, that runs `body` with bash.
@@ -171,9 +188,8 @@ fn wrap_round_trips_hostile_arguments_through_a_real_sh() {
     assert_eq!(
         out.status.code(),
         Some(0),
-        "stderr: {}; {}",
-        String::from_utf8_lossy(&out.stderr),
-        bash_identity()
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
     let mut seen: Vec<&[u8]> = out.stdout.split(|byte| *byte == 0).collect();
     assert_eq!(seen.pop(), Some(&b""[..]), "every argument ends with a NUL");
@@ -187,7 +203,7 @@ fn a_program_called_dash_x_or_a_equals_b_is_a_program_name() {
         let out = run_in_bash(&wrap(&cmd(&[name])).unwrap(), None);
         let stderr = String::from_utf8_lossy(&out.stderr);
         // 127 is "no such program"; an option would give 2, and an assignment would leave `exec` with no program.
-        assert_eq!(out.status.code(), Some(127), "{name}: {stderr}; {}", bash_identity());
+        assert_eq!(out.status.code(), Some(127), "{name}: {stderr}");
         assert!(stderr.contains(name), "{name}: {stderr}");
     }
 }
