@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
-use crate::guest::{BaseBuilder, GuestOs, Guests, SeedMedia, SeedSpec};
+use crate::guest::linux::LinuxGuest;
+use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedMedia, SeedSpec};
 use crate::recipe::Shell;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
@@ -45,11 +46,14 @@ impl GuestOs for FakeGuestOs {
     }
 
     fn boot_id_command(&self) -> Command {
-        Command::new(["cat", "/proc/sys/kernel/random/boot_id"])
+        LinuxGuest.boot_id_command()
     }
 
-    fn wrap(&self, cmd: &Command) -> String {
-        cmd.argv.join(" ")
+    fn wrap(&self, cmd: &Command) -> Result<String> {
+        if cmd.argv.is_empty() {
+            return Err(Error::new(ErrorKind::Usage, "a command needs a non-empty argv"));
+        }
+        Ok(cmd.argv.join(" "))
     }
 
     fn sftp_path(&self, guest_path: &str, _home: &str) -> String {
@@ -68,27 +72,12 @@ impl GuestOs for FakeGuestOs {
         }
     }
 
-    fn wait_ready(&self, _ssh: &SshSession) -> Result<()> {
-        Ok(())
+    fn wait_ready(&self, _ssh: &SshSession) -> Result<Readiness> {
+        Ok(Readiness::Ready)
     }
 
-    /// As on Linux: `bash` by default, `cmd` does not exist.
+    /// As in a Linux guest.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>> {
-        let program: &[&str] = match shell {
-            None | Some(Shell::Bash) => &["bash", "-c"],
-            Some(Shell::Sh) => &["sh", "-c"],
-            Some(Shell::Pwsh) => &["pwsh", "-NoProfile", "-Command"],
-            Some(Shell::Cmd) => {
-                return Err(Error::new(
-                    ErrorKind::Recipe,
-                    "the shell `cmd` does not exist in this guest",
-                ));
-            }
-        };
-        Ok(program
-            .iter()
-            .map(|part| (*part).to_owned())
-            .chain([script.to_owned()])
-            .collect())
+        LinuxGuest.shell_argv(shell, script)
     }
 }

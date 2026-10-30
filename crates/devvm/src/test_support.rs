@@ -1,5 +1,6 @@
 //! Helpers shared by the unit tests (compiled only for `cfg(test)`).
 
+pub mod claims;
 pub mod fake_vm;
 pub mod file_mode;
 pub mod fixtures;
