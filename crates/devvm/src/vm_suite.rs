@@ -5,6 +5,15 @@ use crate::vm_gate::VM;
 
 skuld::default_labels!(VM);
 
+pub(crate) mod backend;
 mod host;
 mod qmp;
 mod storage;
+
+/// What the tests ask the OS about a process they did not write.
+#[cfg(windows)]
+#[path = "vm_suite/os_windows.rs"]
+mod os;
+#[cfg(not(windows))]
+#[path = "vm_suite/os_other.rs"]
+mod os;

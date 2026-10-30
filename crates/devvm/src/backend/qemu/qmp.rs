@@ -18,7 +18,7 @@ use super::uds::UnixStream;
 use crate::exit::Progress;
 use crate::instance::record::InstanceId;
 use crate::store::lock::{FileLock, Mode};
-use crate::{Error, ErrorKind, Result};
+use crate::{Arch, Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "qmp_tests.rs"]
@@ -342,6 +342,24 @@ impl Qmp {
             .and_then(|value| value.as_str().map(str::to_owned))
             .ok_or_else(|| Error::new(ErrorKind::Internal, "QEMU's run state has no name"))?;
         Ok(RunStatus { state })
+    }
+
+    /// The architecture this QEMU emulates (`query-target`). A machine found again from its record has no other way to
+    /// say what it is.
+    pub(crate) fn target_arch(&mut self) -> Result<Arch> {
+        let target = self.execute(&qmp::query_target {})?;
+        let name = serde_json::to_value(target.arch)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        match name.as_str() {
+            "x86_64" => Ok(Arch::Amd64),
+            "aarch64" => Ok(Arch::Arm64),
+            other => Err(Error::new(
+                ErrorKind::Unavailable,
+                format!("QEMU emulates {other:?}, which devvm has no guest for"),
+            )),
+        }
     }
 
     /// Fails with `Unavailable` unless the run state is one of `acceptable`, naming the state and the serial log: a

@@ -26,6 +26,7 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
 
     // The machine is frozen (-S), and `info usernet` lists the forward with the port QEMU chose.
     assert_eq!(session.query_status().unwrap().state, "prelaunch");
+    assert_eq!(session.target_arch().unwrap(), crate::Arch::Amd64);
     let forwards = session.forwarded_ports().unwrap();
     assert_eq!(forwards.len(), 1, "{forwards:?}");
     assert_eq!(forwards[0].guest, 22);
@@ -53,6 +54,7 @@ fn commands_devvm_sends() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
         (qmp::qmp_capabilities::NAME, &[]),
         (qmp::query_status::NAME, &[]),
+        (qmp::query_target::NAME, &[]),
         (qmp::stop::NAME, &[]),
         (qmp::cont::NAME, &[]),
         (qmp::system_powerdown::NAME, &[]),

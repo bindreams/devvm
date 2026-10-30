@@ -49,12 +49,17 @@ pub struct Sock {
     pub endpoint: QmpEndpoint,
 }
 
+/// The shared directory control sockets go in during tests (created if need be).
+pub fn socket_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join(UNICODE_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 impl Sock {
     pub fn new() -> Sock {
-        let dir = std::env::temp_dir().join(UNICODE_DIR);
-        std::fs::create_dir_all(&dir).unwrap();
         Sock {
-            endpoint: QmpEndpoint::for_instance(&dir, &InstanceId::random()).unwrap(),
+            endpoint: QmpEndpoint::for_instance(&socket_dir(), &InstanceId::random()).unwrap(),
         }
     }
 }
@@ -128,12 +133,17 @@ impl Drop for BareQemu {
 
 /// A `LazyInstall` that resolves to `install` without downloading (its tools are used in place).
 pub fn lazy_for(install: &QemuInstall) -> Arc<LazyInstall> {
+    lazy_at(&install.bin)
+}
+
+/// A `LazyInstall` over the QEMU whose executables are in `bin`.
+pub fn lazy_at(bin: &Path) -> Arc<LazyInstall> {
     let dirs = Dirs::under(&std::env::temp_dir());
     let progress = Arc::new(StderrProgress);
     let transport = HttpTransport::new().expect("an HTTP client");
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
     let config = Config {
-        qemu_path: Some(install.bin.clone()),
+        qemu_path: Some(bin.to_path_buf()),
     };
     Arc::new(LazyInstall::new(dirs, config, fetcher, progress))
 }

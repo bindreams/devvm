@@ -43,8 +43,8 @@ mod test_support;
 #[path = "../tests/support/vm_gate.rs"]
 mod vm_gate;
 
-/// The tests that boot QEMU, and the contract suite against it. They need Windows: QEMU runs under WHPX there alone.
-#[cfg(all(test, windows))]
+/// The tests that boot QEMU, and the contract suite against it.
+#[cfg(test)]
 mod vm_suite;
 
 #[cfg(test)]
@@ -80,6 +80,8 @@ mod test_helpers {
             "qemu-extract",
             crate::backend::qemu::sidecar::sidecar_tests::extract_and_wait,
         ),
+        ("qemu-launcher", crate::vm_suite::backend::qemu_launcher),
+        ("qemu-shutdown", crate::vm_suite::backend::qemu_shutdown),
     ];
 
     pub fn run_if_requested() {

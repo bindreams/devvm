@@ -348,6 +348,27 @@ fn an_io_error_run_state_is_reported_as_io_error() {
 }
 
 #[skuld::test]
+fn target_arch_maps_the_qemu_target_to_an_architecture() {
+    for (target, arch) in [("x86_64", crate::Arch::Amd64), ("aarch64", crate::Arch::Arm64)] {
+        let sock = sock();
+        let (server, _) = serve(sock.listen(), 1, move |session, _| {
+            session.answer(json!({ "arch": target }));
+        });
+        assert_eq!(sock.connect().unwrap().target_arch().unwrap(), arch);
+        server.join().unwrap();
+    }
+
+    let sock = sock();
+    let (server, _) = serve(sock.listen(), 1, |session, _| {
+        session.answer(json!({ "arch": "riscv64" }));
+    });
+    let error = sock.connect().unwrap().target_arch().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("riscv64"), "{error}");
+    server.join().unwrap();
+}
+
+#[skuld::test]
 fn events_devvm_does_not_read_are_skipped_wherever_they_arrive() {
     let sock = sock();
     let (server, _) = serve(sock.listen(), 1, |session, _| {

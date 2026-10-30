@@ -73,6 +73,16 @@ pub(crate) trait Machine: Send {
     /// `Backend::attach`.
     fn release(&mut self) -> Result<()>;
 
+    /// Resets the running guest inside its VM process and returns once the reset has happened, not when the guest is
+    /// up again. The process, the disk and the forwarded ports are untouched. `Unavailable` when this host or the VM's
+    /// state cannot reset it (nothing is sent then); `NotSupported` for a machine that has no reset.
+    fn reset(&mut self) -> Result<()> {
+        Err(crate::Error::new(
+            ErrorKind::NotSupported,
+            "this machine cannot be reset in place",
+        ))
+    }
+
     /// Graceful shutdown; returns after the process has exited and its `leftovers` are deleted.
     fn shutdown(&mut self) -> Result<()>;
 

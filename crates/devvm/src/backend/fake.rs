@@ -7,6 +7,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
@@ -49,6 +50,8 @@ pub(crate) struct FakeBackend {
     launched: Arc<Mutex<Vec<MachineRecord>>>,
     leftovers: Option<Leftovers>,
     specs: Mutex<Vec<MachineSpec>>,
+    /// How many times a machine of this backend was reset.
+    resets: Arc<AtomicUsize>,
     storage: FakeStorage,
 }
 
@@ -59,8 +62,14 @@ impl FakeBackend {
             launched: Arc::new(Mutex::new(Vec::new())),
             leftovers: None,
             specs: Mutex::new(Vec::new()),
+            resets: Arc::new(AtomicUsize::new(0)),
             storage: FakeStorage,
         }
+    }
+
+    /// How many resets the machines of this backend have taken.
+    pub(crate) fn resets(&self) -> usize {
+        self.resets.load(Ordering::SeqCst)
     }
 
     /// A backend whose machines create files outside their instance directory when they run, as QEMU's control socket
@@ -164,6 +173,7 @@ impl Backend for FakeBackend {
             state_dir: state_dir.to_path_buf(),
             launched: Some((self.launched.clone(), index)),
             cleaned_by_kill: self.cleaned_by_kill(),
+            resets: self.resets.clone(),
             attached: false,
         }))
     }
@@ -183,6 +193,7 @@ impl Backend for FakeBackend {
             state_dir: PathBuf::new(),
             launched: None,
             cleaned_by_kill: self.cleaned_by_kill(),
+            resets: self.resets.clone(),
             attached: true,
         }))
     }
@@ -207,6 +218,7 @@ struct FakeMachine {
     launched: Option<(Arc<Mutex<Vec<MachineRecord>>>, usize)>,
     /// Whether `kill` and `shutdown` delete the record's `leftovers`.
     cleaned_by_kill: bool,
+    resets: Arc<AtomicUsize>,
     /// Found with `attach`: already running, and not this process's to contain.
     attached: bool,
 }
@@ -245,6 +257,18 @@ impl Machine for FakeMachine {
 
     fn release(&mut self) -> Result<()> {
         if self.attached { Ok(()) } else { self.vm.release() }
+    }
+
+    /// Counts the reset: the fake guest's boot id changes when the code around it reads the count.
+    fn reset(&mut self) -> Result<()> {
+        if self.ssh.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "a fake machine that has not run cannot be reset",
+            ));
+        }
+        self.resets.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Asks the VM over its endpoint to exit, like a guest asked to power off, and waits for the process to be gone.

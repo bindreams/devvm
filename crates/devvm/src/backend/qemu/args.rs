@@ -31,7 +31,7 @@ impl LaunchPaths {
         let code = named
             .map(|firmware| firmware.code.clone())
             .filter(|code| !code.as_os_str().is_empty())
-            .unwrap_or_else(|| share.join(format!("edk2-{}-code.fd", firmware_arch(spec.arch))));
+            .unwrap_or_else(|| share.join(format!("edk2-{}-code.fd", qemu_arch(spec.arch))));
         let vars = named
             .and_then(|firmware| firmware.vars.clone())
             .unwrap_or_else(|| spec.disk.parent().unwrap_or(Path::new("")).join("vars.fd"));
@@ -43,8 +43,8 @@ impl LaunchPaths {
     }
 }
 
-/// How QEMU's firmware files name an architecture.
-fn firmware_arch(arch: Arch) -> &'static str {
+/// How QEMU names an architecture, in `qemu-system-<arch>` and in its firmware files.
+pub(super) fn qemu_arch(arch: Arch) -> &'static str {
     match arch {
         Arch::Amd64 => "x86_64",
         Arch::Arm64 => "aarch64",
