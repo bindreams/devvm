@@ -4,6 +4,7 @@
     allow(dead_code, reason = "used by the VM tests, which only Windows can run")
 )]
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -123,4 +124,62 @@ impl Drop for BareQemu {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// A `LazyInstall` that resolves to `install` without downloading (its tools are used in place).
+pub fn lazy_for(install: &QemuInstall) -> Arc<LazyInstall> {
+    let dirs = Dirs::under(&std::env::temp_dir());
+    let progress = Arc::new(StderrProgress);
+    let transport = HttpTransport::new().expect("an HTTP client");
+    let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
+    let config = Config {
+        qemu_path: Some(install.bin.clone()),
+    };
+    Arc::new(LazyInstall::new(dirs, config, fetcher, progress))
+}
+
+/// Runs the sidecar's `qemu-img` and returns its stdout; panics with its stderr when it fails.
+pub fn qemu_img(install: &QemuInstall, args: &[&OsStr]) -> Vec<u8> {
+    let mut command = Command::new(install.tool("qemu-img"));
+    command
+        .args(args)
+        .env_clear()
+        .envs(install.environment(host::current().system_dirs().as_ref()).unwrap())
+        .stdin(Stdio::null());
+    host::current().quiet(&mut command);
+    let output = command.output().expect("qemu-img should run");
+    assert!(
+        output.status.success(),
+        "qemu-img {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+/// `qemu-img info --output=json` of `image`; with `chain`, of its whole backing chain (an array).
+pub fn qemu_img_info(install: &QemuInstall, image: &Path, chain: bool) -> serde_json::Value {
+    let mut args: Vec<&OsStr> = vec!["info".as_ref(), "--output=json".as_ref()];
+    if chain {
+        args.push("--backing-chain".as_ref());
+    }
+    args.push(image.as_os_str());
+    serde_json::from_slice(&qemu_img(install, &args)).expect("qemu-img info prints JSON")
+}
+
+/// The bytes a guest would read from `disk` (through its backing chain), as a raw image.
+pub fn read_through(install: &QemuInstall, disk: &Path, scratch: &Path) -> Vec<u8> {
+    let raw = scratch.join("read-through.raw");
+    qemu_img(
+        install,
+        &[
+            "convert".as_ref(),
+            "-O".as_ref(),
+            "raw".as_ref(),
+            disk.as_os_str(),
+            raw.as_os_str(),
+        ],
+    );
+    let bytes = std::fs::read(&raw).unwrap();
+    std::fs::remove_file(raw).unwrap();
+    bytes
 }

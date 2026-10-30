@@ -277,7 +277,10 @@ fn paths_with_a_space_and_non_ascii_are_single_argv_items() {
     let args = build_args(&spec, &paths()).unwrap();
     let wanted: OsString = format!("if=none,id=d0,file={},format=qcow2", disk.display()).into();
     assert!(args.contains(&wanted), "{args:?}");
-    assert!(wanted.to_string_lossy().contains(' '), "the item holds the spaces itself");
+    assert!(
+        wanted.to_string_lossy().contains(' '),
+        "the item holds the spaces itself"
+    );
 }
 
 #[skuld::test]

@@ -67,7 +67,10 @@ pub(crate) fn escape_option_value(path: &Path) -> Result<String> {
     let text = path.to_str().ok_or_else(|| {
         Error::new(
             ErrorKind::Unavailable,
-            format!("the path {} is not valid Unicode, so QEMU cannot be given it", path.display()),
+            format!(
+                "the path {} is not valid Unicode, so QEMU cannot be given it",
+                path.display()
+            ),
         )
     })?;
     Ok(text.replace(',', ",,"))
@@ -131,7 +134,10 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
         );
     }
     if let Some(vars) = &paths.vars {
-        args.pair("-drive", format!("if=pflash,format=raw,file={}", escape_option_value(vars)?));
+        args.pair(
+            "-drive",
+            format!("if=pflash,format=raw,file={}", escape_option_value(vars)?),
+        );
     }
 
     // Media that boot come first, in boot order; the system disk boots after all of them.
@@ -192,11 +198,17 @@ fn medium_args(args: &mut Args, index: usize, medium: &Media) -> Result<()> {
         .map_or_else(String::new, |boot_index| format!(",bootindex={boot_index}"));
     match medium.kind {
         MediaKind::Cdrom => {
-            args.pair("-drive", format!("if=none,id=m{index},file={file},media=cdrom{readonly}"));
+            args.pair(
+                "-drive",
+                format!("if=none,id=m{index},file={file},media=cdrom{readonly}"),
+            );
             args.pair("-device", format!("ide-cd,drive=m{index}{boot}"));
         }
         MediaKind::Disk => {
-            args.pair("-drive", format!("if=none,id=m{index},file={file},format=raw{readonly}"));
+            args.pair(
+                "-drive",
+                format!("if=none,id=m{index},file={file},format=raw{readonly}"),
+            );
             args.pair("-device", format!("virtio-blk-pci,drive=m{index}{boot}"));
         }
     }
