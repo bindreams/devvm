@@ -72,13 +72,16 @@ jobs:
       - name: Install uv
         if: runner.os == 'Linux'
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: 0.13.6
+          enable-cache: false
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # windows-latest's ANSI code page is 1252; the claim test fails if the image changes it. Only the Linux leg claims
       # PyYAML: the other legs list the seed test as unavailable, and where it is claimed it fails if uv or PyYAML is
-      # missing.
+      # missing. A test fails if a leg does not make the claims its OS owes (test_support/claims.rs).
       - name: Test
         run: cargo test --workspace --locked
         env:

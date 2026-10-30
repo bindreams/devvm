@@ -8,10 +8,8 @@ use serde_json::json;
 
 use super::seed_files;
 use crate::guest::{SeedKeys, SeedSpec};
+use crate::test_support::claims::PYYAML;
 use crate::test_support::fixtures::unicode_home;
-
-/// The variable a CI job sets to claim that its runs cover the PyYAML reading of the seed.
-const COVERS_PYYAML: &str = "DEVVM_COVERS_PYYAML";
 
 /// Scalar values per case.
 const CHUNK: usize = 4096;
@@ -29,9 +27,9 @@ const CONTEXTS: [Context; 3] = [
 /// Runs the test only where a job claims it. Without a claim the test is ignored and the reason says where it runs, so a
 /// local run never reads as covering PyYAML. Where claimed, a missing `uv` or PyYAML fails the test.
 fn pyyaml_claimed() -> Result<(), String> {
-    match std::env::var(COVERS_PYYAML) {
-        Ok(claimed) if !claimed.is_empty() => Ok(()),
-        _ => Err("no PyYAML claimed; covered by CI (Test job on ubuntu-latest, which installs uv)".to_owned()),
+    match PYYAML.is_made() {
+        true => Ok(()),
+        false => Err("no PyYAML claimed; covered by CI (Test job on ubuntu-latest, which installs uv)".to_owned()),
     }
 }
 
