@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::exit::Progress;
-use crate::host::{self, SystemDirs};
+use crate::host::{Host, SystemDirs};
 use crate::store::fetch::{Artifact, Fetcher};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Dirs, Error, ErrorKind, Result, Sha256};
@@ -98,6 +98,18 @@ impl QemuInstall {
         self.bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     }
 
+    /// A command for the tool `name` that runs it as QEMU itself is run: nothing in its environment but
+    /// [`QemuInstall::environment`], no input, and no console window.
+    pub(crate) fn command(&self, name: &str, host: &dyn Host) -> Result<std::process::Command> {
+        let mut command = std::process::Command::new(self.tool(name));
+        command
+            .env_clear()
+            .envs(self.environment(host.system_dirs().as_ref())?)
+            .stdin(std::process::Stdio::null());
+        host.quiet(&mut command);
+        Ok(command)
+    }
+
     /// The whole environment QEMU is started with: `SystemRoot`, and `PATH` of System32 then `bin`. Pure: the
     /// Windows directories come from the host. With `None` (no Windows directories here) `PATH` is `bin` alone.
     pub(crate) fn environment(&self, system: Option<&SystemDirs>) -> Result<Vec<(OsString, OsString)>> {
@@ -119,14 +131,23 @@ impl QemuInstall {
     }
 }
 
-/// Runs a tool with `--version` and returns what it printed.
-pub(crate) type Verify = Arc<dyn Fn(&Path) -> Result<String> + Send + Sync>;
+/// Runs the tool `name` of an install with `--version` and returns what it printed.
+pub(crate) type Verify = Arc<dyn Fn(&QemuInstall, &str) -> Result<String> + Send + Sync>;
 
-fn run_version(tool: &Path) -> Result<String> {
-    let mut command = std::process::Command::new(tool);
-    command.arg("--version");
-    host::current().quiet(&mut command);
-    let output = command
+/// Runs the tool as QEMU runs it: its environment, and an empty working directory that nothing else can add a library to.
+fn run_version(host: &dyn Host, install: &QemuInstall, name: &str) -> Result<String> {
+    let tool = install.tool(name);
+    let cwd = tempfile::tempdir().map_err(|e| {
+        Error::io(
+            ErrorKind::Io,
+            format!("cannot create a working directory for {} --version", tool.display()),
+            e,
+        )
+    })?;
+    let output = install
+        .command(name, host)?
+        .arg("--version")
+        .current_dir(cwd.path())
         .output()
         .map_err(|e| Error::io(ErrorKind::Store, format!("cannot run {} --version", tool.display()), e))?;
     if !output.status.success() {
@@ -252,7 +273,7 @@ impl Source {
         require_tools(&install.bin, ARCHIVE_TOOLS, ErrorKind::Store)?;
         require_firmware(&install.share, ARCHIVE_FIRMWARE, ErrorKind::Store)?;
         for tool in VERSIONED_TOOLS {
-            let printed = (self.verify)(&install.tool(tool))?;
+            let printed = (self.verify)(&install, tool)?;
             if !printed.contains(&entry.qemu_version) {
                 return Err(Error::new(
                     ErrorKind::Store,
@@ -283,6 +304,15 @@ impl Source {
 
 /// A QEMU the user installed: `dir` holds the executables, the firmware is in `<dir>/share` or `<dir>/../share`.
 fn configured(dir: &Path) -> Result<QemuInstall> {
+    if !dir.is_absolute() {
+        return Err(Error::new(
+            ErrorKind::Unavailable,
+            format!(
+                "the setting qemu.path is {}, which is not an absolute path: QEMU runs in an empty working directory,                  so a relative path would not find its firmware",
+                dir.display()
+            ),
+        ));
+    }
     let install = |share: PathBuf| QemuInstall {
         bin: dir.to_path_buf(),
         share,
@@ -426,14 +456,20 @@ pub(crate) struct LazyInstall {
 }
 
 impl LazyInstall {
-    pub(crate) fn new(dirs: Dirs, config: Config, fetcher: Arc<Fetcher>, progress: Arc<dyn Progress>) -> LazyInstall {
+    pub(crate) fn new(
+        dirs: Dirs,
+        config: Config,
+        fetcher: Arc<Fetcher>,
+        progress: Arc<dyn Progress>,
+        host: &'static dyn Host,
+    ) -> LazyInstall {
         LazyInstall::from_source(Source::new(
             dirs,
             config,
             fetcher,
             progress,
             manifest_entry(crate::TARGET),
-            Arc::new(run_version),
+            Arc::new(move |install, name| run_version(host, install, name)),
         ))
     }
 

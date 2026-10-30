@@ -86,5 +86,8 @@ mod test_helpers {
 
     pub fn run_if_requested() {
         helper::run_if_requested(HELPERS);
+        // The environment of a `qemu-img` is its own, so a copy of this binary installed as one cannot be told to be a
+        // helper by a variable.
+        crate::backend::qemu::sidecar::sidecar_tests::act_as_qemu_img_when_installed_as_one();
     }
 }

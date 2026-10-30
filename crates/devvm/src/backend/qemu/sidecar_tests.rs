@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256 as Sha2};
 
-use super::{LazyInstall, ManifestEntry, QemuInstall, Source, Verify, manifest_entry};
+use super::{LazyInstall, ManifestEntry, QemuInstall, Source, Verify, manifest_entry, run_version};
 use crate::config::Config;
-use crate::host::SystemDirs;
+use crate::host::{self, SystemDirs};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::{Dirs, ErrorKind, Result, Sha256};
@@ -87,14 +87,14 @@ impl Transport for Counting {
 /// version, and the tools it was asked about are recorded.
 fn verified(asked: &Arc<Mutex<Vec<PathBuf>>>) -> Verify {
     let asked = asked.clone();
-    Arc::new(move |tool: &Path| {
-        asked.lock().unwrap().push(tool.to_owned());
+    Arc::new(move |install: &QemuInstall, name: &str| {
+        asked.lock().unwrap().push(install.tool(name));
         Ok(format!("QEMU emulator version {VERSION}"))
     })
 }
 
 fn prints(version: &'static str) -> Verify {
-    Arc::new(move |_| Ok(format!("QEMU emulator version {version}")))
+    Arc::new(move |_, _| Ok(format!("QEMU emulator version {version}")))
 }
 
 struct World {
@@ -297,17 +297,110 @@ fn an_archive_missing_a_file_is_refused_naming_it(#[fixture(unicode_home)] home:
     assert!(visible(&world.dirs.qemu()).is_empty());
 }
 
+/// Every file called `name` under `dir`, however deep.
+fn find(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
+    let Ok(read) = std::fs::read_dir(dir) else { return };
+    for entry in read {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            find(&path, name, found);
+        } else if path.file_name().is_some_and(|n| n == name) {
+            found.push(path);
+        }
+    }
+}
+
+/// Entry names that point out of the extraction directory by one route or another.
+const ESCAPES: &[&str] = &[
+    "../escaped.txt",
+    "bin/../../escaped.txt",
+    "bin/../../../escaped.txt",
+    "..\\escaped.txt",
+    "bin\\..\\..\\escaped.txt",
+    "/escaped.txt",
+    "\\escaped.txt",
+    "C:\\escaped.txt",
+    "C:/escaped.txt",
+    "//server/share/escaped.txt",
+    "escaped.txt:stream",
+    "bin/NUL/escaped.txt",
+];
+
+/// An archive holding an entry that points out of the extraction directory is refused, or the entry is unpacked inside
+/// the published install: it is never a file anywhere else.
 #[skuld::test]
-fn a_zip_with_a_path_escape_is_refused(#[fixture(unicode_home)] home: &Path) {
-    let mut files = files();
-    files.push(("../escaped.txt".to_owned(), b"x".to_vec()));
-    let world = world(home, zip_of(&files));
+fn a_zip_entry_that_points_out_of_the_extraction_directory_never_lands_outside_the_install(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (index, name) in ESCAPES.iter().enumerate() {
+        let mut files = files();
+        files.push(((*name).to_owned(), b"x".to_vec()));
+        let sub = home.join(format!("escape-{index}"));
+        std::fs::create_dir_all(&sub).unwrap();
+        let world = world(&sub, zip_of(&files));
+
+        let result = world.source.resolve();
+
+        let qemu = world.dirs.qemu();
+        let mut found = Vec::new();
+        find(&sub, "escaped.txt", &mut found);
+        for path in &found {
+            // `<qemu>/<published install>/...`: at least the install directory and the file below it.
+            let relative = path.strip_prefix(&qemu).ok();
+            let inside = relative.is_some_and(|relative| {
+                relative.components().count() >= 2
+                    && relative
+                        .components()
+                        .next()
+                        .is_some_and(|first| !first.as_os_str().to_string_lossy().starts_with('.'))
+            });
+            assert!(inside, "{name:?} was unpacked to {}", path.display());
+        }
+        match result {
+            Err(error) => {
+                assert_eq!(error.kind(), ErrorKind::Store, "{name:?}: {error}");
+                assert!(visible(&qemu).is_empty(), "{name:?} left {:?}", entries(&qemu));
+            }
+            Ok(install) => assert!(install.tool("qemu-img").is_file(), "{name:?}"),
+        }
+    }
+}
+
+#[skuld::test]
+fn a_dot_dot_entry_is_refused_naming_the_entry(#[fixture(unicode_home)] home: &Path) {
+    for (index, name) in ["../escaped.txt", "bin/../../escaped.txt"].iter().enumerate() {
+        let mut files = files();
+        files.push(((*name).to_owned(), b"x".to_vec()));
+        let sub = home.join(format!("dotdot-{index}"));
+        std::fs::create_dir_all(&sub).unwrap();
+        let world = world(&sub, zip_of(&files));
+
+        let error = world.source.resolve().unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Store, "{name:?}: {error}");
+        assert!(error.message().contains("escaped.txt"), "{name:?}: {error}");
+        assert!(visible(&world.dirs.qemu()).is_empty());
+    }
+}
+
+#[skuld::test]
+fn a_symbolic_link_in_the_zip_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, bytes) in files() {
+        writer
+            .start_file(name.as_str(), zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer
+        .add_symlink("share/link", "../outside", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    let world = world(home, writer.finish().unwrap().into_inner());
 
     let error = world.source.resolve().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Store, "{error}");
-    assert!(error.message().contains("escaped.txt"), "{error}");
-    assert!(!world.dirs.cache.join("escaped.txt").exists());
+    assert!(error.message().contains("symbolic link"), "{error}");
     assert!(visible(&world.dirs.qemu()).is_empty());
 }
 
@@ -321,7 +414,7 @@ fn a_corrupt_zip_is_a_checksum_error_and_leaves_no_entry(#[fixture(unicode_home)
         bad,
         sha_of(&good),
         Arc::default(),
-        Arc::new(|_| unreachable!("a corrupt archive is never extracted")),
+        Arc::new(|_, _| unreachable!("a corrupt archive is never extracted")),
     );
 
     let error = world.source.resolve().unwrap_err();
@@ -399,7 +492,7 @@ pub(crate) fn extract_and_wait(args: &[String]) {
         url: args[1].clone(),
         sha256: args[2].parse().unwrap(),
     };
-    let verify: Verify = Arc::new(|_| {
+    let verify: Verify = Arc::new(|_, _| {
         println!("extracted");
         let mut sink = Vec::new();
         let _ = std::io::stdin().read_to_end(&mut sink);
@@ -465,6 +558,20 @@ fn config_path_with_firmware_beside_or_above_is_accepted_and_without_is_unavaila
             .contains(&home.join("none").join("share").display().to_string()),
         "{error}"
     );
+}
+
+#[skuld::test]
+fn a_relative_qemu_path_is_unavailable_naming_the_setting(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let relative = PathBuf::from("tools").join("qemu").join("bin");
+    let source = world.source_configured(relative.clone());
+
+    for error in [source.resolve().unwrap_err(), source.existing().unwrap_err()] {
+        assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+        assert!(error.message().contains("qemu.path"), "{error}");
+        assert!(error.message().contains(&relative.display().to_string()), "{error}");
+    }
+    assert_eq!(world.transport.gets(), 0);
 }
 
 #[skuld::test]
@@ -571,7 +678,7 @@ fn a_failed_get_is_not_cached(#[fixture(unicode_home)] home: &Path) {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
     // The first check fails, every later one passes.
-    let lazy = world.lazy(Arc::new(move |_| {
+    let lazy = world.lazy(Arc::new(move |_, _| {
         if counter.fetch_add(1, Ordering::SeqCst) == 0 {
             Ok("QEMU emulator version 9.0.0".to_owned())
         } else {
@@ -612,4 +719,66 @@ fn paths_with_space_and_non_ascii_are_returned_verbatim(#[fixture(unicode_home)]
     let shown = install.tool("qemu-system-x86_64").display().to_string();
     assert!(shown.contains(UNICODE_DIR), "{shown}");
     assert!(install.tool("qemu-system-x86_64").is_file());
+}
+
+// The version check ====================================================================================================
+
+/// When this test binary runs as a copy installed as `qemu-img`, prints what it was started with (the version check's
+/// environment and working directory) as `--version` output, and exits. Called first in the test binary's `main`.
+pub(crate) fn act_as_qemu_img_when_installed_as_one() {
+    let exe = std::env::current_exe().unwrap();
+    if exe.file_stem().is_none_or(|stem| stem != "qemu-img") {
+        return;
+    }
+    let cwd = std::env::current_dir().unwrap();
+    let mut env: Vec<String> = std::env::vars_os()
+        // Windows keeps per-drive working directories in variables named `=C:`.
+        .filter(|(name, _)| !name.to_string_lossy().starts_with('='))
+        .map(|(name, value)| format!("env {}={}", name.to_string_lossy(), value.to_string_lossy()))
+        .collect();
+    env.sort();
+    println!("QEMU emulator version {VERSION}");
+    println!("cwd {}", cwd.display());
+    println!("entries {}", std::fs::read_dir(&cwd).unwrap().count());
+    for line in env {
+        println!("{line}");
+    }
+    std::process::exit(0);
+}
+
+#[skuld::test]
+fn the_version_check_runs_a_tool_with_exactly_qemus_environment_in_an_empty_directory(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let install = QemuInstall {
+        bin,
+        share: home.join("share"),
+        version: VERSION.to_owned(),
+        zip_sha256: None,
+    };
+    std::fs::copy(std::env::current_exe().unwrap(), install.tool("qemu-img")).unwrap();
+
+    let printed = run_version(host::current(), &install, "qemu-img").unwrap();
+
+    let mut expected: Vec<String> = install
+        .environment(host::current().system_dirs().as_ref())
+        .unwrap()
+        .iter()
+        .map(|(name, value)| format!("env {}={}", name.to_string_lossy(), value.to_string_lossy()))
+        .collect();
+    expected.sort();
+    let env: Vec<&str> = printed.lines().filter(|line| line.starts_with("env ")).collect();
+    assert_eq!(env, expected, "{printed}");
+    assert!(
+        printed.contains("entries 0"),
+        "the working directory is not empty: {printed}"
+    );
+    let cwd = printed.lines().find_map(|line| line.strip_prefix("cwd ")).unwrap();
+    assert_ne!(
+        Path::new(cwd),
+        std::env::current_dir().unwrap(),
+        "the caller's directory"
+    );
 }

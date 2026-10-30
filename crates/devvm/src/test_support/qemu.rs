@@ -34,9 +34,11 @@ pub fn qemu_sidecar() -> Result<Arc<QemuInstall>, String> {
     let transport = HttpTransport::new().map_err(|e| format!("cannot build the HTTP client: {e}"))?;
     let progress = Arc::new(StderrProgress);
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
-    LazyInstall::new(dirs, config, fetcher, progress).get().map_err(|e| {
-        format!("QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory)")
-    })
+    LazyInstall::new(dirs, config, fetcher, progress, host::current())
+        .get()
+        .map_err(|e| {
+            format!("QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory)")
+        })
 }
 
 /// A QMP socket path in a short, non-ASCII directory under the temp directory, and its lock file; both are deleted on
@@ -151,19 +153,17 @@ pub fn lazy_at(bin: &Path) -> Arc<LazyInstall> {
     let config = Config {
         qemu_path: Some(bin.to_path_buf()),
     };
-    Arc::new(LazyInstall::new(dirs, config, fetcher, progress))
+    Arc::new(LazyInstall::new(dirs, config, fetcher, progress, host::current()))
 }
 
 /// Runs the sidecar's `qemu-img` and returns its stdout; panics with its stderr when it fails.
 pub fn qemu_img(install: &QemuInstall, args: &[&OsStr]) -> Vec<u8> {
-    let mut command = Command::new(install.tool("qemu-img"));
-    command
+    let output = install
+        .command("qemu-img", host::current())
+        .unwrap()
         .args(args)
-        .env_clear()
-        .envs(install.environment(host::current().system_dirs().as_ref()).unwrap())
-        .stdin(Stdio::null());
-    host::current().quiet(&mut command);
-    let output = command.output().expect("qemu-img should run");
+        .output()
+        .expect("qemu-img should run");
     assert!(
         output.status.success(),
         "qemu-img {args:?} failed: {}",

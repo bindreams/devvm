@@ -3,7 +3,6 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use super::sidecar::LazyInstall;
@@ -32,13 +31,8 @@ impl QemuStorage {
     fn qemu_img(&self, args: &[&OsStr]) -> Result<Vec<u8>> {
         let install = self.install.get()?;
         let tool = install.tool("qemu-img");
-        let mut command = Command::new(&tool);
-        command
-            .args(args)
-            .env_clear()
-            .envs(install.environment(self.host.system_dirs().as_ref())?)
-            .stdin(Stdio::null());
-        self.host.quiet(&mut command);
+        let mut command = install.command("qemu-img", self.host)?;
+        command.args(args);
         let shown = || {
             args.iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
