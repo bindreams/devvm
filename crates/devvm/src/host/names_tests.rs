@@ -203,13 +203,25 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
         "conin$",
         "CONOUT$.txt",
     ];
+    // Measured on the windows-latest runner: NTFS stores the device names `CON`, `AUX.txt`, `COM1` and the
+    // like and reads them back, through Rust's std. `windows_problem` refuses them anyway: the owner's copy rules name
+    // "reserved device names" among the names a target cannot store. The measurement is pinned here so a change in
+    // Windows shows up, and the rule is not loosened by it.
+    let refused_though_stored = ["con", "CON", "Aux.txt", "nul.tar.gz", "PRN", "com1", "COM9", "LPT9.x"];
     let mut table = String::new();
     let mut disagree = Vec::new();
     for name in names {
         let measured = stored(home, name);
         let rule = windows_problem(name);
-        table.push_str(&format!("{name:?}: NTFS {measured:?}; rule {rule:?}\n"));
-        if measured.is_ok() != rule.is_none() {
+        table.push_str(&format!(
+            "{name:?}: NTFS {measured:?}; rule {rule:?}
+"
+        ));
+        let agrees = match refused_though_stored.contains(&name) {
+            true => measured.is_ok() && rule.is_some(),
+            false => measured.is_ok() == rule.is_none(),
+        };
+        if !agrees {
             disagree.push(name);
         }
     }
