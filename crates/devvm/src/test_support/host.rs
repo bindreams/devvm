@@ -48,6 +48,10 @@ impl Host for TestHost {
         host::current().quiet(cmd)
     }
 
+    fn env_names_ignore_case(&self) -> bool {
+        host::current().env_names_ignore_case()
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         host::current().system_dirs()
     }
@@ -136,6 +140,10 @@ impl Host for NoAccelHost {
 
     fn quiet(&self, cmd: &mut std::process::Command) {
         TestHost.quiet(cmd)
+    }
+
+    fn env_names_ignore_case(&self) -> bool {
+        TestHost.env_names_ignore_case()
     }
 
     fn system_dirs(&self) -> Option<SystemDirs> {
@@ -320,6 +328,10 @@ impl Host for RecordingHost {
         TestHost.quiet(cmd)
     }
 
+    fn env_names_ignore_case(&self) -> bool {
+        TestHost.env_names_ignore_case()
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         TestHost.system_dirs()
     }
@@ -447,6 +459,10 @@ impl Host for NoGuestReset {
 
     fn quiet(&self, cmd: &mut std::process::Command) {
         host::current().quiet(cmd)
+    }
+
+    fn env_names_ignore_case(&self) -> bool {
+        host::current().env_names_ignore_case()
     }
 
     fn system_dirs(&self) -> Option<SystemDirs> {

@@ -105,6 +105,10 @@ pub(crate) trait Host: Send + Sync {
     /// Prepares a short non-interactive tool (`qemu-img`, `git`, `ssh -G`) to run without a console window.
     fn quiet(&self, cmd: &mut std::process::Command);
 
+    /// Whether this host reads environment variable names without regard to case (Windows reads `git_dir` as
+    /// `GIT_DIR`).
+    fn env_names_ignore_case(&self) -> bool;
+
     /// The Windows and System32 directories from the OS (never from the environment); `None` off Windows.
     fn system_dirs(&self) -> Option<SystemDirs>;
 

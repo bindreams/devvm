@@ -1,12 +1,17 @@
 //! Asking `git` which files a repository tracks.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
+use crate::exit::Progress;
 use crate::host::Host;
 use crate::{Error, ErrorKind, Result};
+
+#[cfg(test)]
+#[path = "git_tests.rs"]
+mod git_tests;
 
 const MODE_FILE: u32 = 0o100644;
 const MODE_EXECUTABLE: u32 = 0o100755;
@@ -46,58 +51,81 @@ pub(super) fn is_absent(e: &io::Error) -> bool {
     )
 }
 
-/// Variables in git's local list that add to the configuration git reads, so the user's settings still reach it. Kept.
-/// `GIT_CONFIG` is on the list too but is removed: `git config` reads only that file, not the repository's own.
-const ADDITIVE_CONFIG_VARIABLES: [&str; 2] = ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
-
-/// Variables that change which repository git finds from a directory but that `git rev-parse --local-env-vars` does
-/// not list. `GIT_CEILING_DIRECTORIES` stops the upward search below the work tree root;
-/// `GIT_DISCOVERY_ACROSS_FILESYSTEM` stops it at a mount point.
-const UNLISTED_DISCOVERY_VARIABLES: [&str; 2] = ["GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"];
-
-/// The environment variables that make `git` pick a repository (`git rev-parse --local-env-vars`, as the installed
-/// git lists them, less the additive configuration ones). Asked once.
-fn repository_variables(host: &dyn Host) -> Result<&'static [String]> {
-    static VARIABLES: OnceLock<Vec<String>> = OnceLock::new();
-    if let Some(variables) = VARIABLES.get() {
-        return Ok(variables);
-    }
-    let mut cmd = Command::new("git");
-    cmd.args(["rev-parse", "--local-env-vars"]);
-    host.quiet(&mut cmd);
-    let out = run(cmd)?;
-    if !out.status.success() {
-        return Err(Error::new(
-            ErrorKind::Recipe,
-            format!(
-                "cannot ask git which environment variables select a repository: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        ));
-    }
-    Ok(VARIABLES.get_or_init(|| {
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|name| !ADDITIVE_CONFIG_VARIABLES.contains(name))
-            .map(str::to_owned)
-            .collect()
-    }))
+/// The `git` a snapshot runs: the same commands in every call, in an environment that holds none of this process's
+/// `GIT_*` variables but the ones that add to git's configuration. A git hook sets `GIT_DIR` and `GIT_INDEX_FILE`,
+/// and a user may set `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG` or `GIT_TRACE=/dev/stdout`: each makes git read another
+/// repository or write into the output the snapshot parses.
+pub(super) struct Git<'a> {
+    host: &'a dyn Host,
+    /// The variables removed, sorted, as the environment names them.
+    cleared: Vec<OsString>,
 }
 
-/// A `git` command in `dir`. It ignores the repository the caller's environment points at (a git hook sets
-/// `GIT_DIR` and `GIT_INDEX_FILE`, and may set `GIT_OBJECT_DIRECTORY`) and any limit it sets on the search for one, and
-/// starts no console window.
-pub(super) fn command(host: &dyn Host, dir: &Path) -> Result<Command> {
-    let mut command = Command::new("git");
-    for name in repository_variables(host)? {
-        command.env_remove(name);
+impl<'a> Git<'a> {
+    /// Reads this process's environment, and says through `progress` which variables git will not see.
+    pub(super) fn from_process(host: &'a dyn Host, progress: &dyn Progress) -> Git<'a> {
+        Git::from_names(host, std::env::vars_os().map(|(name, _)| name), progress)
     }
-    for name in UNLISTED_DISCOVERY_VARIABLES {
-        command.env_remove(name);
+
+    fn from_names(host: &'a dyn Host, names: impl IntoIterator<Item = OsString>, progress: &dyn Progress) -> Git<'a> {
+        let cleared = cleared_names(names, host.env_names_ignore_case());
+        if !cleared.is_empty() {
+            let list: Vec<_> = cleared.iter().map(|name| name.to_string_lossy()).collect();
+            progress.message(&format!("The following variables have been unset: {}", list.join(", ")));
+        }
+        Git { host, cleared }
     }
-    command.current_dir(dir);
-    host.quiet(&mut command);
-    Ok(command)
+
+    /// A `git` command in `dir` without the cleared variables, and with no console window.
+    fn command(&self, dir: &Path) -> Command {
+        let mut command = Command::new("git");
+        for name in &self.cleared {
+            command.env_remove(name);
+        }
+        command.current_dir(dir);
+        self.host.quiet(&mut command);
+        command
+    }
+}
+
+/// The names in `names` that `git` must not inherit, sorted and without repeats: every `GIT_*` variable except
+/// `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` and the `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs, which add
+/// to the configuration, so the user's settings still reach git. With `ignore_case`, `git_dir` is `GIT_DIR`.
+fn cleared_names(names: impl IntoIterator<Item = OsString>, ignore_case: bool) -> Vec<OsString> {
+    let mut cleared: Vec<OsString> = names
+        .into_iter()
+        .filter(|name| {
+            let text = name.to_string_lossy();
+            let text = if ignore_case { upcase(&text) } else { text.into_owned() };
+            text.starts_with("GIT_") && !adds_to_configuration(&text)
+        })
+        .collect();
+    cleared.sort();
+    cleared.dedup();
+    cleared
+}
+
+/// Each character as the one it uppercases to, where that is one character (Windows compares names that way).
+fn upcase(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(one), None) => one,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
+fn adds_to_configuration(name: &str) -> bool {
+    let numbered = |prefix: &str| {
+        name.strip_prefix(prefix)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    matches!(name, "GIT_CONFIG_PARAMETERS" | "GIT_CONFIG_COUNT")
+        || numbered("GIT_CONFIG_KEY_")
+        || numbered("GIT_CONFIG_VALUE_")
 }
 
 fn run(mut command: Command) -> Result<Output> {
@@ -117,7 +145,7 @@ fn not_a_directory(from_dir: &Path) -> Error {
 }
 
 /// The root of the work tree that contains `from_dir`.
-pub(super) fn work_tree_root(host: &dyn Host, from_dir: &Path) -> Result<PathBuf> {
+pub(super) fn work_tree_root(git: &Git, from_dir: &Path) -> Result<PathBuf> {
     // Git cannot start in a directory that is not there, and `run` would blame git for it.
     match std::fs::metadata(from_dir) {
         Ok(meta) if meta.is_dir() => {}
@@ -131,7 +159,7 @@ pub(super) fn work_tree_root(host: &dyn Host, from_dir: &Path) -> Result<PathBuf
             ));
         }
     }
-    let mut cmd = command(host, from_dir)?;
+    let mut cmd = git.command(from_dir);
     cmd.args(["rev-parse", "--is-inside-work-tree", "--show-cdup"]);
     let out = run(cmd)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -155,8 +183,8 @@ pub(super) fn work_tree_root(host: &dyn Host, from_dir: &Path) -> Result<PathBuf
 }
 
 /// The index of the work tree at `root`, with the index of every initialized submodule in place of the submodule.
-pub(super) fn list(host: &dyn Host, root: &Path) -> Result<Listing> {
-    let mut cmd = command(host, root)?;
+pub(super) fn list(git: &Git, root: &Path) -> Result<Listing> {
+    let mut cmd = git.command(root);
     cmd.args(["ls-files", "-z", "-s", "--recurse-submodules"]);
     let out = run(cmd)?;
     if !out.status.success() {
@@ -267,10 +295,10 @@ fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>, String)> {
 /// The link text of the tracked symlink `item`, as git stores it: the same on every host, where a link read back
 /// from disk can have its separators changed. Git runs in the directory that holds the link, so a symlink in a
 /// submodule is looked up in the submodule's repository.
-pub(super) fn link_text(host: &dyn Host, root: &Path, item: &Tracked) -> Result<String> {
+pub(super) fn link_text(git: &Git, root: &Path, item: &Tracked) -> Result<String> {
     let on_disk = root.join(&item.path);
     let dir = on_disk.parent().expect("a tracked path is below the root");
-    let mut cmd = command(host, dir)?;
+    let mut cmd = git.command(dir);
     cmd.args(["cat-file", "blob", &item.object]);
     let out = run(cmd)?;
     if !out.status.success() {
@@ -293,10 +321,10 @@ pub(super) fn link_text(host: &dyn Host, root: &Path, item: &Tracked) -> Result<
 
 /// Whether the checkout of the repository that holds `item` writes a tracked symlink as a plain file holding its
 /// link text: `core.symlinks` is false, as git reports it there (true when unset).
-pub(super) fn links_are_files(host: &dyn Host, root: &Path, item: &Tracked) -> Result<bool> {
+pub(super) fn links_are_files(git: &Git, root: &Path, item: &Tracked) -> Result<bool> {
     let on_disk = root.join(&item.path);
     let dir = on_disk.parent().expect("a tracked path is below the root");
-    let mut cmd = command(host, dir)?;
+    let mut cmd = git.command(dir);
     cmd.args(["config", "--type=bool", "--default", "true", "--get", "core.symlinks"]);
     let out = run(cmd)?;
     if !out.status.success() {

@@ -92,6 +92,10 @@ impl Host for WindowsHost {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
+    fn env_names_ignore_case(&self) -> bool {
+        true
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         Some(SystemDirs {
             root: directory(GetWindowsDirectoryW)?,

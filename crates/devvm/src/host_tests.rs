@@ -529,3 +529,10 @@ fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
          as passed, so nothing shows it ran at 1252:\n{stdout}",
     );
 }
+
+#[skuld::test]
+fn only_windows_compares_environment_variable_names_without_case() {
+    assert_eq!(current().env_names_ignore_case(), cfg!(windows));
+    assert_eq!(TestHost.env_names_ignore_case(), cfg!(windows));
+    assert!(!OtherHost.env_names_ignore_case());
+}

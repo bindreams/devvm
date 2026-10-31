@@ -8,9 +8,8 @@ use sha2::{Digest, Sha256 as Hasher};
 use tar::{Builder, EntryType, Header};
 
 use super::FULL_DISK_HINT;
-use super::git::{self, Kind, Tracked};
+use super::git::{self, Git, Kind, Tracked};
 use crate::exit::Progress;
-use crate::host::Host;
 use crate::recipe::hash::{EntryContent, ManifestEntry};
 use crate::{Error, ErrorKind, Result, Sha256};
 
@@ -27,7 +26,7 @@ const MTIME: u64 = 946_684_800;
 /// directory that is a symlink is a `recipe` error: the file it names may not be in the repository. So is a tracked
 /// file that is a symlink now, and a tracked symlink that is a regular file now where links can be made.
 pub(super) fn write(
-    host: &dyn Host,
+    git: &Git,
     progress: &dyn Progress,
     root: &Path,
     tracked: &[Tracked],
@@ -63,8 +62,8 @@ pub(super) fn write(
         }
         let entry = match item.kind {
             Kind::Symlink => {
-                check_stands_for_link(host, root, &on_disk, &meta, item)?;
-                let target = git::link_text(host, root, item)?;
+                check_stands_for_link(git, root, &on_disk, &meta, item)?;
+                let target = git::link_text(git, root, item)?;
                 append_symlink(&mut builder, dest, &item.path, &target)?;
                 ManifestEntry {
                     path: item.path.clone(),
@@ -188,7 +187,7 @@ fn header(kind: EntryType, mode: u32, size: u64) -> Header {
 /// plain file that stands for it. Elsewhere a regular file is a typechange. Its target comes from git, never from
 /// disk.
 fn check_stands_for_link(
-    host: &dyn Host,
+    git: &Git,
     root: &Path,
     on_disk: &Path,
     meta: &std::fs::Metadata,
@@ -198,7 +197,7 @@ fn check_stands_for_link(
         return Ok(());
     }
     let found = if meta.is_file() {
-        if git::links_are_files(host, root, item)? {
+        if git::links_are_files(git, root, item)? {
             return Ok(());
         }
         "a regular file"

@@ -737,46 +737,6 @@ fn a_submodule_inside_a_submodule_is_included_and_an_uninitialised_sibling_is_no
 }
 
 #[skuld::test]
-fn git_runs_without_any_variable_that_selects_a_repository(#[fixture(unicode_home)] home: &Path) {
-    let command = crate::copy::git::command(&TestHost, home).unwrap();
-    let removed: Vec<_> = command
-        .get_envs()
-        .filter(|(_, value)| value.is_none())
-        .map(|(name, _)| name.to_string_lossy().into_owned())
-        .collect();
-    // The list git itself keeps, plus the ones a hook is known to set.
-    let local = git(home, &["rev-parse", "--local-env-vars"]);
-    let known = [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_PREFIX",
-        // `git config` reads only this file, not the repository's own.
-        "GIT_CONFIG",
-        // Not in git's list, but they change which repository is found from a directory.
-        "GIT_CEILING_DIRECTORIES",
-        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    ];
-    // These add to the configuration, so the user's settings still reach git.
-    let config = ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
-    for name in local.lines().chain(known).filter(|name| !config.contains(name)) {
-        assert!(
-            removed.iter().any(|r| r == name),
-            "{name} must be removed, got {removed:?}"
-        );
-    }
-    for name in config {
-        assert!(
-            !removed.iter().any(|r| r == name),
-            "{name} must be kept, got {removed:?}"
-        );
-    }
-}
-
-#[skuld::test]
 fn a_tracked_symlink_that_is_a_regular_file_where_links_can_be_made_is_refused_naming_it(
     #[fixture(unicode_home)] home: &Path,
 ) {

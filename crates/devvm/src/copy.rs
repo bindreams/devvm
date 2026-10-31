@@ -11,6 +11,8 @@ use crate::{Error, ErrorKind, Result};
 mod archive;
 mod git;
 
+use git::Git;
+
 /// A full disk leaves nothing to resume: the copy starts over.
 const FULL_DISK_HINT: &str = "free some space and run again";
 
@@ -63,8 +65,9 @@ pub(crate) fn snapshot(
     into: &Path,
     progress: &dyn Progress,
 ) -> Result<Snapshot> {
-    let root = git::work_tree_root(host, from_dir)?;
-    let mut listing = git::list(host, &root)?;
+    let git = Git::from_process(host, progress);
+    let root = git::work_tree_root(&git, from_dir)?;
+    let mut listing = git::list(&git, &root)?;
     for submodule in &listing.uninitialized_submodules {
         progress.message(&format!(
             "skipping uninitialized submodule `{}`",
@@ -80,7 +83,7 @@ pub(crate) fn snapshot(
         .map_err(|e| Error::write(into, e, FULL_DISK_HINT))?;
     let mut out = BufWriter::new(file.as_file());
     let entries = archive::write(
-        host,
+        &git,
         progress,
         &root,
         &listing.tracked,

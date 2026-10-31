@@ -80,6 +80,10 @@ impl<M: FileModes> Host for M {
 
     fn quiet(&self, _cmd: &mut std::process::Command) {}
 
+    fn env_names_ignore_case(&self) -> bool {
+        false
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         None
     }
