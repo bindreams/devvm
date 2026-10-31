@@ -47,6 +47,11 @@ mod vm_gate;
 #[cfg(test)]
 mod vm_suite;
 
+/// Counts live heap bytes for `test_support::alloc::peak_bytes`.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: test_support::alloc::CountingAllocator = test_support::alloc::CountingAllocator;
+
 #[cfg(test)]
 fn main() {
     test_helpers::run_if_requested();
@@ -82,6 +87,7 @@ mod test_helpers {
         ),
         ("qemu-launcher", crate::vm_suite::backend::qemu_launcher),
         ("qemu-shutdown", crate::vm_suite::backend::qemu_shutdown),
+        ("access-heap", crate::access::heap_tests::access_heap),
     ];
 
     pub fn run_if_requested() {

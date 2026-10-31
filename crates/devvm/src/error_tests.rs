@@ -55,3 +55,22 @@ fn error_is_send_sync_static() {
     fn assert_bounds<T: Send + Sync + 'static>() {}
     assert_bounds::<Error>();
 }
+
+#[skuld::test]
+fn a_cleanup_that_worked_leaves_the_error_as_it_was() {
+    let error = Error::new(ErrorKind::Io, "cannot move the copy into place")
+        .after_cleanup("the temporary file", std::io::Result::Ok(()));
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.message(), "cannot move the copy into place");
+}
+
+#[skuld::test]
+fn a_cleanup_that_failed_is_named_with_what_it_left_behind() {
+    let cause = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the file is locked");
+    let error =
+        Error::new(ErrorKind::DiskFull, "cannot write the copy").after_cleanup("the temporary file /x/y", Err(cause));
+    assert_eq!(error.kind(), ErrorKind::DiskFull, "the first failure stays the error");
+    let text = error.message();
+    assert!(text.starts_with("cannot write the copy"), "{text}");
+    assert!(text.contains("/x/y") && text.contains("the file is locked"), "{text}");
+}

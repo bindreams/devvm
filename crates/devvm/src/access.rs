@@ -1,6 +1,17 @@
-//! Reaching a running guest. Only the type the guest traits mention exists so far.
+//! Reaching a running guest: instance keys, `ssh_config` entries and the embedded SSH client.
 
-/// A connection to a guest's SSH server.
-pub(crate) struct SshSession {
-    _private: (),
-}
+pub(crate) mod exec;
+#[cfg(test)]
+#[path = "access/heap_tests.rs"]
+pub(crate) mod heap_tests;
+pub(crate) mod keys;
+pub(crate) mod paths;
+pub(crate) mod runtime;
+pub(crate) mod session;
+pub(crate) mod sftp;
+pub(crate) mod ssh_config;
+
+#[allow(unused_imports, reason = "used by the engine in the next PR")]
+pub(crate) use exec::ExecEnd;
+#[allow(unused_imports, reason = "used by the engine in the next PR")]
+pub(crate) use session::{BootBound, Keepalive, SshSession, SshTarget, VmExit};

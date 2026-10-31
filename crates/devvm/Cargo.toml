@@ -22,6 +22,8 @@ yaml_serde = "0.10"
 bytesize = "2.7.0"
 sha2 = "0.11.1"
 getrandom = "0.4.3"
+# Directory modification times (`access/sftp/local.rs`): `std` cannot open a directory for writing on Unix.
+filetime = "0.2"
 jiff = "0.2.38"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
 url = "2.5.8"
@@ -31,9 +33,19 @@ cosca = { version = "0.6.0", features = ["serde"] }
 qapi = { version = "0.15", default-features = false, features = ["qmp"] }
 zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 toml = "1.1"
+# The embedded SSH client behind a blocking API (`access/`): one private runtime, no `ssh.exe`.
+russh = { version = "0.65", default-features = false, features = ["ring"] }
+russh-sftp = "3"
+rand = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "fs"] }
+os_str_bytes = "7"
 
 [dev-dependencies]
 skuld = { workspace = true }
+# Virtual time for the boot-gate test (`access/session_tests.rs`).
+tokio = { version = "1", features = ["test-util", "process"] }
+# The executors a library caller may be inside (`test_support/callers.rs`).
+futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
 
 # Windows directories, the ANSI code page and the hypervisor come from the OS (`host/windows.rs`); QMP is AF_UNIX
 # (`backend/qemu/uds.rs`).
@@ -42,6 +54,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Networking_WinSock",
+    "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
@@ -50,12 +63,15 @@ windows-sys = { version = "0.61", features = [
 ] }
 uds_windows = "1.2"
 
-# The longest AF_UNIX path of a Unix host (`host/unsupported/socket_unix.rs`).
+# The longest AF_UNIX path of a Unix host (`host/unix.rs`), and an atomic rename that does not replace.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+rustix = { version = "1", features = ["fs"] }
 
 # The fake VM reports its own job and console to the tests (`test_support/fake_vm`).
 [target.'cfg(windows)'.dev-dependencies]
+# Makes the NTFS junction that `read_link` is checked against (`host/windows_tests.rs`).
+junction = "2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
