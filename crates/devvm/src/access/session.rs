@@ -45,7 +45,7 @@ const EVENT_BUFFER: usize = 16;
 // Parameters ==========================================================================================================
 
 /// Where and as whom to connect, and what to name in errors.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct SshTarget {
     pub addr: std::net::SocketAddr,
     pub user: String,
@@ -55,6 +55,19 @@ pub(crate) struct SshTarget {
     pub host_public: String,
     /// Named in every VM-exit and boot-bound error.
     pub serial_log: PathBuf,
+}
+
+/// Without the private key, which must not reach a log or a failed assertion.
+impl std::fmt::Debug for SshTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshTarget")
+            .field("addr", &self.addr)
+            .field("user", &self.user)
+            .field("client_private", &"<redacted>")
+            .field("host_public", &self.host_public)
+            .field("serial_log", &self.serial_log)
+            .finish()
+    }
 }
 
 /// SSH keepalive: after `interval` of silence a probe is sent, and the connection is dead once more than `max_missed`

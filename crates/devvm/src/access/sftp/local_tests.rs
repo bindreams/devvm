@@ -366,3 +366,16 @@ fn a_move_that_fails_removes_a_temporary_that_is_a_link_to_a_directory(#[fixture
     assert!(std::fs::symlink_metadata(&temp).is_err(), "the temporary link is gone");
     assert!(aim.is_dir(), "what the link led to stays");
 }
+
+#[skuld::test]
+fn a_source_name_that_is_not_unicode_is_said_to_be_so_and_a_path_without_a_name_is_said_to_have_none() {
+    let side = HostSide::new(&TestHost, Typed::none());
+    let bad = Path::new("dir").join(non_unicode_name());
+    let error = side.file_name(&bad).unwrap_err();
+    assert_eq!(error.kind(), crate::ErrorKind::Usage, "{error}");
+    assert!(error.message().contains("not valid Unicode"), "{error}");
+    assert!(!error.message().contains("no usable file name"), "{error}");
+
+    let error = side.file_name(&PathBuf::from("..")).unwrap_err();
+    assert!(error.message().contains("no usable file name"), "{error}");
+}

@@ -1114,3 +1114,21 @@ fn a_reset_connection_ends_a_pending_sftp_request(#[fixture(unicode_home)] home:
         assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     });
 }
+
+#[skuld::test]
+fn debug_output_of_a_target_does_not_hold_the_private_key() {
+    let keys = InstanceKeys::generate().unwrap();
+    let target = SshTarget {
+        addr: "127.0.0.1:22".parse().unwrap(),
+        user: "user".to_owned(),
+        client_private: keys.client_private.clone(),
+        host_public: keys.host_public.clone(),
+        serial_log: std::path::PathBuf::from("serial.log"),
+    };
+    let shown = format!("{target:?}");
+    assert!(!shown.contains(keys.client_private.lines().nth(1).unwrap()), "{shown}");
+    // What a failure is debugged by stays: where, as whom, what the guest must present.
+    for kept in ["127.0.0.1:22", "user", keys.host_public.trim(), "serial.log"] {
+        assert!(shown.contains(kept), "{kept} in {shown}");
+    }
+}

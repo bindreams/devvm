@@ -201,12 +201,38 @@ fn a_dangling_link_at_the_final_path_is_not_replaced(#[fixture(unicode_home)] ho
     assert!(temporary_directories(home).is_empty());
 }
 
+/// A kill between the claim and the rename of a host without a no-replace rename leaves an empty directory at the
+/// final path. Every writer holds the lock, so under it that directory is a dead claim.
 #[skuld::test]
-fn an_empty_directory_at_the_final_path_is_not_replaced(#[fixture(unicode_home)] home: &Path) {
+fn an_empty_directory_at_the_final_path_is_a_dead_claim_and_the_write_proceeds(#[fixture(unicode_home)] home: &Path) {
     let dir = home.join("keys");
     std::fs::create_dir(&dir).unwrap();
+    let keys = InstanceKeys::generate().unwrap();
+    keys.write(&TestHost, &dir).unwrap();
+    assert_eq!(InstanceKeys::read(&dir).unwrap(), keys);
+    assert!(temporary_directories(home).is_empty());
+}
+
+#[skuld::test]
+fn a_directory_with_anything_in_it_at_the_final_path_is_never_replaced(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("keys");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("held"), "mine").unwrap();
     let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
-    assert!(dir.read_dir().unwrap().next().is_none());
+    assert_eq!(std::fs::read_to_string(dir.join("held")).unwrap(), "mine");
     assert!(temporary_directories(home).is_empty());
+}
+
+#[skuld::test]
+fn debug_output_of_the_keys_does_not_hold_a_private_key() {
+    let keys = InstanceKeys::generate().unwrap();
+    let shown = format!("{keys:?}");
+    for private in [&keys.client_private, &keys.host_private] {
+        assert!(!shown.contains(private.trim()), "{shown}");
+        let body = private.lines().nth(1).unwrap();
+        assert!(!shown.contains(body), "{shown}");
+    }
+    // The public halves are not secret, and a failure message that names them is useful.
+    assert!(shown.contains(keys.client_public.trim()), "{shown}");
 }

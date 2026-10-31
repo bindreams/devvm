@@ -273,11 +273,19 @@ impl CopySide for HostSide<'_> {
     }
 
     fn file_name(&self, path: &PathBuf) -> Result<String> {
-        without_trailing_separator(path)
+        let name = without_trailing_separator(path)
             .file_name()
-            .and_then(|name| name.to_str())
-            .map(str::to_owned)
-            .ok_or_else(|| Error::new(ErrorKind::Usage, format!("{} has no usable file name", self.name(path))))
+            .ok_or_else(|| Error::new(ErrorKind::Usage, format!("{} has no usable file name", self.name(path))))?
+            .to_owned();
+        name.into_string().map_err(|_| {
+            Error::new(
+                ErrorKind::Usage,
+                format!(
+                    "the file name of {} is not valid Unicode, which SFTP cannot carry",
+                    self.name(path)
+                ),
+            )
+        })
     }
 
     fn chain(&self, path: &PathBuf) -> Vec<(Option<String>, PathBuf)> {

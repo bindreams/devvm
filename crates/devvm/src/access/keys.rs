@@ -20,12 +20,24 @@ const LOCK: &str = ".keys.lock";
 const TEMP_PREFIX: &str = ".keys-";
 
 /// An instance's key pairs as OpenSSH text.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct InstanceKeys {
     pub client_private: String,
     pub client_public: String,
     pub host_private: String,
     pub host_public: String,
+}
+
+/// Without the private keys, which must not reach a log or a failed assertion.
+impl std::fmt::Debug for InstanceKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstanceKeys")
+            .field("client_private", &"<redacted>")
+            .field("client_public", &self.client_public)
+            .field("host_private", &"<redacted>")
+            .field("host_public", &self.host_public)
+            .finish()
+    }
 }
 
 fn key_error(what: &str, source: impl std::error::Error + Send + Sync + 'static) -> Error {
@@ -65,6 +77,32 @@ fn sweep_temporaries(parent: &Path) -> Result<Vec<String>> {
     Ok(warnings)
 }
 
+/// Removes the empty directory at `dir`, which is what a writer killed between the two steps of
+/// `claim_then_rename` leaves on a host without a rename that refuses to replace. The caller holds the
+/// lock every writer takes, so no writer is between those steps, and an empty directory here is a dead claim. A
+/// directory with anything in it, a link and a file are left for `publish_dir` to refuse.
+fn clear_dead_claim(dir: &Path) -> Result<()> {
+    let is_directory = std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir());
+    if !is_directory {
+        return Ok(());
+    }
+    match std::fs::remove_dir(dir) {
+        Err(e)
+            if !matches!(
+                e.kind(),
+                std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            Err(Error::io(
+                ErrorKind::Io,
+                format!("cannot remove the empty directory {}", dir.display()),
+                e,
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Creates the public key file `path` with `text` and flushes it to disk.
 fn write_public(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
@@ -89,7 +127,8 @@ impl InstanceKeys {
     /// Writes `client`, `client.pub`, `host` and `host.pub` into the new directory `dir`. The files are first written
     /// to a temporary directory beside `dir` and flushed to disk, which is then published at `dir` in one step
     /// ([`Host::publish_dir`]): a failure or a kill leaves no `dir` (on a file system without a rename that refuses
-    /// to replace, a kill can leave it empty), and anything already at `dir` is `AlreadyExists`, never replaced.
+    /// to replace, a kill can leave it empty, and the next writer removes it under the lock), and anything else already
+    /// at `dir` is `AlreadyExists`, never replaced.
     /// Writers of one parent directory take turns under a lock there (`.keys.lock`), so a temporary directory a killed
     /// writer left (`.keys-*`) is removed by the next; one that cannot be removed, or a failure to flush `dir`'s parent
     /// after the keys are in place, is returned as a warning. The private files go through [`Host::write_private`].
@@ -107,6 +146,7 @@ impl InstanceKeys {
         let mut lock = FileLock::open(&parent.join(LOCK))?;
         lock.lock(Mode::Exclusive, "the instance keys", &NullProgress)?;
         let mut warnings = sweep_temporaries(parent)?;
+        clear_dead_claim(dir)?;
         let temp = tempfile::Builder::new()
             .prefix(TEMP_PREFIX)
             .tempdir_in(parent)
