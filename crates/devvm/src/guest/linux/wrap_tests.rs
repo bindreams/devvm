@@ -182,26 +182,32 @@ fn a_nul_byte_cannot_travel_in_a_shell_string() {
 /// in a directory above `git --exec-path` (Git for Windows: `<Git>/bin/bash.exe`; elsewhere `/usr/bin/bash` or
 /// `/bin/bash`). Panics naming what was looked for.
 fn bash_program() -> PathBuf {
+    find_bash().unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// [`bash_program`], with the reason it cannot be found as the error.
+fn find_bash() -> Result<PathBuf, String> {
     let mut git = std::process::Command::new("git");
     git.arg("--exec-path");
     TestHost.quiet(&mut git);
     let output = git
         .output()
-        .unwrap_or_else(|e| panic!("these tests need `git` on PATH, to find its `bash`: {e}"));
-    assert!(
-        output.status.success(),
-        "`git --exec-path` failed: {:?} {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
+        .map_err(|e| format!("these tests need `git` on PATH, to find its `bash`: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`git --exec-path` failed: {:?} {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
     let exec_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
     let bash = format!("bin/bash{}", std::env::consts::EXE_SUFFIX);
     exec_path
         .ancestors()
         .map(|dir| dir.join(&bash))
         .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "these tests need git's `bash`: no `{bash}` above `git --exec-path` ({})",
                 exec_path.display()
             )
@@ -290,34 +296,71 @@ fn a_program_called_dash_x_or_a_equals_b_is_a_program_name() {
     }
 }
 
-#[skuld::test]
-fn bash_does_not_pass_through_what_it_owns_but_passes_every_other_name() {
-    let probe = "round-trip-probe";
-    // The program sees `printenv NAME`'s output, after the same `export` the wrapper writes.
-    let seen = |script: String| String::from_utf8_lossy(&run_in_bash(&script, None).stdout).into_owned();
+/// The bash `BASH_OWNED_VARIABLES` was measured with, as `major.minor` (see the list's documentation).
+const MEASURED_BASH: &str = "5.2";
 
-    // Each listed name is on the list because the value asked for does not arrive.
+/// The host bash's `BASH_VERSINFO` major and minor as `"<major> <minor>"`, or why it could not be asked.
+fn host_bash_version() -> Result<String, String> {
+    let mut command = std::process::Command::new(find_bash()?);
+    command.args(["-c", r#"printf '%s %s' "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}""#]);
+    TestHost.quiet(&mut command);
+    let output = command.output().map_err(|e| format!("cannot start bash: {e}"))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// `Ok` when `found` (`"<major> <minor>"`) is [`MEASURED_BASH`]; otherwise the reason the owned-names test is not run.
+fn require_measured_bash(found: &str) -> Result<(), String> {
+    match found.split_once(' ').map(|(major, minor)| format!("{major}.{minor}")) {
+        Some(version) if version == MEASURED_BASH => Ok(()),
+        _ => Err(format!(
+            "the host's bash is {}; the names bash owns are measured for bash {MEASURED_BASH}, the guest's, so they are \
+             only checked against that version",
+            found.replace(' ', ".")
+        )),
+    }
+}
+
+/// Where the host's bash cannot be asked for its version, the test runs and fails on its own, naming what is missing.
+fn host_bash_is_the_measured_version() -> Result<(), String> {
+    match host_bash_version() {
+        Ok(found) => require_measured_bash(&found),
+        Err(_) => Ok(()),
+    }
+}
+
+#[skuld::test]
+fn the_measured_bash_version_is_matched_by_major_and_minor_only() {
+    assert_eq!(require_measured_bash("5 2"), Ok(()));
+    for other in ["3 2", "5 3", "5 1", "4 4", "", "5"] {
+        let reason = require_measured_bash(other).unwrap_err();
+        assert!(reason.contains(&other.replace(' ', ".")), "{other:?}: {reason}");
+    }
+}
+
+#[skuld::test(requires = [host_bash_is_the_measured_version])]
+fn bash_does_not_pass_through_what_it_owns() {
+    // The program sees `printenv NAME`'s output, after the same `export` the wrapper writes. Each listed name is on the
+    // list because the value asked for does not arrive.
     for name in BASH_OWNED_VARIABLES {
-        let arrived = seen(format!("export {name}={} && exec -- printenv {name}", sq(probe)));
+        let script = format!("export {name}={} && exec -- printenv {name}", sq("round-trip-probe"));
+        let out = run_in_bash(&script, None);
         assert_ne!(
-            arrived.trim_end(),
-            probe,
+            String::from_utf8_lossy(&out.stdout).trim_end(),
+            "round-trip-probe",
             "{name} is passed through unchanged, so it need not be listed"
         );
     }
+}
 
-    // A name that is not listed arrives as asked, through the wrapper's own script.
+#[skuld::test]
+fn bash_passes_every_unlisted_name_as_asked() {
+    // Through the wrapper's own script, on every bash: none of these is owned by any version.
+    let probe = "round-trip-probe";
     for name in ["UIDS", "uid", "random", "BASH_VERSION", "HOME", "Zz_9"] {
         let mut command = cmd(&["printenv", name]);
         command.env = vec![(name.to_owned(), probe.to_owned())];
-        assert_eq!(
-            seen(script(&command).unwrap()),
-            format!(
-                "{probe}
-"
-            ),
-            "{name}"
-        );
+        let out = run_in_bash(&script(&command).unwrap(), None);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), format!("{probe}\n"), "{name}");
     }
 }
 
