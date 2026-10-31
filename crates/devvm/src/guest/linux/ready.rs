@@ -12,55 +12,69 @@ mod ready_tests;
 pub(super) const CLOUD_INIT_STATUS: &str = "cloud-init status --wait --format json";
 
 /// Reads the reply of [`CLOUD_INIT_STATUS`]. Anything but a `done` that agrees with its exit code is an error that
-/// quotes the reply. A reply that cannot be read because `output.loss` cut it short is an error of the loss's kind.
+/// quotes the reply. A command that failed is reported by its exit, before anything about its reply. The reply of a
+/// command that exited 0 and cannot be read because `output.loss` cut it short is an error of the loss's kind.
 pub(super) fn readiness(output: &Output) -> Result<Readiness> {
     let failure = |what: &str| {
         Error::new(
             ErrorKind::Io,
             format!(
                 "cloud-init did not finish a normal first boot: {what} (`{CLOUD_INIT_STATUS}`: {})",
-                describe(output)
+                describe(output, true)
             ),
         )
     };
     let code = match &output.status {
         ExitStatus::Code(code) => *code,
         ExitStatus::Signal { name, .. } => {
-            return Err(failure(&format!(
-                "it was killed by signal {name}{}",
-                stderr_suffix(output)
-            )));
+            return Err(command_failure(output, &format!("was killed by signal {name}")));
         }
     };
-    let reply: serde_json::Value = match (serde_json::from_slice(&output.stdout), &output.loss) {
-        (Ok(reply), _) => reply,
-        // The connection broke after the status arrived: the reply is cut short, and the loss is the cause.
-        (Err(_), Some(loss)) => {
-            return Err(Error::new(
+    let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout);
+    let reply = parsed
+        .as_ref()
+        .ok()
+        .filter(|reply| reply.get("status").is_some_and(serde_json::Value::is_string));
+    let Some(reply) = reply else {
+        // A failed command's own exit is the cause of whatever is wrong with its reply, and of a connection lost after
+        // the exit arrived.
+        if code != 0 {
+            return Err(command_failure(output, &format!("exited with exit code {code}")));
+        }
+        return Err(match (&parsed, &output.loss) {
+            // The connection broke after the status arrived: the reply is cut short, and the loss is the cause.
+            (Err(_), Some(loss)) => Error::new(
                 loss.kind(),
                 format!(
                     "cloud-init's reply was cut short: {} (`{CLOUD_INIT_STATUS}`: {})",
                     loss.message(),
-                    describe(output)
+                    describe(output, true)
                 ),
-            ));
-        }
-        // A failed command's own exit is the cause; its missing reply is a consequence.
-        (Err(_), None) if code != 0 => {
-            return Err(failure(&format!(
-                "it exited with exit code {code}{}",
-                stderr_suffix(output)
-            )));
-        }
-        (Err(e), None) => return Err(failure(&format!("its reply is not JSON ({e})"))),
+            ),
+            (Err(e), None) => failure(&format!("its reply is not JSON ({e})")),
+            (Ok(_), _) => failure("its reply has no `status` text"),
+        });
     };
-    let Some(status) = reply.get("status").and_then(serde_json::Value::as_str) else {
-        return Err(failure("its reply has no `status` text"));
-    };
-    match status {
-        "done" => done(&reply, code, &failure),
+    match reply["status"].as_str().unwrap_or_default() {
+        "done" => done(reply, code, &failure),
         other => Err(failure(&format!("its status is `{other}`"))),
     }
+}
+
+/// The error for a `cloud-init status` that did not exit normally: what happened to it, then its stderr, which is
+/// then left out of the quoted output.
+fn command_failure(output: &Output, what: &str) -> Error {
+    let stderr = match output.stderr_lossy().trim() {
+        "" => String::new(),
+        stderr => format!(": {stderr}"),
+    };
+    Error::new(
+        ErrorKind::Io,
+        format!(
+            "cloud-init did not finish a normal first boot: it {what}{stderr} (`{CLOUD_INIT_STATUS}`: {})",
+            describe(output, false)
+        ),
+    )
 }
 
 /// A `done` reply, checked against the exit code and the error lists. cloud-init exits 0 for a clean finish and 2 when
@@ -99,23 +113,15 @@ fn done(reply: &serde_json::Value, code: i32, failure: &dyn Fn(&str) -> Error) -
     }))
 }
 
-/// `: <stderr>` when the command printed anything to stderr, otherwise nothing.
-fn stderr_suffix(output: &Output) -> String {
-    match output.stderr_lossy().trim() {
-        "" => String::new(),
-        stderr => format!(": {stderr}"),
-    }
-}
-
-/// The exit code, stdout and stderr of `output`, for an error message.
-fn describe(output: &Output) -> String {
+/// The exit code and stdout of `output`, and its stderr when `stderr` is set, for an error message.
+fn describe(output: &Output, stderr: bool) -> String {
     let code = match &output.status {
         ExitStatus::Code(code) => format!("exit code {code}"),
         ExitStatus::Signal { name, .. } => format!("signal {name}"),
     };
-    format!(
-        "{code}; stdout: {}; stderr: {}",
-        output.stdout_lossy().trim(),
-        output.stderr_lossy().trim()
-    )
+    let mut text = format!("{code}; stdout: {}", output.stdout_lossy().trim());
+    if stderr {
+        text.push_str(&format!("; stderr: {}", output.stderr_lossy().trim()));
+    }
+    text
 }

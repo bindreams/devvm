@@ -197,3 +197,83 @@ fn a_cloud_init_killed_by_a_signal_has_the_signal_and_its_stderr_as_the_headline
         "{head}"
     );
 }
+
+#[skuld::test]
+fn a_failed_exit_leads_even_when_the_connection_was_lost_afterwards() {
+    let output = Output {
+        status: ExitStatus::Code(127),
+        stdout: Vec::new(),
+        stderr: b"bash: cloud-init: command not found".to_vec(),
+        loss: Some(Error::new(ErrorKind::ConnectionLost, "the VM exited")),
+    };
+    let error = readiness(&output).unwrap_err();
+    let head = headline(&error);
+    assert!(
+        head.contains("exit code 127") && head.contains("command not found"),
+        "{head}"
+    );
+    assert!(!head.contains("cut short"), "{head}");
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+}
+
+#[skuld::test]
+fn a_failed_exit_leads_a_reply_that_parses_but_cannot_be_read() {
+    for code in [127, 1, 2] {
+        for stdout in ["{}", "[]", "null", r#"{"status": 7}"#] {
+            let mut output = reply(code, stdout);
+            output.stderr = b"bash: cloud-init: command not found
+"
+            .to_vec();
+            let error = readiness(&output).unwrap_err();
+            let head = headline(&error);
+            assert!(
+                head.contains(&format!("exit code {code}")) && head.contains("command not found"),
+                "{code} {stdout}: {head}"
+            );
+            assert!(!head.contains("`status`"), "{code} {stdout}: {head}");
+        }
+    }
+
+    // Exit 0 makes the unreadable reply the problem.
+    for stdout in ["{}", "[]", "null"] {
+        let error = readiness(&reply(0, stdout)).unwrap_err();
+        assert!(headline(&error).contains("`status`"), "{stdout}: {}", error.message());
+    }
+}
+
+#[skuld::test]
+fn stderr_appears_once_in_every_readiness_error() {
+    const MARK: &str = "STDERR-MARK";
+    let signal = ExitStatus::Signal {
+        name: "SEGV".to_owned(),
+        core_dumped: false,
+    };
+    let loss = || Some(Error::new(ErrorKind::ConnectionLost, "the VM exited"));
+    let cases = [
+        (ExitStatus::Code(127), "", None),
+        (ExitStatus::Code(127), "{}", None),
+        (ExitStatus::Code(127), "", loss()),
+        (ExitStatus::Code(0), "not json", None),
+        (ExitStatus::Code(0), "{}", None),
+        (ExitStatus::Code(0), r#"{"status": "running"}"#, None),
+        (ExitStatus::Code(0), r#"{"status": "done", "errors": ["boom"]}"#, None),
+        (ExitStatus::Code(1), r#"{"status": "done"}"#, None),
+        (ExitStatus::Code(0), r#"{"extended_status": "do"#, loss()),
+        (signal, "", None),
+    ];
+    for (status, stdout, loss) in cases {
+        let output = Output {
+            status,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: MARK.as_bytes().to_vec(),
+            loss,
+        };
+        let error = readiness(&output).unwrap_err();
+        assert_eq!(
+            error.message().matches(MARK).count(),
+            1,
+            "{output:?}: {}",
+            error.message()
+        );
+    }
+}
