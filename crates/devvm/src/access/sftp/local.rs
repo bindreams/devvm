@@ -306,10 +306,6 @@ impl CopySide for HostSide<'_> {
         self.host.file_name_problem(name)
     }
 
-    fn name_key(&self, name: &str) -> String {
-        self.host.name_key(name)
-    }
-
     fn inspect(&self, path: &PathBuf, follow: bool) -> Result<Kind> {
         let metadata = if follow {
             std::fs::metadata(path)

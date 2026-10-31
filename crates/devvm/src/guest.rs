@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use secrecy::SecretString;
+
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, Media};
 use crate::exit::Progress;
@@ -46,8 +48,6 @@ pub(crate) trait GuestOs: Send + Sync {
     /// Why `name`, a file name taken from the host, cannot be one file name in a guest directory (a Windows guest
     /// refuses `a?b` and device names); `None` when it can.
     fn file_name_problem(&self, name: &str) -> Option<String>;
-    /// `name` the way the guest's file system compares names: two names with the same key are one file there.
-    fn name_key(&self, name: &str) -> String;
 }
 
 /// [`GuestOs::split_root`] for a path whose only root is `/`; any number of leading `/` are one.
@@ -114,13 +114,14 @@ pub(crate) struct SeedSpec {
     pub keys: SeedKeys,
 }
 
-/// The SSH keys a first boot installs, as the text of their files.
+/// The SSH keys a first boot installs, as the text of their files. The private key is a secret: it stays out of `Debug`
+/// output.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SeedKeys {
     /// The public key of the client allowed to log in.
     pub client_public: String,
     /// The guest's SSH host key pair.
-    pub host_private: String,
+    pub host_private: SecretString,
     pub host_public: String,
 }
 

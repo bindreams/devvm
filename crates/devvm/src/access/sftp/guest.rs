@@ -66,10 +66,6 @@ impl CopySide for GuestSide<'_> {
         self.guest.file_name_problem(name)
     }
 
-    fn name_key(&self, name: &str) -> String {
-        self.guest.name_key(name)
-    }
-
     fn inspect(&self, path: &String, follow: bool) -> Result<Kind> {
         let inspect = |path: &String| {
             self.sftp

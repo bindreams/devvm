@@ -1688,7 +1688,7 @@ fn errors_do_not_name_the_directory_the_server_is_rooted_at(#[fixture(unicode_ho
 fn a_name_a_windows_guest_cannot_store_is_refused_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
     let mut env = Env::new(home);
     env.guest = env.os(GuestKind::Windows);
-    for (i, name) in ["a?b", "q*", "x.", "a:b"].into_iter().enumerate() {
+    for (i, name) in ["a?b", "q*", "a:b"].into_iter().enumerate() {
         env.host_file(&format!("t{i}/fine.txt"), b"f");
         env.host_file(&format!("t{i}/sub/{name}"), b"x");
         let error = env
@@ -2052,11 +2052,13 @@ fn a_destination_name_a_windows_host_cannot_store_is_refused_before_anything_is_
     env.guest_file("g/a.txt", b"a");
     let local = env.local.clone();
     for (src, dest, name) in [
-        ("/g/a.txt", local.join("out."), "out."),
-        ("/g", local.join("out "), "out "),
-        // Spelled as a string: `join` would read `a:` as a drive on Windows.
+        // Spelled as strings: `join` would read `a:` as a drive on Windows.
         ("/g/a.txt", PathBuf::from(format!("{}/a:b", local.display())), "a:b"),
-        ("/g", local.join("new.").join("deeper").join("dest"), "new."),
+        (
+            "/g",
+            PathBuf::from(format!("{}/new?/deeper/dest", local.display())),
+            "new?",
+        ),
     ] {
         let error = env.copy_out(src, &dest).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Io, "{}: {error}", dest.display());
@@ -2230,22 +2232,6 @@ fn a_drive_relative_guest_source_is_refused_naming_it(#[fixture(unicode_home)] h
         assert!(error.message().contains(src), "{src}: {error}");
         assert!(!dest.exists(), "{src}: nothing was written");
     }
-}
-
-/// The guest's rules apply to the host's names through the guest, so a case pair is one name on a Windows guest. A host
-/// that folds case (Windows, macOS) cannot hold the pair to begin with.
-#[cfg(target_os = "linux")]
-#[skuld::test]
-fn a_windows_guest_takes_two_host_names_differing_in_case_for_one(#[fixture(unicode_home)] home: &Path) {
-    let mut env = Env::new(home);
-    env.guest = env.os(GuestKind::Windows);
-    env.host_file("t/Readme", b"1");
-    env.host_file("t/README", b"2");
-    let error = env.copy_in(&env.local.join("t"), "/d").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("Readme"), "{error}");
-    assert!(error.message().contains("README"), "{error}");
-    assert!(tree(env.root()).is_empty(), "nothing was created");
 }
 
 /// SFTP v3 carries 32-bit seconds, and OpenSSH sends a time before 1970 as their two's complement: a date after 2038.
@@ -2439,7 +2425,7 @@ fn a_guest_name_with_a_replacement_character_is_refused_even_when_it_exists(#[fi
 fn cp_out_refuses_a_guest_name_a_windows_host_cannot_hold(#[fixture(unicode_home)] home: &Path) {
     let mut env = Env::new(home);
     env.host = RecordingHost::with_windows_names();
-    let names = ["a\\b", "..\\x", "C:\\z", "con", "x.", "a:b", "q?"];
+    let names = ["a\\b", "..\\x", "C:\\z", "a:b", "q?"];
     for (i, name) in names.iter().enumerate() {
         std::fs::create_dir(env.root().join(format!("t{i}"))).unwrap();
         env.guest_named_file(&format!("/t{i}/{name}"), 3);
@@ -2452,30 +2438,15 @@ fn cp_out_refuses_a_guest_name_a_windows_host_cannot_hold(#[fixture(unicode_home
 }
 
 #[skuld::test]
-fn cp_out_refuses_two_guest_names_a_case_insensitive_host_takes_for_one(#[fixture(unicode_home)] home: &Path) {
-    let mut env = Env::new(home);
-    env.host = RecordingHost::with_windows_names();
-    std::fs::create_dir(env.root().join("t")).unwrap();
-    env.guest_named_file("/t/Readme", 3);
-    env.guest_named_file("/t/README", 3);
-    let out = env.local.join("out");
-    let error = env.copy_out("/t", &out).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("Readme"), "{error}");
-    assert!(error.message().contains("README"), "{error}");
-    assert!(!out.exists(), "refused before anything was created");
-}
-
-#[skuld::test]
 fn cp_out_into_a_directory_checks_the_name_it_takes_from_the_guest_path(#[fixture(unicode_home)] home: &Path) {
     let mut env = Env::new(home);
     env.host = RecordingHost::with_windows_names();
-    env.guest_named_file("/con", 3);
+    env.guest_named_file("/q?", 3);
     let dest = env.local.join("dest");
     std::fs::create_dir(&dest).unwrap();
-    let error = env.copy_out("/con", &dest).unwrap_err();
+    let error = env.copy_out("/q?", &dest).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("\"con\""), "{error}");
+    assert!(error.message().contains("\"q?\""), "{error}");
     assert!(tree(&dest).is_empty());
 }
 

@@ -1,7 +1,9 @@
+use secrecy::SecretString;
+
 use crate::ErrorKind;
 use crate::GuestKind;
 use crate::guest::fake::FakeGuests;
-use crate::guest::{BuiltinGuests, Guests};
+use crate::guest::{BuiltinGuests, Guests, SeedKeys};
 use crate::recipe::Shell;
 
 #[skuld::test]
@@ -54,4 +56,19 @@ fn user_path_undoes_sftp_path() {
     }
     // A path the server reports from outside the root stays as it is.
     assert_eq!(rooted.user_path("/srv/jailbreak/a"), "/srv/jailbreak/a");
+}
+
+#[skuld::test]
+fn debug_output_of_the_seed_keys_does_not_hold_the_private_key() {
+    let keys = SeedKeys {
+        client_public: "ssh-ed25519 CLIENT-PUBLIC".to_owned(),
+        host_private: SecretString::from("HOST-PRIVATE-KEY-TEXT"),
+        host_public: "ssh-ed25519 HOST-PUBLIC".to_owned(),
+    };
+    let shown = format!("{keys:?}");
+    assert!(!shown.contains("HOST-PRIVATE-KEY-TEXT"), "{shown}");
+    assert!(
+        shown.contains("CLIENT-PUBLIC") && shown.contains("HOST-PUBLIC"),
+        "{shown}"
+    );
 }

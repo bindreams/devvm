@@ -4,6 +4,7 @@ use std::path::Path;
 
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::exit::NullProgress;
 use crate::host::Host;
@@ -19,25 +20,13 @@ const HOST: &str = "host";
 const LOCK: &str = ".keys.lock";
 const TEMP_PREFIX: &str = ".keys-";
 
-/// An instance's key pairs as OpenSSH text.
-#[derive(Clone, PartialEq, Eq)]
+/// An instance's key pairs as OpenSSH text. The private keys are secrets: they stay out of `Debug` output.
+#[derive(Clone, Debug)]
 pub(crate) struct InstanceKeys {
-    pub client_private: String,
+    pub client_private: SecretString,
     pub client_public: String,
-    pub host_private: String,
+    pub host_private: SecretString,
     pub host_public: String,
-}
-
-/// Without the private keys, which must not reach a log or a failed assertion.
-impl std::fmt::Debug for InstanceKeys {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InstanceKeys")
-            .field("client_private", &"<redacted>")
-            .field("client_public", &self.client_public)
-            .field("host_private", &"<redacted>")
-            .field("host_public", &self.host_public)
-            .finish()
-    }
 }
 
 fn key_error(what: &str, source: impl std::error::Error + Send + Sync + 'static) -> Error {
@@ -45,7 +34,7 @@ fn key_error(what: &str, source: impl std::error::Error + Send + Sync + 'static)
 }
 
 /// A fresh ed25519 pair: the private key and the public key, both as OpenSSH text.
-fn generate_pair() -> Result<(String, String)> {
+fn generate_pair() -> Result<(SecretString, String)> {
     let private = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
         .map_err(|e| key_error("generate an ed25519 key", e))?;
     let public = private
@@ -55,7 +44,7 @@ fn generate_pair() -> Result<(String, String)> {
     let private = private
         .to_openssh(LineEnding::LF)
         .map_err(|e| key_error("encode a private key", e))?;
-    Ok((private.to_string(), public))
+    Ok((private.to_string().into(), public))
 }
 
 /// Removes the `.keys-*` directories in `parent`: every writer holds the lock, so none of them is in use. One that
@@ -126,11 +115,11 @@ impl InstanceKeys {
         })
     }
 
-    /// Writes `client`, `client.pub`, `host` and `host.pub` into the new directory `dir`. The files are first written
-    /// to a temporary directory beside `dir` and flushed to disk, which is then published at `dir` in one step
-    /// ([`Host::publish_dir`]): a failure or a kill leaves no `dir` (on a file system without a rename that refuses
-    /// to replace, a kill can leave it empty, and the next writer removes it under the lock), and anything else already
-    /// at `dir` is `AlreadyExists`, never replaced.
+    /// Writes `client`, `client.pub`, `host` and `host.pub` into `dir`, which must not exist, except as an empty
+    /// directory. The files are first written to a temporary directory beside `dir` and flushed to disk, which is then
+    /// published at `dir` in one step ([`Host::publish_dir`]): a failure or a kill leaves no `dir` (on a file system
+    /// without a rename that refuses to replace, a kill can leave it empty, and the next writer removes it under the
+    /// lock), and anything else already at `dir` is `AlreadyExists`, never replaced.
     /// Writers of one parent directory take turns under a lock there (`.keys.lock`), so a temporary directory a killed
     /// writer left (`.keys-*`) is removed by the next; one that cannot be removed, or a failure to flush `dir`'s parent
     /// after the keys are in place, is returned as a warning. The private files go through [`Host::write_private`].
@@ -154,9 +143,9 @@ impl InstanceKeys {
             .tempdir_in(parent)
             .map_err(|e| io("create a temporary directory in", parent, e))?;
         let files = [
-            (CLIENT, &self.client_private, true),
+            (CLIENT, self.client_private.expose_secret(), true),
             ("client.pub", &self.client_public, false),
-            (HOST, &self.host_private, true),
+            (HOST, self.host_private.expose_secret(), true),
             ("host.pub", &self.host_public, false),
         ];
         let filled = || -> Result<()> {
@@ -207,9 +196,9 @@ impl InstanceKeys {
             })
         };
         Ok(InstanceKeys {
-            client_private: read(CLIENT)?,
+            client_private: read(CLIENT)?.into(),
             client_public: read("client.pub")?,
-            host_private: read(HOST)?,
+            host_private: read(HOST)?.into(),
             host_public: read("host.pub")?,
         })
     }

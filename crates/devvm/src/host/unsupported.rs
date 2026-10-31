@@ -106,10 +106,6 @@ impl<M: FileModes> Host for M {
         posix_problem(name)
     }
 
-    fn name_key(&self, name: &str) -> String {
-        name.to_owned()
-    }
-
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         std::fs::rename(from, to)
     }

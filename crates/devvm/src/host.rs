@@ -126,10 +126,6 @@ pub(crate) trait Host: Send + Sync {
     /// host refuses `a\b`, `C:\z`, device names and more); `None` when it can.
     fn file_name_problem(&self, name: &str) -> Option<String>;
 
-    /// `name` the way this host's file system compares names: two names with the same key are one file here, so
-    /// writing both overwrites the first.
-    fn name_key(&self, name: &str) -> String;
-
     /// Moves the file or symlink `from` over `to`, replacing what is there even when it is read-only (Windows refuses
     /// to rename over a read-only file). A directory at `to` is an error.
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()>;

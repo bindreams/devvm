@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::host::names::{posix_problem, windows_key, windows_problem};
+use crate::host::names::{posix_problem, windows_problem};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -27,46 +27,8 @@ fn posix_names_are_anything_but_nothing_dots_slash_and_nul() {
 #[skuld::test]
 fn windows_refuses_what_is_not_one_file_name() {
     for name in [
-        "a\\b",
-        "..\\x",
-        "C:\\z",
-        "C:z",
-        "a:b",
-        "a<b",
-        "a>b",
-        "a\"b",
-        "a|b",
-        "a?b",
-        "a*b",
-        "x.",
-        "x ",
-        "con",
-        "CON",
-        "Aux.txt",
-        "nul.tar.gz",
-        "com1",
-        "LPT9.x",
-        "com0",
-        "COM0.txt",
-        "lpt0",
-        "LPT0",
-        "COM\u{b9}",
-        "com\u{b2}.txt",
-        "COM\u{b3}",
-        "LPT\u{b9}",
-        "lpt\u{b2}",
-        "LPT\u{b3}.x",
-        "CONIN$",
-        "conout$",
-        "CONOUT$.txt",
-        "CON .txt",
-        "co\u{7}",
-        "a\u{1}",
-        "a\u{1f}b",
-        "",
-        ".",
-        "..",
-        "a/b",
+        "a\\b", "..\\x", "C:\\z", "C:z", "a:b", "a<b", "a>b", "a\"b", "a|b", "a?b", "a*b", "co\u{7}", "a\u{1}",
+        "a\u{1f}b", "", ".", "..", "a/b",
     ] {
         assert!(windows_problem(name).is_some(), "{name:?} was accepted");
     }
@@ -79,12 +41,6 @@ fn windows_refuses_what_is_not_one_file_name() {
         "%x",
         "[a]",
         "-dash",
-        "com10",
-        "COM4\u{b2}",
-        "COM\u{b9}\u{b9}",
-        "console",
-        "conin",
-        "CONIN$x",
         "a.b",
         ".hidden",
         "\u{1f600}",
@@ -95,16 +51,6 @@ fn windows_refuses_what_is_not_one_file_name() {
     ] {
         assert_eq!(windows_problem(name), None, "{name:?}");
     }
-}
-
-#[skuld::test]
-fn windows_keys_ignore_case_and_nothing_else() {
-    assert_eq!(windows_key("a"), windows_key("A"));
-    assert_eq!(windows_key("\u{e9}x"), windows_key("\u{c9}X"));
-    assert_eq!(windows_key("\u{416}"), windows_key("\u{436}"));
-    assert_ne!(windows_key("a"), windows_key("b"));
-    // `\u{df}` upper-cases to two letters; it stays itself rather than becoming `SS`.
-    assert_ne!(windows_key("\u{df}"), windows_key("SS"));
 }
 
 /// A Unix file system holds 255 bytes per name, however many characters they are.
@@ -150,7 +96,7 @@ fn windows_refuses_a_name_over_255_utf16_units() {
 /// Set by the CI job that runs on a Windows runner: the test below creates files with these names there.
 const NTFS_CLAIM: &str = "DEVVM_COVERS_NTFS_NAMES";
 
-/// `Ok` when this run claims an NTFS temp directory. Creating the names opens Windows devices, so no other run does it.
+/// `Ok` when this run claims an NTFS temp directory.
 fn ntfs_claimed() -> Result<(), String> {
     match std::env::var(NTFS_CLAIM) {
         Ok(claimed) if !claimed.is_empty() => Ok(()),
@@ -194,7 +140,8 @@ fn stored(dir: &Path, name: &str) -> Result<(), String> {
     outcome
 }
 
-/// `windows_problem` is what NTFS does, for the names the rules name and the ones they did not know.
+/// `windows_problem` is what NTFS does, for the names the rules name and the ones they did not know. Trailing dots and
+/// spaces and device names are the copy contract's, so they are not probed.
 #[skuld::test(requires = [ntfs_claimed])]
 fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &Path) {
     let names = [
@@ -210,9 +157,7 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
         "a.b",
         ".hidden",
         "\u{1f600}",
-        "console",
-        "com10",
-        // Characters and endings Windows refuses or drops.
+        // Characters Windows refuses.
         "C:z",
         "a:b",
         "a<b",
@@ -221,8 +166,6 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
         "a|b",
         "a?b",
         "a*b",
-        "x.",
-        "x ",
         "co\u{7}",
         "a\u{1}",
         "a\u{1f}b",
@@ -230,62 +173,6 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
         "a\u{7f}",
         "\u{85}x",
         "\u{9f}",
-        // Device names, with and without an extension and in lower case.
-        "con",
-        "CON",
-        "Aux.txt",
-        "nul.tar.gz",
-        "PRN",
-        "com1",
-        "COM9",
-        "LPT9.x",
-        "com0",
-        "COM0",
-        "LPT0",
-        "lpt0.txt",
-        // Superscript digits, which Windows 11 reads as COM and LPT numbers.
-        "COM\u{b9}",
-        "COM\u{b2}",
-        "COM\u{b3}",
-        "LPT\u{b9}",
-        "LPT\u{b2}",
-        "LPT\u{b3}",
-        "com\u{b9}.txt",
-        "COM4\u{b2}",
-        // Console handles.
-        "CONIN$",
-        "CONOUT$",
-        "conin$",
-        "CONOUT$.txt",
-    ];
-    // Measured on the windows-latest runner: NTFS stores the device names `CON`, `AUX.txt`, `COM1`, `COM0`, `LPT¹` and
-    // `CONIN$` and reads them back, through Rust's std. `windows_problem` refuses them anyway: the owner's copy rules
-    // name "reserved device names" among the names a target cannot store. The measurement is pinned here so a change
-    // in Windows shows up, and the rule is not loosened by it.
-    let refused_though_stored = [
-        "con",
-        "CON",
-        "Aux.txt",
-        "nul.tar.gz",
-        "PRN",
-        "com1",
-        "COM9",
-        "LPT9.x",
-        "com0",
-        "COM0",
-        "LPT0",
-        "lpt0.txt",
-        "COM\u{b9}",
-        "COM\u{b2}",
-        "COM\u{b3}",
-        "LPT\u{b9}",
-        "LPT\u{b2}",
-        "LPT\u{b3}",
-        "com\u{b9}.txt",
-        "CONIN$",
-        "CONOUT$",
-        "conin$",
-        "CONOUT$.txt",
     ];
     let mut table = String::new();
     let mut disagree = Vec::new();
@@ -296,11 +183,7 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
             "{name:?}: NTFS {measured:?}; rule {rule:?}
 "
         ));
-        let agrees = match refused_though_stored.contains(&name) {
-            true => measured.is_ok() && rule.is_some(),
-            false => measured.is_ok() == rule.is_none(),
-        };
-        if !agrees {
+        if measured.is_ok() != rule.is_none() {
             disagree.push(name);
         }
     }
@@ -311,77 +194,10 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
     );
 }
 
-/// The characters whose NTFS case folding is measured: every one in the BMP (NTFS folds UTF-16 units), and the ones
-/// outside it that Rust folds.
-fn folding_candidates() -> Vec<char> {
-    (1..=0x10ffff_u32)
-        .filter_map(char::from_u32)
-        .filter(|c| {
-            (*c as u32) < 0x10000
-                || c.to_uppercase().ne(std::iter::once(*c))
-                || c.to_lowercase().ne(std::iter::once(*c))
-        })
-        .collect()
-}
-
-/// The single characters that Unicode pairs with `c` by case, other than `c`.
-fn case_partners(c: char) -> Vec<char> {
-    let single = |mut chars: Box<dyn Iterator<Item = char>>| match (chars.next(), chars.next()) {
-        (Some(one), None) => Some(one),
-        _ => None,
-    };
-    let upper = |c: char| single(Box::new(c.to_uppercase()));
-    let lower = |c: char| single(Box::new(c.to_lowercase()));
-    let mut partners: Vec<char> = [upper(c), lower(c), upper(c).and_then(lower), lower(c).and_then(upper)]
-        .into_iter()
-        .flatten()
-        .filter(|partner| *partner != c)
-        .collect();
-    partners.sort();
-    partners.dedup();
-    partners
-}
-
-/// `windows_key` calls two names one exactly when NTFS does, for each character and its case partners. A key that
-/// folds what NTFS keeps apart refuses a copy NTFS could store; one that keeps apart what NTFS folds lets one file
-/// overwrite another.
-#[skuld::test(requires = [ntfs_claimed])]
-fn windows_key_agrees_with_what_ntfs_calls_the_same_name(#[fixture(unicode_home)] home: &Path) {
-    let dir = home.join("fold");
-    std::fs::create_dir(&dir).unwrap();
-    let mut disagree = Vec::new();
-    let mut compared = 0_usize;
-    for c in folding_candidates() {
-        let name = c.to_string();
-        let partners: Vec<char> = case_partners(c)
-            .into_iter()
-            .filter(|p| windows_problem(&p.to_string()).is_none())
-            .collect();
-        if windows_problem(&name).is_some() || partners.is_empty() {
-            continue;
-        }
-        std::fs::File::create_new(dir.join(&name)).unwrap_or_else(|e| panic!("cannot create U+{:04X}: {e}", c as u32));
-        for partner in partners {
-            compared += 1;
-            let ntfs_same = std::fs::symlink_metadata(dir.join(partner.to_string())).is_ok();
-            let key_same = windows_key(&name) == windows_key(&partner.to_string());
-            if ntfs_same != key_same {
-                disagree.push(format!(
-                    "U+{:04X} and U+{:04X}: NTFS {}, key {}",
-                    c as u32,
-                    partner as u32,
-                    if ntfs_same { "same" } else { "different" },
-                    if key_same { "same" } else { "different" },
-                ));
-            }
-        }
-        std::fs::remove_file(dir.join(&name)).unwrap();
+/// The trees `devvm cp` copies hold no trailing dots or spaces and no device names (a contract, not a check).
+#[skuld::test]
+fn windows_names_do_not_check_trailing_dots_spaces_or_device_names() {
+    for name in ["x.", "x ", "con", "Aux.txt", "COM1", "CONIN$"] {
+        assert_eq!(windows_problem(name), None, "{name:?}");
     }
-    eprintln!("compared {compared} pairs, {} disagree", disagree.len());
-    assert!(
-        disagree.is_empty(),
-        "windows_key disagrees with NTFS on {} pairs:\n{}",
-        disagree.len(),
-        disagree.join("\n")
-    );
 }

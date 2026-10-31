@@ -1,7 +1,7 @@
 //! The decisions of a copy that do not depend on which side is the host: where the source lands, and which names the
 //! target cannot store. Both directions share them, so the rules are written once.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::guest::GuestOs;
 use crate::{Error, ErrorKind, Result};
@@ -236,14 +236,13 @@ pub(super) fn check_clashes(
 
 // Names ===============================================================================================================
 
-/// Which names a target can store, and how it compares them.
+/// Which names a target can store.
 pub(super) struct Rules<'a> {
     /// Whose names are checked: `guest` or `host`.
     pub from: &'a str,
     /// Where they are going: `this host` or `the guest`.
     pub to: &'a str,
     pub problem: &'a dyn Fn(&str) -> Option<String>,
-    pub key: &'a dyn Fn(&str) -> String,
     /// The span of times that a source of this side can give SFTP, in words: `1970 to 2106`.
     pub times: &'a str,
 }
@@ -303,31 +302,12 @@ pub(super) fn check_name(name: &str, rules: &Rules) -> Result<()> {
     }
 }
 
-/// Refuses names the target cannot hold, and two names it takes for one (so the second would overwrite the first).
+/// Refuses names the target cannot hold.
 pub(super) fn check_names(items: &[Item], rules: &Rules) -> Result<()> {
-    let mut seen: HashMap<Vec<String>, &[String]> = HashMap::new();
-    for item in items {
-        for part in &item.rel {
-            check_name(part, rules)?;
-        }
-        let key = item.rel.iter().map(|part| (rules.key)(part)).collect();
-        if let Some(first) = seen.insert(key, &item.rel)
-            && first != item.rel.as_slice()
-        {
-            return Err(Error::new(
-                ErrorKind::Io,
-                format!(
-                    "the {from} paths {:?} and {:?} are one name on {to}, whose file system ignores case, \
-                     so copying both would overwrite the first",
-                    first.join("/"),
-                    item.rel.join("/"),
-                    from = rules.from,
-                    to = rules.to,
-                ),
-            ));
-        }
-    }
-    Ok(())
+    items
+        .iter()
+        .flat_map(|item| &item.rel)
+        .try_for_each(|part| check_name(part, rules))
 }
 
 /// Refuses a listing of `dir` whose names cannot be told apart. The library decodes names lossily, so the bytes

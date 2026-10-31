@@ -5,6 +5,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use russh::keys::{HashAlg, PrivateKey, PublicKey};
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
@@ -617,7 +618,7 @@ fn a_duration_is_told_in_units_a_person_reads() {
 fn connect_to(ka: Keepalive, target: SshTarget) -> Connect {
     Connect {
         pinned: PublicKey::from_openssh(&target.host_public).unwrap(),
-        key: Arc::new(PrivateKey::from_openssh(&target.client_private).unwrap()),
+        key: Arc::new(PrivateKey::from_openssh(target.client_private.expose_secret()).unwrap()),
         ka,
         handshake_bound: ka.handshake_bound().unwrap(),
         vm: VmExit::never(),
@@ -1117,18 +1118,17 @@ fn a_reset_connection_ends_a_pending_sftp_request(#[fixture(unicode_home)] home:
 
 #[skuld::test]
 fn debug_output_of_a_target_does_not_hold_the_private_key() {
-    let keys = InstanceKeys::generate().unwrap();
     let target = SshTarget {
         addr: "127.0.0.1:22".parse().unwrap(),
         user: "user".to_owned(),
-        client_private: keys.client_private.clone(),
-        host_public: keys.host_public.clone(),
+        client_private: SecretString::from("CLIENT-PRIVATE-KEY-TEXT"),
+        host_public: "ssh-ed25519 HOST-PUBLIC".to_owned(),
         serial_log: std::path::PathBuf::from("serial.log"),
     };
     let shown = format!("{target:?}");
-    assert!(!shown.contains(keys.client_private.lines().nth(1).unwrap()), "{shown}");
+    assert!(!shown.contains("CLIENT-PRIVATE-KEY-TEXT"), "{shown}");
     // What a failure is debugged by stays: where, as whom, what the guest must present.
-    for kept in ["127.0.0.1:22", "user", keys.host_public.trim(), "serial.log"] {
+    for kept in ["127.0.0.1:22", "user", "HOST-PUBLIC", "serial.log"] {
         assert!(shown.contains(kept), "{kept} in {shown}");
     }
 }

@@ -57,33 +57,25 @@ fn items(paths: &[&str]) -> Vec<Item> {
 }
 
 #[skuld::test]
-fn a_target_refuses_the_names_it_cannot_store_and_two_names_it_takes_for_one() {
+fn a_target_refuses_the_names_it_cannot_store() {
     let rules = Rules {
         from: "host",
         to: "the guest",
         problem: &names::windows_problem,
-        key: &names::windows_key,
         times: "",
     };
     check_names(&items(&["a", "a/b", "c.txt"]), &rules).unwrap();
-    for (paths, expect) in [
-        (&["ok", "ok/a?b"][..], "\"a?b\""),
-        (&["con"], "\"con\""),
-        (&["x."], "\"x.\""),
-        (&["Readme", "README"], "\"README\""),
-        (&["d/Readme", "d/README"], "\"d/README\""),
-    ] {
-        let error = check_names(&items(paths), &rules).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Io, "{paths:?}: {error}");
-        assert!(error.message().contains(expect), "{paths:?}: {error}");
-        assert!(error.message().contains("the guest"), "{paths:?}: {error}");
-    }
-    // The same names pass where the target compares exactly.
+    let paths = ["ok", "ok/a?b"];
+    let error = check_names(&items(&paths), &rules).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("\"a?b\""), "{error}");
+    assert!(error.message().contains("the guest"), "{error}");
+    // The contract rules these out, so they are not checked.
+    check_names(&items(&["Readme", "README", "con", "x."]), &rules).unwrap();
     let posix = Rules {
         from: "guest",
         to: "this host",
         problem: &names::posix_problem,
-        key: &|name| name.to_owned(),
         times: "",
     };
     check_names(&items(&["Readme", "README", "con", "a?b"]), &posix).unwrap();
@@ -97,7 +89,6 @@ fn a_failed_look_up_below_a_name_the_target_cannot_store_still_names_that_name()
         from: "guest",
         to: "this host",
         problem: &names::windows_problem,
-        key: &names::windows_key,
         times: "",
     };
     let chain = |names: &[&str]| {
@@ -183,7 +174,6 @@ fn a_clash_is_looked_for_only_below_what_the_copy_does_not_create() {
         from: "host",
         to: "the guest",
         problem: &|_| None,
-        key: &|name| name.to_owned(),
         times: "",
     };
     let file = |path: &str| Item {
@@ -354,7 +344,6 @@ fn a_time_that_is_not_kept_is_named_only_for_what_the_copy_sets() {
         from: "host",
         to: "the guest",
         problem: &|_| None,
-        key: &|name| name.to_owned(),
         times: "1970 to 2106",
     };
     let file = |path: &str, mtime| Item {

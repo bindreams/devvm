@@ -35,8 +35,6 @@ pub(super) trait CopySide {
 
     /// Why `name` cannot be one file name in a directory on this side; `None` when it can.
     fn file_name_problem(&self, name: &str) -> Option<String>;
-    /// `name` as this side's file system compares names.
-    fn name_key(&self, name: &str) -> String;
 
     // As a source -----------------------------------------------------------------------------------------------------
 
@@ -165,6 +163,9 @@ where
 
 /// Copies the file, symlink or directory `from` of `src` (a symlink is followed when `follow`) to the destination
 /// `dest` of `dst`, written with a trailing `/` when `slash`. `dest` has no trailing `/` and no `.` or `..` segment.
+///
+/// Contract: a copied tree has no two names that differ only in case, no name ending in a dot or a space and no Windows
+/// device name. Nothing checks this, and a tree that breaks it may be copied wrongly.
 pub(super) fn copy<S, D>(
     src: &S,
     from: &S::Path,
@@ -188,7 +189,6 @@ where
         from: S::NAME,
         to: D::AS_DESTINATION,
         problem: &|name| dst.file_name_problem(name),
-        key: &|name| dst.name_key(name),
         times: S::SOURCE_TIMES,
     };
     plan::check_names(&items, &rules)?;

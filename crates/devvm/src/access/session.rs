@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use russh::client;
 use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
+use secrecy::{ExposeSecret, SecretString};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep, sleep_until, timeout};
@@ -45,29 +46,16 @@ const EVENT_BUFFER: usize = 16;
 // Parameters ==========================================================================================================
 
 /// Where and as whom to connect, and what to name in errors.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct SshTarget {
     pub addr: std::net::SocketAddr,
     pub user: String,
     /// The OpenSSH text of the private key.
-    pub client_private: String,
+    pub client_private: SecretString,
     /// The OpenSSH text of the host key the guest must present; any other is refused.
     pub host_public: String,
     /// Named in every VM-exit and boot-bound error.
     pub serial_log: PathBuf,
-}
-
-/// Without the private key, which must not reach a log or a failed assertion.
-impl std::fmt::Debug for SshTarget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SshTarget")
-            .field("addr", &self.addr)
-            .field("user", &self.user)
-            .field("client_private", &"<redacted>")
-            .field("host_public", &self.host_public)
-            .field("serial_log", &self.serial_log)
-            .finish()
-    }
 }
 
 /// SSH keepalive: after `interval` of silence a probe is sent, and the connection is dead once more than `max_missed`
@@ -613,7 +601,7 @@ impl SshSession {
         let handshake_bound = ka.handshake_bound()?;
         let pinned = PublicKey::from_openssh(&target.host_public)
             .map_err(|e| key_error("the pinned host key is not an OpenSSH public key", e))?;
-        let key = PrivateKey::from_openssh(&target.client_private)
+        let key = PrivateKey::from_openssh(target.client_private.expose_secret())
             .map_err(|e| key_error("the client key is not an OpenSSH private key", e))?;
         let connect = Connect {
             ctx: Context {

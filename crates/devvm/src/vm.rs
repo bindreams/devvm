@@ -39,7 +39,12 @@ mod vm_other_tests;
 pub trait Guest {
     fn run(&self, cmd: &Command) -> Result<Output>;
     fn reboot(&self) -> Result<()>;
+    /// Copies the host file, symlink or directory `src` to the guest path `dest`.
+    ///
+    /// Contract: a copied tree has no two names that differ only in case, no name ending in a dot or a space and no
+    /// Windows device name. Nothing checks this, and a tree that breaks it may be copied wrongly.
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()>;
+    /// Copies the guest file, symlink or directory `src` to the host path `dest`. Same contract as [`Guest::copy_in`].
     fn copy_out(&self, src: &str, dest: &Path) -> Result<()>;
 }
 

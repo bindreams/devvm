@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use russh::keys::PrivateKey;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
@@ -17,6 +18,16 @@ fn temporary_directories(dir: &Path) -> Vec<std::ffi::OsString> {
         .collect()
 }
 
+/// The four key texts, which `InstanceKeys` does not compare itself: it holds secrets.
+fn texts(keys: &InstanceKeys) -> [&str; 4] {
+    [
+        keys.client_private.expose_secret(),
+        &keys.client_public,
+        keys.host_private.expose_secret(),
+        &keys.host_public,
+    ]
+}
+
 fn parses_as_a_pair(private: &str, public: &str) {
     let private = PrivateKey::from_openssh(private).expect("the private key parses");
     let public = russh::keys::PublicKey::from_openssh(public).expect("the public key parses");
@@ -27,8 +38,8 @@ fn parses_as_a_pair(private: &str, public: &str) {
 fn generated_keys_round_trip_and_differ_per_instance() {
     let a = InstanceKeys::generate().unwrap();
     let b = InstanceKeys::generate().unwrap();
-    parses_as_a_pair(&a.client_private, &a.client_public);
-    parses_as_a_pair(&a.host_private, &a.host_public);
+    parses_as_a_pair(a.client_private.expose_secret(), &a.client_public);
+    parses_as_a_pair(a.host_private.expose_secret(), &a.host_public);
     assert_ne!(
         a.client_public, a.host_public,
         "the client and host keys are separate keys"
@@ -45,7 +56,7 @@ fn write_then_read_keys_under_a_space_and_non_ascii_directory(#[fixture(unicode_
     for name in ["client", "client.pub", "host", "host.pub"] {
         assert!(dir.join(name).is_file(), "{name}");
     }
-    assert_eq!(InstanceKeys::read(&dir).unwrap(), keys);
+    assert_eq!(texts(&InstanceKeys::read(&dir).unwrap()), texts(&keys));
 }
 
 #[skuld::test]
@@ -61,7 +72,7 @@ fn write_does_not_replace_an_existing_set(#[fixture(unicode_home)] home: &Path) 
     first.write(&TestHost, &dir).unwrap();
     let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::AlreadyExists);
-    assert_eq!(InstanceKeys::read(&dir).unwrap(), first);
+    assert_eq!(texts(&InstanceKeys::read(&dir).unwrap()), texts(&first));
 }
 
 #[skuld::test]
@@ -80,7 +91,7 @@ fn keys_are_written_whole_or_not_at_all(#[fixture(unicode_home)] home: &Path) {
         "no temporary directory is left behind: {leftovers:?}"
     );
     keys.write(&TestHost, &dir).unwrap();
-    assert_eq!(InstanceKeys::read(&dir).unwrap(), keys);
+    assert_eq!(texts(&InstanceKeys::read(&dir).unwrap()), texts(&keys));
 }
 
 #[skuld::test]
@@ -106,7 +117,7 @@ fn write_sweeps_the_temporary_directory_a_killed_writer_left(#[fixture(unicode_h
     let keys = InstanceKeys::generate().unwrap();
     keys.write(&TestHost, &home.join("keys")).unwrap();
     assert!(temporary_directories(home).is_empty(), "the leftover was swept");
-    assert_eq!(InstanceKeys::read(&home.join("keys")).unwrap(), keys);
+    assert_eq!(texts(&InstanceKeys::read(&home.join("keys")).unwrap()), texts(&keys));
 }
 
 #[skuld::test]
@@ -133,7 +144,7 @@ fn of_concurrent_writers_one_wins_and_the_rest_see_the_set_exists(#[fixture(unic
             assert_eq!(e.kind(), ErrorKind::AlreadyExists, "{e}");
         }
     }
-    assert_eq!(InstanceKeys::read(&dir).unwrap(), winners[0].1);
+    assert_eq!(texts(&InstanceKeys::read(&dir).unwrap()), texts(&winners[0].1));
     assert!(temporary_directories(home).is_empty());
 }
 
@@ -144,14 +155,14 @@ fn a_leftover_that_cannot_be_removed_is_reported_and_does_not_block_the_write(#[
     std::fs::write(&stuck, "not a directory").unwrap();
     let keys = InstanceKeys::generate().unwrap();
     let warnings = keys.write(&TestHost, &home.join("keys")).unwrap();
-    assert_eq!(InstanceKeys::read(&home.join("keys")).unwrap(), keys);
+    assert_eq!(texts(&InstanceKeys::read(&home.join("keys")).unwrap()), texts(&keys));
     assert!(stuck.exists(), "it could not be removed");
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains(".keys-stuck"), "{warnings:?}");
     // The next write meets the same leftover and still goes through.
     let second = InstanceKeys::generate().unwrap();
     second.write(&TestHost, &home.join("keys2")).unwrap();
-    assert_eq!(InstanceKeys::read(&home.join("keys2")).unwrap(), second);
+    assert_eq!(texts(&InstanceKeys::read(&home.join("keys2")).unwrap()), texts(&second));
 }
 
 #[skuld::test]
@@ -182,7 +193,11 @@ fn a_failed_flush_of_the_parent_after_publishing_is_a_warning_not_an_error(#[fix
     host.fail_sync_dir(home);
     let (dir, keys) = (home.join("keys"), InstanceKeys::generate().unwrap());
     let warnings = keys.write(&host, &dir).unwrap();
-    assert_eq!(InstanceKeys::read(&dir).unwrap(), keys, "the keys are in place");
+    assert_eq!(
+        texts(&InstanceKeys::read(&dir).unwrap()),
+        texts(&keys),
+        "the keys are in place"
+    );
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
         warnings[0].contains("flush") && warnings[0].contains("sync_dir"),
@@ -209,7 +224,7 @@ fn an_empty_directory_at_the_final_path_is_a_dead_claim_and_the_write_proceeds(#
     std::fs::create_dir(&dir).unwrap();
     let keys = InstanceKeys::generate().unwrap();
     keys.write(&TestHost, &dir).unwrap();
-    assert_eq!(InstanceKeys::read(&dir).unwrap(), keys);
+    assert_eq!(texts(&InstanceKeys::read(&dir).unwrap()), texts(&keys));
     assert!(temporary_directories(home).is_empty());
 }
 
@@ -226,15 +241,19 @@ fn a_directory_with_anything_in_it_at_the_final_path_is_never_replaced(#[fixture
 
 #[skuld::test]
 fn debug_output_of_the_keys_does_not_hold_a_private_key() {
-    let keys = InstanceKeys::generate().unwrap();
+    let keys = InstanceKeys {
+        client_private: SecretString::from("CLIENT-PRIVATE-KEY-TEXT"),
+        client_public: "ssh-ed25519 CLIENT-PUBLIC".to_owned(),
+        host_private: SecretString::from("HOST-PRIVATE-KEY-TEXT"),
+        host_public: "ssh-ed25519 HOST-PUBLIC".to_owned(),
+    };
     let shown = format!("{keys:?}");
-    for private in [&keys.client_private, &keys.host_private] {
-        assert!(!shown.contains(private.trim()), "{shown}");
-        let body = private.lines().nth(1).unwrap();
-        assert!(!shown.contains(body), "{shown}");
-    }
+    assert!(!shown.contains("PRIVATE-KEY-TEXT"), "{shown}");
     // The public halves are not secret, and a failure message that names them is useful.
-    assert!(shown.contains(keys.client_public.trim()), "{shown}");
+    assert!(
+        shown.contains("CLIENT-PUBLIC") && shown.contains("HOST-PUBLIC"),
+        "{shown}"
+    );
 }
 
 /// POSIX lets `rmdir` of a non-empty directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`; neither

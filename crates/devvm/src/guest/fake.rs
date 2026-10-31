@@ -175,11 +175,4 @@ impl GuestOs for FakeGuestOs {
             GuestKind::Linux | GuestKind::Macos => names::posix_problem(name),
         }
     }
-
-    fn name_key(&self, name: &str) -> String {
-        match self.kind {
-            GuestKind::Windows => names::windows_key(name),
-            GuestKind::Linux | GuestKind::Macos => name.to_owned(),
-        }
-    }
 }

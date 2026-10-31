@@ -16,7 +16,7 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_W
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-use super::names::{windows_key, windows_problem};
+use super::names::windows_problem;
 use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -124,10 +124,6 @@ impl Host for WindowsHost {
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
         windows_problem(name)
-    }
-
-    fn name_key(&self, name: &str) -> String {
-        windows_key(name)
     }
 
     /// Renaming over a read-only file fails with access denied, so the flag is cleared first and put back if the rename

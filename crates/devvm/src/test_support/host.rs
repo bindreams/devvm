@@ -72,10 +72,6 @@ impl Host for TestHost {
         host::current().file_name_problem(name)
     }
 
-    fn name_key(&self, name: &str) -> String {
-        host::current().name_key(name)
-    }
-
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         host::current().replace_file(from, to)
     }
@@ -166,10 +162,6 @@ impl Host for NoAccelHost {
         TestHost.file_name_problem(name)
     }
 
-    fn name_key(&self, name: &str) -> String {
-        TestHost.name_key(name)
-    }
-
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         TestHost.replace_file(from, to)
     }
@@ -227,8 +219,8 @@ impl RecordingHost {
         RecordingHost::default()
     }
 
-    /// A host whose file names follow the rules of Windows (forbidden characters, device names, case-insensitive
-    /// comparison), whatever OS the test runs on.
+    /// A host whose file names follow the rules of Windows (forbidden characters, the length limit), whatever OS the
+    /// test runs on.
     pub fn with_windows_names() -> RecordingHost {
         RecordingHost {
             windows_names: true,
@@ -370,13 +362,6 @@ impl Host for RecordingHost {
         TestHost.file_name_problem(name)
     }
 
-    fn name_key(&self, name: &str) -> String {
-        if self.windows_names {
-            return names::windows_key(name);
-        }
-        TestHost.name_key(name)
-    }
-
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         TestHost.replace_file(from, to)
     }
@@ -486,10 +471,6 @@ impl Host for NoGuestReset {
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
         host::current().file_name_problem(name)
-    }
-
-    fn name_key(&self, name: &str) -> String {
-        host::current().name_key(name)
     }
 
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
