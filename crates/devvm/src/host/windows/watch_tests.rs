@@ -5,7 +5,7 @@ use crate::host::ProcessWatch;
 use crate::test_support::manual_exit::ManualExit;
 
 #[skuld::test]
-fn the_process_running_this_test_has_not_exited() {
+fn a_handle_watch_of_the_process_running_this_test_says_it_has_not_exited() {
     let watch = WindowsWatch::open(ProcessId::current()).unwrap();
 
     assert!(!watch.has_exited().unwrap());
