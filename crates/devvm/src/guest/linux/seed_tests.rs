@@ -112,6 +112,26 @@ fn the_seed_is_byte_identical_for_equal_input(#[fixture(unicode_home)] home: &Pa
 }
 
 #[skuld::test]
+fn an_empty_key_is_an_error_naming_it_not_a_seed_that_locks_the_guest_out(#[fixture(unicode_home)] home: &Path) {
+    type Blank = fn(&mut SeedKeys);
+    let blanks: [(&str, Blank); 3] = [
+        ("client_public", |keys| keys.client_public.clear()),
+        ("host_private", |keys| keys.host_private = SecretString::from("")),
+        ("host_public", |keys| keys.host_public.clear()),
+    ];
+    for (name, blank) in blanks {
+        let mut empty = spec(home, 1);
+        blank(&mut empty.keys);
+        let error = LinuxGuest
+            .instance_seed(&TestHost, &empty)
+            .err()
+            .unwrap_or_else(|| panic!("a seed with an empty `{name}` was written"));
+        assert_eq!(error.kind(), crate::ErrorKind::Internal, "{name}");
+        assert!(error.message().contains(name), "{name}: {}", error.message());
+    }
+}
+
+#[skuld::test]
 fn the_seed_media_is_a_readonly_disk_in_the_scratch_directory(#[fixture(unicode_home)] home: &Path) {
     let media = LinuxGuest.instance_seed(&TestHost, &spec(home, 1)).unwrap().media;
     assert!(media.path.starts_with(home));
@@ -145,8 +165,7 @@ fn every_string_in_the_seed_is_quoted(#[fixture(unicode_home)] home: &Path) {
     }
 }
 
-/// Characters PyYAML (YAML 1.1) rejects (`ReaderError`) or reads as line breaks (NEL, LS, PS) when written raw in a double-quoted
-/// scalar. The exhaustive PyYAML test (`seed_pyyaml_tests.rs`) pins the class; this one runs everywhere.
+/// Characters `document` must escape (see its docs). The exhaustive PyYAML test pins the class; this one runs everywhere.
 const UNREADABLE_RAW: [char; 9] = [
     '\u{7f}', '\u{80}', '\u{85}', '\u{9f}', '\u{fffe}', '\u{ffff}', '\u{8d}', '\u{2028}', '\u{2029}',
 ];
