@@ -30,7 +30,7 @@ pub(crate) use crate::access::exec::ExecEnd;
 use crate::access::exec::{Event, run_exec};
 use crate::access::sftp::Sftp;
 
-mod watched;
+pub(super) mod watched;
 
 #[cfg(test)]
 #[path = "session_tests.rs"]
@@ -221,8 +221,9 @@ impl BootGate {
 
 // Shared state ========================================================================================================
 
-/// What the client handler of one connection tells the session.
-struct Transport {
+/// What the client handler of one connection tells the session. A stream that is watched for its end ([`Watched`])
+/// records into one too: the SFTP channels, whose end is not the connection's.
+pub(in crate::access) struct Transport {
     /// The reason, once the connection has ended.
     ended: watch::Sender<Option<String>>,
     /// The fingerprint of a host key that was not the pinned one.
@@ -230,7 +231,7 @@ struct Transport {
 }
 
 impl Transport {
-    fn new() -> Arc<Transport> {
+    pub(in crate::access) fn new() -> Arc<Transport> {
         Arc::new(Transport {
             ended: watch::channel(None).0,
             refused_key: Mutex::new(None),
@@ -238,7 +239,7 @@ impl Transport {
     }
 
     /// Records the end of the connection, unless an earlier report did: the first reason stays.
-    fn end(&self, reason: String) {
+    pub(in crate::access) fn end(&self, reason: String) {
         self.ended.send_if_modified(|ended| {
             let first = ended.is_none();
             if first {
@@ -249,7 +250,7 @@ impl Transport {
     }
 
     /// Resolves with the reason once the connection has ended.
-    async fn ended(&self) -> String {
+    pub(in crate::access) async fn ended(&self) -> String {
         let mut receiver = self.ended.subscribe();
         loop {
             if let Some(reason) = receiver.borrow_and_update().clone() {

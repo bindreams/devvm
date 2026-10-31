@@ -2,6 +2,7 @@
 //! the runtime; [`super::Sftp`] drives them.
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -13,7 +14,8 @@ use tokio::io::AsyncWriteExt;
 use super::plan::{Beyond, Item, Kind, Present, base_name, check_listing, join, parent_of};
 use super::typed::Typed;
 use super::{Failed, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_name, pump};
-use crate::access::session::Inner;
+use crate::access::session::watched::Watched;
+use crate::access::session::{Inner, Transport};
 use crate::guest::GuestOs;
 use crate::{Error, ErrorKind, Result};
 
@@ -34,6 +36,9 @@ pub(super) struct Remote {
     /// A second SFTP channel, used only for the `posix-rename@openssh.com` extension, which the high-level session
     /// does not send.
     raw: Arc<RawSftpSession>,
+    /// Where the streams of the two SFTP channels record their end. The SFTP library answers no request that is
+    /// registered after it handled the end of its stream, so a step waits on this as well as on its reply.
+    pub(super) channel_end: Arc<Transport>,
     /// The guest whose paths the messages are written in; without one, a path is named as the server is asked for it.
     guest: Option<Arc<dyn GuestOs>>,
     /// What the user typed for the guest path of the copy, which the messages name instead of its normalised form.
@@ -42,21 +47,34 @@ pub(super) struct Remote {
 
 impl Remote {
     pub(super) async fn connect(inner: Arc<Inner>) -> Result<Remote> {
+        let channel_end = Transport::new();
+        let started = Remote::start(inner.clone(), channel_end.clone());
+        tokio::select! {
+            biased;
+            remote = started => remote,
+            reason = channel_end.ended() => Err(channel_failure(&inner, "starting the SFTP subsystem", &reason)),
+        }
+    }
+
+    async fn start(inner: Arc<Inner>, channel_end: Arc<Transport>) -> Result<Remote> {
         let config = Config {
             request_timeout_secs: NO_REQUEST_LIMIT_SECS,
             ..Config::default()
         };
-        let stream = |inner: Arc<Inner>| async move {
-            let channel = inner
-                .handle
-                .channel_open_session()
-                .await
-                .map_err(|_| inner.connection_ended("opening the SFTP subsystem"))?;
-            channel
-                .request_subsystem(true, "sftp")
-                .await
-                .map_err(|_| inner.connection_ended("opening the SFTP subsystem"))?;
-            Ok::<_, Error>(channel.into_stream())
+        let stream = |inner: Arc<Inner>| {
+            let channel_end = channel_end.clone();
+            async move {
+                let channel = inner
+                    .handle
+                    .channel_open_session()
+                    .await
+                    .map_err(|_| inner.connection_ended("opening the SFTP subsystem"))?;
+                channel
+                    .request_subsystem(true, "sftp")
+                    .await
+                    .map_err(|_| inner.connection_ended("opening the SFTP subsystem"))?;
+                Ok::<_, Error>(Watched::named(channel.into_stream(), channel_end, "SFTP channel"))
+            }
         };
         let session = SftpSession::new_with_config(stream(inner.clone()).await?, config.clone())
             .await
@@ -67,9 +85,19 @@ impl Remote {
             inner,
             session: Arc::new(session),
             raw: Arc::new(raw),
+            channel_end,
             guest: None,
             typed: Arc::new(Typed::none()),
         })
+    }
+
+    /// Runs the step `operation` as [`Inner::guarded`] does, ending it too when an SFTP channel of this session ends.
+    pub(super) async fn guarded<T>(&self, awaiting: &str, operation: impl Future<Output = Result<T>>) -> Result<T> {
+        tokio::select! {
+            biased;
+            result = self.inner.guarded(awaiting, true, operation) => result,
+            reason = self.channel_end.ended() => Err(channel_failure(&self.inner, awaiting, &reason)),
+        }
     }
 
     /// This remote, naming guest paths in its messages as `guest` writes them rather than as the server is asked, and
@@ -124,13 +152,19 @@ fn sftp_error(inner: &Inner, awaiting: &str, e: SftpError) -> Error {
                 status.status_code, status.error_message
             ),
         ),
-        other => match inner.transport_end() {
-            Some(_) => inner.connection_ended(&format!("{awaiting} ({other})")),
-            None => Error::new(
-                ErrorKind::Io,
-                format!("{awaiting}: the guest's SFTP channel failed while the connection is up ({other})"),
-            ),
-        },
+        other => channel_failure(inner, awaiting, &other.to_string()),
+    }
+}
+
+/// The error for an SFTP channel that failed, `cause` saying how, during `awaiting`: a lost connection if the
+/// connection has ended, otherwise a failure of the channel or of the server on it, which the caller can tell apart.
+fn channel_failure(inner: &Inner, awaiting: &str, cause: &str) -> Error {
+    match inner.transport_end() {
+        Some(_) => inner.connection_ended(&format!("{awaiting} ({cause})")),
+        None => Error::new(
+            ErrorKind::Io,
+            format!("{awaiting}: the guest's SFTP channel failed while the connection is up ({cause})"),
+        ),
     }
 }
 

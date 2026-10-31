@@ -146,9 +146,10 @@ impl Sftp {
         let remote = self.remote.clone();
         let awaiting = awaiting.to_owned();
         let future = step(remote.clone());
-        runtime::run(&awaiting.clone(), async move {
-            remote.inner.guarded(&awaiting, true, future).await
-        })?
+        runtime::run(
+            &awaiting.clone(),
+            async move { remote.guarded(&awaiting, future).await },
+        )?
     }
 
     /// This session, with the messages of what it does naming guest paths as `guest` writes them, and the guest path of

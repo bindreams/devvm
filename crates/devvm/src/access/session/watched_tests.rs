@@ -153,3 +153,20 @@ fn a_waiter_on_the_transport_wakes_when_the_stream_ends() {
     .unwrap();
     assert!(why.contains("closed"), "{why}");
 }
+
+#[skuld::test]
+fn an_end_is_named_for_what_the_stream_carries() {
+    let end = Transport::new();
+    let (ours, theirs) = tokio::io::duplex(64);
+    drop(theirs);
+    runtime::run("a watched SFTP channel", {
+        let end = end.clone();
+        async move {
+            let mut watched = Watched::named(ours, end, "SFTP channel");
+            assert_eq!(watched.read(&mut [0u8; 8]).await.unwrap(), 0);
+        }
+    })
+    .unwrap();
+    let why = reason(&end).expect("the end was recorded");
+    assert!(why.contains("the peer closed the SFTP channel"), "{why}");
+}

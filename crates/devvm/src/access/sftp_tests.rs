@@ -2218,3 +2218,28 @@ fn an_sftp_channel_that_closes_on_a_live_connection_is_not_a_lost_connection(#[f
     );
     assert!(!env.root().join("dest.bin").exists());
 }
+
+#[skuld::test(requires = [scripted_server])]
+fn a_step_waiting_on_an_sftp_channel_that_has_ended_ends_with_the_channel_failure(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The SFTP library does not answer a request registered after the end of its stream was handled (measured: 2-3 % of
+    // runs of the test above), so the end seen at the stream must end the step.
+    let env = Env::new(home);
+    env.sftp
+        .remote
+        .channel_end
+        .end("the peer closed the SFTP channel".to_owned());
+    let error = env
+        .sftp
+        .call("waiting for a reply that cannot come", |_| {
+            std::future::pending::<Result<()>>()
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "the connection is up: {error}");
+    assert!(error.message().contains("SFTP channel"), "{error}");
+    assert!(
+        error.message().contains("waiting for a reply that cannot come"),
+        "{error}"
+    );
+}
