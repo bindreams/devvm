@@ -66,7 +66,7 @@ pub(crate) struct Keepalive {
 }
 
 impl Keepalive {
-    /// 5 s and 3 misses (assumption of the plan).
+    /// 5 s and 3 misses.
     pub(crate) const STANDARD: Keepalive = Keepalive {
         interval: Duration::from_secs(5),
         max_missed: 3,
@@ -591,8 +591,9 @@ impl SshSession {
     }
 
     /// Runs `command` through the guest's SSH `exec`, copying guest stdout and stderr to `out` and `err` as they
-    /// arrive, and flushing both when the command ends. A guest that outpaces the writers is slowed down, not buffered. See [`ExecEnd`] for the two ways it
-    /// ends. Environment is never sent as SSH `env` requests: the command string carries it.
+    /// arrive, and flushing both when the command ends. A guest that outpaces the writers is slowed down, not buffered.
+    /// See [`ExecEnd`] for the two ways it ends. Environment is never sent as SSH `env` requests: the command string
+    /// carries it.
     ///
     /// Failures: `connection-lost` (keepalive expiry, a dropped connection, the VM exiting, the boot bound),
     /// `no-exit-status` (the channel closed without a status while the connection lives), `io`.

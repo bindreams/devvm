@@ -83,7 +83,7 @@ pub(super) enum Beyond {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Place {
     /// The destination becomes the directory and the contents merge into it. A symlink to a directory at the
-    /// destination is followed, not replaced (owner, 2026-10-30).
+    /// destination is followed, not replaced.
     Root,
     /// The entry is the destination path.
     At,

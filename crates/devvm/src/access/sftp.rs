@@ -1,7 +1,7 @@
 //! SFTP file copy between the host and a guest.
 //!
-//! One source goes to one destination, and where it lands depends on the source and the destination only (owner,
-//! 2026-10-30; the rules are [`plan::place`]):
+//! One source goes to one destination, and where it lands depends on the source and the destination only (the rules are
+//! [`plan::place`]):
 //! - A directory *becomes* the destination: its contents merge into it, it is created with its parents when missing, and
 //!   it never nests, so a rerun gives the same layout.
 //! - A file goes inside a destination that is a directory or ends in `/`, and is the destination otherwise.
