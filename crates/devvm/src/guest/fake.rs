@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
-use crate::guest::{BaseBuilder, GuestOs, Guests, SeedMedia, SeedSpec};
+use crate::guest::{BaseBuilder, GuestOs, Guests, SeedMedia, SeedSpec, posix_root, windows_root};
 use crate::host::names;
 use crate::recipe::Shell;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
@@ -90,7 +90,12 @@ impl GuestOs for FakeGuestOs {
 
     fn sftp_path(&self, guest_path: &str, _home: &str) -> String {
         match &self.paths {
-            SftpPaths::WithoutDrive(drive) => guest_path.strip_prefix(drive).unwrap_or(guest_path).to_owned(),
+            SftpPaths::WithoutDrive(drive) => match guest_path.strip_prefix(drive) {
+                // The drive's root is the server's.
+                Some("") => "/".to_owned(),
+                Some(inside) => inside.to_owned(),
+                None => guest_path.to_owned(),
+            },
             SftpPaths::Under(root) if guest_path.starts_with('/') => {
                 let inside = guest_path == root || guest_path.starts_with(&format!("{root}/"));
                 if inside {
@@ -100,6 +105,19 @@ impl GuestOs for FakeGuestOs {
                 }
             }
             SftpPaths::Same | SftpPaths::Under(_) => guest_path.to_owned(),
+        }
+    }
+
+    fn split_root<'a>(&self, path: &'a str) -> (String, &'a str) {
+        if let SftpPaths::WithoutDrive(drive) = &self.paths
+            && let Some(rest) = path.strip_prefix(drive)
+            && (rest.is_empty() || rest.starts_with('/'))
+        {
+            return (format!("{drive}/"), rest.trim_start_matches('/'));
+        }
+        match self.kind {
+            GuestKind::Windows => windows_root(path),
+            GuestKind::Linux | GuestKind::Macos => posix_root(path),
         }
     }
 

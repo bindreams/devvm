@@ -1278,6 +1278,27 @@ fn a_guest_path_is_given_to_the_server_as_the_guest_maps_it(#[fixture(unicode_ho
     assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
 }
 
+/// A drive root is a root: a copy to `Z:/`, `Z:` or to a `..` above it lands at the server's root, not in its working
+/// directory, and merges there.
+#[skuld::test(requires = [scripted_server])]
+fn a_destination_that_is_a_drive_root_or_dotdot_above_it_is_the_root(#[fixture(unicode_home)] home: &Path) {
+    // The user's home is not the root, where a destination left relative would land.
+    let mut env = Env::with(home, |options| options.home = Some("/home/user".to_owned()));
+    env.guest = FakeGuests.os_on_drive(GuestKind::Linux, "Z:");
+    std::fs::create_dir_all(env.root().join("home/user")).unwrap();
+    let proj = project(&env);
+    for typed in ["Z:/", "Z:", "Z:/..", "Z:/a/../..", "Z:/./"] {
+        env.copy_in(&proj, typed).unwrap();
+        assert_eq!(
+            tree(env.root()),
+            ["a.txt", "home/", "home/user/", "sub/", "sub/b.txt"],
+            "{typed}"
+        );
+        std::fs::remove_dir_all(env.root().join("sub")).unwrap();
+        std::fs::remove_file(env.root().join("a.txt")).unwrap();
+    }
+}
+
 /// A message names the guest path as the user typed it, not as the server is asked for it (here without the drive).
 #[skuld::test(requires = [scripted_server])]
 fn errors_name_the_guest_path_the_user_typed(#[fixture(unicode_home)] home: &Path) {

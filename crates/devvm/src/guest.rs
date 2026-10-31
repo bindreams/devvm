@@ -29,6 +29,12 @@ pub(crate) trait GuestOs: Send + Sync {
     fn sftp_path(&self, guest_path: &str, home: &str) -> String;
     /// The guest path that `sftp_path` turned into `sftp_path`, for a message that names the path as the user wrote it.
     fn user_path(&self, sftp_path: &str) -> String;
+    /// Splits the guest path `path`, as the user writes it, into its root and the rest. The root is spelled the way
+    /// the guest does, with a trailing `/`: `/`, `C:/`, `//server/share/`; it is empty for a relative path. `..` never
+    /// goes above it. The default is a POSIX guest's: one `/`.
+    fn split_root<'a>(&self, path: &'a str) -> (String, &'a str) {
+        posix_root(path)
+    }
     /// Bumped whenever `wrap`, `user:`, `cwd:` or elevation behavior changes; part of every layer key.
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;
@@ -41,6 +47,39 @@ pub(crate) trait GuestOs: Send + Sync {
     fn file_name_problem(&self, name: &str) -> Option<String>;
     /// `name` the way the guest's file system compares names: two names with the same key are one file there.
     fn name_key(&self, name: &str) -> String;
+}
+
+/// [`GuestOs::split_root`] for a path whose only root is `/`; any number of leading `/` are one.
+pub(crate) fn posix_root(path: &str) -> (String, &str) {
+    match path.strip_prefix('/') {
+        Some(_) => ("/".to_owned(), path.trim_start_matches('/')),
+        None => (String::new(), path),
+    }
+}
+
+/// [`GuestOs::split_root`] for a Windows guest: `C:` (with or without `/` after it) and `//server/share` are roots,
+/// otherwise as [`posix_root`].
+pub(crate) fn windows_root(path: &str) -> (String, &str) {
+    let mut letters = path.chars();
+    if let (Some(letter), Some(':')) = (letters.next(), letters.next())
+        && letter.is_ascii_alphabetic()
+    {
+        let rest = &path[2..];
+        if rest.is_empty() || rest.starts_with('/') {
+            return (format!("{letter}:/"), rest.trim_start_matches('/'));
+        }
+    }
+    if let Some(unc) = path.strip_prefix("//")
+        && let Some((server, after_server)) = unc.split_once('/')
+        && !server.is_empty()
+    {
+        let after_server = after_server.trim_start_matches('/');
+        let (share, rest) = after_server.split_once('/').unwrap_or((after_server, ""));
+        if !share.is_empty() {
+            return (format!("//{server}/{share}/"), rest.trim_start_matches('/'));
+        }
+    }
+    posix_root(path)
 }
 
 pub(crate) trait BaseBuilder: Send + Sync {

@@ -1,11 +1,13 @@
 use super::{
     Beyond, Conflict, Item, Kind, Place, Present, Rules, Source, base_name, check_listing, check_names, normalize,
-    parent_of, place, time_notes,
+    normalize_user, parent_of, place, time_notes,
 };
 use std::collections::HashSet;
 
-use crate::ErrorKind;
+use crate::guest::Guests;
+use crate::guest::fake::FakeGuests;
 use crate::host::names;
+use crate::{ErrorKind, GuestKind};
 
 #[skuld::test]
 fn where_a_source_lands_depends_only_on_the_source_the_slash_and_the_destination() {
@@ -202,6 +204,65 @@ fn a_guest_destination_is_resolved_by_name() {
         ("/.hidden/..x", "/.hidden/..x"),
     ] {
         assert_eq!(normalize(given), want, "{given}");
+    }
+}
+
+/// A root stays a root and a `..` above it stays at it, whatever the guest calls a root.
+#[skuld::test]
+fn a_guest_root_stays_a_root_and_dotdot_does_not_go_above_it() {
+    let linux = FakeGuests.os(GuestKind::Linux).unwrap();
+    let windows = FakeGuests.os(GuestKind::Windows).unwrap();
+    let on_drive = FakeGuests.os_on_drive(GuestKind::Linux, "Z:");
+    type Cases<'a> = &'a [(&'a str, &'a str)];
+    let table: &[(&dyn crate::guest::GuestOs, Cases)] = &[
+        (
+            &*on_drive,
+            &[
+                ("Z:/", "Z:/"),
+                ("Z:", "Z:/"),
+                ("Z://", "Z:/"),
+                ("Z:/..", "Z:/"),
+                ("Z:/a/../..", "Z:/"),
+                ("Z:/a/../b", "Z:/b"),
+                ("Z:/a/.", "Z:/a"),
+                ("Z:/./a//b", "Z:/a/b"),
+                ("/a/..", "/"),
+            ],
+        ),
+        (
+            &*windows,
+            &[
+                ("C:/", "C:/"),
+                ("c:/../x", "c:/x"),
+                ("C:", "C:/"),
+                ("C:/a/b/../../..", "C:/"),
+                ("//server/share/x", "//server/share/x"),
+                ("//server/share", "//server/share/"),
+                ("//server/share/", "//server/share/"),
+                ("//server/share/..", "//server/share/"),
+                ("//server/share/x/../../y", "//server/share/y"),
+                ("//server//share/x", "//server/share/x"),
+                ("/a/..", "/"),
+                ("a/../b", "b"),
+                ("C:a/..", "."),
+            ],
+        ),
+        // On a guest with no drives, `Z:` is a name and a leading `//` is one `/`.
+        (
+            &*linux,
+            &[
+                ("Z:/..", "."),
+                ("Z:/a/..", "Z:"),
+                ("//server/share/x", "/server/share/x"),
+                ("//", "/"),
+                ("/..", "/"),
+            ],
+        ),
+    ];
+    for (guest, cases) in table {
+        for (given, want) in *cases {
+            assert_eq!(normalize_user(given, *guest), *want, "{given}");
+        }
     }
 }
 

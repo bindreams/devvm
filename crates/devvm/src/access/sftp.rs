@@ -188,7 +188,7 @@ impl Sftp {
     ) -> Result<()> {
         let slash = dest.ends_with('/');
         let (expanded, home) = self.expanded(dest)?;
-        let operated = without_slash(&guest.sftp_path(&plan::normalize(&expanded), &home));
+        let operated = without_slash(&guest.sftp_path(&plan::normalize_user(&expanded, &**guest), &home));
         let sftp = self.speaking(guest, guest_typed(&**guest, &operated, dest));
         let follow = local::ends_with_separator(src);
         copy::copy(

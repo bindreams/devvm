@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::guest::{GuestOs, posix_root};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -372,29 +373,38 @@ pub(super) fn parent_of(path: &str) -> String {
     }
 }
 
-/// The guest path `path` with its `.` segments dropped and each `..` cancelled against the name before it, by name only
-/// (a symlink before a `..` is not followed), so a destination is created exactly as it reads. A `..` at the root stays
-/// at the root; one with nothing before it stays; no segment left is `.`.
+/// The SFTP path `path` with its `.` segments dropped and each `..` cancelled against the name before it, by name only
+/// (a symlink before a `..` is not followed). A `..` at the root stays at the root; one with nothing before it stays;
+/// no segment left is `.`.
 pub(super) fn normalize(path: &str) -> String {
-    let absolute = path.starts_with('/');
+    normalize_under(posix_root(path))
+}
+
+/// [`normalize`] for a guest path as the user writes it, whose root is what `guest` says it is: `Z:/` and
+/// `//server/share/` are roots, and a `..` above them stays at them.
+pub(super) fn normalize_user(path: &str, guest: &dyn GuestOs) -> String {
+    normalize_under(guest.split_root(path))
+}
+
+fn normalize_under((root, rest): (String, &str)) -> String {
     let mut parts: Vec<&str> = Vec::new();
-    for part in path.split('/') {
+    for part in rest.split('/') {
         match part {
             "" | "." => {}
             ".." => match parts.last() {
                 Some(&last) if last != ".." => {
                     parts.pop();
                 }
-                _ if absolute => {}
+                _ if !root.is_empty() => {}
                 _ => parts.push(part),
             },
             _ => parts.push(part),
         }
     }
-    match (absolute, parts.is_empty()) {
-        (true, _) => format!("/{}", parts.join("/")),
-        (false, true) => ".".to_owned(),
-        (false, false) => parts.join("/"),
+    match (root.is_empty(), parts.is_empty()) {
+        (false, _) => format!("{root}{}", parts.join("/")),
+        (true, true) => ".".to_owned(),
+        (true, false) => parts.join("/"),
     }
 }
 
