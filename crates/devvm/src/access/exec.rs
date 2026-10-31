@@ -10,6 +10,10 @@ use crate::access::session::Inner;
 use crate::exit::ExitStatus;
 use crate::{Error, ErrorKind, Result};
 
+#[cfg(test)]
+#[path = "exec_tests.rs"]
+mod exec_tests;
+
 /// How `SshSession::exec` ended.
 #[derive(Debug)]
 pub(crate) enum ExecEnd {

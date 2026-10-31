@@ -21,6 +21,7 @@
 //! | `status-then-extended-data N` | writes `before the status` to stdout, sends `exit-status 7`, then a line to stream N, closes |
 //! | `echo ...` | prints the rest of the line, exits 0 |
 //! | `read-stdin` | waits for the client to send EOF, then prints `stdin ended` and exits 0 |
+//! | `stall-on-data` | the connection stops reading and writing once the client sends data on this channel (see [`TestSshd::wait_for_held_request`]) |
 //!
 //! Options make connections misbehave: a host key other than the advertised one, a refused client key, a peer that
 //! accepts the connection and never speaks. The SFTP part serves a directory, with virtual symlinks, modes,
@@ -122,7 +123,7 @@ pub(crate) struct State {
     pub(crate) kill: Notify,
     /// Fired to end every connection with a reset (`RST`) instead of an orderly close.
     reset: Notify,
-    /// How many requests are held (see [`SshdOptions::hold_realpath`]).
+    /// How many requests are held (see [`SshdOptions::hold_realpath`] and the `stall-on-data` script).
     pub(crate) held: AtomicUsize,
     pub(crate) held_notify: Notify,
     _temp: Option<tempfile::TempDir>,
@@ -250,7 +251,8 @@ impl TestSshd {
         })
     }
 
-    /// Blocks until the server holds a request (see [`SshdOptions::hold_realpath`]).
+    /// Blocks until the server holds a request (see [`SshdOptions::hold_realpath`]) or has stopped on data it was sent
+    /// (the `stall-on-data` script).
     pub fn wait_for_held_request(&self) {
         runtime::wait(async {
             loop {
@@ -406,6 +408,7 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
             channels: HashMap::new(),
             drop_now: Arc::new(Notify::new()),
             reading_stdin: HashSet::new(),
+            stalling: HashSet::new(),
         };
         // The session reads and writes a pipe that a proxy task joins to the TCP stream, so ending the proxy drops the
         // connection without a word.
@@ -443,6 +446,8 @@ struct Connection {
     drop_now: Arc<Notify>,
     /// Channels running `read-stdin`: they end when the client sends EOF.
     reading_stdin: HashSet<ChannelId>,
+    /// Channels running `stall-on-data`: the first data the client sends on one stops the connection.
+    stalling: HashSet<ChannelId>,
 }
 
 impl Handler for Connection {
@@ -508,6 +513,16 @@ impl Handler for Connection {
         Ok(())
     }
 
+    async fn data(&mut self, channel: ChannelId, _data: &[u8], _session: &mut Session) -> Result<(), Self::Error> {
+        if self.stalling.contains(&channel) {
+            // The handler never returns: nothing more is read from the client, so no window is adjusted for it.
+            self.state.held.fetch_add(1, Ordering::SeqCst);
+            self.state.held_notify.notify_waiters();
+            std::future::pending::<()>().await;
+        }
+        Ok(())
+    }
+
     async fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
         if self.reading_stdin.remove(&channel) {
             session.data(
@@ -544,6 +559,9 @@ impl Handler for Connection {
             }
             ["read-stdin"] => {
                 self.reading_stdin.insert(channel);
+            }
+            ["stall-on-data"] => {
+                self.stalling.insert(channel);
             }
             _ => {
                 let state = self.state.clone();
