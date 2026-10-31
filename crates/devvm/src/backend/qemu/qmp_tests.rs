@@ -11,7 +11,7 @@ use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
 use crate::host::{self, Link, ProcessWatch};
 use crate::instance::record::InstanceId;
-use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, UNICODE_DIR};
+use crate::test_support::fixtures::{ChannelProgress, MemoryProgress};
 use crate::test_support::manual_exit::ManualExit;
 use crate::test_support::qemu::{Sock, socket_dir};
 use crate::test_support::refusing::{REFUSED, Refusing};
@@ -243,7 +243,8 @@ fn the_host_limit_is_the_sun_path_length_less_its_nul() {
 #[skuld::test]
 fn a_path_with_a_space_and_non_ascii_works() {
     let sock = sock();
-    assert!(sock.endpoint.path().to_string_lossy().contains(UNICODE_DIR));
+    let path = sock.endpoint.path().to_string_lossy().into_owned();
+    assert!(path.contains(' ') && !path.is_ascii(), "{path}");
     let (server, log) = serve(sock.listen(), 1, |session, _| {
         session.answer(json!({ "status": "running", "running": true }));
     });

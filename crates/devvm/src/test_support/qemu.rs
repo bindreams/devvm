@@ -45,29 +45,26 @@ pub fn qemu_sidecar() -> Result<Arc<QemuInstall>, String> {
 /// A QMP socket path in a short, non-ASCII directory under the temp directory, and its lock file; both are deleted on
 /// drop.
 ///
-/// The directory is the shared `<temp>/<UNICODE_DIR>`: a socket path is limited (`Host::socket_path_max`), which the per-test
+/// The directory is the shared [`socket_dir`]: a socket path is limited (`Host::socket_path_max`), which the per-test
 /// directories of `unicode_home` exceed. Socket names carry a random instance id, so tests do not collide, and the
 /// shared directory is never removed, so no test can find it gone.
 pub struct Sock {
     pub endpoint: QmpEndpoint,
 }
 
-/// The shared directory control sockets go in during tests (created if need be): `<temp>/<UNICODE_DIR>`, or, where the
-/// temporary directory is too long for a socket path (macOS, and Windows under a long user name), `tmp/<UNICODE_DIR>`
-/// at the root of the temporary directory's volume. The root is spelled out: a drive-relative `/tmp` is a different
-/// directory for a process (QEMU) whose working directory is on another drive.
+/// The short fallback for [`socket_dir`], with a space and a non-ASCII character like [`UNICODE_DIR`].
+const SHORT_SOCKET_DIR: &str = "\u{e9} \u{4e16}";
+
+/// The shared directory control sockets go in during tests (created if need be): `<temp>/<UNICODE_DIR>`, or, where that
+/// does not fit a socket path (macOS, and Windows under a long user name), the shorter `<temp>/<SHORT_SOCKET_DIR>`.
+/// Nothing is created outside the temporary directory.
 pub fn socket_dir() -> PathBuf {
     let fits =
         |dir: &Path| QmpEndpoint::for_launch(dir, &InstanceId::random(), host::current().socket_path_max()).is_ok();
     let temp = std::env::temp_dir();
-    let root = temp
-        .ancestors()
-        .last()
-        .expect("a path has itself as an ancestor")
-        .join("tmp");
-    let dir = [temp.clone(), root]
+    let dir = [UNICODE_DIR, SHORT_SOCKET_DIR]
         .into_iter()
-        .map(|base| base.join(UNICODE_DIR))
+        .map(|name| temp.join(name))
         .find(|dir| fits(dir))
         .unwrap_or_else(|| panic!("no short directory for a control socket under the temporary directory"));
     std::fs::create_dir_all(&dir).unwrap();
