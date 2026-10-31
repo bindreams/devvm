@@ -53,11 +53,19 @@ pub struct Sock {
 }
 
 /// The shared directory control sockets go in during tests (created if need be): `<temp>/<UNICODE_DIR>`, or, where the
-/// temporary directory is too long for a socket path (macOS), `/tmp/<UNICODE_DIR>`.
+/// temporary directory is too long for a socket path (macOS, and Windows under a long user name), `tmp/<UNICODE_DIR>`
+/// at the root of the temporary directory's volume. The root is spelled out: a drive-relative `/tmp` is a different
+/// directory for a process (QEMU) whose working directory is on another drive.
 pub fn socket_dir() -> PathBuf {
     let fits =
         |dir: &Path| QmpEndpoint::for_launch(dir, &InstanceId::random(), host::current().socket_path_max()).is_ok();
-    let dir = [std::env::temp_dir(), PathBuf::from("/tmp")]
+    let temp = std::env::temp_dir();
+    let root = temp
+        .ancestors()
+        .last()
+        .expect("a path has itself as an ancestor")
+        .join("tmp");
+    let dir = [temp.clone(), root]
         .into_iter()
         .map(|base| base.join(UNICODE_DIR))
         .find(|dir| fits(dir))
