@@ -179,12 +179,20 @@ fn every_readiness_error_leads_with_the_first_true_cause_and_keeps_every_fact() 
         ("{}", Some(Cause::NoStatus)),
         ("not json at all", Some(Cause::NotJson)),
         ("", Some(Cause::NotJson)),
+        (
+            " 
+",
+            Some(Cause::NotJson),
+        ),
     ];
     for (fact, status) in &statuses {
         for loss_kind in [None, Some(ErrorKind::ConnectionLost), Some(ErrorKind::Io)] {
             let lost = loss_kind.is_some();
             for (stdout, reply_cause) in &replies {
-                for stderr in [MARK, ""] {
+                for stderr in [
+                    MARK, "", " 
+",
+                ] {
                     let output = Output {
                         status: status.clone(),
                         stdout: stdout.as_bytes().to_vec(),
@@ -223,23 +231,29 @@ fn every_readiness_error_leads_with_the_first_true_cause_and_keeps_every_fact() 
                     };
                     assert_eq!(error.kind(), kind, "{row}: {message}");
 
-                    // Every fact given is in the message.
-                    assert!(message.contains(fact), "{row}: the exit: {message}");
+                    // Every fact given is in the message once, in the headline or in the tail.
+                    let once = |text: &str, what: &str| {
+                        assert_eq!(message.matches(text).count(), 1, "{row}: {what} once: {message}");
+                    };
+                    once(fact, "the exit");
                     let core = matches!(status, ExitStatus::Signal { core_dumped: true, .. });
-                    assert_eq!(message.contains("core dumped"), core, "{row}: core_dumped: {message}");
+                    assert_eq!(
+                        message.matches("core dumped").count(),
+                        usize::from(core),
+                        "{row}: core_dumped: {message}"
+                    );
                     if let Some(kind) = loss_kind {
-                        let loss = Error::new(kind, LOSS).to_string();
-                        assert!(message.contains(&loss), "{row}: the loss and its kind: {message}");
+                        once(&Error::new(kind, LOSS).to_string(), "the loss and its kind");
                     }
+                    let (stdout, stderr) = (stdout.trim(), stderr.trim());
                     assert_eq!(
                         message.contains("stdout:"),
                         !stdout.is_empty(),
                         "{row}: stdout fact: {message}"
                     );
                     if !stdout.is_empty() {
-                        assert!(message.contains(stdout), "{row}: stdout: {message}");
+                        once(stdout, "stdout");
                     }
-                    // Stderr is in the headline (signal, undocumented exit) or in the facts, never both and never empty.
                     assert_eq!(
                         message.matches(MARK).count(),
                         usize::from(!stderr.is_empty()),

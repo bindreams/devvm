@@ -20,12 +20,14 @@ pub(super) fn readiness(output: &Output) -> Result<Readiness> {
 
 /// Why `cloud-init status` is not a normal finish, as the headline of the error. The first that holds is the cause:
 /// a signal; an exit code cloud-init does not document (not 0, 1 or 2); a loss of the output (see [`Output::loss`]),
-/// when the exit is documented and the reply cannot be read; the reply's own problem. For a documented exit with a readable reply the
-/// reply's text is the cause.
+/// when the exit is documented and the reply cannot be read; the reply's own problem. For a documented exit with a
+/// readable reply the reply's text is the cause.
 enum Cause<'a> {
     Signal(&'a str),
     UndocumentedExit(i32),
     OutputLost(&'a Error),
+    /// A `done` reply with exit code 1.
+    DoneWithExit1,
     Reply(String),
 }
 
@@ -50,14 +52,14 @@ fn assess(output: &Output) -> std::result::Result<Readiness, Cause<'_>> {
         });
     };
     match reply["status"].as_str().unwrap_or_default() {
-        "done" => done(reply, code).map_err(Cause::Reply),
+        "done" => done(reply, code),
         other => Err(Cause::Reply(format!("its status is `{other}`"))),
     }
 }
 
 impl Cause<'_> {
-    /// The error: the cause as the headline, then the exit, `core_dumped`, stdout, and whichever of stderr and the loss
-    /// the headline does not already carry. The kind is the loss's when the output was lost, `Io` otherwise.
+    /// The error: the cause as the headline, then the facts it does not already carry (the exit or signal, whether it
+    /// dumped core, stdout, stderr, the loss). The kind is the loss's when the output was lost, `Io` otherwise.
     fn into_error(self, output: &Output) -> Error {
         let stderr = output.stderr_lossy();
         let stderr = stderr.trim();
@@ -73,37 +75,51 @@ impl Cause<'_> {
             Cause::Signal(name) => (ErrorKind::Io, with_stderr(format!("it was killed by signal {name}"))),
             Cause::UndocumentedExit(code) => (ErrorKind::Io, with_stderr(format!("it exited with exit code {code}"))),
             Cause::OutputLost(loss) => (loss.kind(), format!("the output was lost ({loss})")),
+            Cause::DoneWithExit1 => (
+                ErrorKind::Io,
+                "its status is `done` but its exit code 1 is not 0 or 2".to_owned(),
+            ),
             Cause::Reply(problem) => (ErrorKind::Io, problem.clone()),
         };
         let stderr_led = matches!(self, Cause::Signal(_) | Cause::UndocumentedExit(_)) && !stderr.is_empty();
         let loss_led = matches!(self, Cause::OutputLost(_));
-        let mut facts = match &output.status {
-            ExitStatus::Code(code) => format!("exit code {code}"),
-            ExitStatus::Signal { name, core_dumped } => {
-                format!("signal {name}{}", if *core_dumped { ", core dumped" } else { "" })
-            }
-        };
+        let exit_led = matches!(
+            self,
+            Cause::Signal(_) | Cause::UndocumentedExit(_) | Cause::DoneWithExit1
+        );
+        let mut facts = Vec::new();
+        // A signal always leads (see `assess`), so only whether it dumped core is left for the tail.
+        match &output.status {
+            ExitStatus::Code(code) if !exit_led => facts.push(format!("exit code {code}")),
+            ExitStatus::Signal { core_dumped: true, .. } => facts.push("core dumped".to_owned()),
+            _ => {}
+        }
         let stdout = output.stdout_lossy();
         let stdout = stdout.trim();
         if !stdout.is_empty() {
-            facts.push_str(&format!("; stdout: {stdout}"));
+            facts.push(format!("stdout: {stdout}"));
         }
         if !stderr_led && !stderr.is_empty() {
-            facts.push_str(&format!("; stderr: {stderr}"));
+            facts.push(format!("stderr: {stderr}"));
         }
         if let (Some(loss), false) = (&output.loss, loss_led) {
-            facts.push_str(&format!("; {loss}"));
+            facts.push(loss.to_string());
         }
+        let facts = if facts.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", facts.join("; "))
+        };
         Error::new(
             kind,
-            format!("cloud-init did not finish a normal first boot: {headline} (`{CLOUD_INIT_STATUS}`: {facts})"),
+            format!("cloud-init did not finish a normal first boot: {headline} (`{CLOUD_INIT_STATUS}`{facts})"),
         )
     }
 }
 
 /// A `done` reply, checked against the exit code (0, 1 or 2 here) and the error lists. cloud-init exits 0 for a clean
 /// finish and 2 when it recorded recoverable errors; 1, or a non-empty `errors`, contradicts `done`.
-fn done(reply: &serde_json::Value, code: i32) -> std::result::Result<Readiness, String> {
+fn done(reply: &serde_json::Value, code: i32) -> std::result::Result<Readiness, Cause<'static>> {
     let nonempty = |key: &str| {
         reply.get(key).filter(|value| match value {
             serde_json::Value::Null => false,
@@ -113,10 +129,16 @@ fn done(reply: &serde_json::Value, code: i32) -> std::result::Result<Readiness, 
         })
     };
     if let Some(errors) = nonempty("errors") {
-        return Err(format!("its status is `done` but it reports errors: {errors}"));
+        return Err(Cause::Reply(format!(
+            "its status is `done` but it reports errors: {errors}"
+        )));
     }
     if !matches!(code, 0 | 2) {
-        return Err(format!("its status is `done` but its exit code is {code}, not 0 or 2"));
+        debug_assert_eq!(
+            code, 1,
+            "the other undocumented codes are caught before the reply is read"
+        );
+        return Err(Cause::DoneWithExit1);
     }
     let degraded_text = reply
         .get("extended_status")
