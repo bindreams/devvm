@@ -16,6 +16,7 @@
 //! | `hold` | does nothing and never answers: no output, no status |
 //! | `write-once-and-hold` | writes one line to stdout, then does nothing and never answers |
 //! | `status-then-marker` | sends `exit-status 7`, then the line `marker`, and never closes the channel |
+//! | `extended-data N` | writes a line to extended-data stream N (1 is stderr), then exits 0 |
 //! | `echo ...` | prints the rest of the line, exits 0 |
 //!
 //! Options make connections misbehave: a host key other than the advertised one, a refused client key, a peer that
@@ -62,6 +63,13 @@ pub struct SshdOptions {
     pub kill_sftp_after: Option<u64>,
     /// Refuse every `symlink` request, as a Windows guest does.
     pub no_symlinks: bool,
+    /// Close the SFTP channel, and only it, once this many bytes were read or written over SFTP: the connection lives.
+    pub close_sftp_after: Option<u64>,
+    /// An SFTP `realpath` is never answered: a request in flight on the server, for tests that end the connection
+    /// under it.
+    pub hold_realpath: bool,
+    /// Say that nothing exists, not even `/`, and refuse every `mkdir`: a guest whose file system cannot be asked.
+    pub hollow: bool,
 }
 
 pub(crate) struct State {
@@ -87,7 +95,14 @@ pub(crate) struct State {
     pub(crate) specials: Mutex<HashSet<String>>,
     pub(crate) sinks: Mutex<HashMap<String, (u64, String)>>,
     pub(crate) transferred: AtomicU64,
+    /// Every `open` request: the path and the flags it came with.
+    pub(crate) opened: Mutex<Vec<(String, russh_sftp::protocol::OpenFlags)>>,
     pub(crate) kill: Notify,
+    /// Fired to end every connection with a reset (`RST`) instead of an orderly close.
+    reset: Notify,
+    /// How many requests are held (see [`SshdOptions::hold_realpath`]).
+    pub(crate) held: AtomicUsize,
+    pub(crate) held_notify: Notify,
     _temp: Option<tempfile::TempDir>,
 }
 
@@ -132,7 +147,11 @@ impl TestSshd {
             generated: Mutex::default(),
             sinks: Mutex::default(),
             transferred: AtomicU64::new(0),
+            opened: Mutex::default(),
             kill: Notify::new(),
+            reset: Notify::new(),
+            held: AtomicUsize::new(0),
+            held_notify: Notify::new(),
             _temp: temp,
         });
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
@@ -197,9 +216,29 @@ impl TestSshd {
         })
     }
 
+    /// Blocks until the server holds a request (see [`SshdOptions::hold_realpath`]).
+    pub fn wait_for_held_request(&self) {
+        runtime::wait(async {
+            loop {
+                let notified = self.state.held_notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.state.held.load(Ordering::SeqCst) > 0 {
+                    return;
+                }
+                notified.await;
+            }
+        })
+    }
+
     /// Drops every open connection without a word.
     pub fn drop_connections(&self) {
         self.state.kill.notify_waiters();
+    }
+
+    /// Resets every open connection (`RST`, as a peer that crashed or a firewall does), with no closing handshake.
+    pub fn reset_connections(&self) {
+        self.state.reset.notify_waiters();
     }
 
     /// `path` (a path in the served tree, `/`-separated) is a symlink to `target`.
@@ -269,6 +308,11 @@ impl TestSshd {
     }
 
     /// `path` is neither a regular file, a directory nor a symlink (a FIFO, say).
+    /// The path and the flags of every SFTP `open` the server has received, in order.
+    pub fn opened(&self) -> Vec<(String, russh_sftp::protocol::OpenFlags)> {
+        self.state.opened.lock().unwrap().clone()
+    }
+
     pub fn add_special_file(&self, path: &str) {
         self.state.specials.lock().unwrap().insert(path.to_owned());
     }
@@ -328,6 +372,11 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
                 _ = tokio::io::copy_bidirectional(&mut tcp, &mut proxy_end) => {}
                 () = drop_now.notified() => {}
                 () = shutdown.kill.notified() => {}
+                () = shutdown.reset.notified() => {
+                    // Closing with a zero linger time sends `RST`, not `FIN`: the very thing under test.
+                    #[allow(deprecated, reason = "SO_LINGER is how a test asks for a reset")]
+                    let _ = tcp.set_linger(Some(Duration::ZERO));
+                }
             }
         });
         runtime::spawn(async move {
@@ -386,8 +435,19 @@ impl Handler for Connection {
         let state = self.state.clone();
         let drop_now = self.drop_now.clone();
         runtime::spawn(async move {
-            let server = fs::SftpFs::new(state.clone(), drop_now);
-            russh_sftp::server::run(sftp.into_stream(), server).await;
+            let close_now = Arc::new(Notify::new());
+            let server = fs::SftpFs::new(state.clone(), drop_now, close_now.clone());
+            // The server reads and writes a pipe that a proxy task joins to the channel, so ending the proxy closes the
+            // channel and nothing else.
+            let (server_end, mut proxy_end) = tokio::io::duplex(64 * 1024);
+            let mut channel = sftp.into_stream();
+            runtime::spawn(async move {
+                tokio::select! {
+                    _ = tokio::io::copy_bidirectional(&mut channel, &mut proxy_end) => {}
+                    () = close_now.notified() => {}
+                }
+            });
+            russh_sftp::server::run(server_end, server).await;
         });
         Ok(())
     }
@@ -521,6 +581,19 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
                     .to_vec(),
                 )
                 .await;
+        }
+        ["extended-data", stream] => {
+            let stream = stream.parse().expect("extended-data takes a stream number");
+            let _ = handle
+                .extended_data(
+                    channel,
+                    stream,
+                    b"on a stream of its own
+"
+                    .to_vec(),
+                )
+                .await;
+            finish(&handle, channel, 0).await;
         }
         ["echo", rest @ ..] => {
             let _ = handle.data(channel, format!("{}\n", rest.join(" ")).into_bytes()).await;

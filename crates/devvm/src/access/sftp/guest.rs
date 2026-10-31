@@ -90,17 +90,17 @@ impl CopySide for GuestSide<'_> {
         })
     }
 
-    fn make_dirs(&self, dir: &String) -> Result<()> {
+    fn create_dir(&self, dir: &String) -> Result<bool> {
         self.sftp.call(&format!("creating the guest directory {dir}"), {
             let dir = dir.clone();
-            move |remote| async move { remote.make_dirs(&dir).await }
+            move |remote| remote.create_dir(dir)
         })
     }
 
-    fn put_dir(&self, path: &String, follow: bool, what: &str) -> Result<bool> {
-        self.sftp.call(&format!("creating the guest directory {path}"), {
-            let (path, what) = (path.clone(), what.to_owned());
-            move |remote| remote.put_dir(path, follow, what)
+    fn remove_link(&self, path: &String) -> Result<()> {
+        self.sftp.call(&format!("replacing the guest symlink {path}"), {
+            let path = path.clone();
+            move |remote| remote.remove_link(path)
         })
     }
 

@@ -14,6 +14,15 @@ use super::{Failed, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_na
 use crate::access::session::Inner;
 use crate::{Error, ErrorKind, Result};
 
+/// What asking the guest for one directory came to.
+enum Mkdir {
+    Made,
+    /// A directory was there already.
+    Existed,
+    /// The guest said no, and nothing is there.
+    Refused(Error),
+}
+
 /// What the guest side of a transfer holds. Cheap to clone; every remote step gets one.
 #[derive(Clone)]
 pub(super) struct Remote {
@@ -55,27 +64,11 @@ impl Remote {
     }
 
     fn start_error(inner: &Inner, e: SftpError) -> Error {
-        inner.connection_ended(&format!("starting the SFTP subsystem ({e})"))
+        sftp_error(inner, "starting the SFTP subsystem", e)
     }
 
     fn error(&self, awaiting: &str, e: SftpError) -> Error {
-        match e {
-            SftpError::Status(status) if status.status_code == StatusCode::NoSuchFile => Error::new(
-                ErrorKind::NotFound,
-                format!(
-                    "{awaiting}: the guest has no such file or directory ({})",
-                    status.error_message
-                ),
-            ),
-            SftpError::Status(status) => Error::new(
-                ErrorKind::Io,
-                format!(
-                    "{awaiting}: the guest said: {}: {}",
-                    status.status_code, status.error_message
-                ),
-            ),
-            other => self.inner.connection_ended(&format!("{awaiting} ({other})")),
-        }
+        sftp_error(&self.inner, awaiting, e)
     }
 
     /// An `io::Error` out of a guest file read, write or close.
@@ -84,6 +77,35 @@ impl Remote {
             Some(remote) => self.error(awaiting, remote.clone()),
             None => Error::io(ErrorKind::Io, format!("{awaiting}: the guest side failed: {e}"), e),
         }
+    }
+}
+
+/// `e`, a failure of the SFTP library, as an error of the operation `awaiting`. A status is what the guest said. Any
+/// other failure is a lost connection only if the connection has ended; otherwise the SFTP channel or the server on it
+/// failed and the connection lives, which is not the same to the caller.
+fn sftp_error(inner: &Inner, awaiting: &str, e: SftpError) -> Error {
+    match e {
+        SftpError::Status(status) if status.status_code == StatusCode::NoSuchFile => Error::new(
+            ErrorKind::NotFound,
+            format!(
+                "{awaiting}: the guest has no such file or directory ({})",
+                status.error_message
+            ),
+        ),
+        SftpError::Status(status) => Error::new(
+            ErrorKind::Io,
+            format!(
+                "{awaiting}: the guest said: {}: {}",
+                status.status_code, status.error_message
+            ),
+        ),
+        other => match inner.transport_end() {
+            Some(_) => inner.connection_ended(&format!("{awaiting} ({other})")),
+            None => Error::new(
+                ErrorKind::Io,
+                format!("{awaiting}: the guest's SFTP channel failed while the connection is up ({other})"),
+            ),
+        },
     }
 }
 
@@ -237,56 +259,68 @@ impl Remote {
 // Writing =============================================================================================================
 
 impl Remote {
-    /// Makes the directory `path` and its missing parents.
-    pub(super) async fn make_dirs(&self, path: &str) -> Result<()> {
-        let mut missing = Vec::new();
-        let mut here = path.to_owned();
-        loop {
-            match self.stat(&here).await? {
-                Some(attrs) if attrs.file_type().is_dir() => break,
-                Some(_) => {
-                    return Err(Error::new(
-                        ErrorKind::Io,
-                        format!("the guest path {here} exists and is not a directory"),
-                    ));
-                }
-                None => {
+    /// Makes the one directory `path`, whose parent must exist, by asking for it: a server says only "failure" for a
+    /// directory that is there, so a failed request is followed by a look.
+    async fn mkdir(&self, path: &str) -> Result<Mkdir> {
+        let Err(refused) = self.session.create_dir(path).await else {
+            return Ok(Mkdir::Made);
+        };
+        match self.stat(path).await? {
+            Some(attrs) if attrs.file_type().is_dir() => Ok(Mkdir::Existed),
+            Some(_) => Err(Error::new(
+                ErrorKind::Io,
+                format!("the guest path {path} exists and is not a directory"),
+            )),
+            None => Ok(Mkdir::Refused(
+                self.error(&format!("cannot create the guest directory {path}"), refused),
+            )),
+        }
+    }
+
+    /// Makes the directory `path`, and its missing parents first. Returns whether it made `path`. Nothing is looked at
+    /// before a directory is asked for, so one made by someone else in between is found, not fought.
+    pub(super) async fn create_dir(self, path: String) -> Result<bool> {
+        // The directories the guest refused, `path` first, and what it said about `path`.
+        let mut missing: Vec<String> = Vec::new();
+        let mut first_refusal = None;
+        let mut here = path;
+        let made_here = loop {
+            match self.mkdir(&here).await? {
+                Mkdir::Made => break true,
+                Mkdir::Existed => break false,
+                Mkdir::Refused(error) => {
                     let parent = parent_of(&here);
+                    if parent == here {
+                        // A root or `.` that is missing: there is no parent left to try.
+                        return Err(first_refusal.unwrap_or(error));
+                    }
+                    first_refusal.get_or_insert(error);
                     missing.push(here);
                     here = parent;
                 }
             }
+        };
+        if missing.is_empty() {
+            return Ok(made_here);
         }
-        for dir in missing.into_iter().rev() {
-            self.session
-                .create_dir(dir.as_str())
-                .await
-                .map_err(|e| self.error(&format!("cannot create the guest directory {dir}"), e))?;
+        // The last one made is `path`.
+        let mut leaf_made = false;
+        for dir in missing.iter().rev() {
+            leaf_made = match self.mkdir(dir).await? {
+                Mkdir::Made => true,
+                Mkdir::Existed => false,
+                Mkdir::Refused(error) => return Err(error),
+            };
         }
-        Ok(())
+        Ok(leaf_made)
     }
 
-    /// Makes `path` a directory for the tree entry `what`: a missing one is made with its parents, a symlink is
-    /// replaced by a directory (or followed, when `follow`), a file is an error. Returns whether it made the directory.
-    pub(super) async fn put_dir(self, path: String, follow: bool, what: String) -> Result<bool> {
-        match self.lstat(&path).await? {
-            None => self.make_dirs(&path).await.map(|()| true),
-            Some(attrs) => match attrs.file_type() {
-                FileType::Dir => Ok(false),
-                FileType::Symlink if follow && self.leads_to_dir(&path).await? => Ok(false),
-                FileType::Symlink if !follow => {
-                    self.session
-                        .remove_file(path.as_str())
-                        .await
-                        .map_err(|e| self.error(&format!("cannot replace the guest symlink {path}"), e))?;
-                    self.make_dirs(&path).await.map(|()| true)
-                }
-                _ => Err(Error::new(
-                    ErrorKind::Io,
-                    format!("cannot copy {what} onto the guest path {path}, which is not a directory"),
-                )),
-            },
-        }
+    /// Removes the symlink `path`.
+    pub(super) async fn remove_link(self, path: String) -> Result<()> {
+        self.session
+            .remove_file(path.as_str())
+            .await
+            .map_err(|e| self.error(&format!("cannot replace the guest symlink {path}"), e))
     }
 
     async fn posix_rename(&self, from: &str, to: &str) -> Result<()> {
@@ -317,10 +351,17 @@ impl Remote {
             Ok(()) => self.posix_rename(&temp, target).await,
             Err(e) => Err(e),
         };
-        if moved.is_err() {
-            let _ = self.session.remove_file(temp).await;
+        match moved {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // A temporary that was never created is as good as removed.
+                let cleanup = match self.session.remove_file(temp.as_str()).await {
+                    Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(()),
+                    other => other,
+                };
+                Err(e.after_cleanup(&format!("the guest file {temp}"), cleanup))
+            }
         }
-        moved
     }
 
     /// Streams `local` to the guest file `target`.
@@ -345,7 +386,7 @@ impl Remote {
             .session
             .open_with_flags_and_attributes(
                 temp.as_str(),
-                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
                 attributes,
             )
             .await

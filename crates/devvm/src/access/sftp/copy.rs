@@ -2,7 +2,7 @@
 //! [`copy`] reads the source side, checks everything against the destination side, and only then writes. Every rule of
 //! the copy is in [`plan`] or here; a side supplies how its own file system is read and written, and its wording.
 
-use super::plan::{self, Conflict, Item, Kind, Place, Present, Rules, Source};
+use super::plan::{self, Beyond, Conflict, Item, Kind, Place, Present, Rules, Source};
 use crate::exit::Progress;
 use crate::{Error, ErrorKind, Result};
 
@@ -47,11 +47,11 @@ pub(super) trait CopySide {
     /// it leads (and fails when that cannot be told); without it, every link is `Link(Beyond::NotDir)`, for a link that
     /// the copy replaces whatever is behind it.
     fn present(&self, path: &Self::Path, follow: bool) -> Result<Present>;
-    /// Makes the directory `path` and its missing parents.
-    fn make_dirs(&self, path: &Self::Path) -> Result<()>;
-    /// Makes `path` a directory for the tree entry `what`; a symlink is replaced, or followed when `follow`. Returns
-    /// whether it made the directory.
-    fn put_dir(&self, path: &Self::Path, follow: bool, what: &str) -> Result<bool>;
+    /// Makes the directory `path`, and its missing parents first. Returns whether it made `path`: `false` when a
+    /// directory was there already, however it came to be (a link to one counts). Something else there is an error.
+    fn create_dir(&self, path: &Self::Path) -> Result<bool>;
+    /// Removes the symlink `path` (not what it leads to).
+    fn remove_link(&self, path: &Self::Path) -> Result<()>;
     /// Makes `path` a symlink holding `text` in place of whatever is there. `what` names the source entry.
     fn put_link(&self, text: &str, to_dir: bool, path: &Self::Path, what: &str) -> Result<()>;
     /// Sets the modification time of the directory `path`, once its contents are written.
@@ -110,6 +110,28 @@ fn total(top: &Kind, items: &[Item]) -> String {
     )
 }
 
+/// Makes `path` a directory for the tree entry `what`: a missing one is made with its parents, a symlink is replaced by
+/// a directory (or followed, when `follow`), a file is an error. Returns whether it made the directory.
+///
+/// The directory is made by one call that fails if it exists, and a call that found it there is looked at again, so
+/// a directory or a link that appears between the look and the call is neither counted as made nor written through.
+fn put_dir<D: CopySide>(dst: &D, path: &D::Path, follow: bool, what: &str) -> Result<bool> {
+    loop {
+        match dst.present(path, follow)? {
+            Present::Dir => return Ok(false),
+            Present::Link(Beyond::Dir) if follow => return Ok(false),
+            Present::Link(_) if !follow => dst.remove_link(path)?,
+            Present::Nothing => {}
+            Present::File | Present::Link(_) => {
+                return Err(conflict_error(Conflict::DirOntoNonDir, what, D::NAME, &dst.show(path)));
+            }
+        }
+        if dst.create_dir(path)? {
+            return Ok(true);
+        }
+    }
+}
+
 /// Makes `to` the tree entry `kind` copied from `from`. Returns whether it made a directory.
 fn put_item<S, D>(src: &S, dst: &D, kind: &Kind, from: &S::Path, to: &D::Path) -> Result<bool>
 where
@@ -118,7 +140,7 @@ where
 {
     let what = format!("the {} {} {}", S::NAME, kind.noun(), src.show(from));
     match kind {
-        Kind::Dir { .. } => dst.put_dir(to, false, &what),
+        Kind::Dir { .. } => put_dir(dst, to, false, &what),
         Kind::Link { target, to_dir } => dst.put_link(target, *to_dir, to, &what).map(|()| false),
         Kind::File { executable, mtime, .. } => dst.put_file(src, from, *executable, *mtime, to).map(|()| false),
     }
@@ -198,7 +220,7 @@ where
             // The directories the copy made and the times they get once their contents are written. A directory that
             // was already there keeps its time: setting one needs ownership the user may not have.
             let mut made: Vec<(D::Path, u32)> = Vec::new();
-            let root_made = dst.put_dir(dest, true, &what)?;
+            let root_made = put_dir(dst, dest, true, &what)?;
             if let (true, Kind::Dir { mtime: Some(seconds) }) = (root_made, &top) {
                 made.push((dest.clone(), *seconds));
             }
@@ -216,7 +238,7 @@ where
         }
         Place::At | Place::Inside => {
             if let Some(dir) = dst.parent(target) {
-                dst.make_dirs(&dir)?;
+                dst.create_dir(&dir)?;
             }
             put_item(src, dst, &top, from, target)?;
         }

@@ -9,7 +9,7 @@ use super::copy::{CopySide, Receives};
 use super::guest::GuestSide;
 use super::plan::{Beyond, Item, Kind, Present};
 use super::{local_error, partial_name};
-use crate::host::Host;
+use crate::host::{Host, remove_if_present};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -131,33 +131,40 @@ fn temp_beside(target: &Path) -> PathBuf {
     }
 }
 
-/// Moves the temporary `temp` over `target`, replacing a file or a symlink there, and removes `temp` when it fails.
-fn replace(host: &dyn Host, temp: &Path, target: &Path) -> Result<()> {
-    host.replace_file(temp, target).map_err(|e| {
-        let _ = std::fs::remove_file(temp);
-        local_error("cannot move the copy into place at", target, e)
-    })
+/// `error` once the temporary `temp`, which the copy failed to finish, is removed. A temporary that stays is named.
+fn without_temporary(error: Error, temp: &Path) -> Error {
+    error.after_cleanup(
+        &format!("the temporary file {}", temp.display()),
+        remove_if_present(temp),
+    )
 }
 
-/// Makes the downloaded `temp` the file `target`, with the modification time and execute bit of the guest file.
+/// Moves the temporary `temp` over `target`, replacing a file or a symlink there, and removes `temp` when it fails.
+fn replace(host: &dyn Host, temp: &Path, target: &Path) -> Result<()> {
+    host.replace_file(temp, target)
+        .map_err(|e| without_temporary(local_error("cannot move the copy into place at", target, e), temp))
+}
+
+/// Makes the downloaded `temp` the file `target`, with the modification time and execute bit of the guest file. Both
+/// are set on `temp`, before it replaces anything: a failure leaves `target` as it was.
 fn finish_file(temp: &Path, target: &Path, executable: bool, mtime: Option<u32>, host: &dyn Host) -> Result<()> {
-    if let Some(seconds) = mtime {
-        let time = UNIX_EPOCH + Duration::from_secs(u64::from(seconds));
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(temp)
-            .and_then(|file| file.set_modified(time))
-            .map_err(|e| {
-                let _ = std::fs::remove_file(temp);
-                local_error("cannot set the time of", temp, e)
-            })?;
-    }
-    replace(host, temp, target)?;
-    if executable {
-        host.set_executable(target)
-            .map_err(|e| local_error("cannot make executable", target, e))?;
-    }
-    Ok(())
+    let prepare = || -> Result<()> {
+        if let Some(seconds) = mtime {
+            let time = UNIX_EPOCH + Duration::from_secs(u64::from(seconds));
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(temp)
+                .and_then(|file| file.set_modified(time))
+                .map_err(|e| local_error("cannot set the time of", temp, e))?;
+        }
+        if executable {
+            host.set_executable(temp)
+                .map_err(|e| local_error("cannot make executable", temp, e))?;
+        }
+        Ok(())
+    };
+    prepare().map_err(|e| without_temporary(e, temp))?;
+    replace(host, temp, target)
 }
 
 // The side ============================================================================================================
@@ -279,31 +286,30 @@ impl CopySide for HostSide<'_> {
         }
     }
 
-    fn make_dirs(&self, path: &PathBuf) -> Result<()> {
-        std::fs::create_dir_all(path).map_err(|e| local_error("cannot create the directory", path, e))
+    fn create_dir(&self, path: &PathBuf) -> Result<bool> {
+        let made = |result: std::io::Result<()>| match result {
+            Ok(()) => Ok(true),
+            // Whatever is there must be a directory (a link to one counts), or the copy cannot go on.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => Ok(false),
+            Err(e) => Err(local_error("cannot create the directory", path, e)),
+        };
+        match std::fs::create_dir(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = self.parent(path) {
+                    std::fs::create_dir_all(&parent)
+                        .map_err(|e| local_error("cannot create the directory", &parent, e))?;
+                }
+                made(std::fs::create_dir(path))
+            }
+            other => made(other),
+        }
     }
 
-    fn put_dir(&self, path: &PathBuf, follow: bool, what: &str) -> Result<bool> {
-        match std::fs::symlink_metadata(path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.make_dirs(path).map(|()| true),
-            Err(e) => Err(local_error("cannot inspect", path, e)),
-            Ok(metadata) if metadata.is_dir() => Ok(false),
-            Ok(metadata) if metadata.file_type().is_symlink() && follow && leads_to_dir(path)? => Ok(false),
-            Ok(metadata) if metadata.file_type().is_symlink() && !follow => {
-                // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
-                std::fs::remove_file(path)
-                    .or_else(|_| std::fs::remove_dir(path))
-                    .map_err(|e| local_error("cannot replace the symlink", path, e))?;
-                self.make_dirs(path).map(|()| true)
-            }
-            Ok(_) => Err(Error::new(
-                ErrorKind::Io,
-                format!(
-                    "cannot copy {what} onto the host path {}, which is not a directory",
-                    path.display()
-                ),
-            )),
-        }
+    fn remove_link(&self, path: &PathBuf) -> Result<()> {
+        // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
+        std::fs::remove_file(path)
+            .or_else(|_| std::fs::remove_dir(path))
+            .map_err(|e| local_error("cannot replace the symlink", path, e))
     }
 
     fn probe_links(&self, dest: &PathBuf) -> Result<Option<String>> {
@@ -356,10 +362,7 @@ impl Receives<GuestSide<'_>> for HostSide<'_> {
         let temp = temp_beside(to);
         match source.download(from, &temp, to) {
             Ok(()) => finish_file(&temp, to, executable, mtime, self.host),
-            Err(e) => {
-                let _ = std::fs::remove_file(&temp);
-                Err(e)
-            }
+            Err(e) => Err(without_temporary(e, &temp)),
         }
     }
 

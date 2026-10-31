@@ -1,6 +1,10 @@
 use std::path::Path;
 
-use super::{lexically_normal, without_trailing_separator};
+use super::{HostSide, finish_file, lexically_normal, replace, without_trailing_separator};
+use crate::access::sftp::copy::CopySide;
+use crate::test_support::fixtures::unicode_home;
+use crate::test_support::host::{RecordingHost, TestHost};
+use crate::test_support::symlink::symlink;
 
 /// The text of `path` as written: `Path` equality ignores a trailing separator, so only the text can tell `C:\` from
 /// `C:`.
@@ -91,4 +95,88 @@ fn dotdot_stops_at_the_root_of_a_drive() {
 fn dotdot_stops_at_the_root() {
     assert_eq!(text(&lexically_normal(Path::new("/.."))), "/");
     assert_eq!(text(&lexically_normal(Path::new("/a/../.."))), "/");
+}
+
+#[skuld::test]
+fn create_dir_says_whether_it_made_the_directory(#[fixture(unicode_home)] home: &Path) {
+    let side = HostSide { host: &TestHost };
+    let deep = home.join("a").join("b").join("c");
+    assert!(side.create_dir(&deep).unwrap(), "made, with its parents");
+    assert!(deep.is_dir());
+    assert!(!side.create_dir(&deep).unwrap(), "it was already there");
+    assert!(
+        !side.create_dir(&deep.parent().unwrap().to_path_buf()).unwrap(),
+        "so was its parent"
+    );
+}
+
+#[skuld::test]
+fn create_dir_does_not_follow_a_link_that_is_in_the_way(#[fixture(unicode_home)] home: &Path) {
+    let side = HostSide { host: &TestHost };
+    let real = home.join("real");
+    std::fs::create_dir(&real).unwrap();
+    let link = home.join("link");
+    symlink(&real, &link);
+    assert!(
+        !side.create_dir(&link).unwrap(),
+        "something is there, so the copy made nothing"
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+        "the link is untouched"
+    );
+}
+
+#[skuld::test]
+fn create_dir_refuses_a_file_in_the_way(#[fixture(unicode_home)] home: &Path) {
+    let side = HostSide { host: &TestHost };
+    let file = home.join("file");
+    std::fs::write(&file, "x").unwrap();
+    assert!(side.create_dir(&file).is_err());
+    assert!(side.create_dir(&file.join("below")).is_err());
+}
+
+#[skuld::test]
+fn the_execute_bit_is_set_on_the_temporary_before_it_is_moved_into_place(#[fixture(unicode_home)] home: &Path) {
+    let host = RecordingHost::new();
+    let (temp, target) = (home.join("partial"), home.join("tool"));
+    std::fs::write(&temp, "new").unwrap();
+    std::fs::write(&target, "old").unwrap();
+    finish_file(&temp, &target, true, None, &host).unwrap();
+    assert_eq!(
+        host.set_executable_calls(),
+        [temp],
+        "never on the file that already replaced the old one"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+}
+
+#[skuld::test]
+fn a_file_that_cannot_be_made_executable_never_replaces_the_target(#[fixture(unicode_home)] home: &Path) {
+    let host = RecordingHost::new();
+    host.fail_set_executable();
+    let (temp, target) = (home.join("partial"), home.join("tool"));
+    std::fs::write(&temp, "new").unwrap();
+    std::fs::write(&target, "old").unwrap();
+    let error = finish_file(&temp, &target, true, None, &host).unwrap_err();
+    assert!(error.message().contains("cannot make executable"), "{error}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+    assert!(!temp.exists(), "the temporary file is removed");
+}
+
+#[skuld::test]
+fn a_move_whose_cleanup_fails_too_names_both(#[fixture(unicode_home)] home: &Path) {
+    // A directory cannot be moved over a directory that holds something, and `remove_file` cannot remove it.
+    let (temp, target) = (home.join("partial"), home.join("tool"));
+    std::fs::create_dir(&temp).unwrap();
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("held"), "old").unwrap();
+    let error = replace(&TestHost, &temp, &target).unwrap_err();
+    let text = error.message();
+    assert!(text.contains("cannot move the copy into place"), "{text}");
+    assert!(
+        text.contains("cleaning up failed") && text.contains("partial"),
+        "{text}"
+    );
+    assert!(temp.is_dir(), "it was left, and the error says so");
 }

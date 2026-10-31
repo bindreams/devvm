@@ -286,9 +286,18 @@ fn sweep_removes_temporary_files_a_killed_writer_left(#[fixture(unicode_home)] h
 fn sweep_removes_the_temporary_of_every_file_written_there_and_only_those(#[fixture(unicode_home)] home: &Path) {
     let dir = SshConfigDir::new(home.join("ssh"));
     dir.ensure_top_level().unwrap();
-    let stale = ["config.tmp-deadbeef", "known_hosts.tmp-0badf00d", "kept.known_hosts.tmp-12345678"];
+    let stale = [
+        "config.tmp-deadbeef",
+        "known_hosts.tmp-0badf00d",
+        "kept.known_hosts.tmp-12345678",
+    ];
     // Not a temporary of `write_file`: its marker is followed by 8 hex digits.
-    let theirs = ["notes.tmp-draft", "config", "known_hosts.tmp-", "kept.conf.tmp-DEADBEEF"];
+    let theirs = [
+        "notes.tmp-draft",
+        "config",
+        "known_hosts.tmp-",
+        "kept.conf.tmp-DEADBEEF",
+    ];
     for name in stale.iter().chain(&theirs) {
         std::fs::write(dir.path().join(name), "x").unwrap();
     }

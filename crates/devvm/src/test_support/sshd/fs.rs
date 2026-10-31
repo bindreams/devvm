@@ -81,6 +81,8 @@ enum Open {
 pub(super) struct SftpFs {
     state: Arc<State>,
     drop_now: Arc<Notify>,
+    /// Fired to close this SFTP channel and nothing else.
+    close_now: Arc<Notify>,
     handles: HashMap<String, Open>,
     next_handle: u64,
 }
@@ -137,10 +139,11 @@ fn data_failure(state: &State, path: &str) -> Result<(), StatusReply> {
 }
 
 impl SftpFs {
-    pub(super) fn new(state: Arc<State>, drop_now: Arc<Notify>) -> SftpFs {
+    pub(super) fn new(state: Arc<State>, drop_now: Arc<Notify>, close_now: Arc<Notify>) -> SftpFs {
         SftpFs {
             state,
             drop_now,
+            close_now,
             handles: HashMap::new(),
             next_handle: 0,
         }
@@ -189,6 +192,9 @@ impl SftpFs {
 
     /// The attributes of the virtual `path`, following a symlink if `follow`.
     fn attributes(&self, path: &str, follow: bool) -> Result<FileAttributes, StatusReply> {
+        if self.state.options.hollow {
+            return Err(StatusCode::NoSuchFile.into());
+        }
         let path = self.resolve(path, follow)?;
         let mut attrs = FileAttributes::default();
         let mode = self.state.modes.lock().unwrap().get(&path).copied();
@@ -240,6 +246,10 @@ impl SftpFs {
         if self.state.options.kill_sftp_after.is_some_and(|limit| total >= limit) {
             self.drop_now.notify_one();
             return Err(failure("the test server drops the connection here"));
+        }
+        if self.state.options.close_sftp_after.is_some_and(|limit| total >= limit) {
+            // No reply for this request or any after it: the client meets the closed channel, not a status.
+            self.close_now.notify_one();
         }
         Ok(())
     }
@@ -323,6 +333,7 @@ impl Handler for SftpFs {
         attrs: FileAttributes,
     ) -> Result<Handle, StatusReply> {
         let path = self.resolve(&filename, true)?;
+        self.state.opened.lock().unwrap().push((path.clone(), pflags));
         let writing = pflags.contains(OpenFlags::WRITE);
         if pflags.contains(OpenFlags::CREATE) && self.is_locked(&path) && !self.real(&path).exists() {
             return Err(StatusCode::PermissionDenied.into());
@@ -544,6 +555,9 @@ impl Handler for SftpFs {
 
     async fn mkdir(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, StatusReply> {
         let path = self.resolve(&path, false)?;
+        if self.state.options.hollow {
+            return Err(StatusCode::NoSuchFile.into());
+        }
         if self.is_locked(&path) {
             return Err(StatusCode::PermissionDenied.into());
         }
@@ -561,6 +575,11 @@ impl Handler for SftpFs {
     }
 
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, StatusReply> {
+        if self.state.options.hold_realpath {
+            self.state.held.fetch_add(1, Ordering::SeqCst);
+            self.state.held_notify.notify_waiters();
+            std::future::pending::<()>().await;
+        }
         Ok(Name {
             id,
             files: vec![File::dummy(self.resolve(&path, true)?)],

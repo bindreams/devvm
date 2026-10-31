@@ -810,6 +810,23 @@ fn the_modification_time_is_kept_in_both_directions(#[fixture(unicode_home)] hom
     assert_eq!(mtime(&env.local.join("one.txt")), MTIME + 5);
 }
 
+/// The host's execute bit was set `count` times, each on a temporary file in `dir`: the target is only ever replaced
+/// by a file that has the bit already.
+fn assert_executable_set_on_partials(env: &Env, dir: &Path, count: usize) {
+    let calls = env.host.set_executable_calls();
+    assert_eq!(calls.len(), count, "{calls:?}");
+    for call in calls {
+        assert_eq!(call.parent(), Some(dir), "{call:?}");
+        assert!(
+            call.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".devvm-partial-"),
+            "{call:?}"
+        );
+    }
+}
+
 #[skuld::test]
 fn the_executable_bit_is_kept_inside_a_tree_in_both_directions(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
@@ -821,7 +838,7 @@ fn the_executable_bit_is_kept_inside_a_tree_in_both_directions(#[fixture(unicode
     assert_eq!(env.rig.sshd.mode_of("/pack/plain.txt"), Some(0o644));
 
     env.copy_out("/pack", &env.local.join("back")).unwrap();
-    assert_eq!(env.host.set_executable_calls(), [env.local.join("back").join("run.sh")]);
+    assert_executable_set_on_partials(&env, &env.local.join("back"), 1);
 }
 
 #[skuld::test]
@@ -838,7 +855,7 @@ fn cp_modes_follow_the_host_executable_bit_in_and_the_guest_bit_out(#[fixture(un
     env.copy_out("/plain", &env.local.join("plain-back")).unwrap();
     assert!(env.host.set_executable_calls().is_empty());
     env.copy_out("/script", &env.local.join("script-back")).unwrap();
-    assert_eq!(env.host.set_executable_calls(), [env.local.join("script-back")]);
+    assert_executable_set_on_partials(&env, &env.local, 1);
 }
 
 // Names and bytes =====================================================================================================
@@ -1551,4 +1568,82 @@ fn cp_out_into_a_directory_checks_the_name_it_takes_from_the_guest_path(#[fixtur
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("\"con\""), "{error}");
     assert!(tree(&dest).is_empty());
+}
+
+// Guest requests ======================================================================================================
+
+/// Asks the guest side to make the directory `path`.
+fn guest_create_dir(env: &Env, path: &str) -> Result<bool> {
+    let path = path.to_owned();
+    env.sftp
+        .call("creating a directory", move |remote| remote.create_dir(path))
+}
+
+#[skuld::test]
+fn the_guest_makes_missing_parents_and_says_whether_it_made_the_directory(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    assert!(guest_create_dir(&env, "/a/b/c").unwrap(), "made, with its parents");
+    assert!(env.root().join("a/b/c").is_dir());
+    assert!(!guest_create_dir(&env, "/a/b/c").unwrap(), "it was there already");
+    assert!(!guest_create_dir(&env, "/a/b").unwrap(), "so was its parent");
+    assert!(
+        guest_create_dir(&env, "/a/b/d").unwrap(),
+        "a sibling next to what exists"
+    );
+}
+
+#[skuld::test]
+fn the_guest_refuses_a_file_in_the_way_of_a_directory_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("a/file", b"x");
+    for path in ["/a/file", "/a/file/below"] {
+        let error = guest_create_dir(&env, path).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+        assert!(error.message().contains("/a/file"), "{error}");
+    }
+}
+
+#[skuld::test]
+fn a_guest_that_has_not_even_a_root_ends_the_walk_up_with_an_error(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.hollow = true);
+    for path in ["/a/b", "a/b", "."] {
+        let error = guest_create_dir(&env, path).unwrap_err();
+        assert!(
+            error.message().contains("cannot create the guest directory"),
+            "{path}: {error}"
+        );
+    }
+}
+
+#[skuld::test]
+fn the_guest_temporary_is_opened_so_that_it_cannot_be_a_file_that_is_already_there(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    let src = env.host_file("a.txt", b"hello");
+    env.copy_in(&src, "/dest.txt").unwrap();
+    let opened = env.rig.sshd.opened();
+    let partials: Vec<_> = opened
+        .iter()
+        .filter(|(path, _)| path.contains(".devvm-partial-"))
+        .collect();
+    assert_eq!(partials.len(), 1, "{opened:?}");
+    assert!(
+        partials[0].1.contains(russh_sftp::protocol::OpenFlags::EXCLUDE),
+        "the temporary is created with EXCLUDE: {:?}",
+        partials[0].1
+    );
+}
+
+#[skuld::test]
+fn an_sftp_channel_that_closes_on_a_live_connection_is_not_a_lost_connection(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.close_sftp_after = Some(100 * 1024));
+    let big = env.host_file("big.bin", &vec![7u8; 2 << 20]);
+    let error = env.copy_in(&big, "/dest.bin").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "the connection is up: {error}");
+    assert!(
+        error.message().contains("SFTP"),
+        "the error names the SFTP failure: {error}"
+    );
+    assert!(!env.root().join("dest.bin").exists());
 }
