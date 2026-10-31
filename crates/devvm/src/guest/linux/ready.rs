@@ -25,7 +25,12 @@ pub(super) fn readiness(output: &Output) -> Result<Readiness> {
     };
     let code = match &output.status {
         ExitStatus::Code(code) => *code,
-        ExitStatus::Signal { name, .. } => return Err(failure(&format!("it was killed by signal {name}"))),
+        ExitStatus::Signal { name, .. } => {
+            return Err(failure(&format!(
+                "it was killed by signal {name}{}",
+                stderr_suffix(output)
+            )));
+        }
     };
     let reply: serde_json::Value = match (serde_json::from_slice(&output.stdout), &output.loss) {
         (Ok(reply), _) => reply,
@@ -39,6 +44,13 @@ pub(super) fn readiness(output: &Output) -> Result<Readiness> {
                     describe(output)
                 ),
             ));
+        }
+        // A failed command's own exit is the cause; its missing reply is a consequence.
+        (Err(_), None) if code != 0 => {
+            return Err(failure(&format!(
+                "it exited with exit code {code}{}",
+                stderr_suffix(output)
+            )));
         }
         (Err(e), None) => return Err(failure(&format!("its reply is not JSON ({e})"))),
     };
@@ -85,6 +97,14 @@ fn done(reply: &serde_json::Value, code: i32, failure: &dyn Fn(&str) -> Error) -
         Some(errors) => format!("{head}: {errors}"),
         None => head.to_owned(),
     }))
+}
+
+/// `: <stderr>` when the command printed anything to stderr, otherwise nothing.
+fn stderr_suffix(output: &Output) -> String {
+    match output.stderr_lossy().trim() {
+        "" => String::new(),
+        stderr => format!(": {stderr}"),
+    }
 }
 
 /// The exit code, stdout and stderr of `output`, for an error message.

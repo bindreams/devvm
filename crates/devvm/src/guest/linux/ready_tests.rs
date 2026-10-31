@@ -151,3 +151,49 @@ fn a_reply_cut_short_by_a_lost_connection_is_that_loss() {
     );
     assert!(!error.message().contains("not JSON"), "{}", error.message());
 }
+
+/// The message up to the quoted command: what the error says is wrong.
+fn headline(error: &Error) -> &str {
+    error.message().split(" (`").next().unwrap()
+}
+
+#[skuld::test]
+fn a_reply_that_is_not_json_is_blamed_on_the_exit_when_the_command_failed() {
+    for (stdout, code) in [("", 127), ("usage: cloud-init ...", 2), ("oops", 1), ("", 126)] {
+        let mut output = reply(code, stdout);
+        output.stderr = b"bash: cloud-init: command not found\n".to_vec();
+        let error = readiness(&output).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io);
+        let head = headline(&error);
+        assert!(head.contains(&format!("exit code {code}")), "{head}");
+        assert!(head.contains("command not found"), "stderr is in the headline: {head}");
+        assert!(!head.contains("not JSON"), "{head}");
+    }
+
+    // With no stderr the headline is still the exit.
+    let head = headline(&readiness(&reply(1, "")).unwrap_err()).to_owned();
+    assert!(head.contains("exit code 1"), "{head}");
+
+    // Only an exit of 0 makes the unreadable reply the problem.
+    let error = readiness(&reply(0, "not json at all")).unwrap_err();
+    assert!(headline(&error).contains("not JSON"), "{}", error.message());
+}
+
+#[skuld::test]
+fn a_cloud_init_killed_by_a_signal_has_the_signal_and_its_stderr_as_the_headline() {
+    let output = Output {
+        status: ExitStatus::Signal {
+            name: "SEGV".to_owned(),
+            core_dumped: true,
+        },
+        stdout: Vec::new(),
+        stderr: b"Segmentation fault\n".to_vec(),
+        loss: None,
+    };
+    let error = readiness(&output).unwrap_err();
+    let head = headline(&error);
+    assert!(
+        head.contains("signal SEGV") && head.contains("Segmentation fault"),
+        "{head}"
+    );
+}
