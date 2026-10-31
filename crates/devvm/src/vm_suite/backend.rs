@@ -34,20 +34,25 @@ use crate::{Arch, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
 
-/// What a test needs to know of each machine it launched through a [`QemuTarget`], by instance: a process handle (`.0`)
-/// and where its control socket is (`.1`; every launch has its own, so it is known only from the machine's record).
+/// What a test needs to know of each machine it launched through a [`QemuTarget`], by instance. Of an instance launched
+/// twice, only the last launch is kept.
 #[derive(Default)]
-struct Watches(
-    Mutex<HashMap<InstanceId, Watch>>,
-    Mutex<HashMap<InstanceId, QmpEndpoint>>,
-);
+struct Watches {
+    /// A process handle, which gives the exit code after the process is gone.
+    processes: Mutex<HashMap<InstanceId, Watch>>,
+    /// Where the control socket is: every launch has its own, so it is known only from the machine's record.
+    endpoints: Mutex<HashMap<InstanceId, QmpEndpoint>>,
+}
 
 impl Watches {
     fn launched(&self, id: InstanceId, record: &MachineRecord) {
         if let Some(watch) = Watch::new(record.process.pid) {
-            self.0.lock().unwrap().insert(id, watch);
+            self.processes.lock().unwrap().insert(id, watch);
         }
-        self.1.lock().unwrap().insert(id, QmpEndpoint::from_record(&record.qmp));
+        self.endpoints
+            .lock()
+            .unwrap()
+            .insert(id, QmpEndpoint::from_record(&record.qmp));
     }
 }
 
@@ -91,6 +96,7 @@ fn spec_in(dir: &Path, id: InstanceId, lifetime: Lifetime) -> MachineSpec {
         .unwrap_or_else(|e| panic!("the VM tests need WHPX: {e}"));
     MachineSpec {
         id,
+        launch: 1,
         dir: dir.to_path_buf(),
         arch: Arch::Amd64,
         accel,
@@ -136,7 +142,7 @@ impl QemuTarget {
 
     /// The control socket of the machine last launched from `spec`.
     fn endpoint(&self, spec: &MachineSpec) -> QmpEndpoint {
-        self.watches.1.lock().unwrap()[&spec.id].clone()
+        self.watches.endpoints.lock().unwrap()[&spec.id].clone()
     }
 
     /// The machine `n` under `root`, its disk made by the backend's own storage over a layer.
@@ -243,7 +249,7 @@ impl ContractTarget for QemuTarget {
 
     fn ended_gracefully(&self, spec: &MachineSpec) -> bool {
         self.watches
-            .0
+            .processes
             .lock()
             .unwrap()
             .get(&spec.id)
@@ -418,11 +424,15 @@ fn vm_qemu_deleting_an_earlier_machines_leftovers_leaves_the_next_launches_files
     let mut first = target.backend().launch(&spec).unwrap();
     let first_record = first.record();
     first.kill().unwrap();
-    let mut second = target.backend().launch(&spec).unwrap();
+    let next = MachineSpec {
+        launch: spec.launch + 1,
+        ..spec.clone()
+    };
+    let mut second = target.backend().launch(&next).unwrap();
     let second_record = second.record();
     assert_ne!(
         first_record.qmp, second_record.qmp,
-        "a launch has its own control socket"
+        "a launch number has its own control socket"
     );
     for path in &second_record.leftovers {
         std::fs::write(path, b"second").unwrap();
@@ -435,6 +445,31 @@ fn vm_qemu_deleting_an_earlier_machines_leftovers_leaves_the_next_launches_files
         assert!(path.exists(), "{} was deleted", path.display());
     }
     second.kill().unwrap();
+}
+
+#[skuld::test]
+fn vm_qemu_a_launch_whose_socket_name_is_taken_is_refused_and_spawns_nothing(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let target = QemuTarget::new(install);
+    let (spec, _parent) = target.prepared(home, 0, |_| {});
+    let mut first = target.backend().launch(&spec).unwrap();
+    let first_record = first.record();
+    first.kill().unwrap();
+    // What an earlier machine's crashed cleanup leaves at the name the next launch of the same number would take.
+    std::fs::write(&first_record.qmp, b"stale").unwrap();
+
+    let error = target.backend().launch(&spec).err().expect("the name is taken");
+
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert!(error.message().contains(&first_record.qmp), "{error}");
+    assert_eq!(
+        std::fs::read(&first_record.qmp).unwrap(),
+        b"stale",
+        "the stale file is left alone"
+    );
+    std::fs::remove_file(&first_record.qmp).unwrap();
 }
 
 #[skuld::test]
@@ -500,7 +535,7 @@ fn vm_qemu_a_running_machine_leaves_no_leftovers_after_kill(
         assert!(!leftover.exists(), "kill left {}", leftover.display());
     }
     // `ended_gracefully` is false for a process nobody watched, so the exit code must have been seen.
-    let code = target.watches.0.lock().unwrap()[&spec.id].exit_code();
+    let code = target.watches.processes.lock().unwrap()[&spec.id].exit_code();
     assert!(code.is_some(), "no exit code was observed after the kill");
     assert!(
         !target.ended_gracefully(&spec),
@@ -593,7 +628,7 @@ fn vm_qemu_a_system_reset_that_reaches_a_no_reboot_qemu_reports_no_reboot_and_th
     assert!(error.message().contains("no-reboot"), "{error}");
     assert!(!is_running(&record), "QEMU exits at its reset under -no-reboot");
     assert_eq!(
-        target.watches.0.lock().unwrap()[&spec.id].exit_code(),
+        target.watches.processes.lock().unwrap()[&spec.id].exit_code(),
         Some(0),
         "and exits normally"
     );

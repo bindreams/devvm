@@ -162,39 +162,53 @@ impl Sock {
 
 // Endpoint ============================================================================================================
 
+/// `endpoint`'s file name without `dvm-<id>-` and `.sock`.
+fn launch_part(endpoint: &QmpEndpoint, id: &InstanceId) -> String {
+    let name = endpoint.path().file_name().unwrap().to_string_lossy().into_owned();
+    name.strip_prefix(&format!("dvm-{id}-"))
+        .and_then(|rest| rest.strip_suffix(".sock"))
+        .unwrap_or_else(|| panic!("{name}"))
+        .to_owned()
+}
+
+fn endpoint_for(temp: &Path, id: &InstanceId, launch: u64) -> crate::Result<QmpEndpoint> {
+    QmpEndpoint::for_launch(temp, id, launch, host::current().socket_path_max())
+}
+
 #[skuld::test]
 fn two_launches_of_one_instance_get_different_socket_and_lock_paths() {
     let temp = Path::new("temp");
     let id = InstanceId::random();
-    let a = QmpEndpoint::for_launch(temp, &id, host::current().socket_path_max()).unwrap();
-    let b = QmpEndpoint::for_launch(temp, &id, host::current().socket_path_max()).unwrap();
+    let a = endpoint_for(temp, &id, 1).unwrap();
+    let b = endpoint_for(temp, &id, 2).unwrap();
     assert_ne!(a.path(), b.path());
     assert_ne!(a.lock_path(), b.lock_path());
     assert!(a.path().starts_with(temp));
-    for endpoint in [&a, &b] {
-        let name = endpoint.path().file_name().unwrap().to_string_lossy().into_owned();
-        let launch = name
-            .strip_prefix(&format!("dvm-{id}-"))
-            .and_then(|rest| rest.strip_suffix(".sock"));
-        assert!(
-            launch.is_some_and(|hex| hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit())),
-            "{name}"
-        );
-    }
+    assert_eq!(launch_part(&a, &id), "1");
+    assert_eq!(launch_part(&b, &id), "2");
+    let last = endpoint_for(temp, &id, u64::MAX).unwrap();
+    assert_eq!(launch_part(&last, &id), u64::MAX.to_string());
+}
+
+#[skuld::test]
+fn the_same_launch_number_of_one_instance_names_the_same_path() {
+    let temp = Path::new("temp");
+    let id = InstanceId::random();
+    assert_eq!(endpoint_for(temp, &id, 5).unwrap(), endpoint_for(temp, &id, 5).unwrap());
 }
 
 #[skuld::test]
 fn endpoints_of_different_instances_differ() {
     let temp = Path::new("temp");
-    let a = QmpEndpoint::for_launch(temp, &InstanceId::random(), host::current().socket_path_max()).unwrap();
-    let b = QmpEndpoint::for_launch(temp, &InstanceId::random(), host::current().socket_path_max()).unwrap();
+    let a = endpoint_for(temp, &InstanceId::random(), 1).unwrap();
+    let b = endpoint_for(temp, &InstanceId::random(), 1).unwrap();
     assert_ne!(a.path(), b.path());
 }
 
 #[skuld::test]
 fn from_record_gives_the_same_endpoint_and_lock_as_for_launch() {
     let id = InstanceId::random();
-    let made = QmpEndpoint::for_launch(Path::new("temp"), &id, host::current().socket_path_max()).unwrap();
+    let made = endpoint_for(Path::new("temp"), &id, 3).unwrap();
     let recorded = QmpEndpoint::from_record(&made.path().display().to_string());
     assert_eq!(recorded, made);
     assert_eq!(recorded.lock_path(), made.lock_path());
@@ -204,27 +218,48 @@ fn from_record_gives_the_same_endpoint_and_lock_as_for_launch() {
 }
 
 #[skuld::test]
+fn a_launch_whose_socket_or_lock_file_exists_is_refused_naming_it() {
+    let home = &socket_dir();
+    let id = InstanceId::random();
+    let free = endpoint_for(home, &id, 4).unwrap();
+    for stale in [free.path().to_path_buf(), free.lock_path()] {
+        std::fs::write(&stale, b"left by an earlier machine").unwrap();
+        let error = endpoint_for(home, &id, 4).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+        assert!(error.message().contains(&stale.display().to_string()), "{error}");
+        assert_eq!(
+            std::fs::read(&stale).unwrap(),
+            b"left by an earlier machine",
+            "a refused launch leaves the file alone"
+        );
+        endpoint_for(home, &id, 5).expect("the next launch number is free");
+        std::fs::remove_file(&stale).unwrap();
+    }
+    endpoint_for(home, &id, 4).expect("with both files gone, the name is free again");
+}
+
+#[skuld::test]
 fn a_socket_path_over_the_given_limit_is_refused_before_launch() {
     let temp = Path::new("temp");
     let id = InstanceId::random();
-    // Every launch's path has the same length, so the length of one is the exact limit of the next.
-    let length = QmpEndpoint::for_launch(temp, &id, usize::MAX)
+    // The same launch number gives a path of the same length, so the length of one is the exact limit of the next.
+    let length = QmpEndpoint::for_launch(temp, &id, 1, usize::MAX)
         .unwrap()
         .path()
         .to_string_lossy()
         .len();
 
     assert!(
-        QmpEndpoint::for_launch(temp, &id, length).is_ok(),
+        QmpEndpoint::for_launch(temp, &id, 1, length).is_ok(),
         "a path of exactly the limit fits"
     );
-    let error = QmpEndpoint::for_launch(temp, &id, length - 1).unwrap_err();
+    let error = QmpEndpoint::for_launch(temp, &id, 1, length - 1).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains(&format!("{}-byte", length - 1)), "{error}");
 
     // The limit counts UTF-8 bytes, not characters: 30 four-byte characters are 120 bytes.
-    let wide = Path::new("C:\\t").join("\u{1f600}".repeat(30));
-    assert!(QmpEndpoint::for_launch(&wide, &id, 107).is_err());
+    let wide = Path::new("C:\t").join("\u{1f600}".repeat(30));
+    assert!(QmpEndpoint::for_launch(&wide, &id, 1, 107).is_err());
 }
 
 #[skuld::test]

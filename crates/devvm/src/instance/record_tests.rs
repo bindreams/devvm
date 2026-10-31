@@ -58,6 +58,7 @@ fn record(created_from: PathBuf) -> InstanceRecord {
         cpus: 2,
         memory: 4 << 30,
         network: Network::Nat,
+        launches: 7,
         machine: Some(machine()),
     }
 }
@@ -86,6 +87,7 @@ const GOLDEN: &str = r#"{
   "cpus": 2,
   "memory": 4294967296,
   "network": "nat",
+  "launches": 7,
   "machine": {
     "process": {
       "v": 1,
@@ -201,6 +203,22 @@ fn record_json_is_stable(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(written, GOLDEN);
     std::fs::write(home.join("record.json"), GOLDEN).unwrap();
     assert_eq!(read_valid(home), record(PathBuf::from("/work/project")));
+}
+
+#[skuld::test]
+fn a_record_written_before_launches_were_counted_reads_as_zero(#[fixture(unicode_home)] home: &Path) {
+    let mut json: serde_json::Value = serde_json::from_str(GOLDEN).unwrap();
+    assert!(json.as_object_mut().unwrap().remove("launches").is_some());
+    std::fs::write(home.join("record.json"), json.to_string()).unwrap();
+    assert_eq!(read_valid(home).launches, 0);
+}
+
+#[skuld::test]
+fn the_launch_count_survives_a_write_and_a_read(#[fixture(unicode_home)] home: &Path) {
+    let mut counted = record(PathBuf::from("/work/project"));
+    counted.launches = u64::MAX;
+    counted.write(home).unwrap();
+    assert_eq!(read_valid(home).launches, u64::MAX);
 }
 
 #[skuld::test]

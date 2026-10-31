@@ -158,6 +158,24 @@ fn stop_then_start_gives_a_new_process(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
+fn each_launch_of_an_instance_gets_the_next_launch_number(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    assert_eq!(dir.record().unwrap().launches, 0, "a new instance has not launched");
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+    assert_eq!(dir.record().unwrap().launches, 1);
+    instance.stop().unwrap();
+    instance.start().unwrap();
+    assert_eq!(dir.record().unwrap().launches, 2, "a stop does not reset the count");
+
+    let numbers: Vec<u64> = fx.fake.specs().iter().map(|spec| spec.launch).collect();
+    assert_eq!(numbers, [1, 2]);
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
 fn remove_after_start_kills_the_machine_and_deletes_everything(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     instance_in(&fx, "foo", home);
@@ -235,6 +253,11 @@ fn a_cli_killed_at(step: LaunchStep, home: &Path) {
             "a VM killed before the resume never ran"
         );
     }
+    assert_eq!(
+        dir.record().unwrap().launches,
+        1,
+        "the launch number was persisted before the spawn, so a killed CLI cannot hand it out again"
+    );
     let record = dir.record().unwrap().machine;
     match step {
         LaunchStep::Spawned => assert!(record.is_none(), "nothing was recorded yet"),

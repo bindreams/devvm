@@ -381,6 +381,7 @@ impl Storage for FakeStorage {
 pub(crate) fn fake_spec(disk: PathBuf, serial_log: PathBuf, lifetime: Lifetime) -> MachineSpec {
     MachineSpec {
         id: InstanceId::random(),
+        launch: 1,
         dir: disk.parent().expect("a disk has a directory").to_path_buf(),
         arch: Arch::Amd64,
         accel: Accel::Tcg,

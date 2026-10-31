@@ -416,6 +416,20 @@ fn start_on_a_host_without_a_hypervisor_is_unavailable_and_launches_nothing(#[fi
     assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
 }
 
+#[skuld::test]
+fn a_failed_launch_keeps_its_launch_number(#[fixture(unicode_home)] home: &Path) {
+    let (fx, stub, _) = stub_fixture(home, Attach::Gone);
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    // The stub backend refuses every launch; the number was taken before it was asked.
+    instance.start().expect_err("the stub backend launches nothing");
+    assert_eq!(dir.record().unwrap().launches, 1);
+    instance.start().expect_err("the stub backend launches nothing");
+    assert_eq!(dir.record().unwrap().launches, 2, "a number is never handed out twice");
+    assert!(stub.calls().is_empty());
+}
+
 // Helper processes ====================================================================================================
 
 /// Parks the launch of `fake-cli-start` at one step: prints the machine's record and waits for stdin to close, which

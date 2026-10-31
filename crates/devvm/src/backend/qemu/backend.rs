@@ -43,15 +43,16 @@ impl QemuBackend {
 
 impl QemuBackend {
     /// `error`, after the frozen QEMU of a launch that failed has been killed and the files it could have made are
-    /// removed. A QEMU that cannot be killed is named in the error: it is still there, frozen.
+    /// removed. A QEMU that cannot be killed is named in the error: it is still there, frozen, and its files stay.
     fn abandon(&self, vm: &mut VmProcess, endpoint: &QmpEndpoint, error: Error) -> Error {
-        let killed = vm.kill();
-        // Only this launch's own files: its path is used by no other machine.
-        remove_files(&[endpoint.path().to_path_buf(), endpoint.lock_path()], &mut |message| {
-            self.progress.message(&message)
-        });
-        match killed {
-            Ok(()) => error,
+        match vm.kill() {
+            Ok(()) => {
+                // Only this launch's own files: its path is used by no other machine.
+                remove_files(&[endpoint.path().to_path_buf(), endpoint.lock_path()], &mut |message| {
+                    self.progress.message(&message)
+                });
+                error
+            }
             Err(kill) => Error::new(
                 error.kind(),
                 format!("{error}; the frozen QEMU could not be killed either ({kill}) and is still running"),
@@ -65,11 +66,11 @@ impl Backend for QemuBackend {
     /// a `PATH` of System32 and its own `bin`. Its output goes to `<instance>/qemu.log`. Resolving the sidecar here is
     /// the only place a launch can download it.
     ///
-    /// The control socket has a path of its own for each launch (`QmpEndpoint::for_launch`), recorded in the machine's
-    /// record, so no earlier or later machine of the instance shares its files.
+    /// The control socket is named by the launch number (`QmpEndpoint::for_launch`) and recorded in the machine's
+    /// record, so no earlier or later machine of the instance shares its files. A launch whose name exists is refused.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let install = self.install.get()?;
-        let endpoint = QmpEndpoint::for_launch(&self.temp, &spec.id, self.host.socket_path_max())?;
+        let endpoint = QmpEndpoint::for_launch(&self.temp, &spec.id, spec.launch, self.host.socket_path_max())?;
         let paths = LaunchPaths::resolve(spec, endpoint.path().to_path_buf(), &install.share)?;
         let args = build_args(spec, &paths)?;
 

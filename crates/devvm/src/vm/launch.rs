@@ -26,7 +26,7 @@ pub(super) fn launch(
         if backend.find(machine)?.is_some() {
             return Ok(None);
         }
-        // A stale record: the machine is dead, and its files must go before a new machine takes their place.
+        // A stale record: the machine is dead, so its leftovers go.
         dir.retire_machine(op, machine, &mut warn_for(engine, dir))?;
     }
 
@@ -45,8 +45,22 @@ pub(super) fn launch(
         // Placeholder until the instance's keys exist.
         keys: SeedKeys::default(),
     })?;
+    // Taken and persisted before the spawn: a launch that dies midway still used its number, so no later machine of the
+    // instance is named like it.
+    let launch = record.launches.checked_add(1).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Store,
+            format!(
+                "instance {} has launched {} times, which is as far as the count goes",
+                dir.name(),
+                record.launches
+            ),
+        )
+    })?;
+    dir.update(op, &mut |record| record.launches = launch)?;
     let spec = MachineSpec {
         id: *dir.id(),
+        launch,
         dir: dir.path().to_path_buf(),
         arch: record.arch,
         accel,

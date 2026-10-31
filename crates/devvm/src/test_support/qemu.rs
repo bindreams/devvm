@@ -52,62 +52,82 @@ pub struct Sock {
     pub endpoint: QmpEndpoint,
 }
 
-/// The short fallback for [`socket_dir`], with a space and a non-ASCII character like [`UNICODE_DIR`].
-const SHORT_SOCKET_DIR: &str = "\u{e9} \u{4e16}";
+/// The launch number of the sockets the tests name: the first.
+const LAUNCH: u64 = 1;
 
-/// The directory control sockets go in during tests: the first that fits a socket path (`Host::socket_path_max`):
-/// `<temp>/<UNICODE_DIR>`, then the shorter `<temp>/<SHORT_SOCKET_DIR>` (Windows under a long user name), then the
-/// temporary directory itself (macOS, whose temporary directory leaves room for no subdirectory with a non-ASCII name).
-/// Nothing is created outside the temporary directory.
-fn socket_dir_that_fits() -> PathBuf {
-    let fits =
-        |dir: &Path| QmpEndpoint::for_launch(dir, &InstanceId::random(), host::current().socket_path_max()).is_ok();
+/// Shorter fallbacks for [`socket_dir`], each with a space and non-ASCII characters like [`UNICODE_DIR`]: the first
+/// also has a character outside the Basic Multilingual Plane (a UTF-16 surrogate pair).
+const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e16}"];
+
+/// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`): the first of
+/// `<temp>/<UNICODE_DIR>`, the shorter `<temp>/<SHORT_SOCKET_DIRS>` (a long Windows user name), then the temporary
+/// directory itself (macOS, whose temporary directory leaves room for no subdirectory with a non-ASCII name). Nothing
+/// is created outside the temporary directory.
+fn socket_dir_that_fits() -> Option<PathBuf> {
+    let fits = |dir: &Path| {
+        QmpEndpoint::for_launch(dir, &InstanceId::random(), LAUNCH, host::current().socket_path_max()).is_ok()
+    };
     let temp = std::env::temp_dir();
-    [temp.join(UNICODE_DIR), temp.join(SHORT_SOCKET_DIR), temp.clone()]
-        .into_iter()
+    std::iter::once(temp.join(UNICODE_DIR))
+        .chain(SHORT_SOCKET_DIRS.iter().map(|short| temp.join(short)))
+        .chain(std::iter::once(temp.clone()))
         .find(|dir| fits(dir))
-        .unwrap_or_else(|| {
-            panic!(
-                "the temporary directory {} is too long for a control socket",
-                temp.display()
-            )
-        })
 }
 
 /// The shared directory control sockets go in during tests, created if need be (see [`socket_dir_that_fits`]).
 pub fn socket_dir() -> PathBuf {
-    let dir = socket_dir_that_fits();
+    let dir = socket_dir_that_fits().unwrap_or_else(|| {
+        panic!(
+            "the temporary directory {} is too long for a control socket",
+            std::env::temp_dir().display()
+        )
+    });
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-/// A skuld precondition for the tests of non-ASCII socket paths: they are ignored, with the length that ruled the
-/// directory out, where only the temporary directory itself fits (macOS), since they would check nothing there.
+fn has_space_and_non_ascii(path: &Path) -> bool {
+    let path = path.to_string_lossy();
+    path.contains(' ') && !path.is_ascii()
+}
+
+/// A skuld precondition for the tests of non-ASCII socket paths: they are ignored, with the reason, where the socket
+/// directory has no space or no non-ASCII character (only a temporary directory that has neither fits: macOS) or none
+/// fits at all, since they would check nothing there.
 pub fn unicode_socket_dir_fits() -> Result<(), String> {
     let temp = std::env::temp_dir();
-    if socket_dir_that_fits() == temp {
-        return Err(format!(
-            "no non-ASCII directory fits a socket path: the temporary directory {} is {} bytes and a socket path is limited to {}; covered by the Windows jobs",
+    match socket_dir_that_fits() {
+        Some(dir) if has_space_and_non_ascii(&dir) => Ok(()),
+        found => Err(format!(
+            "{} the temporary directory {} is {} bytes and a socket path is limited to {}; covered by the Windows jobs",
+            if found.is_some() {
+                "no non-ASCII directory fits a socket path:"
+            } else {
+                "no directory fits a socket path:"
+            },
             temp.display(),
             temp.as_os_str().len(),
             host::current().socket_path_max(),
-        ));
+        )),
     }
-    Ok(())
 }
 
 /// Asserts that a control socket path has a space and a non-ASCII character, as [`socket_dir`] provides where
 /// [`unicode_socket_dir_fits`].
 pub fn assert_unicode_socket_path(path: &Path) {
-    let path = path.to_string_lossy();
-    assert!(path.contains(' ') && !path.is_ascii(), "{path}");
+    assert!(has_space_and_non_ascii(path), "{}", path.display());
 }
 
 impl Sock {
     pub fn new() -> Sock {
         Sock {
-            endpoint: QmpEndpoint::for_launch(&socket_dir(), &InstanceId::random(), host::current().socket_path_max())
-                .unwrap(),
+            endpoint: QmpEndpoint::for_launch(
+                &socket_dir(),
+                &InstanceId::random(),
+                LAUNCH,
+                host::current().socket_path_max(),
+            )
+            .unwrap(),
         }
     }
 }

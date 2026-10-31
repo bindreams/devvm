@@ -147,6 +147,9 @@ pub(crate) fn remove_files(paths: &[PathBuf], warn: &mut dyn FnMut(String)) {
 pub(crate) struct MachineSpec {
     /// The instance this machine belongs to; a backend derives names that must not collide from it.
     pub id: InstanceId,
+    /// Which launch of the instance this is (`InstanceRecord::launches`): never the number of an earlier machine, so a
+    /// backend can name this machine's files by it and never collide with another's.
+    pub launch: u64,
     /// The instance directory. `disk`, `serial_log` and the firmware variables sit in it.
     pub dir: PathBuf,
     pub arch: Arch,

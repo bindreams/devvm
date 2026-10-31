@@ -39,14 +39,15 @@ pub(crate) struct QmpEndpoint {
 }
 
 impl QmpEndpoint {
-    /// `<temp>/dvm-<32 hex of the id>-<8 random hex>.sock`: short, so it fits `sun_path` under any temp directory, and
-    /// unique per launch. A path is never reused, so deleting a dead machine's files by path cannot touch a later
-    /// machine's. A path over `path_max` bytes (`Host::socket_path_max`) is refused here, before a machine is launched
-    /// with it.
-    pub(crate) fn for_launch(temp: &Path, id: &InstanceId, path_max: usize) -> Result<QmpEndpoint> {
-        let mut launch = [0u8; 4];
-        getrandom::fill(&mut launch).expect("the OS random number generator is available");
-        let path = temp.join(format!("dvm-{id}-{}.sock", hex::encode(launch)));
+    /// `<temp>/dvm-<32 hex of the id>-<launch>.sock`, with `launch` in decimal: short, so it fits `sun_path` under any
+    /// temp directory. `launch` is the instance's launch number (`MachineSpec::launch`), which is never handed out
+    /// twice, so no machine's path is another's and deleting a dead machine's files by path cannot touch a later
+    /// machine's.
+    ///
+    /// Refused, with the file named: a path over `path_max` bytes (`Host::socket_path_max`), and a socket or lock file
+    /// that already exists at the name, which belongs to somebody else. Nothing is deleted or reused.
+    pub(crate) fn for_launch(temp: &Path, id: &InstanceId, launch: u64, path_max: usize) -> Result<QmpEndpoint> {
+        let path = temp.join(format!("dvm-{id}-{launch}.sock"));
         let bytes = path.to_string_lossy().len();
         if bytes > path_max {
             return Err(Error::new(
@@ -58,7 +59,29 @@ impl QmpEndpoint {
                 ),
             ));
         }
-        Ok(QmpEndpoint { path })
+        let endpoint = QmpEndpoint { path };
+        for taken in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
+            match std::fs::symlink_metadata(&taken) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(Error::io(
+                        ErrorKind::Io,
+                        format!("cannot look at {}", taken.display()),
+                        e,
+                    ));
+                }
+                Ok(_) => {
+                    return Err(Error::new(
+                        ErrorKind::AlreadyExists,
+                        format!(
+                            "{} already exists, left by an earlier machine of the instance; delete it and start again",
+                            taken.display()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(endpoint)
     }
 
     /// The endpoint a `MachineRecord.qmp` names.
