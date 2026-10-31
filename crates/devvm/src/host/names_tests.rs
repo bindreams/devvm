@@ -46,6 +46,20 @@ fn windows_refuses_what_is_not_one_file_name() {
         "nul.tar.gz",
         "com1",
         "LPT9.x",
+        "com0",
+        "COM0.txt",
+        "lpt0",
+        "LPT0",
+        "COM\u{b9}",
+        "com\u{b2}.txt",
+        "COM\u{b3}",
+        "LPT\u{b9}",
+        "lpt\u{b2}",
+        "LPT\u{b3}.x",
+        "CONIN$",
+        "conout$",
+        "CONOUT$.txt",
+        "CON .txt",
         "co\u{7}",
         "a\u{1}",
         "a\u{1f}b",
@@ -65,9 +79,12 @@ fn windows_refuses_what_is_not_one_file_name() {
         "%x",
         "[a]",
         "-dash",
-        "com0",
         "com10",
+        "COM4\u{b2}",
+        "COM\u{b9}\u{b9}",
         "console",
+        "conin",
+        "CONIN$x",
         "a.b",
         ".hidden",
         "\u{1f600}",
@@ -203,11 +220,35 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
         "conin$",
         "CONOUT$.txt",
     ];
-    // Measured on the windows-latest runner: NTFS stores the device names `CON`, `AUX.txt`, `COM1` and the
-    // like and reads them back, through Rust's std. `windows_problem` refuses them anyway: the owner's copy rules name
-    // "reserved device names" among the names a target cannot store. The measurement is pinned here so a change in
-    // Windows shows up, and the rule is not loosened by it.
-    let refused_though_stored = ["con", "CON", "Aux.txt", "nul.tar.gz", "PRN", "com1", "COM9", "LPT9.x"];
+    // Measured on the windows-latest runner: NTFS stores the device names `CON`, `AUX.txt`, `COM1`, `COM0`, `LPT¹` and
+    // `CONIN$` and reads them back, through Rust's std. `windows_problem` refuses them anyway: the owner's copy rules
+    // name "reserved device names" among the names a target cannot store. The measurement is pinned here so a change
+    // in Windows shows up, and the rule is not loosened by it.
+    let refused_though_stored = [
+        "con",
+        "CON",
+        "Aux.txt",
+        "nul.tar.gz",
+        "PRN",
+        "com1",
+        "COM9",
+        "LPT9.x",
+        "com0",
+        "COM0",
+        "LPT0",
+        "lpt0.txt",
+        "COM\u{b9}",
+        "COM\u{b2}",
+        "COM\u{b3}",
+        "LPT\u{b9}",
+        "LPT\u{b2}",
+        "LPT\u{b3}",
+        "com\u{b9}.txt",
+        "CONIN$",
+        "CONOUT$",
+        "conin$",
+        "CONOUT$.txt",
+    ];
     let mut table = String::new();
     let mut disagree = Vec::new();
     for name in names {

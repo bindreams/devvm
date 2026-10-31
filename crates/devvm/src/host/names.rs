@@ -5,8 +5,30 @@
 #[path = "names_tests.rs"]
 mod names_tests;
 
-/// Device names Windows reserves, with or without an extension.
-const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+/// Device names Windows reserves, with or without an extension, in upper case. The numbered ones are in
+/// [`is_device_name`].
+const RESERVED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
+
+/// Whether Windows reads `name` as a device: the part before the first dot, without trailing spaces, is in
+/// [`RESERVED`] or is `COM` or `LPT` with one digit (0 to 9, or the superscripts ¹ ² ³), in any case.
+fn is_device_name(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|rest| {
+            let mut chars = rest.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
+    };
+    RESERVED.contains(&stem.as_str()) || numbered("COM") || numbered("LPT")
+}
 
 /// What no host can hold as one file name.
 fn common_problem(name: &str) -> Option<String> {
@@ -43,17 +65,7 @@ pub(crate) fn windows_problem(name: &str) -> Option<String> {
     if name.ends_with('.') || name.ends_with(' ') {
         return Some("ends with a dot or a space, which Windows drops".to_owned());
     }
-    let stem = name
-        .split('.')
-        .next()
-        .unwrap_or(name)
-        .trim_end_matches(' ')
-        .to_ascii_uppercase();
-    let digit = |prefix: &str| {
-        stem.strip_prefix(prefix)
-            .is_some_and(|rest| matches!(rest.as_bytes(), [b'1'..=b'9']))
-    };
-    if RESERVED.contains(&stem.as_str()) || digit("COM") || digit("LPT") {
+    if is_device_name(name) {
         return Some("is a device name, which Windows reserves".to_owned());
     }
     None
