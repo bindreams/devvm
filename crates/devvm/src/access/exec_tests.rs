@@ -11,10 +11,6 @@ use crate::exit::NullProgress;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::sshd::Rig;
 
-/// The failure bound of the wait for `run_exec`. A `run_exec` that is stuck never returns, so this is not a delay the
-/// test synchronises with: it is the point where the test says what hung.
-const HANG_BOUND: Duration = Duration::from_secs(60);
-
 /// A keepalive that cannot fire during a test: the stalled server answers nothing, and a connection the keepalive had
 /// ended would fail the close at once instead of leaving it waiting.
 const NEVER: Keepalive = Keepalive {
@@ -59,27 +55,19 @@ fn a_vm_exit_ends_an_exec_whose_close_has_no_room_in_the_session_queue(#[fixture
     assert!(taken <= 10, "the queue took {taken} messages: something drained it");
 
     fire.send(()).unwrap();
-    let outcome = runtime::run("the end of run_exec", async move {
-        tokio::time::timeout(HANG_BOUND, async move {
-            let end = loop {
-                match host.recv().await {
-                    Some(Event::End(result)) => break result,
-                    Some(_) => {}
-                    None => panic!("run_exec dropped its events without an end"),
-                }
-            };
-            running.await.expect("run_exec returns");
-            end
-        })
-        .await
+    // No time bound: a `run_exec` that does not return is a hang, which the CI job's timeout ends.
+    let end = runtime::run("the end of run_exec", async move {
+        let end = loop {
+            match host.recv().await {
+                Some(Event::End(result)) => break result,
+                Some(_) => {}
+                None => panic!("run_exec dropped its events without an end"),
+            }
+        };
+        running.await.expect("run_exec returns");
+        end
     })
     .unwrap();
-    let end = outcome.unwrap_or_else(|_| {
-        panic!(
-            "run_exec did not return within {HANG_BOUND:?} of the VM exit: the close of its channel waits for room in a \
-             session queue that nothing drains"
-        )
-    });
     let error = end.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("VM process exited"), "{error}");

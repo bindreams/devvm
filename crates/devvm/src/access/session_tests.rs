@@ -469,6 +469,63 @@ fn a_rejected_client_key_is_retried_while_booting_and_final_otherwise(#[fixture(
     assert_eq!(rig.sshd.connections(), 1);
 }
 
+#[skuld::test]
+fn a_boot_bound_that_has_passed_ends_a_connect_naming_the_address_and_the_serial_log(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The server would refuse the host key for good, but the bound is over before any attempt has an answer.
+    let rig = Rig::with(home, |options| options.wrong_host_key_connections = usize::MAX);
+    let error = rig
+        .connect_with(VmExit::never(), Some(BootBound::start(Duration::ZERO).unwrap()))
+        .err()
+        .expect("the connect fails");
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("boot bound of 0s"), "{error}");
+    assert!(error.message().contains(&rig.sshd.addr().to_string()), "{error}");
+    assert!(
+        error.message().contains(&rig.serial_log.display().to_string()),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn the_boot_bound_ends_a_connect_with_the_failure_it_last_saw() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let connect = silent_peer_connect(FAST, &listener);
+    let bound = BootBound::start(Duration::from_secs(90)).unwrap();
+    let awaiting = "waiting for SSH";
+
+    let presented = "SHA256:presented".to_owned();
+    let error = connect.out_of_time(
+        Some(Failure::HostKey {
+            presented: presented.clone(),
+        }),
+        awaiting,
+        bound,
+    );
+    assert_eq!(error.kind(), ErrorKind::HostKey, "{error}");
+    assert!(error.message().contains(&presented), "{error}");
+    assert!(
+        error.message().contains(&fingerprint(&connect.ctx.host_public)),
+        "{error}"
+    );
+
+    let rejected = Failure::Rejected {
+        remaining: "publickey".to_owned(),
+    };
+    let error = connect.out_of_time(Some(rejected), awaiting, bound);
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("`user`"), "{error}");
+
+    let refused = Failure::Tcp(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+    let error = connect.out_of_time(Some(refused), awaiting, bound);
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains(&connect.ctx.addr.to_string()), "{error}");
+    assert!(error.message().contains("serial.log"), "{error}");
+    assert!(error.message().contains("within 1m 30s"), "{error}");
+    assert!(!error.message().contains("boot bound of"), "{error}");
+}
+
 // The boot bound ======================================================================================================
 
 /// Starts the boot bound of `session` now, as the engine does when it resumes the VM. The tests start it after the
