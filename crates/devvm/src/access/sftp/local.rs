@@ -79,6 +79,16 @@ fn sftp_seconds(time: std::io::Result<SystemTime>) -> Option<u32> {
     u32::try_from(since.as_secs()).ok()
 }
 
+/// The error of a symlink that could be removed neither as a file nor as a directory. The first failure is the cause on
+/// every host but Windows, where it can be the second; both are said.
+fn link_removal_failure(as_file: std::io::Error, as_dir: std::io::Error) -> std::io::Error {
+    if as_file.to_string() == as_dir.to_string() {
+        return as_file;
+    }
+    let text = format!("{as_file} (removing it as a directory link failed too: {as_dir})");
+    std::io::Error::new(as_file.kind(), text)
+}
+
 // Reading =============================================================================================================
 
 /// The tree entry that `metadata` describes at `path`, or `None` for a directory's contents to be walked.
@@ -341,7 +351,7 @@ impl CopySide for HostSide<'_> {
     fn remove_link(&self, path: &PathBuf) -> Result<()> {
         // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
         std::fs::remove_file(path)
-            .or_else(|_| std::fs::remove_dir(path))
+            .or_else(|as_file| std::fs::remove_dir(path).map_err(|as_dir| link_removal_failure(as_file, as_dir)))
             .map_err(|e| local_error("cannot replace the symlink", self.name(path), e))
     }
 

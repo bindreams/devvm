@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use super::super::typed::Typed;
-use super::{HostSide, finish_file, lexically_normal, replace, without_trailing_separator};
+use super::{HostSide, finish_file, lexically_normal, link_removal_failure, replace, without_trailing_separator};
 use crate::access::sftp::copy::CopySide;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{RecordingHost, TestHost};
@@ -96,6 +96,21 @@ fn dotdot_stops_at_the_root_of_a_drive() {
 fn dotdot_stops_at_the_root() {
     assert_eq!(text(&lexically_normal(Path::new("/.."))), "/");
     assert_eq!(text(&lexically_normal(Path::new("/a/../.."))), "/");
+}
+
+#[skuld::test]
+fn a_link_that_could_not_be_removed_reports_the_first_failure_and_then_the_second() {
+    let as_file = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+    let as_dir = std::io::Error::other("not a directory");
+    let both = link_removal_failure(as_file, as_dir);
+    assert_eq!(both.kind(), std::io::ErrorKind::PermissionDenied);
+    let text = both.to_string();
+    assert!(text.starts_with("denied"), "{text}");
+    assert!(text.contains("not a directory"), "{text}");
+
+    // The same failure twice is said once.
+    let twice = link_removal_failure(std::io::Error::other("busy"), std::io::Error::other("busy"));
+    assert_eq!(twice.to_string(), "busy");
 }
 
 #[skuld::test]
