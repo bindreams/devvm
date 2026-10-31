@@ -1,4 +1,3 @@
-use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -9,6 +8,7 @@ use crate::host::Host;
 use crate::recipe::hash::{CopyManifest, EntryContent, KeyContext, LayerKey, RootContent, root_key, step_key};
 use crate::recipe::{CopyFrom, Step};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::helper;
 use crate::test_support::host::TestHost;
 use crate::{Arch, ErrorKind, Sha256};
 
@@ -17,13 +17,8 @@ use crate::{Arch, ErrorKind, Sha256};
 /// A `git` command in `dir` for the tests, in the environment the snapshot's git gets: under a git hook `GIT_DIR` and
 /// `GIT_INDEX_FILE` would otherwise send a fixture's commands into the invoking repository.
 pub(crate) fn git_command(dir: &Path) -> Command {
-    git_command_without(std::env::vars_os().map(|(name, _)| name), dir)
-}
-
-/// `git_command` for a process whose environment holds `names`.
-fn git_command_without(names: impl IntoIterator<Item = OsString>, dir: &Path) -> Command {
     let mut command = Command::new("git");
-    for name in cleared_names(&TestHost, names) {
+    for name in cleared_names(&TestHost, std::env::vars_os().map(|(name, _)| name)) {
         command.env_remove(name);
     }
     command.current_dir(dir);
@@ -62,17 +57,6 @@ pub(crate) fn git_with(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).expect("git printed UTF-8")
-}
-
-#[skuld::test]
-fn the_fixtures_git_drops_the_variables_that_select_a_repository() {
-    let names = ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_CONFIG_COUNT", "PATH"];
-    let command = git_command_without(names.map(OsString::from), Path::new("."));
-    let removed: Vec<&OsStr> = command
-        .get_envs()
-        .filter_map(|(name, value)| value.is_none().then_some(name))
-        .collect();
-    assert_eq!(removed, ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"]);
 }
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
@@ -122,8 +106,8 @@ pub(crate) struct Taken {
     pub notes: Vec<String>,
 }
 
-/// `snapshot` of `from` into a fresh directory `scratch/out`. `notes` leaves out the note that lists the `GIT_*`
-/// variables of this process, which differs from one machine to the next.
+/// `snapshot` of `from` into a fresh directory `scratch/out`. `notes` drops the unset-variables note, which varies by
+/// machine.
 pub(crate) fn take(from: &Path, read_only: bool, scratch: &Path) -> crate::Result<Taken> {
     let into = scratch.join("out");
     std::fs::create_dir_all(&into).unwrap();
@@ -185,8 +169,6 @@ fn modes(taken: &Taken) -> Vec<(String, u32)> {
         .map(|e| (e.path, e.mode))
         .collect()
 }
-
-// Tests ===============================================================================================================
 
 #[skuld::test]
 fn empty_directories_are_not_tracked_and_not_copied(#[fixture(unicode_home)] home: &Path) {
@@ -586,7 +568,9 @@ fn a_from_dir_that_is_not_a_directory_is_a_recipe_error_naming_it(#[fixture(unic
     let missing = home.join("no such directory");
     let file = home.join("a file");
     std::fs::write(&file, b"x").unwrap();
-    for from in [missing, file] {
+    // Below a file, which Unix reports as `NotADirectory` and not as a missing path.
+    let below_a_file = file.join("below");
+    for from in [missing, file, below_a_file] {
         let error = take(&from, false, home).err().expect("there is no directory to copy");
         assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
         assert!(error.message().contains(from.to_str().unwrap()), "{error}");
@@ -768,6 +752,106 @@ fn a_submodule_inside_a_submodule_is_included_and_an_uninitialised_sibling_is_no
     assert!(taken.notes[0].contains("vendor/middle/unused"), "{:?}", taken.notes);
 }
 
+/// `home/repo` tracks `top.txt` and `a/b/c/f.txt`. `make_link(target, link)` makes `home/links/j` for `repo/a/b`, and
+/// the snapshot starts from the link: git sees the directory it names, and a path built from the link's text does not.
+pub(crate) fn snapshot_through_a_directory_link(home: &Path, make_link: impl FnOnce(&Path, &Path)) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "top.txt", b"top");
+    put(&repo, "a/b/c/f.txt", b"f");
+    add_all(&repo);
+    std::fs::create_dir_all(home.join("links")).unwrap();
+    let link = home.join("links").join("j");
+    make_link(&repo.join("a").join("b"), &link);
+    let taken = take(&link, false, home).expect("the repository is found through the link");
+    assert_eq!(paths(&taken.snapshot), ["a/b/c/f.txt", "top.txt"]);
+}
+
+#[skuld::test]
+fn a_link_in_a_tracked_directory_that_holds_a_repository_of_its_own_takes_its_text_from_the_outer_one(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "dir/target.txt", b"t");
+    put(&repo, "dir/link", b"target.txt");
+    git(&repo, &["add", "dir/target.txt"]);
+    track_as_symlink(&repo, "dir/link");
+    // Not a submodule: a repository made in a directory the outer one tracks files in. Git run in `dir` finds it, and
+    // it holds neither the link's blob nor the outer repository's `core.symlinks`.
+    git(&repo.join("dir"), &["init", "-q"]);
+    let taken = take(&repo, false, home).expect("the outer repository tracks the link");
+    let link = taken
+        .snapshot
+        .manifest
+        .entries()
+        .iter()
+        .find(|e| e.path == "dir/link")
+        .unwrap();
+    assert_eq!(link.content, EntryContent::SymlinkTarget("target.txt".into()));
+}
+
+#[skuld::test]
+fn a_submodule_that_is_initialised_but_not_checked_out_is_skipped_with_a_note(#[fixture(unicode_home)] home: &Path) {
+    let outer = outer_with_a_submodule(home);
+    let clone = home.join("clone");
+    git(home, &["clone", "-q", outer.to_str().unwrap(), clone.to_str().unwrap()]);
+    // Git lists nothing at all for it now, not even the submodule itself.
+    git(&clone, &["submodule", "init", "-q"]);
+    let taken = take(&clone, false, &home.join("b")).unwrap();
+    assert_eq!(paths(&taken.snapshot), [".gitmodules", "top.txt"]);
+    assert_eq!(taken.notes.len(), 1, "{:?}", taken.notes);
+    assert!(taken.notes[0].contains("vendor/inner"), "{:?}", taken.notes);
+}
+
+#[skuld::test]
+fn a_submodule_git_cannot_enter_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let outer = outer_with_a_submodule(home);
+    let clone = home.join("clone");
+    git(home, &["clone", "-q", outer.to_str().unwrap(), clone.to_str().unwrap()]);
+    git(&clone, &["submodule", "update", "-q", "--init"]);
+    put(&clone, "vendor/inner/.git", b"gitdir: ../../nowhere\n");
+    let error = take(&clone, false, home)
+        .err()
+        .expect("a submodule that cannot be read is neither included nor skipped");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("`vendor/inner`"), "{error}");
+}
+
+#[skuld::test]
+fn a_checked_out_repository_in_a_submodule_git_considers_inactive_is_refused_naming_it(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let outer = outer_with_a_submodule(home);
+    let clone = home.join("clone");
+    git(home, &["clone", "-q", outer.to_str().unwrap(), clone.to_str().unwrap()]);
+    // Never initialised, so inactive, yet its directory holds a repository.
+    git(
+        &clone,
+        &["clone", "-q", home.join("inner").to_str().unwrap(), "vendor/inner"],
+    );
+    let error = take(&clone, false, home)
+        .err()
+        .expect("git does not list the files of an inactive submodule");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("`vendor/inner`"), "{error}");
+}
+
+/// `home/inner` (one file, `lib.txt`) added as the submodule `vendor/inner` of `home/outer`, which also tracks `top.txt`.
+fn outer_with_a_submodule(home: &Path) -> PathBuf {
+    let inner = new_repo(home, "inner");
+    put(&inner, "lib.txt", b"lib");
+    add_all(&inner);
+    git(&inner, &["commit", "-q", "-m", "x"]);
+    let outer = new_repo(home, "outer");
+    put(&outer, "top.txt", b"top");
+    add_all(&outer);
+    git(
+        &outer,
+        &["submodule", "add", "-q", inner.to_str().unwrap(), "vendor/inner"],
+    );
+    git(&outer, &["commit", "-q", "-m", "x"]);
+    outer
+}
+
 #[skuld::test]
 fn a_tracked_symlink_that_is_a_regular_file_where_links_can_be_made_is_refused_naming_it(
     #[fixture(unicode_home)] home: &Path,
@@ -788,6 +872,29 @@ fn a_tracked_symlink_that_is_a_regular_file_where_links_can_be_made_is_refused_n
     assert!(error.message().contains("regular file"), "{error}");
     let left: Vec<_> = std::fs::read_dir(home.join("out")).unwrap().collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+#[skuld::test]
+fn a_tracked_symlink_whose_text_in_git_is_not_utf8_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "link", b"stands in for the link");
+    git(&repo, &["config", "core.symlinks", "false"]);
+    let blob = git_with(&repo, &["hash-object", "-w", "--stdin"], b"bad-\xff-target");
+    git(
+        &repo,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("120000,{},link", blob.trim()),
+        ],
+    );
+    let error = take(&repo, false, home)
+        .err()
+        .expect("link text that is not UTF-8 cannot be copied");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("`link`"), "{error}");
+    assert!(error.message().contains("UTF-8"), "{error}");
 }
 
 #[skuld::test]
@@ -813,4 +920,53 @@ fn a_tracked_name_this_host_cannot_hold_is_skipped_like_a_missing_file(#[fixture
     let taken = take(&repo, false, home).expect("a name that cannot exist here is absent, not an error");
     assert_eq!(paths(&taken.snapshot), ["top.txt"]);
     assert!(taken.notes.is_empty(), "{:?}", taken.notes);
+}
+
+/// The helper `snapshot-git-env`, run with `GIT_DIR` and `GIT_TRACE` set: snapshots a repository of its own through the
+/// real `Git::from_process`.
+pub fn snapshot_with_git_variables(_: &[String]) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let repo = new_repo(dir.path(), "repo");
+    put(&repo, "project.txt", b"p");
+    add_all(&repo);
+    let into = dir.path().join("out");
+    std::fs::create_dir(&into).unwrap();
+    let progress = MemoryProgress::default();
+
+    let snapshot = snapshot(&TestHost, &repo, false, &into, &progress).expect("the snapshot succeeds");
+
+    assert_eq!(
+        paths(&snapshot),
+        ["project.txt"],
+        "git read the project, not the repository GIT_DIR names"
+    );
+    let notes: Vec<String> = progress
+        .messages()
+        .into_iter()
+        .filter_map(|note| note.strip_prefix(UNSET_NOTE_PREFIX).map(str::to_owned))
+        .collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let names: Vec<&str> = notes[0].split(", ").collect();
+    assert!(names.contains(&"GIT_DIR") && names.contains(&"GIT_TRACE"), "{names:?}");
+}
+
+#[skuld::test]
+fn a_snapshot_in_a_process_with_git_variables_reads_its_own_repository_and_names_the_variables(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let other = new_repo(home, "other");
+    put(&other, "other.txt", b"o");
+    add_all(&other);
+    git(&other, &["commit", "-q", "-m", "x"]);
+    let output = helper::command("snapshot-git-env", &[])
+        .env("GIT_DIR", other.join(".git"))
+        .env("GIT_TRACE", "1")
+        .output()
+        .expect("the helper starts");
+    assert!(
+        output.status.success(),
+        "snapshot-git-env failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }

@@ -3,7 +3,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use crate::ErrorKind;
-use crate::copy::copy_tests::{add_all, git, git_command, new_repo, paths, put, read_tar, take};
+use crate::copy::copy_tests::{
+    add_all, git, git_command, new_repo, paths, put, read_tar, snapshot_through_a_directory_link, take,
+};
 use crate::recipe::hash::EntryContent;
 use crate::test_support::fixtures::unicode_home;
 
@@ -190,4 +192,56 @@ fn a_tracked_symlink_that_is_a_regular_file_now_is_refused_naming_it(#[fixture(u
     assert!(error.message().contains("`config`"), "{error}");
     assert!(error.message().contains("git tracks a symlink"), "{error}");
     assert!(error.message().contains("regular file"), "{error}");
+}
+
+#[skuld::test]
+fn a_from_dir_reached_through_a_symlink_snapshots_the_repository(#[fixture(unicode_home)] home: &Path) {
+    snapshot_through_a_directory_link(home, |target, link| std::os::unix::fs::symlink(target, link).unwrap());
+}
+
+/// Makes a FIFO at `path`.
+fn make_fifo(path: &Path) {
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("a path without NUL");
+    // SAFETY: `name` is a NUL-terminated path that outlives the call.
+    let made = unsafe { libc::mkfifo(name.as_ptr(), 0o600) };
+    assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
+}
+
+#[skuld::test]
+fn a_tracked_file_that_is_a_fifo_or_a_socket_now_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    for (i, (what, fifo)) in [("a FIFO", true), ("a socket", false)].into_iter().enumerate() {
+        let repo = new_repo(home, &format!("repo{i}"));
+        put(&repo, "thing", b"x");
+        add_all(&repo);
+        std::fs::remove_file(repo.join("thing")).unwrap();
+        // The socket file stays while the listener lives.
+        let _listener = if fifo {
+            make_fifo(&repo.join("thing"));
+            None
+        } else {
+            Some(std::os::unix::net::UnixListener::bind(repo.join("thing")).expect("a socket"))
+        };
+        let error = take(&repo, false, &home.join(i.to_string()))
+            .err()
+            .unwrap_or_else(|| panic!("{what} is not the tracked file"));
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{what}: {error}");
+        assert!(error.message().contains("`thing`"), "{what}: {error}");
+        assert!(
+            error.message().contains("neither a file nor a directory"),
+            "{what}: {error}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_tracked_symlink_that_is_a_fifo_now_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    std::os::unix::fs::symlink("elsewhere", repo.join("config")).unwrap();
+    add_all(&repo);
+    std::fs::remove_file(repo.join("config")).unwrap();
+    make_fifo(&repo.join("config"));
+    let error = take(&repo, false, home).err().expect("a FIFO is not the tracked link");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("`config`"), "{error}");
+    assert!(error.message().contains("neither a link nor a file"), "{error}");
 }

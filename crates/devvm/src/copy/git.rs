@@ -1,10 +1,13 @@
 //! Asking `git` which files a repository tracks.
 
 use std::ffi::{OsStr, OsString};
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
 
+use os_str_bytes::OsStringBytes;
+
+use super::is_absent;
 use crate::exit::Progress;
 use crate::host::Host;
 use crate::{Error, ErrorKind, Result};
@@ -26,6 +29,17 @@ pub(super) enum Kind {
     Symlink,
 }
 
+impl Kind {
+    /// The index mode git records for this kind.
+    pub(super) fn mode(self) -> u32 {
+        match self {
+            Kind::File => MODE_FILE,
+            Kind::Executable => MODE_EXECUTABLE,
+            Kind::Symlink => MODE_SYMLINK,
+        }
+    }
+}
+
 /// One entry of the index.
 #[derive(Debug)]
 pub(super) struct Tracked {
@@ -34,6 +48,9 @@ pub(super) struct Tracked {
     pub kind: Kind,
     /// The blob (hex) in the index: for a symlink, its link text.
     pub object: String,
+    /// The work tree of the repository whose index lists the entry: the root, or a submodule's. Its objects and its
+    /// configuration are the entry's.
+    pub repo: Arc<Path>,
 }
 
 #[derive(Debug)]
@@ -42,22 +59,12 @@ pub(super) struct Listing {
     pub uninitialized_submodules: Vec<String>,
 }
 
-/// Whether `e` says the path is not there on this host: gone, below a file, or a name the host cannot hold
-/// (Windows reports `a|b` as an invalid name, not as absent).
-pub(super) fn is_absent(e: &io::Error) -> bool {
-    matches!(
-        e.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory | io::ErrorKind::InvalidFilename
-    )
-}
-
 /// The start of the note that lists the variables git will not see.
 pub(super) const UNSET_NOTE_PREFIX: &str = "The following variables have been unset: ";
 
 /// The `git` a snapshot runs: the same commands in every call, in an environment that holds none of this process's
-/// `GIT_*` variables but the ones that add to git's configuration. A git hook sets `GIT_DIR` and `GIT_INDEX_FILE`,
-/// and a user may set `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG` or `GIT_TRACE=/dev/stdout`: each makes git read another
-/// repository or write into the output the snapshot parses.
+/// `GIT_*` variables but the ones that add to git's configuration. A git hook sets `GIT_DIR` and `GIT_INDEX_FILE`.
+/// Any other `GIT_*` variable can make git read another repository or write into the output the snapshot parses.
 pub(super) struct Git<'a> {
     host: &'a dyn Host,
     /// The variables removed, sorted, as the environment names them.
@@ -130,13 +137,15 @@ fn not_a_directory(from_dir: &Path) -> Error {
     )
 }
 
-/// The root of the work tree that contains `from_dir`.
+/// The root of the work tree that contains `from_dir`, as git spells it: absolute, with links resolved. A path built
+/// from `from_dir` and the number of `../` git prints is not that root when `from_dir` goes through a link, since git
+/// resolves the directory it starts in and Windows collapses `..` without resolving.
 pub(super) fn work_tree_root(git: &Git, from_dir: &Path) -> Result<PathBuf> {
     // Git cannot start in a directory that is not there, and `run` would blame git for it.
     match std::fs::metadata(from_dir) {
         Ok(meta) if meta.is_dir() => {}
         Ok(_) => return Err(not_a_directory(from_dir)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(not_a_directory(from_dir)),
+        Err(e) if is_absent(&e) => return Err(not_a_directory(from_dir)),
         Err(e) => {
             return Err(Error::io(
                 ErrorKind::Io,
@@ -146,12 +155,10 @@ pub(super) fn work_tree_root(git: &Git, from_dir: &Path) -> Result<PathBuf> {
         }
     }
     let mut cmd = git.command(from_dir);
-    cmd.args(["rev-parse", "--is-inside-work-tree", "--show-cdup"]);
+    cmd.args(["rev-parse", "--is-inside-work-tree", "--show-toplevel"]);
     let out = run(cmd)?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let mut lines = stdout.lines();
-    // Inside a `.git` directory git succeeds and prints `false`.
-    if !out.status.success() || lines.next() != Some("true") {
+    // Inside a `.git` directory git prints `false` and then fails.
+    let Some(top) = out.stdout.strip_prefix(b"true\n").filter(|_| out.status.success()) else {
         return Err(Error::new(
             ErrorKind::Recipe,
             format!(
@@ -160,19 +167,28 @@ pub(super) fn work_tree_root(git: &Git, from_dir: &Path) -> Result<PathBuf> {
                 String::from_utf8_lossy(&out.stderr).trim()
             ),
         ));
-    }
-    // `--show-cdup` is `../` repeated, or empty at the root: ASCII, so no encoding is involved.
-    Ok(match lines.next() {
-        None | Some("") => from_dir.to_owned(),
-        Some(up) => from_dir.join(up),
+    };
+    let top = top.strip_suffix(b"\n").unwrap_or(top);
+    OsString::from_io_vec(top.to_vec()).map(PathBuf::from).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Internal,
+            format!(
+                "unexpected `git rev-parse --show-toplevel` output: {}",
+                String::from_utf8_lossy(top).escape_debug()
+            ),
+        )
     })
 }
 
-/// The index of the work tree at `root`, with the index of every initialized submodule in place of the submodule.
+/// The index of the work tree at `root`, with the index of every submodule that is checked out in place of the
+/// submodule. Each repository is listed by itself, so that a submodule git cannot enter is found and not left out.
 pub(super) fn list(git: &Git, root: &Path) -> Result<Listing> {
-    let mut cmd = git.command(root);
-    cmd.args(["ls-files", "-z", "-s", "--recurse-submodules"]);
-    let out = run(cmd)?;
+    let mut listing = Listing {
+        tracked: Vec::new(),
+        uninitialized_submodules: Vec::new(),
+    };
+    let root: Arc<Path> = Arc::from(root);
+    let out = ls_files(git, &root)?;
     if !out.status.success() {
         return Err(Error::new(
             ErrorKind::Recipe,
@@ -183,27 +199,42 @@ pub(super) fn list(git: &Git, root: &Path) -> Result<Listing> {
             ),
         ));
     }
-    let mut listing = Listing {
-        tracked: Vec::new(),
-        uninitialized_submodules: Vec::new(),
-    };
-    for record in out.stdout.split(|&b| b == 0).filter(|record| !record.is_empty()) {
-        let (path, kind, object) = parse_record(record)?;
-        match kind {
-            Some(kind) => listing.tracked.push(Tracked { path, kind, object }),
-            None => {
-                refuse_unlisted_work_tree(root, &path)?;
-                listing.uninitialized_submodules.push(path);
-            }
-        }
-    }
+    add_records(git, &root, "", &out.stdout, &mut listing)?;
     Ok(listing)
 }
 
-/// Fails when the gitlink `path` holds a work tree although git listed no files of it: an embedded repository, or a
-/// submodule git considers inactive. Skipping it as "uninitialized" would leave files that are on disk out.
-fn refuse_unlisted_work_tree(root: &Path, path: &str) -> Result<()> {
-    let marker = root.join(path).join(".git");
+fn ls_files(git: &Git, repo: &Path) -> Result<Output> {
+    let mut cmd = git.command(repo);
+    cmd.args(["ls-files", "-z", "-s"]);
+    run(cmd)
+}
+
+/// Adds the entries `stdout` (the index of the repository `repo`, which sits at `prefix` below the snapshot's root:
+/// empty, or ending in `/`) holds to `listing`, and the entries of the submodules below it.
+fn add_records(git: &Git, repo: &Arc<Path>, prefix: &str, stdout: &[u8], listing: &mut Listing) -> Result<()> {
+    for record in stdout.split(|&b| b == 0).filter(|record| !record.is_empty()) {
+        let (path, kind, object) = parse_record(prefix, record)?;
+        match kind {
+            Some(kind) => listing.tracked.push(Tracked {
+                path,
+                kind,
+                object,
+                repo: Arc::clone(repo),
+            }),
+            None => enter_gitlink(git, repo, prefix, &path, listing)?,
+        }
+    }
+    Ok(())
+}
+
+/// Lists the submodule that `path` (below the root, with `prefix` the part that is `repo`'s) is, when it is checked
+/// out and git considers it one. A gitlink with no work tree is noted as uninitialized. Fails when its directory holds
+/// a work tree that is not a submodule git can list: an embedded repository, an inactive submodule, one git cannot
+/// enter. Skipping it would leave files that are on disk out.
+fn enter_gitlink(git: &Git, repo: &Arc<Path>, prefix: &str, path: &str, listing: &mut Listing) -> Result<()> {
+    let relative = &path[prefix.len()..];
+    let dir: Arc<Path> = repo.join(relative).into();
+    let marker = dir.join(".git");
     // A gitlink path that is a file now, or a name this host cannot hold, has no work tree below it, like one that
     // is gone.
     let present = match marker.try_exists() {
@@ -212,19 +243,46 @@ fn refuse_unlisted_work_tree(root: &Path, path: &str) -> Result<()> {
         Err(e) => return Err(Error::io(ErrorKind::Io, format!("cannot read {}", marker.display()), e)),
     };
     if !present {
+        listing.uninitialized_submodules.push(path.to_owned());
         return Ok(());
     }
-    Err(Error::new(
-        ErrorKind::Recipe,
-        format!(
-            "cannot copy `{}`: it is a git repository, but git does not list its files (it is not a submodule, or git could not enter it; make it a submodule, or remove it from the index)",
-            path.escape_debug()
-        ),
-    ))
+    // Git lists a gitlink that it does not enter as itself. It lists nothing for one it should enter and cannot.
+    let mut probe = git.command(repo);
+    probe.args([
+        "--literal-pathspecs",
+        "ls-files",
+        "-z",
+        "-s",
+        "--recurse-submodules",
+        "--",
+        relative,
+    ]);
+    let probe = run(probe)?;
+    let inside = ls_files(git, &dir)?;
+    if !probe.status.success() || !inside.status.success() || lists_itself(&probe.stdout, relative) {
+        return Err(Error::new(
+            ErrorKind::Recipe,
+            format!(
+                "cannot copy `{}`: it is a git repository, but git does not list its files (it is not a submodule, or git could not enter it; make it a submodule, or remove it from the index)",
+                path.escape_debug()
+            ),
+        ));
+    }
+    add_records(git, &dir, &format!("{path}/"), &inside.stdout, listing)
 }
 
-/// `<mode> <object> <stage>\t<path>`. A submodule that is still listed is one git could not enter, so `None`.
-fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>, String)> {
+/// Whether `stdout`, from `ls-files -z -s`, holds the gitlink `relative` itself.
+fn lists_itself(stdout: &[u8], relative: &str) -> bool {
+    stdout.split(|&b| b == 0).any(|record| {
+        let Some(tab) = record.iter().position(|&b| b == b'\t') else {
+            return false;
+        };
+        record[..tab].starts_with(b"160000 ") && &record[tab + 1..] == relative.as_bytes()
+    })
+}
+
+/// `<mode> <object> <stage>\t<path>`, with `prefix` put before the path. A submodule is `None`.
+fn parse_record(prefix: &str, record: &[u8]) -> Result<(String, Option<Kind>, String)> {
     let malformed = || {
         Error::new(
             ErrorKind::Internal,
@@ -236,15 +294,17 @@ fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>, String)> {
     };
     let tab = record.iter().position(|&b| b == b'\t').ok_or_else(malformed)?;
     let (meta, path) = (&record[..tab], &record[tab + 1..]);
-    let path = String::from_utf8(path.to_vec()).map_err(|_| {
-        Error::new(
-            ErrorKind::Recipe,
-            format!(
-                "cannot copy `{}`: the name is not UTF-8",
-                String::from_utf8_lossy(path).escape_debug()
-            ),
-        )
-    })?;
+    let path = String::from_utf8(path.to_vec())
+        .map(|path| format!("{prefix}{path}"))
+        .map_err(|_| {
+            Error::new(
+                ErrorKind::Recipe,
+                format!(
+                    "cannot copy `{}`: the name is not UTF-8",
+                    String::from_utf8_lossy(path).escape_debug()
+                ),
+            )
+        })?;
     let meta = std::str::from_utf8(meta).map_err(|_| malformed())?;
     let mut fields = meta.split(' ');
     let (mode, object, stage) = (fields.next(), fields.next(), fields.next());
@@ -279,12 +339,9 @@ fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>, String)> {
 }
 
 /// The link text of the tracked symlink `item`, as git stores it: the same on every host, where a link read back
-/// from disk can have its separators changed. Git runs in the directory that holds the link, so a symlink in a
-/// submodule is looked up in the submodule's repository.
-pub(super) fn link_text(git: &Git, root: &Path, item: &Tracked) -> Result<String> {
-    let on_disk = root.join(&item.path);
-    let dir = on_disk.parent().expect("a tracked path is below the root");
-    let mut cmd = git.command(dir);
+/// from disk can have its separators changed.
+pub(super) fn link_text(git: &Git, item: &Tracked) -> Result<String> {
+    let mut cmd = git.command(&item.repo);
     cmd.args(["cat-file", "blob", &item.object]);
     let out = run(cmd)?;
     if !out.status.success() {
@@ -307,10 +364,8 @@ pub(super) fn link_text(git: &Git, root: &Path, item: &Tracked) -> Result<String
 
 /// Whether the checkout of the repository that holds `item` writes a tracked symlink as a plain file holding its
 /// link text: `core.symlinks` is false, as git reports it there (true when unset).
-pub(super) fn links_are_files(git: &Git, root: &Path, item: &Tracked) -> Result<bool> {
-    let on_disk = root.join(&item.path);
-    let dir = on_disk.parent().expect("a tracked path is below the root");
-    let mut cmd = git.command(dir);
+pub(super) fn links_are_files(git: &Git, item: &Tracked) -> Result<bool> {
+    let mut cmd = git.command(&item.repo);
     cmd.args(["config", "--type=bool", "--default", "true", "--get", "core.symlinks"]);
     let out = run(cmd)?;
     if !out.status.success() {

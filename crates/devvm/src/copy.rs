@@ -1,6 +1,6 @@
 //! `copy: { from: git-tracked }`: a snapshot of the files git tracks, as a tar plus the manifest that keys its layer.
 
-use std::io::{BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
@@ -13,6 +13,15 @@ mod git;
 
 use git::Git;
 
+/// Whether `e` says the path is not there on this host: gone, below a file, or a name the host cannot hold (Windows
+/// reports `a|b` as an invalid name, not as absent).
+fn is_absent(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory | io::ErrorKind::InvalidFilename
+    )
+}
+
 /// A full disk leaves nothing to resume: the copy starts over.
 const FULL_DISK_HINT: &str = "free some space and run again";
 
@@ -23,6 +32,10 @@ pub(crate) mod copy_tests;
 #[cfg(all(test, unix))]
 #[path = "copy_unix_tests.rs"]
 mod copy_unix_tests;
+
+#[cfg(all(test, windows))]
+#[path = "copy_windows_tests.rs"]
+mod copy_windows_tests;
 
 #[cfg(test)]
 #[path = "copy/heap_tests.rs"]
@@ -39,13 +52,10 @@ pub(crate) struct Snapshot {
 
 /// Snapshots the files git tracks in the repository that contains `from_dir`, as they are on disk.
 ///
-/// - Entries come from the index. A tracked file missing on disk is skipped, so a pending delete leaves the
-///   copy without it; so is one whose name the host cannot hold; so is one that is a directory now, with a
-///   `progress` line. An initialized submodule is
-///   included recursively; an uninitialized one (no work tree in its directory) is skipped with a `progress`
-///   line. A symlink stays a symlink, with git's link text. File contents are not converted (no
-///   `core.autocrlf`).
-/// - Each file is read once, and the same bytes go into the tar and into the manifest hash.
+/// - Entries come from the index. Skipped, each with no error: a tracked path absent on disk (including a pending
+///   delete) or whose name the host cannot hold; a directory now (noted to `progress`); an uninitialized submodule
+///   (noted). Initialized submodules are included recursively. A symlink stays a symlink, with git's link text. File
+///   contents are not converted (no `core.autocrlf`).
 /// - `read_only` clears the write bits of the files in the tar. The tar has no directory entries, so extraction
 ///   leaves directories writable.
 /// - The tar is a new file in `into`, which must exist. It has fixed timestamps and no owner, so equal manifests
@@ -55,9 +65,9 @@ pub(crate) struct Snapshot {
 /// names (`nul`, `con`); devvm does not check, the contract of `devvm cp`. Names are copied as git lists them.
 ///
 /// Fails with `recipe` when `from_dir` is not in a work tree, a tracked path is not UTF-8, the index holds an
-/// unresolved merge conflict, a tracked file is a symlink now (or something else that is not a file), a tracked
-/// symlink is a regular file now where `core.symlinks` is true, or a directory holds a repository that git neither
-/// lists nor treats as a submodule.
+/// unresolved merge conflict, a tracked path is below a directory that is a symlink, a tracked file is a symlink now
+/// (or something else that is not a file), a tracked symlink is a regular file now where `core.symlinks` is true, or
+/// a directory holds a repository that git neither lists nor treats as a submodule.
 pub(crate) fn snapshot(
     host: &dyn Host,
     from_dir: &Path,

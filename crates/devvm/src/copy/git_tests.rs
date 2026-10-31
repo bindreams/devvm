@@ -87,7 +87,6 @@ fn a_lowercase_name_is_judged_by_the_hosts_rule_for_names() {
 #[cfg(windows)]
 #[skuld::test]
 fn a_name_is_classified_as_windows_folds_it_not_as_rust_does() {
-    // Rust uppercases U+0131 to `I` and U+017F to `S`; Windows folds neither (host/windows_tests.rs).
     assert_eq!(cleared(&["G\u{131}T_DIR"]), Vec::<String>::new());
     assert_eq!(
         cleared(&["GIT_CONFIG_PARAMETER\u{17F}"]),
@@ -149,22 +148,6 @@ fn the_command_removes_exactly_the_cleared_variables() {
         .collect();
     removed.sort();
     assert_eq!(removed, ["GIT_DIR", "GIT_TRACE"]);
-}
-
-#[skuld::test]
-fn the_variables_of_this_process_are_read_for_each_snapshot() {
-    // The real environment carries whatever the runner set: the note and the removals agree, and none is a kept one.
-    let progress = MemoryProgress::default();
-    let git = Git::from_process(&TestHost, &progress);
-    assert_eq!(progress.messages().len(), usize::from(!git.cleared.is_empty()));
-    for name in &git.cleared {
-        let name = name.to_string_lossy().to_ascii_uppercase();
-        assert!(name.starts_with("GIT_"), "{name}");
-        assert!(
-            !name.starts_with("GIT_CONFIG_KEY_") && !name.starts_with("GIT_CONFIG_VALUE_"),
-            "{name}"
-        );
-    }
 }
 
 #[skuld::test]

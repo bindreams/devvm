@@ -21,10 +21,7 @@ mod archive_tests;
 const MTIME: u64 = 946_684_800;
 
 /// Writes the files `tracked` (sorted by path) found under `root` to `out`, which is the file `dest`, and returns
-/// their manifest entries in the same order. A tracked path that is gone from disk, or is a directory now, is left
-/// out (a directory is noted to `progress`), and so is one whose name this host cannot hold. A tracked path below a
-/// directory that is a symlink is a `recipe` error: the file it names may not be in the repository. So is a tracked
-/// file that is a symlink now, and a tracked symlink that is a regular file now where links can be made.
+/// their manifest entries in input order. What is skipped and what fails is listed at [`super::snapshot`].
 pub(super) fn write(
     git: &Git,
     progress: &dyn Progress,
@@ -43,7 +40,7 @@ pub(super) fn write(
         let on_disk = root.join(&item.path);
         let meta = match std::fs::symlink_metadata(&on_disk) {
             Ok(meta) => meta,
-            Err(e) if git::is_absent(&e) => continue,
+            Err(e) if super::is_absent(&e) => continue,
             Err(e) => {
                 return Err(Error::io(
                     ErrorKind::Io,
@@ -62,12 +59,12 @@ pub(super) fn write(
         }
         let entry = match item.kind {
             Kind::Symlink => {
-                check_stands_for_link(git, root, &on_disk, &meta, item)?;
-                let target = git::link_text(git, root, item)?;
+                check_stands_for_link(git, &on_disk, &meta, item)?;
+                let target = git::link_text(git, item)?;
                 append_symlink(&mut builder, dest, &item.path, &target)?;
                 ManifestEntry {
                     path: item.path.clone(),
-                    mode: 0o120000,
+                    mode: item.kind.mode(),
                     content: EntryContent::SymlinkTarget(target),
                 }
             }
@@ -98,7 +95,7 @@ pub(super) fn write(
                 let sha = append_file(&mut builder, dest, &item.path, mode, size, file)?;
                 ManifestEntry {
                     path: item.path.clone(),
-                    mode: if executable { 0o100755 } else { 0o100644 },
+                    mode: item.kind.mode(),
                     content: EntryContent::FileSha256(sha),
                 }
             }
@@ -127,8 +124,7 @@ pub(super) fn check_one_component_per_segment(path: &str) -> Result<()> {
 }
 
 /// Fails when a directory above `path` (relative to `root`, `/`-separated) is a symlink, as git does. A missing
-/// directory ends the check: `path` is then gone from disk too. `real_directories` holds the directories already
-/// seen, and spares a `stat` per file.
+/// directory ends the check: `path` is then gone from disk too. `real_directories` caches directories already checked.
 fn check_parents(root: &Path, path: &str, real_directories: &mut HashSet<String>) -> Result<()> {
     for (slash, _) in path.match_indices('/') {
         let directory = &path[..slash];
@@ -150,7 +146,7 @@ fn check_parents(root: &Path, path: &str, real_directories: &mut HashSet<String>
             Ok(_) => {
                 real_directories.insert(directory.to_owned());
             }
-            Err(e) if git::is_absent(&e) => return Ok(()),
+            Err(e) if super::is_absent(&e) => return Ok(()),
             Err(e) => {
                 return Err(Error::io(
                     ErrorKind::Io,
@@ -186,18 +182,12 @@ fn header(kind: EntryType, mode: u32, size: u64) -> Header {
 /// A tracked symlink is a link on disk or, where the checkout writes links as files (`core.symlinks` false), the
 /// plain file that stands for it. Elsewhere a regular file is a typechange. Its target comes from git, never from
 /// disk.
-fn check_stands_for_link(
-    git: &Git,
-    root: &Path,
-    on_disk: &Path,
-    meta: &std::fs::Metadata,
-    item: &Tracked,
-) -> Result<()> {
+fn check_stands_for_link(git: &Git, on_disk: &Path, meta: &std::fs::Metadata, item: &Tracked) -> Result<()> {
     if meta.file_type().is_symlink() {
         return Ok(());
     }
     let found = if meta.is_file() {
-        if git::links_are_files(git, root, item)? {
+        if git::links_are_files(git, item)? {
             return Ok(());
         }
         "a regular file"
@@ -231,7 +221,6 @@ pub(super) fn append_symlink<W: Write>(builder: &mut Builder<W>, dest: &Path, pa
     if target.len() < LINK_NAME_FIELD {
         link.set_link_name_literal(target).map_err(write_error)?;
     } else {
-        // The header keeps the start of the text, cut at a character so that it stays valid UTF-8.
         let cut = (0..LINK_NAME_FIELD)
             .rev()
             .find(|&i| target.is_char_boundary(i))
