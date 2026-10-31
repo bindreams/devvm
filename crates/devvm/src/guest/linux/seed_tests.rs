@@ -9,6 +9,7 @@ use crate::guest::{SeedKeys, SeedSpec};
 use crate::instance::record::InstanceId;
 use crate::media::media_tests::read_image_file;
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::host::{RecordingHost, TestHost};
 
 const HOST_PRIVATE: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nAAAA: tricky # not a comment\n-----END OPENSSH PRIVATE KEY-----\n";
 
@@ -30,7 +31,7 @@ fn spec(dir: &Path, instance: u8) -> SeedSpec {
 }
 
 fn seed_file(dir: &Path, instance: u8, name: &str) -> String {
-    let media = LinuxGuest.instance_seed(&spec(dir, instance)).unwrap().media;
+    let media = LinuxGuest.instance_seed(&TestHost, &spec(dir, instance)).unwrap().media;
     String::from_utf8(read_image_file(&media.path, name)).unwrap()
 }
 
@@ -100,19 +101,19 @@ fn the_seed_is_byte_identical_for_equal_input(#[fixture(unicode_home)] home: &Pa
     std::fs::create_dir(&first).unwrap();
     std::fs::create_dir(&second).unwrap();
 
-    let one = LinuxGuest.instance_seed(&spec(&first, 1)).unwrap().media;
-    let two = LinuxGuest.instance_seed(&spec(&second, 1)).unwrap().media;
+    let one = LinuxGuest.instance_seed(&TestHost, &spec(&first, 1)).unwrap().media;
+    let two = LinuxGuest.instance_seed(&TestHost, &spec(&second, 1)).unwrap().media;
     assert_eq!(std::fs::read(&one.path).unwrap(), std::fs::read(&two.path).unwrap());
 
     let mut other_keys = spec(&second, 1);
     other_keys.keys.client_public = "ssh-ed25519 AAAAother devvm-client".to_owned();
-    let three = LinuxGuest.instance_seed(&other_keys).unwrap().media;
+    let three = LinuxGuest.instance_seed(&TestHost, &other_keys).unwrap().media;
     assert_ne!(std::fs::read(&one.path).unwrap(), std::fs::read(&three.path).unwrap());
 }
 
 #[skuld::test]
 fn the_seed_media_is_a_readonly_disk_in_the_scratch_directory(#[fixture(unicode_home)] home: &Path) {
-    let media = LinuxGuest.instance_seed(&spec(home, 1)).unwrap().media;
+    let media = LinuxGuest.instance_seed(&TestHost, &spec(home, 1)).unwrap().media;
     assert!(media.path.starts_with(home));
     assert_eq!(media.kind, crate::backend::MediaKind::Disk);
     assert!(media.readonly);
@@ -126,7 +127,7 @@ fn every_string_in_the_seed_is_quoted(#[fixture(unicode_home)] home: &Path) {
     for name in AMBIGUOUS_NAMES {
         let mut named = spec(home, 1);
         named.hostname = name.to_owned();
-        let files = LinuxGuest.instance_seed(&named).unwrap();
+        let files = LinuxGuest.instance_seed(&TestHost, &named).unwrap();
         let media = files.media;
         let meta = String::from_utf8(read_image_file(&media.path, "meta-data")).unwrap();
         let user = String::from_utf8(read_image_file(&media.path, "user-data")).unwrap();
@@ -157,7 +158,7 @@ fn characters_yaml_cannot_carry_raw_are_escaped_in_every_key(#[fixture(unicode_h
         keyed.keys.client_public = format!("ssh-ed25519 AAAAclient a{c}b");
         keyed.keys.host_private = SecretString::from(format!("{HOST_PRIVATE}{c}"));
         keyed.keys.host_public = format!("{c}ssh-ed25519 AAAAhost");
-        let media = LinuxGuest.instance_seed(&keyed).unwrap().media;
+        let media = LinuxGuest.instance_seed(&TestHost, &keyed).unwrap().media;
         let user = String::from_utf8(read_image_file(&media.path, "user-data")).unwrap();
 
         assert!(!user.contains(c), "U+{:04X} is written raw", c as u32);
@@ -204,7 +205,15 @@ fn characters_yaml_cannot_carry_raw_are_escaped_in_every_key(#[fixture(unicode_h
 fn printable_non_ascii_stays_raw(#[fixture(unicode_home)] home: &Path) {
     let mut keyed = spec(home, 1);
     keyed.keys.client_public = "ssh-ed25519 AAAAclient \u{e9}\u{416}\u{4e16}\u{1f600}\u{a0}".to_owned();
-    let media = LinuxGuest.instance_seed(&keyed).unwrap().media;
+    let media = LinuxGuest.instance_seed(&TestHost, &keyed).unwrap().media;
     let user = String::from_utf8(read_image_file(&media.path, "user-data")).unwrap();
     assert!(user.contains(&keyed.keys.client_public), "{user}");
+}
+
+/// The image holds the guest's SSH host private key.
+#[skuld::test]
+fn the_seed_image_is_written_through_the_hosts_private_file_path(#[fixture(unicode_home)] home: &Path) {
+    let host = RecordingHost::new();
+    let media = LinuxGuest.instance_seed(&host, &spec(home, 1)).unwrap().media;
+    assert_eq!(host.private_writes(), [media.path]);
 }

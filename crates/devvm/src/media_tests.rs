@@ -6,6 +6,7 @@ use fatfs::{FileSystem, FsOptions};
 use super::{SeedFile, write_cidata_image};
 use crate::backend::MediaKind;
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::host::{RecordingHost, TestHost};
 
 fn file(name: &str, bytes: &[u8]) -> SeedFile {
     SeedFile {
@@ -43,6 +44,7 @@ fn read_file(fs: &FileSystem<Cursor<Vec<u8>>>, name: &str) -> Vec<u8> {
 fn image_has_label_cidata_and_both_files(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("seed.img");
     write_cidata_image(
+        &TestHost,
         &[
             file("user-data", b"#cloud-config\n"),
             file("meta-data", b"instance-id: x\n"),
@@ -64,6 +66,7 @@ fn byte_exact_contents(#[fixture(unicode_home)] home: &Path) {
     let binary = all_bytes();
     let text = "hostname: \u{e9}\u{416}\u{4e16}\u{1f600}\r\nline\n".as_bytes();
     write_cidata_image(
+        &TestHost,
         &[file("user-data", &binary), file("meta-data", text), file("empty", b"")],
         &image,
     )
@@ -79,7 +82,7 @@ fn byte_exact_contents(#[fixture(unicode_home)] home: &Path) {
 fn a_large_file_grows_the_image_instead_of_failing(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("seed.img");
     let big: Vec<u8> = (0..5_000_000u32).map(|i| (i % 251) as u8).collect();
-    write_cidata_image(&[file("user-data", &big), file("meta-data", b"m")], &image).unwrap();
+    write_cidata_image(&TestHost, &[file("user-data", &big), file("meta-data", b"m")], &image).unwrap();
 
     let fs = open(&image);
     assert_eq!(read_file(&fs, "user-data"), big);
@@ -89,7 +92,7 @@ fn a_large_file_grows_the_image_instead_of_failing(#[fixture(unicode_home)] home
 #[skuld::test]
 fn lands_under_a_non_ascii_directory(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("seed.img");
-    let media = write_cidata_image(&[file("user-data", b"u"), file("meta-data", b"m")], &image).unwrap();
+    let media = write_cidata_image(&TestHost, &[file("user-data", b"u"), file("meta-data", b"m")], &image).unwrap();
 
     assert_eq!(media.path, image);
     assert!(image.is_file());
@@ -108,20 +111,20 @@ fn lands_under_a_non_ascii_directory(#[fixture(unicode_home)] home: &Path) {
 fn a_seed_is_deterministic_for_equal_inputs(#[fixture(unicode_home)] home: &Path) {
     let files = [file("user-data", &all_bytes()), file("meta-data", b"instance-id: x\n")];
     let (first, second) = (home.join("one.img"), home.join("two.img"));
-    write_cidata_image(&files, &first).unwrap();
-    write_cidata_image(&files, &second).unwrap();
+    write_cidata_image(&TestHost, &files, &first).unwrap();
+    write_cidata_image(&TestHost, &files, &second).unwrap();
     assert_eq!(std::fs::read(&first).unwrap(), std::fs::read(&second).unwrap());
 
     let other = [file("user-data", b"different"), file("meta-data", b"instance-id: x\n")];
     let third = home.join("three.img");
-    write_cidata_image(&other, &third).unwrap();
+    write_cidata_image(&TestHost, &other, &third).unwrap();
     assert_ne!(std::fs::read(&first).unwrap(), std::fs::read(&third).unwrap());
 }
 
 #[skuld::test]
 fn the_returned_media_is_readonly_and_its_kind_matches_the_format(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("seed.img");
-    let media = write_cidata_image(&[file("user-data", b"u"), file("meta-data", b"m")], &image).unwrap();
+    let media = write_cidata_image(&TestHost, &[file("user-data", b"u"), file("meta-data", b"m")], &image).unwrap();
 
     assert_eq!(media.kind, MediaKind::Disk, "a FAT volume is attached as a disk");
     assert!(media.readonly);
@@ -135,8 +138,12 @@ fn fatfs_type(image: &Path) -> fatfs::FatType {
 
 #[skuld::test]
 fn an_unwritable_destination_is_an_io_error(#[fixture(unicode_home)] home: &Path) {
-    let error = write_cidata_image(&[file("user-data", b"u")], &home.join("missing").join("seed.img"))
-        .expect_err("the directory does not exist");
+    let error = write_cidata_image(
+        &TestHost,
+        &[file("user-data", b"u")],
+        &home.join("missing").join("seed.img"),
+    )
+    .expect_err("the directory does not exist");
     assert_eq!(error.kind(), crate::ErrorKind::Io);
     assert!(error.message().contains("seed.img"), "{}", error.message());
 }
@@ -151,6 +158,7 @@ fn a_repeated_name_is_refused_whatever_its_case(#[fixture(unicode_home)] home: &
     ] {
         let image = home.join("seed.img");
         let error = write_cidata_image(
+            &TestHost,
             &[file(first, b"one"), file("meta-data", b"m"), file(second, b"two")],
             &image,
         )
@@ -170,7 +178,7 @@ fn a_name_fatfs_would_split_or_trim_is_refused(#[fixture(unicode_home)] home: &P
     // `fatfs` trims `/` and walks the rest as a path, so `user-data/` is `user-data` and `a/b` needs a directory.
     for bad in ["", ".", "..", "/", "user-data/", "/user-data", "a/b", "a\\b"] {
         let image = home.join("seed.img");
-        let error = write_cidata_image(&[file("user-data", b"one"), file(bad, b"two")], &image)
+        let error = write_cidata_image(&TestHost, &[file("user-data", b"one"), file(bad, b"two")], &image)
             .expect_err("the name is not a plain FAT file name");
         assert_eq!(error.kind(), crate::ErrorKind::Internal, "{bad:?}");
         assert!(
@@ -202,7 +210,8 @@ fn name_sets_fatfs_would_merge_or_rename_are_refused(#[fixture(unicode_home)] ho
     for names in sets {
         let image = home.join("seed.img");
         let files: Vec<SeedFile> = names.iter().map(|name| file(name, b"x")).collect();
-        let error = write_cidata_image(&files, &image).expect_err("fatfs would not write these names as asked");
+        let error =
+            write_cidata_image(&TestHost, &files, &image).expect_err("fatfs would not write these names as asked");
         assert_eq!(error.kind(), crate::ErrorKind::Internal, "{names:?}");
         for name in names {
             assert!(
@@ -220,7 +229,7 @@ fn a_name_fatfs_rejects_is_refused_by_name(#[fixture(unicode_home)] home: &Path)
     let too_long = "a".repeat(256);
     for bad in ["a:b", "a*", "a\tb", "a\0b", "\u{1f600}", too_long.as_str()] {
         let image = home.join("seed.img");
-        let error = write_cidata_image(&[file("user-data", b"one"), file(bad, b"two")], &image)
+        let error = write_cidata_image(&TestHost, &[file("user-data", b"one"), file(bad, b"two")], &image)
             .expect_err("fatfs refuses the name");
         assert_eq!(error.kind(), crate::ErrorKind::Internal, "{bad:?}");
         assert!(
@@ -245,10 +254,37 @@ fn names_fatfs_keeps_apart_are_written_as_asked(#[fixture(unicode_home)] home: &
         "a.b.c.d",
     ];
     let files: Vec<SeedFile> = names.iter().map(|name| file(name, name.as_bytes())).collect();
-    write_cidata_image(&files, &image).unwrap();
+    write_cidata_image(&TestHost, &files, &image).unwrap();
 
     let fs = open(&image);
     for name in names {
         assert_eq!(read_file(&fs, name), name.as_bytes(), "{name}");
     }
+}
+
+#[skuld::test]
+fn the_image_is_written_as_a_private_file(#[fixture(unicode_home)] home: &Path) {
+    let image = home.join("seed.img");
+    let host = RecordingHost::new();
+    write_cidata_image(&host, &[file("user-data", b"u"), file("meta-data", b"m")], &image).unwrap();
+    assert_eq!(host.private_writes(), [image]);
+}
+
+#[skuld::test]
+fn an_image_left_by_an_earlier_launch_is_replaced(#[fixture(unicode_home)] home: &Path) {
+    let image = home.join("seed.img");
+    write_cidata_image(&TestHost, &[file("user-data", b"old")], &image).unwrap();
+    write_cidata_image(&TestHost, &[file("user-data", b"new")], &image).unwrap();
+    assert_eq!(read_image_file(&image, "user-data"), b"new");
+}
+
+#[skuld::test]
+fn a_refused_private_write_is_an_io_error_naming_the_image(#[fixture(unicode_home)] home: &Path) {
+    let image = home.join("seed.img");
+    let host = RecordingHost::new();
+    host.fail_private_write(0);
+    let error = write_cidata_image(&host, &[file("user-data", b"u")], &image).expect_err("the host refused the write");
+    assert_eq!(error.kind(), crate::ErrorKind::Io);
+    assert!(error.message().contains("seed.img"), "{}", error.message());
+    assert!(!image.exists());
 }

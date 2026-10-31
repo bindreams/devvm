@@ -6,6 +6,7 @@ use std::path::Path;
 use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
 
 use crate::backend::{Media, MediaKind};
+use crate::host::Host;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -26,16 +27,25 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 
 /// Writes the NoCloud `cidata` image holding `files` to `into` and returns it as a read-only guest disk.
 ///
+/// The image can hold private keys, so `host` writes it as a private file ([`Host::write_private`]). An image left at
+/// `into` by an earlier launch is replaced.
+///
 /// A FAT volume labelled `CIDATA` is read by cloud-init's NoCloud source as well as an ISO9660 one, and needs no ISO
 /// writer. It is attached as a virtio-blk disk. Unmeasured: that Ubuntu 24.04 mounts it that way; the first guest boot
 /// decides, and the fallback is an ISO9660 image with Joliet and Rock Ridge names (the format measured as an `ide-cd`).
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
 /// the finished image before anything is written; an image that does not hold exactly `files` is an error.
-pub(crate) fn write_cidata_image(files: &[SeedFile], into: &Path) -> Result<Media> {
+pub(crate) fn write_cidata_image(host: &dyn Host, files: &[SeedFile], into: &Path) -> Result<Media> {
     refuse_path_names(files)?;
     let image = fat_image(files, into)?;
-    std::fs::write(into, image).map_err(|e| {
+    let written = match std::fs::remove_file(into) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+    .and_then(|()| host.write_private(into, &image));
+    written.map_err(|e| {
         Error::io(
             ErrorKind::Io,
             format!("cannot write the seed image {}", into.display()),

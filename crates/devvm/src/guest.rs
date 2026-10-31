@@ -8,6 +8,7 @@ use secrecy::SecretString;
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, Media};
 use crate::exit::Progress;
+use crate::host::Host;
 use crate::instance::record::InstanceId;
 use crate::recipe::{Shell, Source};
 use crate::store::layers::{LayerDir, LayerMeta};
@@ -22,8 +23,9 @@ pub(crate) mod fake;
 pub(crate) mod linux;
 
 pub(crate) trait GuestOs: Send + Sync {
-    /// The per-instance first-boot media (account, keys, hostname).
-    fn instance_seed(&self, seed: &SeedSpec) -> Result<SeedMedia>;
+    /// The per-instance first-boot media (account, keys, hostname). It holds the guest's private key, so `host` writes
+    /// it as a private file.
+    fn instance_seed(&self, host: &dyn Host, seed: &SeedSpec) -> Result<SeedMedia>;
     /// A command whose output is the guest's boot id.
     fn boot_id_command(&self) -> Command;
     /// The final string the guest's shell executes for `cmd`; `usage` for a command no shell string can carry (an empty

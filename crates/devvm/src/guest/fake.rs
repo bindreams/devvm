@@ -7,7 +7,7 @@ use crate::access::SshSession;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
 use crate::guest::linux::LinuxGuest;
 use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedMedia, SeedSpec, posix_root, windows_root};
-use crate::host::names;
+use crate::host::{Host, names};
 use crate::recipe::Shell;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
@@ -64,7 +64,7 @@ struct FakeGuestOs {
 
 impl GuestOs for FakeGuestOs {
     /// A file in `seed.dir` naming the host.
-    fn instance_seed(&self, seed: &SeedSpec) -> Result<SeedMedia> {
+    fn instance_seed(&self, _host: &dyn Host, seed: &SeedSpec) -> Result<SeedMedia> {
         let path = seed.dir.join("seed.fake");
         std::fs::write(
             &path,
