@@ -58,7 +58,7 @@ pub(crate) struct SshTarget {
 }
 
 /// SSH keepalive: after `interval` of silence a probe is sent, and the connection is dead once more than `max_missed`
-/// probes went unanswered. `max_missed` is at least 1: [`SshSession::connect`] refuses 0, which SSH reads as "never".
+/// probes went unanswered. [`SshSession::connect`] refuses a zero `interval` or `max_missed`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Keepalive {
     pub interval: Duration,
@@ -73,10 +73,33 @@ impl Keepalive {
     };
 
     /// How long one connection attempt to a guest that should be up may take: the time the keepalive would need to
-    /// declare a silent peer dead, which is `max_missed + 1` silent intervals; `None` when that does not fit in a
-    /// `Duration`.
-    pub(crate) fn handshake_bound(self) -> Option<Duration> {
-        self.interval.checked_mul(self.max_missed.checked_add(1)?)
+    /// declare a silent peer dead, which is `max_missed + 1` silent intervals.
+    ///
+    /// Refuses (kind `internal`, naming the field) what would never fire or cannot be represented: an `interval` of 0
+    /// (every probe would be missed at once), a `max_missed` of 0 (SSH reads it as "never give up on a silent peer"),
+    /// and a pair whose product does not fit in a `Duration`.
+    pub(crate) fn handshake_bound(self) -> Result<Duration> {
+        if self.interval.is_zero() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "a keepalive with an interval of 0 would miss every probe at once; interval must be positive",
+            ));
+        }
+        if self.max_missed == 0 {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "a keepalive that tolerates no missed probes would never fire; max_missed must be at least 1",
+            ));
+        }
+        self.max_missed
+            .checked_add(1)
+            .and_then(|silent_intervals| self.interval.checked_mul(silent_intervals))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("a keepalive of {self:?} has a handshake bound too long to represent; lower max_missed or interval"),
+                )
+            })
     }
 }
 
@@ -150,11 +173,15 @@ pub(crate) struct BootBound {
 }
 
 impl BootBound {
-    pub(crate) fn start(limit: Duration) -> BootBound {
-        BootBound {
-            limit,
-            deadline: Instant::now() + limit,
-        }
+    /// Starts the clock. Refuses (kind `internal`) a `limit` too long for the clock to represent.
+    pub(crate) fn start(limit: Duration) -> Result<BootBound> {
+        let deadline = Instant::now().checked_add(limit).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("a boot bound of {limit:?} is too long to represent; lower it"),
+            )
+        })?;
+        Ok(BootBound { limit, deadline })
     }
 }
 
@@ -555,21 +582,7 @@ impl SshSession {
         boot: Option<BootBound>,
         progress: &dyn Progress,
     ) -> Result<SshSession> {
-        // SSH treats a limit of 0 as "never give up on a silent peer".
-        if ka.max_missed == 0 {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "a keepalive that tolerates no missed probes would never fire; max_missed must be at least 1",
-            ));
-        }
-        let handshake_bound = ka.handshake_bound().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Internal,
-                format!(
-                    "a keepalive of {ka:?} has a handshake bound too long to represent; lower max_missed or interval"
-                ),
-            )
-        })?;
+        let handshake_bound = ka.handshake_bound()?;
         let pinned = PublicKey::from_openssh(&target.host_public)
             .map_err(|e| key_error("the pinned host key is not an OpenSSH public key", e))?;
         let key = PrivateKey::from_openssh(&target.client_private)

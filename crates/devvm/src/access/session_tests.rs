@@ -246,6 +246,39 @@ fn a_keepalive_that_tolerates_no_missed_probe_is_refused(#[fixture(unicode_home)
     assert_eq!(rig.sshd.connections(), 0, "refused before any connection");
 }
 
+#[skuld::test]
+fn a_time_bound_that_would_overflow_or_never_fire_is_refused_naming_it() {
+    let keepalive = |interval, max_missed| Keepalive { interval, max_missed }.handshake_bound().map(drop);
+    let boot = |limit| BootBound::start(limit).map(drop);
+    // Every configurable bound: (what is set, the result of setting it, the name the refusal must carry).
+    let refused = [
+        ("keepalive interval of 0", keepalive(Duration::ZERO, 3), "interval"),
+        (
+            "keepalive max_missed of 0",
+            keepalive(Duration::from_secs(1), 0),
+            "max_missed",
+        ),
+        (
+            "keepalive interval of Duration::MAX",
+            keepalive(Duration::MAX, 3),
+            "handshake bound",
+        ),
+        (
+            "keepalive max_missed of u32::MAX",
+            keepalive(Duration::from_secs(1), u32::MAX),
+            "handshake bound",
+        ),
+        ("boot limit of Duration::MAX", boot(Duration::MAX), "boot bound"),
+    ];
+    for (what, result, name) in refused {
+        let error = result.err().unwrap_or_else(|| panic!("{what} is accepted"));
+        assert_eq!(error.kind(), ErrorKind::Internal, "{what}: {error}");
+        assert!(error.message().contains(name), "{what}: {error}");
+    }
+    // A boot limit of 0 is not degenerate: the deadline has passed and the wait ends at once, naming the limit.
+    assert!(boot(Duration::ZERO).is_ok());
+}
+
 // Connecting ==========================================================================================================
 
 #[skuld::test]
@@ -262,7 +295,7 @@ fn connect_retries_while_refused_and_stops_when_the_vm_exits(#[fixture(unicode_h
                 &target,
                 FAST,
                 vm,
-                Some(BootBound::start(Duration::from_secs(3600))),
+                Some(BootBound::start(Duration::from_secs(3600)).unwrap()),
                 &*progress,
             )
         });
@@ -312,7 +345,10 @@ fn a_host_key_mismatch_is_retried_while_booting(#[fixture(unicode_home)] home: &
     // A server that fixes its key after three connections: the session comes up, so the mismatch was retried.
     let rig = Rig::with(home, |options| options.wrong_host_key_connections = 3);
     let session = rig
-        .connect_with(VmExit::never(), Some(BootBound::start(Duration::from_secs(3600))))
+        .connect_with(
+            VmExit::never(),
+            Some(BootBound::start(Duration::from_secs(3600)).unwrap()),
+        )
         .expect("the key is right from the fourth connection on");
     assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0));
     assert_eq!(rig.sshd.connections(), 4);
@@ -341,7 +377,10 @@ fn a_host_key_mismatch_is_final_without_a_boot_bound_and_names_both_fingerprints
 fn a_rejected_client_key_is_retried_while_booting_and_final_otherwise(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::with(home, |options| options.rejected_key_connections = 3);
     let session = rig
-        .connect_with(VmExit::never(), Some(BootBound::start(Duration::from_secs(3600))))
+        .connect_with(
+            VmExit::never(),
+            Some(BootBound::start(Duration::from_secs(3600)).unwrap()),
+        )
         .expect("the key is accepted from the fourth connection on");
     assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0));
     assert_eq!(rig.sshd.connections(), 4);
@@ -362,7 +401,7 @@ fn a_rejected_client_key_is_retried_while_booting_and_final_otherwise(#[fixture(
 /// Starts the boot bound of `session` now, as the engine does when it resumes the VM. The tests start it after the
 /// connect, so how long the connect took cannot matter.
 fn arm_boot_bound(session: &SshSession, limit: Duration) -> BootBound {
-    let bound = BootBound::start(limit);
+    let bound = BootBound::start(limit).unwrap();
     session.inner.boot.0.send_replace(Some(bound));
     bound
 }
@@ -372,7 +411,7 @@ fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)]
     let rig = Rig::new(home);
     let one_hour = Duration::from_secs(3600);
     let session = rig
-        .connect_with(VmExit::never(), Some(BootBound::start(one_hour)))
+        .connect_with(VmExit::never(), Some(BootBound::start(one_hour).unwrap()))
         .expect("connects within the bound");
     // The bound a connect was given is the session's.
     assert_eq!(session.inner.boot.0.borrow().map(|bound| bound.limit), Some(one_hour));
@@ -415,7 +454,7 @@ fn the_boot_gate_follows_changes_while_a_wait_is_in_flight() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let gate = BootGate::new(Some(BootBound::start(Duration::from_secs(10))));
+        let gate = BootGate::new(Some(BootBound::start(Duration::from_secs(10)).unwrap()));
         let mut passed = std::pin::pin!(gate.passed());
         let quiet = |seconds| tokio::time::sleep(Duration::from_secs(seconds));
 
@@ -430,7 +469,8 @@ fn the_boot_gate_follows_changes_while_a_wait_is_in_flight() {
             () = quiet(60) => {}
         }
         // A bound armed later governs it again.
-        gate.0.send_replace(Some(BootBound::start(Duration::from_secs(1))));
+        gate.0
+            .send_replace(Some(BootBound::start(Duration::from_secs(1)).unwrap()));
         let bound = passed.await;
         assert_eq!(bound.limit, Duration::from_secs(1));
     });
@@ -561,7 +601,10 @@ fn an_exit_status_that_arrived_is_the_result_even_if_the_boot_bound_passes_befor
 ) {
     let rig = Rig::new(home);
     let session = rig
-        .connect_with(VmExit::never(), Some(BootBound::start(Duration::from_secs(3600))))
+        .connect_with(
+            VmExit::never(),
+            Some(BootBound::start(Duration::from_secs(3600)).unwrap()),
+        )
         .unwrap();
     let mut stderr = Vec::new();
     let end = session
@@ -675,8 +718,8 @@ fn the_handshake_bound_is_the_time_the_keepalive_needs_to_give_up(#[fixture(unic
         interval: Duration::from_millis(100),
         max_missed: 2,
     };
-    assert_eq!(ka.handshake_bound(), Some(Duration::from_millis(300)));
-    assert_eq!(Keepalive::STANDARD.handshake_bound(), Some(Duration::from_secs(20)));
+    assert_eq!(ka.handshake_bound().unwrap(), Duration::from_millis(300));
+    assert_eq!(Keepalive::STANDARD.handshake_bound().unwrap(), Duration::from_secs(20));
 }
 
 #[skuld::test]
@@ -691,7 +734,7 @@ fn a_keepalive_whose_handshake_bound_overflows_is_refused(#[fixture(unicode_home
         max_missed: 3,
     };
     for ka in [too_many, too_long] {
-        assert_eq!(ka.handshake_bound(), None, "{ka:?}");
+        assert!(ka.handshake_bound().is_err(), "{ka:?}");
         let error = SshSession::connect(&rig.target(), ka, VmExit::never(), None, &NullProgress)
             .err()
             .expect("the connect fails");
