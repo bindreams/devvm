@@ -177,6 +177,8 @@ fn every_readiness_error_leads_with_the_first_true_cause_and_keeps_every_fact() 
         (r#"{"status": "done", "errors": ["boom"]}"#, Some(Cause::DoneWithErrors)),
         (r#"{"status": "running"}"#, Some(Cause::NotDone)),
         ("{}", Some(Cause::NoStatus)),
+        (r#"{"status": 5}"#, Some(Cause::NoStatus)),
+        ("[]", Some(Cause::NoStatus)),
         ("not json at all", Some(Cause::NotJson)),
         ("", Some(Cause::NotJson)),
         (
