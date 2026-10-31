@@ -2,11 +2,12 @@
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Globalization::GetACP;
+use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
@@ -30,6 +31,11 @@ fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<Pat
             n => buffer.resize(n + 1, 0),
         }
     }
+}
+
+/// `first`, which stays the error's kind, and the `second` failure that came while dealing with it.
+pub(super) fn also_failed(first: std::io::Error, then: &str, second: std::io::Error) -> std::io::Error {
+    std::io::Error::new(first.kind(), format!("{first}; {then} failed as well ({second})"))
 }
 
 pub(super) struct WindowsHost;
@@ -95,22 +101,51 @@ impl Host for WindowsHost {
         reason = "on Windows the flag is the read-only attribute, not Unix mode bits"
     )]
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        match std::fs::rename(from, to) {
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                let metadata = std::fs::symlink_metadata(to)?;
-                let mut permissions = metadata.permissions();
-                if metadata.file_type().is_symlink() || !permissions.readonly() {
-                    return Err(e);
-                }
-                permissions.set_readonly(false);
-                std::fs::set_permissions(to, permissions.clone())?;
-                std::fs::rename(from, to).inspect_err(|_| {
-                    permissions.set_readonly(true);
-                    let _ = std::fs::set_permissions(to, permissions);
-                })
-            }
-            other => other,
+        let denied = match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => e,
+            other => return other,
+        };
+        let metadata = match std::fs::symlink_metadata(to) {
+            Ok(metadata) => metadata,
+            Err(second) => return Err(also_failed(denied, "looking at the target", second)),
+        };
+        let mut permissions = metadata.permissions();
+        if metadata.file_type().is_symlink() || !permissions.readonly() {
+            return Err(denied);
         }
+        permissions.set_readonly(false);
+        if let Err(second) = std::fs::set_permissions(to, permissions.clone()) {
+            return Err(also_failed(denied, "clearing the read-only attribute", second));
+        }
+        std::fs::rename(from, to).map_err(|first| {
+            permissions.set_readonly(true);
+            match std::fs::set_permissions(to, permissions) {
+                Ok(()) => first,
+                Err(second) => also_failed(first, "putting the read-only attribute back", second),
+            }
+        })
+    }
+
+    /// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` fails with `ERROR_ALREADY_EXISTS` for anything at `to`.
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let wide = |path: &Path| {
+            path.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
+        let (from, to) = (wide(from), wide(to));
+        // SAFETY: both are NUL-terminated and outlive the call.
+        let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) };
+        if moved == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// NTFS journals directory changes, and a directory cannot be flushed through a handle anyway.
+    fn sync_dir(&self, _dir: &Path) -> std::io::Result<()> {
+        Ok(())
     }
 
     fn read_link(&self, path: &Path) -> std::io::Result<String> {

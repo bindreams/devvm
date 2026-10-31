@@ -43,7 +43,7 @@ tokio = { version = "1", features = ["test-util"] }
 
 # Windows directories and the ANSI code page come from the OS (`host/windows.rs`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 # The fake VM reports its own job and console to the tests (`test_support/fake_vm`).
 [target.'cfg(windows)'.dev-dependencies]

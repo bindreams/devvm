@@ -21,6 +21,10 @@ impl FileModes for OtherHost {
         Ok(())
     }
 
+    fn sync_dir(&self, _dir: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+
     fn read_link(&self, _path: &Path) -> std::io::Result<String> {
         Err(std::io::Error::other("this build has no symlink support"))
     }

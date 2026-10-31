@@ -92,6 +92,18 @@ impl Error {
         Error::new(kind, format!("{}: {source}", context.into())).with_source(source)
     }
 
+    /// This error once `cleanup`, which undid a step that had half happened, has run. A cleanup that failed too is
+    /// named next to it with `left`, what it left behind: the first failure stays the error.
+    pub(crate) fn after_cleanup(mut self, left: &str, cleanup: std::result::Result<(), impl fmt::Display>) -> Error {
+        if let Err(failed) = cleanup {
+            self.message = format!(
+                "{}; cleaning up failed as well, so {left} remains ({failed})",
+                self.message
+            );
+        }
+        self
+    }
+
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }

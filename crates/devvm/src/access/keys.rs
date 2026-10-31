@@ -65,6 +65,14 @@ fn sweep_temporaries(parent: &Path) -> Result<Vec<String>> {
     Ok(warnings)
 }
 
+/// Creates the public key file `path` with `text` and flushes it to disk.
+fn write_public(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create_new(path)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()
+}
+
 impl InstanceKeys {
     /// Two new ed25519 pairs; no two instances share one.
     pub(crate) fn generate() -> Result<InstanceKeys> {
@@ -79,11 +87,11 @@ impl InstanceKeys {
     }
 
     /// Writes `client`, `client.pub`, `host` and `host.pub` into the new directory `dir`. The files are first written
-    /// to a temporary directory beside `dir`, which is then renamed into place: a failure or a kill leaves no
-    /// `dir`, and an existing `dir` is `AlreadyExists`, never replaced. Writers of one parent directory take turns
-    /// under a lock there (`.keys.lock`), so of several at once exactly one wins, and a temporary directory a killed
-    /// writer left (`.keys-*`) is removed by the next; one that cannot be removed is returned as a warning. The
-    /// private files go through [`Host::write_private`].
+    /// to a temporary directory beside `dir` and flushed to disk, which is then published at `dir` in one step
+    /// ([`Host::publish_dir`]): a failure or a kill leaves no `dir`, and anything already at `dir` is `AlreadyExists`,
+    /// never replaced. Writers of one parent directory take turns under a lock there (`.keys.lock`), so a temporary
+    /// directory a killed writer left (`.keys-*`) is removed by the next; one that cannot be removed is returned as a
+    /// warning. The private files go through [`Host::write_private`].
     pub(crate) fn write(&self, host: &dyn Host, dir: &Path) -> Result<Vec<String>> {
         let io = |what: &str, path: &Path, source| {
             Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), source)
@@ -97,14 +105,7 @@ impl InstanceKeys {
         std::fs::create_dir_all(parent).map_err(|e| io("create", parent, e))?;
         let mut lock = FileLock::open(&parent.join(LOCK))?;
         lock.lock(Mode::Exclusive, "the instance keys", &NullProgress)?;
-        if dir.exists() {
-            return Err(Error::new(
-                ErrorKind::AlreadyExists,
-                format!("the keys directory {} already exists", dir.display()),
-            ));
-        }
         let warnings = sweep_temporaries(parent)?;
-        // Removed on drop unless it is renamed into place.
         let temp = tempfile::Builder::new()
             .prefix(TEMP_PREFIX)
             .tempdir_in(parent)
@@ -115,20 +116,34 @@ impl InstanceKeys {
             (HOST, &self.host_private, true),
             ("host.pub", &self.host_public, false),
         ];
-        for (name, text, private) in files {
-            let path = temp.path().join(name);
-            let written = if private {
-                host.write_private(&path, text.as_bytes())
-            } else {
-                std::fs::write(&path, text)
-            };
-            written.map_err(|e| io("write", &path, e))?;
+        let filled = || -> Result<()> {
+            for (name, text, private) in files {
+                let path = temp.path().join(name);
+                let written = if private {
+                    host.write_private(&path, text.as_bytes())
+                } else {
+                    write_public(&path, text)
+                };
+                written.map_err(|e| io("write", &path, e))?;
+            }
+            host.sync_dir(temp.path()).map_err(|e| io("flush", temp.path(), e))
+        };
+        if let Err(e) = filled() {
+            let left = format!("the temporary directory {}", temp.path().display());
+            return Err(e.after_cleanup(&left, temp.close()));
         }
         let temp = temp.keep();
-        std::fs::rename(&temp, dir).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&temp);
-            io("move the keys into place at", dir, e)
-        })?;
+        if let Err(e) = host.publish_dir(&temp, dir) {
+            let kind = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                ErrorKind::AlreadyExists
+            } else {
+                ErrorKind::Io
+            };
+            let published = Error::io(kind, format!("cannot move the keys into place at {}", dir.display()), e);
+            let left = format!("the temporary directory {}", temp.display());
+            return Err(published.after_cleanup(&left, std::fs::remove_dir_all(&temp)));
+        }
+        host.sync_dir(parent).map_err(|e| io("flush", parent, e))?;
         Ok(warnings)
     }
 

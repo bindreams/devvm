@@ -109,6 +109,15 @@ pub(crate) trait Host: Send + Sync {
     /// to rename over a read-only file). A directory at `to` is an error.
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()>;
 
+    /// Moves the directory `from` to `to`, which nobody has: an existing `to`, even an empty directory, is
+    /// `AlreadyExists` and nothing changes. Unlike a rename, it is a publish: of several that race for one name,
+    /// exactly one wins.
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+
+    /// Flushes the entries of `dir` to disk, so a file or directory made in it survives a crash. Does nothing on
+    /// Windows, where the file system journals them.
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()>;
+
     /// What the symlink at `path` points to, spelled with `/` as SFTP and Unix guests do; fails with `InvalidData` when
     /// the target is not valid Unicode.
     fn read_link(&self, path: &Path) -> std::io::Result<String>;
@@ -119,19 +128,27 @@ pub(crate) trait Host: Send + Sync {
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
 }
 
-/// Creates `path` with `options` and writes `bytes`. A file whose write failed is removed, so a half-written secret
+/// Creates `path` with `options` and writes `bytes`, which are on disk when it returns. A file whose write failed is removed, so a half-written secret
 /// is never left behind.
 fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = options.write(true).create_new(true).open(path)?;
-    if let Err(e) = file.write_all(bytes) {
+    if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
         drop(file);
         return Err(after_failed_write(path, e, || std::fs::remove_file(path)));
     }
     Ok(())
 }
 
-/// The error of a write to `path` that failed with `error`, after `remove` took the partial file away. A file that
-/// stays is named in the error: a retry would otherwise meet `AlreadyExists` with no explanation.
+/// Removes the file `path`; one that is not there is as good as removed.
+pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// The error of a write to `path` that failed with `error`, after `remove` took what the write left away. A leftover
+/// that stays is named in the error: a retry would otherwise meet `AlreadyExists` with no explanation.
 fn after_failed_write(
     path: &Path,
     error: std::io::Error,
@@ -142,7 +159,7 @@ fn after_failed_write(
         Err(left) => std::io::Error::new(
             error.kind(),
             format!(
-                "{error}; the partial file {} could not be removed either ({left})",
+                "{error}; the leftover {} could not be removed either ({left})",
                 path.display()
             ),
         ),

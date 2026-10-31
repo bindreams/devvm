@@ -239,6 +239,92 @@ fn a_cleaned_up_partial_file_leaves_the_write_error_as_it_was(#[fixture(unicode_
     assert!(!path.exists());
 }
 
+#[cfg(windows)]
+#[skuld::test]
+fn a_second_failure_while_replacing_a_file_is_named_next_to_the_first() {
+    let first = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+    let second = std::io::Error::other("the attribute is locked");
+    let error = super::windows::also_failed(first, "clearing the read-only attribute", second);
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "the first failure stays the kind"
+    );
+    let text = error.to_string();
+    for part in [
+        "access denied",
+        "clearing the read-only attribute",
+        "the attribute is locked",
+    ] {
+        assert!(text.contains(part), "{part} is missing: {text}");
+    }
+}
+
+// Publishing a directory ==============================================================================================
+
+/// Runs `check` on the host this build runs on and on the host that only the tests of the shared rules use.
+fn on_both_hosts(check: impl Fn(&dyn Host)) {
+    check(current());
+    check(&OtherHost);
+}
+
+/// A directory `name` below `home` holding the file `held`.
+fn dir_with_a_file(home: &Path, name: &str) -> std::path::PathBuf {
+    let dir = home.join(name);
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("held"), name).unwrap();
+    dir
+}
+
+#[skuld::test]
+fn publish_dir_moves_a_directory_to_a_name_nobody_has(#[fixture(unicode_home)] home: &Path) {
+    on_both_hosts(|host| {
+        let (from, to) = (dir_with_a_file(home, "from"), home.join("to"));
+        host.publish_dir(&from, &to).unwrap();
+        assert!(!from.exists());
+        assert_eq!(std::fs::read_to_string(to.join("held")).unwrap(), "from");
+        std::fs::remove_dir_all(&to).unwrap();
+    });
+}
+
+#[skuld::test]
+fn publish_dir_never_replaces_what_is_there_not_even_an_empty_directory(#[fixture(unicode_home)] home: &Path) {
+    on_both_hosts(|host| {
+        let from = dir_with_a_file(home, "from");
+        let empty = home.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let file = home.join("file");
+        std::fs::write(&file, "mine").unwrap();
+        for taken in [&empty, &file] {
+            let error = host.publish_dir(&from, taken).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "{}: {error}",
+                taken.display()
+            );
+        }
+        assert!(
+            empty.read_dir().unwrap().next().is_none(),
+            "the empty directory is still empty"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine");
+        assert_eq!(
+            std::fs::read_to_string(from.join("held")).unwrap(),
+            "from",
+            "the source is untouched"
+        );
+        std::fs::remove_dir_all(&from).unwrap();
+        std::fs::remove_dir_all(&empty).unwrap();
+        std::fs::remove_file(&file).unwrap();
+    });
+}
+
+#[skuld::test]
+fn sync_dir_flushes_a_directory_that_exists(#[fixture(unicode_home)] home: &Path) {
+    on_both_hosts(|host| host.sync_dir(home).unwrap());
+}
+
 // The ANSI code page ==================================================================================================
 
 /// The variable a CI job sets to claim that its runs cover this ANSI code page.

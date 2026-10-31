@@ -5,7 +5,8 @@ use russh::keys::PrivateKey;
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::host::{RecordingHost, TestHost};
+use crate::test_support::host::{DirectoryCall, RecordingHost, TestHost};
+use crate::test_support::symlink::symlink;
 
 /// The `.keys-*` directories in `dir`.
 fn temporary_directories(dir: &Path) -> Vec<std::ffi::OsString> {
@@ -151,4 +152,47 @@ fn a_leftover_that_cannot_be_removed_is_reported_and_does_not_block_the_write(#[
     let second = InstanceKeys::generate().unwrap();
     second.write(&TestHost, &home.join("keys2")).unwrap();
     assert_eq!(InstanceKeys::read(&home.join("keys2")).unwrap(), second);
+}
+
+#[skuld::test]
+fn the_set_is_flushed_before_it_is_published_and_the_parent_after(#[fixture(unicode_home)] home: &Path) {
+    let host = RecordingHost::new();
+    let dir = home.join("keys");
+    InstanceKeys::generate().unwrap().write(&host, &dir).unwrap();
+    let calls = host.directory_calls();
+    let [
+        DirectoryCall::Sync(temp),
+        DirectoryCall::Publish { from, to },
+        DirectoryCall::Sync(parent),
+    ] = &calls[..]
+    else {
+        panic!("expected: flush the temporary directory, publish it, flush the parent; got {calls:?}");
+    };
+    assert_eq!(temp.parent(), Some(home));
+    assert!(
+        temp.file_name().unwrap().to_string_lossy().starts_with(".keys-"),
+        "{temp:?}"
+    );
+    assert_eq!((from, to, parent.as_path()), (temp, &dir, home));
+}
+
+#[skuld::test]
+fn a_dangling_link_at_the_final_path_is_not_replaced(#[fixture(unicode_home)] home: &Path) {
+    // `exists()` follows the link and says no, so a check-then-rename would move the keys over it.
+    let dir = home.join("keys");
+    symlink(&home.join("nowhere"), &dir);
+    let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert!(std::fs::symlink_metadata(&dir).unwrap().file_type().is_symlink());
+    assert!(temporary_directories(home).is_empty());
+}
+
+#[skuld::test]
+fn an_empty_directory_at_the_final_path_is_not_replaced(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("keys");
+    std::fs::create_dir(&dir).unwrap();
+    let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert!(dir.read_dir().unwrap().next().is_none());
+    assert!(temporary_directories(home).is_empty());
 }

@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::MachineRecord;
+use crate::host::remove_if_present;
 use crate::instance::name::InstanceName;
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
@@ -262,17 +263,19 @@ pub(crate) fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
     let fail = |action: &str, path: &Path, source| {
         Error::io(ErrorKind::Io, format!("cannot {action} {}", path.display()), source)
     };
-    let result = (|| {
+    (|| {
         let mut out = std::fs::File::create_new(&temp).map_err(|e| fail("create", &temp, e))?;
         out.write_all(text.as_bytes()).map_err(|e| fail("write", &temp, e))?;
         out.sync_all().map_err(|e| fail("sync", &temp, e))?;
         drop(out);
         std::fs::rename(&temp, &target).map_err(|e| fail("replace", &target, e))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
+    })()
+    .map_err(|e| {
+        e.after_cleanup(
+            &format!("the temporary file {}", temp.display()),
+            remove_if_present(&temp),
+        )
+    })
 }
 
 impl InstanceRecord {

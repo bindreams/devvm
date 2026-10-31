@@ -27,6 +27,10 @@ impl FileModes for UnixHost {
         std::fs::set_permissions(path, permissions)
     }
 
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+        std::fs::File::open(dir)?.sync_all()
+    }
+
     fn read_link(&self, path: &Path) -> std::io::Result<String> {
         std::fs::read_link(path)?
             .into_os_string()

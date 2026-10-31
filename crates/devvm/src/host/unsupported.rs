@@ -5,7 +5,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 
 use super::names::posix_problem;
-use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
+use super::{Accel, Host, SystemDirs, Unavailable, after_failed_write, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -21,6 +21,8 @@ pub(super) trait FileModes: Send + Sync {
     fn read_link(&self, path: &Path) -> std::io::Result<String>;
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
+
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()>;
 }
 
 impl<M: FileModes> Host for M {
@@ -72,6 +74,18 @@ impl<M: FileModes> Host for M {
 
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         std::fs::rename(from, to)
+    }
+
+    /// Claims `to` with `create_dir`, which fails for anything that exists, and renames over the claim: a rename of a
+    /// directory replaces an empty one atomically, so `from` is there in full or not at all.
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::create_dir(to)?;
+        // The claim is empty, since only this call has it.
+        std::fs::rename(from, to).map_err(|e| after_failed_write(to, e, || std::fs::remove_dir(to)))
+    }
+
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+        FileModes::sync_dir(self, dir)
     }
 
     fn read_link(&self, path: &Path) -> std::io::Result<String> {

@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::exit::ExitWidth;
 use crate::host::{self, Accel, Host, SystemDirs, Unavailable, names};
@@ -59,6 +60,14 @@ impl Host for TestHost {
 
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         host::current().replace_file(from, to)
+    }
+
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        host::current().publish_dir(from, to)
+    }
+
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().sync_dir(dir)
     }
 
     fn read_link(&self, path: &Path) -> std::io::Result<String> {
@@ -127,6 +136,14 @@ impl Host for NoAccelHost {
         TestHost.replace_file(from, to)
     }
 
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        TestHost.publish_dir(from, to)
+    }
+
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.sync_dir(dir)
+    }
+
     fn read_link(&self, path: &Path) -> std::io::Result<String> {
         TestHost.read_link(path)
     }
@@ -147,6 +164,15 @@ pub struct RecordingHost {
     fail_private_write_at: Mutex<Option<usize>>,
     executable: Mutex<HashSet<PathBuf>>,
     set_executable_calls: Mutex<Vec<PathBuf>>,
+    fail_set_executable: AtomicBool,
+    directory_calls: Mutex<Vec<DirectoryCall>>,
+}
+
+/// What [`RecordingHost`] saw done to directories, in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DirectoryCall {
+    Sync(PathBuf),
+    Publish { from: PathBuf, to: PathBuf },
 }
 
 impl RecordingHost {
@@ -177,6 +203,11 @@ impl RecordingHost {
         *self.fail_private_write_at.lock().unwrap() = Some(index);
     }
 
+    /// Makes every `set_executable` fail.
+    pub fn fail_set_executable(&self) {
+        self.fail_set_executable.store(true, Ordering::SeqCst);
+    }
+
     /// Makes `is_executable` say yes for `path`.
     pub fn mark_executable(&self, path: &Path) {
         self.executable.lock().unwrap().insert(path.to_owned());
@@ -185,6 +216,11 @@ impl RecordingHost {
     /// The paths given to `write_private`, in call order, failed calls included.
     pub fn private_writes(&self) -> Vec<PathBuf> {
         self.private_writes.lock().unwrap().clone()
+    }
+
+    /// The `sync_dir` and `publish_dir` calls, in call order.
+    pub fn directory_calls(&self) -> Vec<DirectoryCall> {
+        self.directory_calls.lock().unwrap().clone()
     }
 
     pub fn set_executable_calls(&self) -> Vec<PathBuf> {
@@ -238,6 +274,9 @@ impl Host for RecordingHost {
 
     fn set_executable(&self, path: &Path) -> std::io::Result<()> {
         self.set_executable_calls.lock().unwrap().push(path.to_owned());
+        if self.fail_set_executable.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("the test made this set_executable fail"));
+        }
         TestHost.set_executable(path)
     }
 
@@ -257,6 +296,22 @@ impl Host for RecordingHost {
 
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         TestHost.replace_file(from, to)
+    }
+
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.directory_calls.lock().unwrap().push(DirectoryCall::Publish {
+            from: from.to_owned(),
+            to: to.to_owned(),
+        });
+        TestHost.publish_dir(from, to)
+    }
+
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+        self.directory_calls
+            .lock()
+            .unwrap()
+            .push(DirectoryCall::Sync(dir.to_owned()));
+        TestHost.sync_dir(dir)
     }
 
     fn read_link(&self, path: &Path) -> std::io::Result<String> {
