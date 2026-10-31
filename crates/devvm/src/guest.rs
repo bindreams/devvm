@@ -74,7 +74,7 @@ pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
             return Err(Error::new(
                 ErrorKind::Usage,
                 format!(
-                    "the guest path {path} is relative to the current directory of drive {letter}:; write {letter}:/{rest} for the drive's root"
+                    "the guest path {path} is relative to the current directory of drive {letter}:; write {letter}:/{rest} to start at the root of drive {letter}:"
                 ),
             ));
         }

@@ -172,9 +172,11 @@ impl Sftp {
         Ok((expand_guest_path(path, &home), home))
     }
 
-    /// The guest path as the guest's SFTP server expects it.
+    /// The guest path as the guest's SFTP server expects it. A path the guest cannot place by name (a drive-relative
+    /// one) is refused, as `copy_in` refuses it for a destination; the path is otherwise left as typed.
     fn guest_path(&self, path: &str, guest: &dyn GuestOs) -> Result<String> {
         let (expanded, home) = self.expanded(path)?;
+        guest.split_root(&expanded)?;
         Ok(guest.sftp_path(&expanded, &home))
     }
 

@@ -468,6 +468,27 @@ fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)]
 }
 
 #[skuld::test]
+fn a_command_in_flight_when_the_boot_bound_passes_has_its_channel_closed(#[fixture(unicode_home)] home: &Path) {
+    // The guard drops the wait for the command; the command keeps running on the guest, with an output pipe nobody reads,
+    // unless the channel is closed.
+    let rig = Rig::new(home);
+    let session = rig
+        .connect_with(
+            VmExit::never(),
+            Some(BootBound::start(Duration::from_secs(3600)).unwrap()),
+        )
+        .expect("connects within the bound");
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| session.exec_collect("hold"));
+        rig.sshd.wait_for_commands(1);
+        arm_boot_bound(&session, Duration::ZERO);
+        let error = running.join().unwrap().unwrap_err();
+        assert!(error.message().contains("boot bound"), "{error}");
+    });
+    rig.sshd.wait_for_channel_close();
+}
+
+#[skuld::test]
 fn a_finished_boot_is_no_longer_ended_by_the_boot_bound(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
@@ -710,6 +731,24 @@ fn exec_flushes_both_host_writers_when_the_command_ends(#[fixture(unicode_home)]
     session.exec("echo hi", &mut out, &mut err).unwrap();
     assert!(out.flushes >= 1, "stdout was flushed {} times", out.flushes);
     assert!(err.flushes >= 1, "stderr was flushed {} times", err.flushes);
+}
+
+#[skuld::test]
+fn a_write_that_fails_still_flushes_the_other_sink(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+
+    // `echo` writes to stdout: stderr is the other sink.
+    let mut err = CountsFlushes::default();
+    let end = session.exec("echo hi", &mut RefusesWrites, &mut err).unwrap();
+    assert!(matches!(end, ExecEnd::HostOutputClosed { .. }), "{end:?}");
+    assert!(err.flushes >= 1, "stderr was flushed {} times", err.flushes);
+
+    // `extended-data 1` writes to stderr: stdout is the other sink.
+    let mut out = CountsFlushes::default();
+    let end = session.exec("extended-data 1", &mut out, &mut RefusesWrites).unwrap();
+    assert!(matches!(end, ExecEnd::HostOutputClosed { .. }), "{end:?}");
+    assert!(out.flushes >= 1, "stdout was flushed {} times", out.flushes);
 }
 
 /// A sink whose flush fails.

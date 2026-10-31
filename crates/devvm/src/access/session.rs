@@ -674,6 +674,10 @@ impl SshSession {
             };
             let sink: &mut dyn std::io::Write = if to_stderr { &mut *err } else { &mut *out };
             if let Err(e) = sink.write_all(&chunk) {
+                // The other sink may hold a partial line (a prompt); its flush is best effort, the write failure is
+                // the result.
+                let other: &mut dyn std::io::Write = if to_stderr { &mut *out } else { &mut *err };
+                let _ = other.flush();
                 // Dropping the receiver tells the task to close the channel.
                 drop(receiver);
                 return Ok(ExecEnd::HostOutputClosed { error: e, status: None });
@@ -681,8 +685,8 @@ impl SshSession {
         }
     }
 
-    /// [`SshSession::exec`] into memory: the sinks are `Vec`s, so the host output never closes. What is lost after the status
-    /// is in [`Output::loss`].
+    /// [`SshSession::exec`] into memory: the sinks are `Vec`s, so the host output never closes. What is lost after the
+    /// status is in [`Output::loss`].
     pub(crate) fn exec_collect(&self, command: &str) -> Result<Output> {
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         match self.exec(command, &mut stdout, &mut stderr)? {

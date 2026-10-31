@@ -16,8 +16,8 @@ pub(crate) enum ExecEnd {
     /// The command ended with this status.
     Finished(ExitStatus),
     /// The command ended with `status`, but then came what devvm cannot carry (output on a stream it does not read, a
-    /// refusal to run the command) or what ended the wait (the VM exited, the boot bound passed); `lost` says what. The status stands: the error that follows an exit
-    /// status does not take it back.
+    /// refusal to run the command) or what ended the wait (the VM exited, the boot bound passed); `lost` says what.
+    /// The status stands: the error that follows an exit status does not take it back.
     FinishedWithLoss { status: ExitStatus, lost: Error },
     /// The host side of the output closed. The channel was closed, so the guest process loses its output pipe and
     /// ends by its own SIGPIPE or SIGHUP; devvm does not wait for a status that may never come. The caller decides what
@@ -65,10 +65,21 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
     // Kept here, not in `run`: the guard drops `run` when the VM exits or the boot bound passes, and a status that had
     // arrived is still the command's result.
     let mut status = None;
+    // Kept here for the same reason, and for one more: `run` empties it when the channel has ended, so what is left
+    // when the guard drops `run` is a channel with a command still running on it.
+    let mut channel = None;
     // The channel's end is the authority on whether the connection died, so the guard does not watch the transport.
     let outcome = inner
-        .guarded(&awaiting, false, run(&inner, &command, &awaiting, &events, &mut status))
+        .guarded(
+            &awaiting,
+            false,
+            run(&inner, &command, &awaiting, &events, &mut status, &mut channel),
+        )
         .await;
+    if let Some(channel) = channel {
+        // russh's `Channel` sends no close when dropped: the guest command would keep an output pipe that nobody reads.
+        let _ = channel.close().await;
+    }
     match (outcome, status) {
         (Ok(None), _) => {} // The host side went away; there is nobody to tell.
         (Ok(Some(status)), _) => {
@@ -85,26 +96,38 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
     }
 }
 
-/// `error`, after the channel is closed: the guest command is still running, and would keep an output pipe that nobody
-/// reads.
-async fn fail(channel: &mut Channel<Msg>, error: Error) -> Error {
-    let _ = channel.close().await;
-    error
-}
-
-/// `Ok(None)` when the host output closed. `status` is set as soon as the command's status arrives.
+/// `Ok(None)` when the host output closed. `status` is set as soon as the command's status arrives. `slot` holds the
+/// channel from the moment it is open until `run` returns, so the caller can close it when this future is dropped
+/// instead; every other way out has ended the channel already.
 async fn run(
     inner: &Inner,
     command: &str,
     awaiting: &str,
     events: &mpsc::Sender<Event>,
     status: &mut Option<ExitStatus>,
+    slot: &mut Option<Channel<Msg>>,
 ) -> Result<Option<ExitStatus>> {
-    let mut channel = inner
+    let opened = inner
         .handle
         .channel_open_session()
         .await
         .map_err(|_| inner.connection_ended(awaiting))?;
+    let channel = slot.insert(opened);
+    let result = pump(inner, channel, command, awaiting, events, status).await;
+    *slot = None;
+    result
+}
+
+/// The part of [`run`] on the open `channel`: it closes the channel itself on the ways out that leave the guest command
+/// running.
+async fn pump(
+    inner: &Inner,
+    channel: &mut Channel<Msg>,
+    command: &str,
+    awaiting: &str,
+    events: &mpsc::Sender<Event>,
+    status: &mut Option<ExitStatus>,
+) -> Result<Option<ExitStatus>> {
     channel
         .exec(true, command.as_bytes())
         .await
@@ -135,7 +158,8 @@ async fn run(
                     ),
                 );
                 if status.is_none() {
-                    return Err(fail(&mut channel, lost).await);
+                    let _ = channel.close().await;
+                    return Err(lost);
                 }
                 Event::Lost(lost)
             }
@@ -160,7 +184,8 @@ async fn run(
                     format!("the server at {} refused to run {awaiting}", inner.ctx.addr),
                 );
                 if status.is_none() {
-                    return Err(fail(&mut channel, lost).await);
+                    let _ = channel.close().await;
+                    return Err(lost);
                 }
                 Event::Lost(lost)
             }

@@ -1871,6 +1871,21 @@ fn a_destination_name_a_windows_host_cannot_store_is_refused_before_anything_is_
 
 // Name rules ----------------------------------------------------------------------------------------------------------
 
+/// `C:a` is relative to the current directory of drive `C:`: a copy out of it is refused, naming it, like a copy into it,
+/// and nothing is written on the host.
+#[skuld::test]
+fn a_drive_relative_guest_source_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.guest = env.os(GuestKind::Windows);
+    let dest = env.local.join("out");
+    for src in ["C:a", "c:a/b", "D:.."] {
+        let error = env.copy_out(src, &dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage, "{src}: {error}");
+        assert!(error.message().contains(src), "{src}: {error}");
+        assert!(!dest.exists(), "{src}: nothing was written");
+    }
+}
+
 /// The guest's rules apply to the host's names through the guest, so a case pair is one name on a Windows guest. A host
 /// that folds case (Windows, macOS) cannot hold the pair to begin with.
 #[cfg(target_os = "linux")]
