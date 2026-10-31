@@ -25,9 +25,6 @@ use crate::{Arch, Error, ErrorKind, Result};
 #[path = "qmp_tests.rs"]
 pub(crate) mod qmp_tests;
 
-/// The longest socket path in UTF-8 bytes: `sun_path` is 108 bytes with its terminating NUL.
-const SUN_PATH_MAX: usize = 107;
-
 // Endpoint ============================================================================================================
 
 /// Where a machine's QMP socket is, and the lock file beside it.
@@ -38,15 +35,16 @@ pub(crate) struct QmpEndpoint {
 
 impl QmpEndpoint {
     /// `<temp>/dvm-<32 hex of the id>.sock`: short, so it fits `sun_path` under any temp directory, and unique per
-    /// instance. A path over the limit is refused here, before a machine is launched with it.
-    pub(crate) fn for_instance(temp: &Path, id: &InstanceId) -> Result<QmpEndpoint> {
+    /// instance. A path over `path_max` bytes (`Host::socket_path_max`) is refused here, before a machine is launched
+    /// with it.
+    pub(crate) fn for_instance(temp: &Path, id: &InstanceId, path_max: usize) -> Result<QmpEndpoint> {
         let path = temp.join(format!("dvm-{id}.sock"));
         let bytes = path.to_string_lossy().len();
-        if bytes > SUN_PATH_MAX {
+        if bytes > path_max {
             return Err(Error::new(
                 ErrorKind::Unavailable,
                 format!(
-                    "the QEMU control socket path {} is {bytes} bytes, over the {SUN_PATH_MAX}-byte limit of an AF_UNIX \
+                    "the QEMU control socket path {} is {bytes} bytes, over the {path_max}-byte limit of an AF_UNIX \
                      path; use a shorter temporary directory (TMP or TEMP)",
                     path.display()
                 ),
@@ -81,8 +79,14 @@ impl QmpEndpoint {
 pub(crate) enum QmpEvent {
     Stop,
     Resume,
-    Reset,
-    Shutdown,
+    /// `requested`: the reason is the QMP `system_reset` devvm sent (`host-qmp-system-reset`), not the guest's own.
+    Reset {
+        requested: bool,
+    },
+    /// `requested`: as for `Reset`; under `-no-reboot` QEMU answers the reset with this and exits.
+    Shutdown {
+        requested: bool,
+    },
     Powerdown,
     /// Any other event, by name.
     Other(String),
@@ -137,8 +141,9 @@ fn lost(endpoint: &QmpEndpoint, what: &str) -> Error {
 impl Qmp {
     /// Connects to the socket, negotiates, and holds the lock file. It waits for the QEMU process to listen for as long
     /// as `exit` does not report the process gone, trying again every few milliseconds: the listener is up about 30 ms
-    /// after spawn. The process exiting ends the wait, and also any later read or write on the session. A machine
-    /// that has exited fails before a lock file is touched.
+    /// after spawn. The process exiting ends the wait and any later write on the session; a read still returns what
+    /// QEMU wrote before it exited. A machine that has exited fails before a lock file is touched, and one that exits
+    /// while this connects leaves no lock file behind.
     pub(crate) fn connect(ep: &QmpEndpoint, exit: &ExitWatch, progress: &dyn Progress) -> Result<Qmp> {
         let stopped = |end: End, when: &str| match end {
             End::Exited => Error::new(
@@ -165,12 +170,17 @@ impl Qmp {
             ),
             progress,
         )?;
+        // The process is gone for good, and nobody needs the lock file this call made. It is deleted while still held.
+        let give_up = |end: End, when: &str| {
+            remove_lock_file(ep);
+            stopped(end, when)
+        };
         let stream = loop {
             match UnixStream::connect(ep.path()) {
                 Ok(stream) => break stream,
                 Err(e) if is_not_listening(&e) => {
                     if let Some(end) = exit.pause() {
-                        return Err(stopped(end, "before its control socket accepted a connection"));
+                        return Err(give_up(end, "before its control socket accepted a connection"));
                     }
                 }
                 Err(e) => {
@@ -194,7 +204,7 @@ impl Qmp {
         let reader = duplicate("for reading")?;
         let registration = exit
             .register(duplicate("for the exit watch")?)
-            .map_err(|end| stopped(end, "while devvm was connecting"))?;
+            .map_err(|end| give_up(end, "while devvm was connecting"))?;
         let mut qmp = Qmp {
             reader: BufReader::new(reader),
             writer: stream,
@@ -224,8 +234,8 @@ impl Qmp {
         let mut line = String::new();
         let read = match self.reader.read_line(&mut line) {
             Ok(read) => read,
-            // A QEMU that exits resets the connection on Windows instead of closing it, and the exit watch shuts it
-            // down: either way, it is gone.
+            // A QEMU that exits resets the connection on Windows instead of closing it, and the exit watch cancels this
+            // read and keeps later ones from blocking: either way, nothing more comes.
             Err(e) if is_closed(&e) || self.registration.exited() => 0,
             Err(e) => {
                 return Err(Error::io(
@@ -337,18 +347,23 @@ impl Qmp {
         self.execute(&qmp::cont {}).map(drop)
     }
 
-    /// Resets the guest inside this QEMU process and returns once QEMU has reported the `RESET` event, not on the reply
-    /// alone. A QEMU started with `-no-reboot` shuts down instead and closes the socket; that is an error here.
+    /// Resets the guest inside this QEMU process and returns once QEMU has reported the `RESET` event this request
+    /// caused (reason `host-qmp-system-reset`), not on the reply alone and not on a reset the guest did by itself. A
+    /// QEMU started with `-no-reboot` shuts down instead and closes the socket; that is an error here.
     pub(crate) fn system_reset(&mut self) -> Result<()> {
         self.events
-            .retain(|e| !matches!(e, QmpEvent::Reset | QmpEvent::Shutdown));
+            .retain(|e| !matches!(e, QmpEvent::Reset { .. } | QmpEvent::Shutdown { .. }));
         self.execute(&qmp::system_reset {})?;
         loop {
-            if let Some(index) = self.events.iter().position(|e| *e == QmpEvent::Reset) {
+            if let Some(index) = self
+                .events
+                .iter()
+                .position(|e| *e == QmpEvent::Reset { requested: true })
+            {
                 self.events.remove(index);
                 return Ok(());
             }
-            if self.events.contains(&QmpEvent::Shutdown) {
+            if self.events.contains(&QmpEvent::Shutdown { requested: true }) {
                 return Err(Error::new(
                     ErrorKind::ConnectionLost,
                     "QEMU shut down instead of resetting the guest (it runs with -no-reboot)",
@@ -374,9 +389,20 @@ impl Qmp {
     pub(crate) fn target_arch(&mut self) -> Result<Arch> {
         let target = self.execute(&qmp::query_target {})?;
         let name = serde_json::to_value(target.arch)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_default();
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("cannot read the architecture QEMU reported ({e}): {:?}", target.arch),
+                )
+            })?
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("QEMU's architecture has no name: {:?}", target.arch),
+                )
+            })?;
         match name.as_str() {
             "x86_64" => Ok(Arch::Amd64),
             "aarch64" => Ok(Arch::Arm64),
@@ -460,19 +486,33 @@ fn is_not_listening(error: &std::io::Error) -> bool {
 /// The event `value` is. The events devvm reads must parse as the `qapi` crate's `Event`; any other is kept by name.
 fn classify(value: &serde_json::Value) -> Result<QmpEvent> {
     let name = value["event"].as_str().unwrap_or_default();
-    let known = match name {
-        "STOP" => QmpEvent::Stop,
-        "RESUME" => QmpEvent::Resume,
-        "RESET" => QmpEvent::Reset,
-        "SHUTDOWN" => QmpEvent::Shutdown,
-        "POWERDOWN" => QmpEvent::Powerdown,
-        other => return Ok(QmpEvent::Other(other.to_owned())),
-    };
-    serde_json::from_value::<qmp::Event>(value.clone()).map_err(|e| {
+    if !matches!(name, "STOP" | "RESUME" | "RESET" | "SHUTDOWN" | "POWERDOWN") {
+        return Ok(QmpEvent::Other(name.to_owned()));
+    }
+    let event = serde_json::from_value::<qmp::Event>(value.clone()).map_err(|e| {
         Error::new(
             ErrorKind::Internal,
             format!("QEMU's {name} event does not fit the qapi schema ({e}): {value}"),
         )
     })?;
-    Ok(known)
+    // The reason tells the reset devvm asked for from one the guest did by itself.
+    let requested = |reason: qmp::ShutdownCause| reason == qmp::ShutdownCause::host_qmp_system_reset;
+    Ok(match event {
+        qmp::Event::STOP { .. } => QmpEvent::Stop,
+        qmp::Event::RESUME { .. } => QmpEvent::Resume,
+        qmp::Event::RESET { data, .. } => QmpEvent::Reset {
+            requested: requested(data.reason),
+        },
+        qmp::Event::SHUTDOWN { data, .. } => QmpEvent::Shutdown {
+            requested: requested(data.reason),
+        },
+        qmp::Event::POWERDOWN { .. } => QmpEvent::Powerdown,
+        _ => QmpEvent::Other(name.to_owned()),
+    })
+}
+
+/// Deletes the lock file of `ep`. One that is gone already is what was wanted; any other failure leaves a file that the
+/// leftover sweep of the machine's shutdown or kill removes.
+fn remove_lock_file(ep: &QmpEndpoint) {
+    let _ = std::fs::remove_file(ep.lock_path());
 }

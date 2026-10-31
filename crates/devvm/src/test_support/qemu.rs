@@ -46,7 +46,7 @@ pub fn qemu_sidecar() -> Result<Arc<QemuInstall>, String> {
 /// A QMP socket path in a short, non-ASCII directory under the temp directory, and its lock file; both are deleted on
 /// drop.
 ///
-/// The directory is the shared `<temp>/<UNICODE_DIR>`: a socket path is limited to 107 bytes, which the per-test
+/// The directory is the shared `<temp>/<UNICODE_DIR>`: a socket path is limited (`Host::socket_path_max`), which the per-test
 /// directories of `unicode_home` exceed. Socket names carry a random instance id, so tests do not collide, and the
 /// shared directory is never removed, so no test can find it gone.
 pub struct Sock {
@@ -56,7 +56,8 @@ pub struct Sock {
 /// The shared directory control sockets go in during tests (created if need be): `<temp>/<UNICODE_DIR>`, or, where the
 /// temporary directory is too long for a socket path (macOS), `/tmp/<UNICODE_DIR>`.
 pub fn socket_dir() -> PathBuf {
-    let fits = |dir: &Path| QmpEndpoint::for_instance(dir, &InstanceId::random()).is_ok();
+    let fits =
+        |dir: &Path| QmpEndpoint::for_instance(dir, &InstanceId::random(), host::current().socket_path_max()).is_ok();
     let dir = [std::env::temp_dir(), PathBuf::from("/tmp")]
         .into_iter()
         .map(|base| base.join(UNICODE_DIR))
@@ -69,7 +70,12 @@ pub fn socket_dir() -> PathBuf {
 impl Sock {
     pub fn new() -> Sock {
         Sock {
-            endpoint: QmpEndpoint::for_instance(&socket_dir(), &InstanceId::random()).unwrap(),
+            endpoint: QmpEndpoint::for_instance(
+                &socket_dir(),
+                &InstanceId::random(),
+                host::current().socket_path_max(),
+            )
+            .unwrap(),
         }
     }
 }
@@ -127,7 +133,7 @@ impl BareQemu {
             .spawn()
             .unwrap_or_else(|e| panic!("cannot start {}: {e}", install.tool("qemu-system-x86_64").display()));
         let pid = child.id();
-        let exit = ExitWatch::watching(move || match cosca::Process::from_pid(pid) {
+        let exit = ExitWatch::watching(host::current(), move || match cosca::Process::from_pid(pid) {
             cosca::identity::Resolved::Found(process) => process
                 .wait()
                 .map_err(|e| crate::Error::new(crate::ErrorKind::Io, format!("cannot wait for QEMU {pid}: {e}"))),

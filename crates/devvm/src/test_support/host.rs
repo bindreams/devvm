@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use crate::backend::qemu::uds::UnixStream;
 use crate::exit::ExitWidth;
 use crate::host::{self, Accel, Host, SystemDirs, Unavailable};
 use crate::{Arch, Result};
@@ -17,6 +18,14 @@ impl Host for TestHost {
 
     fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
         host::current().guest_reset(arch)
+    }
+
+    fn socket_path_max(&self) -> usize {
+        host::current().socket_path_max()
+    }
+
+    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
+        host::current().interrupt_connection(connection)
     }
 
     fn ansi_code_page(&self) -> Option<u32> {
@@ -67,6 +76,14 @@ impl Host for NoAccelHost {
 
     fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
         TestHost.guest_reset(arch)
+    }
+
+    fn socket_path_max(&self) -> usize {
+        TestHost.socket_path_max()
+    }
+
+    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
+        TestHost.interrupt_connection(connection)
     }
 
     fn ansi_code_page(&self) -> Option<u32> {
@@ -120,6 +137,14 @@ impl Host for NoGuestReset {
         Err(Unavailable {
             missing: WINDOWS_11.to_owned(),
         })
+    }
+
+    fn socket_path_max(&self) -> usize {
+        host::current().socket_path_max()
+    }
+
+    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
+        host::current().interrupt_connection(connection)
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

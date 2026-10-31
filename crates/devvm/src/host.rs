@@ -1,11 +1,12 @@
 //! What differs between host operating systems, behind one trait. The only `cfg` in devvm's logic is at the top of this
-//! file, where the implementation is chosen.
+//! file, where the implementation is chosen. (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::backend::qemu::uds::UnixStream;
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -62,6 +63,15 @@ pub(crate) trait Host: Send + Sync {
     /// Whether a running guest of `arch` can be reset inside its VM process (a QMP `system_reset`). The error says what
     /// the host lacks; nothing is sent to a VM to find out.
     fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable>;
+
+    /// The longest AF_UNIX socket path this OS binds, in bytes: `sun_path` without its terminating NUL.
+    fn socket_path_max(&self) -> usize;
+
+    /// Wakes a thread blocked reading `connection`'s socket (through a clone of it) and keeps what the peer wrote
+    /// before: afterwards a read returns the bytes still buffered, then ends the stream, fails as a closed connection
+    /// or reports `WouldBlock`, and never blocks. Needed because Windows can lose the end of an AF_UNIX stream, so a
+    /// reader whose peer died may block for ever.
+    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()>;
 
     /// The ANSI code page of this process (`GetACP`); `None` off Windows.
     fn ansi_code_page(&self) -> Option<u32>;

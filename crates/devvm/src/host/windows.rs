@@ -11,9 +11,11 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWind
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
+use crate::backend::qemu::uds::UnixStream;
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
+mod interrupt;
 mod whpx;
 
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
@@ -39,6 +41,15 @@ impl Host for WindowsHost {
 
     fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
         whpx::guest_reset(&whpx::WinHvPlatform, arch)
+    }
+
+    /// `sun_path` is 108 bytes.
+    fn socket_path_max(&self) -> usize {
+        107
+    }
+
+    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
+        interrupt::interrupt(connection)
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

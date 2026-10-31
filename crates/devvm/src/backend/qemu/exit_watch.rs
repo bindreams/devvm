@@ -2,13 +2,14 @@
 //!
 //! Windows can lose the end of an AF_UNIX stream: a reader blocked on a socket whose peer died may never wake. One
 //! thread per machine waits for the process to exit and, when it does, interrupts the connection devvm holds to it, so
-//! a blocked read or write returns at once. The wait is the OS's, not a timer.
+//! a blocked read returns at once and what QEMU wrote before it died is still read. The wait is the OS's, not a timer.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use super::uds::{UnixStream, interrupt};
+use super::uds::UnixStream;
 use crate::Result;
+use crate::host::Host;
 
 #[cfg(test)]
 #[path = "exit_watch_tests.rs"]
@@ -34,6 +35,7 @@ pub(crate) struct ExitWatch {
 }
 
 struct Shared {
+    host: &'static dyn Host,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -49,9 +51,10 @@ struct State {
 
 impl ExitWatch {
     /// A watch that reports an exit only when told to (`report_exit`).
-    pub(crate) fn new() -> ExitWatch {
+    pub(crate) fn new(host: &'static dyn Host) -> ExitWatch {
         ExitWatch {
             shared: Arc::new(Shared {
+                host,
                 state: Mutex::default(),
                 changed: Condvar::new(),
             }),
@@ -60,8 +63,8 @@ impl ExitWatch {
 
     /// A watch of the process `wait` blocks on. The thread it starts ends when `wait` returns, which is when the process
     /// exits; it holds nothing of the machine.
-    pub(crate) fn watching(wait: impl FnOnce() -> Result<()> + Send + 'static) -> ExitWatch {
-        let watch = ExitWatch::new();
+    pub(crate) fn watching(host: &'static dyn Host, wait: impl FnOnce() -> Result<()> + Send + 'static) -> ExitWatch {
+        let watch = ExitWatch::new(host);
         let thread_watch = watch.clone();
         let started = std::thread::Builder::new()
             .name("qemu-exit-watch".to_owned())
@@ -85,7 +88,12 @@ impl ExitWatch {
         let mut state = self.lock();
         state.end.get_or_insert(End::Exited);
         if let Some(connection) = state.connection.take() {
-            interrupt(&connection);
+            let woken = self.shared.host.interrupt_connection(&connection);
+            // A reader that stays asleep is a hang with no cause to show: fail loudly where it can be seen.
+            debug_assert!(
+                woken.is_ok(),
+                "cannot wake the reader of a dead QEMU's connection: {woken:?}"
+            );
         }
         self.shared.changed.notify_all();
     }
@@ -100,8 +108,23 @@ impl ExitWatch {
         self.lock().end.clone()
     }
 
+    /// Blocks until the watch ends and says how. There is no limit: the end is the process exiting, or the OS refusing to say.
+    pub(crate) fn wait_ended(&self) -> End {
+        let mut state = self.lock();
+        loop {
+            if let Some(end) = state.end.clone() {
+                return end;
+            }
+            state = self.shared.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
     /// Waits for the watch to end or for `RETRY` to pass, whichever is first; the caller re-checks its own condition.
     pub(crate) fn pause(&self) -> Option<End> {
+        self.pause_for(RETRY)
+    }
+
+    fn pause_for(&self, limit: Duration) -> Option<End> {
         let state = self.lock();
         if state.end.is_some() {
             return state.end.clone();
@@ -109,7 +132,7 @@ impl ExitWatch {
         let (state, _) = self
             .shared
             .changed
-            .wait_timeout(state, RETRY)
+            .wait_timeout(state, limit)
             .unwrap_or_else(PoisonError::into_inner);
         state.end.clone()
     }

@@ -358,6 +358,7 @@ dependencies = [
  "hex",
  "home",
  "jiff",
+ "libc",
  "percent-encoding",
  "qapi",
  "reqwest",

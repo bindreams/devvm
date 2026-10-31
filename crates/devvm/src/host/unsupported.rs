@@ -1,8 +1,10 @@
 //! The host for operating systems devvm 0.1.0 does not run VMs on (Linux, macOS).
 
+use std::net::Shutdown;
 use std::path::Path;
 
 use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
+use crate::backend::qemu::uds::UnixStream;
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -12,6 +14,13 @@ mod perm;
 #[cfg(not(unix))]
 #[path = "unsupported/perm_other.rs"]
 mod perm;
+
+#[cfg(unix)]
+#[path = "unsupported/socket_unix.rs"]
+mod socket;
+#[cfg(not(unix))]
+#[path = "unsupported/socket_other.rs"]
+mod socket;
 
 pub(super) struct UnsupportedHost;
 
@@ -24,6 +33,19 @@ impl Host for UnsupportedHost {
 
     fn guest_reset(&self, _arch: Arch) -> std::result::Result<(), Unavailable> {
         Ok(())
+    }
+
+    fn socket_path_max(&self) -> usize {
+        socket::path_max()
+    }
+
+    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
+        // A thread blocked reading wakes with the end of the stream, after the bytes already received. A peer that is
+        // gone already leaves nothing to wake: its end of the stream has been delivered.
+        match connection.shutdown(Shutdown::Read) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),
+            outcome => outcome,
+        }
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

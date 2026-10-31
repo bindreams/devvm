@@ -79,7 +79,7 @@ fn every_command_devvm_sends_exists_in_the_live_schema(
     let stream = loop {
         match UnixStream::connect(qemu.sock.endpoint.path()) {
             Ok(stream) => break stream,
-            // The wait ends when the process exits, or after a short pause to ask again.
+            // The wait ends when the process exits.
             Err(e) => assert!(
                 qemu.exit.pause().is_none(),
                 "QEMU exited before its control socket accepted a connection ({e}); its output is in {}",

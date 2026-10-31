@@ -49,6 +49,10 @@ windows-sys = { version = "0.61", features = [
 ] }
 uds_windows = "1.2"
 
+# The longest AF_UNIX path of a Unix host (`host/unsupported/socket_unix.rs`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # The fake VM reports its own job and console to the tests (`test_support/fake_vm`).
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = [
