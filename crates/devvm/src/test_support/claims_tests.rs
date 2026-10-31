@@ -55,13 +55,18 @@ fn the_openssh_step_must_claim_openssh_sftp_and_pyyaml() {
 
 #[skuld::test]
 fn a_claim_counts_only_with_its_documented_value() {
-    for wrong in ["", "0", "yes", "true", "1 ", "01", "1253"] {
-        for (step, os, claim) in [
-            (TEST, "linux", &PYYAML),
-            (TEST, "windows", &ACP),
-            (TEST, "windows", &NTFS_NAMES),
-            (OPENSSH, "linux", &OPENSSH_SFTP),
-        ] {
+    for (step, os, claim) in [
+        (TEST, "linux", &PYYAML),
+        (TEST, "windows", &ACP),
+        (TEST, "windows", &NTFS_NAMES),
+        (OPENSSH, "linux", &OPENSSH_SFTP),
+        (VM, "windows", &VM_TESTS),
+    ] {
+        // Every value but the claim's own is wrong: `0` is wrong for the others and right for the vm job.
+        for wrong in ["", "0", "1", "yes", "true", "1 ", "01", "1253"]
+            .into_iter()
+            .filter(|wrong| *wrong != claim.value)
+        {
             let absent = missing(step, os, env(&[(claim.var, wrong)])).unwrap();
             assert!(
                 absent.iter().any(|owed| owed.var == claim.var),

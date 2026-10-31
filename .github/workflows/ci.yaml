@@ -79,11 +79,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      # windows-latest's ANSI code page is 1252; the claim test fails if the image changes it. Only the Linux leg claims
-      # PyYAML: the other legs list the seed test as unavailable, and where it is claimed it fails if uv or PyYAML is
-      # missing. A test fails if a step does not make the claims it owes on its OS: the step names itself in
-      # DEVVM_CI_STEP, and test_support/claims.rs lists the claims per step and OS.
-      # The vm job names itself the same way.
+      # A test fails if a step does not make the claims it owes on its OS: the step names itself in DEVVM_CI_STEP, and
+      # test_support/claims.rs lists them. The vm job names itself the same way.
       - name: Test
         run: cargo test --workspace --locked
         env:

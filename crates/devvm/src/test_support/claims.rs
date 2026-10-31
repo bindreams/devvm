@@ -10,31 +10,31 @@ pub struct Claim {
     pub value: &'static str,
 }
 
-/// This runner's ANSI code page is 1252 (`host_tests.rs`).
+/// This runner's ANSI code page is 1252.
 pub const ACP: Claim = Claim {
     var: "DEVVM_COVERS_ACP",
     value: "1252",
 };
 
-/// This runner reads the seed with PyYAML (`guest/linux/seed_pyyaml_tests.rs`).
+/// This runner reads the seed with PyYAML.
 pub const PYYAML: Claim = Claim {
     var: "DEVVM_COVERS_PYYAML",
     value: "1",
 };
 
-/// This runner creates files on NTFS to measure what it stores (`host/names_tests.rs`).
+/// This runner creates files on NTFS to measure what it stores.
 pub const NTFS_NAMES: Claim = Claim {
     var: "DEVVM_COVERS_NTFS_NAMES",
     value: "1",
 };
 
-/// This run's SFTP server is OpenSSH's own `sftp-server` (`access/sftp_tests.rs`).
+/// This run's SFTP server is OpenSSH's own `sftp-server`.
 pub const OPENSSH_SFTP: Claim = Claim {
     var: "DEVVM_COVERS_OPENSSH_SFTP",
     value: "1",
 };
 
-/// This job runs the VM tests: the workflow turns them off for every other job (`tests/support/vm_gate.rs`).
+/// This job runs the VM tests: the workflow turns them off for every other job.
 pub const VM_TESTS: Claim = Claim {
     var: "DEVVM_SKIP_VM_TESTS",
     value: "0",
