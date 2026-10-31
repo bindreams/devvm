@@ -17,6 +17,7 @@
 //! | `write-once-and-hold` | writes one line to stdout, then does nothing and never answers |
 //! | `status-then-marker` | sends `exit-status 7`, then the line `marker`, and never closes the channel |
 //! | `extended-data N` | writes a line to extended-data stream N (1 is stderr), then exits 0 |
+//! | `status-then-extended-data N` | sends `exit-status 7`, then a line to extended-data stream N, then closes |
 //! | `echo ...` | prints the rest of the line, exits 0 |
 //!
 //! Options make connections misbehave: a host key other than the advertised one, a refused client key, a peer that
@@ -656,6 +657,20 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
                 )
                 .await;
             finish(&handle, channel, 0).await;
+        }
+        ["status-then-extended-data", stream] => {
+            let stream = stream.parse().expect("status-then-extended-data takes a stream number");
+            let _ = handle.exit_status_request(channel, 7).await;
+            let _ = handle
+                .extended_data(
+                    channel,
+                    stream,
+                    b"on a stream of its own
+"
+                    .to_vec(),
+                )
+                .await;
+            let _ = handle.close(channel).await;
         }
         ["echo", rest @ ..] => {
             let _ = handle.data(channel, format!("{}\n", rest.join(" ")).into_bytes()).await;

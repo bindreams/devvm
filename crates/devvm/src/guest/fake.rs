@@ -103,6 +103,18 @@ impl GuestOs for FakeGuestOs {
         }
     }
 
+    fn user_path(&self, sftp_path: &str) -> String {
+        match &self.paths {
+            SftpPaths::WithoutDrive(drive) if sftp_path.starts_with('/') => format!("{drive}{sftp_path}"),
+            SftpPaths::Under(root) => match sftp_path.strip_prefix(root.trim_end_matches('/')) {
+                Some("") => "/".to_owned(),
+                Some(inside) if inside.starts_with('/') => inside.to_owned(),
+                _ => sftp_path.to_owned(),
+            },
+            SftpPaths::Same | SftpPaths::WithoutDrive(_) => sftp_path.to_owned(),
+        }
+    }
+
     fn semantics_version(&self) -> u32 {
         1
     }

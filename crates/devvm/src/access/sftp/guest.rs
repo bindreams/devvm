@@ -21,7 +21,11 @@ impl GuestSide<'_> {
     pub(super) fn download(&self, from: &str, temp: &Path, to: &Path) -> Result<()> {
         let (from, temp) = (from.to_owned(), temp.to_owned());
         self.sftp.call(
-            &format!("copying the guest file {from} to {}", to.display()),
+            &format!(
+                "copying the guest file {} to {}",
+                self.sftp.remote.shown(&from),
+                to.display()
+            ),
             move |remote| remote.download(from, temp),
         )
     }
@@ -35,7 +39,7 @@ impl CopySide for GuestSide<'_> {
     const SOURCE_TIMES: &'static str = "1970 to 2038";
 
     fn show(&self, path: &String) -> String {
-        path.clone()
+        self.sftp.remote.shown(path)
     }
 
     fn join(&self, base: &String, name: &str) -> String {
@@ -50,7 +54,7 @@ impl CopySide for GuestSide<'_> {
         plan::base_name(path).map(str::to_owned).ok_or_else(|| {
             Error::new(
                 ErrorKind::Usage,
-                format!("the guest path {path} has no file name to copy"),
+                format!("the guest path {} has no file name to copy", self.show(path)),
             )
         })
     }
@@ -69,61 +73,74 @@ impl CopySide for GuestSide<'_> {
 
     fn inspect(&self, path: &String, follow: bool) -> Result<Kind> {
         self.sftp
-            .call(&format!("inspecting the guest path {path}"), {
+            .call(&format!("inspecting the guest path {}", self.show(path)), {
                 let path = path.clone();
                 move |remote| remote.inspect(path, follow)
             })?
-            .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("the guest source {path} does not exist")))
-    }
-
-    fn walk(&self, dir: &String) -> Result<Vec<Item>> {
-        self.sftp.call(&format!("listing the guest directory {dir}"), {
-            let dir = dir.clone();
-            move |remote| remote.walk(dir)
-        })
-    }
-
-    fn present(&self, path: &String, follow: bool) -> Result<Present> {
-        self.sftp.call(&format!("inspecting the guest path {path}"), {
-            let path = path.clone();
-            move |remote| remote.present(path, follow)
-        })
-    }
-
-    fn create_dir(&self, dir: &String) -> Result<bool> {
-        self.sftp.call(&format!("creating the guest directory {dir}"), {
-            let dir = dir.clone();
-            move |remote| remote.create_dir(dir)
-        })
-    }
-
-    fn remove_link(&self, path: &String) -> Result<()> {
-        self.sftp.call(&format!("replacing the guest symlink {path}"), {
-            let path = path.clone();
-            move |remote| remote.remove_link(path)
-        })
-    }
-
-    fn put_link(&self, text: &str, _to_dir: bool, path: &String, what: &str) -> Result<()> {
-        self.sftp.call(&format!("copying {what} to the guest path {path}"), {
-            let (text, path, what) = (text.to_owned(), path.clone(), what.to_owned());
-            move |remote| remote.put_link(text, path, what)
-        })
-    }
-
-    fn set_dir_time(&self, path: &String, seconds: u32) -> Result<()> {
-        self.sftp
-            .call(&format!("setting the time of the guest directory {path}"), {
-                let path = path.clone();
-                move |remote| remote.set_dir_time(path, seconds)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::NotFound,
+                    format!("the guest source {} does not exist", self.show(path)),
+                )
             })
     }
 
+    fn walk(&self, dir: &String) -> Result<Vec<Item>> {
+        self.sftp
+            .call(&format!("listing the guest directory {}", self.show(dir)), {
+                let dir = dir.clone();
+                move |remote| remote.walk(dir)
+            })
+    }
+
+    fn present(&self, path: &String, follow: bool) -> Result<Present> {
+        self.sftp
+            .call(&format!("inspecting the guest path {}", self.show(path)), {
+                let path = path.clone();
+                move |remote| remote.present(path, follow)
+            })
+    }
+
+    fn create_dir(&self, dir: &String) -> Result<bool> {
+        self.sftp
+            .call(&format!("creating the guest directory {}", self.show(dir)), {
+                let dir = dir.clone();
+                move |remote| remote.create_dir(dir)
+            })
+    }
+
+    fn remove_link(&self, path: &String) -> Result<()> {
+        self.sftp
+            .call(&format!("replacing the guest symlink {}", self.show(path)), {
+                let path = path.clone();
+                move |remote| remote.remove_link(path)
+            })
+    }
+
+    fn put_link(&self, text: &str, _to_dir: bool, path: &String, what: &str) -> Result<()> {
+        self.sftp
+            .call(&format!("copying {what} to the guest path {}", self.show(path)), {
+                let (text, path, what) = (text.to_owned(), path.clone(), what.to_owned());
+                move |remote| remote.put_link(text, path, what)
+            })
+    }
+
+    fn set_dir_time(&self, path: &String, seconds: u32) -> Result<()> {
+        self.sftp.call(
+            &format!("setting the time of the guest directory {}", self.show(path)),
+            {
+                let path = path.clone();
+                move |remote| remote.set_dir_time(path, seconds)
+            },
+        )
+    }
+
     fn probe_links(&self, dest: &String) -> Result<Option<String>> {
-        self.sftp.call(&format!("testing symlinks in the guest path {dest}"), {
-            let dest = dest.clone();
-            move |remote| remote.probe_links(dest)
-        })
+        self.sftp
+            .call(&format!("testing symlinks in the guest path {}", self.show(dest)), {
+                let dest = dest.clone();
+                move |remote| remote.probe_links(dest)
+            })
     }
 }
 
@@ -136,11 +153,13 @@ impl Receives<HostSide<'_>> for GuestSide<'_> {
         mtime: Option<u32>,
         to: &String,
     ) -> Result<()> {
-        self.sftp
-            .call(&format!("copying {} to the guest path {to}", from.display()), {
+        self.sftp.call(
+            &format!("copying {} to the guest path {}", from.display(), self.show(to)),
+            {
                 let (from, to) = (from.clone(), to.clone());
                 move |remote| remote.put_file(from, to, executable, mtime)
-            })
+            },
+        )
     }
 
     fn announce(&self, from: &str, to: &str, total: &str) -> String {

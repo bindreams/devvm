@@ -163,7 +163,7 @@ pub(super) fn link_refusal(rules: &Rules, link: &str, cause: &str) -> Error {
     Error::new(
         ErrorKind::Io,
         format!(
-            "cannot copy the {} symlink {link}: {} cannot make symlinks ({cause})",
+            "cannot copy the {} symlink {link}: {} refused a test symlink ({cause})",
             rules.from, rules.to
         ),
     )
@@ -325,7 +325,8 @@ pub(super) fn check_listing(dir: &str, names: &[String]) -> Result<()> {
         return Err(Error::new(
             ErrorKind::Io,
             format!(
-                "the guest path {:?} has a name that is not valid UTF-8 or contains U+FFFD, which SFTP cannot tell apart",
+                "the guest path {:?} has a name that is not valid UTF-8 or contains U+FFFD, which SFTP cannot \
+                 tell apart",
                 join(dir, name)
             ),
         ));
@@ -349,7 +350,8 @@ pub(super) fn join(base: &str, name: &str) -> String {
     }
 }
 
-/// The parts of the guest path `path` from the outermost, for [`check_destination`]: each with the path that ends in it.
+/// The parts of the guest path `path` from the outermost, for [`check_destination`]: each with the path that ends in
+/// it.
 pub(super) fn chain(path: &str) -> Vec<(Option<String>, String)> {
     let parts: Vec<&str> = path.split('/').collect();
     (0..parts.len())

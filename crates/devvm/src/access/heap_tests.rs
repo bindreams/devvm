@@ -1,7 +1,7 @@
 //! Tests of how much heap the access layer holds. The number only means something in a process of its own (the shared
-//! test binary runs many tests at once), so each test runs the lib's test binary as the helper `access-heap` and asserts
-//! that it exited 0; the helper does the work under the counting allocator of `test_support::alloc` and exits non-zero
-//! when the peak is too high.
+//! test binary runs many tests at once), so each test runs the lib's test binary as the helper `access-heap` and
+//! asserts that it exited 0; the helper does the work under the counting allocator of `test_support::alloc` and exits
+//! non-zero when the peak is too high.
 
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
@@ -129,7 +129,7 @@ fn big_copy() {
 
     let source = dir.path().join("source.bin");
     make_big_source(&source);
-    sftp.copy_in(&source, "/big/in.bin", &TestHost, &*guest, &progress)
+    sftp.copy_in(&source, "/big/in.bin", &TestHost, &guest, &progress)
         .expect("the upload succeeds");
     std::fs::remove_file(&source).unwrap();
     assert_eq!(
@@ -139,7 +139,7 @@ fn big_copy() {
     );
 
     let target = dir.path().join("out.bin");
-    sftp.copy_out("/big/out.bin", &target, &TestHost, &*guest, &progress)
+    sftp.copy_out("/big/out.bin", &target, &TestHost, &guest, &progress)
         .expect("the download succeeds");
     assert_eq!(std::fs::metadata(&target).unwrap().len(), BIG_SIZE);
     assert_eq!(big_file_digest(&target).unwrap(), expected_big_digest());

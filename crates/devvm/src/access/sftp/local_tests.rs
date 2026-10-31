@@ -110,6 +110,15 @@ fn create_dir_says_whether_it_made_the_directory(#[fixture(unicode_home)] home: 
     );
 }
 
+/// Creating a Windows drive root fails with access denied, not already exists, so a file copied to `C:\` met an error.
+#[skuld::test]
+fn create_dir_on_an_existing_root_finds_it_there(#[fixture(unicode_home)] home: &Path) {
+    let side = HostSide { host: &TestHost };
+    let root = home.ancestors().last().unwrap().to_path_buf();
+    assert!(root.parent().is_none(), "{} is a root", root.display());
+    assert!(!side.create_dir(&root).unwrap(), "{}", root.display());
+}
+
 #[skuld::test]
 fn create_dir_does_not_follow_a_link_that_is_in_the_way(#[fixture(unicode_home)] home: &Path) {
     let side = HostSide { host: &TestHost };
@@ -147,6 +156,24 @@ fn the_execute_bit_is_set_on_the_temporary_before_it_is_moved_into_place(#[fixtu
         host.set_executable_calls(),
         [temp],
         "never on the file that already replaced the old one"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+}
+
+/// A umask without the owner write bit, or an ACL that lets the user create but not write, leaves the downloaded file
+/// unopenable for write.
+#[skuld::test]
+fn the_time_is_set_on_a_temporary_that_cannot_be_opened_for_write(#[fixture(unicode_home)] home: &Path) {
+    let (temp, target) = (home.join("partial"), home.join("tool"));
+    std::fs::write(&temp, "new").unwrap();
+    let mut permissions = std::fs::metadata(&temp).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&temp, permissions).unwrap();
+    finish_file(&temp, &target, false, Some(1_000_000_000), &TestHost).unwrap();
+    let modified = std::fs::metadata(&target).unwrap().modified().unwrap();
+    assert_eq!(
+        modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+        1_000_000_000
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
 }

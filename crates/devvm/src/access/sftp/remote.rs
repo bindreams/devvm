@@ -13,6 +13,7 @@ use tokio::io::AsyncWriteExt;
 use super::plan::{Beyond, Item, Kind, Present, check_listing, join, normalize, parent_of};
 use super::{Failed, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_name, pump};
 use crate::access::session::Inner;
+use crate::guest::GuestOs;
 use crate::{Error, ErrorKind, Result};
 
 /// What asking the guest for one directory came to.
@@ -32,6 +33,8 @@ pub(super) struct Remote {
     /// A second SFTP channel, used only for the `posix-rename@openssh.com` extension, which the high-level session
     /// does not send.
     raw: Arc<RawSftpSession>,
+    /// The guest whose paths the messages are written in; without one, a path is named as the server is asked for it.
+    guest: Option<Arc<dyn GuestOs>>,
 }
 
 impl Remote {
@@ -61,7 +64,22 @@ impl Remote {
             inner,
             session: Arc::new(session),
             raw: Arc::new(raw),
+            guest: None,
         })
+    }
+
+    /// This remote, naming guest paths in its messages as `guest` writes them rather than as the server is asked.
+    pub(super) fn speaking(mut self, guest: Arc<dyn GuestOs>) -> Remote {
+        self.guest = Some(guest);
+        self
+    }
+
+    /// The guest path `path`, which is in the server's words, as the user writes it.
+    pub(super) fn shown(&self, path: &str) -> String {
+        match &self.guest {
+            Some(guest) => guest.user_path(path),
+            None => path.to_owned(),
+        }
     }
 
     fn start_error(inner: &Inner, e: SftpError) -> Error {
@@ -118,7 +136,10 @@ impl Remote {
         match self.session.metadata(path).await {
             Ok(attrs) => Ok(Some(attrs)),
             Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
-            Err(e) => Err(self.error(&format!("cannot inspect the guest path {path}"), e)),
+            Err(e) => Err(self.error(
+                &format!("cannot inspect the guest path {path}", path = self.shown(path)),
+                e,
+            )),
         }
     }
 
@@ -127,12 +148,15 @@ impl Remote {
         match self.session.symlink_metadata(path).await {
             Ok(attrs) => Ok(Some(attrs)),
             Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
-            Err(e) => Err(self.error(&format!("cannot inspect the guest path {path}"), e)),
+            Err(e) => Err(self.error(
+                &format!("cannot inspect the guest path {path}", path = self.shown(path)),
+                e,
+            )),
         }
     }
 
-    /// Whether the symlink `path` leads to a directory. A dangling link leads to none; a target that cannot be looked at
-    /// (a loop, no permission) is an error.
+    /// Whether the symlink `path` leads to a directory. A dangling link leads to none; a target that cannot be looked
+    /// at (a loop, no permission) is an error.
     async fn leads_to_dir(&self, path: &str) -> Result<bool> {
         match self.stat(path).await? {
             Some(attrs) => Ok(attrs.file_type().is_dir()),
@@ -156,11 +180,12 @@ impl Remote {
             if attrs.file_type() != FileType::Symlink {
                 return Ok(());
             }
-            let target = self
-                .session
-                .read_link(here.as_str())
-                .await
-                .map_err(|e| self.error(&format!("cannot read the guest symlink {here}"), e))?;
+            let target = self.session.read_link(here.as_str()).await.map_err(|e| {
+                self.error(
+                    &format!("cannot read the guest symlink {here}", here = self.shown(&here)),
+                    e,
+                )
+            })?;
             here = if target.starts_with('/') {
                 normalize(&target)
             } else {
@@ -169,7 +194,10 @@ impl Remote {
         }
         Err(Error::new(
             ErrorKind::Io,
-            format!("cannot look where the guest symlink {link} leads: too many levels of symbolic links"),
+            format!(
+                "cannot look where the guest symlink {link} leads: too many levels of symbolic links",
+                link = self.shown(link)
+            ),
         ))
     }
 
@@ -179,7 +207,10 @@ impl Remote {
         match self.session.metadata(path).await {
             Ok(attrs) => Ok(attrs.file_type().is_dir()),
             Err(SftpError::Status(_)) => Ok(false),
-            Err(e) => Err(self.error(&format!("cannot inspect the guest path {path}"), e)),
+            Err(e) => Err(self.error(
+                &format!("cannot inspect the guest path {path}", path = self.shown(path)),
+                e,
+            )),
         }
     }
 
@@ -211,17 +242,19 @@ impl Remote {
                 size: attrs.len(),
             }),
             FileType::Symlink => {
-                let target = self
-                    .session
-                    .read_link(path)
-                    .await
-                    .map_err(|e| self.error(&format!("cannot read the guest symlink {path}"), e))?;
+                let target = self.session.read_link(path).await.map_err(|e| {
+                    self.error(
+                        &format!("cannot read the guest symlink {path}", path = self.shown(path)),
+                        e,
+                    )
+                })?;
                 if target.contains('\u{fffd}') {
                     return Err(Error::new(
                         ErrorKind::Io,
                         format!(
                             "the guest symlink {path} holds a target that is not valid UTF-8 or contains U+FFFD, \
-                             which SFTP cannot tell apart"
+                             which SFTP cannot tell apart",
+                            path = self.shown(path)
                         ),
                     ));
                 }
@@ -230,7 +263,10 @@ impl Remote {
             }
             FileType::Other => Err(Error::new(
                 ErrorKind::Io,
-                format!("the guest path {path} is neither a regular file, a directory nor a symlink"),
+                format!(
+                    "the guest path {path} is neither a regular file, a directory nor a symlink",
+                    path = self.shown(path)
+                ),
             )),
         }
     }
@@ -254,7 +290,7 @@ impl Remote {
         let mut items = Vec::new();
         let mut pending = vec![(dir, Vec::<String>::new())];
         while let Some((path, rel)) = pending.pop() {
-            let awaiting = format!("cannot list the guest directory {path}");
+            let awaiting = format!("cannot list the guest directory {path}", path = self.shown(&path));
             let listing = self
                 .session
                 .read_dir(path.as_str())
@@ -263,7 +299,7 @@ impl Remote {
             let mut entries: Vec<_> = listing.map(|entry| (entry.file_name(), entry.metadata())).collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             let names: Vec<String> = entries.iter().map(|entry| entry.0.clone()).collect();
-            check_listing(&path, &names)?;
+            check_listing(&self.shown(&path), &names)?;
             let mut dirs = Vec::new();
             for (name, listed) in entries {
                 let child = join(&path, &name);
@@ -274,7 +310,10 @@ impl Remote {
                     self.lstat(&child).await?.ok_or_else(|| {
                         Error::new(
                             ErrorKind::Io,
-                            format!("the guest path {child} vanished while it was listed"),
+                            format!(
+                                "the guest path {child} vanished while it was listed",
+                                child = self.shown(&child)
+                            ),
                         )
                     })?
                 };
@@ -306,11 +345,15 @@ impl Remote {
             Some(attrs) if attrs.file_type().is_dir() => Ok(Mkdir::Existed),
             Some(_) => Err(Error::new(
                 ErrorKind::Io,
-                format!("the guest path {path} exists and is not a directory"),
+                format!(
+                    "the guest path {path} exists and is not a directory",
+                    path = self.shown(path)
+                ),
             )),
-            None => Ok(Mkdir::Refused(
-                self.error(&format!("cannot create the guest directory {path}"), refused),
-            )),
+            None => Ok(Mkdir::Refused(self.error(
+                &format!("cannot create the guest directory {path}", path = self.shown(path)),
+                refused,
+            ))),
         }
     }
 
@@ -354,10 +397,12 @@ impl Remote {
 
     /// Removes the symlink `path`.
     pub(super) async fn remove_link(self, path: String) -> Result<()> {
-        self.session
-            .remove_file(path.as_str())
-            .await
-            .map_err(|e| self.error(&format!("cannot replace the guest symlink {path}"), e))
+        self.session.remove_file(path.as_str()).await.map_err(|e| {
+            self.error(
+                &format!("cannot replace the guest symlink {path}", path = self.shown(&path)),
+                e,
+            )
+        })
     }
 
     async fn posix_rename(&self, from: &str, to: &str) -> Result<()> {
@@ -366,7 +411,11 @@ impl Remote {
             data.extend_from_slice(&(text.len() as u32).to_be_bytes());
             data.extend_from_slice(text.as_bytes());
         }
-        let awaiting = format!("cannot move {from} to {to} on the guest");
+        let awaiting = format!(
+            "cannot move {from} to {to} on the guest",
+            from = self.shown(from),
+            to = self.shown(to)
+        );
         match self.raw.extended(POSIX_RENAME, data).await {
             Ok(Packet::Status(status)) if status.status_code == StatusCode::Ok => Ok(()),
             Ok(Packet::Status(status)) => Err(self.error(&awaiting, SftpError::Status(status))),
@@ -396,7 +445,7 @@ impl Remote {
                     Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(()),
                     other => other,
                 };
-                Err(e.after_cleanup(&format!("the guest file {temp}"), cleanup))
+                Err(e.after_cleanup(&format!("the guest file {temp}", temp = self.shown(&temp)), cleanup))
             }
         }
     }
@@ -414,7 +463,7 @@ impl Remote {
     }
 
     async fn upload_to(&self, local: &Path, temp: String, executable: bool, mtime: Option<u32>) -> Result<()> {
-        let awaiting = format!("cannot write the guest file {temp}");
+        let awaiting = format!("cannot write the guest file {temp}", temp = self.shown(&temp));
         let attributes = FileAttributes {
             permissions: Some(if executable { 0o755 } else { 0o644 }),
             ..FileAttributes::default()
@@ -443,17 +492,22 @@ impl Remote {
                 mtime: Some(time),
                 ..FileAttributes::default()
             };
-            self.session
-                .set_metadata(temp.as_str(), times)
-                .await
-                .map_err(|e| self.error(&format!("cannot set the time of the guest file {temp}"), e))?;
+            self.session.set_metadata(temp.as_str(), times).await.map_err(|e| {
+                self.error(
+                    &format!("cannot set the time of the guest file {temp}", temp = self.shown(&temp)),
+                    e,
+                )
+            })?;
         }
         Ok(())
     }
 
     /// Makes `target` a symlink holding `text`, in place of whatever file or symlink is there.
     pub(super) async fn put_link(self, text: String, target: String, what: String) -> Result<()> {
-        let awaiting = format!("cannot copy {what} to the guest symlink {target}");
+        let awaiting = format!(
+            "cannot copy {what} to the guest symlink {target}",
+            target = self.shown(&target)
+        );
         let this = &self;
         self.replace_with(&target, |temp| async move {
             // OpenSSH's sftp-server reads the symlink request the other way round from the draft: what the link holds
@@ -478,7 +532,10 @@ impl Remote {
                     if parent == dir {
                         return Err(Error::new(
                             ErrorKind::Io,
-                            format!("the guest has no existing directory above {dir}"),
+                            format!(
+                                "the guest has no existing directory above {dir}",
+                                dir = self.shown(&dir)
+                            ),
                         ));
                     }
                     dir = parent;
@@ -494,12 +551,22 @@ impl Remote {
                     status.status_code, status.error_message
                 )));
             }
-            Err(e) => return Err(self.error(&format!("cannot test symlinks in the guest directory {dir}"), e)),
+            Err(e) => {
+                return Err(self.error(
+                    &format!(
+                        "cannot test symlinks in the guest directory {dir}",
+                        dir = self.shown(&dir)
+                    ),
+                    e,
+                ));
+            }
         }
-        self.session
-            .remove_file(probe.as_str())
-            .await
-            .map_err(|e| self.error(&format!("cannot remove the test symlink {probe}"), e))?;
+        self.session.remove_file(probe.as_str()).await.map_err(|e| {
+            self.error(
+                &format!("cannot remove the test symlink {probe}", probe = self.shown(&probe)),
+                e,
+            )
+        })?;
         Ok(None)
     }
 
@@ -510,10 +577,15 @@ impl Remote {
             mtime: Some(seconds),
             ..FileAttributes::default()
         };
-        self.session
-            .set_metadata(path.as_str(), times)
-            .await
-            .map_err(|e| self.error(&format!("cannot set the time of the guest directory {path}"), e))
+        self.session.set_metadata(path.as_str(), times).await.map_err(|e| {
+            self.error(
+                &format!(
+                    "cannot set the time of the guest directory {path}",
+                    path = self.shown(&path)
+                ),
+                e,
+            )
+        })
     }
 }
 
@@ -522,7 +594,7 @@ impl Remote {
 impl Remote {
     /// Streams the guest file `remote` into the new host file `temp`.
     pub(super) async fn download(self, remote: String, temp: PathBuf) -> Result<()> {
-        let awaiting = format!("cannot read the guest file {remote}");
+        let awaiting = format!("cannot read the guest file {remote}", remote = self.shown(&remote));
         let file = self
             .session
             .open(remote.as_str())

@@ -177,6 +177,20 @@ fn the_set_is_flushed_before_it_is_published_and_the_parent_after(#[fixture(unic
 }
 
 #[skuld::test]
+fn a_failed_flush_of_the_parent_after_publishing_is_a_warning_not_an_error(#[fixture(unicode_home)] home: &Path) {
+    let host = RecordingHost::new();
+    host.fail_sync_dir(home);
+    let (dir, keys) = (home.join("keys"), InstanceKeys::generate().unwrap());
+    let warnings = keys.write(&host, &dir).unwrap();
+    assert_eq!(InstanceKeys::read(&dir).unwrap(), keys, "the keys are in place");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("flush") && warnings[0].contains("sync_dir"),
+        "{warnings:?}"
+    );
+}
+
+#[skuld::test]
 fn a_dangling_link_at_the_final_path_is_not_replaced(#[fixture(unicode_home)] home: &Path) {
     // `exists()` follows the link and says no, so a check-then-rename would move the keys over it.
     let dir = home.join("keys");

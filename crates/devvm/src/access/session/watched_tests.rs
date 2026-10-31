@@ -35,6 +35,46 @@ impl AsyncWrite for Reset {
     }
 }
 
+/// A stream that carries data and fails only when shut down, as a socket does after a reset that came once the session
+/// had stopped reading.
+struct FailsToShutDown;
+
+impl AsyncRead for FailsToShutDown {
+    fn poll_read(self: Pin<&mut Self>, _: &mut Context<'_>, _: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for FailsToShutDown {
+    fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Err(io::Error::from(io::ErrorKind::NotConnected)))
+    }
+}
+
+#[skuld::test]
+fn a_failed_shutdown_is_the_end_of_the_connection() {
+    let transport = Transport::new();
+    runtime::run("a watched failed shutdown", {
+        let transport = transport.clone();
+        async move {
+            let mut watched = Watched::new(FailsToShutDown, transport);
+            watched.write_all(b"x").await.unwrap();
+            assert!(watched.shutdown().await.is_err());
+        }
+    })
+    .unwrap();
+    let why = reason(&transport).expect("the end was recorded");
+    assert!(why.contains("shutting down"), "{why}");
+}
+
 #[skuld::test]
 fn data_passes_through_and_is_not_an_end() {
     let transport = Transport::new();

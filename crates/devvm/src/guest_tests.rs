@@ -35,3 +35,23 @@ fn a_linux_guest_wraps_a_script_for_its_shell_and_refuses_cmd() {
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(error.message().contains("cmd"), "{}", error.message());
 }
+
+#[skuld::test]
+fn user_path_undoes_sftp_path() {
+    let drive = FakeGuests.os_on_drive(GuestKind::Windows, "Z:");
+    let root = std::path::Path::new("/srv/jail");
+    let rooted = FakeGuests.os_rooted_at(GuestKind::Linux, root);
+    for guest in [&drive, &rooted, &FakeGuests.os(GuestKind::Linux).unwrap()] {
+        let typed: &[&str] = if std::ptr::eq(guest, &drive) {
+            &["Z:/", "Z:/a", "Z:/a/b.txt"]
+        } else {
+            &["/", "/a", "/a/b.txt"]
+        };
+        for typed in typed {
+            let sent = guest.sftp_path(typed, "/home");
+            assert_eq!(guest.user_path(&sent), *typed, "{typed} was sent as {sent}");
+        }
+    }
+    // A path the server reports from outside the root stays as it is.
+    assert_eq!(rooted.user_path("/srv/jailbreak/a"), "/srv/jailbreak/a");
+}

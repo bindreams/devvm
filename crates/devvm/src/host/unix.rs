@@ -31,6 +31,11 @@ impl FileModes for UnixHost {
         std::fs::File::open(dir)?.sync_all()
     }
 
+    /// One rename that fails with `AlreadyExists` for anything at `to`, so `from` is there in full or not at all.
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        rename_without_replacing(from, to)
+    }
+
     fn read_link(&self, path: &Path) -> std::io::Result<String> {
         std::fs::read_link(path)?
             .into_os_string()
@@ -47,4 +52,33 @@ impl FileModes for UnixHost {
     fn make_symlink(&self, target: &str, link: &Path, _to_dir: bool) -> std::io::Result<()> {
         std::os::unix::fs::symlink(target, link)
     }
+}
+
+/// `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn rename_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE).map_err(std::io::Error::from)
+}
+
+/// The other Unix systems have no such rename.
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+)))]
+fn rename_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+    super::unsupported::claim_then_rename(from, to)
 }

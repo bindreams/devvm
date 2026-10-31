@@ -5,9 +5,9 @@
 //! channel.
 //!
 //! **What ends a wait.** Nothing here is synchronised by a bare delay. A wait ends when its real condition holds or on
-//! one of these: the VM process is gone ([`VmExit`]); the keepalive finds the peer dead; the **boot bound**, the failure
-//! bound of a guest that is still booting; the **handshake bound**, the failure bound of one connection attempt to a
-//! guest that is supposed to be up. Each failure names what was awaited and the serial log.
+//! one of these: the VM process is gone ([`VmExit`]); the keepalive finds the peer dead; the **boot bound**, the
+//! failure bound of a guest that is still booting; the **handshake bound**, the failure bound of one connection attempt
+//! to a guest that is supposed to be up. Each failure names what was awaited and the serial log.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -73,9 +73,10 @@ impl Keepalive {
     };
 
     /// How long one connection attempt to a guest that should be up may take: the time the keepalive would need to
-    /// declare a silent peer dead, which is `max_missed + 1` silent intervals.
-    pub(crate) fn handshake_bound(self) -> Duration {
-        self.interval * (self.max_missed + 1)
+    /// declare a silent peer dead, which is `max_missed + 1` silent intervals; `None` when that does not fit in a
+    /// `Duration`.
+    pub(crate) fn handshake_bound(self) -> Option<Duration> {
+        self.interval.checked_mul(self.max_missed.checked_add(1)?)
     }
 }
 
@@ -416,6 +417,8 @@ struct Connect {
     pinned: PublicKey,
     key: Arc<PrivateKey>,
     ka: Keepalive,
+    /// [`Keepalive::handshake_bound`] of `ka`, which `SshSession::connect` has checked.
+    handshake_bound: Duration,
     vm: VmExit,
     boot: Option<BootBound>,
     ctx: Context,
@@ -481,7 +484,7 @@ impl Connect {
     async fn once(self) -> Result<SshSession> {
         let awaiting = format!("waiting for SSH on {} to answer", self.ctx.addr);
         let config = self.config();
-        let bound = self.ka.handshake_bound();
+        let bound = self.handshake_bound;
         let outcome = tokio::select! {
             outcome = timeout(bound, self.attempt(&config)) => outcome,
             end = self.vm.gone() => return Err(self.ctx.vm_ended(&awaiting, &end)),
@@ -536,9 +539,9 @@ fn key_error(what: &str, source: impl std::error::Error + Send + Sync + 'static)
 
 impl SshSession {
     /// Connects to the guest and authenticates. `boot` is `Some` for a guest that is still booting: the connect then
-    /// retries refusals, resets, a host key that does not match yet and a client key that is not accepted yet (cloud-init
-    /// publishes the host key and the authorized key in separate steps) until it succeeds, the VM exits or the boot bound
-    /// passes, and the session stays "booting" until [`SshSession::finish_boot`].
+    /// retries refusals, resets, a host key that does not match yet and a client key that is not accepted yet
+    /// (cloud-init publishes the host key and the authorized key in separate steps) until it succeeds, the VM exits or
+    /// the boot bound passes, and the session stays "booting" until [`SshSession::finish_boot`].
     ///
     /// With `boot: None` it makes exactly one attempt and every failure is final: a running guest's keys are in place,
     /// so a mismatch there is a changed key. The attempt is bounded by [`Keepalive::handshake_bound`], so a peer that
@@ -559,6 +562,14 @@ impl SshSession {
                 "a keepalive that tolerates no missed probes would never fire; max_missed must be at least 1",
             ));
         }
+        let handshake_bound = ka.handshake_bound().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                format!(
+                    "a keepalive of {ka:?} has a handshake bound too long to represent; lower max_missed or interval"
+                ),
+            )
+        })?;
         let pinned = PublicKey::from_openssh(&target.host_public)
             .map_err(|e| key_error("the pinned host key is not an OpenSSH public key", e))?;
         let key = PrivateKey::from_openssh(&target.client_private)
@@ -574,6 +585,7 @@ impl SshSession {
             pinned,
             key: Arc::new(key),
             ka,
+            handshake_bound,
             vm,
             boot,
         };
@@ -604,6 +616,7 @@ impl SshSession {
         err: &mut dyn std::io::Write,
     ) -> Result<ExecEnd> {
         let (sender, mut receiver) = mpsc::channel(EVENT_BUFFER);
+        let mut lost = None;
         let inner = self.inner.clone();
         let command = command.to_owned();
         runtime::spawn(run_exec(inner, command, sender));
@@ -614,14 +627,25 @@ impl SshSession {
                 Some(Event::End(result)) => {
                     // A partial line the host writers still buffer (a prompt) would otherwise be lost.
                     let flushed = out.flush().and_then(|()| err.flush());
-                    return match (result, flushed) {
-                        (Ok(status), Ok(())) => Ok(ExecEnd::Finished(status)),
-                        (Ok(status), Err(error)) => Ok(ExecEnd::HostOutputClosed {
-                            error,
+                    return match (result, flushed, lost) {
+                        (Ok(status), Ok(()), None) => Ok(ExecEnd::Finished(status)),
+                        (Ok(status), Ok(()), Some(lost)) => Ok(ExecEnd::FinishedWithLoss { status, lost }),
+                        (Ok(status), Err(error), lost) => Ok(ExecEnd::HostOutputClosed {
+                            error: match lost {
+                                None => error,
+                                Some(lost) => {
+                                    let text = format!("{error}; the command's output was lost as well ({lost})");
+                                    std::io::Error::new(error.kind(), text)
+                                }
+                            },
                             status: Some(status),
                         }),
-                        (Err(e), _) => Err(e),
+                        (Err(e), _, _) => Err(e),
                     };
+                }
+                Some(Event::Lost(error)) => {
+                    lost.get_or_insert(error);
+                    continue;
                 }
                 None => {
                     return Err(Error::new(
@@ -644,6 +668,10 @@ impl SshSession {
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         match self.exec(command, &mut stdout, &mut stderr)? {
             ExecEnd::Finished(status) => Ok(Output { status, stdout, stderr }),
+            ExecEnd::FinishedWithLoss { status, lost } => Err(Error::new(
+                lost.kind(),
+                format!("{} (the command had ended with {status:?})", lost.message()),
+            )),
             ExecEnd::HostOutputClosed { error, .. } => {
                 Err(Error::io(ErrorKind::Internal, "a memory sink refused output", error))
             }

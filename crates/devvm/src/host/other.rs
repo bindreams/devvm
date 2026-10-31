@@ -4,7 +4,7 @@
 use std::fs::OpenOptions;
 use std::path::Path;
 
-use super::unsupported::FileModes;
+use super::unsupported::{FileModes, claim_then_rename};
 
 pub(super) struct OtherHost;
 
@@ -23,6 +23,11 @@ impl FileModes for OtherHost {
 
     fn sync_dir(&self, _dir: &Path) -> std::io::Result<()> {
         Ok(())
+    }
+
+    /// A kill between the two steps leaves `to` empty; this host exists for tests only.
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        claim_then_rename(from, to)
     }
 
     fn read_link(&self, _path: &Path) -> std::io::Result<String> {

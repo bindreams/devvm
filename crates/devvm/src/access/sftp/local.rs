@@ -3,7 +3,7 @@
 
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::copy::{CopySide, Receives};
 use super::guest::GuestSide;
@@ -57,7 +57,8 @@ pub(super) fn lexically_normal(path: &Path) -> PathBuf {
     if parts.is_empty() {
         return PathBuf::from(".");
     }
-    // Spelled out, not pushed: `PathBuf::push` reads a name like `a:b` as a drive on Windows and drops what came before.
+    // Spelled out, not pushed: `PathBuf::push` reads a name like `a:b` as a drive on Windows and drops what came
+    // before.
     let mut text = OsString::new();
     for (i, part) in parts.iter().enumerate() {
         if matches!(
@@ -150,11 +151,7 @@ fn replace(host: &dyn Host, temp: &Path, target: &Path) -> Result<()> {
 fn finish_file(temp: &Path, target: &Path, executable: bool, mtime: Option<u32>, host: &dyn Host) -> Result<()> {
     let prepare = || -> Result<()> {
         if let Some(seconds) = mtime {
-            let time = UNIX_EPOCH + Duration::from_secs(u64::from(seconds));
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(temp)
-                .and_then(|file| file.set_modified(time))
+            host.set_file_mtime(temp, seconds)
                 .map_err(|e| local_error("cannot set the time of", temp, e))?;
         }
         if executable {
@@ -287,10 +284,16 @@ impl CopySide for HostSide<'_> {
     }
 
     fn create_dir(&self, path: &PathBuf) -> Result<bool> {
+        // Looked at first: creating an existing Windows drive or share root fails with access denied, not with
+        // already exists.
+        if path.is_dir() {
+            return Ok(false);
+        }
         let made = |result: std::io::Result<()>| match result {
             Ok(()) => Ok(true),
-            // Whatever is there must be a directory (a link to one counts), or the copy cannot go on.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => Ok(false),
+            // Whatever is there must be a directory (a link to one counts), or the copy cannot go on. Another
+            // process may have made it since the look above.
+            Err(_) if path.is_dir() => Ok(false),
             Err(e) => Err(local_error("cannot create the directory", path, e)),
         };
         match std::fs::create_dir(path) {

@@ -62,6 +62,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Watched<S> {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+        let result = Pin::new(&mut self.inner).poll_shutdown(cx);
+        self.failed("shutting down", result)
     }
 }

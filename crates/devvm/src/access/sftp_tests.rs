@@ -238,11 +238,11 @@ impl Env {
     }
 
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()> {
-        self.sftp.copy_in(src, dest, &self.host, &*self.guest, &self.progress)
+        self.sftp.copy_in(src, dest, &self.host, &self.guest, &self.progress)
     }
 
     fn copy_out(&self, src: &str, dest: &Path) -> Result<()> {
-        self.sftp.copy_out(src, dest, &self.host, &*self.guest, &self.progress)
+        self.sftp.copy_out(src, dest, &self.host, &self.guest, &self.progress)
     }
 
     /// A host file `name` below `local`, with `content`.
@@ -613,10 +613,7 @@ fn cp_reports_a_missing_source_naming_the_side(#[fixture(unicode_home)] home: &P
 
     let error = env.copy_out("/nope", &env.local.join("x")).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
-    assert!(
-        error.message().contains(&format!("guest source {}", env.g("/nope"))),
-        "{error}"
-    );
+    assert!(error.message().contains("guest source /nope"), "{error}");
     assert!(!env.local.join("x").exists());
 }
 
@@ -696,7 +693,7 @@ fn a_link_the_host_cannot_store_is_an_error_naming_it(#[fixture(unicode_home)] h
     let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("/t/ln"), "{error}");
-    assert!(error.message().contains("cannot make symlinks"), "{error}");
+    assert!(error.message().contains("refused a test symlink"), "{error}");
     assert!(!env.local.join("out").join("ln").exists());
 }
 
@@ -785,10 +782,42 @@ fn a_symlink_child_met_while_merging_is_replaced_never_written_through(#[fixture
     assert!(tree(&outside_dir).is_empty(), "nothing was written through `sub`");
 }
 
+#[skuld::test]
+fn a_file_or_link_replaces_a_symlink_to_a_directory_met_while_merging(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("g/plain", b"guest plain");
+    env.guest_file("outside.txt", b"guest outside");
+    env.guest_link("/g/lnk", "/outside.txt");
+    let outside_dir = env.local.join("outside");
+    std::fs::create_dir(&outside_dir).unwrap();
+    let dest = env.local.join("dest");
+    std::fs::create_dir(&dest).unwrap();
+    symlink(&outside_dir, &dest.join("plain"));
+    symlink(&outside_dir, &dest.join("lnk"));
+    env.copy_out("/g", &dest).unwrap();
+    assert_eq!(std::fs::read(dest.join("plain")).unwrap(), b"guest plain");
+    assert!(
+        !std::fs::symlink_metadata(dest.join("plain"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the file replaced the link"
+    );
+    assert!(
+        std::fs::symlink_metadata(dest.join("lnk"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the guest link replaced the directory link"
+    );
+    assert!(!dest.join("lnk").is_dir());
+    assert!(tree(&outside_dir).is_empty(), "nothing was written through either");
+}
+
 // A destination that is a symlink =====================================================================================
 
 /// The typed destination that is a link to a directory is followed, for a directory and a file source, with and without
-/// `/` (owner, 2026-10-30). The link stays; a link met inside the merged tree is still replaced.
+/// `/`. The link stays; a link met inside the merged tree is still replaced.
 #[skuld::test]
 fn a_destination_that_is_a_symlink_to_a_directory_is_followed_in_both_directions(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
@@ -1249,6 +1278,48 @@ fn a_guest_path_is_given_to_the_server_as_the_guest_maps_it(#[fixture(unicode_ho
     assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
 }
 
+/// A message names the guest path as the user typed it, not as the server is asked for it (here without the drive).
+#[skuld::test(requires = [scripted_server])]
+fn errors_name_the_guest_path_the_user_typed(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.guest = FakeGuests.os_on_drive(GuestKind::Linux, "Z:");
+    let proj = project(&env);
+    let file = env.host_file("f.txt", b"f");
+    env.copy_in(&file, "Z:/in.txt").unwrap();
+
+    let named = |error: &crate::Error, typed: &str| {
+        assert!(error.message().contains(typed), "{typed} is not named: {error}");
+    };
+    named(
+        &env.copy_out("Z:/missing", &env.local.join("m")).unwrap_err(),
+        "Z:/missing",
+    );
+    // A directory onto a file, and a file below a file.
+    named(&env.copy_in(&proj, "Z:/in.txt").unwrap_err(), "Z:/in.txt");
+    named(&env.copy_in(&file, "Z:/in.txt/below").unwrap_err(), "Z:/in.txt");
+}
+
+/// The same with a guest whose server is rooted elsewhere (OpenSSH's, in CI): the root is not the user's.
+#[skuld::test]
+fn errors_do_not_name_the_directory_the_server_is_rooted_at(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"f");
+    env.copy_in(&file, "/in.txt").unwrap();
+    let root = env.root().display().to_string();
+    let proj = project(&env);
+    for error in [
+        env.copy_out("/missing", &env.local.join("m")).unwrap_err(),
+        env.copy_in(&proj, "/in.txt").unwrap_err(),
+        env.copy_in(&file, "/in.txt/below").unwrap_err(),
+    ] {
+        assert!(!error.message().contains(&root), "{root} is named: {error}");
+        assert!(
+            error.message().contains("/in.txt") || error.message().contains("/missing"),
+            "{error}"
+        );
+    }
+}
+
 // Refused before anything is written ==================================================================================
 
 /// Windows hosts cannot hold the names this test needs, so it runs where they can be made.
@@ -1363,11 +1434,11 @@ fn links_a_guest_cannot_store_fail_the_copy_before_anything_is_written(#[fixture
     let error = env.copy_in(&env.local.join("t"), "/dest").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains(&link.display().to_string()), "{error}");
-    assert!(error.message().contains("cannot make symlinks"), "{error}");
+    assert!(error.message().contains("refused a test symlink"), "{error}");
     assert!(!env.root().join("dest").exists(), "nothing was created");
     // A link given as the source is checked too.
     let error = env.copy_in(&link, "/lone").unwrap_err();
-    assert!(error.message().contains("cannot make symlinks"), "{error}");
+    assert!(error.message().contains("refused a test symlink"), "{error}");
     assert!(!env.root().join("lone").exists());
     // A tree without links goes to the same guest.
     env.copy_in(&project(&env), "/plain").unwrap();
@@ -1384,7 +1455,7 @@ fn links_a_host_cannot_store_fail_the_copy_before_anything_is_written(#[fixture(
     let error = env.copy_out("/g", &out).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("/g/ln"), "{error}");
-    assert!(error.message().contains("cannot make symlinks"), "{error}");
+    assert!(error.message().contains("refused a test symlink"), "{error}");
     assert!(!out.exists(), "nothing was created");
     // A tree without links goes to the same host.
     env.guest_file("p/a.txt", b"a");
@@ -1494,7 +1565,7 @@ fn a_clash_is_reported_before_the_guest_link_probe_makes_anything(#[fixture(unic
     std::fs::create_dir_all(env.root().join("d").join("x")).unwrap();
     let error = env.copy_in(&env.local.join("t"), "/d").unwrap_err();
     assert!(error.message().contains("/d/x"), "{error}");
-    assert!(!error.message().contains("cannot make symlinks"), "{error}");
+    assert!(!error.message().contains("refused a test symlink"), "{error}");
 }
 
 #[skuld::test]
@@ -1510,7 +1581,7 @@ fn a_clash_is_reported_before_the_host_link_probe_makes_anything(#[fixture(unico
         error.message().contains(&out.join("x").display().to_string()),
         "{error}"
     );
-    assert!(!error.message().contains("cannot make symlinks"), "{error}");
+    assert!(!error.message().contains("refused a test symlink"), "{error}");
 }
 
 // Directory times of a merge ------------------------------------------------------------------------------------------

@@ -14,6 +14,10 @@ use crate::{Error, ErrorKind, Result};
 pub(crate) enum ExecEnd {
     /// The command ended with this status.
     Finished(ExitStatus),
+    /// The command ended with `status`, but the server then sent what devvm cannot carry (output on a stream it does
+    /// not read, a refusal to run the command); `lost` says what. The status stands: the error that follows an exit
+    /// status does not take it back.
+    FinishedWithLoss { status: ExitStatus, lost: Error },
     /// The host side of the output closed. The channel was closed, so the guest process loses its output pipe and
     /// ends by its own SIGPIPE or SIGHUP; devvm does not wait for a status that may never come. The caller decides what
     /// that means.
@@ -29,6 +33,8 @@ pub(crate) enum ExecEnd {
 pub(super) enum Event {
     Out(Vec<u8>),
     Err(Vec<u8>),
+    /// Something the command's status had already arrived before; it does not change that status.
+    Lost(Error),
     End(Result<ExitStatus>),
 }
 
@@ -109,12 +115,16 @@ async fn run(
             ChannelMsg::ExtendedData { data, ext: 1 } => Event::Err(data.to_vec()),
             // Only stderr is defined; output on another stream would be dropped without a trace.
             ChannelMsg::ExtendedData { ext, .. } => {
-                return Err(Error::new(
+                let lost = Error::new(
                     ErrorKind::Io,
                     format!(
                         "the server sent output of {awaiting} on extended data stream {ext}, which devvm does not read"
                     ),
-                ));
+                );
+                if status.is_none() {
+                    return Err(lost);
+                }
+                Event::Lost(lost)
             }
             ChannelMsg::ExitStatus { exit_status } => {
                 *status = Some(ExitStatus::Code(exit_status as i32));
@@ -132,10 +142,14 @@ async fn run(
                 continue;
             }
             ChannelMsg::Failure => {
-                return Err(Error::new(
+                let lost = Error::new(
                     ErrorKind::Io,
                     format!("the server at {} refused to run {awaiting}", inner.ctx.addr),
-                ));
+                );
+                if status.is_none() {
+                    return Err(lost);
+                }
+                Event::Lost(lost)
             }
             ChannelMsg::Close => {
                 return status.take().map(Some).ok_or_else(|| {

@@ -23,6 +23,19 @@ pub(super) trait FileModes: Send + Sync {
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
 
     fn sync_dir(&self, dir: &Path) -> std::io::Result<()>;
+
+    /// [`Host::publish_dir`]. A host with a rename that refuses to replace does it in one step; one without can only
+    /// call [`claim_then_rename`].
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+}
+
+/// Claims `to` with `create_dir`, which fails for anything that exists, and renames `from` over the claim: a rename of
+/// a directory replaces an empty one. Of several that race for one name exactly one wins, but a kill between the two
+/// steps leaves `to` empty. For a host with no rename that refuses to replace.
+pub(super) fn claim_then_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    // The claim is empty, since only this call has it.
+    std::fs::rename(from, to).map_err(|e| after_failed_write(to, e, || std::fs::remove_dir(to)))
 }
 
 impl<M: FileModes> Host for M {
@@ -64,6 +77,11 @@ impl<M: FileModes> Host for M {
         FileModes::set_executable(self, path)
     }
 
+    /// By path through `utimensat`, which asks for no write access to the file.
+    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(i64::from(seconds), 0))
+    }
+
     fn file_name_problem(&self, name: &str) -> Option<String> {
         posix_problem(name)
     }
@@ -76,12 +94,8 @@ impl<M: FileModes> Host for M {
         std::fs::rename(from, to)
     }
 
-    /// Claims `to` with `create_dir`, which fails for anything that exists, and renames over the claim: a rename of a
-    /// directory replaces an empty one atomically, so `from` is there in full or not at all.
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        std::fs::create_dir(to)?;
-        // The claim is empty, since only this call has it.
-        std::fs::rename(from, to).map_err(|e| after_failed_write(to, e, || std::fs::remove_dir(to)))
+        FileModes::publish_dir(self, from, to)
     }
 
     fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {

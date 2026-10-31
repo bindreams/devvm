@@ -8,6 +8,7 @@ use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::test_support::host::TestHost;
+use crate::test_support::symlink::symlink;
 #[cfg(windows)]
 use skuld::env;
 
@@ -260,6 +261,33 @@ fn a_second_failure_while_replacing_a_file_is_named_next_to_the_first() {
     }
 }
 
+// Replacing a file ====================================================================================================
+
+/// What a copy meets in a destination tree: a symlink to a directory where the guest has a file or a file symlink.
+#[skuld::test]
+fn replace_file_replaces_a_symlink_to_a_directory_and_leaves_the_directory(#[fixture(unicode_home)] home: &Path) {
+    let real = home.join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::write(real.join("held"), "kept").unwrap();
+    let link_to_file = home.join("target.txt");
+    std::fs::write(&link_to_file, "pointed at").unwrap();
+    for (n, as_link) in [false, true].into_iter().enumerate() {
+        let (from, to) = (home.join(format!("from{n}")), home.join(format!("to{n}")));
+        symlink(&real, &to);
+        if as_link {
+            symlink(&link_to_file, &from);
+        } else {
+            std::fs::write(&from, "new").unwrap();
+        }
+        current().replace_file(&from, &to).unwrap();
+        let meta = std::fs::symlink_metadata(&to).unwrap();
+        assert_eq!(meta.file_type().is_symlink(), as_link, "link source: {as_link}");
+        assert!(!std::fs::metadata(&to).unwrap().is_dir(), "link source: {as_link}");
+        assert!(!from.exists(), "link source: {as_link}");
+        assert_eq!(std::fs::read_to_string(real.join("held")).unwrap(), "kept");
+    }
+}
+
 // Publishing a directory ==============================================================================================
 
 /// Runs `check` on the host this build runs on and on the host that only the tests of the shared rules use.
@@ -285,6 +313,37 @@ fn publish_dir_moves_a_directory_to_a_name_nobody_has(#[fixture(unicode_home)] h
         assert_eq!(std::fs::read_to_string(to.join("held")).unwrap(), "from");
         std::fs::remove_dir_all(&to).unwrap();
     });
+}
+
+/// A reader that finds `to` finds the whole directory: there is no moment when it is there and empty, which a kill in
+/// that moment would make permanent.
+#[skuld::test]
+fn publish_dir_shows_the_directory_in_full_or_not_at_all(#[fixture(unicode_home)] home: &Path) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for round in 0..200 {
+        let (from, to) = (
+            dir_with_a_file(home, &format!("from{round}")),
+            home.join(format!("to{round}")),
+        );
+        let published = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let watcher = scope.spawn(|| {
+                // Ends when the publish has returned: the condition, not a time.
+                while !published.load(Ordering::SeqCst) {
+                    if to.exists() {
+                        assert!(to.join("held").exists(), "{} was there empty", to.display());
+                    }
+                }
+            });
+            current().publish_dir(&from, &to).unwrap();
+            published.store(true, Ordering::SeqCst);
+            watcher.join().unwrap();
+        });
+        assert_eq!(
+            std::fs::read_to_string(to.join("held")).unwrap(),
+            format!("from{round}")
+        );
+    }
 }
 
 #[skuld::test]

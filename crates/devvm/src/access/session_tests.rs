@@ -51,6 +51,27 @@ fn output_on_an_extended_data_stream_other_than_stderr_is_an_error_naming_it(#[f
     );
 }
 
+#[skuld::test]
+fn output_lost_after_the_exit_status_is_reported_with_the_status(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    match session.exec("status-then-extended-data 2", &mut out, &mut err).unwrap() {
+        ExecEnd::FinishedWithLoss { status, lost } => {
+            assert_eq!(
+                status,
+                ExitStatus::Code(7),
+                "the status is not hidden by what came after"
+            );
+            assert!(lost.message().contains("extended data stream 2"), "{lost}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let error = session.exec_collect("status-then-extended-data 2").unwrap_err();
+    assert!(error.message().contains("extended data stream 2"), "{error}");
+    assert!(error.message().contains("Code(7)"), "the status is named: {error}");
+}
+
 // Exit mapping ========================================================================================================
 
 #[skuld::test]
@@ -443,7 +464,7 @@ fn a_closed_host_output_closes_the_channel_and_returns_host_output_closed(#[fixt
             assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
             assert_eq!(status, None, "the command had not ended");
         }
-        ExecEnd::Finished(status) => panic!("a command that never ends finished: {status:?}"),
+        other => panic!("a command that never ends finished: {other:?}"),
     }
     // The server saw the channel close, so its `yes` loses its pipe.
     rig.sshd.wait_for_channel_close();
@@ -654,8 +675,30 @@ fn the_handshake_bound_is_the_time_the_keepalive_needs_to_give_up(#[fixture(unic
         interval: Duration::from_millis(100),
         max_missed: 2,
     };
-    assert_eq!(ka.handshake_bound(), Duration::from_millis(300));
-    assert_eq!(Keepalive::STANDARD.handshake_bound(), Duration::from_secs(20));
+    assert_eq!(ka.handshake_bound(), Some(Duration::from_millis(300)));
+    assert_eq!(Keepalive::STANDARD.handshake_bound(), Some(Duration::from_secs(20)));
+}
+
+#[skuld::test]
+fn a_keepalive_whose_handshake_bound_overflows_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let too_many = Keepalive {
+        interval: Duration::from_millis(100),
+        max_missed: u32::MAX,
+    };
+    let too_long = Keepalive {
+        interval: Duration::MAX,
+        max_missed: 3,
+    };
+    for ka in [too_many, too_long] {
+        assert_eq!(ka.handshake_bound(), None, "{ka:?}");
+        let error = SshSession::connect(&rig.target(), ka, VmExit::never(), None, &NullProgress)
+            .err()
+            .expect("the connect fails");
+        assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+        assert!(error.message().contains("handshake bound"), "{error}");
+    }
+    assert_eq!(rig.sshd.connections(), 0, "refused before any connection");
 }
 
 #[skuld::test]

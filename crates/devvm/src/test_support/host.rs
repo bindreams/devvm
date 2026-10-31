@@ -50,6 +50,10 @@ impl Host for TestHost {
         host::current().set_executable(path)
     }
 
+    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        host::current().set_file_mtime(path, seconds)
+    }
+
     fn file_name_problem(&self, name: &str) -> Option<String> {
         host::current().file_name_problem(name)
     }
@@ -124,6 +128,10 @@ impl Host for NoAccelHost {
         TestHost.set_executable(path)
     }
 
+    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        TestHost.set_file_mtime(path, seconds)
+    }
+
     fn file_name_problem(&self, name: &str) -> Option<String> {
         TestHost.file_name_problem(name)
     }
@@ -166,6 +174,7 @@ pub struct RecordingHost {
     set_executable_calls: Mutex<Vec<PathBuf>>,
     fail_set_executable: AtomicBool,
     directory_calls: Mutex<Vec<DirectoryCall>>,
+    fail_sync_dir_of: Mutex<Option<PathBuf>>,
 }
 
 /// What [`RecordingHost`] saw done to directories, in order.
@@ -201,6 +210,11 @@ impl RecordingHost {
     /// Makes the `index`-th (from 0) call of `write_private` fail.
     pub fn fail_private_write(&self, index: usize) {
         *self.fail_private_write_at.lock().unwrap() = Some(index);
+    }
+
+    /// Makes `sync_dir` fail for `dir`.
+    pub fn fail_sync_dir(&self, dir: &Path) {
+        *self.fail_sync_dir_of.lock().unwrap() = Some(dir.to_owned());
     }
 
     /// Makes every `set_executable` fail.
@@ -280,6 +294,10 @@ impl Host for RecordingHost {
         TestHost.set_executable(path)
     }
 
+    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        TestHost.set_file_mtime(path, seconds)
+    }
+
     fn file_name_problem(&self, name: &str) -> Option<String> {
         if self.windows_names {
             return names::windows_problem(name);
@@ -311,6 +329,9 @@ impl Host for RecordingHost {
             .lock()
             .unwrap()
             .push(DirectoryCall::Sync(dir.to_owned()));
+        if self.fail_sync_dir_of.lock().unwrap().as_deref() == Some(dir) {
+            return Err(std::io::Error::other("the test made this sync_dir fail"));
+        }
         TestHost.sync_dir(dir)
     }
 

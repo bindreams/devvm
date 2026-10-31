@@ -27,6 +27,8 @@ pub(crate) trait GuestOs: Send + Sync {
     fn wrap(&self, cmd: &Command) -> String;
     /// `guest_path` as the guest's SFTP server expects it.
     fn sftp_path(&self, guest_path: &str, home: &str) -> String;
+    /// The guest path that `sftp_path` turned into `sftp_path`, for a message that names the path as the user wrote it.
+    fn user_path(&self, sftp_path: &str) -> String;
     /// Bumped whenever `wrap`, `user:`, `cwd:` or elevation behavior changes; part of every layer key.
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;

@@ -3,11 +3,13 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, UNIX_EPOCH};
 
 use windows_sys::Win32::Globalization::GetACP;
-use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+use windows_sys::Win32::Storage::FileSystem::{FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
@@ -84,6 +86,15 @@ impl Host for WindowsHost {
 
     fn set_executable(&self, _path: &Path) -> std::io::Result<()> {
         Ok(())
+    }
+
+    /// Opened for `FILE_WRITE_ATTRIBUTES` alone: the read-only attribute, or an ACL that denies writing the contents,
+    /// does not stop it.
+    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .open(path)?
+            .set_modified(UNIX_EPOCH + Duration::from_secs(u64::from(seconds)))
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {

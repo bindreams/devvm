@@ -90,8 +90,9 @@ impl InstanceKeys {
     /// to a temporary directory beside `dir` and flushed to disk, which is then published at `dir` in one step
     /// ([`Host::publish_dir`]): a failure or a kill leaves no `dir`, and anything already at `dir` is `AlreadyExists`,
     /// never replaced. Writers of one parent directory take turns under a lock there (`.keys.lock`), so a temporary
-    /// directory a killed writer left (`.keys-*`) is removed by the next; one that cannot be removed is returned as a
-    /// warning. The private files go through [`Host::write_private`].
+    /// directory a killed writer left (`.keys-*`) is removed by the next; one that cannot be removed, or a failure to
+    /// flush `dir`'s parent after the keys are in place, is returned as a warning. The private files go through
+    /// [`Host::write_private`].
     pub(crate) fn write(&self, host: &dyn Host, dir: &Path) -> Result<Vec<String>> {
         let io = |what: &str, path: &Path, source| {
             Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), source)
@@ -105,7 +106,7 @@ impl InstanceKeys {
         std::fs::create_dir_all(parent).map_err(|e| io("create", parent, e))?;
         let mut lock = FileLock::open(&parent.join(LOCK))?;
         lock.lock(Mode::Exclusive, "the instance keys", &NullProgress)?;
-        let warnings = sweep_temporaries(parent)?;
+        let mut warnings = sweep_temporaries(parent)?;
         let temp = tempfile::Builder::new()
             .prefix(TEMP_PREFIX)
             .tempdir_in(parent)
@@ -143,7 +144,10 @@ impl InstanceKeys {
             let left = format!("the temporary directory {}", temp.display());
             return Err(published.after_cleanup(&left, std::fs::remove_dir_all(&temp)));
         }
-        host.sync_dir(parent).map_err(|e| io("flush", parent, e))?;
+        // The keys are in place by now, so a flush that fails is a warning: an error would read as "nothing written".
+        if let Err(e) = host.sync_dir(parent) {
+            warnings.push(io("flush", parent, e).message().to_owned());
+        }
         Ok(warnings)
     }
 

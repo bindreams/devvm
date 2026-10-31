@@ -2,8 +2,8 @@
 //!
 //! One source goes to one destination, and where it lands depends on the source and the destination only (the rules are
 //! [`plan::place`]):
-//! - A directory *becomes* the destination: its contents merge into it, it is created with its parents when missing, and
-//!   it never nests, so a rerun gives the same layout.
+//! - A directory *becomes* the destination: its contents merge into it, it is created with its parents when missing,
+//!   and it never nests, so a rerun gives the same layout.
 //! - A file goes inside a destination that is a directory or ends in `/`, and is the destination otherwise.
 //! - Symlinks are copied as links, never followed; a source path that is itself a link is copied as a link unless it
 //!   ends in `/`. A destination that is a link to a directory is followed, with or without `/`; one that is a link to a
@@ -141,6 +141,13 @@ impl Sftp {
         })?
     }
 
+    /// This session, with the messages of what it does naming guest paths as `guest` writes them.
+    fn speaking(&self, guest: &Arc<dyn GuestOs>) -> Sftp {
+        Sftp {
+            remote: self.remote.clone().speaking(guest.clone()),
+        }
+    }
+
     /// The guest user's home directory.
     pub(crate) fn home(&self) -> Result<String> {
         self.call("asking the guest for its home directory", Remote::home)
@@ -165,9 +172,10 @@ impl Sftp {
         src: &Path,
         dest: &str,
         host: &dyn Host,
-        guest: &dyn GuestOs,
+        guest: &Arc<dyn GuestOs>,
         progress: &dyn Progress,
     ) -> Result<()> {
+        let sftp = self.speaking(guest);
         let slash = dest.ends_with('/');
         let (expanded, home) = self.expanded(dest)?;
         let dest = without_slash(&guest.sftp_path(&plan::normalize(&expanded), &home));
@@ -176,7 +184,10 @@ impl Sftp {
             &HostSide { host },
             &src.to_owned(),
             follow,
-            &GuestSide { sftp: self, guest },
+            &GuestSide {
+                sftp: &sftp,
+                guest: &**guest,
+            },
             &dest,
             slash,
             progress,
@@ -189,15 +200,19 @@ impl Sftp {
         src: &str,
         dest: &Path,
         host: &dyn Host,
-        guest: &dyn GuestOs,
+        guest: &Arc<dyn GuestOs>,
         progress: &dyn Progress,
     ) -> Result<()> {
+        let sftp = self.speaking(guest);
         let slash = local::ends_with_separator(dest);
         let dest = local::lexically_normal(&local::without_trailing_separator(dest));
         let follow = src.ends_with('/');
-        let src = self.guest_path(src, guest)?;
+        let src = self.guest_path(src, &**guest)?;
         copy::copy(
-            &GuestSide { sftp: self, guest },
+            &GuestSide {
+                sftp: &sftp,
+                guest: &**guest,
+            },
             &src,
             follow,
             &HostSide { host },
