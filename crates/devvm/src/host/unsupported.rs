@@ -78,7 +78,7 @@ impl<M: FileModes> Host for M {
     }
 
     /// By path through `utimensat`, which asks for no write access to the file.
-    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+    fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
         filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(i64::from(seconds), 0))
     }
 

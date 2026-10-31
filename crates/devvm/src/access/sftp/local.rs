@@ -174,7 +174,7 @@ fn finish_file(temp: &Path, target: &Path, executable: bool, mtime: Option<u32>,
     let prepare = || -> Result<()> {
         if let Some(seconds) = mtime {
             side.host
-                .set_file_mtime(temp, seconds)
+                .set_mtime(temp, seconds)
                 .map_err(|e| local_error("cannot set the time of", side.name(temp), e))?;
         }
         if executable {
@@ -377,7 +377,8 @@ impl CopySide for HostSide<'_> {
     }
 
     fn set_dir_time(&self, path: &PathBuf, seconds: u32) -> Result<()> {
-        filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(i64::from(seconds), 0))
+        self.host
+            .set_mtime(path, seconds)
             .map_err(|e| local_error("cannot set the time of", self.name(path), e))
     }
 

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use windows_sys::Win32::Globalization::GetACP;
-use windows_sys::Win32::Storage::FileSystem::{FILE_WRITE_ATTRIBUTES, MoveFileExW};
+use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
@@ -89,10 +89,11 @@ impl Host for WindowsHost {
     }
 
     /// Opened for `FILE_WRITE_ATTRIBUTES` alone: the read-only attribute, or an ACL that denies writing the contents,
-    /// does not stop it.
-    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+    /// does not stop it. A directory opens only with backup semantics.
+    fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
         OpenOptions::new()
             .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(path)?
             .set_modified(UNIX_EPOCH + Duration::from_secs(u64::from(seconds)))
     }

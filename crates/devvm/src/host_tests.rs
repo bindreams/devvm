@@ -178,6 +178,37 @@ fn write_private_is_create_new_and_owner_only(#[fixture(unicode_home)] home: &Pa
 }
 
 #[skuld::test]
+fn set_mtime_sets_the_time_of_a_directory_and_of_a_read_only_file(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("dir");
+    std::fs::create_dir(&dir).unwrap();
+    let file = home.join("read-only.txt");
+    std::fs::write(&file, "x").unwrap();
+    let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&file, permissions).unwrap();
+    for path in [&dir, &file] {
+        current().set_mtime(path, 1_000_000_000).unwrap();
+        let since = std::fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        assert_eq!(since.as_secs(), 1_000_000_000, "{}", path.display());
+    }
+    // Removable again, whatever the platform makes of a read-only file.
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "a temporary file in the test's own directory"
+    )]
+    {
+        let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&file, permissions).unwrap();
+    }
+}
+
+#[skuld::test]
 fn executable_bit_round_trips_on_unix_and_is_inert_on_windows(#[fixture(unicode_home)] home: &Path) {
     let tool = home.join("tool");
     std::fs::write(&tool, b"#!/bin/sh").unwrap();

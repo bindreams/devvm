@@ -97,9 +97,9 @@ pub(crate) trait Host: Send + Sync {
     /// Adds execute where read is set; does nothing on Windows.
     fn set_executable(&self, path: &Path) -> std::io::Result<()>;
 
-    /// Sets the modification time of the file `path` to `seconds` since 1970. It needs no write access to the file's
-    /// contents, so a file that is read-only to its owner takes it.
-    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()>;
+    /// Sets the modification time of the file or directory `path` to `seconds` since 1970. It needs no write access to
+    /// the contents, so a file that is read-only to its owner takes it.
+    fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()>;
 
     /// Why `name`, a file name taken from a guest, cannot be one file name in a directory on this host (a Windows
     /// host refuses `a\b`, `C:\z`, device names and more); `None` when it can.

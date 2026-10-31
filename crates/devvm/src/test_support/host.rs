@@ -50,8 +50,8 @@ impl Host for TestHost {
         host::current().set_executable(path)
     }
 
-    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
-        host::current().set_file_mtime(path, seconds)
+    fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        host::current().set_mtime(path, seconds)
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
@@ -128,8 +128,8 @@ impl Host for NoAccelHost {
         TestHost.set_executable(path)
     }
 
-    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
-        TestHost.set_file_mtime(path, seconds)
+    fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        TestHost.set_mtime(path, seconds)
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
@@ -294,8 +294,8 @@ impl Host for RecordingHost {
         TestHost.set_executable(path)
     }
 
-    fn set_file_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
-        TestHost.set_file_mtime(path, seconds)
+    fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        TestHost.set_mtime(path, seconds)
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
