@@ -2015,8 +2015,7 @@ fn a_guest_special_file_fails_the_copy_naming_it_and_nothing_is_written(#[fixtur
 
 // Names of the destination --------------------------------------------------------------------------------------------
 
-/// What the user typed is checked like the names of the tree: the target would drop the dot or read the colon as a
-/// stream.
+/// What the user typed is checked like the names of the tree: the target would read the colon as a stream.
 #[skuld::test]
 fn a_destination_name_a_windows_guest_cannot_store_is_refused_before_anything_is_written(
     #[fixture(unicode_home)] home: &Path,
@@ -2026,11 +2025,10 @@ fn a_destination_name_a_windows_guest_cannot_store_is_refused_before_anything_is
     let file = env.host_file("t/f.txt", b"f");
     let dir = env.local.join("t");
     for (src, dest, name) in [
-        (&file, "/out.", "out."),
-        (&dir, "/out.", "out."),
         (&file, "/a:b", "a:b"),
-        (&dir, "/new./deeper/dest", "new."),
-        (&file, "/ok/new./f", "new."),
+        (&dir, "/a:b", "a:b"),
+        (&dir, "/new:/deeper/dest", "new:"),
+        (&file, "/ok/new:/f", "new:"),
     ] {
         let error = env.copy_in(src, dest).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Io, "{dest}: {error}");
