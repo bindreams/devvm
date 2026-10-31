@@ -638,6 +638,13 @@ async fn finish(handle: &russh::server::Handle, channel: ChannelId, status: u32)
 
 async fn script(state: Arc<State>, handle: russh::server::Handle, channel: ChannelId, command: String) {
     let words: Vec<&str> = command.split_whitespace().collect();
+    if let ["cloud-init", "status", "--wait", "--format", "json"] = words.as_slice()
+        && let Some((code, reply)) = &state.options.cloud_init
+    {
+        let _ = handle.data(channel, reply.clone().into_bytes()).await;
+        finish(&handle, channel, *code).await;
+        return;
+    }
     match words.as_slice() {
         ["exit", n] => finish(&handle, channel, n.parse().expect("exit takes a number")).await,
         ["say-error-and-exit-125"] => {
@@ -752,11 +759,6 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
         ["echo", rest @ ..] => {
             let _ = handle.data(channel, format!("{}\n", rest.join(" ")).into_bytes()).await;
             finish(&handle, channel, 0).await;
-        }
-        ["cloud-init", "status", "--wait", "--format", "json"] if state.options.cloud_init.is_some() => {
-            let (code, reply) = state.options.cloud_init.clone().expect("checked by the guard");
-            let _ = handle.data(channel, reply.into_bytes()).await;
-            finish(&handle, channel, code).await;
         }
         _ => {
             let _ = handle
