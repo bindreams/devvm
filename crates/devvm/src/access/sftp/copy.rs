@@ -191,7 +191,12 @@ where
         times: S::SOURCE_TIMES,
     };
     plan::check_names(&items, &rules)?;
-    plan::check_destination(&dst.chain(dest), &rules, &mut |path| dst.present(path, false))?;
+    plan::check_destination(
+        &dst.chain(dest),
+        &rules,
+        &mut |path| dst.present(path, false),
+        &|path| dst.show(path),
+    )?;
     let present = dst.present(dest, true)?;
     let what = format!("the {} {} {}", S::NAME, top.noun(), src.show(from));
     let source = if top.is_dir() { Source::Dir } else { Source::Entry };

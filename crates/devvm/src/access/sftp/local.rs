@@ -337,15 +337,7 @@ impl CopySide for HostSide<'_> {
             }
             Ok(metadata) if metadata.is_dir() => Ok(Present::Dir),
             Ok(_) => Ok(Present::File),
-            // Below a file there is nothing; making it is what says why not (`create_dir`).
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) =>
-            {
-                Ok(Present::Nothing)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Present::Nothing),
             Err(e) => Err(local_error("cannot inspect", self.name(path), e)),
         }
     }

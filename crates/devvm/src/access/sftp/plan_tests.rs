@@ -109,13 +109,18 @@ fn a_failed_look_up_below_a_name_the_target_cannot_store_still_names_that_name()
     };
     let invalid = || crate::Error::new(ErrorKind::Io, "cannot inspect: invalid name");
     // Only `y` fails to be looked up, as the target cannot read a path through `a:b`; nothing exists.
-    let error = check_destination(&chain(&["out", "a:b", "y"]), &rules, &mut |path: &String| {
-        if path.ends_with("/y") {
-            Err(invalid())
-        } else {
-            Ok(Present::Nothing)
-        }
-    })
+    let error = check_destination(
+        &chain(&["out", "a:b", "y"]),
+        &rules,
+        &mut |path: &String| {
+            if path.ends_with("/y") {
+                Err(invalid())
+            } else {
+                Ok(Present::Nothing)
+            }
+        },
+        &|path: &String| path.clone(),
+    )
     .unwrap_err();
     assert!(error.message().contains("\"a:b\""), "{error}");
     assert!(error.message().contains("cannot be created"), "{error}");
@@ -128,9 +133,25 @@ fn a_failed_look_up_below_a_name_the_target_cannot_store_still_names_that_name()
             "out/ok/y" => Err(invalid()),
             _ => Ok(Present::Nothing),
         },
+        &|path: &String| path.clone(),
     )
     .unwrap_err();
     assert!(error.message().contains("invalid name"), "{error}");
+    // A file in the way is why the names below it cannot be looked up, and what is told.
+    let error = check_destination(
+        &chain(&["out", "a", "b"]),
+        &rules,
+        &mut |path: &String| match path.as_str() {
+            "out" => Ok(Present::File),
+            _ => Err(invalid()),
+        },
+        &|path: &String| format!("<{path}>"),
+    )
+    .unwrap_err();
+    assert!(
+        error.message().contains("<out> exists and is not a directory"),
+        "{error}"
+    );
 }
 
 /// No real file system lists a name twice, so the fake server cannot be made to; the check is tested directly.

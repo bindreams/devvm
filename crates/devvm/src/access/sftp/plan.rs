@@ -251,17 +251,25 @@ pub(super) struct Rules<'a> {
 /// holds the destination's names from the outermost, each with the path that ends in it (`None` for a part that is no
 /// name: a root, `.`, `..`). Names are looked up from the innermost, and the first that exists ends the check: the
 /// target stores what it holds. A name that cannot be looked up is refusing to be, and says so less plainly; the names
-/// above it are checked first, as one of them may be why, and its refusal is the plain one.
+/// above it are checked first, as one of them may be why, and its refusal is the plain one. A lookup that failed below
+/// a file is failing because of it: the file is what is told, as `show` writes its path.
 pub(super) fn check_destination<P>(
     chain: &[(Option<String>, P)],
     rules: &Rules,
     present: &mut dyn FnMut(&P) -> Result<Present>,
+    show: &dyn Fn(&P) -> String,
 ) -> Result<()> {
     let mut lookup_failed = None;
     for (name, path) in chain.iter().rev() {
         let Some(name) = name else { continue };
         let found = present(path);
         if matches!(found, Ok(found) if found != Present::Nothing) {
+            if matches!(found, Ok(Present::File)) && lookup_failed.is_some() {
+                return Err(Error::new(
+                    ErrorKind::Io,
+                    format!("the destination path {} exists and is not a directory", show(path)),
+                ));
+            }
             break;
         }
         if let Some(problem) = (rules.problem)(name) {
