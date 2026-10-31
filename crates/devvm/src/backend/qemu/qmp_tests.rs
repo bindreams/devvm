@@ -682,6 +682,9 @@ fn connected_to_a_server_that_wrote(
     (server, qmp)
 }
 
+// macOS flushes unread bytes when `shutdown(Read)` wakes a reader (measured in CI), so `UnsupportedHost` cannot keep them
+// there; Windows and Linux keep them.
+#[cfg(not(target_vendor = "apple"))]
 #[skuld::test]
 fn a_reply_that_arrived_before_the_exit_is_read_after_it() {
     let sock = sock();
@@ -696,6 +699,9 @@ fn a_reply_that_arrived_before_the_exit_is_read_after_it() {
     server.join().unwrap();
 }
 
+// macOS flushes unread bytes when `shutdown(Read)` wakes a reader (measured in CI), so `UnsupportedHost` cannot keep them
+// there; Windows and Linux keep them.
+#[cfg(not(target_vendor = "apple"))]
 #[skuld::test]
 fn a_no_reboot_shutdown_that_arrived_before_the_exit_is_still_read() {
     let sock = sock();

@@ -40,7 +40,8 @@ impl Host for UnsupportedHost {
     }
 
     fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
-        // A thread blocked reading wakes with the end of the stream, after the bytes already received. A peer that is
+        // A thread blocked reading wakes with the end of the stream. Linux delivers the bytes already received first;
+        // macOS drops them (measured in CI). A peer that is
         // gone already leaves nothing to wake: its end of the stream has been delivered.
         match connection.shutdown(Shutdown::Read) {
             Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),

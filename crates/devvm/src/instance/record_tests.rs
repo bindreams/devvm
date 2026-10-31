@@ -101,7 +101,8 @@ const GOLDEN: &str = r#"{
       }
     ],
     "serial_log": "/state/serial.log",
-    "leftovers": []
+    "leftovers": [],
+    "no_reboot": false
   }
 }"#;
 
