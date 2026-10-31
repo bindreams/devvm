@@ -51,6 +51,9 @@ pub(super) fn is_absent(e: &io::Error) -> bool {
     )
 }
 
+/// The start of the note that lists the variables git will not see.
+pub(super) const UNSET_NOTE_PREFIX: &str = "The following variables have been unset: ";
+
 /// The `git` a snapshot runs: the same commands in every call, in an environment that holds none of this process's
 /// `GIT_*` variables but the ones that add to git's configuration. A git hook sets `GIT_DIR` and `GIT_INDEX_FILE`,
 /// and a user may set `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG` or `GIT_TRACE=/dev/stdout`: each makes git read another
@@ -71,7 +74,7 @@ impl<'a> Git<'a> {
         let cleared = cleared_names(host, names);
         if !cleared.is_empty() {
             let list: Vec<_> = cleared.iter().map(|name| name.to_string_lossy()).collect();
-            progress.message(&format!("The following variables have been unset: {}", list.join(", ")));
+            progress.message(&format!("{UNSET_NOTE_PREFIX}{}", list.join(", ")));
         }
         Git { host, cleared }
     }

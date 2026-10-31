@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::copy::git::UNSET_NOTE_PREFIX;
 use crate::copy::{Snapshot, snapshot};
 use crate::host::Host;
 use crate::recipe::hash::{CopyManifest, EntryContent, KeyContext, LayerKey, RootContent, root_key, step_key};
@@ -95,7 +96,8 @@ pub(crate) struct Taken {
     pub notes: Vec<String>,
 }
 
-/// `snapshot` of `from` into a fresh directory `scratch/out`.
+/// `snapshot` of `from` into a fresh directory `scratch/out`. `notes` leaves out the note that lists the `GIT_*`
+/// variables of this process, which differs from one machine to the next.
 pub(crate) fn take(from: &Path, read_only: bool, scratch: &Path) -> crate::Result<Taken> {
     let into = scratch.join("out");
     std::fs::create_dir_all(&into).unwrap();
@@ -103,7 +105,11 @@ pub(crate) fn take(from: &Path, read_only: bool, scratch: &Path) -> crate::Resul
     let snapshot = snapshot(&TestHost, from, read_only, &into, &progress)?;
     Ok(Taken {
         snapshot,
-        notes: progress.messages(),
+        notes: progress
+            .messages()
+            .into_iter()
+            .filter(|note| !note.starts_with(UNSET_NOTE_PREFIX))
+            .collect(),
     })
 }
 
