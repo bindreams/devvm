@@ -4,7 +4,10 @@
 //! or `Handle::block_on`: those panic inside another runtime, and a library caller may be in its own async test.
 
 use std::future::Future;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::pin::pin;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::task::{Context, Poll, Wake, Waker};
+use std::thread::{self, Thread};
 
 use tokio::runtime::{Builder, Runtime};
 
@@ -62,12 +65,36 @@ where
     Ok(runtime()?.spawn(task))
 }
 
+/// Wakes the thread that is parked in [`wait`].
+struct Unpark(Thread);
+
+impl Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
 /// Waits for `future` on the calling thread. The future may be a tokio channel receiver or a join handle: those do
-/// not need to be polled by a tokio runtime, so this is safe inside one. It runs outside the cooperative budget of an
+/// not need to be polled by a tokio runtime, so this is safe inside one. It enters no executor, so it is as safe
+/// inside `futures`' executors, which panic when entered twice. It runs outside the cooperative budget of an
 /// enclosing tokio task: a wait that never returns to the scheduler would never get the budget back and would hang
 /// once it ran out.
 pub(crate) fn wait<F: Future>(future: F) -> F::Output {
-    futures::executor::block_on(tokio::task::unconstrained(future))
+    let mut future = pin!(tokio::task::unconstrained(future));
+    let waker = Waker::from(Arc::new(Unpark(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return output;
+        }
+        // A wake that came before this park left a token, so the park returns at once; a wake with nothing new only
+        // costs one more poll.
+        thread::park();
+    }
 }
 
 fn panicked(what: &str) -> Error {

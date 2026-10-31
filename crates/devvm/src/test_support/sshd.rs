@@ -20,6 +20,7 @@
 //! | `extended-data-and-hold N` | writes a line to extended-data stream N, then does nothing and never answers |
 //! | `status-then-extended-data N` | writes `before the status` to stdout, sends `exit-status 7`, then a line to stream N, closes |
 //! | `echo ...` | prints the rest of the line, exits 0 |
+//! | `read-stdin` | waits for the client to send EOF, then prints `stdin ended` and exits 0 |
 //!
 //! Options make connections misbehave: a host key other than the advertised one, a refused client key, a peer that
 //! accepts the connection and never speaks. The SFTP part serves a directory, with virtual symlinks, modes,
@@ -108,6 +109,7 @@ pub(crate) struct State {
     pub(crate) read_only_dirs: Mutex<HashSet<String>>,
     pub(crate) failing_data: Mutex<HashSet<String>>,
     pub(crate) phantoms: Mutex<HashSet<String>>,
+    pub(crate) unlookable: Mutex<HashSet<String>>,
     pub(crate) listed_again: Mutex<HashSet<String>>,
     pub(crate) discarding: Mutex<HashSet<String>>,
     pub(crate) generated: Mutex<HashMap<String, u64>>,
@@ -171,6 +173,7 @@ impl TestSshd {
             read_only_dirs: Mutex::default(),
             failing_data: Mutex::default(),
             phantoms: Mutex::default(),
+            unlookable: Mutex::default(),
             listed_again: Mutex::default(),
             specials: Mutex::default(),
             discarding: Mutex::default(),
@@ -322,6 +325,11 @@ impl TestSshd {
         self.state.phantoms.lock().unwrap().insert(path.to_owned());
     }
 
+    /// Looking at `path` through a symlink is refused with permission denied.
+    pub fn refuse_lookup(&self, path: &str) {
+        self.state.unlookable.lock().unwrap().insert(path.to_owned());
+    }
+
     /// A directory listing names `path`, an entry that exists, a second time, at its end.
     pub fn list_again(&self, path: &str) {
         self.state.listed_again.lock().unwrap().insert(path.to_owned());
@@ -395,6 +403,7 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
             index,
             channels: HashMap::new(),
             drop_now: Arc::new(Notify::new()),
+            reading_stdin: HashSet::new(),
         };
         // The session reads and writes a pipe that a proxy task joins to the TCP stream, so ending the proxy drops the
         // connection without a word.
@@ -430,6 +439,8 @@ struct Connection {
     channels: HashMap<ChannelId, Channel<Msg>>,
     /// Fired by the `drop-connection` script: the TCP connection is dropped without a word.
     drop_now: Arc<Notify>,
+    /// Channels running `read-stdin`: they end when the client sends EOF.
+    reading_stdin: HashSet<ChannelId>,
 }
 
 impl Handler for Connection {
@@ -495,6 +506,21 @@ impl Handler for Connection {
         Ok(())
     }
 
+    async fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
+        if self.reading_stdin.remove(&channel) {
+            session.data(
+                channel,
+                b"stdin ended
+"
+                .to_vec(),
+            )?;
+            session.exit_status_request(channel, 0)?;
+            session.eof(channel)?;
+            session.close(channel)?;
+        }
+        Ok(())
+    }
+
     async fn exec_request(
         &mut self,
         channel: ChannelId,
@@ -513,6 +539,9 @@ impl Handler for Connection {
             ["drop-connection"] => {
                 let _ = handle.data(channel, b"about to drop\n".to_vec()).await;
                 self.drop_now.notify_one();
+            }
+            ["read-stdin"] => {
+                self.reading_stdin.insert(channel);
             }
             _ => {
                 let state = self.state.clone();

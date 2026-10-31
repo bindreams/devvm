@@ -656,6 +656,21 @@ fn links_in_a_tree_are_copied_as_links_in_both_directions(#[fixture(unicode_home
     assert_eq!(tree(&env.local.join("back")), want);
 }
 
+/// A tree link whose target the guest refuses to look at is not "a link to a file": the copy fails naming the link
+/// and what the guest said.
+#[skuld::test(requires = [scripted_server])]
+fn a_guest_link_whose_target_the_guest_refuses_to_look_at_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("pack/real.txt", b"real");
+    env.guest_link("/pack/locked", "/secret");
+    env.rig.sshd.refuse_lookup("/secret");
+    let error = env.copy_out("/pack", &env.local.join("back")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("/pack/locked"), "{error}");
+    assert!(error.message().contains("Permission denied"), "the cause: {error}");
+    assert!(!env.local.join("back").exists(), "nothing is written");
+}
+
 #[skuld::test]
 fn a_link_given_as_the_source_is_copied_as_a_link_and_with_a_slash_it_is_followed_once(
     #[fixture(unicode_home)] home: &Path,
@@ -1476,6 +1491,34 @@ fn errors_name_the_host_destination_exactly_as_typed(#[fixture(unicode_home)] ho
     ] {
         let error = env.copy_out("/proj", Path::new(&typed)).unwrap_err();
         let wanted = format!("onto {}{sep}sub on this host", typed.trim_end_matches(sep));
+        assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
+    }
+}
+
+/// The file that a destination lies below is named as its own name, with the destination as the user typed it, not as
+/// the copy normalised it.
+#[skuld::test]
+fn a_file_above_the_destination_is_named_with_the_destination_as_typed(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"f");
+    env.copy_in(&file, "/in.txt").unwrap();
+    for typed in ["~/in.txt/x", "/a/../in.txt/x", "/x//../in.txt/x", "/./in.txt/x/y/"] {
+        let error = env.copy_in(&file, typed).expect_err(typed);
+        let wanted = format!("in.txt (a part of {typed}) exists and is not a directory");
+        assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
+    }
+
+    env.guest_file("g.txt", b"g");
+    env.host_file("out.txt", b"x");
+    let local = env.local.display().to_string();
+    let sep = std::path::MAIN_SEPARATOR;
+    for typed in [
+        format!("{local}{sep}out.txt{sep}x"),
+        format!("{local}{sep}y{sep}..{sep}out.txt{sep}x"),
+        format!("{local}{sep}.{sep}out.txt{sep}x{sep}z"),
+    ] {
+        let error = env.copy_out("/g.txt", Path::new(&typed)).unwrap_err();
+        let wanted = format!("out.txt (a part of {typed}) exists and is not a directory");
         assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
     }
 }

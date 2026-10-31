@@ -38,11 +38,12 @@ impl Typed {
     }
 
     /// `path` as the user would write it: the root is the typed text, a path below it is the typed text and the rest.
-    /// A path elsewhere (a temporary file beside the root) is not the user's and stays as it is.
+    /// A part above the root is its own name and the typed text it belongs to: the user never wrote the path to it. A
+    /// path elsewhere (a temporary file beside the root) is not the user's and stays as it is.
     pub(super) fn name(&self, path: String) -> String {
         let Some(root) = &self.root else { return path };
         let Some(rest) = path.strip_prefix(root.as_str()) else {
-            return path;
+            return self.part_above(root, path);
         };
         if rest.is_empty() {
             return self.typed.clone();
@@ -63,5 +64,25 @@ impl Typed {
             .or_else(|| root.chars().next_back())
             .expect("a root that ends the prefix has a last character");
         format!("{base}{separator}{name}")
+    }
+
+    /// `path` when it is a directory above the root: its last name and the typed text it is a part of.
+    fn part_above(&self, root: &str, path: String) -> String {
+        let Some(rest) = root
+            .strip_prefix(path.as_str())
+            .filter(|rest| !path.is_empty() && !rest.is_empty())
+        else {
+            return path;
+        };
+        let above = rest.starts_with(self.is_separator) || path.ends_with(self.is_separator);
+        let name = path
+            .trim_end_matches(self.is_separator)
+            .rsplit(self.is_separator)
+            .next();
+        match name.filter(|name| above && !name.is_empty()) {
+            Some(name) => format!("{name} (a part of {})", self.typed),
+            None if above => format!("{path} (a part of {})", self.typed),
+            None => path,
+        }
     }
 }

@@ -357,7 +357,7 @@ enum Failure {
 impl Failure {
     fn into_error(self, ctx: &Context, bound: Option<Duration>) -> Error {
         let awaiting = format!("waiting for SSH on {} to answer", ctx.addr);
-        let within = bound.map_or(String::new(), |b| format!(" within {b:?}"));
+        let within = bound.map_or(String::new(), |b| format!(" within {}", humanly(b)));
         match self {
             Failure::Tcp(e) => ctx.lost(&awaiting, &format!("no answer{within}; the connection failed: {e}")),
             Failure::Transport(e) => ctx.lost(&awaiting, &format!("no answer{within}; the handshake failed: {e}")),
@@ -525,9 +525,10 @@ impl Connect {
         match outcome {
             Ok(Ok(parts)) => Ok(self.session(parts)),
             Ok(Err(failure)) => Err(failure.into_error(&self.ctx, None)),
-            Err(_) => Err(self
-                .ctx
-                .lost(&awaiting, &format!("no answer within the handshake bound of {bound:?}"))),
+            Err(_) => Err(self.ctx.lost(
+                &awaiting,
+                &format!("no answer within the handshake bound of {}", humanly(bound)),
+            )),
         }
     }
 

@@ -37,13 +37,14 @@ toml = "1.1"
 russh = { version = "0.65", default-features = false, features = ["ring"] }
 russh-sftp = "3"
 rand = "0.10"
-futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "fs"] }
 
 [dev-dependencies]
 skuld = { workspace = true }
 # Virtual time for the boot-gate test (`access/session_tests.rs`).
 tokio = { version = "1", features = ["test-util", "process"] }
+# The executors a library caller may be inside (`test_support/callers.rs`).
+futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
 
 # Windows directories, the ANSI code page and the hypervisor come from the OS (`host/windows.rs`); QMP is AF_UNIX
 # (`backend/qemu/uds.rs`).

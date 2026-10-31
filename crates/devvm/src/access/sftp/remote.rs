@@ -278,16 +278,10 @@ impl Remote {
     }
 
     /// Whether the symlink `path` of a source tree leads to a directory, as far as the guest says: the link is copied
-    /// as it is, so a target that cannot be looked at (a loop, no permission) counts as none.
+    /// as it is, so a target that does not exist or loops (the server's "no such file") counts as none. A target the
+    /// guest refuses to look at is an error.
     async fn source_leads_to_dir(&self, path: &str) -> Result<bool> {
-        match self.session.metadata(path).await {
-            Ok(attrs) => Ok(attrs.file_type().is_dir()),
-            Err(SftpError::Status(_)) => Ok(false),
-            Err(e) => Err(self.error(
-                &format!("cannot inspect the guest path {path}", path = self.shown(path)),
-                e,
-            )),
-        }
+        Ok(self.stat(path).await?.is_some_and(|attrs| attrs.file_type().is_dir()))
     }
 
     /// What the destination `path` is. A symlink is reported as leading to a directory only when `follow` is set, which

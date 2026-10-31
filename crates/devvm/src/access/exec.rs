@@ -132,6 +132,9 @@ async fn pump(
         .exec(true, command.as_bytes())
         .await
         .map_err(|_| inner.connection_ended(awaiting))?;
+    // The command has no stdin, as with `ssh host cmd </dev/null`: one that reads it would wait forever. A send that
+    // fails means the connection is gone, which the wait below reports.
+    let _ = channel.eof().await;
     loop {
         let message = tokio::select! {
             message = channel.wait() => message,

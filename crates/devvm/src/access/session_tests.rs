@@ -1,17 +1,19 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use russh::keys::{HashAlg, PublicKey};
+use russh::keys::{HashAlg, PrivateKey, PublicKey};
 
 use crate::ErrorKind;
-use crate::access::session::{BootGate, ClientHandler, Transport, humanly};
-use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, VmExit};
+use crate::access::keys::InstanceKeys;
+use crate::access::session::{BootGate, ClientHandler, Connect, Context, Failure, Transport, humanly};
+use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, SshTarget, VmExit};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::exit::{ExitStatus, ExitWidth, NullProgress};
+use crate::test_support::callers::in_every_caller_context;
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::sshd::{FAST_KEEPALIVE as FAST, Rig, TestSshd};
 
@@ -99,6 +101,18 @@ fn echo_round_trips_through_exec_collect(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(status, ExitStatus::Code(0));
     assert_eq!(stdout, b"hello world\n");
     assert!(stderr.is_empty());
+}
+
+/// The guest command has no stdin, as with `ssh host cmd </dev/null`: one that reads it to the end ends.
+#[skuld::test]
+fn a_command_that_reads_stdin_sees_the_end_of_it(#[fixture(unicode_home)] home: &Path) {
+    let output = Rig::new(home).connect().exec_collect("read-stdin").unwrap();
+    assert_eq!(output.status, ExitStatus::Code(0));
+    assert_eq!(
+        output.stdout,
+        b"stdin ended
+"
+    );
 }
 
 #[skuld::test]
@@ -494,6 +508,63 @@ fn a_duration_is_told_in_units_a_person_reads() {
     assert!(!humanly(Duration::MAX).is_empty());
 }
 
+/// A connect to a peer that accepts the connection and never speaks, on virtual time: the bounds below pass at once.
+fn silent_peer_connect(ka: Keepalive, listener: &std::net::TcpListener) -> Connect {
+    let keys = InstanceKeys::generate().unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serial_log = std::path::PathBuf::from("serial.log");
+    Connect {
+        target: SshTarget {
+            addr,
+            user: "user".to_owned(),
+            client_private: keys.client_private.clone(),
+            host_public: keys.client_public.clone(),
+            serial_log: serial_log.clone(),
+        },
+        pinned: PublicKey::from_openssh(&keys.client_public).unwrap(),
+        key: Arc::new(PrivateKey::from_openssh(&keys.client_private).unwrap()),
+        ka,
+        handshake_bound: ka.handshake_bound().unwrap(),
+        vm: VmExit::never(),
+        boot: None,
+        ctx: Context {
+            addr,
+            user: "user".to_owned(),
+            serial_log,
+            host_public: keys.client_public,
+        },
+    }
+}
+
+#[skuld::test]
+fn the_handshake_bound_is_told_in_units_a_person_reads() {
+    // The kernel completes the TCP handshake of a listener that never accepts, so the peer is silent after it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let ka = Keepalive {
+        interval: Duration::from_secs(30),
+        max_missed: 2,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let error = runtime
+        .block_on(silent_peer_connect(ka, &listener).once())
+        .err()
+        .expect("the connect fails");
+    assert!(error.message().contains("handshake bound of 1m 30s"), "{error}");
+}
+
+#[skuld::test]
+fn the_bound_of_the_last_failed_attempt_is_told_in_units_a_person_reads() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let connect = silent_peer_connect(FAST, &listener);
+    let refused = Failure::Tcp(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+    let error = refused.into_error(&connect.ctx, Some(Duration::from_secs(90)));
+    assert!(error.message().contains("within 1m 30s"), "{error}");
+}
+
 #[skuld::test]
 fn a_command_in_flight_when_the_boot_bound_passes_has_its_channel_closed(#[fixture(unicode_home)] home: &Path) {
     // The guard drops the wait for the command; the command keeps running on the guest, with an output pipe nobody reads,
@@ -844,45 +915,33 @@ fn a_command_that_failed_carries_the_flush_that_failed_with_it_and_both_sinks_ar
 // The facade ==========================================================================================================
 
 #[skuld::test]
-fn blocking_api_works_inside_a_tokio_runtime(#[fixture(unicode_home)] home: &Path) {
+fn connect_works_from_every_caller_context(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
-    let outer = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .build()
-        .unwrap();
     let target = rig.target();
-    let status = outer.block_on(async move {
-        tokio::spawn(async move {
-            let session = SshSession::connect(&target, FAST, VmExit::never(), None, &NullProgress).unwrap();
-            session.exec_collect("exit 3").unwrap().status
-        })
-        .await
-        .unwrap()
+    in_every_caller_context(move || {
+        let session = SshSession::connect(&target, FAST, VmExit::never(), None, &NullProgress).unwrap();
+        assert_eq!(session.exec_collect("exit 3").unwrap().status, ExitStatus::Code(3));
     });
-    assert_eq!(status, ExitStatus::Code(3));
 }
 
 #[skuld::test]
-fn many_commands_inside_one_outer_task_complete(#[fixture(unicode_home)] home: &Path) {
-    // Every command waits on tokio channels, which spend the outer task's cooperative budget of 128 units.
-    const COMMANDS: usize = 300;
+fn exec_collect_works_from_every_caller_context(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
-    let outer = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .build()
-        .unwrap();
-    let target = rig.target();
-    let statuses = outer.block_on(async move {
-        tokio::spawn(async move {
-            let session = SshSession::connect(&target, FAST, VmExit::never(), None, &NullProgress).unwrap();
-            (0..COMMANDS)
-                .map(|_| session.exec_collect("exit 3").unwrap().status)
-                .collect::<Vec<_>>()
-        })
-        .await
-        .unwrap()
+    let session = rig.connect();
+    in_every_caller_context(move || {
+        assert_eq!(session.exec_collect("exit 3").unwrap().status, ExitStatus::Code(3));
     });
-    assert_eq!(statuses, vec![ExitStatus::Code(3); COMMANDS]);
+}
+
+#[skuld::test]
+fn an_sftp_call_works_from_every_caller_context(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let sftp = session.sftp().unwrap();
+    in_every_caller_context(move || {
+        let _keep = &session;
+        assert_eq!(sftp.home().unwrap(), "/");
+    });
 }
 
 #[skuld::test]
