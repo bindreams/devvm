@@ -12,74 +12,97 @@ mod ready_tests;
 pub(super) const CLOUD_INIT_STATUS: &str = "cloud-init status --wait --format json";
 
 /// Reads the reply of [`CLOUD_INIT_STATUS`]. Anything but a `done` that agrees with its exit code is an error that
-/// quotes the reply. A command that failed is reported by its exit, before anything about its reply. The reply of a
-/// command that exited 0 and cannot be read because `output.loss` cut it short is an error of the loss's kind.
+/// quotes the reply. The error is built from every fact in `output` (see [`Cause`] for which one leads) and keeps all of
+/// them.
 pub(super) fn readiness(output: &Output) -> Result<Readiness> {
-    let failure = |what: &str| {
-        Error::new(
-            ErrorKind::Io,
-            format!(
-                "cloud-init did not finish a normal first boot: {what} (`{CLOUD_INIT_STATUS}`: {})",
-                describe(output, true)
-            ),
-        )
-    };
+    assess(output).map_err(|cause| cause.into_error(output))
+}
+
+/// Why `cloud-init status` is not a normal finish, as the headline of the error. The first that holds is the cause:
+/// a signal; an exit code cloud-init does not document (not 0, 1 or 2); a lost connection, when the exit is
+/// documented and the reply cannot be read; the reply's own problem. For a documented exit with a readable reply the
+/// reply's text is the cause.
+enum Cause<'a> {
+    Signal(&'a str),
+    UndocumentedExit(i32),
+    LostConnection(&'a Error),
+    Reply(String),
+}
+
+fn assess(output: &Output) -> std::result::Result<Readiness, Cause<'_>> {
     let code = match &output.status {
         ExitStatus::Code(code) => *code,
-        ExitStatus::Signal { name, .. } => {
-            return Err(command_failure(output, &format!("was killed by signal {name}")));
-        }
+        ExitStatus::Signal { name, .. } => return Err(Cause::Signal(name)),
     };
+    if !matches!(code, 0..=2) {
+        return Err(Cause::UndocumentedExit(code));
+    }
     let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout);
     let reply = parsed
         .as_ref()
         .ok()
         .filter(|reply| reply.get("status").is_some_and(serde_json::Value::is_string));
     let Some(reply) = reply else {
-        // A failed command's own exit is the cause of whatever is wrong with its reply, and of a connection lost after
-        // the exit arrived.
-        if code != 0 {
-            return Err(command_failure(output, &format!("exited with exit code {code}")));
-        }
-        return Err(match (&parsed, &output.loss) {
-            // The connection broke after the status arrived: the reply is cut short, and the loss is the cause.
-            (Err(_), Some(loss)) => Error::new(
-                loss.kind(),
-                format!(
-                    "cloud-init's reply was cut short: {} (`{CLOUD_INIT_STATUS}`: {})",
-                    loss.message(),
-                    describe(output, true)
-                ),
-            ),
-            (Err(e), None) => failure(&format!("its reply is not JSON ({e})")),
-            (Ok(_), _) => failure("its reply has no `status` text"),
+        return Err(match (&output.loss, &parsed) {
+            (Some(loss), _) => Cause::LostConnection(loss),
+            (None, Err(e)) => Cause::Reply(format!("its reply is not JSON ({e})")),
+            (None, Ok(_)) => Cause::Reply("its reply has no `status` text".to_owned()),
         });
     };
     match reply["status"].as_str().unwrap_or_default() {
-        "done" => done(reply, code, &failure),
-        other => Err(failure(&format!("its status is `{other}`"))),
+        "done" => done(reply, code).map_err(Cause::Reply),
+        other => Err(Cause::Reply(format!("its status is `{other}`"))),
     }
 }
 
-/// The error for a `cloud-init status` that did not exit normally: what happened to it, then its stderr, which is
-/// then left out of the quoted output.
-fn command_failure(output: &Output, what: &str) -> Error {
-    let stderr = match output.stderr_lossy().trim() {
-        "" => String::new(),
-        stderr => format!(": {stderr}"),
-    };
-    Error::new(
-        ErrorKind::Io,
-        format!(
-            "cloud-init did not finish a normal first boot: it {what}{stderr} (`{CLOUD_INIT_STATUS}`: {})",
-            describe(output, false)
-        ),
-    )
+impl Cause<'_> {
+    /// The error: the cause as the headline, then the exit, `core_dumped`, stdout, and whichever of stderr and the loss
+    /// the headline does not already carry. The kind is the loss's for a lost connection, `Io` otherwise.
+    fn into_error(self, output: &Output) -> Error {
+        let stderr = output.stderr_lossy();
+        let stderr = stderr.trim();
+        // A command that did not exit normally says why in its stderr, so the headline carries it.
+        let with_stderr = |what: String| {
+            if stderr.is_empty() {
+                what
+            } else {
+                format!("{what}: {stderr}")
+            }
+        };
+        let (kind, headline) = match &self {
+            Cause::Signal(name) => (ErrorKind::Io, with_stderr(format!("it was killed by signal {name}"))),
+            Cause::UndocumentedExit(code) => (ErrorKind::Io, with_stderr(format!("it exited with exit code {code}"))),
+            Cause::LostConnection(loss) => (
+                loss.kind(),
+                format!("the connection was lost ({loss}) and its reply cannot be read"),
+            ),
+            Cause::Reply(problem) => (ErrorKind::Io, problem.clone()),
+        };
+        let stderr_led = matches!(self, Cause::Signal(_) | Cause::UndocumentedExit(_)) && !stderr.is_empty();
+        let loss_led = matches!(self, Cause::LostConnection(_));
+        let mut facts = match &output.status {
+            ExitStatus::Code(code) => format!("exit code {code}"),
+            ExitStatus::Signal { name, core_dumped } => {
+                format!("signal {name}{}", if *core_dumped { ", core dumped" } else { "" })
+            }
+        };
+        facts.push_str(&format!("; stdout: {}", output.stdout_lossy().trim()));
+        if !stderr_led {
+            facts.push_str(&format!("; stderr: {stderr}"));
+        }
+        if let (Some(loss), false) = (&output.loss, loss_led) {
+            facts.push_str(&format!("; {loss}"));
+        }
+        Error::new(
+            kind,
+            format!("cloud-init did not finish a normal first boot: {headline} (`{CLOUD_INIT_STATUS}`: {facts})"),
+        )
+    }
 }
 
-/// A `done` reply, checked against the exit code and the error lists. cloud-init exits 0 for a clean finish and 2 when
-/// it recorded recoverable errors; any other code, or a non-empty `errors`, contradicts `done`.
-fn done(reply: &serde_json::Value, code: i32, failure: &dyn Fn(&str) -> Error) -> Result<Readiness> {
+/// A `done` reply, checked against the exit code (0, 1 or 2 here) and the error lists. cloud-init exits 0 for a clean
+/// finish and 2 when it recorded recoverable errors; 1, or a non-empty `errors`, contradicts `done`.
+fn done(reply: &serde_json::Value, code: i32) -> std::result::Result<Readiness, String> {
     let nonempty = |key: &str| {
         reply.get(key).filter(|value| match value {
             serde_json::Value::Null => false,
@@ -89,14 +112,10 @@ fn done(reply: &serde_json::Value, code: i32, failure: &dyn Fn(&str) -> Error) -
         })
     };
     if let Some(errors) = nonempty("errors") {
-        return Err(failure(&format!(
-            "its status is `done` but it reports errors: {errors}"
-        )));
+        return Err(format!("its status is `done` but it reports errors: {errors}"));
     }
     if !matches!(code, 0 | 2) {
-        return Err(failure(&format!(
-            "its status is `done` but it exited with exit code {code}, not 0 or 2"
-        )));
+        return Err(format!("its status is `done` but its exit code is {code}, not 0 or 2"));
     }
     let degraded_text = reply
         .get("extended_status")
@@ -111,17 +130,4 @@ fn done(reply: &serde_json::Value, code: i32, failure: &dyn Fn(&str) -> Error) -
         Some(errors) => format!("{head}: {errors}"),
         None => head.to_owned(),
     }))
-}
-
-/// The exit code and stdout of `output`, and its stderr when `stderr` is set, for an error message.
-fn describe(output: &Output, stderr: bool) -> String {
-    let code = match &output.status {
-        ExitStatus::Code(code) => format!("exit code {code}"),
-        ExitStatus::Signal { name, .. } => format!("signal {name}"),
-    };
-    let mut text = format!("{code}; stdout: {}", output.stdout_lossy().trim());
-    if stderr {
-        text.push_str(&format!("; stderr: {}", output.stderr_lossy().trim()));
-    }
-    text
 }
