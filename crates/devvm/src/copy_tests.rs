@@ -754,9 +754,14 @@ fn git_runs_without_any_variable_that_selects_a_repository(#[fixture(unicode_hom
         "GIT_OBJECT_DIRECTORY",
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_PREFIX",
+        // `git config` reads only this file, not the repository's own.
+        "GIT_CONFIG",
+        // Not in git's list, but they change which repository is found from a directory.
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
     ];
-    // These carry the user's configuration, not a repository choice.
-    let config = ["GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
+    // These add to the configuration, so the user's settings still reach git.
+    let config = ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
     for name in local.lines().chain(known).filter(|name| !config.contains(name)) {
         assert!(
             removed.iter().any(|r| r == name),

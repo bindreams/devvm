@@ -46,11 +46,17 @@ pub(super) fn is_absent(e: &io::Error) -> bool {
     )
 }
 
-/// Variables in git's local list that carry the user's configuration, not a repository choice. Kept.
-const CONFIG_VARIABLES: [&str; 3] = ["GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
+/// Variables in git's local list that add to the configuration git reads, so the user's settings still reach it. Kept.
+/// `GIT_CONFIG` is on the list too but is removed: `git config` reads only that file, not the repository's own.
+const ADDITIVE_CONFIG_VARIABLES: [&str; 2] = ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
+
+/// Variables that change which repository git finds from a directory but that `git rev-parse --local-env-vars` does
+/// not list. `GIT_CEILING_DIRECTORIES` stops the upward search below the work tree root;
+/// `GIT_DISCOVERY_ACROSS_FILESYSTEM` stops it at a mount point.
+const UNLISTED_DISCOVERY_VARIABLES: [&str; 2] = ["GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"];
 
 /// The environment variables that make `git` pick a repository (`git rev-parse --local-env-vars`, as the installed
-/// git lists them, less the configuration ones). Asked once.
+/// git lists them, less the additive configuration ones). Asked once.
 fn repository_variables(host: &dyn Host) -> Result<&'static [String]> {
     static VARIABLES: OnceLock<Vec<String>> = OnceLock::new();
     if let Some(variables) = VARIABLES.get() {
@@ -72,17 +78,21 @@ fn repository_variables(host: &dyn Host) -> Result<&'static [String]> {
     Ok(VARIABLES.get_or_init(|| {
         String::from_utf8_lossy(&out.stdout)
             .lines()
-            .filter(|name| !CONFIG_VARIABLES.contains(name))
+            .filter(|name| !ADDITIVE_CONFIG_VARIABLES.contains(name))
             .map(str::to_owned)
             .collect()
     }))
 }
 
 /// A `git` command in `dir`. It ignores the repository the caller's environment points at (a git hook sets
-/// `GIT_DIR` and `GIT_INDEX_FILE`, and may set `GIT_OBJECT_DIRECTORY`), and starts no console window.
+/// `GIT_DIR` and `GIT_INDEX_FILE`, and may set `GIT_OBJECT_DIRECTORY`) and any limit it sets on the search for one, and
+/// starts no console window.
 pub(super) fn command(host: &dyn Host, dir: &Path) -> Result<Command> {
     let mut command = Command::new("git");
     for name in repository_variables(host)? {
+        command.env_remove(name);
+    }
+    for name in UNLISTED_DISCOVERY_VARIABLES {
         command.env_remove(name);
     }
     command.current_dir(dir);
