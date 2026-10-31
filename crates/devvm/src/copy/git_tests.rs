@@ -1,6 +1,8 @@
 use std::ffi::OsString;
+use std::path::Path;
 
-use super::{Git, cleared_names};
+use super::{Git, adds_to_configuration, cleared_names};
+use crate::copy::copy_tests::git_command;
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::host::TestHost;
 
@@ -161,6 +163,24 @@ fn the_variables_of_this_process_are_read_for_each_snapshot() {
         assert!(
             !name.starts_with("GIT_CONFIG_KEY_") && !name.starts_with("GIT_CONFIG_VALUE_"),
             "{name}"
+        );
+    }
+}
+
+#[skuld::test]
+fn every_variable_git_calls_local_is_cleared_unless_it_adds_to_the_configuration() {
+    let out = git_command(Path::new("."))
+        .args(["rev-parse", "--local-env-vars"])
+        .output()
+        .expect("the tests need `git` on PATH");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let reported = names(&String::from_utf8(out.stdout).unwrap().lines().collect::<Vec<_>>());
+    assert!(!reported.is_empty(), "git reported no local variables");
+    let cleared = cleared_names(&TestHost, reported.clone());
+    for name in reported.iter().filter(|name| !cleared.contains(name)) {
+        assert!(
+            adds_to_configuration(&TestHost, name),
+            "git calls {name:?} local, and devvm leaves it set"
         );
     }
 }

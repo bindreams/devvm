@@ -95,7 +95,7 @@ impl<'a> Git<'a> {
 /// `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` and the `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs, which add
 /// to the configuration, so the user's settings still reach git. `host` decides what the same name is (Windows ignores
 /// case, by the OS's own table).
-fn cleared_names(host: &dyn Host, names: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+pub(super) fn cleared_names(host: &dyn Host, names: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     let mut cleared: Vec<OsString> = names
         .into_iter()
         .filter(|name| host.env_name_strip_prefix(name, "GIT_").is_some() && !adds_to_configuration(host, name))

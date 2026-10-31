@@ -1,8 +1,9 @@
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::copy::git::UNSET_NOTE_PREFIX;
+use crate::copy::git::{UNSET_NOTE_PREFIX, cleared_names};
 use crate::copy::{Snapshot, snapshot};
 use crate::host::Host;
 use crate::recipe::hash::{CopyManifest, EntryContent, KeyContext, LayerKey, RootContent, root_key, step_key};
@@ -13,12 +14,26 @@ use crate::{Arch, ErrorKind, Sha256};
 
 // Git repositories ====================================================================================================
 
+/// A `git` command in `dir` for the tests, in the environment the snapshot's git gets: under a git hook `GIT_DIR` and
+/// `GIT_INDEX_FILE` would otherwise send a fixture's commands into the invoking repository.
+pub(crate) fn git_command(dir: &Path) -> Command {
+    git_command_without(std::env::vars_os().map(|(name, _)| name), dir)
+}
+
+/// `git_command` for a process whose environment holds `names`.
+fn git_command_without(names: impl IntoIterator<Item = OsString>, dir: &Path) -> Command {
+    let mut command = Command::new("git");
+    for name in cleared_names(&TestHost, names) {
+        command.env_remove(name);
+    }
+    command.current_dir(dir);
+    TestHost.quiet(&mut command);
+    command
+}
+
 /// Runs `git args` in `dir` with `stdin`, and returns its stdout. Fails the test naming git when it cannot run.
 pub(crate) fn git_with(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
-    let mut command = Command::new("git");
-    TestHost.quiet(&mut command);
-    let mut child = command
-        .current_dir(dir)
+    let mut child = git_command(dir)
         .args([
             "-c",
             "user.name=devvm",
@@ -47,6 +62,17 @@ pub(crate) fn git_with(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).expect("git printed UTF-8")
+}
+
+#[skuld::test]
+fn the_fixtures_git_drops_the_variables_that_select_a_repository() {
+    let names = ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_CONFIG_COUNT", "PATH"];
+    let command = git_command_without(names.map(OsString::from), Path::new("."));
+    let removed: Vec<&OsStr> = command
+        .get_envs()
+        .filter_map(|(name, value)| value.is_none().then_some(name))
+        .collect();
+    assert_eq!(removed, ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"]);
 }
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> String {

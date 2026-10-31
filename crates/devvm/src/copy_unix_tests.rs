@@ -3,7 +3,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use crate::ErrorKind;
-use crate::copy::copy_tests::{add_all, git, new_repo, paths, put, read_tar, take};
+use crate::copy::copy_tests::{add_all, git, git_command, new_repo, paths, put, read_tar, take};
 use crate::recipe::hash::EntryContent;
 use crate::test_support::fixtures::unicode_home;
 
@@ -42,8 +42,7 @@ fn non_utf8_names_are_refused_naming_them(#[fixture(unicode_home)] home: &Path) 
     let empty = git(&repo, &["hash-object", "-w", "--stdin"]);
     let mut entry = OsString::from(format!("100644,{},", empty.trim()));
     entry.push(OsStr::from_bytes(b"bad-\xff-name"));
-    let status = std::process::Command::new("git")
-        .current_dir(&repo)
+    let status = git_command(&repo)
         .args(["update-index", "--add", "--cacheinfo"])
         .arg(entry)
         .status()
