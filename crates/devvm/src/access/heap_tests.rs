@@ -19,7 +19,7 @@ use crate::test_support::host::TestHost;
 use crate::test_support::sshd::{BIG_SIZE, Rig, big_file_digest, expected_big_digest, pattern_byte, sample_windows};
 
 /// The most heap the helper may have held at once.
-const LIMIT: usize = 64 << 20;
+pub(crate) const LIMIT: usize = 64 << 20;
 
 /// The helper's entry point: `access-heap <scenario>`.
 pub fn access_heap(args: &[String]) {
@@ -106,7 +106,7 @@ fn slow_writer() {
 // Scenario: a file past 4 GiB =========================================================================================
 
 /// A host file of `BIG_SIZE` bytes: zeros, with the pattern in the sample windows.
-fn make_big_source(path: &Path) {
+pub(crate) fn make_big_source(path: &Path) {
     let mut file = std::fs::File::create(path).expect("the big source file");
     file.set_len(BIG_SIZE).expect("a file of 4 GiB + 1 bytes");
     for (start, end) in sample_windows() {

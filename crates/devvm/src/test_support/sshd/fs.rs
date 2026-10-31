@@ -46,10 +46,15 @@ pub fn expected_big_digest() -> String {
 
 /// The hex SHA-256 over the sample windows of the file at `path`.
 pub fn big_file_digest(path: &std::path::Path) -> std::io::Result<String> {
+    big_file_digest_from(path, 0)
+}
+
+/// [`big_file_digest`] for a file whose big content starts `base` bytes in, such as a tar entry's data.
+pub fn big_file_digest_from(path: &std::path::Path, base: u64) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     for (start, end) in sample_windows() {
-        file.seek(SeekFrom::Start(start))?;
+        file.seek(SeekFrom::Start(base + start))?;
         let mut window = vec![0u8; (end - start) as usize];
         file.read_exact(&mut window)?;
         hasher.update(&window);

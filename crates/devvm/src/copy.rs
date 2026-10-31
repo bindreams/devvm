@@ -22,6 +22,10 @@ pub(crate) mod copy_tests;
 #[path = "copy_unix_tests.rs"]
 mod copy_unix_tests;
 
+#[cfg(test)]
+#[path = "copy/heap_tests.rs"]
+pub(crate) mod heap_tests;
+
 /// The files of one `copy` step.
 #[derive(Debug)]
 pub(crate) struct Snapshot {
@@ -43,6 +47,9 @@ pub(crate) struct Snapshot {
 ///   leaves directories writable.
 /// - The tar is a new file in `into`, which must exist. It has fixed timestamps and no owner, so equal manifests
 ///   give equal bytes.
+///
+/// The tracked tree must not contain case-insensitive name collisions, names with a trailing dot, or Windows device
+/// names (`nul`, `con`); devvm does not check, the contract of `devvm cp`. Names are copied as git lists them.
 ///
 /// Fails with `recipe` when `from_dir` is not in a work tree, a tracked path is not UTF-8, the index holds an
 /// unresolved merge conflict, a tracked file is a symlink now (or something else that is not a file), or a

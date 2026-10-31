@@ -90,6 +90,7 @@ mod test_helpers {
         ("qemu-launcher", crate::vm_suite::backend::qemu_launcher),
         ("qemu-shutdown", crate::vm_suite::backend::qemu_shutdown),
         ("access-heap", crate::access::heap_tests::access_heap),
+        ("snapshot-big", crate::copy::heap_tests::snapshot_big),
     ];
 
     pub fn run_if_requested() {

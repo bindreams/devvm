@@ -51,7 +51,7 @@ use crate::access::runtime;
 use crate::access::{BootBound, Keepalive, SshSession, SshTarget, VmExit};
 use crate::exit::NullProgress;
 
-pub use fs::{BIG_SIZE, big_file_digest, expected_big_digest, pattern_byte, sample_windows};
+pub use fs::{BIG_SIZE, big_file_digest, big_file_digest_from, expected_big_digest, pattern_byte, sample_windows};
 
 /// Where Debian and Ubuntu put OpenSSH's SFTP server (package `openssh-sftp-server`).
 pub const OPENSSH_SFTP_SERVER: &str = "/usr/lib/openssh/sftp-server";
