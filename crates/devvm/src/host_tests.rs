@@ -532,7 +532,21 @@ fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
 
 #[skuld::test]
 fn only_windows_compares_environment_variable_names_without_case() {
-    assert_eq!(current().env_names_ignore_case(), cfg!(windows));
-    assert_eq!(TestHost.env_names_ignore_case(), cfg!(windows));
-    assert!(!OtherHost.env_names_ignore_case());
+    let ignores_case = cfg!(windows);
+    for host in [current(), &TestHost as &dyn Host] {
+        assert_eq!(
+            host.env_name_strip_prefix("git_dir".as_ref(), "GIT_").is_some(),
+            ignores_case
+        );
+        assert_eq!(
+            host.env_name_strip_prefix("GIT_DIR".as_ref(), "GIT_").as_deref(),
+            Some("DIR")
+        );
+    }
+    assert_eq!(OtherHost.env_name_strip_prefix("git_dir".as_ref(), "GIT_"), None);
+    assert_eq!(
+        OtherHost.env_name_strip_prefix("GIT_".as_ref(), "GIT_").as_deref(),
+        Some("")
+    );
+    assert_eq!(OtherHost.env_name_strip_prefix("GIT".as_ref(), "GIT_"), None);
 }

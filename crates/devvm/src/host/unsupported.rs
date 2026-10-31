@@ -1,6 +1,7 @@
 //! What every host devvm 0.1.0 does not run VMs on (Linux, macOS) shares. A host type supplies only what differs, the
 //! file modes ([`FileModes`]), and is a [`Host`] through the blanket impl below.
 
+use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::Arc;
@@ -80,8 +81,9 @@ impl<M: FileModes> Host for M {
 
     fn quiet(&self, _cmd: &mut std::process::Command) {}
 
-    fn env_names_ignore_case(&self) -> bool {
-        false
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        debug_assert!(prefix.is_ascii());
+        name.to_string_lossy().strip_prefix(prefix).map(str::to_owned)
     }
 
     fn system_dirs(&self) -> Option<SystemDirs> {

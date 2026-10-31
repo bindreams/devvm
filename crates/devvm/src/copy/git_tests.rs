@@ -8,8 +8,8 @@ fn names(list: &[&str]) -> Vec<OsString> {
     list.iter().map(OsString::from).collect()
 }
 
-fn cleared(list: &[&str], ignore_case: bool) -> Vec<String> {
-    cleared_names(names(list), ignore_case)
+fn cleared(list: &[&str]) -> Vec<String> {
+    cleared_names(&TestHost, names(list))
         .into_iter()
         .map(|name| name.into_string().unwrap())
         .collect()
@@ -25,7 +25,7 @@ fn the_variables_that_add_to_the_configuration_are_kept() {
         "GIT_CONFIG_KEY_12",
         "GIT_CONFIG_VALUE_12",
     ];
-    assert_eq!(cleared(&kept, false), Vec::<String>::new());
+    assert_eq!(cleared(&kept), Vec::<String>::new());
 }
 
 #[skuld::test]
@@ -39,7 +39,7 @@ fn every_other_git_variable_is_cleared_known_or_not() {
         "GIT_FUTURE_THING",
     ];
     assert_eq!(
-        cleared(&all, false),
+        cleared(&all),
         [
             "GIT_CEILING_DIRECTORIES",
             "GIT_CONFIG",
@@ -63,47 +63,40 @@ fn a_config_variable_whose_suffix_is_not_digits_is_cleared() {
         "GIT_CONFIG_PARAMETERS2",
         "GIT_CONFIG_KEY",
     ];
-    assert_eq!(cleared(&odd, false).len(), odd.len());
+    assert_eq!(cleared(&odd).len(), odd.len());
 }
 
 #[skuld::test]
 fn other_variables_are_not_touched() {
     assert_eq!(
-        cleared(
-            &["PATH", "HOME", "GITHUB_TOKEN", "GIT", "NOT_GIT_DIR", "XGIT_DIR"],
-            true
-        ),
+        cleared(&["PATH", "HOME", "GITHUB_TOKEN", "GIT", "NOT_GIT_DIR", "XGIT_DIR"]),
         Vec::<String>::new()
     );
 }
 
 #[skuld::test]
-fn a_lowercase_name_is_left_where_names_are_case_sensitive() {
-    assert_eq!(
-        cleared(&["git_dir", "Git_Trace", "git_config_key_0"], false),
-        Vec::<String>::new()
-    );
+fn a_lowercase_name_is_judged_by_the_hosts_rule_for_names() {
+    // Windows reads `git_dir` as `GIT_DIR`; elsewhere it is another variable. The config pairs are kept in any case.
+    let list = ["git_dir", "Git_Trace", "git_config_key_0", "Git_Config_Parameters"];
+    let expected: &[&str] = if cfg!(windows) { &["Git_Trace", "git_dir"] } else { &[] };
+    assert_eq!(cleared(&list), expected);
 }
 
+#[cfg(windows)]
 #[skuld::test]
-fn a_lowercase_name_is_the_same_variable_where_names_ignore_case() {
-    // Windows reads `git_dir` as `GIT_DIR`. The config pairs are kept in any case.
+fn a_name_is_classified_as_windows_folds_it_not_as_rust_does() {
+    // Rust uppercases U+0131 to `I` and U+017F to `S`; Windows folds neither (host/windows_tests.rs).
+    assert_eq!(cleared(&["G\u{131}T_DIR"]), Vec::<String>::new());
     assert_eq!(
-        cleared(
-            &["git_dir", "Git_Trace", "git_config_key_0", "Git_Config_Parameters"],
-            true
-        ),
-        ["Git_Trace", "git_dir"]
+        cleared(&["GIT_CONFIG_PARAMETER\u{17F}"]),
+        ["GIT_CONFIG_PARAMETER\u{17F}"]
     );
 }
 
 #[skuld::test]
 fn the_cleared_names_are_sorted_and_listed_once() {
     assert_eq!(
-        cleared(
-            &["GIT_TRACE", "GIT_DIR", "GIT_TRACE", "GIT_ALTERNATE_OBJECT_DIRECTORIES"],
-            false
-        ),
+        cleared(&["GIT_TRACE", "GIT_DIR", "GIT_TRACE", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]),
         ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_DIR", "GIT_TRACE"]
     );
 }

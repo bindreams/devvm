@@ -1,6 +1,6 @@
 //! Asking `git` which files a repository tracks.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -68,7 +68,7 @@ impl<'a> Git<'a> {
     }
 
     fn from_names(host: &'a dyn Host, names: impl IntoIterator<Item = OsString>, progress: &dyn Progress) -> Git<'a> {
-        let cleared = cleared_names(names, host.env_names_ignore_case());
+        let cleared = cleared_names(host, names);
         if !cleared.is_empty() {
             let list: Vec<_> = cleared.iter().map(|name| name.to_string_lossy()).collect();
             progress.message(&format!("The following variables have been unset: {}", list.join(", ")));
@@ -90,40 +90,23 @@ impl<'a> Git<'a> {
 
 /// The names in `names` that `git` must not inherit, sorted and without repeats: every `GIT_*` variable except
 /// `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` and the `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs, which add
-/// to the configuration, so the user's settings still reach git. With `ignore_case`, `git_dir` is `GIT_DIR`.
-fn cleared_names(names: impl IntoIterator<Item = OsString>, ignore_case: bool) -> Vec<OsString> {
+/// to the configuration, so the user's settings still reach git. `host` decides what the same name is (Windows ignores
+/// case, by the OS's own table).
+fn cleared_names(host: &dyn Host, names: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     let mut cleared: Vec<OsString> = names
         .into_iter()
-        .filter(|name| {
-            let text = name.to_string_lossy();
-            let text = if ignore_case { upcase(&text) } else { text.into_owned() };
-            text.starts_with("GIT_") && !adds_to_configuration(&text)
-        })
+        .filter(|name| host.env_name_strip_prefix(name, "GIT_").is_some() && !adds_to_configuration(host, name))
         .collect();
     cleared.sort();
     cleared.dedup();
     cleared
 }
 
-/// Each character as the one it uppercases to, where that is one character (Windows compares names that way).
-fn upcase(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            let mut upper = c.to_uppercase();
-            match (upper.next(), upper.next()) {
-                (Some(one), None) => one,
-                _ => c,
-            }
-        })
-        .collect()
-}
-
-fn adds_to_configuration(name: &str) -> bool {
-    let numbered = |prefix: &str| {
-        name.strip_prefix(prefix)
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-    };
-    matches!(name, "GIT_CONFIG_PARAMETERS" | "GIT_CONFIG_COUNT")
+fn adds_to_configuration(host: &dyn Host, name: &OsStr) -> bool {
+    let strip = |prefix| host.env_name_strip_prefix(name, prefix);
+    let numbered = |prefix| strip(prefix).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    strip("GIT_CONFIG_PARAMETERS").is_some_and(|rest| rest.is_empty())
+        || strip("GIT_CONFIG_COUNT").is_some_and(|rest| rest.is_empty())
         || numbered("GIT_CONFIG_KEY_")
         || numbered("GIT_CONFIG_VALUE_")
 }

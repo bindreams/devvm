@@ -1,6 +1,6 @@
 //! The Windows host.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::OpenOptions;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
@@ -11,7 +11,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
-use windows_sys::Win32::Globalization::GetACP;
+use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal, GetACP};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
@@ -92,8 +92,25 @@ impl Host for WindowsHost {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    fn env_names_ignore_case(&self) -> bool {
-        true
+    /// The first `prefix.len()` UTF-16 units are compared by the OS, one for one: an ASCII prefix unit only ever
+    /// matches a single unit, so the rest starts on a unit boundary.
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        debug_assert!(prefix.is_ascii());
+        let name: Vec<u16> = name.encode_wide().collect();
+        let prefix: Vec<u16> = prefix.encode_utf16().collect();
+        let head = name.get(..prefix.len())?;
+        // SAFETY: both pointers and lengths come from live slices, and the lengths fit in `i32` for any name
+        // Windows can hold (at most 32767 units) and for a prefix.
+        let ordering = unsafe {
+            CompareStringOrdinal(
+                head.as_ptr(),
+                i32::try_from(head.len()).ok()?,
+                prefix.as_ptr(),
+                i32::try_from(prefix.len()).ok()?,
+                1,
+            )
+        };
+        (ordering == CSTR_EQUAL).then(|| String::from_utf16_lossy(&name[prefix.len()..]))
     }
 
     fn system_dirs(&self) -> Option<SystemDirs> {

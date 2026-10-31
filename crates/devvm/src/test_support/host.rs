@@ -1,6 +1,7 @@
 //! Hosts for the tests: one whose accelerator always works, and one that has none.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -48,8 +49,8 @@ impl Host for TestHost {
         host::current().quiet(cmd)
     }
 
-    fn env_names_ignore_case(&self) -> bool {
-        host::current().env_names_ignore_case()
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        host::current().env_name_strip_prefix(name, prefix)
     }
 
     fn system_dirs(&self) -> Option<SystemDirs> {
@@ -142,8 +143,8 @@ impl Host for NoAccelHost {
         TestHost.quiet(cmd)
     }
 
-    fn env_names_ignore_case(&self) -> bool {
-        TestHost.env_names_ignore_case()
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        TestHost.env_name_strip_prefix(name, prefix)
     }
 
     fn system_dirs(&self) -> Option<SystemDirs> {
@@ -328,8 +329,8 @@ impl Host for RecordingHost {
         TestHost.quiet(cmd)
     }
 
-    fn env_names_ignore_case(&self) -> bool {
-        TestHost.env_names_ignore_case()
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        TestHost.env_name_strip_prefix(name, prefix)
     }
 
     fn system_dirs(&self) -> Option<SystemDirs> {
@@ -461,8 +462,8 @@ impl Host for NoGuestReset {
         host::current().quiet(cmd)
     }
 
-    fn env_names_ignore_case(&self) -> bool {
-        host::current().env_names_ignore_case()
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        host::current().env_name_strip_prefix(name, prefix)
     }
 
     fn system_dirs(&self) -> Option<SystemDirs> {
