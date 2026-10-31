@@ -8,6 +8,7 @@ fn reply(code: i32, stdout: &str) -> Output {
         status: ExitStatus::Code(code),
         stdout: stdout.as_bytes().to_vec(),
         stderr: Vec::new(),
+        loss: None,
     }
 }
 
@@ -68,6 +69,7 @@ fn a_cloud_init_killed_by_a_signal_is_not_ready_whatever_it_printed() {
         },
         stdout: br#"{"status": "done"}"#.to_vec(),
         stderr: Vec::new(),
+        loss: None,
     };
     let error = readiness(&output).unwrap_err();
     assert!(error.message().contains("KILL"), "{}", error.message());

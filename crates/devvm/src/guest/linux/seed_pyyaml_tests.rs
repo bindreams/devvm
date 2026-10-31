@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::process::Command;
 
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::json;
 
 use super::seed_files;
@@ -49,7 +50,7 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
                 instance_id: hex::encode([1u8; 16]).parse().unwrap(),
                 keys: SeedKeys {
                     client_public: format!("ssh-ed25519 {text} x"),
-                    host_private: text.clone(),
+                    host_private: SecretString::from(text.clone()),
                     host_public: text,
                 },
             };
@@ -64,7 +65,7 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
                 "user_data": file("user-data"),
                 "hostname": spec.hostname,
                 "client_public": spec.keys.client_public,
-                "host_private": spec.keys.host_private,
+                "host_private": spec.keys.host_private.expose_secret(),
                 "host_public": spec.keys.host_public,
             })
         })

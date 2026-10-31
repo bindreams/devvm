@@ -1,5 +1,6 @@
 //! The NoCloud seed: the files cloud-init reads at first boot.
 
+use secrecy::ExposeSecret;
 use serde::Serialize;
 
 use crate::guest::SeedSpec;
@@ -64,7 +65,7 @@ pub(super) fn seed_files(spec: &SeedSpec) -> Result<Vec<SeedFile>> {
             ssh_authorized_keys: [&spec.keys.client_public],
         }],
         ssh_keys: HostKeys {
-            ed25519_private: &spec.keys.host_private,
+            ed25519_private: spec.keys.host_private.expose_secret(),
             ed25519_public: &spec.keys.host_public,
         },
     };

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use secrecy::{ExposeSecret, SecretString};
 use yaml_serde::Value;
 
 use crate::guest::linux::LinuxGuest;
@@ -21,7 +22,7 @@ fn spec(dir: &Path, instance: u8) -> SeedSpec {
         instance_id: id(instance),
         keys: SeedKeys {
             client_public: "ssh-ed25519 AAAAclient devvm-client".to_owned(),
-            host_private: HOST_PRIVATE.to_owned(),
+            host_private: SecretString::from(HOST_PRIVATE),
             host_public: "ssh-ed25519 AAAAhost devvm-host".to_owned(),
         },
     }
@@ -153,7 +154,7 @@ fn characters_yaml_cannot_carry_raw_are_escaped_in_every_key(#[fixture(unicode_h
     for c in UNREADABLE_RAW {
         let mut keyed = spec(home, 1);
         keyed.keys.client_public = format!("ssh-ed25519 AAAAclient a{c}b");
-        keyed.keys.host_private = format!("{HOST_PRIVATE}{c}");
+        keyed.keys.host_private = SecretString::from(format!("{HOST_PRIVATE}{c}"));
         keyed.keys.host_public = format!("{c}ssh-ed25519 AAAAhost");
         let media = LinuxGuest.instance_seed(&keyed).unwrap().media;
         let user = String::from_utf8(read_image_file(&media.path, "user-data")).unwrap();
@@ -178,7 +179,7 @@ fn characters_yaml_cannot_carry_raw_are_escaped_in_every_key(#[fixture(unicode_h
             Some(keyed.keys.client_public.as_str())
         );
         for (parsed, expected) in [
-            (&json["ssh_keys"]["ed25519_private"], keyed.keys.host_private.as_str()),
+            (&json["ssh_keys"]["ed25519_private"], keyed.keys.host_private.expose_secret()),
             (&json["ssh_keys"]["ed25519_public"], keyed.keys.host_public.as_str()),
         ] {
             assert_eq!(parsed.as_str(), Some(expected));
@@ -186,7 +187,7 @@ fn characters_yaml_cannot_carry_raw_are_escaped_in_every_key(#[fixture(unicode_h
         let host_keys = field(&yaml, "ssh_keys");
         assert_eq!(
             field(host_keys, "ed25519_private").as_str(),
-            Some(keyed.keys.host_private.as_str())
+            Some(keyed.keys.host_private.expose_secret())
         );
         assert_eq!(
             field(host_keys, "ed25519_public").as_str(),

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use secrecy::SecretString;
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::{LinuxGuest, seed};
@@ -84,7 +85,7 @@ fn probe_spec() -> SeedSpec {
             .expect("32 hex digits"),
         keys: SeedKeys {
             client_public: "client-public-key".to_owned(),
-            host_private: "host-private-key".to_owned(),
+            host_private: SecretString::from("host-private-key"),
             host_public: "host-public-key".to_owned(),
         },
     }
