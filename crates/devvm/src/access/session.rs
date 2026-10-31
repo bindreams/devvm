@@ -677,15 +677,23 @@ impl SshSession {
         }
     }
 
-    /// [`SshSession::exec`] into memory: the sinks are `Vec`s, so the host output never closes.
+    /// [`SshSession::exec`] into memory: the sinks are `Vec`s, so the host output never closes. What is lost after the status
+    /// is in [`Output::loss`].
     pub(crate) fn exec_collect(&self, command: &str) -> Result<Output> {
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         match self.exec(command, &mut stdout, &mut stderr)? {
-            ExecEnd::Finished(status) => Ok(Output { status, stdout, stderr }),
-            ExecEnd::FinishedWithLoss { status, lost } => Err(Error::new(
-                lost.kind(),
-                format!("{} (the command had ended with {status:?})", lost.message()),
-            )),
+            ExecEnd::Finished(status) => Ok(Output {
+                status,
+                stdout,
+                stderr,
+                loss: None,
+            }),
+            ExecEnd::FinishedWithLoss { status, lost } => Ok(Output {
+                status,
+                stdout,
+                stderr,
+                loss: Some(lost),
+            }),
             ExecEnd::HostOutputClosed { error, .. } => {
                 Err(Error::io(ErrorKind::Internal, "a memory sink refused output", error))
             }

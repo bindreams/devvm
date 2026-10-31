@@ -25,11 +25,15 @@ pub enum ExitStatus {
 }
 
 /// A finished guest command.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Output {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    /// What went wrong after the status had arrived: output on a stream devvm does not read, a refusal to run the
+    /// command, the VM exiting, the boot bound passing. The status and the output above stand; this is not a failure of
+    /// the command.
+    pub loss: Option<Error>,
 }
 
 impl Output {

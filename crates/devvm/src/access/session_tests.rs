@@ -67,16 +67,25 @@ fn output_lost_after_the_exit_status_is_reported_with_the_status(#[fixture(unico
         }
         other => panic!("{other:?}"),
     }
-    let error = session.exec_collect("status-then-extended-data 2").unwrap_err();
-    assert!(error.message().contains("extended data stream 2"), "{error}");
-    assert!(error.message().contains("Code(7)"), "the status is named: {error}");
+    // Collected into memory, the status and the output that came before the loss are kept, and the loss is carried.
+    let output = session.exec_collect("status-then-extended-data 2").unwrap();
+    assert_eq!(output.status, ExitStatus::Code(7));
+    assert_eq!(
+        output.stdout,
+        b"before the status
+"
+    );
+    let loss = output.loss.expect("the loss is carried with the output");
+    assert!(loss.message().contains("extended data stream 2"), "{loss}");
 }
 
 // Exit mapping ========================================================================================================
 
 #[skuld::test]
 fn echo_round_trips_through_exec_collect(#[fixture(unicode_home)] home: &Path) {
-    let (status, stdout, stderr) = finished(&Rig::new(home).connect(), "echo hello world");
+    let output = Rig::new(home).connect().exec_collect("echo hello world").unwrap();
+    assert!(output.loss.is_none(), "{:?}", output.loss);
+    let (status, stdout, stderr) = (output.status, output.stdout, output.stderr);
     assert_eq!(status, ExitStatus::Code(0));
     assert_eq!(stdout, b"hello world\n");
     assert!(stderr.is_empty());
