@@ -23,8 +23,9 @@ const MTIME: u64 = 946_684_800;
 
 /// Writes the files `tracked` (sorted by path) found under `root` to `out`, which is the file `dest`, and returns
 /// their manifest entries in the same order. A tracked path that is gone from disk, or is a directory now, is left
-/// out (a directory is noted to `progress`). A tracked path below a directory that is a symlink is a `recipe`
-/// error: the file it names may not be in the repository. So is a tracked file that is a symlink now.
+/// out (a directory is noted to `progress`), and so is one whose name this host cannot hold. A tracked path below a
+/// directory that is a symlink is a `recipe` error: the file it names may not be in the repository. So is a tracked
+/// file that is a symlink now, and a tracked symlink that is a regular file now where links can be made.
 pub(super) fn write(
     host: &dyn Host,
     progress: &dyn Progress,
@@ -43,7 +44,7 @@ pub(super) fn write(
         let on_disk = root.join(&item.path);
         let meta = match std::fs::symlink_metadata(&on_disk) {
             Ok(meta) => meta,
-            Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => continue,
+            Err(e) if git::is_absent(&e) => continue,
             Err(e) => {
                 return Err(Error::io(
                     ErrorKind::Io,
@@ -62,7 +63,7 @@ pub(super) fn write(
         }
         let entry = match item.kind {
             Kind::Symlink => {
-                check_stands_for_link(&on_disk, &meta, &item.path)?;
+                check_stands_for_link(host, root, &on_disk, &meta, item)?;
                 let target = git::link_text(host, root, item)?;
                 append_symlink(&mut builder, dest, &item.path, &target)?;
                 ManifestEntry {
@@ -150,7 +151,7 @@ fn check_parents(root: &Path, path: &str, real_directories: &mut HashSet<String>
             Ok(_) => {
                 real_directories.insert(directory.to_owned());
             }
-            Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => return Ok(()),
+            Err(e) if git::is_absent(&e) => return Ok(()),
             Err(e) => {
                 return Err(Error::io(
                     ErrorKind::Io,
@@ -183,17 +184,32 @@ fn header(kind: EntryType, mode: u32, size: u64) -> Header {
     header
 }
 
-/// A tracked symlink is a link on disk or, where the checkout cannot make links, the plain file that stands for it.
-/// Its target comes from git, never from disk.
-fn check_stands_for_link(on_disk: &Path, meta: &std::fs::Metadata, path: &str) -> Result<()> {
-    if meta.file_type().is_symlink() || meta.is_file() {
+/// A tracked symlink is a link on disk or, where the checkout writes links as files (`core.symlinks` false), the
+/// plain file that stands for it. Elsewhere a regular file is a typechange. Its target comes from git, never from
+/// disk.
+fn check_stands_for_link(
+    host: &dyn Host,
+    root: &Path,
+    on_disk: &Path,
+    meta: &std::fs::Metadata,
+    item: &Tracked,
+) -> Result<()> {
+    if meta.file_type().is_symlink() {
         return Ok(());
     }
+    let found = if meta.is_file() {
+        if git::links_are_files(host, root, item)? {
+            return Ok(());
+        }
+        "a regular file"
+    } else {
+        "neither a link nor a file"
+    };
     Err(Error::new(
         ErrorKind::Recipe,
         format!(
-            "cannot copy `{}`: git tracks a symlink but {} is neither a link nor a file",
-            path.escape_debug(),
+            "cannot copy `{}`: git tracks a symlink there but {} is {found} (commit the change or restore the link)",
+            item.path.escape_debug(),
             on_disk.display()
         ),
     ))

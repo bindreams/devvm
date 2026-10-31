@@ -3,6 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 use crate::host::Host;
 use crate::{Error, ErrorKind, Result};
@@ -36,16 +37,53 @@ pub(super) struct Listing {
     pub uninitialized_submodules: Vec<String>,
 }
 
+/// Whether `e` says the path is not there on this host: gone, below a file, or a name the host cannot hold
+/// (Windows reports `a|b` as an invalid name, not as absent).
+pub(super) fn is_absent(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory | io::ErrorKind::InvalidFilename
+    )
+}
+
+/// The environment variables that make `git` pick a repository (`git rev-parse --local-env-vars`), as the installed
+/// git lists them. Asked once.
+fn repository_variables(host: &dyn Host) -> Result<&'static [String]> {
+    static VARIABLES: OnceLock<Vec<String>> = OnceLock::new();
+    if let Some(variables) = VARIABLES.get() {
+        return Ok(variables);
+    }
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--local-env-vars"]);
+    host.quiet(&mut cmd);
+    let out = run(cmd)?;
+    if !out.status.success() {
+        return Err(Error::new(
+            ErrorKind::Recipe,
+            format!(
+                "cannot ask git which environment variables select a repository: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ));
+    }
+    Ok(VARIABLES.get_or_init(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }))
+}
+
 /// A `git` command in `dir`. It ignores the repository the caller's environment points at (a git hook sets
-/// `GIT_DIR` and `GIT_INDEX_FILE`), and starts no console window.
-pub(super) fn command(host: &dyn Host, dir: &Path) -> Command {
+/// `GIT_DIR` and `GIT_INDEX_FILE`, and may set `GIT_OBJECT_DIRECTORY`), and starts no console window.
+pub(super) fn command(host: &dyn Host, dir: &Path) -> Result<Command> {
     let mut command = Command::new("git");
-    for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"] {
+    for name in repository_variables(host)? {
         command.env_remove(name);
     }
     command.current_dir(dir);
     host.quiet(&mut command);
-    command
+    Ok(command)
 }
 
 fn run(mut command: Command) -> Result<Output> {
@@ -79,7 +117,7 @@ pub(super) fn work_tree_root(host: &dyn Host, from_dir: &Path) -> Result<PathBuf
             ));
         }
     }
-    let mut cmd = command(host, from_dir);
+    let mut cmd = command(host, from_dir)?;
     cmd.args(["rev-parse", "--is-inside-work-tree", "--show-cdup"]);
     let out = run(cmd)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -104,7 +142,7 @@ pub(super) fn work_tree_root(host: &dyn Host, from_dir: &Path) -> Result<PathBuf
 
 /// The index of the work tree at `root`, with the index of every initialized submodule in place of the submodule.
 pub(super) fn list(host: &dyn Host, root: &Path) -> Result<Listing> {
-    let mut cmd = command(host, root);
+    let mut cmd = command(host, root)?;
     cmd.args(["ls-files", "-z", "-s", "--recurse-submodules"]);
     let out = run(cmd)?;
     if !out.status.success() {
@@ -138,10 +176,11 @@ pub(super) fn list(host: &dyn Host, root: &Path) -> Result<Listing> {
 /// submodule git considers inactive. Skipping it as "uninitialized" would leave files that are on disk out.
 fn refuse_unlisted_work_tree(root: &Path, path: &str) -> Result<()> {
     let marker = root.join(path).join(".git");
-    // A gitlink path that is a file now has no work tree below it, like one that is gone.
+    // A gitlink path that is a file now, or a name this host cannot hold, has no work tree below it, like one that
+    // is gone.
     let present = match marker.try_exists() {
         Ok(present) => present,
-        Err(e) if e.kind() == io::ErrorKind::NotADirectory => false,
+        Err(e) if is_absent(&e) => false,
         Err(e) => return Err(Error::io(ErrorKind::Io, format!("cannot read {}", marker.display()), e)),
     };
     if !present {
@@ -217,7 +256,7 @@ fn parse_record(record: &[u8]) -> Result<(String, Option<Kind>, String)> {
 pub(super) fn link_text(host: &dyn Host, root: &Path, item: &Tracked) -> Result<String> {
     let on_disk = root.join(&item.path);
     let dir = on_disk.parent().expect("a tracked path is below the root");
-    let mut cmd = command(host, dir);
+    let mut cmd = command(host, dir)?;
     cmd.args(["cat-file", "blob", &item.object]);
     let out = run(cmd)?;
     if !out.status.success() {
@@ -236,4 +275,25 @@ pub(super) fn link_text(host: &dyn Host, root: &Path, item: &Tracked) -> Result<
             format!("cannot copy `{}`: its link text is not UTF-8", item.path.escape_debug()),
         )
     })
+}
+
+/// Whether the checkout of the repository that holds `item` writes a tracked symlink as a plain file holding its
+/// link text: `core.symlinks` is false, as git reports it there (true when unset).
+pub(super) fn links_are_files(host: &dyn Host, root: &Path, item: &Tracked) -> Result<bool> {
+    let on_disk = root.join(&item.path);
+    let dir = on_disk.parent().expect("a tracked path is below the root");
+    let mut cmd = command(host, dir)?;
+    cmd.args(["config", "--type=bool", "--default", "true", "--get", "core.symlinks"]);
+    let out = run(cmd)?;
+    if !out.status.success() {
+        return Err(Error::new(
+            ErrorKind::Recipe,
+            format!(
+                "cannot read `core.symlinks` for `{}` from git: {}",
+                item.path.escape_debug(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim() == "false")
 }

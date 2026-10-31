@@ -174,3 +174,21 @@ fn a_gitlink_path_that_is_a_regular_file_now_is_skipped_as_uninitialised(#[fixtu
     assert_eq!(taken.notes.len(), 1, "{:?}", taken.notes);
     assert!(taken.notes[0].contains("`sub`"), "{:?}", taken.notes);
 }
+
+#[skuld::test]
+fn a_tracked_symlink_that_is_a_regular_file_now_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "real.conf", b"r");
+    std::os::unix::fs::symlink("real.conf", repo.join("config")).unwrap();
+    add_all(&repo);
+    // The default `core.symlinks` here is true: a regular file where a link is tracked is a typechange.
+    std::fs::remove_file(repo.join("config")).unwrap();
+    put(&repo, "config", b"content of my own");
+    let error = take(&repo, false, home)
+        .err()
+        .expect("a file the user wrote is not the tracked link");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("`config`"), "{error}");
+    assert!(error.message().contains("git tracks a symlink"), "{error}");
+    assert!(error.message().contains("regular file"), "{error}");
+}

@@ -38,7 +38,8 @@ pub(crate) struct Snapshot {
 /// Snapshots the files git tracks in the repository that contains `from_dir`, as they are on disk.
 ///
 /// - Entries come from the index. A tracked file missing on disk is skipped, so a pending delete leaves the
-///   copy without it; so is one that is a directory now, with a `progress` line. An initialized submodule is
+///   copy without it; so is one whose name the host cannot hold; so is one that is a directory now, with a
+///   `progress` line. An initialized submodule is
 ///   included recursively; an uninitialized one (no work tree in its directory) is skipped with a `progress`
 ///   line. A symlink stays a symlink, with git's link text. File contents are not converted (no
 ///   `core.autocrlf`).
@@ -52,8 +53,9 @@ pub(crate) struct Snapshot {
 /// names (`nul`, `con`); devvm does not check, the contract of `devvm cp`. Names are copied as git lists them.
 ///
 /// Fails with `recipe` when `from_dir` is not in a work tree, a tracked path is not UTF-8, the index holds an
-/// unresolved merge conflict, a tracked file is a symlink now (or something else that is not a file), or a
-/// directory holds a repository that git neither lists nor treats as a submodule.
+/// unresolved merge conflict, a tracked file is a symlink now (or something else that is not a file), a tracked
+/// symlink is a regular file now where `core.symlinks` is true, or a directory holds a repository that git neither
+/// lists nor treats as a submodule.
 pub(crate) fn snapshot(
     host: &dyn Host,
     from_dir: &Path,

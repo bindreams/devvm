@@ -72,8 +72,10 @@ pub(crate) fn add_all(root: &Path) {
     git(root, &["add", "-A"]);
 }
 
-/// Tracks `link` (a file holding the link text) as a symlink, the way a checkout without symlink support sees one.
+/// Tracks `link` (a file holding the link text) as a symlink, the way a checkout without symlink support sees one:
+/// the repository says `core.symlinks` is false, as `git init` records where links cannot be made.
 fn track_as_symlink(repo: &Path, link: &str) {
+    git(repo, &["config", "core.symlinks", "false"]);
     let blob = git(repo, &["hash-object", "-w", link]);
     git(
         repo,
@@ -735,17 +737,72 @@ fn a_submodule_inside_a_submodule_is_included_and_an_uninitialised_sibling_is_no
 }
 
 #[skuld::test]
-fn git_runs_without_the_callers_repository_variables() {
-    let command = crate::copy::git::command(&TestHost, Path::new("."));
+fn git_runs_without_any_variable_that_selects_a_repository(#[fixture(unicode_home)] home: &Path) {
+    let command = crate::copy::git::command(&TestHost, home).unwrap();
     let removed: Vec<_> = command
         .get_envs()
         .filter(|(_, value)| value.is_none())
         .map(|(name, _)| name.to_string_lossy().into_owned())
         .collect();
-    for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"] {
+    // The list git itself keeps, plus the ones a hook is known to set.
+    let local = git(home, &["rev-parse", "--local-env-vars"]);
+    let known = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+    ];
+    for name in local.lines().chain(known) {
         assert!(
             removed.iter().any(|r| r == name),
             "{name} must be removed, got {removed:?}"
         );
     }
+}
+
+#[skuld::test]
+fn a_tracked_symlink_that_is_a_regular_file_where_links_can_be_made_is_refused_naming_it(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "real.conf", b"r");
+    put(&repo, "config", b"real.conf");
+    git(&repo, &["add", "real.conf"]);
+    track_as_symlink(&repo, "config");
+    git(&repo, &["config", "core.symlinks", "true"]);
+    put(&repo, "config", b"content of my own");
+    let error = take(&repo, false, home)
+        .err()
+        .expect("a file the user wrote is not the tracked link");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("`config`"), "{error}");
+    assert!(error.message().contains("git tracks a symlink"), "{error}");
+    assert!(error.message().contains("regular file"), "{error}");
+    let left: Vec<_> = std::fs::read_dir(home.join("out")).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[skuld::test]
+fn a_tracked_name_this_host_cannot_hold_is_skipped_like_a_missing_file(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "top.txt", b"top");
+    add_all(&repo);
+    // Index only. Windows reads `|` as an invalid name rather than an absent one, for the file and for a directory.
+    for path in ["a|b", "d|ir/f.txt"] {
+        git(
+            &repo,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("100644,e69de29bb2d1d6434b8b29ae775ad8c2e48c5391,{path}"),
+            ],
+        );
+    }
+    let taken = take(&repo, false, home).expect("a name that cannot exist here is absent, not an error");
+    assert_eq!(paths(&taken.snapshot), ["top.txt"]);
+    assert!(taken.notes.is_empty(), "{:?}", taken.notes);
 }
