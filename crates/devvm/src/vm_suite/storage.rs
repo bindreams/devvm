@@ -180,8 +180,10 @@ fn committing_an_instance_disk_with_no_backing_file_is_refused(
     assert!(error.message().contains("no backing file"), "{error}");
 }
 
+/// `qemu-img` does not refuse it (the guest sees a disk shorter than the layer), so the storage does not either; whether
+/// a resource request may be that small is for the engine to decide.
 #[skuld::test]
-fn a_disk_smaller_than_its_backing_image_is_refused_by_qemu_img_and_nothing_is_left(
+fn a_disk_smaller_than_its_backing_image_is_made_with_the_requested_size(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -191,13 +193,12 @@ fn a_disk_smaller_than_its_backing_image_is_refused_by_qemu_img_and_nothing_is_l
     let instance = home.join("small").join("disk.img");
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
-    let error = storage
+    storage
         .create_instance_disk(base.tip().dir(), &instance, (BASE_LEN / 2) as u64)
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().starts_with("qemu-img create"), "{error}");
-    assert!(!instance.parent().unwrap().join(VARS).exists(), "{error}");
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], BASE_LEN / 2);
+    assert!(instance.parent().unwrap().join(VARS).is_file());
 }
 
 #[skuld::test]
