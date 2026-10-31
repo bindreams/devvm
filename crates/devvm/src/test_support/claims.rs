@@ -34,6 +34,12 @@ pub const OPENSSH_SFTP: Claim = Claim {
     value: "1",
 };
 
+/// The `bash` the tests run is 5.2, the guest's: the version the names bash owns were measured with.
+pub const BASH_5_2: Claim = Claim {
+    var: "DEVVM_COVERS_BASH_5_2",
+    value: "1",
+};
+
 /// This job runs the VM tests: the workflow turns them off for every other job.
 pub const VM_TESTS: Claim = Claim {
     var: "DEVVM_SKIP_VM_TESTS",
@@ -47,10 +53,10 @@ pub const STEP_VAR: &str = "DEVVM_CI_STEP";
 /// The claims each workflow step or job (`ci.yaml`) must make on each runner OS (`std::env::consts::OS`). A pair not
 /// listed is not a step or job of the workflow.
 const OWED: &[(&str, &str, &[&Claim])] = &[
-    ("test", "linux", &[&PYYAML]),
+    ("test", "linux", &[&PYYAML, &BASH_5_2]),
     ("test", "macos", &[]),
     ("test", "windows", &[&ACP, &NTFS_NAMES]),
-    ("openssh-sftp", "linux", &[&OPENSSH_SFTP, &PYYAML]),
+    ("openssh-sftp", "linux", &[&OPENSSH_SFTP, &PYYAML, &BASH_5_2]),
     ("vm", "windows", &[&ACP, &VM_TESTS]),
 ];
 

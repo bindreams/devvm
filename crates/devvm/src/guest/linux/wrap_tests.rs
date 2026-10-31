@@ -4,6 +4,7 @@ use std::process::Stdio;
 
 use super::{BASH_OWNED_VARIABLES, script, wrap};
 use crate::host::Host;
+use crate::test_support::claims::BASH_5_2;
 use crate::test_support::host::TestHost;
 use crate::{Command, ErrorKind, RunAs};
 
@@ -299,51 +300,39 @@ fn a_program_called_dash_x_or_a_equals_b_is_a_program_name() {
 /// The bash `BASH_OWNED_VARIABLES` was measured with, as `major.minor` (see the list's documentation).
 const MEASURED_BASH: &str = "5.2";
 
-/// The host bash's `BASH_VERSINFO` major and minor as `"<major> <minor>"`, or why it could not be asked.
-fn host_bash_version() -> Result<String, String> {
-    let mut command = std::process::Command::new(find_bash()?);
-    command.args(["-c", r#"printf '%s %s' "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}""#]);
-    TestHost.quiet(&mut command);
-    let output = command.output().map_err(|e| format!("cannot start bash: {e}"))?;
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
+/// A name no bash owns, that the production script is built for and the test then swaps for each listed name.
+const PROBE_NAME: &str = "DEVVM_PROBE_NAME";
 
-/// `Ok` when `found` (`"<major> <minor>"`) is [`MEASURED_BASH`]; otherwise the reason the owned-names test is not run.
-fn require_measured_bash(found: &str) -> Result<(), String> {
-    match found.split_once(' ').map(|(major, minor)| format!("{major}.{minor}")) {
-        Some(version) if version == MEASURED_BASH => Ok(()),
-        _ => Err(format!(
-            "the host's bash is {}; the names bash owns are measured for bash {MEASURED_BASH}, the guest's, so they are \
-             only checked against that version",
-            found.replace(' ', ".")
+/// Runs the test only where a job claims its bash is [`MEASURED_BASH`]; the test itself checks the claim is true.
+fn bash_5_2_claimed() -> Result<(), String> {
+    match BASH_5_2.is_made() {
+        true => Ok(()),
+        false => Err(format!(
+            "{} is not set; the names bash owns are measured for bash {MEASURED_BASH}, the guest's, and checked in CI \
+             (Test step on ubuntu-latest)",
+            BASH_5_2.var
         )),
     }
 }
 
-/// Where the host's bash cannot be asked for its version, the test runs and fails on its own, naming what is missing.
-fn host_bash_is_the_measured_version() -> Result<(), String> {
-    match host_bash_version() {
-        Ok(found) => require_measured_bash(&found),
-        Err(_) => Ok(()),
-    }
-}
-
-#[skuld::test]
-fn the_measured_bash_version_is_matched_by_major_and_minor_only() {
-    assert_eq!(require_measured_bash("5 2"), Ok(()));
-    for other in ["3 2", "5 3", "5 1", "4 4", "", "5"] {
-        let reason = require_measured_bash(other).unwrap_err();
-        assert!(reason.contains(&other.replace(' ', ".")), "{other:?}: {reason}");
-    }
-}
-
-#[skuld::test(requires = [host_bash_is_the_measured_version])]
+#[skuld::test(requires = [bash_5_2_claimed])]
 fn bash_does_not_pass_through_what_it_owns() {
-    // The program sees `printenv NAME`'s output, after the same `export` the wrapper writes. Each listed name is on the
-    // list because the value asked for does not arrive.
+    let version = run_in_bash(r#"printf '%s.%s' "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}""#, None);
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout),
+        MEASURED_BASH,
+        "{} is claimed, but the bash these tests run is not {MEASURED_BASH}",
+        BASH_5_2.var
+    );
+
+    // What the program sees is the production script's: `script` refuses an owned name, so it is built for a name that
+    // is not owned and the name is swapped afterwards. `:` stands for the commands a login shell's profile has run
+    // before the script: `PIPESTATUS` reaches the program only in a shell that has run none.
+    let mut command = cmd(&["printenv", PROBE_NAME]);
+    command.env = vec![(PROBE_NAME.to_owned(), "round-trip-probe".to_owned())];
+    let production = script(&command).unwrap();
     for name in BASH_OWNED_VARIABLES {
-        let script = format!("export {name}={} && exec -- printenv {name}", sq("round-trip-probe"));
-        let out = run_in_bash(&script, None);
+        let out = run_in_bash(&format!(":\n{}", production.replace(PROBE_NAME, name)), None);
         assert_ne!(
             String::from_utf8_lossy(&out.stdout).trim_end(),
             "round-trip-probe",

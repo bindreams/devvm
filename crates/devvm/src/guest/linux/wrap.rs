@@ -72,14 +72,15 @@ fn user_script(cmd: &Command) -> Result<String> {
     Ok(steps.join(" && "))
 }
 
-/// The names `export NAME=v` does not pass to the program unchanged (bash 5.2.37, `export NAME=probe && exec --
-/// printenv NAME`):
+/// The names `export NAME=v` does not pass to the program unchanged (bash 5.2.21 and 5.2.37, `export NAME=probe && exec
+/// -- printenv NAME` after a command has run, as in a login shell):
 /// - readonly, so the `export` fails and the command never runs: `BASHOPTS`, `BASH_VERSINFO`, `EUID`, `PPID`,
 ///   `SHELLOPTS`, `UID`;
 /// - the program gets bash's value, or the assignment changes it: `RANDOM`, `SRANDOM`, `BASHPID`, `LINENO`, `HISTCMD`,
 ///   `EPOCHSECONDS`, `EPOCHREALTIME`, `BASH_COMMAND`, `BASH_SUBSHELL`, `SHLVL`, `SECONDS`, `OPTIND`, `_`;
 /// - the program gets nothing: `GROUPS`, `FUNCNAME`, `DIRSTACK`, `BASH_ALIASES`, `BASH_CMDS`, `BASH_LINENO`,
-///   `BASH_SOURCE`, `BASH_ARGC`, `BASH_ARGV`, `PIPESTATUS`.
+///   `BASH_SOURCE`, `BASH_ARGC`, `BASH_ARGV`, `PIPESTATUS` (it arrives in a shell that has run no command, but the
+///   script runs in a login shell, whose profile has).
 const BASH_OWNED_VARIABLES: [&str; 29] = [
     "BASHOPTS",
     "BASH_VERSINFO",

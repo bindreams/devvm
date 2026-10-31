@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{ACP, Claim, NTFS_NAMES, OPENSSH_SFTP, PYYAML, STEP_VAR, VM_TESTS, missing};
+use super::{ACP, BASH_5_2, Claim, NTFS_NAMES, OPENSSH_SFTP, PYYAML, STEP_VAR, VM_TESTS, missing};
 
 const TEST: &str = "test";
 const OPENSSH: &str = "openssh-sftp";
@@ -20,9 +20,14 @@ fn made(claims: &[&Claim]) -> Vec<(&'static str, &'static str)> {
 }
 
 #[skuld::test]
-fn the_test_step_on_linux_must_claim_pyyaml() {
-    assert_eq!(names(missing(TEST, "linux", env(&[]))), [PYYAML.var]);
-    assert!(missing(TEST, "linux", env(&made(&[&PYYAML]))).unwrap().is_empty());
+fn the_test_step_on_linux_must_claim_pyyaml_and_bash_5_2() {
+    assert_eq!(names(missing(TEST, "linux", env(&[]))), [PYYAML.var, BASH_5_2.var]);
+    assert_eq!(names(missing(TEST, "linux", env(&made(&[&PYYAML])))), [BASH_5_2.var]);
+    assert!(
+        missing(TEST, "linux", env(&made(&[&PYYAML, &BASH_5_2])))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[skuld::test]
@@ -37,17 +42,17 @@ fn the_test_step_on_windows_must_claim_the_code_page_and_ntfs_names() {
 }
 
 #[skuld::test]
-fn the_openssh_step_must_claim_openssh_sftp_and_pyyaml() {
+fn the_openssh_step_must_claim_openssh_sftp_pyyaml_and_bash_5_2() {
     assert_eq!(
         names(missing(OPENSSH, "linux", env(&[]))),
-        [OPENSSH_SFTP.var, PYYAML.var]
+        [OPENSSH_SFTP.var, PYYAML.var, BASH_5_2.var]
     );
     assert_eq!(
         names(missing(OPENSSH, "linux", env(&made(&[&PYYAML])))),
-        [OPENSSH_SFTP.var]
+        [OPENSSH_SFTP.var, BASH_5_2.var]
     );
     assert!(
-        missing(OPENSSH, "linux", env(&made(&[&OPENSSH_SFTP, &PYYAML])))
+        missing(OPENSSH, "linux", env(&made(&[&OPENSSH_SFTP, &PYYAML, &BASH_5_2])))
             .unwrap()
             .is_empty()
     );
@@ -57,6 +62,7 @@ fn the_openssh_step_must_claim_openssh_sftp_and_pyyaml() {
 fn a_claim_counts_only_with_its_documented_value() {
     for (step, os, claim) in [
         (TEST, "linux", &PYYAML),
+        (TEST, "linux", &BASH_5_2),
         (TEST, "windows", &ACP),
         (TEST, "windows", &NTFS_NAMES),
         (OPENSSH, "linux", &OPENSSH_SFTP),
@@ -79,7 +85,14 @@ fn a_claim_counts_only_with_its_documented_value() {
 
 #[skuld::test]
 fn a_step_owes_no_claim_it_does_not_cover() {
+    // macOS and Windows runners have a bash that is not 5.2 (3.2 and Git's 5.3).
     assert!(missing(TEST, "macos", env(&[])).unwrap().is_empty());
+    assert!(
+        !missing(TEST, "windows", env(&[]))
+            .unwrap()
+            .iter()
+            .any(|owed| owed.var == BASH_5_2.var)
+    );
     assert!(
         !missing(TEST, "linux", env(&[]))
             .unwrap()
