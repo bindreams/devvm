@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use russh::{ChannelMsg, Sig};
+use russh::client::Msg;
+use russh::{Channel, ChannelMsg, Sig};
 use tokio::sync::mpsc;
 
 use crate::access::session::Inner;
@@ -84,6 +85,13 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
     }
 }
 
+/// `error`, after the channel is closed: the guest command is still running, and would keep an output pipe that nobody
+/// reads.
+async fn fail(channel: &mut Channel<Msg>, error: Error) -> Error {
+    let _ = channel.close().await;
+    error
+}
+
 /// `Ok(None)` when the host output closed. `status` is set as soon as the command's status arrives.
 async fn run(
     inner: &Inner,
@@ -127,7 +135,7 @@ async fn run(
                     ),
                 );
                 if status.is_none() {
-                    return Err(lost);
+                    return Err(fail(&mut channel, lost).await);
                 }
                 Event::Lost(lost)
             }
@@ -152,7 +160,7 @@ async fn run(
                     format!("the server at {} refused to run {awaiting}", inner.ctx.addr),
                 );
                 if status.is_none() {
-                    return Err(lost);
+                    return Err(fail(&mut channel, lost).await);
                 }
                 Event::Lost(lost)
             }

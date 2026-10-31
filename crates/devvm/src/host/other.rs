@@ -13,7 +13,7 @@ impl FileModes for OtherHost {
         OpenOptions::new()
     }
 
-    /// `sun_path` is 108 bytes, as on Windows, the only OS where this host serves.
+    /// `sun_path` is 108 bytes, as on Windows, the platform whose limit this host copies.
     fn socket_path_max(&self) -> usize {
         107
     }

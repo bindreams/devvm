@@ -376,9 +376,9 @@ pub(super) fn parent_of(path: &str) -> String {
 /// The guest path `path` as the user writes it with its `.` segments dropped and each `..` cancelled against the name
 /// before it, by name only (a symlink before a `..` is not followed), so a destination is created exactly as it reads.
 /// A `..` at a root stays at the root, whatever `guest` calls a root (`/`, `Z:/`, `//server/share/`); one with nothing
-/// before it stays; no segment left is `.`.
-pub(super) fn normalize_user(path: &str, guest: &dyn GuestOs) -> String {
-    normalize_under(guest.split_root(path))
+/// before it stays; no segment left is `.`. A path the guest cannot place by name (a drive-relative one) is an error.
+pub(super) fn normalize_user(path: &str, guest: &dyn GuestOs) -> Result<String> {
+    guest.split_root(path).map(normalize_under)
 }
 
 fn normalize_under((root, rest): (String, &str)) -> String {

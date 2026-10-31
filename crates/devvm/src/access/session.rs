@@ -640,7 +640,8 @@ impl SshSession {
                 Some(Event::Err(chunk)) => (true, chunk),
                 Some(Event::End(result)) => {
                     // A partial line the host writers still buffer (a prompt) would otherwise be lost.
-                    let flushed = out.flush().and_then(|()| err.flush());
+                    let flushed_out = out.flush();
+                    let flushed = flushed_out.and(err.flush());
                     return match (result, flushed, lost) {
                         (Ok(status), Ok(()), None) => Ok(ExecEnd::Finished(status)),
                         (Ok(status), Ok(()), Some(lost)) => Ok(ExecEnd::FinishedWithLoss { status, lost }),
@@ -654,7 +655,10 @@ impl SshSession {
                             },
                             status: Some(status),
                         }),
-                        (Err(e), _, _) => Err(e),
+                        (Err(e), Err(error), _) => {
+                            Err(e.together_with(format!("flushing the host output failed ({error})")))
+                        }
+                        (Err(e), Ok(()), _) => Err(e),
                     };
                 }
                 Some(Event::Lost(error)) => {

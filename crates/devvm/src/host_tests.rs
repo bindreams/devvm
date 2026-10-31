@@ -384,6 +384,18 @@ fn sync_dir_flushes_a_directory_that_exists(#[fixture(unicode_home)] home: &Path
     on_both_hosts(|host| host.sync_dir(home).unwrap());
 }
 
+/// Where a directory is flushed through a handle (Unix), a directory that is not there is an error, so the call is not
+/// a stub that answers `Ok`. NTFS journals its directories and flushes nothing.
+#[skuld::test]
+fn sync_dir_of_a_missing_directory_fails_where_directories_are_flushed(#[fixture(unicode_home)] home: &Path) {
+    let missing = home.join("missing");
+    let error = current().sync_dir(&missing);
+    match cfg!(unix) {
+        true => assert_eq!(error.unwrap_err().kind(), std::io::ErrorKind::NotFound),
+        false => error.unwrap(),
+    }
+}
+
 // The ANSI code page ==================================================================================================
 
 /// The variable a CI job sets to claim that its runs cover this ANSI code page.

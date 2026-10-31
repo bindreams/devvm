@@ -17,6 +17,7 @@
 //! | `write-once-and-hold` | writes one line to stdout, then does nothing and never answers |
 //! | `status-then-marker` | sends `exit-status 7`, then the line `marker`, and never closes the channel |
 //! | `extended-data N` | writes a line to extended-data stream N (1 is stderr), then exits 0 |
+//! | `extended-data-and-hold N` | writes a line to extended-data stream N, then does nothing and never answers |
 //! | `status-then-extended-data N` | writes `before the status` to stdout, sends `exit-status 7`, then a line to stream N, closes |
 //! | `echo ...` | prints the rest of the line, exits 0 |
 //!
@@ -657,6 +658,18 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
                 )
                 .await;
             finish(&handle, channel, 0).await;
+        }
+        ["extended-data-and-hold", stream] => {
+            let stream = stream.parse().expect("extended-data-and-hold takes a stream number");
+            let _ = handle
+                .extended_data(
+                    channel,
+                    stream,
+                    b"on a stream of its own
+"
+                    .to_vec(),
+                )
+                .await;
         }
         ["status-then-extended-data", stream] => {
             let stream = stream.parse().expect("status-then-extended-data takes a stream number");

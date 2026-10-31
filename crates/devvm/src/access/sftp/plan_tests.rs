@@ -204,7 +204,7 @@ fn a_guest_destination_is_resolved_by_name() {
         ("a/../../b", "../b"),
         ("/.hidden/..x", "/.hidden/..x"),
     ] {
-        assert_eq!(normalize_user(given, &*linux), want, "{given}");
+        assert_eq!(normalize_user(given, &*linux).unwrap(), want, "{given}");
     }
 }
 
@@ -245,7 +245,6 @@ fn a_guest_root_stays_a_root_and_dotdot_does_not_go_above_it() {
                 ("//server//share/x", "//server/share/x"),
                 ("/a/..", "/"),
                 ("a/../b", "b"),
-                ("C:a/..", "."),
             ],
         ),
         // On a guest with no drives, `Z:` is a name and a leading `//` is one `/`.
@@ -262,8 +261,25 @@ fn a_guest_root_stays_a_root_and_dotdot_does_not_go_above_it() {
     ];
     for (guest, cases) in table {
         for (given, want) in *cases {
-            assert_eq!(normalize_user(given, *guest), *want, "{given}");
+            assert_eq!(normalize_user(given, *guest).unwrap(), *want, "{given}");
         }
+    }
+}
+
+/// `C:a` is relative to the current directory of drive `C:`, which no path of ours names: it is refused, naming it,
+/// instead of becoming a path on another drive or none. On a guest with no drives it is a plain name.
+#[skuld::test]
+fn a_drive_relative_windows_path_is_refused_naming_it() {
+    let linux = FakeGuests.os(GuestKind::Linux).unwrap();
+    let windows = FakeGuests.os(GuestKind::Windows).unwrap();
+    for given in ["C:a/..", "C:a", "c:..", "D:a/b/../c"] {
+        let error = normalize_user(given, &*windows).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage, "{given}: {error}");
+        assert!(error.message().contains(given), "{given}: {error}");
+        assert!(normalize_user(given, &*linux).is_ok(), "{given}");
+    }
+    for given in ["C:", "C:/", "C:/a"] {
+        assert!(normalize_user(given, &*windows).is_ok(), "{given}");
     }
 }
 

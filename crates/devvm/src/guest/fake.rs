@@ -108,16 +108,16 @@ impl GuestOs for FakeGuestOs {
         }
     }
 
-    fn split_root<'a>(&self, path: &'a str) -> (String, &'a str) {
+    fn split_root<'a>(&self, path: &'a str) -> Result<(String, &'a str)> {
         if let SftpPaths::WithoutDrive(drive) = &self.paths
             && let Some(rest) = path.strip_prefix(drive)
             && (rest.is_empty() || rest.starts_with('/'))
         {
-            return (format!("{drive}/"), rest.trim_start_matches('/'));
+            return Ok((format!("{drive}/"), rest.trim_start_matches('/')));
         }
         match self.kind {
             GuestKind::Windows => windows_root(path),
-            GuestKind::Linux | GuestKind::Macos => posix_root(path),
+            GuestKind::Linux | GuestKind::Macos => Ok(posix_root(path)),
         }
     }
 

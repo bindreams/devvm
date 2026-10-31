@@ -52,6 +52,16 @@ fn output_on_an_extended_data_stream_other_than_stderr_is_an_error_naming_it(#[f
 }
 
 #[skuld::test]
+fn a_command_that_fails_before_a_status_has_its_channel_closed(#[fixture(unicode_home)] home: &Path) {
+    // The guest command is still running; without the close it keeps its output pipe and blocks once the window fills.
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let error = session.exec_collect("extended-data-and-hold 2").unwrap_err();
+    assert!(error.message().contains("extended data stream 2"), "{error}");
+    rig.sshd.wait_for_channel_close();
+}
+
+#[skuld::test]
 fn output_lost_after_the_exit_status_is_reported_with_the_status(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let session = rig.connect();
@@ -499,11 +509,25 @@ fn the_boot_gate_follows_changes_while_a_wait_is_in_flight() {
             _ = &mut passed => panic!("a finished boot was ended by its bound"),
             () = quiet(60) => {}
         }
-        // A bound armed later governs it again.
-        gate.0
-            .send_replace(Some(BootBound::start(Duration::from_secs(1)).unwrap()));
+        // A bound armed later governs it again, from its own deadline: `BootBound::start` reads the real clock, which
+        // the paused one has left behind, so the bound is built on the virtual clock.
+        let armed = tokio::time::Instant::now();
+        let one_second = Duration::from_secs(1);
+        gate.0.send_replace(Some(BootBound {
+            limit: one_second,
+            deadline: (armed + one_second).into_std(),
+        }));
+        tokio::select! {
+            _ = &mut passed => panic!("the new bound passed before its deadline"),
+            () = tokio::time::sleep(Duration::from_millis(500)) => {}
+        }
         let bound = passed.await;
-        assert_eq!(bound.limit, Duration::from_secs(1));
+        assert_eq!(bound.limit, one_second);
+        assert!(
+            armed.elapsed() >= one_second,
+            "the bound passed {:?} after it was armed",
+            armed.elapsed()
+        );
     });
 }
 
@@ -717,6 +741,32 @@ fn a_flush_that_fails_at_the_end_is_a_closed_host_output_that_keeps_the_status(#
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[skuld::test]
+fn a_command_that_failed_carries_the_flush_that_failed_with_it_and_both_sinks_are_flushed(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let mut err = CountsFlushes::default();
+    let error = session
+        .exec("close-no-status", &mut FailsToFlush, &mut err)
+        .unwrap_err();
+    assert_eq!(
+        error.kind(),
+        ErrorKind::NoExitStatus,
+        "the command's failure stays the error: {error}"
+    );
+    assert!(
+        error.message().contains("the reader is gone"),
+        "the failed flush is carried: {error}"
+    );
+    assert!(err.flushes >= 1, "stderr is flushed after stdout's flush failed");
+
+    let mut err = CountsFlushes::default();
+    session.exec("echo hi", &mut FailsToFlush, &mut err).unwrap();
+    assert!(err.flushes >= 1, "stderr is flushed after stdout's flush failed");
 }
 
 // The facade ==========================================================================================================

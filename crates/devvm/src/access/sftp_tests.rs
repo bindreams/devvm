@@ -1075,6 +1075,37 @@ fn a_chain_of_guest_links_is_dangling_or_a_loop_by_where_it_ends(#[fixture(unico
     );
 }
 
+/// A link that holds a path through itself (`l` -> `l/l`) is a loop, though the guest answers "no such file" for the
+/// directory component `l` as it does for one that is missing; a link through a directory that is really missing is
+/// dangling.
+#[skuld::test]
+fn a_guest_link_that_leads_through_itself_is_a_loop_and_one_through_a_missing_directory_is_dangling(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"new");
+    env.guest_link("/l", "l/l");
+    env.guest_link("/m", "/m/x");
+    env.guest_link("/p", "q/x");
+    env.guest_link("/q", "p/y");
+    for dest in ["/l", "/m", "/p", "/q"] {
+        let error = env.copy_in(&file, dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{dest}: {error}");
+        assert!(error.message().contains(dest), "{dest}: {error}");
+        assert!(error.message().contains("symbolic links"), "{dest}: {error}");
+    }
+    assert_eq!(
+        env.guest_link_target("/l"),
+        Some("l/l".to_owned()),
+        "the loop is left alone"
+    );
+
+    env.guest_link("/gone", "nowhere/x");
+    env.copy_in(&file, "/gone").unwrap();
+    assert_eq!(env.guest_link_target("/gone"), None, "the dangling link was replaced");
+    assert_eq!(std::fs::read(env.root().join("gone")).unwrap(), b"new");
+}
+
 // Metadata ============================================================================================================
 
 #[skuld::test]

@@ -231,13 +231,21 @@ impl Remote {
     /// Fails if the symlink `link`, which leads to nothing, is a loop. OpenSSH's `sftp-server` answers "no such file"
     /// for a loop as it does for a link to nothing, so the links are followed by hand until one is met twice or the
     /// chain ends. A link is told by where it really is, with its parents resolved by the guest: a `..` in what it
-    /// holds is read against that directory, not against the names it was reached by.
+    /// holds is read against that directory, not against the names it was reached by. A parent that does not resolve
+    /// is followed the same way, so a link that leads through itself (`l` holding `l/l`) is a loop.
     async fn refuse_loop(&self, link: &str) -> Result<()> {
         let mut seen = HashSet::new();
         let mut here = link.to_owned();
         loop {
             let Some(real) = self.beside_real_parent(&here).await? else {
-                return Ok(());
+                // The directory that holds `here` does not resolve: it is missing, or it is a link that loops (the
+                // guest answers "no such file" for both). Follow it as a link, with the same links already met.
+                let parent = parent_of(&here);
+                if parent == here {
+                    return Ok(());
+                }
+                here = parent;
+                continue;
             };
             if !seen.insert(real.clone()) {
                 break;

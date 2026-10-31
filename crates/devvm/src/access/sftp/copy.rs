@@ -6,6 +6,10 @@ use super::plan::{self, Beyond, Conflict, Item, Kind, Place, Present, Rules, Sou
 use crate::exit::Progress;
 use crate::{Error, ErrorKind, Result};
 
+#[cfg(test)]
+#[path = "copy_tests.rs"]
+mod copy_tests;
+
 /// One end of a copy.
 pub(super) trait CopySide {
     /// A path on this side, in its own spelling.
@@ -90,22 +94,27 @@ fn conflict_error(conflict: Conflict, what: &str, side: &str, dest: &str) -> Err
     Error::new(ErrorKind::Io, message)
 }
 
-/// The announcement of a copy: what the walk found.
+/// The announcement of a copy: what the walk found. The sizes are what the guest reports, so a sum past `u64::MAX` is
+/// announced as more than that, not wrapped or refused.
 fn total(top: &Kind, items: &[Item]) -> String {
-    let (mut files, mut dirs, mut links, mut bytes) = (0u64, 0u64, 0u64, 0u64);
+    let (mut files, mut dirs, mut links) = (0u64, 0u64, 0u64);
+    let mut bytes = Some(0u64);
     for kind in std::iter::once(top).chain(items.iter().map(|item| &item.kind)) {
         match kind {
             Kind::Dir { .. } => dirs += 1,
             Kind::File { size, .. } => {
                 files += 1;
-                bytes += size;
+                bytes = bytes.and_then(|sum| sum.checked_add(*size));
             }
             Kind::Link { .. } => links += 1,
         }
     }
+    let size = match bytes {
+        Some(bytes) => bytesize::ByteSize(bytes).to_string(),
+        None => format!("more than {}", bytesize::ByteSize(u64::MAX)),
+    };
     format!(
-        "{files} files ({}), {links} symlinks, {} directories",
-        bytesize::ByteSize(bytes),
+        "{files} files ({size}), {links} symlinks, {} directories",
         dirs.saturating_sub(u64::from(top.is_dir()))
     )
 }

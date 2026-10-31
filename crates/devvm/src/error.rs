@@ -104,6 +104,12 @@ impl Error {
         self
     }
 
+    /// This error with a failure that came with it named after it; the first failure stays the error.
+    pub(crate) fn together_with(mut self, other: impl fmt::Display) -> Error {
+        self.message = format!("{}; {other} as well", self.message);
+        self
+    }
+
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }

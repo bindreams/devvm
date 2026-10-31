@@ -76,6 +76,7 @@ jobs:
         run: cargo test --workspace --locked
         env:
           DEVVM_COVERS_ACP: ${{ runner.os == 'Windows' && '1252' || '' }}
+          DEVVM_COVERS_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '' }}
 
       # The copy tests again, against OpenSSH's own sftp-server instead of the scripted one. The claim makes them fail,
       # not skip, if the run does not use it.
