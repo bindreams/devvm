@@ -154,6 +154,14 @@ impl QemuMachine {
         )
     }
 
+    /// `Unavailable` for a machine launched with `-no-reboot`, which a reset would end.
+    fn refuse_no_reboot(&self) -> Result<()> {
+        if self.record.no_reboot {
+            return Err(Error::new(ErrorKind::Unavailable, NO_REBOOT_REFUSAL));
+        }
+        Ok(())
+    }
+
     /// `Internal` for a machine that was never resumed: its control socket does not exist, so asking it anything
     /// would wait for ever.
     fn require_resumed(&self, what: &str) -> Result<()> {
@@ -253,23 +261,23 @@ impl Machine for QemuMachine {
         if self.attached { Ok(()) } else { self.vm.release() }
     }
 
-    /// Resets the guest inside this QEMU. A machine launched with `-no-reboot`, which exits at a reset instead of
-    /// resetting the guest, is refused first, with nothing sent to the VM. Then the host is asked whether it can reset a
-    /// guest: a host that cannot fails with nothing sent either, except that a machine found with `attach` has to ask
-    /// QEMU's `query-target` for the architecture the host needs. A VM that is not running (paused, I/O error) is
-    /// refused by name.
+    /// Resets the guest inside this QEMU. Nothing is sent to the VM for a refusal: a machine launched with `-no-reboot`
+    /// (QEMU exits at a reset instead of resetting the guest) and a host that cannot reset a guest are both refused
+    /// first. A machine found with `attach` does not know its architecture, which the host needs, so it is refused for
+    /// `-no-reboot` before it asks QEMU's `query-target`. A VM that is not running (paused, I/O error) is refused by name.
     fn reset(&mut self) -> Result<()> {
         self.require_resumed("reset the VM")?;
-        if self.record.no_reboot {
-            return Err(Error::new(ErrorKind::Unavailable, NO_REBOOT_REFUSAL));
-        }
         let arch = match self.arch {
             Some(arch) => arch,
-            None => self.connect()?.target_arch().map_err(|e| self.explain(e))?,
+            None => {
+                self.refuse_no_reboot()?;
+                self.connect()?.target_arch().map_err(|e| self.explain(e))?
+            }
         };
         self.host
             .guest_reset(arch)
             .map_err(|unavailable| Error::new(ErrorKind::Unavailable, unavailable.to_string()))?;
+        self.refuse_no_reboot()?;
         let mut qmp = self.connect()?;
         qmp.require_state(&["running"], "reset the VM", &self.record.serial_log)
             .map_err(|e| self.explain(e))?;
