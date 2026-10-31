@@ -236,3 +236,17 @@ fn debug_output_of_the_keys_does_not_hold_a_private_key() {
     // The public halves are not secret, and a failure message that names them is useful.
     assert!(shown.contains(keys.client_public.trim()), "{shown}");
 }
+
+/// POSIX lets `rmdir` of a non-empty directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`; neither
+/// means a dead claim, so `publish_dir` must be the one to refuse it.
+#[skuld::test]
+fn a_remove_failure_that_means_the_directory_is_not_empty_leaves_it_to_publish_dir() {
+    use std::io::ErrorKind::{AlreadyExists, DirectoryNotEmpty, NotFound, PermissionDenied};
+    for kind in [DirectoryNotEmpty, AlreadyExists, NotFound] {
+        assert!(super::is_not_a_dead_claim(kind), "{kind:?}");
+    }
+    assert!(
+        !super::is_not_a_dead_claim(PermissionDenied),
+        "an empty directory that cannot be removed is an error"
+    );
+}

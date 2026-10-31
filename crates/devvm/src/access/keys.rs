@@ -77,28 +77,30 @@ fn sweep_temporaries(parent: &Path) -> Result<Vec<String>> {
     Ok(warnings)
 }
 
-/// Removes the empty directory at `dir`, which is what a writer killed between the two steps of
-/// `claim_then_rename` leaves on a host without a rename that refuses to replace. The caller holds the
-/// lock every writer takes, so no writer is between those steps, and an empty directory here is a dead claim. A
-/// directory with anything in it, a link and a file are left for `publish_dir` to refuse.
+/// Whether a failed `remove_dir` means the directory is not an empty dead claim, so `publish_dir` is left to refuse it.
+/// POSIX lets `rmdir` of a non-empty directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`.
+fn is_not_a_dead_claim(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
+    )
+}
+
+/// Removes the empty directory at `dir`. A writer killed between the two steps of `claim_then_rename` leaves one on a
+/// host without a rename that refuses to replace; there it can only be a dead claim, because the caller holds the lock
+/// every writer takes. On a host with a native no-replace rename someone else made it, and it is removed all the same.
+/// A directory with anything in it, a link and a file are left for `publish_dir` to refuse.
 fn clear_dead_claim(dir: &Path) -> Result<()> {
     let is_directory = std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir());
     if !is_directory {
         return Ok(());
     }
     match std::fs::remove_dir(dir) {
-        Err(e)
-            if !matches!(
-                e.kind(),
-                std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
-            ) =>
-        {
-            Err(Error::io(
-                ErrorKind::Io,
-                format!("cannot remove the empty directory {}", dir.display()),
-                e,
-            ))
-        }
+        Err(e) if !is_not_a_dead_claim(e.kind()) => Err(Error::io(
+            ErrorKind::Io,
+            format!("cannot remove the empty directory {}", dir.display()),
+            e,
+        )),
         _ => Ok(()),
     }
 }
