@@ -27,7 +27,9 @@ use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
-use crate::test_support::qemu::{assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, socket_dir};
+use crate::test_support::qemu::{
+    assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, socket_dir, unicode_socket_dir_fits,
+};
 use crate::{Arch, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
@@ -461,7 +463,7 @@ fn vm_qemu_start_failure_reports_qemu_log(
     assert!(!is_running(&machine.record()), "QEMU exited");
 }
 
-#[skuld::test]
+#[skuld::test(requires = [unicode_socket_dir_fits])]
 fn vm_qemu_launch_with_paths_under_space_and_non_ascii(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
