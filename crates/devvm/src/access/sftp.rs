@@ -11,6 +11,9 @@
 //!   Links met inside the merged tree are replaced. A host or guest that cannot store a link is an error naming it.
 //! - `.` and `..` in the destination are read by name before anything is made (a symlink before a `..` is not
 //!   followed), so `new/.` is `new` and `a/../b` is `b`, with no stray `a`.
+//! - A message names the source and the destination as the user typed them (`~`, a trailing `/`, `..` and a doubled
+//!   `/` included), and a path below one as the typed text and the rest; the normalised forms are only operated on
+//!   ([`typed::Typed`]).
 //! - Contents, the execute bit and the modification time of files are kept (through [`Host`] where the host decides).
 //! - Every file and link is written to `.devvm-partial-<random>` beside its target and renamed over it (on the guest
 //!   side with `posix-rename@openssh.com`), so a failure leaves no partial file at the final path, a read-only target
@@ -32,6 +35,7 @@ mod guest;
 mod local;
 mod plan;
 mod remote;
+mod typed;
 
 use std::future::Future;
 use std::path::Path;
@@ -42,6 +46,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use self::guest::GuestSide;
 use self::local::HostSide;
 use self::remote::Remote;
+use self::typed::Typed;
 use crate::access::paths::{check_guest_path, expand_guest_path};
 use crate::access::runtime;
 use crate::access::session::Inner;
@@ -97,13 +102,13 @@ where
     }
 }
 
-fn local_error(what: &str, path: &Path, source: std::io::Error) -> Error {
+fn local_error(what: &str, path: impl std::fmt::Display, source: std::io::Error) -> Error {
     let kind = if source.kind() == std::io::ErrorKind::NotFound {
         ErrorKind::NotFound
     } else {
         ErrorKind::Io
     };
-    Error::io(kind, format!("{what} {}", path.display()), source)
+    Error::io(kind, format!("{what} {path}"), source)
 }
 
 /// `path` without a trailing `/`, a lone `/` excepted.
@@ -112,6 +117,11 @@ fn without_slash(path: &str) -> String {
         "" => path.chars().take(1).collect(),
         trimmed => trimmed.to_owned(),
     }
+}
+
+/// What the user typed as the guest path `typed`, which the copy operates on as the SFTP path `operated`.
+fn guest_typed(guest: &dyn GuestOs, operated: &str, typed: &str) -> Typed {
+    Typed::new(guest.user_path(operated), typed.to_owned(), |c| c == '/')
 }
 
 impl Sftp {
@@ -141,10 +151,11 @@ impl Sftp {
         })?
     }
 
-    /// This session, with the messages of what it does naming guest paths as `guest` writes them.
-    fn speaking(&self, guest: &Arc<dyn GuestOs>) -> Sftp {
+    /// This session, with the messages of what it does naming guest paths as `guest` writes them, and the guest path of
+    /// the copy as `typed` has it.
+    fn speaking(&self, guest: &Arc<dyn GuestOs>, typed: Typed) -> Sftp {
         Sftp {
-            remote: self.remote.clone().speaking(guest.clone()),
+            remote: self.remote.clone().speaking(guest.clone(), typed),
         }
     }
 
@@ -175,20 +186,20 @@ impl Sftp {
         guest: &Arc<dyn GuestOs>,
         progress: &dyn Progress,
     ) -> Result<()> {
-        let sftp = self.speaking(guest);
         let slash = dest.ends_with('/');
         let (expanded, home) = self.expanded(dest)?;
-        let dest = without_slash(&guest.sftp_path(&plan::normalize(&expanded), &home));
+        let operated = without_slash(&guest.sftp_path(&plan::normalize(&expanded), &home));
+        let sftp = self.speaking(guest, guest_typed(&**guest, &operated, dest));
         let follow = local::ends_with_separator(src);
         copy::copy(
-            &HostSide { host },
+            &HostSide::new(host, Typed::none()),
             &src.to_owned(),
             follow,
             &GuestSide {
                 sftp: &sftp,
                 guest: &**guest,
             },
-            &dest,
+            &operated,
             slash,
             progress,
         )
@@ -203,20 +214,25 @@ impl Sftp {
         guest: &Arc<dyn GuestOs>,
         progress: &dyn Progress,
     ) -> Result<()> {
-        let sftp = self.speaking(guest);
         let slash = local::ends_with_separator(dest);
-        let dest = local::lexically_normal(&local::without_trailing_separator(dest));
+        let operated = local::lexically_normal(&local::without_trailing_separator(dest));
+        let host_typed = Typed::new(
+            operated.display().to_string(),
+            dest.display().to_string(),
+            std::path::is_separator,
+        );
         let follow = src.ends_with('/');
-        let src = self.guest_path(src, &**guest)?;
+        let from = self.guest_path(src, &**guest)?;
+        let sftp = self.speaking(guest, guest_typed(&**guest, &from, src));
         copy::copy(
             &GuestSide {
                 sftp: &sftp,
                 guest: &**guest,
             },
-            &src,
+            &from,
             follow,
-            &HostSide { host },
-            &dest,
+            &HostSide::new(host, host_typed),
+            &operated,
             slash,
             progress,
         )

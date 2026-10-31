@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use super::super::typed::Typed;
 use super::{HostSide, finish_file, lexically_normal, replace, without_trailing_separator};
 use crate::access::sftp::copy::CopySide;
 use crate::test_support::fixtures::unicode_home;
@@ -99,7 +100,7 @@ fn dotdot_stops_at_the_root() {
 
 #[skuld::test]
 fn create_dir_says_whether_it_made_the_directory(#[fixture(unicode_home)] home: &Path) {
-    let side = HostSide { host: &TestHost };
+    let side = HostSide::new(&TestHost, Typed::none());
     let deep = home.join("a").join("b").join("c");
     assert!(side.create_dir(&deep).unwrap(), "made, with its parents");
     assert!(deep.is_dir());
@@ -113,7 +114,7 @@ fn create_dir_says_whether_it_made_the_directory(#[fixture(unicode_home)] home: 
 /// Creating a Windows drive root fails with access denied, not already exists, so a file copied to `C:\` met an error.
 #[skuld::test]
 fn create_dir_on_an_existing_root_finds_it_there(#[fixture(unicode_home)] home: &Path) {
-    let side = HostSide { host: &TestHost };
+    let side = HostSide::new(&TestHost, Typed::none());
     let root = home.ancestors().last().unwrap().to_path_buf();
     assert!(root.parent().is_none(), "{} is a root", root.display());
     assert!(!side.create_dir(&root).unwrap(), "{}", root.display());
@@ -121,7 +122,7 @@ fn create_dir_on_an_existing_root_finds_it_there(#[fixture(unicode_home)] home: 
 
 #[skuld::test]
 fn create_dir_does_not_follow_a_link_that_is_in_the_way(#[fixture(unicode_home)] home: &Path) {
-    let side = HostSide { host: &TestHost };
+    let side = HostSide::new(&TestHost, Typed::none());
     let real = home.join("real");
     std::fs::create_dir(&real).unwrap();
     let link = home.join("link");
@@ -138,7 +139,7 @@ fn create_dir_does_not_follow_a_link_that_is_in_the_way(#[fixture(unicode_home)]
 
 #[skuld::test]
 fn create_dir_refuses_a_file_in_the_way(#[fixture(unicode_home)] home: &Path) {
-    let side = HostSide { host: &TestHost };
+    let side = HostSide::new(&TestHost, Typed::none());
     let file = home.join("file");
     std::fs::write(&file, "x").unwrap();
     assert!(side.create_dir(&file).is_err());
@@ -151,7 +152,7 @@ fn the_execute_bit_is_set_on_the_temporary_before_it_is_moved_into_place(#[fixtu
     let (temp, target) = (home.join("partial"), home.join("tool"));
     std::fs::write(&temp, "new").unwrap();
     std::fs::write(&target, "old").unwrap();
-    finish_file(&temp, &target, true, None, &host).unwrap();
+    finish_file(&temp, &target, true, None, &HostSide::new(&host, Typed::none())).unwrap();
     assert_eq!(
         host.set_executable_calls(),
         [temp],
@@ -169,7 +170,14 @@ fn the_time_is_set_on_a_temporary_that_cannot_be_opened_for_write(#[fixture(unic
     let mut permissions = std::fs::metadata(&temp).unwrap().permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&temp, permissions).unwrap();
-    finish_file(&temp, &target, false, Some(1_000_000_000), &TestHost).unwrap();
+    finish_file(
+        &temp,
+        &target,
+        false,
+        Some(1_000_000_000),
+        &HostSide::new(&TestHost, Typed::none()),
+    )
+    .unwrap();
     let modified = std::fs::metadata(&target).unwrap().modified().unwrap();
     assert_eq!(
         modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
@@ -185,7 +193,7 @@ fn a_file_that_cannot_be_made_executable_never_replaces_the_target(#[fixture(uni
     let (temp, target) = (home.join("partial"), home.join("tool"));
     std::fs::write(&temp, "new").unwrap();
     std::fs::write(&target, "old").unwrap();
-    let error = finish_file(&temp, &target, true, None, &host).unwrap_err();
+    let error = finish_file(&temp, &target, true, None, &HostSide::new(&host, Typed::none())).unwrap_err();
     assert!(error.message().contains("cannot make executable"), "{error}");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
     assert!(!temp.exists(), "the temporary file is removed");
@@ -198,7 +206,7 @@ fn a_move_whose_cleanup_fails_too_names_both(#[fixture(unicode_home)] home: &Pat
     std::fs::create_dir(&temp).unwrap();
     std::fs::create_dir(&target).unwrap();
     std::fs::write(target.join("held"), "old").unwrap();
-    let error = replace(&TestHost, &temp, &target).unwrap_err();
+    let error = replace(&HostSide::new(&TestHost, Typed::none()), &temp, &target).unwrap_err();
     let text = error.message();
     assert!(text.contains("cannot move the copy into place"), "{text}");
     assert!(

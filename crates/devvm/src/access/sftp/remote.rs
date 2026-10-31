@@ -11,6 +11,7 @@ use russh_sftp::protocol::{FileAttributes, FileType, OpenFlags, Packet, StatusCo
 use tokio::io::AsyncWriteExt;
 
 use super::plan::{Beyond, Item, Kind, Present, check_listing, join, normalize, parent_of};
+use super::typed::Typed;
 use super::{Failed, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_name, pump};
 use crate::access::session::Inner;
 use crate::guest::GuestOs;
@@ -35,6 +36,8 @@ pub(super) struct Remote {
     raw: Arc<RawSftpSession>,
     /// The guest whose paths the messages are written in; without one, a path is named as the server is asked for it.
     guest: Option<Arc<dyn GuestOs>>,
+    /// What the user typed for the guest path of the copy, which the messages name instead of its normalised form.
+    typed: Arc<Typed>,
 }
 
 impl Remote {
@@ -65,19 +68,22 @@ impl Remote {
             session: Arc::new(session),
             raw: Arc::new(raw),
             guest: None,
+            typed: Arc::new(Typed::none()),
         })
     }
 
-    /// This remote, naming guest paths in its messages as `guest` writes them rather than as the server is asked.
-    pub(super) fn speaking(mut self, guest: Arc<dyn GuestOs>) -> Remote {
+    /// This remote, naming guest paths in its messages as `guest` writes them rather than as the server is asked, and
+    /// the copy's own guest path as `typed` has it.
+    pub(super) fn speaking(mut self, guest: Arc<dyn GuestOs>, typed: Typed) -> Remote {
         self.guest = Some(guest);
+        self.typed = Arc::new(typed);
         self
     }
 
     /// The guest path `path`, which is in the server's words, as the user writes it.
     pub(super) fn shown(&self, path: &str) -> String {
         match &self.guest {
-            Some(guest) => guest.user_path(path),
+            Some(guest) => self.typed.name(guest.user_path(path)),
             None => path.to_owned(),
         }
     }
@@ -479,9 +485,9 @@ impl Remote {
             .map_err(|e| self.error(&awaiting, e))?;
         let source = tokio::fs::File::open(local)
             .await
-            .map_err(|e| local_error("cannot read", local, e))?;
+            .map_err(|e| local_error("cannot read", local.display(), e))?;
         pump(source, &mut file).await.map_err(|failed| match failed {
-            Failed::Read(e) => local_error("cannot read", local, e),
+            Failed::Read(e) => local_error("cannot read", local.display(), e),
             Failed::Write(e) => self.guest_io(&awaiting, e),
         })?;
         // Shutting down flushes and closes the handle: a failed write may only show here.
@@ -605,15 +611,15 @@ impl Remote {
             .create_new(true)
             .open(&temp)
             .await
-            .map_err(|e| local_error("cannot create", &temp, e))?;
+            .map_err(|e| local_error("cannot create", temp.display(), e))?;
         pump(file, &mut local).await.map_err(|failed| match failed {
             Failed::Read(e) => self.guest_io(&awaiting, e),
-            Failed::Write(e) => local_error("cannot write", &temp, e),
+            Failed::Write(e) => local_error("cannot write", temp.display(), e),
         })?;
         local
             .shutdown()
             .await
-            .map_err(|e| local_error("cannot finish", &temp, e))
+            .map_err(|e| local_error("cannot finish", temp.display(), e))
     }
 
     /// The guest user's home directory.

@@ -1299,6 +1299,73 @@ fn errors_name_the_guest_path_the_user_typed(#[fixture(unicode_home)] home: &Pat
     named(&env.copy_in(&file, "Z:/in.txt/below").unwrap_err(), "Z:/in.txt");
 }
 
+/// What the user typed is what a message names, whatever the copy did to it to find the file: `~` stays `~`, a trailing
+/// `/`, a `..` and a doubled `/` stay.
+#[skuld::test]
+fn errors_name_the_guest_destination_exactly_as_typed(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let proj = project(&env);
+    let file = env.host_file("f.txt", b"f");
+    env.copy_in(&file, "/in.txt").unwrap();
+    env.copy_in(&file, "/d/in.txt").unwrap();
+    env.copy_in(&file, "/dd/sub").unwrap();
+
+    // The destination itself is a file the directory cannot go onto.
+    for typed in ["~/in.txt", "/in.txt/", "/a/../in.txt", "/d//in.txt", "/./in.txt"] {
+        let error = env.copy_in(&proj, typed).unwrap_err();
+        let wanted = format!("onto the guest path {typed}, which is not a directory");
+        assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
+    }
+    // An entry below the destination clashes: the path is the typed one, joined with the entry's name.
+    for typed in ["~/dd", "/dd/", "/a/../dd", "/x//../dd", "/dd//"] {
+        let error = env.copy_in(&proj, typed).unwrap_err();
+        let wanted = format!("onto {}/sub on the guest", typed.trim_end_matches('/'));
+        assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
+    }
+}
+
+#[skuld::test]
+fn errors_name_the_guest_source_exactly_as_typed(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    for typed in ["~/missing", "/missing/", "/a/../missing", "/d//missing", "/./missing"] {
+        let error = env.copy_out(typed, &env.local.join("m")).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
+        let wanted = format!("the guest source {typed} does not exist");
+        assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
+    }
+}
+
+#[skuld::test]
+fn errors_name_the_host_destination_exactly_as_typed(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    guest_project(&env);
+    env.host_file("out.txt", b"x");
+    env.host_file("out/sub", b"x");
+    let local = env.local.display().to_string();
+    let sep = std::path::MAIN_SEPARATOR;
+
+    for typed in [
+        format!("{local}{sep}out.txt{sep}"),
+        format!("{local}{sep}x{sep}..{sep}out.txt"),
+        format!("{local}{sep}{sep}out.txt"),
+        format!("{local}{sep}.{sep}out.txt"),
+    ] {
+        let error = env.copy_out("/proj", Path::new(&typed)).unwrap_err();
+        let wanted = format!("onto the host path {typed}, which is not a directory");
+        assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
+    }
+    for typed in [
+        format!("{local}{sep}out{sep}"),
+        format!("{local}{sep}x{sep}..{sep}out"),
+        format!("{local}{sep}{sep}out"),
+        format!("{local}{sep}.{sep}out"),
+    ] {
+        let error = env.copy_out("/proj", Path::new(&typed)).unwrap_err();
+        let wanted = format!("onto {}{sep}sub on this host", typed.trim_end_matches(sep));
+        assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
+    }
+}
+
 /// The same with a guest whose server is rooted elsewhere (OpenSSH's, in CI): the root is not the user's.
 #[skuld::test]
 fn errors_do_not_name_the_directory_the_server_is_rooted_at(#[fixture(unicode_home)] home: &Path) {

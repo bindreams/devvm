@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::copy::{CopySide, Receives};
 use super::guest::GuestSide;
 use super::plan::{Beyond, Item, Kind, Present};
+use super::typed::Typed;
 use super::{local_error, partial_name};
 use crate::host::{Host, remove_if_present};
 use crate::{Error, ErrorKind, Result};
@@ -81,21 +82,23 @@ fn sftp_seconds(time: std::io::Result<SystemTime>) -> Option<u32> {
 // Reading =============================================================================================================
 
 /// The tree entry that `metadata` describes at `path`, or `None` for a directory's contents to be walked.
-fn kind_of(path: &Path, metadata: &std::fs::Metadata, host: &dyn Host) -> Result<Kind> {
+fn kind_of(path: &Path, metadata: &std::fs::Metadata, side: &HostSide) -> Result<Kind> {
     let file_type = metadata.file_type();
     if file_type.is_symlink() {
-        let target = host
+        let target = side
+            .host
             .read_link(path)
-            .map_err(|e| local_error("cannot read the symlink", path, e))?;
+            .map_err(|e| local_error("cannot read the symlink", side.name(path), e))?;
         Ok(Kind::Link { target, to_dir: false })
     } else if file_type.is_dir() {
         Ok(Kind::Dir {
             mtime: sftp_seconds(metadata.modified()),
         })
     } else if file_type.is_file() {
-        let executable = host
+        let executable = side
+            .host
             .is_executable(path)
-            .map_err(|e| local_error("cannot read the mode of", path, e))?;
+            .map_err(|e| local_error("cannot read the mode of", side.name(path), e))?;
         Ok(Kind::File {
             executable,
             mtime: sftp_seconds(metadata.modified()),
@@ -106,7 +109,7 @@ fn kind_of(path: &Path, metadata: &std::fs::Metadata, host: &dyn Host) -> Result
             ErrorKind::Io,
             format!(
                 "{} is neither a regular file, a directory nor a symlink",
-                path.display()
+                side.name(path)
             ),
         ))
     }
@@ -116,11 +119,15 @@ fn kind_of(path: &Path, metadata: &std::fs::Metadata, host: &dyn Host) -> Result
 
 /// Whether the symlink `path` leads to a directory. A dangling link leads to none; a target that cannot be looked at (a
 /// loop, no permission) is an error.
-fn leads_to_dir(path: &Path) -> Result<bool> {
+fn leads_to_dir(path: &Path, side: &HostSide) -> Result<bool> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_dir()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(local_error("cannot inspect where the symlink leads at", path, e)),
+        Err(e) => Err(local_error(
+            "cannot inspect where the symlink leads at",
+            side.name(path),
+            e,
+        )),
     }
 }
 
@@ -133,35 +140,42 @@ fn temp_beside(target: &Path) -> PathBuf {
 }
 
 /// `error` once the temporary `temp`, which the copy failed to finish, is removed. A temporary that stays is named.
-fn without_temporary(error: Error, temp: &Path) -> Error {
+fn without_temporary(error: Error, temp: &Path, side: &HostSide) -> Error {
     error.after_cleanup(
-        &format!("the temporary file {}", temp.display()),
+        &format!("the temporary file {}", side.name(temp)),
         remove_if_present(temp),
     )
 }
 
 /// Moves the temporary `temp` over `target`, replacing a file or a symlink there, and removes `temp` when it fails.
-fn replace(host: &dyn Host, temp: &Path, target: &Path) -> Result<()> {
-    host.replace_file(temp, target)
-        .map_err(|e| without_temporary(local_error("cannot move the copy into place at", target, e), temp))
+fn replace(side: &HostSide, temp: &Path, target: &Path) -> Result<()> {
+    side.host.replace_file(temp, target).map_err(|e| {
+        without_temporary(
+            local_error("cannot move the copy into place at", side.name(target), e),
+            temp,
+            side,
+        )
+    })
 }
 
 /// Makes the downloaded `temp` the file `target`, with the modification time and execute bit of the guest file. Both
 /// are set on `temp`, before it replaces anything: a failure leaves `target` as it was.
-fn finish_file(temp: &Path, target: &Path, executable: bool, mtime: Option<u32>, host: &dyn Host) -> Result<()> {
+fn finish_file(temp: &Path, target: &Path, executable: bool, mtime: Option<u32>, side: &HostSide) -> Result<()> {
     let prepare = || -> Result<()> {
         if let Some(seconds) = mtime {
-            host.set_file_mtime(temp, seconds)
-                .map_err(|e| local_error("cannot set the time of", temp, e))?;
+            side.host
+                .set_file_mtime(temp, seconds)
+                .map_err(|e| local_error("cannot set the time of", side.name(temp), e))?;
         }
         if executable {
-            host.set_executable(temp)
-                .map_err(|e| local_error("cannot make executable", temp, e))?;
+            side.host
+                .set_executable(temp)
+                .map_err(|e| local_error("cannot make executable", side.name(temp), e))?;
         }
         Ok(())
     };
-    prepare().map_err(|e| without_temporary(e, temp))?;
-    replace(host, temp, target)
+    prepare().map_err(|e| without_temporary(e, temp, side))?;
+    replace(side, temp, target)
 }
 
 // The side ============================================================================================================
@@ -169,6 +183,19 @@ fn finish_file(temp: &Path, target: &Path, executable: bool, mtime: Option<u32>,
 /// The host end of a copy.
 pub(super) struct HostSide<'a> {
     pub(super) host: &'a dyn Host,
+    /// What the user typed for the host path of the copy, if they did.
+    typed: Typed,
+}
+
+impl<'a> HostSide<'a> {
+    pub(super) fn new(host: &'a dyn Host, typed: Typed) -> HostSide<'a> {
+        HostSide { host, typed }
+    }
+
+    /// `path` in the words of a message.
+    fn name(&self, path: &Path) -> String {
+        self.typed.name(path.display().to_string())
+    }
 }
 
 impl CopySide for HostSide<'_> {
@@ -179,7 +206,7 @@ impl CopySide for HostSide<'_> {
     const SOURCE_TIMES: &'static str = "1970 to 2106";
 
     fn show(&self, path: &PathBuf) -> String {
-        path.display().to_string()
+        self.name(path)
     }
 
     fn join(&self, base: &PathBuf, name: &str) -> PathBuf {
@@ -197,7 +224,7 @@ impl CopySide for HostSide<'_> {
             .file_name()
             .and_then(|name| name.to_str())
             .map(str::to_owned)
-            .ok_or_else(|| Error::new(ErrorKind::Usage, format!("{} has no usable file name", path.display())))
+            .ok_or_else(|| Error::new(ErrorKind::Usage, format!("{} has no usable file name", self.name(path))))
     }
 
     fn chain(&self, path: &PathBuf) -> Vec<(Option<String>, PathBuf)> {
@@ -228,8 +255,8 @@ impl CopySide for HostSide<'_> {
         } else {
             std::fs::symlink_metadata(path)
         }
-        .map_err(|e| local_error("the host source", path, e))?;
-        kind_of(path, &metadata, self.host)
+        .map_err(|e| local_error("the host source", self.name(path), e))?;
+        kind_of(path, &metadata, self)
     }
 
     fn walk(&self, dir: &PathBuf) -> Result<Vec<Item>> {
@@ -237,8 +264,8 @@ impl CopySide for HostSide<'_> {
         let mut pending = vec![(dir.to_owned(), Vec::<String>::new())];
         while let Some((path, rel)) = pending.pop() {
             let mut names = Vec::new();
-            for entry in std::fs::read_dir(&path).map_err(|e| local_error("cannot list", &path, e))? {
-                let entry = entry.map_err(|e| local_error("cannot list", &path, e))?;
+            for entry in std::fs::read_dir(&path).map_err(|e| local_error("cannot list", self.name(&path), e))? {
+                let entry = entry.map_err(|e| local_error("cannot list", self.name(&path), e))?;
                 names.push(entry.file_name());
             }
             names.sort();
@@ -250,12 +277,13 @@ impl CopySide for HostSide<'_> {
                         ErrorKind::Io,
                         format!(
                             "{} has a name that is not valid Unicode, which SFTP cannot carry",
-                            child.display()
+                            self.name(&child)
                         ),
                     ));
                 };
-                let metadata = std::fs::symlink_metadata(&child).map_err(|e| local_error("cannot read", &child, e))?;
-                let kind = kind_of(&child, &metadata, self.host)?;
+                let metadata =
+                    std::fs::symlink_metadata(&child).map_err(|e| local_error("cannot read", self.name(&child), e))?;
+                let kind = kind_of(&child, &metadata, self)?;
                 let mut child_rel = rel.clone();
                 child_rel.push(text.to_owned());
                 if kind.is_dir() {
@@ -271,15 +299,17 @@ impl CopySide for HostSide<'_> {
 
     fn present(&self, path: &PathBuf, follow: bool) -> Result<Present> {
         match std::fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => Ok(Present::Link(if follow && leads_to_dir(path)? {
-                Beyond::Dir
-            } else {
-                Beyond::NotDir
-            })),
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                Ok(Present::Link(if follow && leads_to_dir(path, self)? {
+                    Beyond::Dir
+                } else {
+                    Beyond::NotDir
+                }))
+            }
             Ok(metadata) if metadata.is_dir() => Ok(Present::Dir),
             Ok(_) => Ok(Present::File),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Present::Nothing),
-            Err(e) => Err(local_error("cannot inspect", path, e)),
+            Err(e) => Err(local_error("cannot inspect", self.name(path), e)),
         }
     }
 
@@ -294,13 +324,13 @@ impl CopySide for HostSide<'_> {
             // Whatever is there must be a directory (a link to one counts), or the copy cannot go on. Another
             // process may have made it since the look above.
             Err(_) if path.is_dir() => Ok(false),
-            Err(e) => Err(local_error("cannot create the directory", path, e)),
+            Err(e) => Err(local_error("cannot create the directory", self.name(path), e)),
         };
         match std::fs::create_dir(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if let Some(parent) = self.parent(path) {
                     std::fs::create_dir_all(&parent)
-                        .map_err(|e| local_error("cannot create the directory", &parent, e))?;
+                        .map_err(|e| local_error("cannot create the directory", self.name(&parent), e))?;
                 }
                 made(std::fs::create_dir(path))
             }
@@ -312,7 +342,7 @@ impl CopySide for HostSide<'_> {
         // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
         std::fs::remove_file(path)
             .or_else(|_| std::fs::remove_dir(path))
-            .map_err(|e| local_error("cannot replace the symlink", path, e))
+            .map_err(|e| local_error("cannot replace the symlink", self.name(path), e))
     }
 
     fn probe_links(&self, dest: &PathBuf) -> Result<Option<String>> {
@@ -326,18 +356,19 @@ impl CopySide for HostSide<'_> {
                 }
             })
             .find(|path| path.is_dir())
-            .ok_or_else(|| Error::new(ErrorKind::Io, format!("no directory above {} exists", dest.display())))?;
+            .ok_or_else(|| Error::new(ErrorKind::Io, format!("no directory above {} exists", self.name(dest))))?;
         let probe = dir.join(partial_name());
         if let Err(e) = self.host.make_symlink(".", &probe, false) {
             return Ok(Some(e.to_string()));
         }
-        std::fs::remove_file(&probe).map_err(|e| local_error("cannot remove the test symlink", &probe, e))?;
+        std::fs::remove_file(&probe)
+            .map_err(|e| local_error("cannot remove the test symlink", self.name(&probe), e))?;
         Ok(None)
     }
 
     fn set_dir_time(&self, path: &PathBuf, seconds: u32) -> Result<()> {
         filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(i64::from(seconds), 0))
-            .map_err(|e| local_error("cannot set the time of", path, e))
+            .map_err(|e| local_error("cannot set the time of", self.name(path), e))
     }
 
     fn put_link(&self, text: &str, to_dir: bool, target: &PathBuf, what: &str) -> Result<()> {
@@ -345,11 +376,11 @@ impl CopySide for HostSide<'_> {
         self.host.make_symlink(text, &temp, to_dir).map_err(|e| {
             Error::io(
                 ErrorKind::Io,
-                format!("cannot copy {what} to {} on this host: {e}", target.display()),
+                format!("cannot copy {what} to {} on this host: {e}", self.name(target)),
                 e,
             )
         })?;
-        replace(self.host, &temp, target)
+        replace(self, &temp, target)
     }
 }
 
@@ -363,9 +394,9 @@ impl Receives<GuestSide<'_>> for HostSide<'_> {
         to: &PathBuf,
     ) -> Result<()> {
         let temp = temp_beside(to);
-        match source.download(from, &temp, to) {
-            Ok(()) => finish_file(&temp, to, executable, mtime, self.host),
-            Err(e) => Err(without_temporary(e, &temp)),
+        match source.download(from, &temp, &self.name(to)) {
+            Ok(()) => finish_file(&temp, to, executable, mtime, self),
+            Err(e) => Err(without_temporary(e, &temp, self)),
         }
     }
 
