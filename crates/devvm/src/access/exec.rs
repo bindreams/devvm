@@ -78,7 +78,12 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
         .await;
     if let Some(channel) = channel {
         // russh's `Channel` sends no close when dropped: the guest command would keep an output pipe that nobody reads.
-        let _ = channel.close().await;
+        // The close joins the session's bounded queue of outgoing messages, which nothing drains while the peer holds
+        // back a window or a socket write (a frozen guest, another channel's upload in flight): the guard that ended
+        // `run` bounds this wait too, so the close is sent if there is room and given up if there is none.
+        let _ = inner
+            .guarded(&awaiting, false, async { Ok(channel.close().await.is_ok()) })
+            .await;
     }
     match (outcome, status) {
         (Ok(None), _) => {} // The host side went away; there is nobody to tell.

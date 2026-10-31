@@ -279,7 +279,7 @@ impl Remote {
 
     /// Whether the symlink `path` of a source tree leads to a directory, as far as the guest says: the link is copied
     /// as it is, so a target that does not exist or loops (the server's "no such file") counts as none. A target the
-    /// guest refuses to look at is an error.
+    /// guest refuses to look at is an error: the kind of link to make cannot be chosen.
     async fn source_leads_to_dir(&self, path: &str) -> Result<bool> {
         Ok(self.stat(path).await?.is_some_and(|attrs| attrs.file_type().is_dir()))
     }
@@ -300,7 +300,8 @@ impl Remote {
     }
 
     /// The tree entry at `path`, given its attributes (not followed through a symlink).
-    pub(super) async fn kind_of(&self, path: &str, attrs: &FileAttributes) -> Result<Kind> {
+    /// `link_kinds` asks what a symlink leads to; without it that is not looked at, and every link is a file link.
+    pub(super) async fn kind_of(&self, path: &str, attrs: &FileAttributes, link_kinds: bool) -> Result<Kind> {
         // OpenSSH sends a time before 1970 as the 32-bit two's complement of its seconds, which reads as a date after
         // 2038. The two cannot be told apart, so a time past 2038 is not trusted.
         let mtime = attrs.mtime.filter(|seconds| i32::try_from(*seconds).is_ok());
@@ -328,7 +329,7 @@ impl Remote {
                         ),
                     ));
                 }
-                let to_dir = self.source_leads_to_dir(path).await?;
+                let to_dir = link_kinds && self.source_leads_to_dir(path).await?;
                 Ok(Kind::Link { target, to_dir })
             }
             FileType::Other => Err(Error::new(
@@ -343,20 +344,20 @@ impl Remote {
 
     /// The source `path`: a symlink is a link unless `follow` (the user wrote a trailing `/`). `None` when it does not
     /// exist.
-    pub(super) async fn inspect(self, path: String, follow: bool) -> Result<Option<Kind>> {
+    pub(super) async fn inspect(self, path: String, follow: bool, link_kinds: bool) -> Result<Option<Kind>> {
         let attrs = if follow {
             self.stat(&path).await?
         } else {
             self.lstat(&path).await?
         };
         match attrs {
-            Some(attrs) => self.kind_of(&path, &attrs).await.map(Some),
+            Some(attrs) => self.kind_of(&path, &attrs, link_kinds).await.map(Some),
             None => Ok(None),
         }
     }
 
     /// The guest tree below `dir`, parents before children, symlinks as links.
-    pub(super) async fn walk(self, dir: String) -> Result<Vec<Item>> {
+    pub(super) async fn walk(self, dir: String, link_kinds: bool) -> Result<Vec<Item>> {
         let mut items = Vec::new();
         let mut pending = vec![(dir, Vec::<String>::new())];
         while let Some((path, rel)) = pending.pop() {
@@ -387,7 +388,7 @@ impl Remote {
                         )
                     })?
                 };
-                let kind = self.kind_of(&child, &attrs).await?;
+                let kind = self.kind_of(&child, &attrs, link_kinds).await?;
                 let mut child_rel = rel.clone();
                 child_rel.push(name);
                 if kind.is_dir() {

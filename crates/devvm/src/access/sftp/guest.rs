@@ -14,6 +14,9 @@ use crate::{Error, ErrorKind, Result};
 pub(super) struct GuestSide<'a> {
     pub(super) sftp: &'a Sftp,
     pub(super) guest: &'a dyn GuestOs,
+    /// Whether the source tree is told what each of its links leads to: only a host that makes the two kinds of link
+    /// differently uses it, and asking for it can fail where the copy would not.
+    pub(super) link_kinds: bool,
 }
 
 impl GuestSide<'_> {
@@ -72,7 +75,8 @@ impl CopySide for GuestSide<'_> {
             self.sftp
                 .call(&format!("inspecting the guest path {}", self.show(path)), {
                     let path = path.clone();
-                    move |remote| remote.inspect(path, follow)
+                    let link_kinds = self.link_kinds;
+                    move |remote| remote.inspect(path, follow, link_kinds)
                 })
         };
         if let Some(kind) = inspect(path)? {
@@ -93,7 +97,8 @@ impl CopySide for GuestSide<'_> {
         self.sftp
             .call(&format!("listing the guest directory {}", self.show(dir)), {
                 let dir = dir.clone();
-                move |remote| remote.walk(dir)
+                let link_kinds = self.link_kinds;
+                move |remote| remote.walk(dir, link_kinds)
             })
     }
 

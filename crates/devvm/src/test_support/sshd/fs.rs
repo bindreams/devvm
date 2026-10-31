@@ -202,8 +202,8 @@ impl SftpFs {
         // file" for anything else.
         let slash = path.ends_with('/');
         let path = self.resolve(path, follow || slash)?;
-        if follow && self.state.unlookable.lock().unwrap().contains(&path) {
-            return Err(StatusCode::PermissionDenied.into());
+        if follow && let Some(status) = self.state.unlookable.lock().unwrap().get(&path) {
+            return Err((*status).into());
         }
         let mut attrs = FileAttributes::default();
         let mode = self.state.modes.lock().unwrap().get(&path).copied();

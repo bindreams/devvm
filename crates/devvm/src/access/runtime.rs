@@ -5,9 +5,8 @@
 
 use std::future::Future;
 use std::pin::pin;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
-use std::thread::{self, Thread};
 
 use tokio::runtime::{Builder, Runtime};
 
@@ -65,35 +64,53 @@ where
     Ok(runtime()?.spawn(task))
 }
 
-/// Wakes the thread that is parked in [`wait`].
-struct Unpark(Thread);
+/// What one [`wait`] blocks on: a flag and a condition variable of its own, so it never takes the thread's park token,
+/// which an executor that polls the caller may be parked on.
+#[derive(Default)]
+struct Signal {
+    woken: Mutex<bool>,
+    changed: Condvar,
+}
 
-impl Wake for Unpark {
+impl Signal {
+    fn block_until_woken(&self) {
+        let mut woken = self.woken.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*woken {
+            woken = self.changed.wait(woken).unwrap_or_else(PoisonError::into_inner);
+        }
+        *woken = false;
+    }
+}
+
+impl Wake for Signal {
     fn wake(self: Arc<Self>) {
-        self.0.unpark();
+        self.wake_by_ref();
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.0.unpark();
+        *self.woken.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.changed.notify_one();
     }
 }
 
 /// Waits for `future` on the calling thread. The future may be a tokio channel receiver or a join handle: those do
 /// not need to be polled by a tokio runtime, so this is safe inside one. It enters no executor, so it is as safe
-/// inside `futures`' executors, which panic when entered twice. It runs outside the cooperative budget of an
+/// inside `futures`' executors, which panic when entered twice, and it leaves the thread's park token alone, so an
+/// executor parked on it is woken as it would be without the wait. It runs outside the cooperative budget of an
 /// enclosing tokio task: a wait that never returns to the scheduler would never get the budget back and would hang
 /// once it ran out.
 pub(crate) fn wait<F: Future>(future: F) -> F::Output {
     let mut future = pin!(tokio::task::unconstrained(future));
-    let waker = Waker::from(Arc::new(Unpark(thread::current())));
+    let signal = Arc::new(Signal::default());
+    let waker = Waker::from(signal.clone());
     let mut context = Context::from_waker(&waker);
     loop {
         if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
             return output;
         }
-        // A wake that came before this park left a token, so the park returns at once; a wake with nothing new only
-        // costs one more poll.
-        thread::park();
+        // A wake that came during the poll is kept, so the block returns at once; a wake with nothing new only costs
+        // one more poll.
+        signal.block_until_woken();
     }
 }
 

@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use russh_sftp::protocol::StatusCode;
+
 use crate::access::SshSession;
 use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
@@ -656,19 +658,68 @@ fn links_in_a_tree_are_copied_as_links_in_both_directions(#[fixture(unicode_home
     assert_eq!(tree(&env.local.join("back")), want);
 }
 
-/// A tree link whose target the guest refuses to look at is not "a link to a file": the copy fails naming the link
-/// and what the guest said.
+/// A host that makes a directory link and a file link differently needs to know what a link leads to. A target the guest
+/// refuses to look at, whatever the status, leaves the type unknown: the copy fails naming the link and what the guest
+/// said, and writes nothing.
 #[skuld::test(requires = [scripted_server])]
-fn a_guest_link_whose_target_the_guest_refuses_to_look_at_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
-    let env = Env::new(home);
+fn a_guest_link_whose_target_the_guest_refuses_to_look_at_is_an_error_naming_it_for_a_host_with_link_kinds(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (status, said) in [
+        (StatusCode::PermissionDenied, "Permission denied"),
+        (StatusCode::BadMessage, "Bad message"),
+    ] {
+        let home = home.join(format!("{status:?}"));
+        std::fs::create_dir(&home).unwrap();
+        let mut env = Env::new(&home);
+        env.host = RecordingHost::with_link_kinds(true);
+        env.guest_file("pack/real.txt", b"real");
+        env.guest_link("/pack/locked", "/secret");
+        env.rig.sshd.refuse_lookup("/secret", status);
+        let error = env.copy_out("/pack", &env.local.join("back")).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{status:?}: {error}");
+        assert!(error.message().contains("/pack/locked"), "{status:?}: {error}");
+        assert!(error.message().contains(said), "{status:?}, the cause: {error}");
+        assert!(!env.local.join("back").exists(), "{status:?}: nothing is written");
+    }
+}
+
+/// A host that makes the two link kinds alike never asks what a link leads to, so a link the guest cannot look through
+/// is copied as the link it is.
+#[skuld::test(requires = [scripted_server])]
+fn a_guest_link_whose_target_the_guest_refuses_to_look_at_is_copied_as_a_link_for_a_host_without_link_kinds(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for status in [StatusCode::PermissionDenied, StatusCode::BadMessage] {
+        let home = home.join(format!("{status:?}"));
+        std::fs::create_dir(&home).unwrap();
+        let mut env = Env::new(&home);
+        env.host = RecordingHost::with_link_kinds(false);
+        env.guest_file("pack/real.txt", b"real");
+        env.guest_link("/pack/locked", "secret");
+        env.rig.sshd.refuse_lookup("/pack/secret", status);
+        let out = env.local.join("back");
+        env.copy_out("/pack", &out)
+            .unwrap_or_else(|e| panic!("{status:?}: {e}"));
+        assert_eq!(tree(&out), ["locked -> secret", "real.txt"], "{status:?}");
+        // The probe, then the link.
+        assert_eq!(env.host.symlinks_made(), [false, false], "{status:?}");
+    }
+}
+
+/// A host with link kinds is told what each link leads to: a directory, a file, or nothing (a file link).
+#[skuld::test]
+fn a_host_with_link_kinds_is_told_what_each_guest_link_leads_to(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::with_link_kinds(true);
     env.guest_file("pack/real.txt", b"real");
-    env.guest_link("/pack/locked", "/secret");
-    env.rig.sshd.refuse_lookup("/secret");
-    let error = env.copy_out("/pack", &env.local.join("back")).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("/pack/locked"), "{error}");
-    assert!(error.message().contains("Permission denied"), "the cause: {error}");
-    assert!(!env.local.join("back").exists(), "nothing is written");
+    env.guest_file("pack/sub/inner.txt", b"inner");
+    env.guest_link("/pack/to-dir", "sub");
+    env.guest_link("/pack/to-file", "real.txt");
+    env.guest_link("/pack/dangling", "nowhere");
+    env.copy_out("/pack", &env.local.join("back")).unwrap();
+    // The probe, then the links in the order of the walk, which is sorted by name: dangling, to-dir, to-file.
+    assert_eq!(env.host.symlinks_made(), [false, false, true, false]);
 }
 
 #[skuld::test]

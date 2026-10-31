@@ -39,6 +39,7 @@ use std::time::Duration;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{Auth, Config, Handler, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, Sig};
+use russh_sftp::protocol::StatusCode;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
@@ -109,7 +110,7 @@ pub(crate) struct State {
     pub(crate) read_only_dirs: Mutex<HashSet<String>>,
     pub(crate) failing_data: Mutex<HashSet<String>>,
     pub(crate) phantoms: Mutex<HashSet<String>>,
-    pub(crate) unlookable: Mutex<HashSet<String>>,
+    pub(crate) unlookable: Mutex<HashMap<String, StatusCode>>,
     pub(crate) listed_again: Mutex<HashSet<String>>,
     pub(crate) discarding: Mutex<HashSet<String>>,
     pub(crate) generated: Mutex<HashMap<String, u64>>,
@@ -325,9 +326,10 @@ impl TestSshd {
         self.state.phantoms.lock().unwrap().insert(path.to_owned());
     }
 
-    /// Looking at `path` through a symlink is refused with permission denied.
-    pub fn refuse_lookup(&self, path: &str) {
-        self.state.unlookable.lock().unwrap().insert(path.to_owned());
+    /// Looking at `path` through a symlink is refused with `status`: OpenSSH's `sftp-server` answers permission denied
+    /// for EPERM and EACCES, and bad message for ENAMETOOLONG and EINVAL.
+    pub fn refuse_lookup(&self, path: &str, status: StatusCode) {
+        self.state.unlookable.lock().unwrap().insert(path.to_owned(), status);
     }
 
     /// A directory listing names `path`, an entry that exists, a second time, at its end.

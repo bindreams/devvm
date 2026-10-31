@@ -201,6 +201,7 @@ impl Sftp {
             &GuestSide {
                 sftp: &sftp,
                 guest: &**guest,
+                link_kinds: false,
             },
             &operated,
             slash,
@@ -231,6 +232,7 @@ impl Sftp {
             &GuestSide {
                 sftp: &sftp,
                 guest: &**guest,
+                link_kinds: host.symlinks_have_kinds(),
             },
             &from,
             follow,

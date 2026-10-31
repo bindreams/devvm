@@ -195,6 +195,10 @@ impl Host for WindowsHost {
         }
     }
 
+    fn symlinks_have_kinds(&self) -> bool {
+        true
+    }
+
     /// A target written with `/` is not followed by Windows, so it is stored with `\`.
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         let target = target.replace('/', "\\");

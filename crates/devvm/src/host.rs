@@ -149,8 +149,14 @@ pub(crate) trait Host: Send + Sync {
     /// the target is not valid Unicode.
     fn read_link(&self, path: &Path) -> std::io::Result<String>;
 
+    /// Whether this host makes a symlink to a directory and a symlink to a file differently (Windows does), so
+    /// [`Host::make_symlink`] needs to be told which the target is. A copy looks at the target of a guest link only
+    /// when this is `true`.
+    fn symlinks_have_kinds(&self) -> bool;
+
     /// Creates the symlink `link` pointing to `target`, a `/`-separated text taken from a guest. `to_dir` says whether
-    /// the target is a directory, which Windows needs to know. Fails with `PermissionDenied`, naming the cause, where
+    /// the target is a directory, which a host with [`Host::symlinks_have_kinds`] needs to know; any other host
+    /// ignores it. Fails with `PermissionDenied`, naming the cause, where
     /// this host cannot make symlinks (Windows without Developer Mode or an elevated token).
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
 }

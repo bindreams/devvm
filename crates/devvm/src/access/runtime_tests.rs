@@ -1,5 +1,11 @@
+use std::future::{Future, poll_fn};
+use std::pin::pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
+use std::thread::{self, Thread};
+
 use crate::ErrorKind;
-use crate::access::runtime::{Lazy, run, run_reporting};
+use crate::access::runtime::{Lazy, run, run_reporting, wait};
 use crate::test_support::callers::{MORE_THAN_THE_BUDGET, in_every_caller_context};
 use crate::test_support::fixtures::MemoryProgress;
 
@@ -99,4 +105,51 @@ fn racing_first_uses_from_async_contexts_do_not_panic() {
             .collect()
     });
     assert!(addresses.windows(2).all(|pair| pair[0] == pair[1]), "{addresses:?}");
+}
+
+/// Wakes by unparking the thread, like the executor below.
+struct UnparkExecutor(Thread);
+
+impl Wake for UnparkExecutor {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// An executor that waits for its wake on the thread's park token alone, with no flag of its own, as `std`'s docs
+/// show for a minimal one.
+fn block_on_the_park_token<F: Future>(future: F) -> F::Output {
+    let mut future = pin!(future);
+    let waker = Waker::from(Arc::new(UnparkExecutor(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return output;
+        }
+        thread::park();
+    }
+}
+
+/// A caller whose executor is woken while `wait` blocks inside its poll gets that wake: `wait` must not spend the
+/// token the executor parks on. The executor is woken before `wait` first polls, and its future returns `Pending`
+/// after the wait; it is polled again only if the wake is still there.
+#[skuld::test]
+fn wait_leaves_the_wake_of_a_caller_that_parks_on_the_thread_token() {
+    let mut first = true;
+    block_on_the_park_token(poll_fn(|context| {
+        if !std::mem::replace(&mut first, false) {
+            return Poll::Ready(());
+        }
+        let executor = context.waker().clone();
+        let mut polled = false;
+        wait(poll_fn(|inner| {
+            if std::mem::replace(&mut polled, true) {
+                return Poll::Ready(());
+            }
+            executor.wake_by_ref();
+            inner.waker().wake_by_ref();
+            Poll::Pending
+        }));
+        Poll::Pending
+    }));
 }

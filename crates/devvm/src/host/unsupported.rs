@@ -126,6 +126,10 @@ impl<M: FileModes> Host for M {
         FileModes::read_link(self, path)
     }
 
+    fn symlinks_have_kinds(&self) -> bool {
+        false
+    }
+
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         FileModes::make_symlink(self, target, link, to_dir)
     }

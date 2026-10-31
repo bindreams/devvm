@@ -26,7 +26,8 @@ pub(super) enum Kind {
     Link {
         /// What the link holds, `/`-separated.
         target: String,
-        /// Whether it leads to a directory: a Windows host makes the two kinds differently. Only a guest source knows.
+        /// Whether it leads to a directory: a Windows host makes the two kinds differently. Only a guest source knows,
+        /// and it looks only when the destination host makes them differently; otherwise this is `false`.
         to_dir: bool,
     },
 }

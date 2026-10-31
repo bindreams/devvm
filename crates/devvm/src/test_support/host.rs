@@ -92,6 +92,10 @@ impl Host for TestHost {
         host::current().read_link(path)
     }
 
+    fn symlinks_have_kinds(&self) -> bool {
+        host::current().symlinks_have_kinds()
+    }
+
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         host::current().make_symlink(target, link, to_dir)
     }
@@ -182,6 +186,10 @@ impl Host for NoAccelHost {
         TestHost.read_link(path)
     }
 
+    fn symlinks_have_kinds(&self) -> bool {
+        TestHost.symlinks_have_kinds()
+    }
+
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         TestHost.make_symlink(target, link, to_dir)
     }
@@ -194,6 +202,10 @@ impl Host for NoAccelHost {
 pub struct RecordingHost {
     windows_names: bool,
     no_symlinks: bool,
+    /// What `symlinks_have_kinds` answers; the real host's answer when unset.
+    link_kinds: Option<bool>,
+    /// The `to_dir` of every `make_symlink` call, in call order, failed calls included.
+    symlinks_made: Mutex<Vec<bool>>,
     private_writes: Mutex<Vec<PathBuf>>,
     fail_private_write_at: Mutex<Option<usize>>,
     executable: Mutex<HashSet<PathBuf>>,
@@ -231,6 +243,21 @@ impl RecordingHost {
             no_symlinks: true,
             ..RecordingHost::default()
         }
+    }
+
+    /// A host that says it makes the two kinds of symlink differently (`kinds`, as Windows does) or not (as Unix does),
+    /// whatever OS the test runs on.
+    pub fn with_link_kinds(kinds: bool) -> RecordingHost {
+        RecordingHost {
+            link_kinds: Some(kinds),
+            ..RecordingHost::default()
+        }
+    }
+
+    /// The `to_dir` of every `make_symlink` call, in call order. A copy makes a link under a temporary name, so the
+    /// order is how a call is told from another.
+    pub fn symlinks_made(&self) -> Vec<bool> {
+        self.symlinks_made.lock().unwrap().clone()
     }
 
     /// Makes the `index`-th (from 0) call of `write_private` fail.
@@ -377,7 +404,12 @@ impl Host for RecordingHost {
         TestHost.read_link(path)
     }
 
+    fn symlinks_have_kinds(&self) -> bool {
+        self.link_kinds.unwrap_or_else(|| TestHost.symlinks_have_kinds())
+    }
+
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
+        self.symlinks_made.lock().unwrap().push(to_dir);
         if self.no_symlinks {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -474,6 +506,10 @@ impl Host for NoGuestReset {
 
     fn read_link(&self, path: &Path) -> std::io::Result<String> {
         host::current().read_link(path)
+    }
+
+    fn symlinks_have_kinds(&self) -> bool {
+        host::current().symlinks_have_kinds()
     }
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
