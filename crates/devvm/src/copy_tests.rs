@@ -755,10 +755,18 @@ fn git_runs_without_any_variable_that_selects_a_repository(#[fixture(unicode_hom
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_PREFIX",
     ];
-    for name in local.lines().chain(known) {
+    // These carry the user's configuration, not a repository choice.
+    let config = ["GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
+    for name in local.lines().chain(known).filter(|name| !config.contains(name)) {
         assert!(
             removed.iter().any(|r| r == name),
             "{name} must be removed, got {removed:?}"
+        );
+    }
+    for name in config {
+        assert!(
+            !removed.iter().any(|r| r == name),
+            "{name} must be kept, got {removed:?}"
         );
     }
 }
@@ -790,6 +798,9 @@ fn a_tracked_name_this_host_cannot_hold_is_skipped_like_a_missing_file(#[fixture
     let repo = new_repo(home, "repo");
     put(&repo, "top.txt", b"top");
     add_all(&repo);
+    // Git for Windows refuses such a path in `update-index` unless `core.protectNTFS` is off; an index that holds one
+    // exists on Windows only then.
+    git(&repo, &["config", "core.protectNTFS", "false"]);
     // Index only. Windows reads `|` as an invalid name rather than an absent one, for the file and for a directory.
     for path in ["a|b", "d|ir/f.txt"] {
         git(

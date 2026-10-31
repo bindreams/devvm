@@ -46,8 +46,11 @@ pub(super) fn is_absent(e: &io::Error) -> bool {
     )
 }
 
-/// The environment variables that make `git` pick a repository (`git rev-parse --local-env-vars`), as the installed
-/// git lists them. Asked once.
+/// Variables in git's local list that carry the user's configuration, not a repository choice. Kept.
+const CONFIG_VARIABLES: [&str; 3] = ["GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"];
+
+/// The environment variables that make `git` pick a repository (`git rev-parse --local-env-vars`, as the installed
+/// git lists them, less the configuration ones). Asked once.
 fn repository_variables(host: &dyn Host) -> Result<&'static [String]> {
     static VARIABLES: OnceLock<Vec<String>> = OnceLock::new();
     if let Some(variables) = VARIABLES.get() {
@@ -69,6 +72,7 @@ fn repository_variables(host: &dyn Host) -> Result<&'static [String]> {
     Ok(VARIABLES.get_or_init(|| {
         String::from_utf8_lossy(&out.stdout)
             .lines()
+            .filter(|name| !CONFIG_VARIABLES.contains(name))
             .map(str::to_owned)
             .collect()
     }))
