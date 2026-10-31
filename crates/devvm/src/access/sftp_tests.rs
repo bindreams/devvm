@@ -9,6 +9,7 @@ use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
+use crate::test_support::claims::OPENSSH_SFTP;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::RecordingHost;
 use crate::test_support::sshd::{Rig, SshdOptions};
@@ -18,17 +19,14 @@ use crate::{ErrorKind, GuestKind, Result};
 
 // The server ==========================================================================================================
 
-/// Set by the CI job that runs these tests against OpenSSH's own `sftp-server` instead of the scripted one: the copy
-/// is then checked against what a real guest does, and a test that cannot run there says why.
-const OPENSSH_CLAIM: &str = "DEVVM_COVERS_OPENSSH_SFTP";
-
-/// `Ok` when this run claims OpenSSH's server. The reason it does not is for a test to show as not run.
+/// `Ok` when this run claims OpenSSH's own `sftp-server` instead of the scripted one: the copy is then checked against
+/// what a real guest does. The reason it does not is for a test to show as not run.
 fn openssh_claimed() -> std::result::Result<(), String> {
-    match std::env::var(OPENSSH_CLAIM) {
-        Ok(claimed) if !claimed.is_empty() => Ok(()),
-        _ => Err(format!(
-            "{OPENSSH_CLAIM} is not set; the scripted server is used here, OpenSSH's is covered by CI (Test job on \
-             ubuntu-latest)"
+    match OPENSSH_SFTP.is_made() {
+        true => Ok(()),
+        false => Err(format!(
+            "{} is not set; the scripted server is used here, OpenSSH's is covered by CI (the openssh-sftp step on ubuntu-latest)",
+            OPENSSH_SFTP.var
         )),
     }
 }
@@ -58,7 +56,8 @@ fn the_server_of_this_run_is_openssh_as_claimed(#[fixture(unicode_home)] home: &
     let env = Env::new(home);
     assert!(
         env.openssh,
-        "{OPENSSH_CLAIM} is set but the run did not start OpenSSH's server"
+        "{} is set but the run did not start OpenSSH's server",
+        OPENSSH_SFTP.var
     );
     assert_eq!(env.sftp.home().unwrap(), env.g("/"));
 }
@@ -73,7 +72,7 @@ struct Env {
     progress: MemoryProgress,
     /// The host side: an empty directory.
     local: PathBuf,
-    /// Whether the guest's SFTP server is OpenSSH's own (see [`OPENSSH_CLAIM`]).
+    /// Whether the guest's SFTP server is OpenSSH's own (see [`OPENSSH_SFTP`]).
     openssh: bool,
 }
 

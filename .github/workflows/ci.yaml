@@ -81,10 +81,12 @@ jobs:
 
       # windows-latest's ANSI code page is 1252; the claim test fails if the image changes it. Only the Linux leg claims
       # PyYAML: the other legs list the seed test as unavailable, and where it is claimed it fails if uv or PyYAML is
-      # missing. A test fails if a leg does not make the claims its OS owes (test_support/claims.rs).
+      # missing. A test fails if a step does not make the claims it owes on its OS: the step names itself in
+      # DEVVM_CI_STEP, and test_support/claims.rs lists the claims per step and OS.
       - name: Test
         run: cargo test --workspace --locked
         env:
+          DEVVM_CI_STEP: test
           DEVVM_COVERS_ACP: ${{ runner.os == 'Windows' && '1252' || '' }}
           DEVVM_COVERS_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '' }}
           DEVVM_COVERS_PYYAML: ${{ runner.os == 'Linux' && '1' || '' }}
@@ -101,6 +103,7 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test -p devvm --lib --locked
         env:
+          DEVVM_CI_STEP: openssh-sftp
           DEVVM_COVERS_OPENSSH_SFTP: "1"
           DEVVM_COVERS_PYYAML: "1"
 

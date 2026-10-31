@@ -22,8 +22,30 @@ pub const PYYAML: Claim = Claim {
     value: "1",
 };
 
-/// The claims each runner OS (`std::env::consts::OS`) must make. The workflow's Test step sets them by `runner.os`.
-const OWED: &[(&str, &[&Claim])] = &[("linux", &[&PYYAML]), ("windows", &[&ACP])];
+/// This runner creates files on NTFS to measure what it stores (`host/names_tests.rs`).
+pub const NTFS_NAMES: Claim = Claim {
+    var: "DEVVM_COVERS_NTFS_NAMES",
+    value: "1",
+};
+
+/// This run's SFTP server is OpenSSH's own `sftp-server` (`access/sftp_tests.rs`).
+pub const OPENSSH_SFTP: Claim = Claim {
+    var: "DEVVM_COVERS_OPENSSH_SFTP",
+    value: "1",
+};
+
+/// The variable each workflow step that runs the tests sets to its name in [`OWED`]. Steps differ in what they claim,
+/// so the table cannot be keyed by the runner OS alone.
+pub const STEP_VAR: &str = "DEVVM_CI_STEP";
+
+/// The claims each workflow step (`ci.yaml`) must make on each runner OS (`std::env::consts::OS`). A pair not listed is
+/// not a step of the workflow.
+const OWED: &[(&str, &str, &[&Claim])] = &[
+    ("test", "linux", &[&PYYAML]),
+    ("test", "macos", &[]),
+    ("test", "windows", &[&ACP, &NTFS_NAMES]),
+    ("openssh-sftp", "linux", &[&OPENSSH_SFTP, &PYYAML]),
+];
 
 impl Claim {
     /// Whether this process's environment makes the claim.
@@ -36,11 +58,12 @@ impl Claim {
     }
 }
 
-/// The claims runner `os` owes that `env` does not make.
-pub fn missing(os: &str, env: impl Fn(&str) -> Option<String>) -> Vec<&'static Claim> {
-    OWED.iter()
-        .filter(|(owner, _)| *owner == os)
-        .flat_map(|(_, claims)| claims.iter().copied())
-        .filter(|claim| !claim.is_made_in(&env))
-        .collect()
+/// The claims the step `step` on runner `os` owes that `env` does not make. A pair the table does not list is an error:
+/// an unnamed or renamed step must not read as owing nothing.
+pub fn missing(step: &str, os: &str, env: impl Fn(&str) -> Option<String>) -> Result<Vec<&'static Claim>, String> {
+    let (_, _, claims) = OWED
+        .iter()
+        .find(|(owner, runner, _)| *owner == step && *runner == os)
+        .ok_or_else(|| format!("the step {step:?} on {os} owes no listed claims (test_support/claims.rs)"))?;
+    Ok(claims.iter().copied().filter(|claim| !claim.is_made_in(&env)).collect())
 }
