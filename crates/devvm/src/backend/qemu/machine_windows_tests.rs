@@ -67,10 +67,17 @@ impl World {
 
     /// A machine found with `attach`, as another process sees one.
     fn attached(&self) -> QemuMachine {
+        self.attached_on(host::current())
+    }
+
+    fn attached_on(&self, host: &'static dyn host::Host) -> QemuMachine {
+        let vm = self.handle();
+        let id = vm.id();
         QemuMachine::attached(
-            self.handle(),
+            vm,
+            host.watch_process(id).unwrap(),
             self.record.clone(),
-            host::current(),
+            host,
             Arc::new(MemoryProgress::default()),
         )
         .unwrap()
@@ -78,8 +85,11 @@ impl World {
 
     /// A machine this process launched and resumed, whose log is `log`.
     fn launched(&self, log: PathBuf, host: &'static dyn host::Host) -> QemuMachine {
+        let vm = self.handle();
+        let id = vm.id();
         let mut machine = QemuMachine::launched(
-            self.handle(),
+            vm,
+            host.watch_process(id).unwrap(),
             self.record.clone(),
             Vec::new(),
             log,
@@ -192,6 +202,27 @@ fn reset_of_a_no_reboot_machine_is_refused_before_it_connects(#[fixture(unicode_
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains("no-reboot"), "{error}");
+    assert!(
+        error.message().contains("resetting the guest") && !error.message().contains("  "),
+        "the refusal text lost its line continuation: {error}"
+    );
+}
+
+#[skuld::test]
+fn reset_of_an_attached_no_reboot_machine_is_refused_with_nothing_sent_even_when_qemu_is_gone(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let mut world = world(home);
+    world.record.no_reboot = true;
+    let mut machine = world.attached();
+    // No server listens and the VM is gone: asking it for its architecture would fail with `ConnectionLost`.
+    world.end_qemu();
+
+    let error = machine.reset().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("no-reboot"), "{error}");
+    assert!(!world.lock_file().exists(), "a connection was attempted");
 }
 
 #[skuld::test]
@@ -231,13 +262,7 @@ fn reset_of_an_attached_machine_sends_only_the_target_query_before_the_host_answ
         session.answer(json!({ "arch": "x86_64" }));
         assert!(session.command().is_none(), "a command followed the target query");
     });
-    let mut machine = QemuMachine::attached(
-        world.handle(),
-        world.record.clone(),
-        &NO_GUEST_RESET,
-        Arc::new(MemoryProgress::default()),
-    )
-    .unwrap();
+    let mut machine = world.attached_on(&NO_GUEST_RESET);
 
     let error = machine.reset().unwrap_err();
 

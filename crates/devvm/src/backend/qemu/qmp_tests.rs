@@ -7,32 +7,27 @@ use serde_json::{Value, json};
 
 use super::{Qmp, QmpEndpoint, VmEnd};
 use crate::ErrorKind;
-use crate::backend::qemu::exit_watch::ExitWatch;
 use crate::backend::qemu::ports::Forward;
-use crate::backend::qemu::uds::{UnixListener, UnixStream};
-use crate::host;
+use crate::backend::qemu::uds::UnixListener;
+use crate::host::{self, Link, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, UNICODE_DIR};
-use crate::test_support::host::{INTERRUPT_FAILED, INTERRUPT_FAILS};
+use crate::test_support::manual_exit::ManualExit;
 use crate::test_support::qemu::Sock;
 
 // A fake QMP server ===================================================================================================
 
 /// One accepted connection, speaking QMP as QEMU does.
 pub(crate) struct Session {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
-    /// Ended by `Server::join`: the test is over with the client, and a read that waits for the client's end of stream
-    /// must return even if Windows lost that end of stream.
-    release: ExitWatch,
+    link: BufReader<Box<dyn Link>>,
 }
 
 impl Session {
-    fn new(stream: UnixStream, release: ExitWatch) -> Session {
+    /// `release` is the process this server stands for: when the test ends it (`Server::join`), a read that waits for
+    /// the client's end of stream returns even if Windows lost that end of stream.
+    fn new(stream: crate::backend::qemu::uds::UnixStream, release: &Arc<dyn ProcessWatch>) -> Session {
         Session {
-            reader: BufReader::new(stream.try_clone().unwrap()),
-            writer: stream,
-            release,
+            link: BufReader::new(release.link(stream).unwrap()),
         }
     }
 
@@ -45,15 +40,15 @@ impl Session {
     /// Writes `bytes` as they are: a line that is not JSON, or not text, or has no end.
     pub(crate) fn send_raw(&mut self, bytes: &[u8]) {
         // The client may be gone already; a script that cares reads first.
-        let _ = self.writer.write_all(bytes).and_then(|()| self.writer.flush());
+        let link = self.link.get_mut();
+        let _ = link.write_all(bytes).and_then(|()| link.flush());
     }
 
     /// The next command as `(name, arguments)`; `None` when the client closed the connection or the test released the
     /// server (`Server::join`).
     pub(crate) fn command(&mut self) -> Option<(String, Value)> {
-        let _registration = self.release.register(self.writer.try_clone().unwrap()).ok()?;
         let mut line = String::new();
-        if self.reader.read_line(&mut line).ok()? == 0 {
+        if self.link.read_line(&mut line).ok()? == 0 {
             return None;
         }
         let value: Value = serde_json::from_str(&line).unwrap();
@@ -71,7 +66,7 @@ impl Session {
         self.send(json!({ "error": { "class": "GenericError", "desc": desc } }));
     }
 
-    fn event(&mut self, name: &str, data: Option<Value>) {
+    pub(crate) fn event(&mut self, name: &str, data: Option<Value>) {
         let mut event = json!({ "event": name, "timestamp": { "seconds": 1, "microseconds": 2 } });
         if let Some(data) = data {
             event["data"] = data;
@@ -103,7 +98,7 @@ pub(crate) type Log = Arc<Mutex<Vec<String>>>;
 /// The thread of a fake QMP server.
 pub(crate) struct Server {
     thread: std::thread::JoinHandle<()>,
-    release: ExitWatch,
+    release: ManualExit,
 }
 
 impl Server {
@@ -115,7 +110,7 @@ impl Server {
     /// For when the test is over with the client: a script still waiting for the client's end of stream is woken (a
     /// script that waits for a command it was never sent is a bug in the test), then waits for the script to end.
     pub(crate) fn join(self) -> std::thread::Result<()> {
-        self.release.report_exit();
+        self.release.exit();
         self.thread.join()
     }
 }
@@ -123,7 +118,7 @@ impl Server {
 /// Accepts `clients` connections in turn. Each gets QEMU's greeting and `qmp_capabilities`, then `script(session)`.
 ///
 /// Windows can lose the end of an AF_UNIX stream, so no test may end by waiting for the peer to close:
-/// - A client that must see the server end is given a fake process (`fake_process`), ended once the server is done
+/// - A client that must see the server end is given a `ManualExit` process, ended once the server is done
 ///   (`end_process_after`).
 /// - A script waits for its client with `Session::command`, which `Server::join` wakes. A script that serves more than
 ///   one client must not wait for the end of the first one: no `join` comes before the second.
@@ -134,12 +129,12 @@ pub(crate) fn serve(
 ) -> (Server, Log) {
     let log: Log = Arc::default();
     let seen = log.clone();
-    let release = ExitWatch::new(host::current());
-    let released = release.clone();
+    let release = ManualExit::new();
+    let released = release.watch();
     let thread = std::thread::spawn(move || {
         for _ in 0..clients {
             let (stream, _) = listener.accept().unwrap();
-            let mut session = Session::new(stream, released.clone());
+            let mut session = Session::new(stream, &released);
             session.send(greeting());
             let (name, _) = session.command().expect("qmp_capabilities");
             seen.lock().unwrap().push(name);
@@ -150,7 +145,7 @@ pub(crate) fn serve(
     (Server { thread, release }, log)
 }
 
-fn sock() -> Sock {
+pub(crate) fn sock() -> Sock {
     Sock::new()
 }
 
@@ -159,12 +154,8 @@ impl Sock {
         UnixListener::bind(self.endpoint.path()).unwrap()
     }
 
-    fn connect(&self) -> crate::Result<Qmp> {
-        Qmp::connect(
-            &self.endpoint,
-            &ExitWatch::new(host::current()),
-            &MemoryProgress::default(),
-        )
+    pub(crate) fn connect(&self) -> crate::Result<Qmp> {
+        Qmp::connect(&self.endpoint, &ManualExit::new().watch(), &MemoryProgress::default())
     }
 }
 
@@ -263,7 +254,7 @@ fn four_sequential_clients_each_get_the_greeting() {
 #[skuld::test]
 fn connect_waits_for_the_listener() {
     let sock = sock();
-    let exit = ExitWatch::new(host::current());
+    let exit = ManualExit::new().watch();
 
     std::thread::scope(|scope| {
         let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).map(drop));
@@ -276,31 +267,21 @@ fn connect_waits_for_the_listener() {
 #[skuld::test]
 fn a_machine_that_has_exited_fails_before_a_lock_file_is_touched() {
     let sock = sock();
-    let exit = ExitWatch::new(host::current());
-    exit.report_exit();
-    let error = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default())
+    let exit = ManualExit::new();
+    exit.exit();
+    let error = Qmp::connect(&sock.endpoint, &exit.watch(), &MemoryProgress::default())
         .err()
         .unwrap();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(!sock.endpoint.lock_path().exists());
 }
 
-/// A watch whose process is a channel: it exits when the sender is dropped.
-fn fake_process() -> (mpsc::Sender<()>, ExitWatch) {
-    let (sender, receiver) = mpsc::channel::<()>();
-    let watch = ExitWatch::watching(host::current(), move || {
-        let _ = receiver.recv();
-        Ok(())
-    });
-    (sender, watch)
-}
-
-/// Ends the fake process once `server` is done, from a thread of its own, while the calling thread reads the connection.
-fn end_process_after<T>(server: Server, process: mpsc::Sender<()>, read: impl FnOnce() -> T) -> T {
+/// Ends `process` once `server` is done, from a thread of its own, while the calling thread reads the connection.
+fn end_process_after<T>(server: Server, process: &ManualExit, read: impl FnOnce() -> T) -> T {
     std::thread::scope(|scope| {
         scope.spawn(move || {
             server.wait().unwrap();
-            drop(process);
+            process.exit();
         });
         read()
     })
@@ -309,11 +290,11 @@ fn end_process_after<T>(server: Server, process: mpsc::Sender<()>, read: impl Fn
 #[skuld::test]
 fn a_process_that_exits_while_connect_waits_for_the_listener_ends_the_wait() {
     let sock = sock();
-    let (process, exit) = fake_process();
+    let process = ManualExit::new();
 
     let error = std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()));
-        drop(process);
+        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()));
+        process.exit();
         client.join().unwrap().err().expect("nothing ever listens")
     });
 
@@ -326,18 +307,56 @@ fn a_process_that_exits_while_connect_waits_for_the_listener_ends_the_wait() {
 }
 
 #[skuld::test]
-fn a_process_that_cannot_be_watched_fails_connect_naming_why() {
+fn a_process_that_exits_after_the_socket_accepted_but_before_the_greeting_leaves_no_lock_file() {
     let sock = sock();
-    let exit = ExitWatch::watching(host::current(), || {
-        Err(crate::Error::new(ErrorKind::Io, "the wait was refused"))
+    let process = ManualExit::new();
+    let listener = sock.listen();
+    let server = std::thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            let (stream, _) = listener.accept().unwrap();
+            // The exit comes first, so that a client that sees the end of the stream also sees the exit.
+            process.exit();
+            drop(stream);
+        });
+        let error = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default())
+            .err()
+            .expect("QEMU never greeted");
+        server.join().unwrap();
+        error
     });
 
-    let error = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default())
-        .err()
-        .expect("nothing ever listens");
+    assert_eq!(server.kind(), ErrorKind::ConnectionLost, "{server}");
+    assert!(
+        !sock.endpoint.lock_path().exists(),
+        "the lock file of a process that is gone was left behind"
+    );
+}
 
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("the wait was refused"), "{error}");
+#[skuld::test]
+fn a_handshake_that_fails_while_the_process_lives_keeps_the_lock_file() {
+    let sock = sock();
+    let release = ManualExit::new();
+    let listener = sock.listen();
+    let thread = std::thread::spawn({
+        let released = release.watch();
+        move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut session = Session::new(stream, &released);
+            session.send(json!({ "hello": 1 }));
+            // Held until the client has failed: the process lives, and so does the connection.
+            session.command();
+        }
+    });
+    let server = Server { thread, release };
+
+    let error = sock.connect().err().expect("the greeting is not QMP");
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(
+        sock.endpoint.lock_path().exists(),
+        "another session may be waiting on the lock file of a live process"
+    );
+    server.join().unwrap();
 }
 
 #[skuld::test]
@@ -358,8 +377,7 @@ fn the_qmp_lock_serializes_two_processes() {
 
     let (progress, messages) = ChannelProgress::new();
     std::thread::scope(|scope| {
-        let client =
-            scope.spawn(|| Qmp::connect(&sock.endpoint, &ExitWatch::new(host::current()), &*progress).map(drop));
+        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &ManualExit::new().watch(), &*progress).map(drop));
         let message = messages.recv().unwrap();
         assert!(message.starts_with("waiting for "), "{message}");
         // Releasing the lock is what lets the second connect proceed.
@@ -629,15 +647,15 @@ fn system_reset_is_not_done_on_the_reply_alone() {
 #[skuld::test]
 fn system_reset_of_a_qemu_that_exits_before_the_reset_event_is_a_lost_connection() {
     let sock = sock();
-    let (process, exit) = fake_process();
+    let process = ManualExit::new();
     let (server, _) = serve(sock.listen(), 1, |session, _| {
         session.command().unwrap();
         session.reply(json!({}));
         // No RESET event, and the server is done.
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
-    let error = end_process_after(server, process, || qmp.system_reset().unwrap_err());
+    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let error = end_process_after(server, &process, || qmp.system_reset().unwrap_err());
 
     // The exit can come before the reply is written: either way the call did not finish and names what it waited for.
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
@@ -663,87 +681,12 @@ fn system_reset_of_a_no_reboot_qemu_is_an_error_naming_no_reboot() {
     server.join().unwrap();
 }
 
-// An exit while the client has bytes it has not read ------------------------------------------------------------------
-
-/// A connection to a server that wrote `lines` on its own right after the handshake and then holds the connection open
-/// (a stream whose end Windows may lose). Returns once the server has written them.
-fn connected_to_a_server_that_wrote(
-    sock: &Sock,
-    exit: &ExitWatch,
-    lines: impl Fn(&mut Session) + Send + 'static,
-) -> (Server, Qmp) {
-    let (written, written_rx) = mpsc::channel::<()>();
-    let (server, _) = serve(sock.listen(), 1, move |session, _| {
-        lines(session);
-        written.send(()).unwrap();
-        while session.command().is_some() {}
-    });
-    let qmp = Qmp::connect(&sock.endpoint, exit, &MemoryProgress::default()).unwrap();
-    written_rx.recv().unwrap();
-    (server, qmp)
-}
-
-// macOS flushes unread bytes when `shutdown(Read)` wakes a reader (measured in CI), so `UnsupportedHost` cannot keep them
-// there; Windows and Linux keep them.
-#[cfg(not(target_vendor = "apple"))]
-#[skuld::test]
-fn a_reply_that_arrived_before_the_exit_is_read_after_it() {
-    let sock = sock();
-    let exit = ExitWatch::new(host::current());
-    let (server, mut qmp) = connected_to_a_server_that_wrote(&sock, &exit, |session| session.reply(json!({})));
-    exit.report_exit();
-
-    // `quit`'s reply is the one QEMU writes just before it exits.
-    qmp.quit().unwrap();
-
-    drop(qmp);
-    server.join().unwrap();
-}
-
-// macOS flushes unread bytes when `shutdown(Read)` wakes a reader (measured in CI), so `UnsupportedHost` cannot keep them
-// there; Windows and Linux keep them.
-#[cfg(not(target_vendor = "apple"))]
-#[skuld::test]
-fn a_no_reboot_shutdown_that_arrived_before_the_exit_is_still_read() {
-    let sock = sock();
-    let exit = ExitWatch::new(host::current());
-    let (server, mut qmp) = connected_to_a_server_that_wrote(&sock, &exit, |session| {
-        session.reply(json!({}));
-        session.event(
-            "SHUTDOWN",
-            Some(json!({ "guest": false, "reason": "host-qmp-system-reset" })),
-        );
-    });
-    exit.report_exit();
-
-    let error = qmp.system_reset().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("no-reboot"), "{error}");
-    drop(qmp);
-    server.join().unwrap();
-}
-
-#[skuld::test]
-fn the_read_after_the_last_buffered_event_of_an_exited_process_ends_instead_of_blocking() {
-    let sock = sock();
-    let exit = ExitWatch::new(host::current());
-    let (server, mut qmp) = connected_to_a_server_that_wrote(&sock, &exit, |session| session.event("POWERDOWN", None));
-    exit.report_exit();
-
-    // The server still holds the connection open: only the exit can end this wait.
-    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
-
-    drop(qmp);
-    server.join().unwrap();
-}
-
 // wait_for_end --------------------------------------------------------------------------------------------------------
 
 #[skuld::test]
 fn wait_for_end_returns_exited_when_the_server_closes_after_shutdown() {
     let sock = sock();
-    let (process, exit) = fake_process();
+    let process = ManualExit::new();
     let (acked, acked_rx) = mpsc::channel::<()>();
     let (server, _) = serve(sock.listen(), 1, move |session, _| {
         session.answer(json!({}));
@@ -753,10 +696,10 @@ fn wait_for_end_returns_exited_when_the_server_closes_after_shutdown() {
         let _ = acked_rx.recv();
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
     qmp.system_powerdown().unwrap();
     acked.send(()).unwrap();
-    let end = end_process_after(server, process, || qmp.wait_for_end());
+    let end = end_process_after(server, &process, || qmp.wait_for_end());
 
     assert_eq!(end.unwrap(), VmEnd::Exited);
 }
@@ -806,27 +749,27 @@ fn a_stop_event_in_a_normal_state_is_checked_and_does_not_end_the_wait() {
 
 // A QEMU that goes away, or a socket that fails, at the wrong moment --------------------------------------------------
 
-/// Windows can lose the end of the stream when a server writes and closes, so these tests end the fake
-/// process once the server is done: a lost end of stream is woken by the exit watch instead of hanging the test.
+/// Windows can lose the end of the stream when a server writes and closes, so these tests end the process once the
+/// server is done: the exit ends the read instead of the test hanging.
 #[skuld::test]
 fn a_server_that_closes_after_the_greeting_is_a_lost_connection() {
     let sock = sock();
-    let (process, exit) = fake_process();
+    let process = ManualExit::new();
     let listener = sock.listen();
-    let release = ExitWatch::new(host::current());
+    let release = ManualExit::new();
     let thread = std::thread::spawn({
-        let release = release.clone();
+        let released = release.watch();
         move || {
             let (stream, _) = listener.accept().unwrap();
-            let mut session = Session::new(stream, release);
+            let mut session = Session::new(stream, &released);
             session.send(greeting());
             // Dropped before `qmp_capabilities` is answered.
         }
     });
     let server = Server { thread, release };
 
-    let error = end_process_after(server, process, || {
-        Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default())
+    let error = end_process_after(server, &process, || {
+        Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default())
             .err()
             .expect("the handshake cannot finish")
     });
@@ -837,104 +780,18 @@ fn a_server_that_closes_after_the_greeting_is_a_lost_connection() {
 #[skuld::test]
 fn a_server_that_closes_after_query_status_loses_the_next_command() {
     let sock = sock();
-    let (process, exit) = fake_process();
+    let process = ManualExit::new();
     let (server, _) = serve(sock.listen(), 1, |session, _| {
         session.answer(json!({ "status": "running", "running": true }));
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
     assert_eq!(qmp.query_status().unwrap().state, "running");
     server.join().unwrap();
-    drop(process);
+    process.exit();
     let error = qmp.system_powerdown().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-}
-
-#[skuld::test]
-fn a_process_that_exits_while_a_read_is_blocked_ends_the_read() {
-    let sock = sock();
-    let (process, exit) = fake_process();
-    let (asked, asked_rx) = mpsc::channel();
-    let (finished, finished_rx) = mpsc::channel::<()>();
-    // The server takes the command and never answers; it keeps the connection open until the client is done, so the
-    // read can end only because the process exited.
-    let (server, _) = serve(sock.listen(), 1, move |session, _| {
-        let (name, _) = session.command().unwrap();
-        asked.send(name).unwrap();
-        let _ = finished_rx.recv();
-    });
-    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
-
-    let error = std::thread::scope(|scope| {
-        let client = scope.spawn(move || qmp.query_status());
-        assert_eq!(asked_rx.recv().unwrap(), "query-status");
-        drop(process);
-        client.join().unwrap().unwrap_err()
-    });
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    finished.send(()).unwrap();
-    server.join().unwrap();
-}
-
-#[skuld::test]
-fn a_read_that_starts_after_the_process_exited_ends_at_once() {
-    let sock = sock();
-    let exit = ExitWatch::new(host::current());
-    let (finished, finished_rx) = mpsc::channel::<()>();
-    // The server keeps the connection open and says nothing, so a read can end only because the process exited.
-    let (server, _) = serve(sock.listen(), 1, move |_, _| {
-        let _ = finished_rx.recv();
-    });
-    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
-
-    // The exit comes before the first read, so there is nothing blocked for the interrupt to wake.
-    exit.report_exit();
-    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
-    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited, "a second read");
-    let error = qmp.query_status().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    finished.send(()).unwrap();
-    server.join().unwrap();
-}
-
-#[skuld::test]
-fn a_command_sent_after_the_process_exited_is_a_lost_connection() {
-    let sock = sock();
-    let exit = ExitWatch::new(host::current());
-    let (finished, finished_rx) = mpsc::channel::<()>();
-    let (server, _) = serve(sock.listen(), 1, move |_, _| {
-        let _ = finished_rx.recv();
-    });
-    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
-
-    exit.report_exit();
-    let error = qmp.stop().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    finished.send(()).unwrap();
-    server.join().unwrap();
-}
-
-#[skuld::test]
-fn an_exit_the_host_could_not_wake_the_reader_for_is_named_in_the_session_error() {
-    let sock = sock();
-    let exit = ExitWatch::new(&INTERRUPT_FAILS);
-    let (finished, finished_rx) = mpsc::channel::<()>();
-    let (server, _) = serve(sock.listen(), 1, move |_, _| {
-        let _ = finished_rx.recv();
-    });
-    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
-
-    exit.report_exit();
-    let error = qmp.query_status().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.to_string().contains(INTERRUPT_FAILED), "{error}");
-    finished.send(()).unwrap();
-    server.join().unwrap();
 }
 
 /// Not a socket test: Windows' AF_UNIX sockets sometimes never deliver the end of the stream to a reader after the peer

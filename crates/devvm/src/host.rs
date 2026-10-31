@@ -5,8 +5,10 @@ use std::fmt;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::backend::qemu::uds::UnixStream;
+use cosca::identity::ProcessId;
+
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -16,8 +18,11 @@ mod host_tests;
 
 #[cfg_attr(windows, allow(dead_code))]
 mod unsupported;
+pub(crate) mod watch;
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
+
+pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(windows))]
 use unsupported::UnsupportedHost as Current;
@@ -67,12 +72,10 @@ pub(crate) trait Host: Send + Sync {
     /// The longest AF_UNIX socket path this OS binds, in bytes: `sun_path` without its terminating NUL.
     fn socket_path_max(&self) -> usize;
 
-    /// Wakes a thread blocked reading `connection`'s socket (through a clone of it) and keeps what the peer wrote
-    /// before: afterwards a read returns the bytes still buffered, then ends the stream, fails as a closed connection
-    /// or reports `WouldBlock`, and never blocks. Needed because Windows can lose the end of an AF_UNIX stream, so a
-    /// reader whose peer died may block for ever. An `Err` means the preferred way failed; a host with a fallback has
-    /// still woken the reader that way (losing unread bytes) and the error says so.
-    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()>;
+    /// Watches the process `id` names. Its exit wakes whoever reads that process's control socket through the watch's
+    /// `link`, even when the OS never ends the stream (Windows can lose the end of an AF_UNIX stream). A process that
+    /// has exited already is a watch that reports it. An error means the OS would not let the process be watched.
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>>;
 
     /// The ANSI code page of this process (`GetACP`); `None` off Windows.
     fn ansi_code_page(&self) -> Option<u32>;

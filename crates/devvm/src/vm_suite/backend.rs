@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use super::os::{self, Watch};
 use crate::backend::contract::{self, ContractTarget};
 use crate::backend::qemu::backend::QemuBackend;
-use crate::backend::qemu::exit_watch::ExitWatch;
 use crate::backend::qemu::qmp::{Qmp, QmpEndpoint};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::{DISK, QemuStorage, VARS};
@@ -22,7 +21,7 @@ use crate::backend::{
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::exit::StderrProgress;
-use crate::host::{self, Host};
+use crate::host::{self, Host, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
@@ -282,16 +281,24 @@ fn is_running(record: &MachineRecord) -> bool {
     VmProcess::attach(&record.process).unwrap().is_some()
 }
 
+/// The watch of the machine's process, as a session needs one.
+fn watch_of(record: &MachineRecord) -> Arc<dyn ProcessWatch> {
+    let vm = VmProcess::attach(&record.process)
+        .unwrap()
+        .expect("the machine's process runs");
+    host::current().watch_process(vm.id()).unwrap()
+}
+
 /// The host port QEMU has bound for the machine's first forward, read over QMP.
 fn forwarded_host_port(record: &MachineRecord) -> u16 {
     let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &ExitWatch::new(host::current()), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(&endpoint, &watch_of(record), &MemoryProgress::default()).unwrap();
     qmp.forwarded_ports().unwrap()[0].host
 }
 
 fn run_state(record: &MachineRecord) -> String {
     let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &ExitWatch::new(host::current()), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(&endpoint, &watch_of(record), &MemoryProgress::default()).unwrap();
     qmp.query_status().unwrap().state
 }
 
@@ -652,7 +659,7 @@ fn vm_qemu_shutdown_of_a_paused_machine_fails_naming_the_state_and_returns(
     let record = machine.record();
     {
         let endpoint = QmpEndpoint::from_record(&record.qmp);
-        Qmp::connect(&endpoint, &ExitWatch::new(host::current()), &MemoryProgress::default())
+        Qmp::connect(&endpoint, &watch_of(&record), &MemoryProgress::default())
             .unwrap()
             .stop()
             .unwrap();
@@ -680,8 +687,9 @@ fn vm_qemu_reset_of_a_paused_machine_fails_naming_the_state_and_returns(
     let mut machine = target.backend().launch(&spec).unwrap();
     machine.resume().unwrap();
     {
-        let endpoint = QmpEndpoint::from_record(&machine.record().qmp);
-        Qmp::connect(&endpoint, &ExitWatch::new(host::current()), &MemoryProgress::default())
+        let record = machine.record();
+        let endpoint = QmpEndpoint::from_record(&record.qmp);
+        Qmp::connect(&endpoint, &watch_of(&record), &MemoryProgress::default())
             .unwrap()
             .stop()
             .unwrap();

@@ -9,12 +9,11 @@ use std::sync::Arc;
 
 use super::args::guest_port;
 use super::directory_of;
-use super::exit_watch::{End, ExitWatch};
 use super::qmp::{Qmp, QmpEndpoint, VmEnd};
 use crate::backend::{Endpoint, Machine, MachineRecord, SshEndpoint};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
-use crate::host::Host;
+use crate::host::{Host, ProcessWatch};
 use crate::{Arch, Error, ErrorKind, Result};
 
 #[cfg(all(test, windows))]
@@ -23,6 +22,10 @@ mod machine_windows_tests;
 
 /// The run states in which a guest powers down on request, or is already going.
 const POWERDOWN_STATES: &[&str] = &["running", "suspended", "shutdown"];
+
+/// Why a machine launched with `-no-reboot` is not reset.
+const NO_REBOOT_REFUSAL: &str = "cannot reset the VM: it runs with -no-reboot, under which QEMU exits at a reset \
+                                 instead of resetting the guest";
 
 /// What QEMU wrote to its standard output and error: `qemu.log` in the instance directory.
 pub(super) fn qemu_log(dir: &Path) -> PathBuf {
@@ -36,8 +39,8 @@ pub(super) struct QemuMachine {
     /// The forwards this machine was launched with; their host ports are read back once it runs.
     forwards: Vec<Endpoint>,
     endpoint: QmpEndpoint,
-    /// The process's exit, so that a session blocked on a dead QEMU wakes.
-    exit: ExitWatch,
+    /// The process, so that a session blocked on a dead QEMU wakes.
+    process: Arc<dyn ProcessWatch>,
     /// Where QEMU's output goes: `launch` was given the directory, `attach` has only the record's serial log.
     log: PathBuf,
     /// What the guest is, for the host to say whether it can reset one; `None` for a machine found with `attach`, which
@@ -52,9 +55,14 @@ pub(super) struct QemuMachine {
 }
 
 impl QemuMachine {
-    /// A machine this process just launched, frozen.
+    /// A machine this process just launched, frozen. `process` watches `vm`'s process.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is a different fact about the launch; a struct would only rename them"
+    )]
     pub(super) fn launched(
         vm: VmProcess,
+        process: Arc<dyn ProcessWatch>,
         record: MachineRecord,
         forwards: Vec<Endpoint>,
         log: PathBuf,
@@ -64,7 +72,7 @@ impl QemuMachine {
     ) -> QemuMachine {
         QemuMachine {
             endpoint: QmpEndpoint::from_record(&record.qmp),
-            exit: ExitWatch::watching(host, vm.exit_waiter()),
+            process,
             log,
             arch: Some(arch),
             vm,
@@ -81,6 +89,7 @@ impl QemuMachine {
     /// A machine that runs already, found from its record.
     pub(super) fn attached(
         vm: VmProcess,
+        process: Arc<dyn ProcessWatch>,
         record: MachineRecord,
         host: &'static dyn Host,
         progress: Arc<dyn Progress>,
@@ -88,7 +97,7 @@ impl QemuMachine {
         let log = qemu_log(directory_of(&record.serial_log, "the machine's serial log")?);
         Ok(QemuMachine {
             endpoint: QmpEndpoint::from_record(&record.qmp),
-            exit: ExitWatch::watching(host, vm.exit_waiter()),
+            process,
             log,
             arch: None,
             ssh: record.ssh.iter().map(|e| (e.endpoint, e.addr)).collect(),
@@ -104,7 +113,7 @@ impl QemuMachine {
 
     /// A session with QEMU. `ConnectionLost` means QEMU is gone or going.
     fn open(&self) -> Result<Qmp> {
-        Qmp::connect(&self.endpoint, &self.exit, &*self.progress)
+        Qmp::connect(&self.endpoint, &self.process, &*self.progress)
     }
 
     fn connect(&self) -> Result<Qmp> {
@@ -112,7 +121,8 @@ impl QemuMachine {
     }
 
     /// `error` with what the process left behind, when the error means QEMU is gone: only a closed control socket
-    /// (`ConnectionLost`) is a QEMU on its way out, so this waits for the exit before it reads the log. Any other error is about the connection and says nothing of the process, which may be alive.
+    /// (`ConnectionLost`) is a QEMU on its way out, so this waits for the exit before it reads the log. Any other error
+    /// is about the connection and says nothing of the process, which may be alive.
     fn explain(&self, error: Error) -> Error {
         if error.kind() != ErrorKind::ConnectionLost {
             return error;
@@ -158,7 +168,7 @@ impl QemuMachine {
     }
 
     /// Sends the powerdown request and returns when QEMU closes the session. The session ending early
-    /// (`ConnectionLost`) is QEMU going away or gone, which the caller confirms with the exit watch.
+    /// (`ConnectionLost`) is QEMU going away or gone, which the caller confirms by waiting for the process.
     fn power_down(&self) -> Result<()> {
         if !self.vm.is_alive()? {
             return Ok(());
@@ -243,12 +253,16 @@ impl Machine for QemuMachine {
         if self.attached { Ok(()) } else { self.vm.release() }
     }
 
-    /// Resets the guest inside this QEMU. The host is asked first whether it can: a host that cannot fails here with
-    /// nothing sent to the VM, except that a machine found with `attach` has to ask QEMU's `query-target` for the
-    /// architecture the host needs. A VM that is not running (paused, I/O error) is refused by name, and so is one
-    /// launched with `-no-reboot`, which exits at a reset instead of resetting the guest.
+    /// Resets the guest inside this QEMU. A machine launched with `-no-reboot`, which exits at a reset instead of
+    /// resetting the guest, is refused first, with nothing sent to the VM. Then the host is asked whether it can reset a
+    /// guest: a host that cannot fails with nothing sent either, except that a machine found with `attach` has to ask
+    /// QEMU's `query-target` for the architecture the host needs. A VM that is not running (paused, I/O error) is
+    /// refused by name.
     fn reset(&mut self) -> Result<()> {
         self.require_resumed("reset the VM")?;
+        if self.record.no_reboot {
+            return Err(Error::new(ErrorKind::Unavailable, NO_REBOOT_REFUSAL));
+        }
         let arch = match self.arch {
             Some(arch) => arch,
             None => self.connect()?.target_arch().map_err(|e| self.explain(e))?,
@@ -256,12 +270,6 @@ impl Machine for QemuMachine {
         self.host
             .guest_reset(arch)
             .map_err(|unavailable| Error::new(ErrorKind::Unavailable, unavailable.to_string()))?;
-        if self.record.no_reboot {
-            return Err(Error::new(
-                ErrorKind::Unavailable,
-                "cannot reset the VM: it runs with -no-reboot, under which QEMU exits at a reset instead of resetting                  the guest",
-            ));
-        }
         let mut qmp = self.connect()?;
         qmp.require_state(&["running"], "reset the VM", &self.record.serial_log)
             .map_err(|e| self.explain(e))?;
@@ -275,12 +283,8 @@ impl Machine for QemuMachine {
         self.require_resumed("shut the VM down")?;
         match self.power_down() {
             Ok(()) => {}
-            // A closed control socket is a QEMU quitting, but only the process's exit says it did. Waiting for it is the
-            // wait `shutdown` always has (it never escalates); a watch that cannot tell leaves only the error.
-            Err(e) if e.kind() == ErrorKind::ConnectionLost => match self.exit.wait_ended() {
-                End::Exited => {}
-                End::Unwatchable(_) => return Err(e),
-            },
+            // A closed control socket is a QEMU quitting; the wait below is for the process to be gone.
+            Err(e) if e.kind() == ErrorKind::ConnectionLost => {}
             Err(e) => return Err(e),
         }
         // The session, and with it the lock, is gone before the files are deleted.

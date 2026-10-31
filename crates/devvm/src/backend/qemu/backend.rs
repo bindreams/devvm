@@ -95,6 +95,10 @@ impl Backend for QemuBackend {
             Ok(process) => process,
             Err(e) => return Err(self.abandon(&mut vm, &endpoint, e)),
         };
+        let watch = match self.host.watch_process(vm.id()) {
+            Ok(watch) => watch,
+            Err(e) => return Err(self.abandon(&mut vm, &endpoint, e)),
+        };
 
         let record = MachineRecord {
             process,
@@ -106,6 +110,7 @@ impl Backend for QemuBackend {
         };
         Ok(Box::new(QemuMachine::launched(
             vm,
+            watch,
             record,
             spec.forwards.clone(),
             log,
@@ -122,8 +127,10 @@ impl Backend for QemuBackend {
                 format!("no machine is running as process {}", record.process.pid),
             ));
         };
+        let watch = self.host.watch_process(vm.id())?;
         Ok(Box::new(QemuMachine::attached(
             vm,
+            watch,
             record.clone(),
             self.host,
             self.progress.clone(),

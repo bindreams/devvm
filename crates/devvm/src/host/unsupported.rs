@@ -1,10 +1,11 @@
 //! The host for operating systems devvm 0.1.0 does not run VMs on (Linux, macOS).
 
-use std::net::Shutdown;
 use std::path::Path;
+use std::sync::Arc;
 
-use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
-use crate::backend::qemu::uds::UnixStream;
+use cosca::identity::ProcessId;
+
+use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -21,6 +22,8 @@ mod socket;
 #[cfg(not(unix))]
 #[path = "unsupported/socket_other.rs"]
 mod socket;
+
+mod watch;
 
 pub(super) struct UnsupportedHost;
 
@@ -39,14 +42,8 @@ impl Host for UnsupportedHost {
         socket::path_max()
     }
 
-    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
-        // A thread blocked reading wakes with the end of the stream. Linux delivers the bytes already received first;
-        // macOS drops them (measured in CI). A peer that is
-        // gone already leaves nothing to wake: its end of the stream has been delivered.
-        match connection.shutdown(Shutdown::Read) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),
-            outcome => outcome,
-        }
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        Ok(Arc::new(watch::UnixWatch::new(id)))
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

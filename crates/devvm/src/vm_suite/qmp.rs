@@ -22,7 +22,7 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
 ) {
     let qemu = BareQemu::spawn(install, home);
     let endpoint = qemu.sock.endpoint.clone();
-    let mut session = Qmp::connect(&endpoint, &qemu.exit, &MemoryProgress::default()).unwrap();
+    let mut session = Qmp::connect(&endpoint, &qemu.process, &MemoryProgress::default()).unwrap();
 
     // The machine is frozen (-S), and `info usernet` lists the forward with the port QEMU chose.
     assert_eq!(session.query_status().unwrap().state, "prelaunch");
@@ -44,7 +44,7 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
     // `RESET` is awaited by the call itself.
     session.system_reset().unwrap();
 
-    // QEMU exits right after the reply, and the exit watch can end the read before the reply is read.
+    // QEMU exits right after the reply, and the exit can end the read before the reply is read.
     match session.quit() {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::ConnectionLost => {}
@@ -81,7 +81,7 @@ fn every_command_devvm_sends_exists_in_the_live_schema(
             Ok(stream) => break stream,
             // The wait ends when the process exits.
             Err(e) => assert!(
-                qemu.exit.pause().is_none(),
+                !qemu.process.pause().unwrap(),
                 "QEMU exited before its control socket accepted a connection ({e}); its output is in {}",
                 home.join("qemu.log").display()
             ),

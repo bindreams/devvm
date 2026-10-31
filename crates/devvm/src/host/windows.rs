@@ -5,18 +5,23 @@ use std::fs::OpenOptions;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use cosca::identity::ProcessId;
 
 use windows_sys::Win32::Globalization::GetACP;
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
-use crate::backend::qemu::uds::UnixStream;
+use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
-mod interrupt;
+mod link;
+mod watch;
 mod whpx;
+
+pub(crate) use watch::WindowsWatch;
 
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
 fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
@@ -48,8 +53,8 @@ impl Host for WindowsHost {
         107
     }
 
-    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
-        interrupt::interrupt(connection)
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        Ok(Arc::new(WindowsWatch::open(id)?))
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

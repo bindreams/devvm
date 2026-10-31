@@ -11,12 +11,11 @@ use std::sync::Arc;
 
 use crate::Dirs;
 use crate::backend::qemu::args::escape_option_value;
-use crate::backend::qemu::exit_watch::ExitWatch;
 use crate::backend::qemu::qmp::QmpEndpoint;
 use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
 use crate::config::Config;
 use crate::exit::StderrProgress;
-use crate::host;
+use crate::host::{self, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_support::fixtures::UNICODE_DIR;
@@ -93,7 +92,7 @@ pub struct BareQemu {
     child: Child,
     pub sock: Sock,
     /// Reports when the process exits.
-    pub exit: ExitWatch,
+    pub process: Arc<dyn ProcessWatch>,
 }
 
 impl BareQemu {
@@ -133,18 +132,11 @@ impl BareQemu {
             .spawn()
             .unwrap_or_else(|e| panic!("cannot start {}: {e}", install.tool("qemu-system-x86_64").display()));
         let pid = child.id();
-        let exit = ExitWatch::watching(host::current(), move || match cosca::Process::from_pid(pid) {
-            cosca::identity::Resolved::Found(process) => process
-                .wait()
-                .map_err(|e| crate::Error::new(crate::ErrorKind::Io, format!("cannot wait for QEMU {pid}: {e}"))),
-            // Exited before it was looked up.
-            cosca::identity::Resolved::Gone => Ok(()),
-            cosca::identity::Resolved::Unknown => Err(crate::Error::new(
-                crate::ErrorKind::Io,
-                format!("the OS refused to identify QEMU {pid}"),
-            )),
-        });
-        BareQemu { child, sock, exit }
+        let process = match cosca::Process::from_pid(pid) {
+            cosca::identity::Resolved::Found(process) => host::current().watch_process(process.id()).unwrap(),
+            other => panic!("cannot identify QEMU {pid} right after starting it: {other:?}"),
+        };
+        BareQemu { child, sock, process }
     }
 }
 
