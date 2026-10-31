@@ -58,7 +58,6 @@ pub(super) struct Listing {
     pub uninitialized_submodules: Vec<String>,
 }
 
-/// The start of the note that lists the variables git will not see.
 pub(super) const UNSET_NOTE_PREFIX: &str = "The following variables have been unset: ";
 
 /// The `git` a snapshot runs: the same commands in every call, in an environment that holds none of this process's
