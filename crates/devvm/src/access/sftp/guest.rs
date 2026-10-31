@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use super::Sftp;
-use super::copy::{CopySide, Receives};
+use super::copy::{CopySide, Receives, slash_on_non_dir};
 use super::local::HostSide;
 use super::plan::{self, Item, Kind, Present};
 use crate::guest::GuestOs;
@@ -68,17 +68,25 @@ impl CopySide for GuestSide<'_> {
     }
 
     fn inspect(&self, path: &String, follow: bool) -> Result<Kind> {
-        self.sftp
-            .call(&format!("inspecting the guest path {}", self.show(path)), {
-                let path = path.clone();
-                move |remote| remote.inspect(path, follow)
-            })?
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::NotFound,
-                    format!("the guest source {} does not exist", self.show(path)),
-                )
-            })
+        let inspect = |path: &String| {
+            self.sftp
+                .call(&format!("inspecting the guest path {}", self.show(path)), {
+                    let path = path.clone();
+                    move |remote| remote.inspect(path, follow)
+                })
+        };
+        if let Some(kind) = inspect(path)? {
+            return Ok(kind);
+        }
+        // A server answers `file/` as it does a missing path, though it is there: the `/` is what it cannot take.
+        let bare = path.trim_end_matches('/').to_owned();
+        if follow && !bare.is_empty() && bare != *path && inspect(&bare)?.is_some_and(|kind| !kind.is_dir()) {
+            return Err(slash_on_non_dir(Self::NAME, &self.show(path)));
+        }
+        Err(Error::new(
+            ErrorKind::NotFound,
+            format!("the guest source {} does not exist", self.show(path)),
+        ))
     }
 
     fn walk(&self, dir: &String) -> Result<Vec<Item>> {

@@ -94,6 +94,14 @@ fn conflict_error(conflict: Conflict, what: &str, side: &str, dest: &str) -> Err
     Error::new(ErrorKind::Io, message)
 }
 
+/// The error for a source written with a trailing `/` that is not a directory.
+pub(super) fn slash_on_non_dir(side: &str, source: &str) -> Error {
+    Error::new(
+        ErrorKind::Io,
+        format!("cannot copy the {side} source {source}: it ends in `/` but is not a directory"),
+    )
+}
+
 /// The announcement of a copy: what the walk found. The sizes are what the guest reports, so a sum past `u64::MAX` is
 /// announced as more than that, not wrapped or refused.
 fn total(top: &Kind, items: &[Item]) -> String {
@@ -173,14 +181,7 @@ where
     let top = src.inspect(from, follow)?;
     // The `/` that made the copy follow a link also asks for a directory, as it does for `cp`.
     if follow && !top.is_dir() {
-        return Err(Error::new(
-            ErrorKind::Io,
-            format!(
-                "cannot copy the {} source {}: it ends in `/` but is not a directory",
-                S::NAME,
-                src.show(from)
-            ),
-        ));
+        return Err(slash_on_non_dir(S::NAME, &src.show(from)));
     }
     let items = if top.is_dir() { src.walk(from)? } else { Vec::new() };
     let rules = Rules {

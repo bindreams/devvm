@@ -198,7 +198,10 @@ impl SftpFs {
         if self.state.options.hollow {
             return Err(StatusCode::NoSuchFile.into());
         }
-        let path = self.resolve(path, follow)?;
+        // A trailing `/` makes the system look through a symlink, and only a directory answers: OpenSSH says "no such
+        // file" for anything else.
+        let slash = path.ends_with('/');
+        let path = self.resolve(path, follow || slash)?;
         let mut attrs = FileAttributes::default();
         let mode = self.state.modes.lock().unwrap().get(&path).copied();
         if let Some(target) = self.state.links.lock().unwrap().get(&path) {
@@ -232,6 +235,9 @@ impl SftpFs {
             } else {
                 0o100000 | mode.unwrap_or(0o644)
             });
+        }
+        if slash && attrs.permissions.is_none_or(|mode| mode & 0o170000 != 0o040000) {
+            return Err(StatusCode::NoSuchFile.into());
         }
         Ok(attrs)
     }
