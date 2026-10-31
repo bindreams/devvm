@@ -81,6 +81,27 @@ fn unusable_name(name: &str, why: &str) -> Error {
     )
 }
 
+/// The messages `fatfs` 0.3.6 gives, as `ErrorKind::Other`, for a name it refuses.
+const FATFS_NAME_MESSAGES: [&str; 3] = [
+    "File name is empty",
+    "File name too long",
+    "File name contains unsupported characters",
+];
+
+/// Whether `error`, from creating a file, is about the name: an existing entry of that name, or one of
+/// [`FATFS_NAME_MESSAGES`]. Anything else (a full directory, a full volume) is not the name's fault.
+fn is_name_rejection(error: &std::io::Error) -> bool {
+    match error.kind() {
+        std::io::ErrorKind::AlreadyExists => true,
+        std::io::ErrorKind::Other => FATFS_NAME_MESSAGES.contains(&error.to_string().as_str()),
+        _ => false,
+    }
+}
+
+fn build_failed(error: &std::io::Error) -> Error {
+    Error::new(ErrorKind::Internal, format!("cannot build the seed image: {error}"))
+}
+
 fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
     let io = |e: std::io::Error| {
         Error::io(
@@ -111,10 +132,13 @@ fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
     {
         let fs = FileSystem::new(&mut disk, FsOptions::new()).map_err(io)?;
         for file in files {
-            let mut out = fs
-                .root_dir()
-                .create_file(&file.name)
-                .map_err(|e| unusable_name(&file.name, &e.to_string()))?;
+            let mut out = fs.root_dir().create_file(&file.name).map_err(|e| {
+                if is_name_rejection(&e) {
+                    unusable_name(&file.name, &e.to_string())
+                } else {
+                    build_failed(&e)
+                }
+            })?;
             out.write_all(&file.bytes).map_err(io)?;
             out.flush().map_err(io)?;
         }

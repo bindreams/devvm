@@ -225,20 +225,51 @@ fn name_sets_fatfs_would_merge_or_rename_are_refused(#[fixture(unicode_home)] ho
 }
 
 #[skuld::test]
-fn a_name_fatfs_rejects_is_refused_by_name(#[fixture(unicode_home)] home: &Path) {
+fn a_name_fatfs_rejects_is_refused_by_name_with_fatfs_s_reason(#[fixture(unicode_home)] home: &Path) {
+    // The reasons are fatfs 0.3.6's fixed messages; `unusable_name` is chosen by matching them, so a fatfs that words
+    // them differently fails here instead of blaming the wrong thing.
     let too_long = "a".repeat(256);
-    for bad in ["a:b", "a*", "a\tb", "a\0b", "\u{1f600}", too_long.as_str()] {
+    let cases = [
+        ("a:b", "File name contains unsupported characters"),
+        ("a*", "File name contains unsupported characters"),
+        ("a\tb", "File name contains unsupported characters"),
+        ("a\0b", "File name contains unsupported characters"),
+        ("\u{1f600}", "File name contains unsupported characters"),
+        (too_long.as_str(), "File name too long"),
+    ];
+    for (bad, reason) in cases {
         let image = home.join("seed.img");
         let error = write_cidata_image(&TestHost, &[file("user-data", b"one"), file(bad, b"two")], &image)
             .expect_err("fatfs refuses the name");
         assert_eq!(error.kind(), crate::ErrorKind::Internal, "{bad:?}");
         assert!(
-            error.message().contains(&format!("`{bad}`")),
+            error.message().contains(&format!("`{bad}` cannot be a file name")) && error.message().contains(reason),
             "{bad:?}: {}",
             error.message()
         );
         assert!(!image.exists(), "nothing is written for a refused set");
     }
+}
+
+#[skuld::test]
+fn a_failure_that_is_not_the_name_does_not_blame_the_name(#[fixture(unicode_home)] home: &Path) {
+    // Every name is fine; the root directory of the 1 MiB image runs out of entries, which fatfs reports as "No space
+    // left on device". Each of these names takes two of the directory's 512 entries (a long-name entry and the short one).
+    let files: Vec<SeedFile> = (0..300).map(|n| file(&format!("file-{n}"), b"")).collect();
+    let image = home.join("seed.img");
+    let error = write_cidata_image(&TestHost, &files, &image).expect_err("the root directory is full");
+    assert_eq!(error.kind(), crate::ErrorKind::Internal);
+    assert!(
+        error.message().starts_with("cannot build the seed image: "),
+        "{}",
+        error.message()
+    );
+    assert!(
+        !error.message().contains("cannot be a file name"),
+        "a name is blamed: {}",
+        error.message()
+    );
+    assert!(!image.exists(), "nothing is written for a failed build");
 }
 
 #[skuld::test]
