@@ -55,24 +55,33 @@ pub struct Sock {
 /// The short fallback for [`socket_dir`], with a space and a non-ASCII character like [`UNICODE_DIR`].
 const SHORT_SOCKET_DIR: &str = "\u{e9} \u{4e16}";
 
-/// The shared directory control sockets go in during tests (created if need be): `<temp>/<UNICODE_DIR>`, or, where that
-/// does not fit a socket path (macOS, and Windows under a long user name), the shorter `<temp>/<SHORT_SOCKET_DIR>`.
-/// Nothing is created outside the temporary directory.
+/// The shared directory control sockets go in during tests (created if need be), the first that fits a socket path
+/// (`Host::socket_path_max`): `<temp>/<UNICODE_DIR>`, then the shorter `<temp>/<SHORT_SOCKET_DIR>` (Windows under a long
+/// user name), then the temporary directory itself (macOS, whose temporary directory leaves room for no subdirectory
+/// with a non-ASCII name). Nothing is created outside the temporary directory.
 pub fn socket_dir() -> PathBuf {
     let fits =
         |dir: &Path| QmpEndpoint::for_launch(dir, &InstanceId::random(), host::current().socket_path_max()).is_ok();
     let temp = std::env::temp_dir();
-    let dir = [UNICODE_DIR, SHORT_SOCKET_DIR]
+    let dir = [temp.join(UNICODE_DIR), temp.join(SHORT_SOCKET_DIR), temp.clone()]
         .into_iter()
-        .map(|name| temp.join(name))
         .find(|dir| fits(dir))
-        .unwrap_or_else(|| panic!("no short directory for a control socket under the temporary directory"));
+        .unwrap_or_else(|| {
+            panic!(
+                "the temporary directory {} is too long for a control socket",
+                temp.display()
+            )
+        });
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-/// Asserts that a control socket path has a space and a non-ASCII character, as [`socket_dir`] guarantees.
+/// Asserts that a control socket path has a space and a non-ASCII character, as [`socket_dir`] provides wherever that
+/// fits; when only the temporary directory itself fits (macOS), there is nothing to assert.
 pub fn assert_unicode_socket_path(path: &Path) {
+    if path.parent() == Some(std::env::temp_dir().as_path()) {
+        return;
+    }
     let path = path.to_string_lossy();
     assert!(path.contains(' ') && !path.is_ascii(), "{path}");
 }
