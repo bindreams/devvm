@@ -46,18 +46,25 @@ pub(super) fn launch(
         keys: SeedKeys::default(),
     })?;
     // Taken and persisted before the spawn: a launch that dies midway still used its number, so no later machine of the
-    // instance is named like it.
-    let launch = record.launches.checked_add(1).ok_or_else(|| {
+    // instance is named like it. Incremented on the current record, under the op lock; at the last number the record is
+    // rewritten unchanged.
+    let mut taken = None;
+    let current = dir.update(op, &mut |record| {
+        taken = record.launches.checked_add(1);
+        if let Some(next) = taken {
+            record.launches = next;
+        }
+    })?;
+    let launch = taken.ok_or_else(|| {
         Error::new(
             ErrorKind::Store,
             format!(
                 "instance {} has launched {} times, which is as far as the count goes",
                 dir.name(),
-                record.launches
+                current.launches
             ),
         )
     })?;
-    dir.update(op, &mut |record| record.launches = launch)?;
     let spec = MachineSpec {
         id: *dir.id(),
         launch,

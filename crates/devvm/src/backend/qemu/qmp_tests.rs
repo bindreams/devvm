@@ -258,7 +258,7 @@ fn a_socket_path_over_the_given_limit_is_refused_before_launch() {
     assert!(error.message().contains(&format!("{}-byte", length - 1)), "{error}");
 
     // The limit counts UTF-8 bytes, not characters: 30 four-byte characters are 120 bytes.
-    let wide = Path::new("C:\t").join("\u{1f600}".repeat(30));
+    let wide = Path::new("C:\\t").join("\u{1f600}".repeat(30));
     assert!(QmpEndpoint::for_launch(&wide, &id, 1, 107).is_err());
 }
 

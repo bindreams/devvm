@@ -459,6 +459,9 @@ fn vm_qemu_a_launch_whose_socket_name_is_taken_is_refused_and_spawns_nothing(
     first.kill().unwrap();
     // What an earlier machine's crashed cleanup leaves at the name the next launch of the same number would take.
     std::fs::write(&first_record.qmp, b"stale").unwrap();
+    // A launch clears QEMU's working directory before it spawns; the refusal comes first, so the marker survives.
+    let marker = spec.dir.join("qemu-cwd").join("marker");
+    std::fs::write(&marker, b"untouched").unwrap();
 
     let error = target.backend().launch(&spec).err().expect("the name is taken");
 
@@ -468,6 +471,11 @@ fn vm_qemu_a_launch_whose_socket_name_is_taken_is_refused_and_spawns_nothing(
         std::fs::read(&first_record.qmp).unwrap(),
         b"stale",
         "the stale file is left alone"
+    );
+    assert_eq!(
+        std::fs::read(&marker).unwrap(),
+        b"untouched",
+        "the refusal came before the working directory was cleared and anything was spawned"
     );
     std::fs::remove_file(&first_record.qmp).unwrap();
 }

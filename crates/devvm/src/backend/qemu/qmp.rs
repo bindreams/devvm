@@ -74,7 +74,7 @@ impl QmpEndpoint {
                     return Err(Error::new(
                         ErrorKind::AlreadyExists,
                         format!(
-                            "{} already exists, left by an earlier machine of the instance; delete it and start again",
+                            "{} already exists, so this launch number is used up; start again for the next one",
                             taken.display()
                         ),
                     ));
