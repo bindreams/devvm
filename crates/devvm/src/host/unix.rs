@@ -4,7 +4,13 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use super::unsupported::FileModes;
+use rustix::io::Errno;
+
+use super::unsupported::{FileModes, claim_then_rename};
+
+#[cfg(test)]
+#[path = "unix_tests.rs"]
+mod unix_tests;
 
 pub(super) struct UnixHost;
 
@@ -31,9 +37,10 @@ impl FileModes for UnixHost {
         std::fs::File::open(dir)?.sync_all()
     }
 
-    /// One rename that fails with `AlreadyExists` for anything at `to`, so `from` is there in full or not at all.
+    /// One rename that fails with `AlreadyExists` for anything at `to`, so `from` is there in full or not at all; on
+    /// a file system or kernel without such a rename, [`claim_then_rename`].
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        rename_without_replacing(from, to)
+        publish_with(from, to, rename_without_replacing)
     }
 
     fn read_link(&self, path: &Path) -> std::io::Result<String> {
@@ -54,6 +61,22 @@ impl FileModes for UnixHost {
     }
 }
 
+/// Whether `errno` from a rename that refuses to replace says that the file system or the kernel has no such rename,
+/// as opposed to refusing this one: NFS answers `EINVAL` to any rename flag, some FUSE and 9p mounts and old kernels
+/// `EINVAL` or `ENOSYS`, a seccomp filter `ENOSYS`, macOS volumes without `RENAME_EXCL` `ENOTSUP`.
+fn lacks_a_rename_that_refuses_to_replace(errno: Errno) -> bool {
+    errno == Errno::INVAL || errno == Errno::NOSYS || errno == Errno::NOTSUP || errno == Errno::OPNOTSUPP
+}
+
+/// Publishes with `rename`, which must refuse to replace; where `rename` says there is no such rename, falls back to
+/// [`claim_then_rename`].
+fn publish_with(from: &Path, to: &Path, rename: impl FnOnce(&Path, &Path) -> Result<(), Errno>) -> std::io::Result<()> {
+    match rename(from, to) {
+        Err(errno) if lacks_a_rename_that_refuses_to_replace(errno) => claim_then_rename(from, to),
+        other => other.map_err(std::io::Error::from),
+    }
+}
+
 /// `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS.
 #[cfg(any(
     target_os = "linux",
@@ -64,12 +87,12 @@ impl FileModes for UnixHost {
     target_os = "visionos",
     target_os = "watchos"
 ))]
-fn rename_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+fn rename_without_replacing(from: &Path, to: &Path) -> Result<(), Errno> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
-    renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE).map_err(std::io::Error::from)
+    renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE)
 }
 
-/// The other Unix systems have no such rename.
+/// The other Unix systems have no such rename, which is what [`publish_with`] falls back on.
 #[cfg(not(any(
     target_os = "linux",
     target_os = "android",
@@ -79,6 +102,6 @@ fn rename_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
     target_os = "visionos",
     target_os = "watchos"
 )))]
-fn rename_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
-    super::unsupported::claim_then_rename(from, to)
+fn rename_without_replacing(_from: &Path, _to: &Path) -> Result<(), Errno> {
+    Err(Errno::NOSYS)
 }

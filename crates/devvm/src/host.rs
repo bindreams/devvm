@@ -115,7 +115,9 @@ pub(crate) trait Host: Send + Sync {
 
     /// Moves the directory `from` to `to`, which nobody has: an existing `to`, even an empty directory, is
     /// `AlreadyExists` and nothing changes. Unlike a rename, it is a publish: of several that race for one name,
-    /// exactly one wins.
+    /// exactly one wins. Where the file system has a rename that refuses to replace (Windows, Linux, macOS), `to` is
+    /// there in full or not at all; where it has none (NFS, some FUSE mounts, old kernels) `to` is claimed first, and
+    /// a kill between the claim and the move leaves it empty.
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
 
     /// Flushes the entries of `dir` to disk, so a file or directory made in it survives a crash. Does nothing on

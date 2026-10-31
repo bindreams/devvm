@@ -88,8 +88,8 @@ impl InstanceKeys {
 
     /// Writes `client`, `client.pub`, `host` and `host.pub` into the new directory `dir`. The files are first written
     /// to a temporary directory beside `dir` and flushed to disk, which is then published at `dir` in one step
-    /// ([`Host::publish_dir`]): a failure or a kill leaves no `dir`, and anything already at `dir` is `AlreadyExists`,
-    /// never replaced. Writers of one parent directory take turns under a lock there (`.keys.lock`), so a temporary
+    /// ([`Host::publish_dir`]): a failure or a kill leaves no `dir` (on a file system without a rename that refuses
+    /// to replace, a kill can leave it empty), and anything already at `dir` is `AlreadyExists`, never replaced. Writers of one parent directory take turns under a lock there (`.keys.lock`), so a temporary
     /// directory a killed writer left (`.keys-*`) is removed by the next; one that cannot be removed, or a failure to
     /// flush `dir`'s parent after the keys are in place, is returned as a warning. The private files go through
     /// [`Host::write_private`].

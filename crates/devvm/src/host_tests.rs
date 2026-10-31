@@ -315,37 +315,6 @@ fn publish_dir_moves_a_directory_to_a_name_nobody_has(#[fixture(unicode_home)] h
     });
 }
 
-/// A reader that finds `to` finds the whole directory: there is no moment when it is there and empty, which a kill in
-/// that moment would make permanent.
-#[skuld::test]
-fn publish_dir_shows_the_directory_in_full_or_not_at_all(#[fixture(unicode_home)] home: &Path) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    for round in 0..200 {
-        let (from, to) = (
-            dir_with_a_file(home, &format!("from{round}")),
-            home.join(format!("to{round}")),
-        );
-        let published = AtomicBool::new(false);
-        std::thread::scope(|scope| {
-            let watcher = scope.spawn(|| {
-                // Ends when the publish has returned: the condition, not a time.
-                while !published.load(Ordering::SeqCst) {
-                    if to.exists() {
-                        assert!(to.join("held").exists(), "{} was there empty", to.display());
-                    }
-                }
-            });
-            current().publish_dir(&from, &to).unwrap();
-            published.store(true, Ordering::SeqCst);
-            watcher.join().unwrap();
-        });
-        assert_eq!(
-            std::fs::read_to_string(to.join("held")).unwrap(),
-            format!("from{round}")
-        );
-    }
-}
-
 #[skuld::test]
 fn publish_dir_never_replaces_what_is_there_not_even_an_empty_directory(#[fixture(unicode_home)] home: &Path) {
     on_both_hosts(|host| {
