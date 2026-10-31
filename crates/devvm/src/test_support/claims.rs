@@ -34,6 +34,12 @@ pub const OPENSSH_SFTP: Claim = Claim {
     value: "1",
 };
 
+/// This job runs the VM tests: the workflow turns them off for every other job (`tests/support/vm_gate.rs`).
+pub const VM_TESTS: Claim = Claim {
+    var: "DEVVM_SKIP_VM_TESTS",
+    value: "0",
+};
+
 /// The variable each workflow step or job that runs the tests sets to its name in [`OWED`]. They differ in what they
 /// claim, so the table cannot be keyed by the runner OS alone.
 pub const STEP_VAR: &str = "DEVVM_CI_STEP";
@@ -45,7 +51,7 @@ const OWED: &[(&str, &str, &[&Claim])] = &[
     ("test", "macos", &[]),
     ("test", "windows", &[&ACP, &NTFS_NAMES]),
     ("openssh-sftp", "linux", &[&OPENSSH_SFTP, &PYYAML]),
-    ("vm", "windows", &[&ACP]),
+    ("vm", "windows", &[&ACP, &VM_TESTS]),
 ];
 
 impl Claim {

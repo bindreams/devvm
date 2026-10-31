@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{ACP, Claim, NTFS_NAMES, OPENSSH_SFTP, PYYAML, STEP_VAR, missing};
+use super::{ACP, Claim, NTFS_NAMES, OPENSSH_SFTP, PYYAML, STEP_VAR, VM_TESTS, missing};
 
 const TEST: &str = "test";
 const OPENSSH: &str = "openssh-sftp";
@@ -85,9 +85,14 @@ fn a_step_owes_no_claim_it_does_not_cover() {
 }
 
 #[skuld::test]
-fn the_vm_job_on_windows_must_claim_the_code_page() {
-    assert_eq!(names(missing(VM, "windows", env(&[]))), [ACP.var]);
-    assert!(missing(VM, "windows", env(&made(&[&ACP]))).unwrap().is_empty());
+fn the_vm_job_on_windows_must_claim_the_code_page_and_the_vm_tests() {
+    assert_eq!(names(missing(VM, "windows", env(&[]))), [ACP.var, VM_TESTS.var]);
+    assert_eq!(names(missing(VM, "windows", env(&made(&[&ACP])))), [VM_TESTS.var]);
+    assert!(
+        missing(VM, "windows", env(&made(&[&ACP, &VM_TESTS])))
+            .unwrap()
+            .is_empty()
+    );
     assert!(missing(VM, "linux", env(&[])).is_err());
 }
 
