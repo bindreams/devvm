@@ -2,8 +2,9 @@
 //!
 //! The string is `bash -lc '<script>'`: a login shell, so tools an earlier step installed (rustup's `~/.cargo/env`,
 //! sourced from `~/.profile`) are on `PATH`. The script is `cd`, `export`, then `exec --`. The `cd` is
-//! `CDPATH= cd --`: the profile's `CDPATH` must not redirect a relative directory or make `cd` print the one it
-//! chose. `env(1)` is not used: it reads `-x` as an option and `a=b` as an assignment even after `--`.
+//! `CDPATH= cd -P --`: the profile's `CDPATH` must not redirect a relative directory or make `cd` print the one it
+//! chose, and `-P` resolves `..` after a symlink physically, as the kernel does (a plain `cd` folds it textually).
+//! `env(1)` is not used: it reads `-x` as an option and `a=b` as an assignment even after `--`.
 //! `exec --` ends the builtin's own option parsing, so `-x` and `a=b` are program names.
 //!
 //! Elevated commands run as `exec sudo -n -- bash -c '<the same script>'`: the `cd`, the `export`s and the program all
@@ -30,7 +31,8 @@ pub(super) fn wrap(cmd: &Command) -> Result<String> {
         return Err(Error::new(
             ErrorKind::Usage,
             format!(
-                "the command is {} bytes as a shell command line, but the guest's kernel refuses any single argument                  over {LONGEST_ARGUMENT} bytes (quoting makes the line longer than the command)",
+                "the command is {} bytes as a shell command line, but the guest's kernel refuses any single argument \
+                 over {LONGEST_ARGUMENT} bytes (quoting makes the line longer than the command)",
                 line.len()
             ),
         ));
@@ -57,7 +59,7 @@ fn user_script(cmd: &Command) -> Result<String> {
             return Err(Error::new(ErrorKind::Usage, "the working directory is empty"));
         }
         steps.push(format!(
-            "CDPATH= cd -- {}",
+            "CDPATH= cd -P -- {}",
             quote_checked("the working directory", &cd_operand(cwd))?
         ));
     }
@@ -134,7 +136,7 @@ const BASH_OWNED_VARIABLES: [&str; 30] = [
     "EXECIGNORE",
 ];
 
-/// `cwd` as the operand of `cd --`. `cd -- -` still means `$OLDPWD`, so a value starting with `-` is written as an
+/// `cwd` as the operand of `cd -P --`. `cd -P -- -` still means `$OLDPWD`, so a value starting with `-` is written as an
 /// explicit relative path.
 fn cd_operand(cwd: &str) -> String {
     if cwd.starts_with('-') {

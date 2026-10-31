@@ -6,6 +6,7 @@ use super::{BASH_OWNED_VARIABLES, script, wrap};
 use crate::host::Host;
 use crate::test_support::claims::BASH_5_2;
 use crate::test_support::host::TestHost;
+use crate::test_support::symlink::symlink;
 use crate::{Command, ErrorKind, RunAs};
 
 fn cmd(argv: &[&str]) -> Command {
@@ -24,7 +25,7 @@ fn wrap_applies_cwd_env_and_elevation_in_order() {
     let mut user = cmd(&["echo", "a b"]);
     user.cwd = Some("/w".to_owned());
     user.env = vec![("K".to_owned(), "v'x".to_owned()), ("L".to_owned(), String::new())];
-    let user_script = r"CDPATH= cd -- '/w' && export K='v'\''x' L='' && exec -- 'echo' 'a b'";
+    let user_script = r"CDPATH= cd -P -- '/w' && export K='v'\''x' L='' && exec -- 'echo' 'a b'";
     assert_eq!(script(&user).unwrap(), user_script);
     assert_eq!(wrap(&user).unwrap(), format!("bash -lc {}", sq(user_script)));
 
@@ -53,7 +54,7 @@ fn wrap_keeps_env_and_cwd_inside_the_sudo_shell() {
         .split_once("bash -c ")
         .expect("the root shell is started by `bash -c`, never `sh -c`");
     assert_eq!(before_inner, "exec sudo -n -- ", "nothing runs before sudo");
-    assert_eq!(inner, sq("CDPATH= cd -- '/root' && export A='1' && exec -- 'id'"));
+    assert_eq!(inner, sq("CDPATH= cd -P -- '/root' && export A='1' && exec -- 'id'"));
 }
 
 #[skuld::test]
@@ -64,7 +65,7 @@ fn a_working_directory_starting_with_a_dash_cannot_be_read_as_an_option_or_oldpw
         command.cwd = Some(cwd.to_owned());
         assert_eq!(
             script(&command).unwrap(),
-            format!("CDPATH= cd -- {} && exec -- 'true'", sq(written)),
+            format!("CDPATH= cd -P -- {} && exec -- 'true'", sq(written)),
             "{cwd}"
         );
     }
@@ -179,10 +180,11 @@ fn a_shell_line_over_one_argument_of_the_kernel_is_a_usage_error_naming_the_size
 
         let error = wrap(&sized(LONGEST_ARGUMENT - overhead + 1)).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Usage, "{run_as:?}");
-        assert!(
-            error.message().contains("131072") && error.message().contains("131071"),
-            "{run_as:?} names the line's size and the limit: {}",
-            error.message()
+        assert_eq!(
+            error.message(),
+            "the command is 131072 bytes as a shell command line, but the guest's kernel refuses any single argument \
+             over 131071 bytes (quoting makes the line longer than the command)",
+            "{run_as:?}"
         );
     }
 
@@ -421,6 +423,30 @@ fn a_working_directory_is_entered_literally_whatever_cdpath_and_its_first_charac
         assert!(
             stdout.ends_with(&format!("/base/{dir}\n")),
             "{dir} must resolve under the shell's directory, not CDPATH: {stdout:?}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_working_directory_is_resolved_physically_as_the_kernel_does() {
+    // `base/link` leads to `base/real/deeper`. The kernel resolves `link/..` to `base/real`; a logical `cd` folds the
+    // `..` textually and enters `base`.
+    let tmp = skuld::TempDir::new().unwrap();
+    let base = tmp.join("base");
+    std::fs::create_dir_all(base.join("real/deeper")).unwrap();
+    symlink(&base.join("real/deeper"), &base.join("link"));
+    let elsewhere = tmp.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    for cwd in ["link/..", "./link/.."] {
+        let (stdout, code) = pwd_in(&base, &elsewhere, cwd);
+        assert_eq!(code, Some(0), "{cwd}: {stdout}");
+        assert!(
+            stdout.ends_with(
+                "/base/real
+"
+            ),
+            "{cwd} must name the parent of what `link` leads to: {stdout:?}"
         );
     }
 }
