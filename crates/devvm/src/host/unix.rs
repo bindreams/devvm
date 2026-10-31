@@ -11,6 +11,32 @@ use super::unsupported::{FileModes, claim_then_rename};
 
 mod entry;
 
+// How `entry` opens a directory to search it: one module per kind of Unix, each with a `SEARCH_ONLY` flag.
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+#[path = "unix/search_path.rs"]
+mod search;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+#[path = "unix/search_apple.rs"]
+mod search;
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+)))]
+#[path = "unix/search_read.rs"]
+mod search;
+
 #[cfg(test)]
 #[path = "unix_tests.rs"]
 mod unix_tests;

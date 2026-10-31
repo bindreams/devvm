@@ -11,6 +11,8 @@ use rustix::io::Errno;
 use crate::host::entry::components;
 use crate::host::{Entry, is_absent};
 
+use super::search::SEARCH_ONLY;
+
 #[cfg(test)]
 #[path = "entry_tests.rs"]
 mod entry_tests;
@@ -18,13 +20,10 @@ mod entry_tests;
 pub(super) fn open_entry(root: &Path, rel: &str) -> io::Result<Entry> {
     let names = components(rel)?;
     let (last, parents) = names.split_last().expect("a path has a name");
-    let mut directory = open(
-        root,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
+    // A directory is opened to be searched, not read: one with `x` and not `r` (mode 0300) still leads to its files.
+    let mut directory = open(root, SEARCH_ONLY | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty())?;
     for (i, name) in parents.iter().enumerate() {
-        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let flags = SEARCH_ONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         match openat(&directory, *name, flags, Mode::empty()) {
             Ok(next) => directory = next,
             // A link refuses `O_NOFOLLOW`, as `ELOOP` or, with `O_DIRECTORY`, as `ENOTDIR`; which one depends on the OS.
