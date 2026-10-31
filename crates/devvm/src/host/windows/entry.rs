@@ -15,8 +15,8 @@ use windows_sys::Wdk::Storage::FileSystem::{
 use windows_sys::Win32::Foundation::{HANDLE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, UNICODE_STRING};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_GENERIC_READ, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo,
-    FileIdInfo, GetFileInformationByHandleEx,
+    FILE_GENERIC_READ, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_TRAVERSE, FileAttributeTagInfo, FileIdInfo, GetFileInformationByHandleEx, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -30,6 +30,10 @@ mod entry_tests;
 /// The bit of a reparse tag that says the point stands for another name: symlinks and junctions have it, a cloud
 /// placeholder or a deduplicated file does not and reads as itself.
 const NAME_SURROGATE: u32 = 0x2000_0000;
+
+/// The access a directory on the walk is opened with: enough to tell what it is and to open names in it, and not
+/// `FILE_LIST_DIRECTORY`, which a directory the user may pass through can deny.
+const SEARCH: u32 = FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 /// What a handle is, from its own attributes.
 enum Kind {
@@ -54,7 +58,7 @@ pub(super) fn open_entry(root: &Path, rel: &str) -> io::Result<Entry> {
     }
     let mut directory = open_directory(root)?;
     for i in 0..names.len() - 1 {
-        let (next, kind) = match look(&directory, &names[..=i]) {
+        let (next, kind) = match look(&directory, &names[..=i], SEARCH) {
             Ok(found) => found,
             Err(e) if is_absent(&e) => return Ok(Entry::Absent),
             Err(e) => return Err(e),
@@ -65,7 +69,7 @@ pub(super) fn open_entry(root: &Path, rel: &str) -> io::Result<Entry> {
             Kind::File => return Ok(Entry::Absent),
         }
     }
-    let (file, kind) = match look(&directory, &names) {
+    let (file, kind) = match look_last(&directory, &names) {
         Ok(found) => found,
         Err(e) if is_absent(&e) => return Ok(Entry::Absent),
         Err(e) => return Err(e),
@@ -77,29 +81,41 @@ pub(super) fn open_entry(root: &Path, rel: &str) -> io::Result<Entry> {
     })
 }
 
-/// Opens the last of `path` (the names from the root) in `directory`, as itself, and says what it is. A reparse point
-/// that is not a link (a cloud placeholder, a deduplicated file) gets its data from a filter that opening it as itself
-/// bypasses, so it is opened again through the filter: the handle returned is that one.
-fn look(directory: &File, path: &[&str]) -> io::Result<(File, Kind)> {
+/// Opens the last of `path` (the names from the root) in `directory` with `access`, as itself, and says what it is. A
+/// reparse point that is not a link (a cloud placeholder, a deduplicated file) gets its data from a filter that opening
+/// it as itself bypasses, so it is opened again through the filter: the handle returned is that one.
+fn look(directory: &File, path: &[&str], access: u32) -> io::Result<(File, Kind)> {
     let name = path.last().expect("a path has a name");
-    let file = open_below(directory, name, true)?;
+    let file = open_below(directory, name, true, access)?;
     let (kind, filtered) = classify(&file)?;
     if filtered {
-        return Ok((read_through(directory, name, &file, path)?, kind));
+        return Ok((read_through(directory, name, &file, path, access)?, kind));
     }
     Ok((file, kind))
 }
 
+/// [`look`] at the end of the path, where a file is opened for reading. A directory that denies reading is still a
+/// directory, so when reading is refused the name is looked at again for searching.
+fn look_last(directory: &File, path: &[&str]) -> io::Result<(File, Kind)> {
+    match look(directory, path, FILE_GENERIC_READ) {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => match look(directory, path, SEARCH) {
+            Ok((found, Kind::Directory)) => Ok((found, Kind::Directory)),
+            _ => Err(e),
+        },
+        other => other,
+    }
+}
+
 fn open_directory(path: &Path) -> io::Result<File> {
     OpenOptions::new()
-        .read(true)
+        .access_mode(SEARCH)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
 }
 
-/// Opens `name`, one name and no path, in `directory` for reading. With `itself`, whatever is at `name` is opened as
+/// Opens `name`, one name and no path, in `directory` with `access`. With `itself`, whatever is at `name` is opened as
 /// itself: a link is not followed and a cloud placeholder's filter does not run. Without it, the open goes through them.
-fn open_below(directory: &File, name: &str, itself: bool) -> io::Result<File> {
+fn open_below(directory: &File, name: &str, itself: bool, access: u32) -> io::Result<File> {
     let wide: Vec<u16> = name.encode_utf16().collect();
     let bytes = u16::try_from(wide.len() * 2)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the name is too long for Windows"))?;
@@ -125,7 +141,7 @@ fn open_below(directory: &File, name: &str, itself: bool) -> io::Result<File> {
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_GENERIC_READ,
+            access,
             &attributes,
             &mut status_block,
             std::ptr::null(),
@@ -148,8 +164,8 @@ fn open_below(directory: &File, name: &str, itself: bool) -> io::Result<File> {
 
 /// Opens `name` again, this time through the filter of a reparse point that is not a link, and returns that handle.
 /// `first` is the handle of the open as itself; the two must be the same file, or the name was swapped in between.
-fn read_through(directory: &File, name: &str, first: &File, path: &[&str]) -> io::Result<File> {
-    let through = open_below(directory, name, false)?;
+fn read_through(directory: &File, name: &str, first: &File, path: &[&str], access: u32) -> io::Result<File> {
+    let through = open_below(directory, name, false, access)?;
     if file_id(first)? != file_id(&through)? {
         return Err(io::Error::other(format!(
             "`{}` changed while it was being opened",

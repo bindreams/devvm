@@ -1,8 +1,16 @@
 use std::fs::OpenOptions;
+use std::io::Read;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, SE_FILE_OBJECT, SetEntriesInAclW,
+    SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP,
+};
+use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID};
+use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_LIST_DIRECTORY};
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
 
@@ -96,9 +104,9 @@ fn make_unhandled_reparse_point(path: &Path, tag: u32) {
 fn a_name_with_a_colon_is_absent_and_a_stream_is_never_read(#[fixture(unicode_home)] home: &Path) {
     std::fs::create_dir(home.join("d")).unwrap();
     std::fs::write(home.join("d").join("a"), b"the file").unwrap();
-    // Win32 reads `:` as a stream separator except in a `\?\` path, which takes every character as a name.
+    // NTFS reads `:` as a stream separator whatever the prefix; the `\\?\` prefix is dropped to leave an ordinary path.
     let text = home.to_str().expect("the test directory is Unicode");
-    let stream = format!(r"{}\d\a:b", text.strip_prefix(r"\?\").unwrap_or(text));
+    let stream = format!(r"{}\d\a:b", text.strip_prefix(r"\\?\").unwrap_or(text));
     std::fs::write(&stream, b"the stream").unwrap();
     assert_eq!(
         std::fs::read(&stream).unwrap(),
@@ -127,8 +135,179 @@ fn the_name_reopened_through_its_filter_must_be_the_file_that_was_opened(#[fixtu
     std::fs::write(home.join("x"), b"x").unwrap();
     std::fs::write(home.join("y"), b"y").unwrap();
     let directory = open_directory(home).unwrap();
-    let first = open_below(&directory, "x", true).unwrap();
-    read_through(&directory, "x", &first, &["x"]).expect("the same file again");
-    let error = read_through(&directory, "y", &first, &["d", "y"]).unwrap_err();
+    let first = open_below(&directory, "x", true, FILE_GENERIC_READ).unwrap();
+    read_through(&directory, "x", &first, &["x"], FILE_GENERIC_READ).expect("the same file again");
+    let error = read_through(&directory, "y", &first, &["d", "y"], FILE_GENERIC_READ).unwrap_err();
     assert!(error.to_string().contains("`d/y`"), "{error}");
+}
+
+/// Denies everyone `FILE_LIST_DIRECTORY` on a directory for as long as it lives, then puts the old DACL back, so the
+/// directory can be deleted. The user may still traverse it.
+struct ListDenied {
+    path: Vec<u16>,
+    old_acl: *mut ACL,
+    descriptor: PSECURITY_DESCRIPTOR,
+}
+
+impl ListDenied {
+    fn new(directory: &Path) -> Self {
+        let path: Vec<u16> = directory.as_os_str().encode_wide().chain([0]).collect();
+        let mut old_acl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: `path` is NUL-terminated; the out-pointers are valid and the unwanted ones are null.
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut old_acl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(
+            status,
+            0,
+            "GetNamedSecurityInfoW: {}",
+            std::io::Error::from_raw_os_error(status as i32)
+        );
+        // `WD` is Everyone in every language.
+        let sid_text: Vec<u16> = "WD".encode_utf16().chain([0]).collect();
+        let mut everyone: PSID = std::ptr::null_mut();
+        // SAFETY: `sid_text` is NUL-terminated and `everyone` is a valid out-pointer.
+        let converted = unsafe { ConvertStringSidToSidW(sid_text.as_ptr(), &mut everyone) };
+        assert_ne!(
+            converted,
+            0,
+            "ConvertStringSidToSidW: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_LIST_DIRECTORY,
+            grfAccessMode: DENY_ACCESS,
+            grfInheritance: NO_INHERITANCE,
+            Trustee: Default::default(),
+        };
+        entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        entry.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        entry.Trustee.ptstrName = everyone.cast();
+        let mut new_acl: *mut ACL = std::ptr::null_mut();
+        // SAFETY: `entry` names a SID that lives until the LocalFree below; `old_acl` is the DACL of `descriptor`.
+        let status = unsafe { SetEntriesInAclW(1, &entry, old_acl, &mut new_acl) };
+        assert_eq!(
+            status,
+            0,
+            "SetEntriesInAclW: {}",
+            std::io::Error::from_raw_os_error(status as i32)
+        );
+        // SAFETY: `path` is NUL-terminated and `new_acl` is a complete ACL.
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                new_acl,
+                std::ptr::null(),
+            )
+        };
+        // SAFETY: both were allocated by the calls above and nothing uses them after this.
+        unsafe {
+            LocalFree(new_acl.cast());
+            LocalFree(everyone);
+        }
+        assert_eq!(
+            status,
+            0,
+            "SetNamedSecurityInfoW: {}",
+            std::io::Error::from_raw_os_error(status as i32)
+        );
+        Self {
+            path,
+            old_acl,
+            descriptor,
+        }
+    }
+}
+
+impl Drop for ListDenied {
+    fn drop(&mut self) {
+        // SAFETY: `path` is NUL-terminated, and `old_acl` lives in `descriptor`, which is freed after the call.
+        let status = unsafe {
+            let status = SetNamedSecurityInfoW(
+                self.path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                self.old_acl,
+                std::ptr::null(),
+            );
+            LocalFree(self.descriptor);
+            status
+        };
+        // A second panic while unwinding would abort and hide the first.
+        if status != 0 && !std::thread::panicking() {
+            panic!(
+                "restoring the DACL: {}",
+                std::io::Error::from_raw_os_error(status as i32)
+            );
+        }
+    }
+}
+
+fn read_all(mut file: std::fs::File) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    bytes
+}
+
+/// The user may traverse a directory they cannot list, and a path through it works.
+#[skuld::test]
+fn a_directory_that_can_be_traversed_but_not_listed_is_walked(#[fixture(unicode_home)] home: &Path) {
+    let root = home.join("root");
+    std::fs::create_dir_all(root.join("d")).unwrap();
+    std::fs::write(root.join("d").join("f.txt"), b"inside").unwrap();
+    let denied = ListDenied::new(&root.join("d"));
+    assert!(
+        std::fs::read_dir(root.join("d")).is_err(),
+        "the directory is not listable"
+    );
+    let found = WindowsHost.open_entry(&root, "d/f.txt");
+    drop(denied);
+    match found.unwrap_or_else(|e| panic!("open_entry: {e}")) {
+        Entry::File(file) => assert_eq!(read_all(file), b"inside"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[skuld::test]
+fn a_root_that_can_be_traversed_but_not_listed_is_walked(#[fixture(unicode_home)] home: &Path) {
+    let root = home.join("root");
+    std::fs::create_dir_all(root.join("d")).unwrap();
+    std::fs::write(root.join("d").join("f.txt"), b"inside").unwrap();
+    let denied = ListDenied::new(&root);
+    assert!(std::fs::read_dir(&root).is_err(), "the root is not listable");
+    let found = WindowsHost.open_entry(&root, "d/f.txt");
+    drop(denied);
+    match found.unwrap_or_else(|e| panic!("open_entry: {e}")) {
+        Entry::File(file) => assert_eq!(read_all(file), b"inside"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A directory at the end of the path is reported as one, listable or not.
+#[skuld::test]
+fn a_directory_that_cannot_be_listed_is_a_directory(#[fixture(unicode_home)] home: &Path) {
+    std::fs::create_dir(home.join("d")).unwrap();
+    let denied = ListDenied::new(&home.join("d"));
+    let found = WindowsHost.open_entry(home, "d");
+    drop(denied);
+    assert!(matches!(
+        found.unwrap_or_else(|e| panic!("open_entry: {e}")),
+        Entry::Directory
+    ));
 }
