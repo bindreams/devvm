@@ -213,6 +213,18 @@ impl<'a> HostSide<'a> {
     fn name(&self, path: &Path) -> String {
         self.typed.name(path.display().to_string())
     }
+
+    /// The error for a directory `path` that cannot be made because the nearest part of it that exists is not a
+    /// directory; `None` when it is one, or nothing of `path` can be looked at.
+    fn file_in_the_way(&self, path: &Path) -> Option<Error> {
+        let existing = path.ancestors().find(|part| std::fs::symlink_metadata(part).is_ok())?;
+        (!existing.is_dir()).then(|| {
+            Error::new(
+                ErrorKind::Io,
+                format!("the host path {} exists and is not a directory", self.name(existing)),
+            )
+        })
+    }
 }
 
 impl CopySide for HostSide<'_> {
@@ -325,7 +337,15 @@ impl CopySide for HostSide<'_> {
             }
             Ok(metadata) if metadata.is_dir() => Ok(Present::Dir),
             Ok(_) => Ok(Present::File),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Present::Nothing),
+            // Below a file there is nothing; making it is what says why not (`create_dir`).
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(Present::Nothing)
+            }
             Err(e) => Err(local_error("cannot inspect", self.name(path), e)),
         }
     }
@@ -341,13 +361,17 @@ impl CopySide for HostSide<'_> {
             // Whatever is there must be a directory (a link to one counts), or the copy cannot go on. Another
             // process may have made it since the look above.
             Err(_) if path.is_dir() => Ok(false),
-            Err(e) => Err(local_error("cannot create the directory", self.name(path), e)),
+            Err(e) => Err(self
+                .file_in_the_way(path)
+                .unwrap_or_else(|| local_error("cannot create the directory", self.name(path), e))),
         };
         match std::fs::create_dir(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if let Some(parent) = self.parent(path) {
-                    std::fs::create_dir_all(&parent)
-                        .map_err(|e| local_error("cannot create the directory", self.name(&parent), e))?;
+                    std::fs::create_dir_all(&parent).map_err(|e| {
+                        self.file_in_the_way(&parent)
+                            .unwrap_or_else(|| local_error("cannot create the directory", self.name(&parent), e))
+                    })?;
                 }
                 made(std::fs::create_dir(path))
             }

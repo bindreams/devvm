@@ -4,7 +4,7 @@
 //! or `Handle::block_on`: those panic inside another runtime, and a library caller may be in its own async test.
 
 use std::future::Future;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use tokio::runtime::{Builder, Runtime};
 
@@ -15,18 +15,42 @@ use crate::{Error, ErrorKind, Result};
 #[path = "runtime_tests.rs"]
 mod runtime_tests;
 
-/// The runtime, started on first use. Two first uses at once may each start one; the loser is dropped unused.
-fn runtime() -> Result<&'static Runtime> {
-    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    if let Some(runtime) = RUNTIME.get() {
-        return Ok(runtime);
+/// A runtime started on first use. The start is serialized, so a runtime is never built to be thrown away: dropping
+/// one panics in an asynchronous context, where a library caller may be.
+pub(crate) struct Lazy {
+    runtime: OnceLock<Runtime>,
+    starting: Mutex<()>,
+}
+
+impl Lazy {
+    pub(crate) const fn new() -> Self {
+        Self {
+            runtime: OnceLock::new(),
+            starting: Mutex::new(()),
+        }
     }
-    let started = Builder::new_multi_thread()
-        .thread_name("devvm-ssh")
-        .enable_all()
-        .build()
-        .map_err(|e| Error::io(ErrorKind::Io, "cannot start the threads of the SSH runtime", e))?;
-    Ok(RUNTIME.get_or_init(|| started))
+
+    pub(crate) fn get(&self) -> Result<&Runtime> {
+        if let Some(runtime) = self.runtime.get() {
+            return Ok(runtime);
+        }
+        // Nothing under the lock can leave the guarded data (`()`) wrong, so a poisoned lock is as good as a clean one.
+        let _starting = self.starting.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(runtime) = self.runtime.get() {
+            return Ok(runtime);
+        }
+        let started = Builder::new_multi_thread()
+            .thread_name("devvm-ssh")
+            .enable_all()
+            .build()
+            .map_err(|e| Error::io(ErrorKind::Io, "cannot start the threads of the SSH runtime", e))?;
+        Ok(self.runtime.get_or_init(|| started))
+    }
+}
+
+fn runtime() -> Result<&'static Runtime> {
+    static RUNTIME: Lazy = Lazy::new();
+    RUNTIME.get()
 }
 
 /// Starts `task` on the runtime.
@@ -39,9 +63,11 @@ where
 }
 
 /// Waits for `future` on the calling thread. The future may be a tokio channel receiver or a join handle: those do
-/// not need to be polled by a tokio runtime, so this is safe inside one.
+/// not need to be polled by a tokio runtime, so this is safe inside one. It runs outside the cooperative budget of an
+/// enclosing tokio task: a wait that never returns to the scheduler would never get the budget back and would hang
+/// once it ran out.
 pub(crate) fn wait<F: Future>(future: F) -> F::Output {
-    futures::executor::block_on(future)
+    futures::executor::block_on(tokio::task::unconstrained(future))
 }
 
 fn panicked(what: &str) -> Error {

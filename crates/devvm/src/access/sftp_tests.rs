@@ -684,6 +684,31 @@ fn a_link_given_as_the_source_is_copied_as_a_link_and_with_a_slash_it_is_followe
     assert_eq!(tree(&env.local.join("out-followed")), ["b.txt", "inner -> shared"]);
 }
 
+/// `cp link/` fails when `link` leads to a file, and so does `file/`: the `/` asks for a directory. A host source is refused
+/// by the OS, a guest one by the copy (a server may stat `file/` as `file`).
+#[skuld::test]
+fn a_source_with_a_slash_that_is_not_a_directory_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"f");
+    symlink(&file, &env.local.join("lnk"));
+    for (source, says_why) in [(with_slash(&file), false), (with_slash(&env.local.join("lnk")), false)] {
+        let error = env.copy_in(&source, "/out").unwrap_err();
+        let typed = source.display().to_string();
+        assert!(error.message().contains(&typed), "{typed} is not named: {error}");
+        assert!(!says_why || error.message().contains("not a directory"), "{error}");
+        assert!(!env.root().join("out").exists(), "nothing was written");
+    }
+
+    env.guest_file("g.txt", b"g");
+    env.guest_link("/lnk", "g.txt");
+    for (typed, says_why) in [("/g.txt/", true), ("/lnk/", true)] {
+        let error = env.copy_out(typed, &env.local.join("out")).unwrap_err();
+        assert!(error.message().contains(typed), "{typed} is not named: {error}");
+        assert!(!says_why || error.message().contains("not a directory"), "{error}");
+        assert!(!env.local.join("out").exists(), "nothing was written");
+    }
+}
+
 #[skuld::test]
 fn a_link_the_host_cannot_store_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
     let mut env = Env::new(home);
@@ -1452,6 +1477,34 @@ fn errors_name_the_host_destination_exactly_as_typed(#[fixture(unicode_home)] ho
         let error = env.copy_out("/proj", Path::new(&typed)).unwrap_err();
         let wanted = format!("onto {}{sep}sub on this host", typed.trim_end_matches(sep));
         assert!(error.message().contains(&wanted), "{wanted:?} is not in: {error}");
+    }
+}
+
+/// A destination below a file is a plain "not a directory", whichever name of it the lookup trips over first.
+#[skuld::test]
+fn a_destination_below_a_file_is_not_a_directory_in_plain_words(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"f");
+    env.copy_in(&file, "/in.txt").unwrap();
+    for typed in ["/in.txt/sub", "/in.txt/a/b", "/in.txt/a/b/"] {
+        let error = env.copy_in(&file, typed).unwrap_err();
+        assert!(error.message().contains("is not a directory"), "{typed}: {error}");
+        assert!(error.message().contains("/in.txt"), "{typed}: {error}");
+        assert!(!error.message().contains("cannot inspect"), "{typed}: {error}");
+    }
+
+    env.guest_file("g.txt", b"g");
+    env.host_file("out.txt", b"x");
+    let local = env.local.display().to_string();
+    let sep = std::path::MAIN_SEPARATOR;
+    for typed in [
+        format!("{local}{sep}out.txt{sep}sub"),
+        format!("{local}{sep}out.txt{sep}a{sep}b"),
+    ] {
+        let error = env.copy_out("/g.txt", Path::new(&typed)).unwrap_err();
+        assert!(error.message().contains("is not a directory"), "{typed}: {error}");
+        assert!(error.message().contains("out.txt"), "{typed}: {error}");
+        assert!(!error.message().contains("cannot inspect"), "{typed}: {error}");
     }
 }
 

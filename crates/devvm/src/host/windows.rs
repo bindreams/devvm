@@ -25,6 +25,10 @@ mod link;
 mod watch;
 mod whpx;
 
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod windows_tests;
+
 pub(crate) use watch::WindowsWatch;
 
 /// `ERROR_PRIVILEGE_NOT_HELD`: the user may not create symlinks.

@@ -165,6 +165,11 @@ impl VmExit {
     }
 }
 
+/// `duration` in units a person reads (`1h`, `1m 30s`).
+pub(crate) fn humanly(duration: Duration) -> String {
+    jiff::SignedDuration::try_from(duration).map_or_else(|_| format!("{duration:?}"), |signed| format!("{signed:#}"))
+}
+
 /// The failure bound on a booting guest: one deadline, started when the VM is resumed.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BootBound {
@@ -178,7 +183,7 @@ impl BootBound {
         let deadline = Instant::now().checked_add(limit).ok_or_else(|| {
             Error::new(
                 ErrorKind::Internal,
-                format!("a boot bound of {limit:?} is too long to represent; lower it"),
+                format!("a boot bound of {} is too long to represent; lower it", humanly(limit)),
             )
         })?;
         Ok(BootBound { limit, deadline })
@@ -336,7 +341,7 @@ impl Context {
     fn bound_passed(&self, awaiting: &str, limit: Duration) -> Error {
         self.lost(
             awaiting,
-            &format!("it did not happen within the boot bound of {limit:?}"),
+            &format!("it did not happen within the boot bound of {}", humanly(limit)),
         )
     }
 }

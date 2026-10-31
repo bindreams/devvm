@@ -7,7 +7,7 @@ use std::time::Duration;
 use russh::keys::{HashAlg, PublicKey};
 
 use crate::ErrorKind;
-use crate::access::session::{BootGate, ClientHandler, Transport};
+use crate::access::session::{BootGate, ClientHandler, Transport, humanly};
 use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, VmExit};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
@@ -477,12 +477,21 @@ fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)]
     arm_boot_bound(&session, Duration::from_millis(200));
     let error = session.exec_collect("hold").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("boot bound"), "{error}");
+    assert!(error.message().contains("boot bound of 200ms ("), "{error}");
     assert!(error.message().contains("hold"), "{error}");
     assert!(
         error.message().contains(&rig.serial_log.display().to_string()),
         "{error}"
     );
+}
+
+#[skuld::test]
+fn a_duration_is_told_in_units_a_person_reads() {
+    assert_eq!(humanly(Duration::from_secs(3600)), "1h");
+    assert_eq!(humanly(Duration::from_secs(90)), "1m 30s");
+    assert_eq!(humanly(Duration::from_millis(200)), "200ms");
+    // Too long for a signed duration: still told, not refused.
+    assert!(!humanly(Duration::MAX).is_empty());
 }
 
 #[skuld::test]
@@ -851,6 +860,29 @@ fn blocking_api_works_inside_a_tokio_runtime(#[fixture(unicode_home)] home: &Pat
         .unwrap()
     });
     assert_eq!(status, ExitStatus::Code(3));
+}
+
+#[skuld::test]
+fn many_commands_inside_one_outer_task_complete(#[fixture(unicode_home)] home: &Path) {
+    // Every command waits on tokio channels, which spend the outer task's cooperative budget of 128 units.
+    const COMMANDS: usize = 300;
+    let rig = Rig::new(home);
+    let outer = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    let target = rig.target();
+    let statuses = outer.block_on(async move {
+        tokio::spawn(async move {
+            let session = SshSession::connect(&target, FAST, VmExit::never(), None, &NullProgress).unwrap();
+            (0..COMMANDS)
+                .map(|_| session.exec_collect("exit 3").unwrap().status)
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap()
+    });
+    assert_eq!(statuses, vec![ExitStatus::Code(3); COMMANDS]);
 }
 
 #[skuld::test]

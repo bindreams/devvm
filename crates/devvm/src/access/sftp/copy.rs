@@ -171,6 +171,17 @@ where
     D: Receives<S>,
 {
     let top = src.inspect(from, follow)?;
+    // The `/` that made the copy follow a link also asks for a directory, as it does for `cp`.
+    if follow && !top.is_dir() {
+        return Err(Error::new(
+            ErrorKind::Io,
+            format!(
+                "cannot copy the {} source {}: it ends in `/` but is not a directory",
+                S::NAME,
+                src.show(from)
+            ),
+        ));
+    }
     let items = if top.is_dir() { src.walk(from)? } else { Vec::new() };
     let rules = Rules {
         from: S::NAME,
