@@ -389,7 +389,13 @@ fn a_working_directory_is_entered_literally_whatever_cdpath_and_its_first_charac
 #[skuld::test]
 fn elevated_wrapper_runs_end_to_end_with_a_stub_sudo() {
     let stubs = skuld::TempDir::new().unwrap();
-    write_script(&stubs, "sudo", "shift 2\nexec \"$@\"");
+    // Like sudo's `env_reset` and a root shell's directory: only PATH (and, on Windows, SYSTEMROOT) survives, and the
+    // command starts in `/`. What the script exports or enters outside the sudo shell is lost, as in the guest.
+    write_script(
+        &stubs,
+        "sudo",
+        "shift 2\ncd / && exec env -i PATH=\"$PATH\" ${SYSTEMROOT:+SYSTEMROOT=\"$SYSTEMROOT\"} \"$@\"",
+    );
     // A hostile program name: a space, a quote and a dollar sign.
     let program = "we ird's $name";
     write_script(&stubs, program, r#"printf '%s|%s|%s' "$PWD" "$MARK" "$1""#);
