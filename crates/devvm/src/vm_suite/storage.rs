@@ -92,9 +92,7 @@ fn disk_size_larger_than_the_backing_image_is_accepted(
     assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], 64 << 20);
 }
 
-/// Six layers on the root: each one's backing path is absolute, so the chain does not grow a path with its depth. (A
-/// relative backing path is resolved against the child's path as written, and a chain of four layers outgrew Windows'
-/// 260-character path limit under it.)
+/// Six layers on the root: each one's backing path is absolute, so the chain's path length does not grow with its depth.
 #[skuld::test]
 fn a_chain_of_layers_resolves_however_deep_it_is(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
@@ -146,6 +144,60 @@ fn a_chain_of_layers_resolves_however_deep_it_is(
         base_before,
         "a parent layer is never written"
     );
+}
+
+#[skuld::test]
+fn committing_an_instance_disk_with_no_backing_file_is_refused(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let instance = home.join("alone").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+    std::fs::write(instance.parent().unwrap().join(VARS), b"vars").unwrap();
+    qemu_img(
+        install,
+        &[
+            "create".as_ref(),
+            "-f".as_ref(),
+            "qcow2".as_ref(),
+            instance.as_os_str(),
+            "1M".as_ref(),
+        ],
+    );
+
+    let error = world
+        .store
+        .build(&request(key(9)), None, |staging| {
+            storage.commit_layer(&instance, staging.dir)?;
+            Ok(Built::default())
+        })
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("no backing file"), "{error}");
+}
+
+#[skuld::test]
+fn a_disk_smaller_than_its_backing_image_is_refused_by_qemu_img_and_nothing_is_left(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let base = base_layer(&world, &storage, home);
+    let instance = home.join("small").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    let error = storage
+        .create_instance_disk(base.tip().dir(), &instance, (BASE_LEN / 2) as u64)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().starts_with("qemu-img create"), "{error}");
+    assert!(!instance.parent().unwrap().join(VARS).exists(), "{error}");
 }
 
 #[skuld::test]

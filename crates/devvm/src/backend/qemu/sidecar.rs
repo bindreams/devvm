@@ -286,18 +286,19 @@ impl Source {
                 ));
             }
         }
-        match std::fs::rename(staging.path(), &published) {
-            Ok(()) => {}
-            // Another process published it first; the rename cannot replace a directory, and theirs is as good.
-            Err(_) if published.is_dir() => {}
-            Err(e) => {
-                return Err(Error::io(
-                    ErrorKind::Io,
-                    format!("cannot publish QEMU as {}", published.display()),
-                    e,
-                ));
-            }
-        }
+        // Publishing happens only under the extraction lock, after the re-check above: nobody else has published it.
+        debug_assert!(
+            !published.is_dir(),
+            "{} appeared under the extraction lock",
+            published.display()
+        );
+        std::fs::rename(staging.path(), &published).map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot publish QEMU as {}", published.display()),
+                e,
+            )
+        })?;
         Ok(self.install_at(&published, entry))
     }
 }

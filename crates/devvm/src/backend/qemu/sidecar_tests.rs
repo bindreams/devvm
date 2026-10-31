@@ -317,8 +317,17 @@ enum Outcome {
     Refused,
     /// The archive is accepted and the entry is unpacked at this path under the install.
     Unpacked(&'static str),
-    /// Refused where the OS gives the name a special meaning (Windows), otherwise unpacked at the path it names.
-    UnpackedOrRefused(&'static str),
+}
+
+/// A name Windows gives a special meaning (a stream, a device) is refused there and is an ordinary file name elsewhere.
+#[cfg(windows)]
+const fn special(_path: &'static str) -> Outcome {
+    Outcome::Refused
+}
+
+#[cfg(not(windows))]
+const fn special(path: &'static str) -> Outcome {
+    Outcome::Unpacked(path)
 }
 
 /// Entry names that point out of the extraction directory by one route or another.
@@ -334,8 +343,8 @@ const ESCAPES: &[(&str, Outcome)] = &[
     ("C:\\escaped.txt", Outcome::Unpacked("escaped.txt")),
     ("C:/escaped.txt", Outcome::Unpacked("escaped.txt")),
     ("//server/share/escaped.txt", Outcome::Unpacked("escaped.txt")),
-    ("escaped.txt:stream", Outcome::UnpackedOrRefused("escaped.txt:stream")),
-    ("bin/NUL/escaped.txt", Outcome::UnpackedOrRefused("bin/NUL/escaped.txt")),
+    ("escaped.txt:stream", special("escaped.txt:stream")),
+    ("bin/NUL/escaped.txt", special("bin/NUL/escaped.txt")),
 ];
 
 /// An archive holding an entry that points out of the extraction directory is refused naming the entry, or the entry is
@@ -353,12 +362,12 @@ fn a_zip_entry_that_points_out_of_the_extraction_directory_never_lands_outside_t
         let qemu = world.dirs.qemu();
 
         let landed = match (outcome, world.source.resolve()) {
-            (Outcome::Unpacked(path) | Outcome::UnpackedOrRefused(path), Ok(install)) => {
+            (Outcome::Unpacked(path), Ok(install)) => {
                 let file = install.bin.parent().unwrap().join(path);
                 assert!(file.is_file(), "{name:?} was not unpacked at {}", file.display());
                 Some(file)
             }
-            (Outcome::Refused | Outcome::UnpackedOrRefused(_), Err(error)) => {
+            (Outcome::Refused, Err(error)) => {
                 assert_eq!(error.kind(), ErrorKind::Store, "{name:?}: {error}");
                 assert!(error.message().contains("escaped.txt"), "{name:?}: {error}");
                 assert!(visible(&qemu).is_empty(), "{name:?} left {:?}", entries(&qemu));

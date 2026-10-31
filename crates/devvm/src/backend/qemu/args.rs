@@ -5,6 +5,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use super::directory_of;
 use crate::backend::{DiskBus, Endpoint, MachineSpec, Media, MediaKind, NetModel};
 use crate::host::Accel;
 use crate::{Arch, Error, ErrorKind, Result};
@@ -25,21 +26,22 @@ pub(crate) struct LaunchPaths {
 
 impl LaunchPaths {
     /// The paths for `spec`: the firmware code the spec names, else `<share>/edk2-<arch>-code.fd`; the variables the
-    /// spec names, else `vars.fd` beside the machine's disk.
-    pub(crate) fn resolve(spec: &MachineSpec, qmp: PathBuf, share: &Path) -> LaunchPaths {
+    /// spec names, else `vars.fd` beside the machine's disk. `Internal` when the disk has no directory.
+    pub(crate) fn resolve(spec: &MachineSpec, qmp: PathBuf, share: &Path) -> Result<LaunchPaths> {
         let named = spec.firmware.as_ref();
         let code = named
             .map(|firmware| firmware.code.clone())
             .filter(|code| !code.as_os_str().is_empty())
             .unwrap_or_else(|| share.join(format!("edk2-{}-code.fd", qemu_arch(spec.arch))));
-        let vars = named
-            .and_then(|firmware| firmware.vars.clone())
-            .unwrap_or_else(|| spec.disk.parent().unwrap_or(Path::new("")).join("vars.fd"));
-        LaunchPaths {
+        let vars = match named.and_then(|firmware| firmware.vars.clone()) {
+            Some(vars) => vars,
+            None => directory_of(&spec.disk, "the machine's disk")?.join("vars.fd"),
+        };
+        Ok(LaunchPaths {
             qmp,
             code: Some(code),
             vars: Some(vars),
-        }
+        })
     }
 }
 
@@ -143,12 +145,7 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
     // Media that boot come first, in boot order; the system disk boots after all of them.
     let mut media: Vec<&Media> = spec.media.iter().collect();
     media.sort_by_key(|medium| medium.boot_index.unwrap_or(u32::MAX));
-    let disk_boot_index = 1 + spec
-        .media
-        .iter()
-        .filter_map(|medium| medium.boot_index)
-        .max()
-        .unwrap_or(0);
+    let disk_boot_index = disk_boot_index(&spec.media)?;
     args.pair(
         "-drive",
         format!("if=none,id=d0,file={},format=qcow2", escape_option_value(&spec.disk)?),
@@ -178,6 +175,28 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
     Ok(args.0)
 }
 
+/// The boot index of the system disk: one after the last medium that boots. QEMU's `bootindex` is a signed 32-bit
+/// number, so a medium whose index leaves no room after it is refused, naming the medium.
+fn disk_boot_index(media: &[Media]) -> Result<u32> {
+    const LAST: u32 = i32::MAX as u32;
+    let mut after = 1;
+    for medium in media {
+        let Some(index) = medium.boot_index else { continue };
+        if index >= LAST {
+            return Err(Error::new(
+                ErrorKind::Usage,
+                format!(
+                    "the boot index {index} of {} is too large: QEMU's limit is {}, and the system disk boots after every medium",
+                    medium.path.display(),
+                    LAST - 1
+                ),
+            ));
+        }
+        after = after.max(index + 1);
+    }
+    Ok(after)
+}
+
 /// The `-device` value of the system disk. A SATA disk also needs its controller, added to `args` first.
 fn system_disk_device(bus: DiskBus, boot_index: u32, args: &mut Args) -> String {
     match bus {
@@ -200,7 +219,7 @@ fn medium_args(args: &mut Args, index: usize, medium: &Media) -> Result<()> {
         MediaKind::Cdrom => {
             args.pair(
                 "-drive",
-                format!("if=none,id=m{index},file={file},media=cdrom{readonly}"),
+                format!("if=none,id=m{index},file={file},format=raw,media=cdrom{readonly}"),
             );
             args.pair("-device", format!("ide-cd,drive=m{index}{boot}"));
         }

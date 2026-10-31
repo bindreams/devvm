@@ -73,3 +73,30 @@ fn committing_an_instance_without_its_variables_is_refused_naming_the_file(#[fix
 
     staging.unwrap();
 }
+
+#[skuld::test]
+fn an_instance_disk_with_no_directory_is_refused_naming_it_before_qemu_img_runs(#[fixture(unicode_home)] home: &Path) {
+    let storage = storage_without_qemu(home);
+    let layer = layer(home, true);
+
+    let error = storage
+        .create_instance_disk(layer.tip().dir(), Path::new(""), 1 << 20)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("instance disk"), "{error}");
+}
+
+#[skuld::test]
+fn committing_an_instance_disk_with_no_directory_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let storage = storage_without_qemu(home);
+    env(home)
+        .store
+        .build(&request(key(3)), None, |staging| {
+            let error = storage.commit_layer(Path::new(""), staging.dir).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+            assert!(error.message().contains("instance disk"), "{error}");
+            Ok(Built::default())
+        })
+        .unwrap();
+}

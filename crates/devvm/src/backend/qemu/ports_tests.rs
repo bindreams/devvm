@@ -1,7 +1,7 @@
 use super::{Forward, parse_usernet};
 use crate::ErrorKind;
 
-/// The text of HMP `info usernet` with one forward, as QEMU 11.1.2 printed it (the row is from the measured run).
+/// The text of HMP `info usernet` with one forward, as QEMU 11.1.2 printed it.
 const ONE_FORWARD: &str = "\
 Hub 0 (#net0):\r
   Protocol[State]    FD  Source Address  Port   Dest. Address  Port RecvQ SendQ\r
@@ -67,4 +67,21 @@ fn an_unparseable_forward_row_is_an_error_quoting_it() {
     let error = parse_usernet(text).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert!(error.message().contains("notaport"), "{error}");
+}
+
+#[skuld::test]
+fn a_forward_row_with_too_few_columns_is_an_error_quoting_it() {
+    let text = "  TCP[HOST_FORWARD]  258       127.0.0.1\r\n";
+    let error = parse_usernet(text).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("too few columns"), "{error}");
+    assert!(error.message().contains("127.0.0.1"), "{error}");
+}
+
+#[skuld::test]
+fn a_forward_with_a_guest_port_that_is_not_a_number_is_an_error_quoting_it() {
+    let text = "  TCP[HOST_FORWARD]  258       127.0.0.1 49986       10.0.2.15    ssh     0     0\r\n";
+    let error = parse_usernet(text).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("ssh"), "{error}");
 }

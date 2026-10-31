@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::directory_of;
 use super::sidecar::LazyInstall;
 use crate::backend::Storage;
 use crate::host::Host;
@@ -107,6 +108,7 @@ impl Storage for QemuStorage {
     fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: u64) -> Result<()> {
         let vars = require_vars(layer.path(), "the layer")?;
         let backing = layer.path().join(DISK);
+        let beside = directory_of(into, "the instance disk")?.join(VARS);
         self.qemu_img(&[
             "create".as_ref(),
             "-f".as_ref(),
@@ -118,7 +120,6 @@ impl Storage for QemuStorage {
             into.as_os_str(),
             size.to_string().as_ref(),
         ])?;
-        let beside = into.parent().unwrap_or(Path::new("")).join(VARS);
         copy_file(&vars, &beside)
     }
 
@@ -128,7 +129,7 @@ impl Storage for QemuStorage {
     /// 260-character path limit, which QEMU does not lift.
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()> {
         let vars = require_vars(
-            instance_disk.parent().unwrap_or(Path::new("")),
+            directory_of(instance_disk, "the instance disk")?,
             "the instance directory",
         )?;
         let info = self.info(instance_disk)?;
