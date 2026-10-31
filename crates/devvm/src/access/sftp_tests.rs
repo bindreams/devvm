@@ -1009,6 +1009,43 @@ fn a_destination_link_that_cannot_be_looked_at_is_an_error_naming_it_and_the_cau
     }
 }
 
+/// A `..` in a link's target is read against the directory the link really is in, so a symlinked parent decides which
+/// chain is walked: a loop through one is a loop, and a link that only looks like a loop by name is dangling.
+#[skuld::test]
+fn a_chain_of_guest_links_through_a_symlinked_parent_is_walked_where_the_links_really_are(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"new");
+
+    // `/proj` is `/data/proj`; the links `/data/proj/l` and `/data/other/l` lead to each other through `..`. By name
+    // from `/proj/l`, `../other/l` is `/other/l`, which is absent.
+    std::fs::create_dir_all(env.at("/data/proj")).unwrap();
+    std::fs::create_dir_all(env.at("/data/other")).unwrap();
+    env.guest_link("/proj", "/data/proj");
+    env.guest_link("/data/proj/l", "../other/l");
+    env.guest_link("/data/other/l", "../proj/l");
+    let error = env.copy_in(&file, "/proj/l").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("/proj/l"), "{error}");
+    assert!(error.message().contains("symbolic links"), "{error}");
+    assert_eq!(env.guest_link_target("/data/proj/l"), Some("../other/l".to_owned()));
+
+    // `/t/s` is `/real/deep`; the link `/real/deep/l` holds `../s/l`, which is `/real/s/l`, absent: dangling. By name
+    // from `/t/s/l` it would be `/t/s/l` itself.
+    std::fs::create_dir_all(env.at("/real/deep")).unwrap();
+    std::fs::create_dir_all(env.at("/t")).unwrap();
+    env.guest_link("/t/s", "/real/deep");
+    env.guest_link("/real/deep/l", "../s/l");
+    env.copy_in(&file, "/t/s/l").unwrap();
+    assert_eq!(
+        env.guest_link_target("/real/deep/l"),
+        None,
+        "the dangling link was replaced"
+    );
+    assert_eq!(std::fs::read(env.at("/real/deep/l")).unwrap(), b"new");
+}
+
 /// OpenSSH says "no such file" for a loop as for a link to nothing, so the guest's links are followed by hand: a chain
 /// that ends in nothing is dangling whatever its length, and relative links that lead back to themselves are a loop.
 #[skuld::test]

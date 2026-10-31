@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::guest::{GuestOs, posix_root};
+use crate::guest::GuestOs;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -373,15 +373,10 @@ pub(super) fn parent_of(path: &str) -> String {
     }
 }
 
-/// The SFTP path `path` with its `.` segments dropped and each `..` cancelled against the name before it, by name only
-/// (a symlink before a `..` is not followed). A `..` at the root stays at the root; one with nothing before it stays;
-/// no segment left is `.`.
-pub(super) fn normalize(path: &str) -> String {
-    normalize_under(posix_root(path))
-}
-
-/// [`normalize`] for a guest path as the user writes it, whose root is what `guest` says it is: `Z:/` and
-/// `//server/share/` are roots, and a `..` above them stays at them.
+/// The guest path `path` as the user writes it with its `.` segments dropped and each `..` cancelled against the name
+/// before it, by name only (a symlink before a `..` is not followed), so a destination is created exactly as it reads.
+/// A `..` at a root stays at the root, whatever `guest` calls a root (`/`, `Z:/`, `//server/share/`); one with nothing
+/// before it stays; no segment left is `.`.
 pub(super) fn normalize_user(path: &str, guest: &dyn GuestOs) -> String {
     normalize_under(guest.split_root(path))
 }

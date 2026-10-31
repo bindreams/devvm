@@ -10,7 +10,7 @@ use russh_sftp::client::{Config, RawSftpSession, SftpSession};
 use russh_sftp::protocol::{FileAttributes, FileType, OpenFlags, Packet, StatusCode};
 use tokio::io::AsyncWriteExt;
 
-use super::plan::{Beyond, Item, Kind, Present, check_listing, join, normalize, parent_of};
+use super::plan::{Beyond, Item, Kind, Present, base_name, check_listing, join, parent_of};
 use super::typed::Typed;
 use super::{Failed, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_name, pump};
 use crate::access::session::Inner;
@@ -173,29 +173,57 @@ impl Remote {
         }
     }
 
+    /// `path` with the directory that holds it resolved by the guest, so a symlink among its parents is followed, and
+    /// a `..` in it is read against the directory it really follows. `None` when that directory does not exist.
+    async fn beside_real_parent(&self, path: &str) -> Result<Option<String>> {
+        let canonical = |what: String, path: String| async move {
+            match self.session.canonicalize(path).await {
+                Ok(real) => Ok(Some(real)),
+                Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
+                Err(e) => Err(self.error(&format!("cannot inspect the guest path {what}"), e)),
+            }
+        };
+        match base_name(path) {
+            Some(name) if name != "." && name != ".." => {
+                let parent = parent_of(path);
+                let real = canonical(self.shown(&parent), parent).await?;
+                Ok(real.map(|parent| join(&parent, name)))
+            }
+            // `a/..` and `/` are directories, not links.
+            _ => canonical(self.shown(path), path.to_owned()).await,
+        }
+    }
+
     /// Fails if the symlink `link`, which leads to nothing, is a loop. OpenSSH's `sftp-server` answers "no such file"
     /// for a loop as it does for a link to nothing, so the links are followed by hand until one is met twice or the
-    /// chain ends.
+    /// chain ends. A link is told by where it really is, with its parents resolved by the guest: a `..` in what it
+    /// holds is read against that directory, not against the names it was reached by.
     async fn refuse_loop(&self, link: &str) -> Result<()> {
         let mut seen = HashSet::new();
         let mut here = link.to_owned();
-        while seen.insert(here.clone()) {
-            let Some(attrs) = self.lstat(&here).await? else {
+        loop {
+            let Some(real) = self.beside_real_parent(&here).await? else {
+                return Ok(());
+            };
+            if !seen.insert(real.clone()) {
+                break;
+            }
+            let Some(attrs) = self.lstat(&real).await? else {
                 return Ok(());
             };
             if attrs.file_type() != FileType::Symlink {
                 return Ok(());
             }
-            let target = self.session.read_link(here.as_str()).await.map_err(|e| {
+            let target = self.session.read_link(real.as_str()).await.map_err(|e| {
                 self.error(
-                    &format!("cannot read the guest symlink {here}", here = self.shown(&here)),
+                    &format!("cannot read the guest symlink {real}", real = self.shown(&real)),
                     e,
                 )
             })?;
             here = if target.starts_with('/') {
-                normalize(&target)
+                target
             } else {
-                normalize(&join(&parent_of(&here), &target))
+                join(&parent_of(&real), &target)
             };
         }
         Err(Error::new(

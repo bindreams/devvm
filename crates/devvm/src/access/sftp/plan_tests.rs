@@ -1,6 +1,6 @@
 use super::{
-    Beyond, Conflict, Item, Kind, Place, Present, Rules, Source, base_name, check_listing, check_names, normalize,
-    normalize_user, parent_of, place, time_notes,
+    Beyond, Conflict, Item, Kind, Place, Present, Rules, Source, base_name, check_listing, check_names, normalize_user,
+    parent_of, place, time_notes,
 };
 use std::collections::HashSet;
 
@@ -185,6 +185,7 @@ fn the_root_of_a_merged_tree_is_fresh_only_when_missing() {
 
 #[skuld::test]
 fn a_guest_destination_is_resolved_by_name() {
+    let linux = FakeGuests.os(GuestKind::Linux).unwrap();
     for (given, want) in [
         ("/h/new/.", "/h/new"),
         ("/h/a/../b", "/h/b"),
@@ -203,7 +204,7 @@ fn a_guest_destination_is_resolved_by_name() {
         ("a/../../b", "../b"),
         ("/.hidden/..x", "/.hidden/..x"),
     ] {
-        assert_eq!(normalize(given), want, "{given}");
+        assert_eq!(normalize_user(given, &*linux), want, "{given}");
     }
 }
 
