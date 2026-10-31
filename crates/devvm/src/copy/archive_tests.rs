@@ -159,6 +159,32 @@ fn a_read_that_is_retried_is_not_blamed_when_the_disk_then_fills() {
     assert!(error.message().contains(DEST), "{error}");
 }
 
+/// A reader that gives `bytes`, then fails once with `Interrupted` where the end of the file is expected.
+struct InterruptedAtEnd<'a> {
+    rest: &'a [u8],
+    interrupted: bool,
+}
+
+impl Read for InterruptedAtEnd<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.rest.is_empty() && !self.interrupted {
+            self.interrupted = true;
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        self.rest.read(buf)
+    }
+}
+
+#[skuld::test]
+fn an_interrupted_read_at_the_end_of_the_file_is_retried() {
+    let mut builder = tar::Builder::new(Vec::new());
+    let reader = InterruptedAtEnd {
+        rest: b"hello",
+        interrupted: false,
+    };
+    append_file(&mut builder, Path::new(DEST), NAME, 0o644, 5, reader).expect("the file is archived");
+}
+
 /// Archives a symlink `path` -> `target` and returns the entry's link name as the tar holds it.
 fn link_name_in_tar(path: &str, target: &str) -> Vec<u8> {
     let mut builder = tar::Builder::new(Vec::new());

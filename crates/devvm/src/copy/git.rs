@@ -138,16 +138,19 @@ pub(super) fn list(host: &dyn Host, root: &Path) -> Result<Listing> {
 /// submodule git considers inactive. Skipping it as "uninitialized" would leave files that are on disk out.
 fn refuse_unlisted_work_tree(root: &Path, path: &str) -> Result<()> {
     let marker = root.join(path).join(".git");
-    let present = marker
-        .try_exists()
-        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot read {}", marker.display()), e))?;
+    // A gitlink path that is a file now has no work tree below it, like one that is gone.
+    let present = match marker.try_exists() {
+        Ok(present) => present,
+        Err(e) if e.kind() == io::ErrorKind::NotADirectory => false,
+        Err(e) => return Err(Error::io(ErrorKind::Io, format!("cannot read {}", marker.display()), e)),
+    };
     if !present {
         return Ok(());
     }
     Err(Error::new(
         ErrorKind::Recipe,
         format!(
-            "cannot copy `{}`: it is a git repository, but git does not list its files (make it a submodule, or remove it from the index)",
+            "cannot copy `{}`: it is a git repository, but git does not list its files (it is not a submodule, or git could not enter it; make it a submodule, or remove it from the index)",
             path.escape_debug()
         ),
     ))

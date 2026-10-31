@@ -298,11 +298,14 @@ pub(super) fn append_file<W: Write, R: Read>(
         return Err(changed(hashing.count));
     }
     let mut extra = [0u8; 1];
-    let more = hashing
-        .inner
-        .into_inner()
-        .read(&mut extra)
-        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot read `{}`", path.escape_debug()), e))?;
+    let mut rest = hashing.inner.into_inner();
+    let more = loop {
+        match rest.read(&mut extra) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            other => break other,
+        }
+    }
+    .map_err(|e| Error::io(ErrorKind::Io, format!("cannot read `{}`", path.escape_debug()), e))?;
     if more != 0 {
         return Err(changed(size + 1));
     }

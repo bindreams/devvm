@@ -152,3 +152,25 @@ fn the_path_of_a_skipped_submodule_is_escaped_in_the_note(#[fixture(unicode_home
     assert!(!taken.notes[0].contains('\n'), "{:?}", taken.notes);
     assert!(taken.notes[0].contains(r"line\nbreak"), "{:?}", taken.notes);
 }
+
+#[skuld::test]
+fn a_gitlink_path_that_is_a_regular_file_now_is_skipped_as_uninitialised(#[fixture(unicode_home)] home: &Path) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "top.txt", b"top");
+    add_all(&repo);
+    // The gitlink is in the index only; on disk its path holds a file, so `sub/.git` is "not a directory" to the OS.
+    git(
+        &repo,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,sub",
+        ],
+    );
+    put(&repo, "sub", b"a file where the submodule was");
+    let taken = take(&repo, false, home).expect("no work tree in `sub`, so the gitlink is skipped");
+    assert_eq!(paths(&taken.snapshot), ["top.txt"]);
+    assert_eq!(taken.notes.len(), 1, "{:?}", taken.notes);
+    assert!(taken.notes[0].contains("`sub`"), "{:?}", taken.notes);
+}

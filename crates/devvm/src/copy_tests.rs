@@ -663,7 +663,7 @@ fn a_failed_snapshot_leaves_nothing_in_the_output_directory(#[fixture(unicode_ho
     );
     let error = take(&repo, false, home).err().expect("the link text is not in git");
     assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert!(error.message().contains('b'), "{error}");
+    assert!(error.message().contains("`b`"), "{error}");
     let left: Vec<_> = std::fs::read_dir(home.join("out")).unwrap().collect();
     assert!(left.is_empty(), "{left:?}");
 }
