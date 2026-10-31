@@ -27,10 +27,11 @@ pub(crate) trait ProcessWatch: Send + Sync {
 
 /// A connection to a process's control socket.
 ///
-/// A read returns what the peer wrote, in order, and blocks until there is more. Once the process has exited and the
-/// socket holds nothing more, a read ends the stream (`Ok(0)`) or fails as a closed connection, whether or not the OS
-/// ever delivers the end of the stream (Windows can lose it). A write that cannot finish because the process has
-/// exited fails as a closed connection.
+/// A read returns what the peer wrote, in order, and blocks until there is more. On Windows, once the process has
+/// exited and the socket holds nothing more, a read ends the stream (`Ok(0)`) whether or not the OS ever delivers the
+/// end of the stream (it can lose it), and a write that cannot finish because the process has exited fails as a closed
+/// connection. Elsewhere the link is the bare stream: a read ends when the peer closes it, so a process that keeps the
+/// socket open after QEMU exits keeps a read waiting.
 pub(crate) trait Link: Read + Write + Send {}
 
 /// A host whose streams always end when the peer's process exits needs nothing but the stream.

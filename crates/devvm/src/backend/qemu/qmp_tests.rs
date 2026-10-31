@@ -13,7 +13,8 @@ use crate::host::{self, Link, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, UNICODE_DIR};
 use crate::test_support::manual_exit::ManualExit;
-use crate::test_support::qemu::Sock;
+use crate::test_support::qemu::{Sock, socket_dir};
+use crate::test_support::refusing::{REFUSED, Refusing};
 
 // A fake QMP server ===================================================================================================
 
@@ -300,23 +301,19 @@ fn a_process_that_exits_while_connect_waits_for_the_listener_ends_the_wait() {
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("exited"), "{error}");
-    assert!(
-        !sock.endpoint.lock_path().exists(),
-        "the lock file made while waiting was left behind"
-    );
 }
 
 #[skuld::test]
-fn a_process_that_exits_after_the_socket_accepted_but_before_the_greeting_leaves_no_lock_file() {
+fn a_peer_that_closes_before_the_greeting_fails_as_a_lost_connection_and_keeps_the_lock_file() {
     let sock = sock();
     let process = ManualExit::new();
     let listener = sock.listen();
-    let server = std::thread::scope(|scope| {
+    let error = std::thread::scope(|scope| {
         let server = scope.spawn(|| {
             let (stream, _) = listener.accept().unwrap();
-            // The exit comes first, so that a client that sees the end of the stream also sees the exit.
-            process.exit();
+            // QEMU closes the socket during teardown, and the process object signals after that.
             drop(stream);
+            process.exit();
         });
         let error = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default())
             .err()
@@ -325,15 +322,15 @@ fn a_process_that_exits_after_the_socket_accepted_but_before_the_greeting_leaves
         error
     });
 
-    assert_eq!(server.kind(), ErrorKind::ConnectionLost, "{server}");
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(
-        !sock.endpoint.lock_path().exists(),
-        "the lock file of a process that is gone was left behind"
+        sock.endpoint.lock_path().exists(),
+        "connect deleted the lock file: only launch and the machine's removal may"
     );
 }
 
 #[skuld::test]
-fn a_handshake_that_fails_while_the_process_lives_keeps_the_lock_file() {
+fn a_failed_handshake_keeps_the_lock_file() {
     let sock = sock();
     let release = ManualExit::new();
     let listener = sock.listen();
@@ -354,9 +351,98 @@ fn a_handshake_that_fails_while_the_process_lives_keeps_the_lock_file() {
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert!(
         sock.endpoint.lock_path().exists(),
-        "another session may be waiting on the lock file of a live process"
+        "connect deleted the lock file: only launch and the machine's removal may"
     );
     server.join().unwrap();
+}
+
+#[skuld::test]
+fn a_process_that_cannot_be_asked_fails_connect_with_the_refusal_before_a_lock_file_is_touched() {
+    let sock = sock();
+    let watch = Refusing::new(ManualExit::new().watch());
+    watch.refuse_has_exited();
+
+    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert_eq!(error.message(), REFUSED);
+    assert!(!sock.endpoint.lock_path().exists());
+}
+
+#[skuld::test]
+fn a_process_that_cannot_be_paused_on_fails_the_wait_for_the_listener_with_the_refusal() {
+    let sock = sock();
+    let watch = Refusing::new(ManualExit::new().watch());
+    watch.refuse_pause();
+
+    // Nothing listens, so connect must wait, and the wait is what refuses.
+    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert_eq!(error.message(), REFUSED);
+}
+
+#[skuld::test]
+fn a_connect_error_that_is_not_a_missing_listener_is_an_io_error_naming_the_socket() {
+    // A path over the host's limit can never connect, so waiting for a listener would be for ever. The lock file's path
+    // is a plain file path and stays valid.
+    let long = socket_dir().join("x".repeat(host::current().socket_path_max()));
+    let endpoint = QmpEndpoint::from_record(&long.display().to_string());
+    let process = ManualExit::new();
+
+    let error = Qmp::connect(&endpoint, &process.watch(), &MemoryProgress::default())
+        .err()
+        .unwrap();
+    let _ = std::fs::remove_file(endpoint.lock_path());
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(
+        error.message().contains("cannot connect to the QEMU control socket"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn a_read_error_while_the_process_cannot_be_asked_is_reported_and_not_taken_for_the_end() {
+    let sock = sock();
+    let watch = Refusing::new(ManualExit::new().watch());
+    let (server, _) = serve(sock.listen(), 1, |session, _| {
+        // QEMU is alive: the connection stays up until the client lets go.
+        while session.command().is_some() {}
+    });
+    let mut qmp = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default()).unwrap();
+    watch.fail_reads_with(std::io::ErrorKind::PermissionDenied);
+    watch.refuse_has_exited();
+
+    let error = qmp.wait_for_end().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    drop(qmp);
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn a_corrupt_line_is_reported_as_itself_even_when_the_process_has_exited_since() {
+    let sock = sock();
+    let process = Arc::new(ManualExit::new());
+    let (server, _) = serve(sock.listen(), 1, {
+        let process = process.clone();
+        move |session, _| {
+            session.send_raw(b"\xff\xfe\n");
+            process.exit();
+        }
+    });
+    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    server.wait().unwrap();
+
+    let error = qmp.wait_for_end().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    drop(qmp);
 }
 
 #[skuld::test]

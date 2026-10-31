@@ -135,8 +135,15 @@ pub(crate) struct Qmp {
 impl Qmp {
     /// Connects to the socket, negotiates, and holds the lock file. It waits for the QEMU process to listen for as long
     /// as `process` has not exited, trying again every few milliseconds: the listener is up about 30 ms after spawn. A
-    /// read on the session ends when the process has exited and QEMU's bytes are used up. A process that has exited
-    /// fails before a lock file is touched, and one that exits while this connects leaves no lock file behind.
+    /// process that has exited fails before a lock file is touched.
+    ///
+    /// Never deletes the lock file, whether it succeeds or not: another session may be waiting on that very file, and a
+    /// path removed under it could be a later session's. The file is removed by whoever knows no session can be live,
+    /// the machine's shutdown or kill, or the next launch of the instance (`QemuBackend::launch`).
+    ///
+    /// A read on the session ends once the process has exited and QEMU's bytes are used up. On Windows the exit ends
+    /// the read even if the OS never delivers the end of the stream; elsewhere the read ends with the stream, so a
+    /// process that keeps the socket open after QEMU exits keeps the read waiting.
     pub(crate) fn connect(ep: &QmpEndpoint, process: &Arc<dyn ProcessWatch>, progress: &dyn Progress) -> Result<Qmp> {
         let exited = |when: &str| {
             Error::new(
@@ -159,37 +166,29 @@ impl Qmp {
             ),
             progress,
         )?;
-        // A process that has exited needs no lock file, and nobody else needs the one this call made: it is deleted
-        // while still held. A live process may have another session waiting on the file, so it stays.
-        let fail = |error: Error| {
-            if matches!(process.has_exited(), Ok(true)) {
-                remove_lock_file(ep);
-            }
-            error
-        };
         let stream = loop {
             match UnixStream::connect(ep.path()) {
                 Ok(stream) => break stream,
                 Err(e) if is_not_listening(&e) => match process.pause() {
                     Ok(false) => {}
-                    Ok(true) => return Err(fail(exited("before its control socket accepted a connection"))),
-                    Err(e) => return Err(fail(e)),
+                    Ok(true) => return Err(exited("before its control socket accepted a connection")),
+                    Err(e) => return Err(e),
                 },
                 Err(e) => {
-                    return Err(fail(Error::io(
+                    return Err(Error::io(
                         ErrorKind::Io,
                         format!("cannot connect to the QEMU control socket {}", ep.path().display()),
                         e,
-                    )));
+                    ));
                 }
             }
         };
         let link = process.link(stream).map_err(|e| {
-            fail(Error::io(
+            Error::io(
                 ErrorKind::Io,
                 format!("cannot watch the connection to {}", ep.path().display()),
                 e,
-            ))
+            )
         })?;
         let mut qmp = Qmp {
             reader: BufReader::new(link),
@@ -198,10 +197,8 @@ impl Qmp {
             process: process.clone(),
             _lock: lock,
         };
-        match qmp.negotiate() {
-            Ok(()) => Ok(qmp),
-            Err(e) => Err(fail(e)),
-        }
+        qmp.negotiate()?;
+        Ok(qmp)
     }
 
     fn lost(&self, what: &str) -> Error {
@@ -236,8 +233,9 @@ impl Qmp {
         let mut line = String::new();
         let read = match self.reader.read_line(&mut line) {
             Ok(read) => read,
-            // A QEMU that exits resets the connection on Windows instead of closing it: nothing more comes.
-            Err(e) if is_closed(&e) || self.exited() => 0,
+            // A QEMU that exits resets the connection on Windows instead of closing it: nothing more comes. Any other
+            // error, a corrupt line included, is reported as itself even when QEMU has exited since.
+            Err(e) if is_closed(&e) || (self.exited() && e.kind() != std::io::ErrorKind::InvalidData) => 0,
             Err(e) => {
                 return Err(Error::io(
                     ErrorKind::Io,
@@ -510,10 +508,4 @@ fn classify(value: &serde_json::Value) -> Result<QmpEvent> {
         qmp::Event::POWERDOWN { .. } => QmpEvent::Powerdown,
         _ => QmpEvent::Other(name.to_owned()),
     })
-}
-
-/// Deletes the lock file of `ep`. One that is gone already is what was wanted; any other failure leaves a file that the
-/// leftover sweep of the machine's shutdown or kill removes.
-fn remove_lock_file(ep: &QmpEndpoint) {
-    let _ = std::fs::remove_file(ep.lock_path());
 }

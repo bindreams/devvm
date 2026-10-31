@@ -16,6 +16,10 @@ use crate::exit::Progress;
 use crate::host::{Host, ProcessWatch};
 use crate::{Arch, Error, ErrorKind, Result};
 
+#[cfg(test)]
+#[path = "machine_tests.rs"]
+mod machine_tests;
+
 #[cfg(all(test, windows))]
 #[path = "machine_windows_tests.rs"]
 mod machine_windows_tests;

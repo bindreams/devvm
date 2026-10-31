@@ -25,7 +25,8 @@ pub(crate) mod qemu;
 
 pub(crate) trait Backend: Send + Sync {
     /// Starts a machine and returns it **frozen**: its identity is known (`Machine::record`) but it has not run. The
-    /// caller persists the record, then calls `Machine::resume`.
+    /// caller persists the record, then calls `Machine::resume`. The caller holds the instance's lock and no machine of
+    /// the instance runs: a backend may delete what an earlier machine of the instance left behind.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>>;
 
     /// Finds a machine started by another process (or an earlier run) from its record. `NotFound` when it is not

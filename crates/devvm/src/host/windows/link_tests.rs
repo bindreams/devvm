@@ -18,6 +18,19 @@ fn pair() -> (Sock, UnixStream, UnixStream) {
     (sock, client, peer)
 }
 
+/// Reads `size` bytes from `peer`, 4 KiB at a time, and returns how many came.
+fn drain(mut peer: impl Read, size: usize) -> usize {
+    let mut got = 0;
+    let mut buffer = [0u8; 4096];
+    while got < size {
+        match peer.read(&mut buffer).unwrap() {
+            0 => break,
+            n => got += n,
+        }
+    }
+    got
+}
+
 /// Everything `link` reads until it ends the stream.
 fn read_all(mut link: impl Read) -> Vec<u8> {
     let mut got = Vec::new();
@@ -140,5 +153,56 @@ fn a_write_that_cannot_finish_when_the_process_exits_fails_as_a_closed_connectio
 
     let error: std::io::Error = writer.join().unwrap().unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+    drop(peer);
+}
+
+#[skuld::test]
+fn a_write_larger_than_the_socket_buffers_goes_through_as_the_peer_drains() {
+    const SIZE: usize = 16 * 1024 * 1024;
+    let exit = ManualExit::new();
+    let (_sock, client, peer) = pair();
+    let mut link = exit.watch().link(client).unwrap();
+
+    // The writer hands over far more than the buffers hold, in chunks (Winsock takes one huge send whole), and the peer
+    // takes 4 KiB at a time: the writer finds the socket full again and again and goes on only when the peer's reads
+    // make room.
+    let writer = std::thread::spawn(move || {
+        let chunk = [b'x'; 64 * 1024];
+        (0..SIZE / chunk.len()).try_for_each(|_| link.write_all(&chunk))
+    });
+    let received = drain(peer, SIZE);
+
+    writer.join().unwrap().unwrap();
+    assert_eq!(received, SIZE);
+}
+
+#[skuld::test]
+fn small_reads_that_leave_bytes_behind_and_then_run_dry_wake_for_the_next_bytes() {
+    let exit = ManualExit::new();
+    let (_sock, client, mut peer) = pair();
+    let mut link = exit.watch().link(client).unwrap();
+    let (drained, drained_rx) = mpsc::channel::<()>();
+
+    let reader = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        for burst in [10usize, 7] {
+            let mut left = burst;
+            while left > 0 {
+                // Three bytes at a time: most reads stop short of what the socket holds.
+                let mut buffer = [0u8; 3];
+                let n = link.read(&mut buffer[..left.min(3)]).unwrap();
+                got.extend_from_slice(&buffer[..n]);
+                left -= n;
+            }
+            drained.send(()).unwrap();
+        }
+        got
+    });
+    peer.write_all(b"0123456789").unwrap();
+    drained_rx.recv().unwrap();
+    peer.write_all(b"abcdefg").unwrap();
+    drained_rx.recv().unwrap();
+
+    assert_eq!(reader.join().unwrap(), b"0123456789abcdefg");
     drop(peer);
 }

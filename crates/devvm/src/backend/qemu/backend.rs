@@ -42,9 +42,10 @@ impl QemuBackend {
 }
 
 impl QemuBackend {
-    /// `error`, after the frozen QEMU of a launch that failed has been killed and the files it could have made are
-    /// removed. A QEMU that cannot be killed is named in the error: it is still there, frozen.
-    fn abandon(&self, vm: &mut VmProcess, endpoint: &QmpEndpoint, error: Error) -> Error {
+    /// Deletes the control socket and lock file of `endpoint`, which no live session can hold: a machine that is gone,
+    /// or one about to be launched. A file that cannot be deleted is reported and left; QEMU's own bind then fails and
+    /// says so in `qemu.log`.
+    fn clear(&self, endpoint: &QmpEndpoint) {
         for path in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
@@ -52,6 +53,12 @@ impl QemuBackend {
                 Err(e) => self.progress.message(&format!("cannot delete {}: {e}", path.display())),
             }
         }
+    }
+
+    /// `error`, after the frozen QEMU of a launch that failed has been killed and the files it could have made are
+    /// removed. A QEMU that cannot be killed is named in the error: it is still there, frozen.
+    fn abandon(&self, vm: &mut VmProcess, endpoint: &QmpEndpoint, error: Error) -> Error {
+        self.clear(endpoint);
         match vm.kill() {
             Ok(()) => error,
             Err(kill) => Error::new(
@@ -66,6 +73,9 @@ impl Backend for QemuBackend {
     /// Starts QEMU frozen, in an empty private working directory, with nothing in its environment but `SystemRoot` and
     /// a `PATH` of System32 and its own `bin`. Its output goes to `<instance>/qemu.log`. Resolving the sidecar here is
     /// the only place a launch can download it.
+    ///
+    /// A control socket or lock file at the instance's path is a leftover (a late `Qmp::connect` makes one after its
+    /// machine is gone) and is deleted first.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let install = self.install.get()?;
         let endpoint = QmpEndpoint::for_instance(&self.temp, &spec.id, self.host.socket_path_max())?;
@@ -81,6 +91,8 @@ impl Backend for QemuBackend {
         }
         std::fs::create_dir_all(&cwd)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", cwd.display()), e))?;
+
+        self.clear(&endpoint);
 
         let mut command = cosca::Command::new();
         command

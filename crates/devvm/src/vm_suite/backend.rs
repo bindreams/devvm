@@ -397,6 +397,29 @@ fn vm_qemu_a_killed_frozen_machine_leaves_no_socket_file_no_lock_file_and_no_ser
 }
 
 #[skuld::test]
+fn vm_qemu_launch_clears_a_stale_socket_and_lock_file_at_the_instance_path(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let target = QemuTarget::new(install);
+    let (spec, _parent) = target.prepared(home, 0, |_| {});
+    let endpoint = target.endpoint(&spec);
+    std::fs::write(endpoint.path(), b"stale").unwrap();
+    std::fs::write(endpoint.lock_path(), b"stale").unwrap();
+
+    let mut machine = target.backend().launch(&spec).unwrap();
+
+    // A frozen machine has made neither file yet, so what is there now is the leftover.
+    for leftover in target.leftovers(&spec) {
+        assert!(!leftover.exists(), "launch left {}", leftover.display());
+    }
+    // QEMU binds the path: a stale file still there would fail it.
+    machine.resume().unwrap();
+    assert!(is_running(&machine.record()));
+    machine.kill().unwrap();
+}
+
+#[skuld::test]
 fn vm_qemu_start_failure_reports_qemu_log(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,

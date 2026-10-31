@@ -8,4 +8,5 @@ pub mod host;
 pub mod http;
 pub mod manual_exit;
 pub mod qemu;
+pub mod refusing;
 pub mod stub_backend;

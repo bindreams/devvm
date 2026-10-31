@@ -15,7 +15,6 @@ use crate::contain::{Lifetime, VmProcess};
 use crate::host;
 use crate::test_support::fake_vm;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
-use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::qemu::Sock;
 
 /// A fake VM, a control socket for it and the record that names both.
@@ -67,10 +66,7 @@ impl World {
 
     /// A machine found with `attach`, as another process sees one.
     fn attached(&self) -> QemuMachine {
-        self.attached_on(host::current())
-    }
-
-    fn attached_on(&self, host: &'static dyn host::Host) -> QemuMachine {
+        let host = host::current();
         let vm = self.handle();
         let id = vm.id();
         QemuMachine::attached(
@@ -178,54 +174,6 @@ fn a_connection_error_that_is_not_a_close_is_reported_while_qemu_lives(#[fixture
 }
 
 #[skuld::test]
-fn reset_of_a_launched_machine_asks_the_host_before_it_connects(#[fixture(unicode_home)] home: &Path) {
-    let world = world(home);
-    let mut machine = world.launched(world.dir.join("qemu.log"), &NO_GUEST_RESET);
-    // Nothing listens and the VM is gone: a reset that connected would fail with `ConnectionLost`, not `Unavailable`.
-    world.end_qemu();
-
-    let error = machine.reset().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
-    assert_eq!(error.message(), WINDOWS_11);
-}
-
-#[skuld::test]
-fn reset_of_a_no_reboot_machine_is_refused_before_it_connects(#[fixture(unicode_home)] home: &Path) {
-    let mut world = world(home);
-    world.record.no_reboot = true;
-    let mut machine = world.launched(world.dir.join("qemu.log"), host::current());
-    // Nothing listens and the VM is gone: a reset that connected would fail with `ConnectionLost`, not `Unavailable`.
-    world.end_qemu();
-
-    let error = machine.reset().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
-    assert!(error.message().contains("no-reboot"), "{error}");
-    assert!(
-        error.message().contains("resetting the guest") && !error.message().contains("  "),
-        "the refusal text lost its line continuation: {error}"
-    );
-}
-
-#[skuld::test]
-fn reset_of_an_attached_no_reboot_machine_is_refused_with_nothing_sent_even_when_qemu_is_gone(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let mut world = world(home);
-    world.record.no_reboot = true;
-    let mut machine = world.attached();
-    // No server listens and the VM is gone: asking it for its architecture would fail with `ConnectionLost`.
-    world.end_qemu();
-
-    let error = machine.reset().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
-    assert!(error.message().contains("no-reboot"), "{error}");
-    assert!(!world.lock_file().exists(), "a connection was attempted");
-}
-
-#[skuld::test]
 fn shutdown_waits_for_the_exit_after_the_control_socket_closes_while_qemu_lives(#[fixture(unicode_home)] home: &Path) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -251,27 +199,6 @@ fn shutdown_waits_for_the_exit_after_the_control_socket_closes_while_qemu_lives(
 
     result.unwrap();
     assert!(exited_before_it_returned, "shutdown returned while QEMU was alive");
-}
-
-#[skuld::test]
-fn reset_of_an_attached_machine_sends_only_the_target_query_before_the_host_answers(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let world = world(home);
-    let (server, log) = serve(world.sock.listen(), 1, |session, _| {
-        session.answer(json!({ "arch": "x86_64" }));
-        assert!(session.command().is_none(), "a command followed the target query");
-    });
-    let mut machine = world.attached_on(&NO_GUEST_RESET);
-
-    let error = machine.reset().unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
-    assert_eq!(error.message(), WINDOWS_11);
-    drop(machine);
-    server.join().unwrap();
-    assert_eq!(*log.lock().unwrap(), ["qmp_capabilities"]);
-    world.end_qemu();
 }
 
 #[skuld::test]
