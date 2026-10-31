@@ -79,6 +79,10 @@ impl Machine for Strict {
         self.inner.release()
     }
 
+    fn reset(&mut self) -> crate::Result<()> {
+        self.inner.reset()
+    }
+
     fn shutdown(&mut self) -> crate::Result<()> {
         assert!(
             self.awaited.lock().unwrap().contains(&self.record().process.pid),
@@ -218,6 +222,10 @@ impl Machine for Deleting {
 
     fn release(&mut self) -> crate::Result<()> {
         self.0.release()
+    }
+
+    fn reset(&mut self) -> crate::Result<()> {
+        self.0.reset()
     }
 
     fn shutdown(&mut self) -> crate::Result<()> {
@@ -579,4 +587,32 @@ fn a_relaunch_in_the_same_directory_reads_only_its_own_run(#[fixture(unicode_hom
     let pid = second.record().process.pid;
     assert!(answer(second.ssh_endpoints()[0].1.port()).starts_with(&format!("up pid={pid} ")));
     second.kill().unwrap();
+}
+
+#[skuld::test]
+fn fake_reset_counts_and_needs_a_machine_that_has_run(#[fixture(unicode_home)] home: &Path) {
+    let target = FakeTarget::new();
+    let env = crate::store::layers::layers_tests::env(home);
+    let parent = target.parent_layer(&env.store);
+    let spec = target.spec(home, 0);
+    std::fs::create_dir_all(spec.disk.parent().unwrap()).unwrap();
+    target
+        .backend()
+        .storage()
+        .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+        .unwrap();
+    let mut machine = target.backend().launch(&spec).unwrap();
+
+    assert_eq!(
+        machine.reset().unwrap_err().kind(),
+        ErrorKind::Internal,
+        "a frozen machine"
+    );
+    assert_eq!(target.backend.resets(), 0);
+
+    machine.resume().unwrap();
+    machine.reset().unwrap();
+    machine.reset().unwrap();
+    assert_eq!(target.backend.resets(), 2);
+    machine.kill().unwrap();
 }

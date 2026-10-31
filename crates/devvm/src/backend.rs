@@ -21,10 +21,12 @@ mod backend_tests;
 pub(crate) mod contract;
 #[cfg(test)]
 pub(crate) mod fake;
+pub(crate) mod qemu;
 
 pub(crate) trait Backend: Send + Sync {
     /// Starts a machine and returns it **frozen**: its identity is known (`Machine::record`) but it has not run. The
-    /// caller persists the record, then calls `Machine::resume`.
+    /// caller persists the record, then calls `Machine::resume`. The caller holds the instance's lock and no machine of
+    /// the instance runs: a backend may delete what an earlier machine of the instance left behind.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>>;
 
     /// Finds a machine started by another process (or an earlier run) from its record. `NotFound` when it is not
@@ -72,6 +74,16 @@ pub(crate) trait Machine: Send {
     /// `Backend::attach`.
     fn release(&mut self) -> Result<()>;
 
+    /// Resets the running guest inside its VM process and returns once the reset has happened, not when the guest is
+    /// up again. The process, the disk and the forwarded ports are untouched. `Unavailable` when this host or the VM's
+    /// state cannot reset it (nothing is sent then); `NotSupported` for a machine that has no reset.
+    fn reset(&mut self) -> Result<()> {
+        Err(crate::Error::new(
+            ErrorKind::NotSupported,
+            "this machine cannot be reset in place",
+        ))
+    }
+
     /// Graceful shutdown; returns after the process has exited and its `leftovers` are deleted.
     fn shutdown(&mut self) -> Result<()>;
 
@@ -106,18 +118,27 @@ pub(crate) struct MachineRecord {
     /// Files outside the instance directory that die with the machine (QEMU: the QMP socket and its lock file).
     #[serde(default)]
     pub leftovers: Vec<PathBuf>,
+    /// The machine was launched with `DeviceProfile::no_reboot`: it exits when its guest reboots, so it cannot be reset
+    /// in place.
+    #[serde(default)]
+    pub no_reboot: bool,
 }
 
 impl MachineRecord {
     /// Deletes `leftovers`, best effort: a file that is already gone is fine, any other failure goes to `warn`.
     /// Call it only once the machine is proven dead.
     pub(crate) fn remove_leftovers(&self, warn: &mut dyn FnMut(String)) {
-        for path in &self.leftovers {
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => warn(format!("cannot delete {}: {e}", path.display())),
-            }
+        remove_files(&self.leftovers, warn);
+    }
+}
+
+/// Deletes `paths`, best effort: a file that is already gone is fine, any other failure goes to `warn`.
+pub(crate) fn remove_files(paths: &[PathBuf], warn: &mut dyn FnMut(String)) {
+    for path in paths {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn(format!("cannot delete {}: {e}", path.display())),
         }
     }
 }
@@ -126,6 +147,9 @@ impl MachineRecord {
 pub(crate) struct MachineSpec {
     /// The instance this machine belongs to; a backend derives names that must not collide from it.
     pub id: InstanceId,
+    /// Which launch of the instance this is (`InstanceRecord::launches`): never the number of an earlier machine, so a
+    /// backend can name this machine's files by it and never collide with another's.
+    pub launch: u64,
     /// The instance directory. `disk`, `serial_log` and the firmware variables sit in it.
     pub dir: PathBuf,
     pub arch: Arch,

@@ -1,10 +1,13 @@
 //! What differs between host operating systems, behind one trait. The only `cfg` in devvm's logic is at the top of this
-//! file, where the implementation is chosen.
+//! file, where the implementation is chosen. (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -15,8 +18,11 @@ mod host_tests;
 
 #[cfg_attr(windows, allow(dead_code))]
 mod unsupported;
+pub(crate) mod watch;
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
+
+pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(windows))]
 use unsupported::UnsupportedHost as Current;
@@ -58,6 +64,20 @@ pub(crate) struct SystemDirs {
 pub(crate) trait Host: Send + Sync {
     /// The accelerator for guests of `arch`, or what is missing.
     fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable>;
+
+    /// Whether a running guest of `arch` can be reset inside its VM process (a QMP `system_reset`). The error says what
+    /// the host lacks; nothing is sent to a VM to find out.
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable>;
+
+    /// The longest AF_UNIX socket path this OS binds, in bytes: `sun_path` without its terminating NUL.
+    fn socket_path_max(&self) -> usize;
+
+    /// Watches the process `id` names. On Windows its exit ends a read of that process's control socket through the
+    /// watch's `link` even when the OS never ends the stream (Windows can lose the end of an AF_UNIX stream); elsewhere
+    /// the link is the bare stream and a read ends when the peer closes it, and the exit is seen by `has_exited` and
+    /// `pause`. A process that has exited already is a watch that reports it. An error means the OS would not let the
+    /// process be watched.
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>>;
 
     /// The ANSI code page of this process (`GetACP`); `None` off Windows.
     fn ansi_code_page(&self) -> Option<u32>;

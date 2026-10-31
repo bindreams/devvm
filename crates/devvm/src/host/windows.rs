@@ -5,14 +5,23 @@ use std::fs::OpenOptions;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use cosca::identity::ProcessId;
 
 use windows_sys::Win32::Globalization::GetACP;
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
+use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
+
+mod link;
+mod watch;
+mod whpx;
+
+pub(crate) use watch::WindowsWatch;
 
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
 fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
@@ -31,10 +40,21 @@ fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<Pat
 pub(super) struct WindowsHost;
 
 impl Host for WindowsHost {
-    fn accelerator(&self, _arch: Arch) -> std::result::Result<Accel, Unavailable> {
-        Err(Unavailable {
-            missing: "WHPX detection is not implemented".to_owned(),
-        })
+    fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable> {
+        whpx::accelerator(&whpx::WinHvPlatform, arch)
+    }
+
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        whpx::guest_reset(&whpx::WinHvPlatform, arch)
+    }
+
+    /// `sun_path` is 108 bytes.
+    fn socket_path_max(&self) -> usize {
+        107
+    }
+
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        Ok(Arc::new(WindowsWatch::open(id)?))
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

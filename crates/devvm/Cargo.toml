@@ -27,13 +27,32 @@ reqwest = { version = "0.13.5", default-features = false, features = ["blocking"
 url = "2.5.8"
 percent-encoding = "2.3.2"
 cosca = { version = "0.6.0", features = ["serde"] }
+# QMP command and event types; devvm drives the socket itself (`backend/qemu/qmp.rs`).
+qapi = { version = "0.15", default-features = false, features = ["qmp"] }
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+toml = "1.1"
 
 [dev-dependencies]
 skuld = { workspace = true }
 
-# Windows directories and the ANSI code page come from the OS (`host/windows.rs`).
+# Windows directories, the ANSI code page and the hypervisor come from the OS (`host/windows.rs`); QMP is AF_UNIX
+# (`backend/qemu/uds.rs`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Hypervisor",
+] }
+uds_windows = "1.2"
+
+# The longest AF_UNIX path of a Unix host (`host/unsupported/socket_unix.rs`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # The fake VM reports its own job and console to the tests (`test_support/fake_vm`).
 [target.'cfg(windows)'.dev-dependencies]
@@ -41,9 +60,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [[test]]

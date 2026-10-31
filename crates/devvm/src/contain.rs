@@ -197,7 +197,7 @@ impl VmProcess {
         }
     }
 
-    fn id(&self) -> ProcessId {
+    pub(crate) fn id(&self) -> ProcessId {
         match &self.state {
             State::Frozen(frozen, _) => frozen.id(),
             State::Running(child, _) => child.id(),

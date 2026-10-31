@@ -26,6 +26,7 @@ fn machine(sleeper: &Sleeper) -> MachineRecord {
         ssh: Vec::new(),
         serial_log: PathBuf::new(),
         leftovers: Vec::new(),
+        no_reboot: false,
     }
 }
 

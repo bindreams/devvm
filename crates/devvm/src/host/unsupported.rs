@@ -1,8 +1,11 @@
 //! The host for operating systems devvm 0.1.0 does not run VMs on (Linux, macOS).
 
 use std::path::Path;
+use std::sync::Arc;
 
-use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
+use cosca::identity::ProcessId;
+
+use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -13,6 +16,15 @@ mod perm;
 #[path = "unsupported/perm_other.rs"]
 mod perm;
 
+#[cfg(unix)]
+#[path = "unsupported/socket_unix.rs"]
+mod socket;
+#[cfg(not(unix))]
+#[path = "unsupported/socket_other.rs"]
+mod socket;
+
+mod watch;
+
 pub(super) struct UnsupportedHost;
 
 impl Host for UnsupportedHost {
@@ -20,6 +32,18 @@ impl Host for UnsupportedHost {
         Err(Unavailable {
             missing: format!("{} hosts are not supported in devvm 0.1.0", std::env::consts::OS),
         })
+    }
+
+    fn guest_reset(&self, _arch: Arch) -> std::result::Result<(), Unavailable> {
+        Ok(())
+    }
+
+    fn socket_path_max(&self) -> usize {
+        socket::path_max()
+    }
+
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        Ok(Arc::new(watch::UnixWatch::new(id)))
     }
 
     fn ansi_code_page(&self) -> Option<u32> {
