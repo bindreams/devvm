@@ -27,7 +27,7 @@ use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
-use crate::test_support::qemu::{lazy_at, qemu_img, qemu_sidecar, socket_dir};
+use crate::test_support::qemu::{assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, socket_dir};
 use crate::{Arch, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
@@ -470,7 +470,7 @@ fn vm_qemu_launch_with_paths_under_space_and_non_ascii(
     let (spec, _parent) = target.prepared(home, 0, |_| {});
     assert!(spec.disk.to_string_lossy().contains(UNICODE_DIR));
     let mut machine = target.backend().launch(&spec).unwrap();
-    assert!(target.endpoint(&spec).path().to_string_lossy().contains(UNICODE_DIR));
+    assert_unicode_socket_path(target.endpoint(&spec).path());
 
     machine.resume().unwrap();
 

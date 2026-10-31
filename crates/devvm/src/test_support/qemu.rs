@@ -71,6 +71,12 @@ pub fn socket_dir() -> PathBuf {
     dir
 }
 
+/// Asserts that a control socket path has a space and a non-ASCII character, as [`socket_dir`] guarantees.
+pub fn assert_unicode_socket_path(path: &Path) {
+    let path = path.to_string_lossy();
+    assert!(path.contains(' ') && !path.is_ascii(), "{path}");
+}
+
 impl Sock {
     pub fn new() -> Sock {
         Sock {
