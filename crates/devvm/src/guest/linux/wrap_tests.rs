@@ -99,6 +99,7 @@ fn names_bash_does_not_pass_through_are_usage_errors_naming_the_variable() {
         "BASH_ARGC",
         "BASH_ARGV",
         "PIPESTATUS",
+        "EXECIGNORE",
         "SHLVL",
         "SECONDS",
         "OPTIND",
@@ -303,6 +304,10 @@ const MEASURED_BASH: &str = "5.2";
 /// A name no bash owns, that the production script is built for and the test then swaps for each listed name.
 const PROBE_NAME: &str = "DEVVM_PROBE_NAME";
 
+/// The value the test sets. It is a pattern matching the program, `printenv`: `EXECIGNORE` changes the outcome only
+/// when its value matches the program the script executes.
+const PROBE_VALUE: &str = "*printenv";
+
 /// Runs the test only where a job claims its bash is [`MEASURED_BASH`]; the test itself checks the claim is true.
 fn bash_5_2_claimed() -> Result<(), String> {
     match BASH_5_2.is_made() {
@@ -329,13 +334,13 @@ fn bash_does_not_pass_through_what_it_owns() {
     // is not owned and the name is swapped afterwards. `:` stands for the commands a login shell's profile has run
     // before the script: `PIPESTATUS` reaches the program only in a shell that has run none.
     let mut command = cmd(&["printenv", PROBE_NAME]);
-    command.env = vec![(PROBE_NAME.to_owned(), "round-trip-probe".to_owned())];
+    command.env = vec![(PROBE_NAME.to_owned(), PROBE_VALUE.to_owned())];
     let production = script(&command).unwrap();
     for name in BASH_OWNED_VARIABLES {
         let out = run_in_bash(&format!(":\n{}", production.replace(PROBE_NAME, name)), None);
         assert_ne!(
             String::from_utf8_lossy(&out.stdout).trim_end(),
-            "round-trip-probe",
+            PROBE_VALUE,
             "{name} is passed through unchanged, so it need not be listed"
         );
     }

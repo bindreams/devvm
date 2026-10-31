@@ -80,8 +80,11 @@ fn user_script(cmd: &Command) -> Result<String> {
 ///   `EPOCHSECONDS`, `EPOCHREALTIME`, `BASH_COMMAND`, `BASH_SUBSHELL`, `SHLVL`, `SECONDS`, `OPTIND`, `_`;
 /// - the program gets nothing: `GROUPS`, `FUNCNAME`, `DIRSTACK`, `BASH_ALIASES`, `BASH_CMDS`, `BASH_LINENO`,
 ///   `BASH_SOURCE`, `BASH_ARGC`, `BASH_ARGV`, `PIPESTATUS` (it arrives in a shell that has run no command, but the
-///   script runs in a login shell, whose profile has).
-const BASH_OWNED_VARIABLES: [&str; 29] = [
+///   script runs in a login shell, whose profile has);
+/// - the program does not start: `EXECIGNORE`. Its patterns drop executables from the `PATH` search of `exec`, so
+///   `export EXECIGNORE='*printenv' && exec -- printenv EXECIGNORE` exits 127, "printenv: not found" (`env(1)` would
+///   run the program).
+const BASH_OWNED_VARIABLES: [&str; 30] = [
     "BASHOPTS",
     "BASH_VERSINFO",
     "EUID",
@@ -111,6 +114,7 @@ const BASH_OWNED_VARIABLES: [&str; 29] = [
     "BASH_ARGC",
     "BASH_ARGV",
     "PIPESTATUS",
+    "EXECIGNORE",
 ];
 
 /// `cwd` as the operand of `cd --`. `cd -- -` still means `$OLDPWD`, so a value starting with `-` is written as an
