@@ -187,7 +187,7 @@ impl TestSshd {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         listener.set_nonblocking(true).expect("a nonblocking listener");
         let addr = listener.local_addr().expect("a bound address");
-        let accept = runtime::spawn(accept_loop(listener, state.clone()));
+        let accept = runtime::spawn(accept_loop(listener, state.clone())).expect("the SSH runtime is running");
         TestSshd { addr, state, accept }
     }
 
@@ -413,12 +413,14 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
                     let _ = tcp.set_linger(Some(Duration::ZERO));
                 }
             }
-        });
+        })
+        .expect("the SSH runtime is running");
         runtime::spawn(async move {
             if let Ok(running) = russh::server::run_stream(config, server_end, connection).await {
                 let _ = running.await;
             }
-        });
+        })
+        .expect("the SSH runtime is running");
     }
 }
 
@@ -470,7 +472,7 @@ impl Handler for Connection {
         let state = self.state.clone();
         let drop_now = self.drop_now.clone();
         if state.options.openssh_sftp {
-            runtime::spawn(serve_with_openssh(state, sftp.into_stream()));
+            runtime::spawn(serve_with_openssh(state, sftp.into_stream())).expect("the SSH runtime is running");
             return Ok(());
         }
         runtime::spawn(async move {
@@ -485,9 +487,11 @@ impl Handler for Connection {
                     _ = tokio::io::copy_bidirectional(&mut channel, &mut proxy_end) => {}
                     () = close_now.notified() => {}
                 }
-            });
+            })
+            .expect("the SSH runtime is running");
             russh_sftp::server::run(server_end, server).await;
-        });
+        })
+        .expect("the SSH runtime is running");
         Ok(())
     }
 
@@ -512,7 +516,7 @@ impl Handler for Connection {
             }
             _ => {
                 let state = self.state.clone();
-                runtime::spawn(script(state, handle, channel, command));
+                runtime::spawn(script(state, handle, channel, command)).expect("the SSH runtime is running");
             }
         }
         Ok(())

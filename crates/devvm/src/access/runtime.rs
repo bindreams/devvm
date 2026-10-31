@@ -15,24 +15,27 @@ use crate::{Error, ErrorKind, Result};
 #[path = "runtime_tests.rs"]
 mod runtime_tests;
 
-fn runtime() -> &'static Runtime {
+/// The runtime, started on first use. Two first uses at once may each start one; the loser is dropped unused.
+fn runtime() -> Result<&'static Runtime> {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        Builder::new_multi_thread()
-            .thread_name("devvm-ssh")
-            .enable_all()
-            .build()
-            .expect("the SSH runtime can start its threads")
-    })
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(runtime);
+    }
+    let started = Builder::new_multi_thread()
+        .thread_name("devvm-ssh")
+        .enable_all()
+        .build()
+        .map_err(|e| Error::io(ErrorKind::Io, "cannot start the threads of the SSH runtime", e))?;
+    Ok(RUNTIME.get_or_init(|| started))
 }
 
 /// Starts `task` on the runtime.
-pub(crate) fn spawn<F>(task: F) -> tokio::task::JoinHandle<F::Output>
+pub(crate) fn spawn<F>(task: F) -> Result<tokio::task::JoinHandle<F::Output>>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    runtime().spawn(task)
+    Ok(runtime()?.spawn(task))
 }
 
 /// Waits for `future` on the calling thread. The future may be a tokio channel receiver or a join handle: those do
@@ -50,7 +53,7 @@ pub(crate) fn run<T>(what: &str, task: impl Future<Output = T> + Send + 'static)
 where
     T: Send + 'static,
 {
-    wait(spawn(task)).map_err(|_| panicked(what))
+    wait(spawn(task)?).map_err(|_| panicked(what))
 }
 
 /// [`run`], where the task also sends progress messages, which are handed to `progress` as they arrive.
@@ -61,7 +64,7 @@ where
     Fut: Future<Output = T> + Send + 'static,
 {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    let handle = spawn(task(sender));
+    let handle = spawn(task(sender))?;
     // The sender lives inside the task, so the channel closes exactly when the task is over or gone.
     while let Some(message) = wait(receiver.recv()) {
         progress.message(&message);

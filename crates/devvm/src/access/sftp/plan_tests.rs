@@ -1,6 +1,6 @@
 use super::{
-    Beyond, Conflict, Item, Kind, Place, Present, Rules, Source, base_name, check_listing, check_names, normalize_user,
-    parent_of, place, time_notes,
+    Beyond, Conflict, Item, Kind, Place, Present, Rules, Source, base_name, check_destination, check_listing,
+    check_names, normalize_user, parent_of, place, time_notes,
 };
 use std::collections::HashSet;
 
@@ -87,6 +87,50 @@ fn a_target_refuses_the_names_it_cannot_store_and_two_names_it_takes_for_one() {
         times: "",
     };
     check_names(&items(&["Readme", "README", "con", "a?b"]), &posix).unwrap();
+}
+
+/// A look-up that fails for a name below one the target cannot store (Windows: `out\a:b\y` is not a path) must not hide
+/// the refusal of the name above it; a look-up that fails below a name that exists is a real failure.
+#[skuld::test]
+fn a_failed_look_up_below_a_name_the_target_cannot_store_still_names_that_name() {
+    let rules = Rules {
+        from: "guest",
+        to: "this host",
+        problem: &names::windows_problem,
+        key: &names::windows_key,
+        times: "",
+    };
+    let chain = |names: &[&str]| {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (Some((*name).to_owned()), names[..=i].join("/")))
+            .collect::<Vec<_>>()
+    };
+    let invalid = || crate::Error::new(ErrorKind::Io, "cannot inspect: invalid name");
+    // Only `y` fails to be looked up, as the target cannot read a path through `a:b`; nothing exists.
+    let error = check_destination(&chain(&["out", "a:b", "y"]), &rules, &mut |path: &String| {
+        if path.ends_with("/y") {
+            Err(invalid())
+        } else {
+            Ok(Present::Nothing)
+        }
+    })
+    .unwrap_err();
+    assert!(error.message().contains("\"a:b\""), "{error}");
+    assert!(error.message().contains("cannot be created"), "{error}");
+    // `out` exists and nothing in the chain is a bad name: the failure to look `y` up is the error.
+    let error = check_destination(
+        &chain(&["out", "ok", "y"]),
+        &rules,
+        &mut |path: &String| match path.as_str() {
+            "out" => Ok(Present::Dir),
+            "out/ok/y" => Err(invalid()),
+            _ => Ok(Present::Nothing),
+        },
+    )
+    .unwrap_err();
+    assert!(error.message().contains("invalid name"), "{error}");
 }
 
 /// No real file system lists a name twice, so the fake server cannot be made to; the check is tested directly.

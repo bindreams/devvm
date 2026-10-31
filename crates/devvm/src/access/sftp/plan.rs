@@ -250,19 +250,20 @@ pub(super) struct Rules<'a> {
 /// Refuses a name of the destination the user typed that the copy would create and the target cannot store. `chain`
 /// holds the destination's names from the outermost, each with the path that ends in it (`None` for a part that is no
 /// name: a root, `.`, `..`). Names are looked up from the innermost, and the first that exists ends the check: the
-/// target stores what it holds.
+/// target stores what it holds. A name that cannot be looked up is refusing to be, and says so less plainly; the names
+/// above it are checked first, as one of them may be why, and its refusal is the plain one.
 pub(super) fn check_destination<P>(
     chain: &[(Option<String>, P)],
     rules: &Rules,
     present: &mut dyn FnMut(&P) -> Result<Present>,
 ) -> Result<()> {
+    let mut lookup_failed = None;
     for (name, path) in chain.iter().rev() {
         let Some(name) = name else { continue };
         let found = present(path);
         if matches!(found, Ok(found) if found != Present::Nothing) {
             break;
         }
-        // A target that cannot look a name up is refusing it too, and says so less plainly.
         if let Some(problem) = (rules.problem)(name) {
             return Err(Error::new(
                 ErrorKind::Io,
@@ -272,9 +273,11 @@ pub(super) fn check_destination<P>(
                 ),
             ));
         }
-        found?;
+        if let Err(e) = found {
+            lookup_failed.get_or_insert(e);
+        }
     }
-    Ok(())
+    lookup_failed.map_or(Ok(()), Err)
 }
 
 /// Refuses `name` when the target cannot hold it as one file name.

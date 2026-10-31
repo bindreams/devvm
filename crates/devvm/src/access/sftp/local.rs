@@ -1,7 +1,7 @@
 //! The host side of a copy: reading a source tree, and writing a destination. It runs on the calling thread; every
 //! platform difference goes through [`Host`].
 
-use std::ffi::OsString;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -55,21 +55,28 @@ pub(super) fn lexically_normal(path: &Path) -> PathBuf {
             other => parts.push(other),
         }
     }
-    if parts.is_empty() {
+    let mut parts = parts.into_iter();
+    let Some(first) = parts.next() else {
         return PathBuf::from(".");
+    };
+    parts.fold(PathBuf::from(first.as_os_str()), |path, part| {
+        joined(&path, part.as_os_str())
+    })
+}
+
+/// `base` with `part` after it as one more piece, never read for what it looks like: `PathBuf::push` and `Path::join`
+/// take a name like `c:b` for a drive on Windows and drop `base`. A separator goes between two pieces, but not after
+/// a root, a drive or one that already ends in a separator.
+pub(super) fn joined(base: &Path, part: &OsStr) -> PathBuf {
+    let mut text = base.as_os_str().to_owned();
+    let after_a_name = matches!(
+        base.components().next_back(),
+        Some(Component::Normal(_) | Component::ParentDir | Component::CurDir)
+    );
+    if after_a_name && !ends_with_separator(base) {
+        text.push(std::path::MAIN_SEPARATOR_STR);
     }
-    // Spelled out, not pushed: `PathBuf::push` reads a name like `a:b` as a drive on Windows and drops what came
-    // before.
-    let mut text = OsString::new();
-    for (i, part) in parts.iter().enumerate() {
-        if matches!(
-            i.checked_sub(1).map(|before| parts[before]),
-            Some(Component::Normal(_) | Component::ParentDir)
-        ) {
-            text.push(std::path::MAIN_SEPARATOR_STR);
-        }
-        text.push(part.as_os_str());
-    }
+    text.push(part);
     PathBuf::from(text)
 }
 
@@ -144,7 +151,7 @@ fn leads_to_dir(path: &Path, side: &HostSide) -> Result<bool> {
 /// The temporary name for a file that will replace `target`: beside it, so the rename stays on one file system.
 fn temp_beside(target: &Path) -> PathBuf {
     match target.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.join(partial_name()),
+        Some(parent) if !parent.as_os_str().is_empty() => joined(parent, partial_name().as_ref()),
         _ => PathBuf::from(partial_name()),
     }
 }
@@ -220,7 +227,7 @@ impl CopySide for HostSide<'_> {
     }
 
     fn join(&self, base: &PathBuf, name: &str) -> PathBuf {
-        base.join(name)
+        joined(base, name.as_ref())
     }
 
     fn parent(&self, path: &PathBuf) -> Option<PathBuf> {
@@ -241,7 +248,7 @@ impl CopySide for HostSide<'_> {
         let mut so_far = PathBuf::new();
         path.components()
             .map(|component| {
-                so_far.push(component.as_os_str());
+                so_far = joined(&so_far, component.as_os_str());
                 let name = match component {
                     Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
                     _ => None,
@@ -281,7 +288,7 @@ impl CopySide for HostSide<'_> {
             names.sort();
             let mut dirs = Vec::new();
             for name in names {
-                let child = path.join(&name);
+                let child = joined(&path, &name);
                 let Some(text) = name.to_str() else {
                     return Err(Error::new(
                         ErrorKind::Io,
@@ -367,7 +374,7 @@ impl CopySide for HostSide<'_> {
             })
             .find(|path| path.is_dir())
             .ok_or_else(|| Error::new(ErrorKind::Io, format!("no directory above {} exists", self.name(dest))))?;
-        let probe = dir.join(partial_name());
+        let probe = joined(dir, partial_name().as_ref());
         if let Err(e) = self.host.make_symlink(".", &probe, false) {
             return Ok(Some(e.to_string()));
         }

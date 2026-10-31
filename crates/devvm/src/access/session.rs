@@ -121,13 +121,13 @@ pub(crate) struct VmExit {
 
 impl VmExit {
     /// Watches `process` from a thread that blocks in `VmProcess::wait`. The thread lives as long as the VM.
-    pub(crate) fn watch(process: VmProcess) -> VmExit {
+    pub(crate) fn watch(process: VmProcess) -> Result<VmExit> {
         VmExit::when(move || process.wait().map_err(|e| e.message().to_owned()))
     }
 
     /// Fires when `wait`, which blocks until the VM is gone, returns. An `Err` is the reason the VM's end could not be
-    /// observed; waits then end with it.
-    pub(crate) fn when(wait: impl FnOnce() -> std::result::Result<(), String> + Send + 'static) -> VmExit {
+    /// observed; waits then end with it. Fails when the OS cannot start the thread.
+    pub(crate) fn when(wait: impl FnOnce() -> std::result::Result<(), String> + Send + 'static) -> Result<VmExit> {
         let (sender, receiver) = watch::channel(None);
         std::thread::Builder::new()
             .name("devvm-vm-exit".to_owned())
@@ -138,8 +138,8 @@ impl VmExit {
                 };
                 let _ = sender.send(Some(end));
             })
-            .expect("the OS can start a thread");
-        VmExit { ended: Some(receiver) }
+            .map_err(|e| Error::io(ErrorKind::Io, "cannot start the thread that watches the VM process", e))?;
+        Ok(VmExit { ended: Some(receiver) })
     }
 
     /// A watcher that never fires: for a machine whose process is not watched.
@@ -633,7 +633,7 @@ impl SshSession {
         let mut lost = None;
         let inner = self.inner.clone();
         let command = command.to_owned();
-        runtime::spawn(run_exec(inner, command, sender));
+        runtime::spawn(run_exec(inner, command, sender))?;
         loop {
             let (to_stderr, chunk) = match runtime::wait(receiver.recv()) {
                 Some(Event::Out(chunk)) => (false, chunk),

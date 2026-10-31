@@ -1869,6 +1869,52 @@ fn a_destination_name_a_windows_host_cannot_store_is_refused_before_anything_is_
     assert_eq!(tree(&local.join("there")), ["f.txt"]);
 }
 
+/// On a Windows host `X:name` is the entry `name` in the current directory of drive X. A destination name spelled like
+/// that is refused as a name with a colon even when that entry exists, and the failed copy leaves no `out` behind.
+#[cfg(windows)]
+#[skuld::test]
+fn a_drive_like_destination_name_is_refused_even_when_the_drive_relative_path_exists(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let mut env = Env::new(home);
+    env.host = RecordingHost::with_windows_names();
+    env.guest_file("g/a.txt", b"a");
+    let local = env.local.clone();
+    let here = std::env::current_dir().unwrap();
+    let Some(std::path::Component::Prefix(prefix)) = here.components().next() else {
+        panic!("the current directory {} has no drive", here.display());
+    };
+    let drive = prefix
+        .as_os_str()
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_owned();
+    let entry = std::fs::read_dir(&here)
+        .unwrap()
+        .next()
+        .unwrap_or_else(|| panic!("the current directory {} is empty", here.display()))
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .into_owned();
+    let name = format!("{drive}{entry}");
+    assert!(
+        std::fs::symlink_metadata(&name).is_ok(),
+        "{name} should be an entry of the current directory of its drive"
+    );
+    for (src, below) in [("/g/a.txt", ""), ("/g", ""), ("/g/a.txt", r"\y"), ("/g", r"\y")] {
+        let dest = PathBuf::from(format!(r"{}\out\{name}{below}", local.display()));
+        let error = env.copy_out(src, &dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{}: {error}", dest.display());
+        assert!(
+            error.message().contains(&format!("{name:?}")),
+            "{}: {error}",
+            dest.display()
+        );
+        assert!(tree(&local).is_empty(), "{}: nothing was created", dest.display());
+    }
+}
+
 // Name length ---------------------------------------------------------------------------------------------------------
 
 /// 256 characters, one over what a file system holds per name in bytes (Unix) or UTF-16 units (Windows).

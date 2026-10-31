@@ -115,6 +115,23 @@ fn exit_7_125_255_pass_through_unchanged(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(stdout, b"devvm-error: x: y\n");
 }
 
+/// SSH carries an exit status as 32 unsigned bits and `ExitStatus::Code` holds an `i32`: the biggest that fits passes
+/// through, and one that does not is an error naming it, not a negative code.
+#[skuld::test]
+fn an_exit_status_that_does_not_fit_a_code_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let (status, ..) = finished(&session, "exit 2147483647");
+    assert_eq!(status, ExitStatus::Code(i32::MAX));
+    for status in [2_147_483_648_u32, u32::MAX] {
+        let error = session.exec_collect(&format!("exit {status}")).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{status}: {error}");
+        assert!(error.message().contains(&status.to_string()), "{status}: {error}");
+    }
+    // The connection is still good.
+    assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0));
+}
+
 #[skuld::test]
 fn signal_death_segv_and_kill_map_to_signal(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
@@ -194,7 +211,7 @@ fn all_256_byte_values_arrive_intact_on_both_streams(#[fixture(unicode_home)] ho
 fn a_vm_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string()));
+    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
     let session = rig.connect_with(vm, None).unwrap();
     std::thread::scope(|scope| {
         let running = scope.spawn(|| session.exec_collect("hold"));
@@ -219,7 +236,7 @@ fn a_process_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)
         .unwrap()
         .expect("the sleeper is alive");
     let rig = Rig::new(home);
-    let session = rig.connect_with(VmExit::watch(process), None).unwrap();
+    let session = rig.connect_with(VmExit::watch(process).unwrap(), None).unwrap();
     std::thread::scope(|scope| {
         let running = scope.spawn(|| session.exec_collect("hold"));
         rig.sshd.wait_for_commands(1);
@@ -237,7 +254,8 @@ fn a_vm_watcher_that_cannot_wait_ends_the_wait_with_its_reason(#[fixture(unicode
     let vm = VmExit::when(move || {
         let _ = wait.recv();
         Err("the handle is gone".to_owned())
-    });
+    })
+    .unwrap();
     let session = rig.connect_with(vm, None).unwrap();
     std::thread::scope(|scope| {
         let running = scope.spawn(|| session.exec_collect("hold"));
@@ -329,7 +347,7 @@ fn connect_retries_while_refused_and_stops_when_the_vm_exits(#[fixture(unicode_h
     target.addr = refused_addr();
     let (progress, messages) = ChannelProgress::new();
     let (fire, wait) = mpsc::channel::<()>();
-    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string()));
+    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
     let error = std::thread::scope(|scope| {
         let connecting = scope.spawn(|| {
             SshSession::connect(
@@ -493,7 +511,10 @@ fn a_finished_boot_is_no_longer_ended_by_the_boot_bound(#[fixture(unicode_home)]
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
     let session = rig
-        .connect_with(VmExit::when(move || wait.recv().map_err(|e| e.to_string())), None)
+        .connect_with(
+            VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap(),
+            None,
+        )
         .expect("connects");
     // A bound that has already passed: were it still armed, it would end the command at once.
     arm_boot_bound(&session, Duration::ZERO);
@@ -652,7 +673,10 @@ fn an_exit_status_that_arrived_is_the_result_and_the_vm_exit_after_it_is_the_los
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
     let session = rig
-        .connect_with(VmExit::when(move || wait.recv().map_err(|e| e.to_string())), None)
+        .connect_with(
+            VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap(),
+            None,
+        )
         .unwrap();
     let mut stderr = Vec::new();
     // The marker follows the status on the wire, so the status has been read when the sink sees the marker.

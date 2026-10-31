@@ -164,7 +164,17 @@ async fn pump(
                 Event::Lost(lost)
             }
             ChannelMsg::ExitStatus { exit_status } => {
-                *status = Some(ExitStatus::Code(exit_status as i32));
+                let Ok(code) = i32::try_from(exit_status) else {
+                    let _ = channel.close().await;
+                    return Err(Error::new(
+                        ErrorKind::Io,
+                        format!(
+                            "the server sent the exit status {exit_status} of {awaiting}, which is over {}",
+                            i32::MAX
+                        ),
+                    ));
+                };
+                *status = Some(ExitStatus::Code(code));
                 continue;
             }
             ChannelMsg::ExitSignal {

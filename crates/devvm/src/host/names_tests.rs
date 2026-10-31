@@ -310,3 +310,78 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
         "windows_problem disagrees with NTFS on {disagree:?}:\n{table}"
     );
 }
+
+/// The characters whose NTFS case folding is measured: every one in the BMP (NTFS folds UTF-16 units), and the ones
+/// outside it that Rust folds.
+fn folding_candidates() -> Vec<char> {
+    (1..=0x10ffff_u32)
+        .filter_map(char::from_u32)
+        .filter(|c| {
+            (*c as u32) < 0x10000
+                || c.to_uppercase().ne(std::iter::once(*c))
+                || c.to_lowercase().ne(std::iter::once(*c))
+        })
+        .collect()
+}
+
+/// The single characters that Unicode pairs with `c` by case, other than `c`.
+fn case_partners(c: char) -> Vec<char> {
+    let single = |mut chars: Box<dyn Iterator<Item = char>>| match (chars.next(), chars.next()) {
+        (Some(one), None) => Some(one),
+        _ => None,
+    };
+    let upper = |c: char| single(Box::new(c.to_uppercase()));
+    let lower = |c: char| single(Box::new(c.to_lowercase()));
+    let mut partners: Vec<char> = [upper(c), lower(c), upper(c).and_then(lower), lower(c).and_then(upper)]
+        .into_iter()
+        .flatten()
+        .filter(|partner| *partner != c)
+        .collect();
+    partners.sort();
+    partners.dedup();
+    partners
+}
+
+/// `windows_key` calls two names one exactly when NTFS does, for each character and its case partners. A key that
+/// folds what NTFS keeps apart refuses a copy NTFS could store; one that keeps apart what NTFS folds lets one file
+/// overwrite another.
+#[skuld::test(requires = [ntfs_claimed])]
+fn windows_key_agrees_with_what_ntfs_calls_the_same_name(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("fold");
+    std::fs::create_dir(&dir).unwrap();
+    let mut disagree = Vec::new();
+    let mut compared = 0_usize;
+    for c in folding_candidates() {
+        let name = c.to_string();
+        let partners: Vec<char> = case_partners(c)
+            .into_iter()
+            .filter(|p| windows_problem(&p.to_string()).is_none())
+            .collect();
+        if windows_problem(&name).is_some() || partners.is_empty() {
+            continue;
+        }
+        std::fs::File::create_new(dir.join(&name)).unwrap_or_else(|e| panic!("cannot create U+{:04X}: {e}", c as u32));
+        for partner in partners {
+            compared += 1;
+            let ntfs_same = std::fs::symlink_metadata(dir.join(partner.to_string())).is_ok();
+            let key_same = windows_key(&name) == windows_key(&partner.to_string());
+            if ntfs_same != key_same {
+                disagree.push(format!(
+                    "U+{:04X} and U+{:04X}: NTFS {}, key {}",
+                    c as u32,
+                    partner as u32,
+                    if ntfs_same { "same" } else { "different" },
+                    if key_same { "same" } else { "different" },
+                ));
+            }
+        }
+        std::fs::remove_file(dir.join(&name)).unwrap();
+    }
+    eprintln!("compared {compared} pairs, {} disagree", disagree.len());
+    assert!(
+        disagree.is_empty(),
+        "windows_key disagrees with NTFS on {} pairs:\n{}",
+        disagree.len(),
+        disagree.join("\n")
+    );
+}

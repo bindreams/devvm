@@ -1,7 +1,9 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::super::typed::Typed;
-use super::{HostSide, finish_file, lexically_normal, link_removal_failure, replace, without_trailing_separator};
+use super::{
+    HostSide, finish_file, joined, lexically_normal, link_removal_failure, replace, without_trailing_separator,
+};
 use crate::access::sftp::copy::CopySide;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{RecordingHost, TestHost};
@@ -75,6 +77,79 @@ fn a_name_that_looks_like_a_drive_stays_a_name() {
         (r"C:\x\a:b\.", r"C:\x\a:b"),
     ] {
         assert_eq!(text(&lexically_normal(Path::new(given))), want, "{given}");
+    }
+}
+
+/// The prefixes of a destination are the path read piece by piece, whatever a name looks like: `PathBuf::push` would
+/// read `c:b` as a drive and drop what came before it, and the destination check would then look at the wrong path.
+#[cfg(windows)]
+#[skuld::test]
+fn the_prefixes_of_a_destination_keep_a_drive_like_name_a_name() {
+    let side = HostSide::new(&TestHost, Typed::none());
+    for (given, want) in [
+        (r"out\c:b", vec![r"out", r"out\c:b"]),
+        (r"out\c:b\y", vec![r"out", r"out\c:b", r"out\c:b\y"]),
+        (r"C:\out\d:b", vec![r"C:", r"C:\", r"C:\out", r"C:\out\d:b"]),
+        (
+            r"\\?\C:\out\d:b",
+            vec![r"\\?\C:", r"\\?\C:\", r"\\?\C:\out", r"\\?\C:\out\d:b"],
+        ),
+        (
+            r"\\server\share\out\d:b",
+            vec![
+                r"\\server\share",
+                r"\\server\share\",
+                r"\\server\share\out",
+                r"\\server\share\out\d:b",
+            ],
+        ),
+        (r"..\c:b", vec![r"..", r"..\c:b"]),
+        (r".\c:b", vec![r".", r".\c:b"]),
+        (r"C:b", vec![r"C:", r"C:b"]),
+    ] {
+        let chain = side.chain(&PathBuf::from(given));
+        let got: Vec<String> = chain.iter().map(|(_, path)| text(path)).collect();
+        assert_eq!(got, want, "{given}");
+    }
+}
+
+/// A name joined to a base is that name under the base, on every host: it is never read as a drive or a root.
+#[skuld::test]
+fn a_name_joined_to_a_base_stays_under_it() {
+    let sep = std::path::MAIN_SEPARATOR;
+    let at = |path: &str| path.replace('/', &sep.to_string());
+    for (base, name, want) in [
+        ("out", "f", "out/f"),
+        ("out/", "f", "out/f"),
+        ("", "f", "f"),
+        (".", "f", "./f"),
+        ("..", "f", "../f"),
+        ("a/b", "c", "a/b/c"),
+    ] {
+        assert_eq!(
+            text(&joined(Path::new(&at(base)), name.as_ref())),
+            at(want),
+            "{base} + {name}"
+        );
+    }
+    let side = HostSide::new(&TestHost, Typed::none());
+    assert_eq!(text(&side.join(&PathBuf::from(at("out")), "x")), at("out/x"));
+}
+
+/// The same on Windows, where a name can look like a drive or a root.
+#[cfg(windows)]
+#[skuld::test]
+fn a_drive_like_name_joined_to_a_base_stays_under_it() {
+    for (base, name, want) in [
+        ("out", "c:b", r"out\c:b"),
+        (r"out\", "c:b", r"out\c:b"),
+        (r"C:\", "d:b", r"C:\d:b"),
+        ("C:", "b", "C:b"),
+        (r"\\?\C:\", "d:b", r"\\?\C:\d:b"),
+        (r"\\server\share\", "d:b", r"\\server\share\d:b"),
+        ("", "c:b", "c:b"),
+    ] {
+        assert_eq!(text(&joined(Path::new(base), name.as_ref())), want, "{base} + {name}");
     }
 }
 
