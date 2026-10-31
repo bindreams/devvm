@@ -128,12 +128,17 @@ impl MachineRecord {
     /// Deletes `leftovers`, best effort: a file that is already gone is fine, any other failure goes to `warn`.
     /// Call it only once the machine is proven dead.
     pub(crate) fn remove_leftovers(&self, warn: &mut dyn FnMut(String)) {
-        for path in &self.leftovers {
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => warn(format!("cannot delete {}: {e}", path.display())),
-            }
+        remove_files(&self.leftovers, warn);
+    }
+}
+
+/// Deletes `paths`, best effort: a file that is already gone is fine, any other failure goes to `warn`.
+pub(crate) fn remove_files(paths: &[PathBuf], warn: &mut dyn FnMut(String)) {
+    for path in paths {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn(format!("cannot delete {}: {e}", path.display())),
         }
     }
 }

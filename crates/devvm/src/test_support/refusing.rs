@@ -11,12 +11,14 @@ use crate::{Error, ErrorKind, Result};
 /// What a refusing call fails with.
 pub const REFUSED: &str = "the test watch was made to refuse";
 
-/// Delegates to `inner` until told to refuse; `has_exited` and `pause` then fail with [`REFUSED`] (`Internal`). A watch
-/// that refuses from the start is a tripwire: whatever consults it has connected to QEMU.
+/// Delegates to `inner` until told to refuse; `has_exited` and `pause` then fail with [`REFUSED`] (`Internal`), and
+/// `link` with an I/O error. A watch that refuses from the start is a tripwire: whatever consults it has connected to
+/// QEMU.
 pub struct Refusing {
     inner: Arc<dyn ProcessWatch>,
     has_exited: AtomicBool,
     pause: AtomicBool,
+    link: AtomicBool,
     /// Reads on every link fail with this kind of error.
     read_error: Arc<Mutex<Option<std::io::ErrorKind>>>,
 }
@@ -27,6 +29,7 @@ impl Refusing {
             inner,
             has_exited: AtomicBool::new(false),
             pause: AtomicBool::new(false),
+            link: AtomicBool::new(false),
             read_error: Arc::default(),
         })
     }
@@ -42,6 +45,10 @@ impl Refusing {
 
     pub fn refuse_pause(&self) {
         self.pause.store(true, Ordering::SeqCst);
+    }
+
+    pub fn refuse_link(&self) {
+        self.link.store(true, Ordering::SeqCst);
     }
 
     /// Makes every read, on links made already too, fail with an error of `kind`.
@@ -70,6 +77,9 @@ impl ProcessWatch for Refusing {
     }
 
     fn link(&self, stream: UnixStream) -> std::io::Result<Box<dyn Link>> {
+        if self.link.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other(REFUSED));
+        }
         Ok(Box::new(FailingReads {
             link: self.inner.link(stream)?,
             error: self.read_error.clone(),

@@ -56,7 +56,7 @@ pub struct Sock {
 /// temporary directory is too long for a socket path (macOS), `/tmp/<UNICODE_DIR>`.
 pub fn socket_dir() -> PathBuf {
     let fits =
-        |dir: &Path| QmpEndpoint::for_instance(dir, &InstanceId::random(), host::current().socket_path_max()).is_ok();
+        |dir: &Path| QmpEndpoint::for_launch(dir, &InstanceId::random(), host::current().socket_path_max()).is_ok();
     let dir = [std::env::temp_dir(), PathBuf::from("/tmp")]
         .into_iter()
         .map(|base| base.join(UNICODE_DIR))
@@ -69,12 +69,8 @@ pub fn socket_dir() -> PathBuf {
 impl Sock {
     pub fn new() -> Sock {
         Sock {
-            endpoint: QmpEndpoint::for_instance(
-                &socket_dir(),
-                &InstanceId::random(),
-                host::current().socket_path_max(),
-            )
-            .unwrap(),
+            endpoint: QmpEndpoint::for_launch(&socket_dir(), &InstanceId::random(), host::current().socket_path_max())
+                .unwrap(),
         }
     }
 }

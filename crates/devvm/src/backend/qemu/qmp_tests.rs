@@ -163,24 +163,38 @@ impl Sock {
 // Endpoint ============================================================================================================
 
 #[skuld::test]
-fn endpoint_names_are_unique_per_instance() {
+fn two_launches_of_one_instance_get_different_socket_and_lock_paths() {
     let temp = Path::new("temp");
-    let a = QmpEndpoint::for_instance(temp, &InstanceId::random(), host::current().socket_path_max()).unwrap();
-    let b = QmpEndpoint::for_instance(temp, &InstanceId::random(), host::current().socket_path_max()).unwrap();
+    let id = InstanceId::random();
+    let a = QmpEndpoint::for_launch(temp, &id, host::current().socket_path_max()).unwrap();
+    let b = QmpEndpoint::for_launch(temp, &id, host::current().socket_path_max()).unwrap();
     assert_ne!(a.path(), b.path());
     assert_ne!(a.lock_path(), b.lock_path());
     assert!(a.path().starts_with(temp));
-    let name = a.path().file_name().unwrap().to_string_lossy().into_owned();
-    assert!(
-        name.starts_with("dvm-") && name.ends_with(".sock") && name.len() == 4 + 32 + 5,
-        "{name}"
-    );
+    for endpoint in [&a, &b] {
+        let name = endpoint.path().file_name().unwrap().to_string_lossy().into_owned();
+        let launch = name
+            .strip_prefix(&format!("dvm-{id}-"))
+            .and_then(|rest| rest.strip_suffix(".sock"));
+        assert!(
+            launch.is_some_and(|hex| hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit())),
+            "{name}"
+        );
+    }
 }
 
 #[skuld::test]
-fn from_record_gives_the_same_endpoint_and_lock_as_for_instance() {
+fn endpoints_of_different_instances_differ() {
+    let temp = Path::new("temp");
+    let a = QmpEndpoint::for_launch(temp, &InstanceId::random(), host::current().socket_path_max()).unwrap();
+    let b = QmpEndpoint::for_launch(temp, &InstanceId::random(), host::current().socket_path_max()).unwrap();
+    assert_ne!(a.path(), b.path());
+}
+
+#[skuld::test]
+fn from_record_gives_the_same_endpoint_and_lock_as_for_launch() {
     let id = InstanceId::random();
-    let made = QmpEndpoint::for_instance(Path::new("temp"), &id, host::current().socket_path_max()).unwrap();
+    let made = QmpEndpoint::for_launch(Path::new("temp"), &id, host::current().socket_path_max()).unwrap();
     let recorded = QmpEndpoint::from_record(&made.path().display().to_string());
     assert_eq!(recorded, made);
     assert_eq!(recorded.lock_path(), made.lock_path());
@@ -193,19 +207,24 @@ fn from_record_gives_the_same_endpoint_and_lock_as_for_instance() {
 fn a_socket_path_over_the_given_limit_is_refused_before_launch() {
     let temp = Path::new("temp");
     let id = InstanceId::random();
-    let length = temp.join(format!("dvm-{id}.sock")).to_string_lossy().len();
+    // Every launch's path has the same length, so the length of one is the exact limit of the next.
+    let length = QmpEndpoint::for_launch(temp, &id, usize::MAX)
+        .unwrap()
+        .path()
+        .to_string_lossy()
+        .len();
 
     assert!(
-        QmpEndpoint::for_instance(temp, &id, length).is_ok(),
+        QmpEndpoint::for_launch(temp, &id, length).is_ok(),
         "a path of exactly the limit fits"
     );
-    let error = QmpEndpoint::for_instance(temp, &id, length - 1).unwrap_err();
+    let error = QmpEndpoint::for_launch(temp, &id, length - 1).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains(&format!("{}-byte", length - 1)), "{error}");
 
     // The limit counts UTF-8 bytes, not characters: 30 four-byte characters are 120 bytes.
     let wide = Path::new("C:\\t").join("\u{1f600}".repeat(30));
-    assert!(QmpEndpoint::for_instance(&wide, &id, 107).is_err());
+    assert!(QmpEndpoint::for_launch(&wide, &id, 107).is_err());
 }
 
 #[skuld::test]
@@ -384,6 +403,26 @@ fn a_process_that_cannot_be_paused_on_fails_the_wait_for_the_listener_with_the_r
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert_eq!(error.message(), REFUSED);
+}
+
+#[skuld::test]
+fn a_process_watch_that_cannot_watch_the_connection_fails_connect_with_an_io_error_naming_the_socket() {
+    let sock = sock();
+    let watch = Refusing::new(ManualExit::new().watch());
+    watch.refuse_link();
+    // The connection is made by the kernel's backlog; nothing accepts it, and nothing needs to.
+    let _listener = sock.listen();
+
+    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("cannot watch the connection to"), "{error}");
+    assert!(
+        error.message().contains(&sock.endpoint.path().display().to_string()),
+        "{error}"
+    );
 }
 
 #[skuld::test]

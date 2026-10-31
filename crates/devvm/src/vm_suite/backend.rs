@@ -32,9 +32,22 @@ use crate::{Arch, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
 
-/// What a test needs to know of each machine it launched through a [`QemuTarget`], by instance.
+/// What a test needs to know of each machine it launched through a [`QemuTarget`], by instance: a process handle (`.0`)
+/// and where its control socket is (`.1`; every launch has its own, so it is known only from the machine's record).
 #[derive(Default)]
-struct Watches(Mutex<HashMap<InstanceId, Watch>>);
+struct Watches(
+    Mutex<HashMap<InstanceId, Watch>>,
+    Mutex<HashMap<InstanceId, QmpEndpoint>>,
+);
+
+impl Watches {
+    fn launched(&self, id: InstanceId, record: &MachineRecord) {
+        if let Some(watch) = Watch::new(record.process.pid) {
+            self.0.lock().unwrap().insert(id, watch);
+        }
+        self.1.lock().unwrap().insert(id, QmpEndpoint::from_record(&record.qmp));
+    }
+}
 
 /// A [`QemuBackend`] that keeps a process handle of every machine launched through it, so that the exit code is known
 /// after the process is gone (a graceful end exits 0, a kill exits 1).
@@ -46,9 +59,7 @@ struct Observing {
 impl Backend for Observing {
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let machine = self.inner.launch(spec)?;
-        if let Some(watch) = Watch::new(machine.record().process.pid) {
-            self.watches.0.lock().unwrap().insert(spec.id, watch);
-        }
+        self.watches.launched(spec.id, &machine.record());
         Ok(machine)
     }
 
@@ -121,8 +132,9 @@ impl QemuTarget {
         }
     }
 
+    /// The control socket of the machine last launched from `spec`.
     fn endpoint(&self, spec: &MachineSpec) -> QmpEndpoint {
-        QmpEndpoint::for_instance(&socket_dir(), &spec.id, host::current().socket_path_max()).unwrap()
+        self.watches.1.lock().unwrap()[&spec.id].clone()
     }
 
     /// The machine `n` under `root`, its disk made by the backend's own storage over a layer.
@@ -200,9 +212,7 @@ impl ContractTarget for QemuTarget {
                 String::from_utf8_lossy(&output.stdout)
             )
         });
-        if let Some(watch) = Watch::new(record.process.pid) {
-            self.watches.0.lock().unwrap().insert(spec.id, watch);
-        }
+        self.watches.launched(spec.id, &record);
         Ok(record)
     }
 
@@ -397,26 +407,32 @@ fn vm_qemu_a_killed_frozen_machine_leaves_no_socket_file_no_lock_file_and_no_ser
 }
 
 #[skuld::test]
-fn vm_qemu_launch_clears_a_stale_socket_and_lock_file_at_the_instance_path(
+fn vm_qemu_deleting_an_earlier_machines_leftovers_leaves_the_next_launches_files(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
     let target = QemuTarget::new(install);
     let (spec, _parent) = target.prepared(home, 0, |_| {});
-    let endpoint = target.endpoint(&spec);
-    std::fs::write(endpoint.path(), b"stale").unwrap();
-    std::fs::write(endpoint.lock_path(), b"stale").unwrap();
-
-    let mut machine = target.backend().launch(&spec).unwrap();
-
-    // A frozen machine has made neither file yet, so what is there now is the leftover.
-    for leftover in target.leftovers(&spec) {
-        assert!(!leftover.exists(), "launch left {}", leftover.display());
+    let mut first = target.backend().launch(&spec).unwrap();
+    let first_record = first.record();
+    first.kill().unwrap();
+    let mut second = target.backend().launch(&spec).unwrap();
+    let second_record = second.record();
+    assert_ne!(
+        first_record.qmp, second_record.qmp,
+        "a launch has its own control socket"
+    );
+    for path in &second_record.leftovers {
+        std::fs::write(path, b"second").unwrap();
     }
-    // QEMU binds the path: a stale file still there would fail it.
-    machine.resume().unwrap();
-    assert!(is_running(&machine.record()));
-    machine.kill().unwrap();
+
+    // What a late `Vm::drop` of the first machine does.
+    first_record.remove_leftovers(&mut |message| panic!("{message}"));
+
+    for path in &second_record.leftovers {
+        assert!(path.exists(), "{} was deleted", path.display());
+    }
+    second.kill().unwrap();
 }
 
 #[skuld::test]
@@ -453,8 +469,8 @@ fn vm_qemu_launch_with_paths_under_space_and_non_ascii(
     let target = QemuTarget::new(install);
     let (spec, _parent) = target.prepared(home, 0, |_| {});
     assert!(spec.disk.to_string_lossy().contains(UNICODE_DIR));
-    assert!(target.endpoint(&spec).path().to_string_lossy().contains(UNICODE_DIR));
     let mut machine = target.backend().launch(&spec).unwrap();
+    assert!(target.endpoint(&spec).path().to_string_lossy().contains(UNICODE_DIR));
 
     machine.resume().unwrap();
 

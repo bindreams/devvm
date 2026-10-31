@@ -8,7 +8,7 @@ use super::machine::{QemuMachine, qemu_log};
 use super::qmp::QmpEndpoint;
 use super::sidecar::LazyInstall;
 use super::storage::QemuStorage;
-use crate::backend::{Backend, Machine, MachineRecord, MachineSpec, Storage};
+use crate::backend::{Backend, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::Host;
@@ -42,24 +42,15 @@ impl QemuBackend {
 }
 
 impl QemuBackend {
-    /// Deletes the control socket and lock file of `endpoint`, which no live session can hold: a machine that is gone,
-    /// or one about to be launched. A file that cannot be deleted is reported and left; QEMU's own bind then fails and
-    /// says so in `qemu.log`.
-    fn clear(&self, endpoint: &QmpEndpoint) {
-        for path in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => self.progress.message(&format!("cannot delete {}: {e}", path.display())),
-            }
-        }
-    }
-
     /// `error`, after the frozen QEMU of a launch that failed has been killed and the files it could have made are
     /// removed. A QEMU that cannot be killed is named in the error: it is still there, frozen.
     fn abandon(&self, vm: &mut VmProcess, endpoint: &QmpEndpoint, error: Error) -> Error {
-        self.clear(endpoint);
-        match vm.kill() {
+        let killed = vm.kill();
+        // Only this launch's own files: its path is used by no other machine.
+        remove_files(&[endpoint.path().to_path_buf(), endpoint.lock_path()], &mut |message| {
+            self.progress.message(&message)
+        });
+        match killed {
             Ok(()) => error,
             Err(kill) => Error::new(
                 error.kind(),
@@ -74,11 +65,11 @@ impl Backend for QemuBackend {
     /// a `PATH` of System32 and its own `bin`. Its output goes to `<instance>/qemu.log`. Resolving the sidecar here is
     /// the only place a launch can download it.
     ///
-    /// A control socket or lock file at the instance's path is a leftover (a late `Qmp::connect` makes one after its
-    /// machine is gone) and is deleted first.
+    /// The control socket has a path of its own for each launch (`QmpEndpoint::for_launch`), recorded in the machine's
+    /// record, so no earlier or later machine of the instance shares its files.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let install = self.install.get()?;
-        let endpoint = QmpEndpoint::for_instance(&self.temp, &spec.id, self.host.socket_path_max())?;
+        let endpoint = QmpEndpoint::for_launch(&self.temp, &spec.id, self.host.socket_path_max())?;
         let paths = LaunchPaths::resolve(spec, endpoint.path().to_path_buf(), &install.share)?;
         let args = build_args(spec, &paths)?;
 
@@ -91,8 +82,6 @@ impl Backend for QemuBackend {
         }
         std::fs::create_dir_all(&cwd)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", cwd.display()), e))?;
-
-        self.clear(&endpoint);
 
         let mut command = cosca::Command::new();
         command

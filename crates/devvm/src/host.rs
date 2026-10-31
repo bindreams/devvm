@@ -72,9 +72,11 @@ pub(crate) trait Host: Send + Sync {
     /// The longest AF_UNIX socket path this OS binds, in bytes: `sun_path` without its terminating NUL.
     fn socket_path_max(&self) -> usize;
 
-    /// Watches the process `id` names. Its exit wakes whoever reads that process's control socket through the watch's
-    /// `link`, even when the OS never ends the stream (Windows can lose the end of an AF_UNIX stream). A process that
-    /// has exited already is a watch that reports it. An error means the OS would not let the process be watched.
+    /// Watches the process `id` names. On Windows its exit ends a read of that process's control socket through the
+    /// watch's `link` even when the OS never ends the stream (Windows can lose the end of an AF_UNIX stream); elsewhere
+    /// the link is the bare stream and a read ends when the peer closes it, and the exit is seen by `has_exited` and
+    /// `pause`. A process that has exited already is a watch that reports it. An error means the OS would not let the
+    /// process be watched.
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>>;
 
     /// The ANSI code page of this process (`GetACP`); `None` off Windows.

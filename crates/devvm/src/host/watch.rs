@@ -1,7 +1,8 @@
 //! Waiting for a process while reading its control socket.
 //!
-//! The reader owns the wait: it waits for the socket and for the process together and nothing is ever cancelled or
-//! shut down from another thread, so no byte is discarded and no wakeup can be lost.
+//! The reader owns the wait and nothing is ever cancelled or shut down from another thread, so no byte is discarded
+//! and no wakeup can be lost. On Windows a read waits for the socket and for the process together. Elsewhere a read is
+//! a plain blocking read of the stream, and the process is waited on only between the re-checks of `pause`.
 
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -18,7 +19,7 @@ pub(crate) trait ProcessWatch: Send + Sync {
     fn has_exited(&self) -> Result<bool>;
 
     /// Returns `true` as soon as the process has exited, or `false` after `RETRY` if it has not; the caller re-checks
-    /// what it is waiting for and calls again. Waits for the process itself, so an exit ends it at once.
+    /// what it is waiting for and calls again. It waits on the process itself, so an exit ends it at once.
     fn pause(&self) -> Result<bool>;
 
     /// A reader and writer of `stream`, a connection to this process, that stops waiting when the process exits.

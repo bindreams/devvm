@@ -39,11 +39,14 @@ pub(crate) struct QmpEndpoint {
 }
 
 impl QmpEndpoint {
-    /// `<temp>/dvm-<32 hex of the id>.sock`: short, so it fits `sun_path` under any temp directory, and unique per
-    /// instance. A path over `path_max` bytes (`Host::socket_path_max`) is refused here, before a machine is launched
+    /// `<temp>/dvm-<32 hex of the id>-<8 random hex>.sock`: short, so it fits `sun_path` under any temp directory, and
+    /// unique per launch. A path is never reused, so deleting a dead machine's files by path cannot touch a later
+    /// machine's. A path over `path_max` bytes (`Host::socket_path_max`) is refused here, before a machine is launched
     /// with it.
-    pub(crate) fn for_instance(temp: &Path, id: &InstanceId, path_max: usize) -> Result<QmpEndpoint> {
-        let path = temp.join(format!("dvm-{id}.sock"));
+    pub(crate) fn for_launch(temp: &Path, id: &InstanceId, path_max: usize) -> Result<QmpEndpoint> {
+        let mut launch = [0u8; 4];
+        getrandom::fill(&mut launch).expect("the OS random number generator is available");
+        let path = temp.join(format!("dvm-{id}-{}.sock", hex::encode(launch)));
         let bytes = path.to_string_lossy().len();
         if bytes > path_max {
             return Err(Error::new(
@@ -139,7 +142,8 @@ impl Qmp {
     ///
     /// Never deletes the lock file, whether it succeeds or not: another session may be waiting on that very file, and a
     /// path removed under it could be a later session's. The file is removed by whoever knows no session can be live,
-    /// the machine's shutdown or kill, or the next launch of the instance (`QemuBackend::launch`).
+    /// the machine's shutdown or kill. Each launch has its own path, so a deletion by path only ever touches that
+    /// machine's files.
     ///
     /// A read on the session ends once the process has exited and QEMU's bytes are used up. On Windows the exit ends
     /// the read even if the OS never delivers the end of the stream; elsewhere the read ends with the stream, so a
