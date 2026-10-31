@@ -7,7 +7,7 @@ use std::time::Duration;
 use russh::keys::{HashAlg, PublicKey};
 
 use crate::ErrorKind;
-use crate::access::session::BootGate;
+use crate::access::session::{BootGate, ClientHandler, Transport};
 use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, VmExit};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
@@ -244,6 +244,28 @@ fn a_keepalive_that_tolerates_no_missed_probe_is_refused(#[fixture(unicode_home)
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert!(error.message().contains("max_missed"), "{error}");
     assert_eq!(rig.sshd.connections(), 0, "refused before any connection");
+}
+
+#[skuld::test]
+fn the_disconnect_hook_keeps_the_reason_that_ended_the_connection_first(#[fixture(unicode_home)] home: &Path) {
+    use russh::client::{DisconnectReason, Handler};
+
+    let rig = Rig::new(home);
+    let pinned = PublicKey::from_openssh(&rig.target().host_public).unwrap();
+    let transport = Transport::new();
+    transport.end("the stream ended".to_owned());
+    let mut handler = ClientHandler {
+        pinned,
+        transport: transport.clone(),
+    };
+    crate::access::runtime::run("running the disconnect hook", async move {
+        handler
+            .disconnected(DisconnectReason::Error(russh::Error::KeepaliveTimeout))
+            .await
+    })
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(transport.ended.borrow().as_deref(), Some("the stream ended"));
 }
 
 #[skuld::test]
@@ -570,7 +592,7 @@ impl<F: Fn()> Write for RunsOnWrite<F> {
 }
 
 #[skuld::test]
-fn an_exit_status_that_arrived_is_the_result_even_if_the_vm_exits_before_the_close(
+fn an_exit_status_that_arrived_is_the_result_and_the_vm_exit_after_it_is_the_loss(
     #[fixture(unicode_home)] home: &Path,
 ) {
     let rig = Rig::new(home);
@@ -590,13 +612,17 @@ fn an_exit_status_that_arrived_is_the_result_even_if_the_vm_exits_before_the_clo
         )
         .unwrap();
     match end {
-        ExecEnd::Finished(status) => assert_eq!(status, ExitStatus::Code(7)),
+        ExecEnd::FinishedWithLoss { status, lost } => {
+            assert_eq!(status, ExitStatus::Code(7));
+            assert_eq!(lost.kind(), ErrorKind::ConnectionLost, "{lost}");
+            assert!(lost.message().contains("VM process exited"), "{lost}");
+        }
         other => panic!("{other:?}"),
     }
 }
 
 #[skuld::test]
-fn an_exit_status_that_arrived_is_the_result_even_if_the_boot_bound_passes_before_the_close(
+fn an_exit_status_that_arrived_is_the_result_and_the_boot_bound_after_it_is_the_loss(
     #[fixture(unicode_home)] home: &Path,
 ) {
     let rig = Rig::new(home);
@@ -617,7 +643,11 @@ fn an_exit_status_that_arrived_is_the_result_even_if_the_boot_bound_passes_befor
         )
         .unwrap();
     match end {
-        ExecEnd::Finished(status) => assert_eq!(status, ExitStatus::Code(7)),
+        ExecEnd::FinishedWithLoss { status, lost } => {
+            assert_eq!(status, ExitStatus::Code(7));
+            assert_eq!(lost.kind(), ErrorKind::ConnectionLost, "{lost}");
+            assert!(lost.message().contains("boot"), "{lost}");
+        }
         other => panic!("{other:?}"),
     }
 }

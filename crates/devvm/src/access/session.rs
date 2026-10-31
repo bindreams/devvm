@@ -295,7 +295,7 @@ impl client::Handler for ClientHandler {
             }
             client::DisconnectReason::Error(e) => format!("the connection failed: {e}"),
         };
-        self.transport.ended.send_replace(Some(text));
+        self.transport.end(text);
         match reason {
             client::DisconnectReason::ReceivedDisconnect(_) => Ok(()),
             client::DisconnectReason::Error(e) => Err(e),

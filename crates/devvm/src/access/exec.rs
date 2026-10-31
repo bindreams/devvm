@@ -14,8 +14,8 @@ use crate::{Error, ErrorKind, Result};
 pub(crate) enum ExecEnd {
     /// The command ended with this status.
     Finished(ExitStatus),
-    /// The command ended with `status`, but the server then sent what devvm cannot carry (output on a stream it does
-    /// not read, a refusal to run the command); `lost` says what. The status stands: the error that follows an exit
+    /// The command ended with `status`, but then came what devvm cannot carry (output on a stream it does not read, a
+    /// refusal to run the command) or what ended the wait (the VM exited, the boot bound passed); `lost` says what. The status stands: the error that follows an exit
     /// status does not take it back.
     FinishedWithLoss { status: ExitStatus, lost: Error },
     /// The host side of the output closed. The channel was closed, so the guest process loses its output pipe and
@@ -33,7 +33,7 @@ pub(crate) enum ExecEnd {
 pub(super) enum Event {
     Out(Vec<u8>),
     Err(Vec<u8>),
-    /// Something the command's status had already arrived before; it does not change that status.
+    /// Something that happened after the command's status had arrived; it does not change that status.
     Lost(Error),
     End(Result<ExitStatus>),
 }
@@ -70,7 +70,12 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
         .await;
     match (outcome, status) {
         (Ok(None), _) => {} // The host side went away; there is nobody to tell.
-        (Ok(Some(status)), _) | (Err(_), Some(status)) => {
+        (Ok(Some(status)), _) => {
+            let _ = events.send(Event::End(Ok(status))).await;
+        }
+        // The VM exited or the boot bound passed after the status arrived: the status stands, and the end is said.
+        (Err(e), Some(status)) => {
+            let _ = events.send(Event::Lost(e)).await;
             let _ = events.send(Event::End(Ok(status))).await;
         }
         (Err(e), None) => {
