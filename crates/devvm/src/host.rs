@@ -107,11 +107,8 @@ pub(crate) trait Host: Send + Sync {
     fn quiet(&self, cmd: &mut std::process::Command);
 
     /// What follows `prefix` in the environment variable `name`, if `name` starts with it as this host compares
-    /// names; the rest is lossy UTF-8. `prefix` is ASCII. Windows compares with `CompareStringOrdinal` ignoring case,
-    /// which uses "the operating system uppercase table" ([Microsoft]): `git_dir` starts with `GIT_`, and the long s
-    /// (U+017F) is no `S` there, whatever `char::to_uppercase` says. Elsewhere the bytes must be equal.
-    ///
-    /// [Microsoft]: https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal
+    /// names; the rest is lossy UTF-8. `prefix` is ASCII. Windows compares with `CompareStringOrdinal` (ignore case, OS
+    /// uppercase table: U+017F is no `S`); elsewhere bytes must be equal.
     fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String>;
 
     /// The Windows and System32 directories from the OS (never from the environment); `None` off Windows.

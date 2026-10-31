@@ -99,17 +99,12 @@ impl Host for WindowsHost {
         let name: Vec<u16> = name.encode_wide().collect();
         let prefix: Vec<u16> = prefix.encode_utf16().collect();
         let head = name.get(..prefix.len())?;
-        // SAFETY: both pointers and lengths come from live slices, and the lengths fit in `i32` for any name
-        // Windows can hold (at most 32767 units) and for a prefix.
-        let ordering = unsafe {
-            CompareStringOrdinal(
-                head.as_ptr(),
-                i32::try_from(head.len()).ok()?,
-                prefix.as_ptr(),
-                i32::try_from(prefix.len()).ok()?,
-                1,
-            )
-        };
+        let len = i32::try_from(prefix.len()).expect("a prefix is a few units long");
+        // SAFETY: both pointers describe live slices of `len` units.
+        let ordering = unsafe { CompareStringOrdinal(head.as_ptr(), len, prefix.as_ptr(), len, 1) };
+        // The call fails, with 0, only for a bad pointer, length or flag, and none of them is bad here. Read as "not
+        // equal", it would let a `GIT_*` name through.
+        assert_ne!(ordering, 0, "CompareStringOrdinal rejected two valid slices");
         (ordering == CSTR_EQUAL).then(|| String::from_utf16_lossy(&name[prefix.len()..]))
     }
 

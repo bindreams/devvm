@@ -29,8 +29,7 @@ fn ascii_case_does_not_matter_to_an_environment_name() {
     assert_eq!(strip("GITX_DIR", "GIT_"), None);
 }
 
-/// Measured with `CompareStringOrdinal` against `char::to_uppercase` over the BMP: Rust uppercases U+0131 (dotless i)
-/// to `I` and U+017F (long s) to `S`, and Windows folds neither to ASCII.
+/// Rust uppercases U+0131 to `I` and U+017F to `S`; Windows folds neither to ASCII.
 #[skuld::test]
 fn a_letter_rust_folds_to_ascii_and_windows_does_not_is_not_that_letter() {
     assert_eq!('\u{131}'.to_uppercase().to_string(), "I");
