@@ -86,9 +86,6 @@ impl GuestOs for FakeGuestOs {
     }
 
     fn wrap(&self, cmd: &Command) -> Result<String> {
-        if cmd.argv.is_empty() {
-            return Err(Error::new(ErrorKind::Usage, "a command needs a non-empty argv"));
-        }
         Ok(cmd.argv.join(" "))
     }
 

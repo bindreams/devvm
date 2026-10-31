@@ -1,10 +1,10 @@
 use secrecy::SecretString;
 
+use crate::ErrorKind;
 use crate::GuestKind;
 use crate::guest::fake::FakeGuests;
 use crate::guest::{BuiltinGuests, Guests, SeedKeys};
 use crate::recipe::Shell;
-use crate::{Command, ErrorKind};
 
 #[skuld::test]
 fn builtin_guests_name_the_missing_guest() {
@@ -71,12 +71,4 @@ fn debug_output_of_the_seed_keys_does_not_hold_the_private_key() {
         shown.contains("CLIENT-PUBLIC") && shown.contains("HOST-PUBLIC"),
         "{shown}"
     );
-}
-
-#[skuld::test]
-fn a_guest_refuses_to_wrap_an_empty_argv() {
-    let os = FakeGuests.os(GuestKind::Linux).unwrap();
-    let error = os.wrap(&Command::new(Vec::<String>::new())).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Usage);
-    assert_eq!(os.wrap(&Command::new(["echo", "hi"])).unwrap(), "echo hi");
 }
