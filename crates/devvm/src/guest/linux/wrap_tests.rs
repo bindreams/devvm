@@ -162,6 +162,40 @@ fn an_empty_working_directory_is_a_usage_error() {
 }
 
 #[skuld::test]
+fn a_shell_line_over_one_argument_of_the_kernel_is_a_usage_error_naming_the_size() {
+    // Linux refuses a single argument of 131072 bytes or more (MAX_ARG_STRLEN, with the NUL), measured in
+    // ubuntu:24.04 and bash:5.2. sshd hands the whole `wrap` string to the login shell as one argument, which is longer
+    // than the script, which is longer than the elevated script's inner one.
+    const LONGEST_ARGUMENT: usize = 131_071;
+    for run_as in [RunAs::User, RunAs::Elevated] {
+        let sized = |padding: usize| {
+            let mut command = cmd(&["true", &"a".repeat(padding)]);
+            command.run_as = run_as;
+            command
+        };
+        let overhead = wrap(&sized(0)).unwrap().len();
+        let fits = wrap(&sized(LONGEST_ARGUMENT - overhead)).unwrap();
+        assert_eq!(fits.len(), LONGEST_ARGUMENT, "{run_as:?}");
+
+        let error = wrap(&sized(LONGEST_ARGUMENT - overhead + 1)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage, "{run_as:?}");
+        assert!(
+            error.message().contains("131072") && error.message().contains("131071"),
+            "{run_as:?} names the line's size and the limit: {}",
+            error.message()
+        );
+    }
+
+    // The size is the quoted line's: 40000 quotes are small as an argument and about 4 times larger in the script.
+    let mut quotes = cmd(&["true", &"'".repeat(40_000)]);
+    for run_as in [RunAs::User, RunAs::Elevated] {
+        quotes.run_as = run_as;
+        let error = wrap(&quotes).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage, "{run_as:?}");
+    }
+}
+
+#[skuld::test]
 fn a_nul_byte_cannot_travel_in_a_shell_string() {
     let nul = "a\0b";
     let mut in_argv = cmd(&["echo", nul]);

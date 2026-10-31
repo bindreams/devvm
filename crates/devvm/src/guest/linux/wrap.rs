@@ -16,9 +16,26 @@ use crate::{Command, Error, ErrorKind, Result, RunAs};
 #[path = "wrap_tests.rs"]
 mod wrap_tests;
 
+/// The longest single argument Linux passes to a program (`MAX_ARG_STRLEN` is 131072, with the NUL; measured in
+/// ubuntu:24.04 and bash:5.2: 131071 bytes run, 131072 fail with E2BIG).
+const LONGEST_ARGUMENT: usize = 131_071;
+
 /// The string sshd hands to the account's shell for `cmd`.
 pub(super) fn wrap(cmd: &Command) -> Result<String> {
-    Ok(format!("bash -lc {}", quote(&script(cmd)?)))
+    let line = format!("bash -lc {}", quote(&script(cmd)?));
+    // sshd passes `line` to the login shell as one argument, and the shell passes the script to `bash -lc` as one more
+    // (and `sudo`'s `bash -c` the inner script). `line` contains the script, which contains the inner one, so
+    // `line` is the longest of them.
+    if line.len() > LONGEST_ARGUMENT {
+        return Err(Error::new(
+            ErrorKind::Usage,
+            format!(
+                "the command is {} bytes as a shell command line, but the guest's kernel refuses any single argument                  over {LONGEST_ARGUMENT} bytes (quoting makes the line longer than the command)",
+                line.len()
+            ),
+        ));
+    }
+    Ok(line)
 }
 
 /// What `bash -lc` runs for `cmd`.
