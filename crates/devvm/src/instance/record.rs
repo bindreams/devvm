@@ -85,6 +85,10 @@ pub(crate) struct InstanceRecord {
     pub cpus: u32,
     pub memory: u64,
     pub network: Network,
+    /// How many launches have been started for this instance: a launch takes the next number, under the op lock and
+    /// before it spawns, and a number is never taken twice. A machine's files are named by it, so no two machines of an
+    /// instance share a path.
+    pub launches: u64,
     pub machine: Option<MachineRecord>,
 }
 
@@ -116,6 +120,9 @@ struct Wire {
     cpus: u32,
     memory: u64,
     network: String,
+    /// Absent in a record written before launches were counted.
+    #[serde(default)]
+    launches: u64,
     machine: Option<MachineRecord>,
 }
 
@@ -201,6 +208,7 @@ fn from_wire(wire: Wire) -> std::result::Result<InstanceRecord, String> {
         cpus: wire.cpus,
         memory: wire.memory,
         network: network_parse(&wire.network)?,
+        launches: wire.launches,
         machine: wire.machine,
     })
 }
@@ -325,6 +333,7 @@ impl InstanceRecord {
             cpus: self.cpus,
             memory: self.memory,
             network: network_text(self.network).to_owned(),
+            launches: self.launches,
             machine: self.machine.clone(),
         };
         let text = serde_json::to_string_pretty(&wire).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;

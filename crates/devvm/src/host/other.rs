@@ -13,6 +13,11 @@ impl FileModes for OtherHost {
         OpenOptions::new()
     }
 
+    /// `sun_path` is 108 bytes, as on Windows, the only OS where this host serves.
+    fn socket_path_max(&self) -> usize {
+        107
+    }
+
     fn is_executable(&self, _path: &Path) -> std::io::Result<bool> {
         Ok(false)
     }

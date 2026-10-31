@@ -16,6 +16,11 @@
 //! skuld ignores the test (listing the reason) only when `vm_tests_enabled` returns `Err`, which this module does
 //! only for the opt-out. With the switch unset, a failing `vm_host` setup fails the test.
 
+/// The label of every test that boots QEMU or runs one of its tools. `SKULD_LABELS=vm` selects exactly these, and
+/// nothing selects by test name.
+#[skuld::label]
+pub const VM: skuld::Label;
+
 /// The environment variable that opts VM tests out.
 pub const SKIP_VAR: &str = "DEVVM_SKIP_VM_TESTS";
 

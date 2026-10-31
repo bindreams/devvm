@@ -21,6 +21,11 @@ impl FileModes for UnixHost {
         options
     }
 
+    /// `sun_path` less its terminating NUL: 107 on Linux, 103 on macOS and the BSDs.
+    fn socket_path_max(&self) -> usize {
+        std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path) - 1
+    }
+
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
         Ok(std::fs::metadata(path)?.permissions().mode() & 0o111 != 0)
     }

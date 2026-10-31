@@ -4,8 +4,8 @@
 //!
 //! - `<key>/<generation>/`: one published generation, holding `meta.json` and the backend's files;
 //! - `<key>/current`: the generation a lookup uses;
-//! - `<key>/.staging-<random>/`: a build in progress, a sibling of the generation directories (same depth, so relative
-//!   backing-file paths stay valid after the publishing rename);
+//! - `<key>/.staging-<random>/`: a build in progress, a sibling of the generation directories (one filesystem, so the
+//!   publishing rename is atomic; backing-file paths are absolute and do not depend on where a layer was built);
 //! - `.locks/`: `gc.lock`, `<key>.build` and `<key>-<generation>.gen`, outside every directory that gets deleted.
 
 use std::collections::HashSet;

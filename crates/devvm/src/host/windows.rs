@@ -6,7 +6,10 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
+
+use cosca::identity::ProcessId;
 
 use windows_sys::Win32::Globalization::GetACP;
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
@@ -14,9 +17,15 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWind
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::names::{windows_key, windows_problem};
-use super::{Accel, Host, SystemDirs, Unavailable, create_new_with};
+use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
+
+mod link;
+mod watch;
+mod whpx;
+
+pub(crate) use watch::WindowsWatch;
 
 /// `ERROR_PRIVILEGE_NOT_HELD`: the user may not create symlinks.
 const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
@@ -43,10 +52,21 @@ pub(super) fn also_failed(first: std::io::Error, then: &str, second: std::io::Er
 pub(super) struct WindowsHost;
 
 impl Host for WindowsHost {
-    fn accelerator(&self, _arch: Arch) -> std::result::Result<Accel, Unavailable> {
-        Err(Unavailable {
-            missing: "WHPX detection is not implemented".to_owned(),
-        })
+    fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable> {
+        whpx::accelerator(&whpx::WinHvPlatform, arch)
+    }
+
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        whpx::guest_reset(&whpx::WinHvPlatform, arch)
+    }
+
+    /// `sun_path` is 108 bytes.
+    fn socket_path_max(&self) -> usize {
+        107
+    }
+
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        Ok(Arc::new(WindowsWatch::open(id)?))
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

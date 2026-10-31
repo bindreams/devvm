@@ -2,11 +2,13 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
-use crate::host::{self, Accel, Host, SystemDirs, Unavailable, names};
+use crate::host::{self, Accel, Host, ProcessWatch, SystemDirs, Unavailable, names};
 use crate::{Arch, Result};
 
 /// Reports TCG as the accelerator and delegates everything else to the real host, so the real `detach` is the one the
@@ -16,6 +18,18 @@ pub struct TestHost;
 impl Host for TestHost {
     fn accelerator(&self, _arch: Arch) -> std::result::Result<Accel, Unavailable> {
         Ok(Accel::Tcg)
+    }
+
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        host::current().guest_reset(arch)
+    }
+
+    fn socket_path_max(&self) -> usize {
+        host::current().socket_path_max()
+    }
+
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        host::current().watch_process(id)
     }
 
     fn ansi_code_page(&self) -> Option<u32> {
@@ -94,6 +108,18 @@ impl Host for NoAccelHost {
         Err(Unavailable {
             missing: NO_ACCELERATOR.to_owned(),
         })
+    }
+
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        TestHost.guest_reset(arch)
+    }
+
+    fn socket_path_max(&self) -> usize {
+        TestHost.socket_path_max()
+    }
+
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        TestHost.watch_process(id)
     }
 
     fn ansi_code_page(&self) -> Option<u32> {
@@ -247,6 +273,18 @@ impl Host for RecordingHost {
         TestHost.accelerator(arch)
     }
 
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        TestHost.guest_reset(arch)
+    }
+
+    fn socket_path_max(&self) -> usize {
+        TestHost.socket_path_max()
+    }
+
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        TestHost.watch_process(id)
+    }
+
     fn ansi_code_page(&self) -> Option<u32> {
         TestHost.ansi_code_page()
     }
@@ -347,5 +385,98 @@ impl Host for RecordingHost {
             ));
         }
         TestHost.make_symlink(target, link, to_dir)
+    }
+}
+
+/// What [`NoGuestReset`] says is missing.
+pub const WINDOWS_11: &str =
+    "rebooting a guest needs Windows 11 or later (this host's WinHvPlatform.dll has no WHvResetPartition)";
+
+/// A host like the real one that cannot reset a running guest (Windows 10).
+pub struct NoGuestReset;
+
+pub static NO_GUEST_RESET: NoGuestReset = NoGuestReset;
+
+impl Host for NoGuestReset {
+    fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable> {
+        host::current().accelerator(arch)
+    }
+
+    fn guest_reset(&self, _arch: Arch) -> std::result::Result<(), Unavailable> {
+        Err(Unavailable {
+            missing: WINDOWS_11.to_owned(),
+        })
+    }
+
+    fn socket_path_max(&self) -> usize {
+        host::current().socket_path_max()
+    }
+
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        host::current().watch_process(id)
+    }
+
+    fn ansi_code_page(&self) -> Option<u32> {
+        host::current().ansi_code_page()
+    }
+
+    fn detach(&self, cmd: &mut cosca::Command) -> Result<()> {
+        host::current().detach(cmd)
+    }
+
+    fn exit_width(&self) -> crate::exit::ExitWidth {
+        host::current().exit_width()
+    }
+
+    fn quiet(&self, cmd: &mut std::process::Command) {
+        host::current().quiet(cmd)
+    }
+
+    fn system_dirs(&self) -> Option<SystemDirs> {
+        host::current().system_dirs()
+    }
+
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        host::current().write_private(path, bytes)
+    }
+
+    fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
+        host::current().is_executable(path)
+    }
+
+    fn set_executable(&self, path: &Path) -> std::io::Result<()> {
+        host::current().set_executable(path)
+    }
+
+    fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
+        host::current().set_mtime(path, seconds)
+    }
+
+    fn file_name_problem(&self, name: &str) -> Option<String> {
+        host::current().file_name_problem(name)
+    }
+
+    fn name_key(&self, name: &str) -> String {
+        host::current().name_key(name)
+    }
+
+    fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        host::current().replace_file(from, to)
+    }
+
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        host::current().publish_dir(from, to)
+    }
+
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().sync_dir(dir)
+    }
+
+    fn read_link(&self, path: &Path) -> std::io::Result<String> {
+        host::current().read_link(path)
+    }
+
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
+        host::current().make_symlink(target, link, to_dir)
     }
 }

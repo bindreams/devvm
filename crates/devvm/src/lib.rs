@@ -38,6 +38,15 @@ pub const TARGET: &str = env!("DEVVM_TARGET");
 #[cfg(test)]
 mod test_support;
 
+/// The gate every VM-booting test goes through (shared with `tests/vm_gate.rs`).
+#[cfg(test)]
+#[path = "../tests/support/vm_gate.rs"]
+mod vm_gate;
+
+/// The tests that boot QEMU, and the contract suite against it.
+#[cfg(test)]
+mod vm_suite;
+
 /// Counts live heap bytes for `test_support::alloc::peak_bytes`.
 #[cfg(test)]
 #[global_allocator]
@@ -46,7 +55,10 @@ static ALLOCATOR: test_support::alloc::CountingAllocator = test_support::alloc::
 #[cfg(test)]
 fn main() {
     test_helpers::run_if_requested();
-    skuld::run_all();
+    let mut runner = skuld::TestRunner::new();
+    // A mistyped label in SKULD_LABELS must fail, not select nothing.
+    runner.require_known_labels();
+    runner.run();
 }
 
 /// Registry of the lib's re-exec helpers (see `test_support::helper`).
@@ -69,10 +81,19 @@ mod test_helpers {
         ("layer-builder", crate::store::layers::cross_tests::layer_builder),
         ("lease-holder", crate::store::layers::gc_tests::lease_holder),
         ("fetch-artifact", crate::store::fetch::http_tests::fetch_artifact),
+        (
+            "qemu-extract",
+            crate::backend::qemu::sidecar::sidecar_tests::extract_and_wait,
+        ),
+        ("qemu-launcher", crate::vm_suite::backend::qemu_launcher),
+        ("qemu-shutdown", crate::vm_suite::backend::qemu_shutdown),
         ("access-heap", crate::access::heap_tests::access_heap),
     ];
 
     pub fn run_if_requested() {
         helper::run_if_requested(HELPERS);
+        // The environment of a `qemu-img` is its own, so a copy of this binary installed as one cannot be told to be a
+        // helper by a variable.
+        crate::backend::qemu::sidecar::sidecar_tests::act_as_qemu_img_when_installed_as_one();
     }
 }

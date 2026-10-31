@@ -16,7 +16,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # No CI job can boot a VM; the VM tests fail by default and this is the explicit opt-out.
+  # The Test job leaves the VM tests out (the vm job runs them); this is the explicit opt-out.
   DEVVM_SKIP_VM_TESTS: "1"
 
 jobs:
@@ -95,6 +95,34 @@ jobs:
       - name: Package
         if: runner.os == 'Linux'
         run: cargo package -p devvm --locked
+
+  # The tests that boot QEMU, under the Windows Hypervisor Platform of a hosted runner. Every test labelled `vm` runs
+  # here; the Test job leaves them out (DEVVM_SKIP_VM_TESTS=1). The tests fetch the pinned QEMU through devvm's own
+  # downloader, as a user's install does.
+  vm:
+    name: VM tests (windows-latest, WHPX)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # Overrides the workflow's `1`: the gate keeps VM tests on for any value but `1`.
+      DEVVM_SKIP_VM_TESTS: "0"
+      DEVVM_COVERS_ACP: "1252"
+      DEVVM_TEST_UNICODE_BASE: 'C:\Users'
+      SKULD_LABELS: vm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: vm
+
+      - name: Test
+        run: cargo test -p devvm --lib --locked
 
   # The workspace must build on the oldest toolchain it declares (`rust-version`), with the locked dependencies.
   msrv:

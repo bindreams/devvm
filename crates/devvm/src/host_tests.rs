@@ -404,7 +404,7 @@ fn code_page_claimed() -> Result<(), String> {
     match std::env::var(COVERS_ACP) {
         Ok(claimed) if !claimed.is_empty() => Ok(()),
         _ => Err(format!(
-            "no code page claimed; this host's ACP is {}; 1252 is covered by CI (Test job on windows-latest)",
+            "no code page claimed; this host's ACP is {}; 1252 is covered by CI (Test job and vm job on windows-latest)",
             current()
                 .ansi_code_page()
                 .map_or_else(|| "not applicable".to_owned(), |acp| acp.to_string()),
@@ -412,7 +412,8 @@ fn code_page_claimed() -> Result<(), String> {
     }
 }
 
-#[skuld::test(requires = [code_page_claimed])]
+// Labelled `vm` although it boots nothing, so that the vm job (`SKULD_LABELS=vm`) runs it and claims the code page too.
+#[skuld::test(requires = [code_page_claimed], labels = [crate::vm_gate::VM])]
 fn the_host_code_page_is_the_one_this_run_claims() {
     let claimed = std::env::var(COVERS_ACP).unwrap();
     let actual = current().ansi_code_page();

@@ -3,16 +3,24 @@
 
 use std::fs::OpenOptions;
 use std::path::Path;
+use std::sync::Arc;
+
+use cosca::identity::ProcessId;
 
 use super::names::posix_problem;
-use super::{Accel, Host, SystemDirs, Unavailable, after_failed_write, create_new_with};
+use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
+
+mod watch;
 
 /// How a host that cannot run VMs treats file modes and symlinks.
 pub(super) trait FileModes: Send + Sync {
     /// Options that create a file readable and writable by its owner only, from the first moment it exists.
     fn private_options(&self) -> OpenOptions;
+
+    /// [`Host::socket_path_max`].
+    fn socket_path_max(&self) -> usize;
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool>;
 
@@ -43,6 +51,18 @@ impl<M: FileModes> Host for M {
         Err(Unavailable {
             missing: format!("{} hosts are not supported in devvm 0.1.0", std::env::consts::OS),
         })
+    }
+
+    fn guest_reset(&self, _arch: Arch) -> std::result::Result<(), Unavailable> {
+        Ok(())
+    }
+
+    fn socket_path_max(&self) -> usize {
+        FileModes::socket_path_max(self)
+    }
+
+    fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
+        Ok(Arc::new(watch::UnixWatch::new(id)))
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

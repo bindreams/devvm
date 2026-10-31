@@ -303,6 +303,7 @@ impl Registry {
                 cpus: new.cpus,
                 memory: new.memory,
                 network: new.network,
+                launches: 0,
                 machine: None,
             }
             .write(temp)?;
