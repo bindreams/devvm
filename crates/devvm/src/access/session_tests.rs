@@ -526,6 +526,41 @@ fn the_boot_bound_ends_a_connect_with_the_failure_it_last_saw() {
     assert!(!error.message().contains("boot bound of"), "{error}");
 }
 
+#[skuld::test]
+fn a_boot_bound_that_passes_during_a_retry_carries_the_failure_of_the_attempt_before(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The server presents the wrong host key for good. The clock runs in real time until the first attempt has failed
+    // and then stops, so the hour of the bound passes without anyone waiting for it, inside the retry that follows.
+    let rig = Rig::with(home, |options| options.wrong_host_key_connections = usize::MAX);
+    let connect = connect_to(FAST, rig.target());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let error = runtime
+        .block_on(async {
+            let limit = Duration::from_secs(3600);
+            let bound = BootBound {
+                limit,
+                deadline: (tokio::time::Instant::now() + limit).into_std(),
+            };
+            let (messages, mut told) = tokio::sync::mpsc::unbounded_channel();
+            let connecting = tokio::spawn(connect.until_up(bound, messages));
+            // `until_up` tells this in the same poll that records the failure, and the runtime has one thread: nothing
+            // else runs in between.
+            told.recv().await.expect("the connect tells that it is waiting");
+            tokio::time::pause();
+            connecting.await.unwrap()
+        })
+        .err()
+        .expect("the connect fails");
+    assert!(
+        !error.message().contains("boot bound of"),
+        "the bound ended the connect without the failure of the attempt before it: {error}"
+    );
+}
+
 // The boot bound ======================================================================================================
 
 /// Starts the boot bound of `session` now, as the engine does when it resumes the VM. The tests start it after the
@@ -565,32 +600,38 @@ fn a_duration_is_told_in_units_a_person_reads() {
     assert!(!humanly(Duration::MAX).is_empty());
 }
 
-/// A connect to a peer that accepts the connection and never speaks, on virtual time: the bounds below pass at once.
-fn silent_peer_connect(ka: Keepalive, listener: &std::net::TcpListener) -> Connect {
-    let keys = InstanceKeys::generate().unwrap();
-    let addr = listener.local_addr().unwrap();
-    let serial_log = std::path::PathBuf::from("serial.log");
+/// A connect to `target`, with no VM to watch and no boot bound.
+fn connect_to(ka: Keepalive, target: SshTarget) -> Connect {
     Connect {
-        target: SshTarget {
-            addr,
-            user: "user".to_owned(),
-            client_private: keys.client_private.clone(),
-            host_public: keys.client_public.clone(),
-            serial_log: serial_log.clone(),
-        },
-        pinned: PublicKey::from_openssh(&keys.client_public).unwrap(),
-        key: Arc::new(PrivateKey::from_openssh(&keys.client_private).unwrap()),
+        pinned: PublicKey::from_openssh(&target.host_public).unwrap(),
+        key: Arc::new(PrivateKey::from_openssh(&target.client_private).unwrap()),
         ka,
         handshake_bound: ka.handshake_bound().unwrap(),
         vm: VmExit::never(),
         boot: None,
         ctx: Context {
-            addr,
-            user: "user".to_owned(),
-            serial_log,
-            host_public: keys.client_public,
+            addr: target.addr,
+            user: target.user.clone(),
+            serial_log: target.serial_log.clone(),
+            host_public: target.host_public.clone(),
         },
+        target,
     }
+}
+
+/// A connect to a peer that accepts the connection and never speaks, on virtual time: the bounds below pass at once.
+fn silent_peer_connect(ka: Keepalive, listener: &std::net::TcpListener) -> Connect {
+    let keys = InstanceKeys::generate().unwrap();
+    connect_to(
+        ka,
+        SshTarget {
+            addr: listener.local_addr().unwrap(),
+            user: "user".to_owned(),
+            client_private: keys.client_private,
+            host_public: keys.client_public,
+            serial_log: std::path::PathBuf::from("serial.log"),
+        },
+    )
 }
 
 #[skuld::test]
