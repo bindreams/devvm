@@ -3,6 +3,7 @@ use std::path::Path;
 use secrecy::{ExposeSecret, SecretString};
 use yaml_serde::Value;
 
+use crate::guest::GuestOs;
 use crate::guest::linux::LinuxGuest;
 use crate::guest::{SeedKeys, SeedSpec};
 use crate::instance::record::InstanceId;
@@ -179,7 +180,10 @@ fn characters_yaml_cannot_carry_raw_are_escaped_in_every_key(#[fixture(unicode_h
             Some(keyed.keys.client_public.as_str())
         );
         for (parsed, expected) in [
-            (&json["ssh_keys"]["ed25519_private"], keyed.keys.host_private.expose_secret()),
+            (
+                &json["ssh_keys"]["ed25519_private"],
+                keyed.keys.host_private.expose_secret(),
+            ),
             (&json["ssh_keys"]["ed25519_public"], keyed.keys.host_public.as_str()),
         ] {
             assert_eq!(parsed.as_str(), Some(expected));

@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256 as Sha2};
 
 use super::{LinuxGuest, seed};
 use crate::backend::Storage;
+use crate::guest::GuestOs;
 use crate::guest::{BaseBuilder, BuildCtx, SeedKeys, SeedSpec};
 use crate::instance::record::InstanceId;
 use crate::media::SeedFile;

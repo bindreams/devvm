@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256 as Sha2};
 use super::{LinuxBuilder, definition_hash_of, probe_spec};
 use crate::backend::fake::FakeStorage;
 use crate::exit::NullProgress;
+use crate::guest::GuestOs;
 use crate::guest::linux::LinuxGuest;
 use crate::guest::linux::seed::seed_files;
 use crate::guest::{BaseBuilder, BuildCtx};

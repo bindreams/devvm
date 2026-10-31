@@ -151,7 +151,7 @@ pub(crate) struct BuildCtx {
 /// The guests compiled into this build: none yet.
 pub(crate) struct BuiltinGuests;
 
-fn missing(kind: GuestKind) -> Error {
+pub(crate) fn missing(kind: GuestKind) -> Error {
     Error::new(
         ErrorKind::NotSupported,
         format!("{} guests are not available in this build of devvm", kind.as_str()),
