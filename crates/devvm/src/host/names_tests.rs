@@ -105,8 +105,19 @@ fn ntfs_claimed() -> Result<(), String> {
     }
 }
 
-/// What the file system does with the name `name`: `Ok` when a file made under it is listed under exactly that name,
-/// `Err` with what happened otherwise (the create failed, or Windows stored another name or none).
+/// Whether what is written to the file `path` is what is read from it, so the name is a file and not a device.
+fn round_trip(path: &Path) -> Result<(), String> {
+    std::fs::write(path, b"stored").map_err(|e| format!("write failed: {e}"))?;
+    match std::fs::read(path) {
+        Ok(read) if read == b"stored" => Ok(()),
+        Ok(read) => Err(format!("read back {read:?}")),
+        Err(e) => Err(format!("read failed: {e}")),
+    }
+}
+
+/// What the file system does with the name `name`: `Ok` when a file made under it is listed under exactly that name and
+/// keeps what is written to it, `Err` with what happened otherwise (the create failed, or Windows stored another name
+/// or none, or the name is a device).
 fn stored(dir: &Path, name: &str) -> Result<(), String> {
     let dir = dir.join("probe");
     std::fs::create_dir(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
@@ -119,7 +130,7 @@ fn stored(dir: &Path, name: &str) -> Result<(), String> {
                 .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
                 .collect();
             match listed.iter().any(|listed| listed == name) {
-                true => Ok(()),
+                true => round_trip(&dir.join(name)),
                 false => Err(format!("listed as {listed:?}")),
             }
         }
