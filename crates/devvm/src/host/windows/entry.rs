@@ -15,8 +15,8 @@ use windows_sys::Wdk::Storage::FileSystem::{
 use windows_sys::Win32::Foundation::{HANDLE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, UNICODE_STRING};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo,
-    GetFileInformationByHandleEx,
+    FILE_GENERIC_READ, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo,
+    FileIdInfo, GetFileInformationByHandleEx,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -48,37 +48,58 @@ pub(super) fn open_entry(root: &Path, rel: &str) -> io::Result<Entry> {
             format!("`{}` is not a path below a directory", rel.escape_debug()),
         ));
     }
-    let (last, parents) = names.split_last().expect("a path has a name");
-    let mut directory = OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(root)?;
-    for (i, name) in parents.iter().enumerate() {
-        let next = match open_below(&directory, name) {
-            Ok(next) => next,
+    // `name:stream` opens an alternate data stream of the file `name`, which is no file git tracks.
+    if names.iter().any(|name| name.contains(':')) {
+        return Ok(Entry::Absent);
+    }
+    let mut directory = open_directory(root)?;
+    for i in 0..names.len() - 1 {
+        let (next, kind) = match look(&directory, &names[..=i]) {
+            Ok(found) => found,
             Err(e) if is_absent(&e) => return Ok(Entry::Absent),
             Err(e) => return Err(e),
         };
-        match kind(&next)? {
+        match kind {
             Kind::Directory => directory = next,
             Kind::Link => return Ok(Entry::BelowSymlink(names[..=i].join("/"))),
             Kind::File => return Ok(Entry::Absent),
         }
     }
-    let file = match open_below(&directory, last) {
-        Ok(file) => file,
+    let (file, kind) = match look(&directory, &names) {
+        Ok(found) => found,
         Err(e) if is_absent(&e) => return Ok(Entry::Absent),
         Err(e) => return Err(e),
     };
-    Ok(match kind(&file)? {
+    Ok(match kind {
         Kind::Link => Entry::Symlink,
         Kind::Directory => Entry::Directory,
         Kind::File => Entry::File(file),
     })
 }
 
-/// Opens `name`, one name and no path, in `directory` for reading. A link at `name` is opened itself.
-fn open_below(directory: &File, name: &str) -> io::Result<File> {
+/// Opens the last of `path` (the names from the root) in `directory`, as itself, and says what it is. A reparse point
+/// that is not a link (a cloud placeholder, a deduplicated file) gets its data from a filter that opening it as itself
+/// bypasses, so it is opened again through the filter: the handle returned is that one.
+fn look(directory: &File, path: &[&str]) -> io::Result<(File, Kind)> {
+    let name = path.last().expect("a path has a name");
+    let file = open_below(directory, name, true)?;
+    let (kind, filtered) = classify(&file)?;
+    if filtered {
+        return Ok((read_through(directory, name, &file, path)?, kind));
+    }
+    Ok((file, kind))
+}
+
+fn open_directory(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+/// Opens `name`, one name and no path, in `directory` for reading. With `itself`, whatever is at `name` is opened as
+/// itself: a link is not followed and a cloud placeholder's filter does not run. Without it, the open goes through them.
+fn open_below(directory: &File, name: &str, itself: bool) -> io::Result<File> {
     let wide: Vec<u16> = name.encode_utf16().collect();
     let bytes = u16::try_from(wide.len() * 2)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the name is too long for Windows"))?;
@@ -95,6 +116,7 @@ fn open_below(directory: &File, name: &str) -> io::Result<File> {
         SecurityDescriptor: std::ptr::null(),
         SecurityQualityOfService: std::ptr::null(),
     };
+    let options = if itself { FILE_OPEN_REPARSE_POINT } else { 0 };
     let mut handle: HANDLE = std::ptr::null_mut();
     // SAFETY: an all-zero IO_STATUS_BLOCK is the state the call expects to overwrite.
     let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
@@ -110,7 +132,7 @@ fn open_below(directory: &File, name: &str) -> io::Result<File> {
             0,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_OPEN,
-            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            options | FILE_SYNCHRONOUS_IO_NONALERT,
             std::ptr::null(),
             0,
         )
@@ -124,7 +146,42 @@ fn open_below(directory: &File, name: &str) -> io::Result<File> {
     Ok(unsafe { File::from_raw_handle(handle as _) })
 }
 
-fn kind(file: &File) -> io::Result<Kind> {
+/// Opens `name` again, this time through the filter of a reparse point that is not a link, and returns that handle.
+/// `first` is the handle of the open as itself; the two must be the same file, or the name was swapped in between.
+fn read_through(directory: &File, name: &str, first: &File, path: &[&str]) -> io::Result<File> {
+    let through = open_below(directory, name, false)?;
+    if file_id(first)? != file_id(&through)? {
+        return Err(io::Error::other(format!(
+            "`{}` changed while it was being opened",
+            path.join("/").escape_debug()
+        )));
+    }
+    Ok(through)
+}
+
+/// The volume and the 128-bit file ID: what says two handles are the same file.
+fn file_id(file: &File) -> io::Result<(u64, [u8; 16])> {
+    let mut info = FILE_ID_INFO {
+        VolumeSerialNumber: 0,
+        FileId: Default::default(),
+    };
+    // SAFETY: `info` is a FILE_ID_INFO of the size passed, and the handle is open.
+    let read = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as HANDLE,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if read == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+}
+
+/// What `file` is, and whether it is a reparse point that is not a link.
+fn classify(file: &File) -> io::Result<(Kind, bool)> {
     let mut info = FILE_ATTRIBUTE_TAG_INFO {
         FileAttributes: 0,
         ReparseTag: 0,
@@ -141,13 +198,14 @@ fn kind(file: &File) -> io::Result<Kind> {
     if read == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(
-        if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && info.ReparseTag & NAME_SURROGATE != 0 {
-            Kind::Link
-        } else if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-            Kind::Directory
-        } else {
-            Kind::File
-        },
-    )
+    let reparse_point = info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    if reparse_point && info.ReparseTag & NAME_SURROGATE != 0 {
+        return Ok((Kind::Link, false));
+    }
+    let kind = if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        Kind::Directory
+    } else {
+        Kind::File
+    };
+    Ok((kind, reparse_point))
 }
