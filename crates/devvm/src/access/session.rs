@@ -20,6 +20,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep, sleep_until, timeout};
 
+use self::watched::Watched;
 use crate::access::runtime;
 use crate::contain::VmProcess;
 use crate::exit::{Output, Progress};
@@ -28,6 +29,8 @@ use crate::{Error, ErrorKind, Result};
 pub(crate) use crate::access::exec::ExecEnd;
 use crate::access::exec::{Event, run_exec};
 use crate::access::sftp::Sftp;
+
+mod watched;
 
 #[cfg(test)]
 #[path = "session_tests.rs"]
@@ -70,9 +73,9 @@ impl Keepalive {
     };
 
     /// How long one connection attempt to a guest that should be up may take: the time the keepalive would need to
-    /// declare a silent peer dead.
+    /// declare a silent peer dead, which is `max_missed + 1` silent intervals.
     pub(crate) fn handshake_bound(self) -> Duration {
-        self.interval * self.max_missed
+        self.interval * (self.max_missed + 1)
     }
 }
 
@@ -204,6 +207,17 @@ impl Transport {
             ended: watch::channel(None).0,
             refused_key: Mutex::new(None),
         })
+    }
+
+    /// Records the end of the connection, unless an earlier report did: the first reason stays.
+    fn end(&self, reason: String) {
+        self.ended.send_if_modified(|ended| {
+            let first = ended.is_none();
+            if first {
+                *ended = Some(reason);
+            }
+            first
+        });
     }
 
     /// Resolves with the reason once the connection has ended.
@@ -382,13 +396,15 @@ impl Inner {
         }
     }
 
-    /// The error for a connection that ended: the reason the client handler recorded, if it did.
+    /// The reason the connection ended, once the client handler or the stream has recorded one.
+    pub(super) fn transport_end(&self) -> Option<String> {
+        self.transport.ended.borrow().clone()
+    }
+
+    /// The error for a connection that ended: the reason recorded, if there is one.
     pub(super) fn connection_ended(&self, awaiting: &str) -> Error {
         let reason = self
-            .transport
-            .ended
-            .borrow()
-            .clone()
+            .transport_end()
             .unwrap_or_else(|| "the connection ended".to_owned());
         self.ctx.lost(awaiting, &reason)
     }
@@ -422,6 +438,7 @@ impl Connect {
     ) -> std::result::Result<(client::Handle<ClientHandler>, Arc<Transport>), Failure> {
         let stream = TcpStream::connect(self.target.addr).await.map_err(Failure::Tcp)?;
         let transport = Transport::new();
+        let stream = Watched::new(stream, transport.clone());
         let handler = ClientHandler {
             pinned: self.pinned.clone(),
             transport: transport.clone(),

@@ -33,6 +33,24 @@ fn refused_addr() -> SocketAddr {
     listener.local_addr().unwrap()
 }
 
+// Streams =============================================================================================================
+
+#[skuld::test]
+fn output_on_an_extended_data_stream_other_than_stderr_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let error = session.exec_collect("extended-data 2").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("extended data stream 2"), "{error}");
+    // Stream 1 is stderr, as ever.
+    let output = session.exec_collect("extended-data 1").unwrap();
+    assert_eq!(
+        output.stderr,
+        b"on a stream of its own
+"
+    );
+}
+
 // Exit mapping ========================================================================================================
 
 #[skuld::test]
@@ -623,4 +641,35 @@ fn sessions_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<SshSession>();
     assert_send_sync::<VmExit>();
+}
+
+// The end of the connection, whichever way it comes ===================================================================
+
+#[skuld::test]
+fn the_handshake_bound_is_the_time_the_keepalive_needs_to_give_up(#[fixture(unicode_home)] _home: &Path) {
+    // The peer is declared dead once more than `max_missed` probes went unanswered: the first probe goes out after one
+    // silent interval, and the last allowed miss is followed by one more interval before the verdict.
+    let ka = Keepalive {
+        interval: Duration::from_millis(100),
+        max_missed: 2,
+    };
+    assert_eq!(ka.handshake_bound(), Duration::from_millis(300));
+    assert_eq!(Keepalive::STANDARD.handshake_bound(), Duration::from_secs(20));
+}
+
+#[skuld::test]
+fn a_reset_connection_ends_a_pending_sftp_request(#[fixture(unicode_home)] home: &Path) {
+    // An `RST` makes russh end its session on a path that does not tell the handler (measured: `ENOTCONN` on Linux), so
+    // the end of the connection must be seen at the stream, or a request in flight waits forever.
+    let rig = Rig::with(home, |options| options.hold_realpath = true);
+    let session = rig.connect();
+    let sftp = session.sftp().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| sender.send(sftp.home()).unwrap());
+        rig.sshd.wait_for_held_request();
+        rig.sshd.reset_connections();
+        let error = receiver.recv().unwrap().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    });
 }

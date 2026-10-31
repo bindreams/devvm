@@ -107,6 +107,15 @@ async fn run(
         let event = match message {
             ChannelMsg::Data { data } => Event::Out(data.to_vec()),
             ChannelMsg::ExtendedData { data, ext: 1 } => Event::Err(data.to_vec()),
+            // Only stderr is defined; output on another stream would be dropped without a trace.
+            ChannelMsg::ExtendedData { ext, .. } => {
+                return Err(Error::new(
+                    ErrorKind::Io,
+                    format!(
+                        "the server sent output of {awaiting} on extended data stream {ext}, which devvm does not read"
+                    ),
+                ));
+            }
             ChannelMsg::ExitStatus { exit_status } => {
                 *status = Some(ExitStatus::Code(exit_status as i32));
                 continue;
