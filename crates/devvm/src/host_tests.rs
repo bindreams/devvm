@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::unsupported::UnsupportedHost;
+use super::other::OtherHost;
 use super::{Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
@@ -8,17 +8,18 @@ use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::test_support::host::TestHost;
+use crate::test_support::symlink::symlink;
 #[cfg(windows)]
 use skuld::env;
 
 #[skuld::test]
 fn unsupported_host_exit_width_is_low_byte() {
-    assert_eq!(UnsupportedHost.exit_width(), ExitWidth::LowByte);
+    assert_eq!(OtherHost.exit_width(), ExitWidth::LowByte);
 }
 
 #[skuld::test]
 fn unsupported_host_names_itself_in_unavailable() {
-    let missing = UnsupportedHost.accelerator(Arch::host()).unwrap_err().missing;
+    let missing = OtherHost.accelerator(Arch::host()).unwrap_err().missing;
     assert!(missing.contains(std::env::consts::OS), "{missing}");
     assert!(missing.contains("0.1.0"), "{missing}");
 }
@@ -70,7 +71,7 @@ fn undetached_control() -> ConsoleFacts {
 fn unsupported_host_detach_changes_nothing() {
     let mut cmd = console_window_command();
     cmd.no_window();
-    UnsupportedHost.detach(&mut cmd).unwrap();
+    OtherHost.detach(&mut cmd).unwrap();
     assert_eq!(console_facts(cmd), undetached_control());
 }
 
@@ -141,7 +142,7 @@ fn quiet_leaves_a_command_runnable() {
 
 #[skuld::test]
 fn unsupported_host_has_no_system_dirs() {
-    assert!(UnsupportedHost.system_dirs().is_none());
+    assert!(OtherHost.system_dirs().is_none());
 }
 
 #[cfg(windows)]
@@ -174,6 +175,37 @@ fn write_private_is_create_new_and_owner_only(#[fixture(unicode_home)] home: &Pa
         b"secret",
         "an existing file is left alone"
     );
+}
+
+#[skuld::test]
+fn set_mtime_sets_the_time_of_a_directory_and_of_a_read_only_file(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("dir");
+    std::fs::create_dir(&dir).unwrap();
+    let file = home.join("read-only.txt");
+    std::fs::write(&file, "x").unwrap();
+    let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&file, permissions).unwrap();
+    for path in [&dir, &file] {
+        current().set_mtime(path, 1_000_000_000).unwrap();
+        let since = std::fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        assert_eq!(since.as_secs(), 1_000_000_000, "{}", path.display());
+    }
+    // Removable again, whatever the platform makes of a read-only file.
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "a temporary file in the test's own directory"
+    )]
+    {
+        let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&file, permissions).unwrap();
+    }
 }
 
 #[skuld::test]
@@ -239,6 +271,131 @@ fn a_cleaned_up_partial_file_leaves_the_write_error_as_it_was(#[fixture(unicode_
     assert!(!path.exists());
 }
 
+#[cfg(windows)]
+#[skuld::test]
+fn a_second_failure_while_replacing_a_file_is_named_next_to_the_first() {
+    let first = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+    let second = std::io::Error::other("the attribute is locked");
+    let error = super::windows::also_failed(first, "clearing the read-only attribute", second);
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "the first failure stays the kind"
+    );
+    let text = error.to_string();
+    for part in [
+        "access denied",
+        "clearing the read-only attribute",
+        "the attribute is locked",
+    ] {
+        assert!(text.contains(part), "{part} is missing: {text}");
+    }
+}
+
+// Replacing a file ====================================================================================================
+
+/// What a copy meets in a destination tree: a symlink to a directory where the guest has a file or a file symlink.
+#[skuld::test]
+fn replace_file_replaces_a_symlink_to_a_directory_and_leaves_the_directory(#[fixture(unicode_home)] home: &Path) {
+    let real = home.join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::write(real.join("held"), "kept").unwrap();
+    let link_to_file = home.join("target.txt");
+    std::fs::write(&link_to_file, "pointed at").unwrap();
+    for (n, as_link) in [false, true].into_iter().enumerate() {
+        let (from, to) = (home.join(format!("from{n}")), home.join(format!("to{n}")));
+        symlink(&real, &to);
+        if as_link {
+            symlink(&link_to_file, &from);
+        } else {
+            std::fs::write(&from, "new").unwrap();
+        }
+        current().replace_file(&from, &to).unwrap();
+        let meta = std::fs::symlink_metadata(&to).unwrap();
+        assert_eq!(meta.file_type().is_symlink(), as_link, "link source: {as_link}");
+        assert!(!std::fs::metadata(&to).unwrap().is_dir(), "link source: {as_link}");
+        assert!(!from.exists(), "link source: {as_link}");
+        assert_eq!(std::fs::read_to_string(real.join("held")).unwrap(), "kept");
+    }
+}
+
+// Publishing a directory ==============================================================================================
+
+/// Runs `check` on the host this build runs on and on the host that only the tests of the shared rules use.
+fn on_both_hosts(check: impl Fn(&dyn Host)) {
+    check(current());
+    check(&OtherHost);
+}
+
+/// A directory `name` below `home` holding the file `held`.
+fn dir_with_a_file(home: &Path, name: &str) -> std::path::PathBuf {
+    let dir = home.join(name);
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("held"), name).unwrap();
+    dir
+}
+
+#[skuld::test]
+fn publish_dir_moves_a_directory_to_a_name_nobody_has(#[fixture(unicode_home)] home: &Path) {
+    on_both_hosts(|host| {
+        let (from, to) = (dir_with_a_file(home, "from"), home.join("to"));
+        host.publish_dir(&from, &to).unwrap();
+        assert!(!from.exists());
+        assert_eq!(std::fs::read_to_string(to.join("held")).unwrap(), "from");
+        std::fs::remove_dir_all(&to).unwrap();
+    });
+}
+
+#[skuld::test]
+fn publish_dir_never_replaces_what_is_there_not_even_an_empty_directory(#[fixture(unicode_home)] home: &Path) {
+    on_both_hosts(|host| {
+        let from = dir_with_a_file(home, "from");
+        let empty = home.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let file = home.join("file");
+        std::fs::write(&file, "mine").unwrap();
+        for taken in [&empty, &file] {
+            let error = host.publish_dir(&from, taken).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "{}: {error}",
+                taken.display()
+            );
+        }
+        assert!(
+            empty.read_dir().unwrap().next().is_none(),
+            "the empty directory is still empty"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine");
+        assert_eq!(
+            std::fs::read_to_string(from.join("held")).unwrap(),
+            "from",
+            "the source is untouched"
+        );
+        std::fs::remove_dir_all(&from).unwrap();
+        std::fs::remove_dir_all(&empty).unwrap();
+        std::fs::remove_file(&file).unwrap();
+    });
+}
+
+#[skuld::test]
+fn sync_dir_flushes_a_directory_that_exists(#[fixture(unicode_home)] home: &Path) {
+    on_both_hosts(|host| host.sync_dir(home).unwrap());
+}
+
+/// Where a directory is flushed through a handle (Unix), a directory that is not there is an error, so the call is not
+/// a stub that answers `Ok`. NTFS journals its directories and flushes nothing.
+#[skuld::test]
+fn sync_dir_of_a_missing_directory_fails_where_directories_are_flushed(#[fixture(unicode_home)] home: &Path) {
+    let missing = home.join("missing");
+    let error = current().sync_dir(&missing);
+    match cfg!(unix) {
+        true => assert_eq!(error.unwrap_err().kind(), std::io::ErrorKind::NotFound),
+        false => error.unwrap(),
+    }
+}
+
 // The ANSI code page ==================================================================================================
 
 /// The variable a CI job sets to claim that its runs cover this ANSI code page.
@@ -290,7 +447,7 @@ fn the_host_code_page_is_the_one_this_run_claims() {
 #[skuld::test]
 fn ansi_code_page_is_some_on_windows_and_none_elsewhere() {
     assert_eq!(current().ansi_code_page().is_some(), cfg!(windows));
-    assert_eq!(UnsupportedHost.ansi_code_page(), None);
+    assert_eq!(OtherHost.ansi_code_page(), None);
 }
 
 /// A manifest that gives the process the ANSI code page of a locale. Windows reads `<exe>.manifest` for an executable

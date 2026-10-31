@@ -76,6 +76,21 @@ jobs:
         run: cargo test --workspace --locked
         env:
           DEVVM_COVERS_ACP: ${{ runner.os == 'Windows' && '1252' || '' }}
+          DEVVM_COVERS_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '' }}
+
+      # The copy tests again, against OpenSSH's own sftp-server instead of the scripted one. The claim makes them fail,
+      # not skip, if the run does not use it.
+      - name: Install OpenSSH's SFTP server
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends openssh-sftp-server
+
+      - name: Test the copy against OpenSSH's SFTP server
+        if: runner.os == 'Linux'
+        run: cargo test -p devvm --lib --locked
+        env:
+          DEVVM_COVERS_OPENSSH_SFTP: "1"
 
       # The packaged crate must carry every file the library includes (the embedded recipes).
       - name: Package

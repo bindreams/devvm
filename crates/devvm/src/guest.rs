@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use secrecy::SecretString;
+
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, Media};
 use crate::exit::Progress;
@@ -27,6 +29,15 @@ pub(crate) trait GuestOs: Send + Sync {
     fn wrap(&self, cmd: &Command) -> String;
     /// `guest_path` as the guest's SFTP server expects it.
     fn sftp_path(&self, guest_path: &str, home: &str) -> String;
+    /// The guest path that `sftp_path` turned into `sftp_path`, for a message that names the path as the user wrote it.
+    fn user_path(&self, sftp_path: &str) -> String;
+    /// Splits the guest path `path`, as the user writes it, into its root and the rest. The root is spelled the way
+    /// the guest does, with a trailing `/`: `/`, `C:/`, `//server/share/`; it is empty for a relative path. `..` never
+    /// goes above it. The default is a POSIX guest's: one `/`. A path the guest does not place by name is a `usage`
+    /// error naming it.
+    fn split_root<'a>(&self, path: &'a str) -> Result<(String, &'a str)> {
+        Ok(posix_root(path))
+    }
     /// Bumped whenever `wrap`, `user:`, `cwd:` or elevation behavior changes; part of every layer key.
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;
@@ -34,6 +45,51 @@ pub(crate) trait GuestOs: Send + Sync {
     /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
     /// the guest does not have is a `recipe` error.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>>;
+    /// Why `name`, a file name taken from the host, cannot be one file name in a guest directory (a Windows guest
+    /// refuses `a?b` and device names); `None` when it can.
+    fn file_name_problem(&self, name: &str) -> Option<String>;
+}
+
+/// [`GuestOs::split_root`] for a path whose only root is `/`; any number of leading `/` are one.
+pub(crate) fn posix_root(path: &str) -> (String, &str) {
+    match path.strip_prefix('/') {
+        Some(_) => ("/".to_owned(), path.trim_start_matches('/')),
+        None => (String::new(), path),
+    }
+}
+
+/// [`GuestOs::split_root`] for a Windows guest: `C:` (with or without `/` after it) and `//server/share` are roots,
+/// otherwise as [`posix_root`]. `C:a` is relative to the current directory of drive `C:`, which a path cannot name:
+/// it is refused.
+pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
+    let mut letters = path.chars();
+    if let (Some(letter), Some(':')) = (letters.next(), letters.next())
+        && letter.is_ascii_alphabetic()
+    {
+        let rest = &path[2..];
+        if rest.is_empty() || rest.starts_with('/') {
+            return Ok((format!("{letter}:/"), rest.trim_start_matches('/')));
+        }
+        if !rest.starts_with('\\') {
+            return Err(Error::new(
+                ErrorKind::Usage,
+                format!(
+                    "the guest path {path} is relative to the current directory of drive {letter}:; write {letter}:/{rest} to start at the root of drive {letter}:"
+                ),
+            ));
+        }
+    }
+    if let Some(unc) = path.strip_prefix("//")
+        && let Some((server, after_server)) = unc.split_once('/')
+        && !server.is_empty()
+    {
+        let after_server = after_server.trim_start_matches('/');
+        let (share, rest) = after_server.split_once('/').unwrap_or((after_server, ""));
+        if !share.is_empty() {
+            return Ok((format!("//{server}/{share}/"), rest.trim_start_matches('/')));
+        }
+    }
+    Ok(posix_root(path))
 }
 
 pub(crate) trait BaseBuilder: Send + Sync {
@@ -58,13 +114,14 @@ pub(crate) struct SeedSpec {
     pub keys: SeedKeys,
 }
 
-/// The SSH keys a first boot installs, as the text of their files.
+/// The SSH keys a first boot installs, as the text of their files. The private key is a secret: it stays out of `Debug`
+/// output.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SeedKeys {
     /// The public key of the client allowed to log in.
     pub client_public: String,
     /// The guest's SSH host key pair.
-    pub host_private: String,
+    pub host_private: SecretString,
     pub host_public: String,
 }
 

@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::MachineRecord;
+use crate::host::remove_if_present;
 use crate::instance::name::InstanceName;
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
@@ -246,28 +247,43 @@ fn read_file<T>(
     Ok(parse(&text).map(Some))
 }
 
+/// What [`write_file`] appends to a name for the file it writes first, followed by [`TEMP_DIGITS`] hex digits.
+const TEMP_MARK: &str = ".tmp-";
+const TEMP_DIGITS: usize = 8;
+
+/// Whether `name` is the temporary file of a [`write_file`] that was killed before its rename.
+pub(crate) fn is_write_file_temporary(name: &str) -> bool {
+    name.rsplit_once(TEMP_MARK).is_some_and(|(base, digits)| {
+        !base.is_empty()
+            && digits.len() == TEMP_DIGITS
+            && digits.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
 /// Writes `text` to `dir/file` through a temp file and a rename, so a reader sees the old or the new content, never a
 /// mixture, and a crash leaves no half-written `file`.
-fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
+pub(crate) fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
     use std::io::Write;
-    let mut suffix = [0u8; 4];
+    let mut suffix = [0u8; TEMP_DIGITS / 2];
     getrandom::fill(&mut suffix).expect("the OS random number generator is available");
-    let temp = dir.join(format!("{file}.tmp-{}", hex::encode(suffix)));
+    let temp = dir.join(format!("{file}{TEMP_MARK}{}", hex::encode(suffix)));
     let target = dir.join(file);
     let fail = |action: &str, path: &Path, source| {
         Error::io(ErrorKind::Io, format!("cannot {action} {}", path.display()), source)
     };
-    let result = (|| {
+    (|| {
         let mut out = std::fs::File::create_new(&temp).map_err(|e| fail("create", &temp, e))?;
         out.write_all(text.as_bytes()).map_err(|e| fail("write", &temp, e))?;
         out.sync_all().map_err(|e| fail("sync", &temp, e))?;
         drop(out);
         std::fs::rename(&temp, &target).map_err(|e| fail("replace", &target, e))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
+    })()
+    .map_err(|e| {
+        e.after_cleanup(
+            &format!("the temporary file {}", temp.display()),
+            remove_if_present(&temp),
+        )
+    })
 }
 
 impl InstanceRecord {

@@ -1,5 +1,6 @@
-//! What differs between host operating systems, behind one trait. The only `cfg` in devvm's logic is at the top of this
-//! file, where the implementation is chosen. (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
+//! What differs between host operating systems, behind one trait. The implementation is chosen here and only here, by
+//! the `cfg`s on the module declarations and on [`Current`] below; no code under `host/` selects one.
+//! (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
 use std::fmt;
 use std::fs::OpenOptions;
@@ -16,7 +17,17 @@ use crate::{Arch, Result};
 #[path = "host_tests.rs"]
 mod host_tests;
 
-#[cfg_attr(windows, allow(dead_code))]
+pub(crate) mod names;
+#[cfg_attr(
+    any(unix, windows),
+    allow(
+        dead_code,
+        reason = "the host on neither Unix nor Windows; the tests use it everywhere"
+    )
+)]
+mod other;
+#[cfg(unix)]
+mod unix;
 mod unsupported;
 pub(crate) mod watch;
 #[cfg(windows)]
@@ -24,8 +35,10 @@ pub(crate) mod windows;
 
 pub(crate) use watch::{Link, ProcessWatch};
 
-#[cfg(not(windows))]
-use unsupported::UnsupportedHost as Current;
+#[cfg(not(any(unix, windows)))]
+use other::OtherHost as Current;
+#[cfg(unix)]
+use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
 
@@ -104,21 +117,67 @@ pub(crate) trait Host: Send + Sync {
 
     /// Adds execute where read is set; does nothing on Windows.
     fn set_executable(&self, path: &Path) -> std::io::Result<()>;
+
+    /// Sets the modification time of the file or directory `path` to `seconds` since 1970. It needs no write access to
+    /// the contents, so a file that is read-only to its owner takes it.
+    fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()>;
+
+    /// Why `name`, a file name taken from a guest, cannot be one file name in a directory on this host (a Windows
+    /// host refuses `a\b`, `C:\z`, device names and more); `None` when it can.
+    fn file_name_problem(&self, name: &str) -> Option<String>;
+
+    /// Moves the file or symlink `from` over `to`, replacing what is there even when it is read-only (Windows refuses
+    /// to rename over a read-only file). A directory at `to` is an error.
+    fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+
+    /// Moves the directory `from` to `to`, which nobody has: an existing `to`, even an empty directory, is
+    /// `AlreadyExists` and nothing changes. Unlike a rename, it is a publish: of several that race for one name,
+    /// exactly one wins. Where the file system has a rename that refuses to replace (Windows, Linux, macOS), `to` is
+    /// there in full or not at all; where it has none (NFS, some FUSE mounts, old kernels) `to` is claimed first, and
+    /// a kill between the claim and the move leaves it empty.
+    fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+
+    /// Flushes the entries of `dir` to disk, so a file or directory made in it survives a crash. Does nothing on
+    /// Windows, where the file system journals them.
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()>;
+
+    /// What the symlink at `path` points to, spelled with `/` as SFTP and Unix guests do; fails with `InvalidData` when
+    /// the target is not valid Unicode.
+    fn read_link(&self, path: &Path) -> std::io::Result<String>;
+
+    /// Whether this host makes a symlink to a directory and a symlink to a file differently (Windows does), so
+    /// [`Host::make_symlink`] needs to be told which the target is. A copy looks at the target of a guest link only
+    /// when this is `true`.
+    fn symlinks_have_kinds(&self) -> bool;
+
+    /// Creates the symlink `link` pointing to `target`, a `/`-separated text taken from a guest. `to_dir` says whether
+    /// the target is a directory, which a host with [`Host::symlinks_have_kinds`] needs to know; any other host
+    /// ignores it. Fails with `PermissionDenied`, naming the cause, where
+    /// this host cannot make symlinks (Windows without Developer Mode or an elevated token).
+    fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
 }
 
-/// Creates `path` with `options` and writes `bytes`. A file whose write failed is removed, so a half-written secret
-/// is never left behind.
+/// Creates `path` with `options` and writes `bytes`, which are on disk when it returns. A file whose write failed is
+/// removed, so a half-written secret is never left behind.
 fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = options.write(true).create_new(true).open(path)?;
-    if let Err(e) = file.write_all(bytes) {
+    if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
         drop(file);
         return Err(after_failed_write(path, e, || std::fs::remove_file(path)));
     }
     Ok(())
 }
 
-/// The error of a write to `path` that failed with `error`, after `remove` took the partial file away. A file that
-/// stays is named in the error: a retry would otherwise meet `AlreadyExists` with no explanation.
+/// Removes the file `path`; one that is not there is as good as removed.
+pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// The error of a write to `path` that failed with `error`, after `remove` took what the write left away. A leftover
+/// that stays is named in the error: a retry would otherwise meet `AlreadyExists` with no explanation.
 fn after_failed_write(
     path: &Path,
     error: std::io::Error,
@@ -129,7 +188,7 @@ fn after_failed_write(
         Err(left) => std::io::Error::new(
             error.kind(),
             format!(
-                "{error}; the partial file {} could not be removed either ({left})",
+                "{error}; the leftover {} could not be removed either ({left})",
                 path.display()
             ),
         ),
