@@ -117,6 +117,10 @@ pub(crate) struct MachineRecord {
     /// Files outside the instance directory that die with the machine (QEMU: the QMP socket and its lock file).
     #[serde(default)]
     pub leftovers: Vec<PathBuf>,
+    /// The machine was launched with `DeviceProfile::no_reboot`: it exits when its guest reboots, so it cannot be reset
+    /// in place.
+    #[serde(default)]
+    pub no_reboot: bool,
 }
 
 impl MachineRecord {

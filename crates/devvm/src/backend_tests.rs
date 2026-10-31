@@ -34,16 +34,37 @@ fn sample() -> MachineRecord {
             PathBuf::from("/run/user/1000/devvm-ab.sock"),
             PathBuf::from("/run/user/1000/devvm-ab.sock.lock"),
         ],
+        no_reboot: false,
     }
 }
 
-const GOLDEN: &str = r#"{"process":{"v":1,"platform":"windows","pid":4242,"token":"133000000000000000"},"qmp":"/run/user/1000/devvm-ab.sock","ssh":[{"endpoint":"normal","addr":"127.0.0.1:2222"},{"endpoint":"elevated","addr":"127.0.0.1:2223"}],"serial_log":"/var/devvm/serial.log","leftovers":["/run/user/1000/devvm-ab.sock","/run/user/1000/devvm-ab.sock.lock"]}"#;
+const GOLDEN: &str = r#"{"process":{"v":1,"platform":"windows","pid":4242,"token":"133000000000000000"},"qmp":"/run/user/1000/devvm-ab.sock","ssh":[{"endpoint":"normal","addr":"127.0.0.1:2222"},{"endpoint":"elevated","addr":"127.0.0.1:2223"}],"serial_log":"/var/devvm/serial.log","leftovers":["/run/user/1000/devvm-ab.sock","/run/user/1000/devvm-ab.sock.lock"],"no_reboot":false}"#;
 
 #[skuld::test]
 fn machine_record_json_is_stable() {
     let record = sample();
     assert_eq!(serde_json::to_string(&record).unwrap(), GOLDEN);
     assert_eq!(serde_json::from_str::<MachineRecord>(GOLDEN).unwrap(), record);
+}
+
+#[skuld::test]
+fn a_machine_record_without_no_reboot_parses_as_a_machine_that_reboots() {
+    let without = GOLDEN.replace(r#","no_reboot":false"#, "");
+    assert_ne!(without, GOLDEN);
+    let parsed = serde_json::from_str::<MachineRecord>(&without).unwrap();
+    assert!(!parsed.no_reboot);
+    assert_eq!(parsed, sample());
+}
+
+#[skuld::test]
+fn a_machine_record_keeps_no_reboot() {
+    let record = MachineRecord {
+        no_reboot: true,
+        ..sample()
+    };
+    let json = serde_json::to_string(&record).unwrap();
+    assert!(json.contains(r#""no_reboot":true"#), "{json}");
+    assert_eq!(serde_json::from_str::<MachineRecord>(&json).unwrap(), record);
 }
 
 #[skuld::test]

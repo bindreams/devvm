@@ -489,6 +489,7 @@ fn start_over_a_stale_record_deletes_the_old_machines_leftovers(#[fixture(unicod
         ssh: Vec::new(),
         serial_log: std::path::PathBuf::new(),
         leftovers: vec![socket.clone()],
+        no_reboot: false,
     };
     sleeper.finish();
     let op = dir.op_exclusive().unwrap();

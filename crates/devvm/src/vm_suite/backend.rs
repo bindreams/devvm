@@ -1,10 +1,8 @@
 //! The QEMU backend against the contract every backend meets, and against QEMU's own behaviour.
 //!
 //! These machines run firmware only, on an empty qcow2: no guest OS boots, so they need the sidecar and WHPX and nothing
-//! else. A firmware-only machine does not end on `system_powerdown` (measured on the hosted runner: the `POWERDOWN`
-//! event arrives, the process stays, in both of the states tried), so the contract functions that wait for a graceful end
-//! (`shutdown_stops_the_process`, `shutdown_from_another_process_stops_the_machine`, and the shutdown half of
-//! `a_running_machine_leaves_no_leftovers_after_kill_or_shutdown`) belong to the guest target of the end-to-end suite.
+//! else. A firmware-only machine does not end on `system_powerdown` (the `POWERDOWN` event arrives, the process stays),
+//! so the contract functions that wait for a graceful end are not run here.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -125,7 +123,7 @@ impl QemuTarget {
     }
 
     fn endpoint(&self, spec: &MachineSpec) -> QmpEndpoint {
-        QmpEndpoint::for_instance(&socket_dir(), &spec.id).unwrap()
+        QmpEndpoint::for_instance(&socket_dir(), &spec.id, host::current().socket_path_max()).unwrap()
     }
 
     /// The machine `n` under `root`, its disk made by the backend's own storage over a layer.
@@ -287,13 +285,13 @@ fn is_running(record: &MachineRecord) -> bool {
 /// The host port QEMU has bound for the machine's first forward, read over QMP.
 fn forwarded_host_port(record: &MachineRecord) -> u16 {
     let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &ExitWatch::new(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(&endpoint, &ExitWatch::new(host::current()), &MemoryProgress::default()).unwrap();
     qmp.forwarded_ports().unwrap()[0].host
 }
 
 fn run_state(record: &MachineRecord) -> String {
     let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &ExitWatch::new(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(&endpoint, &ExitWatch::new(host::current()), &MemoryProgress::default()).unwrap();
     qmp.query_status().unwrap().state
 }
 
@@ -500,7 +498,7 @@ fn vm_qemu_a_frozen_machine_cannot_be_reset_or_shut_down_and_does_not_hang(
 // Reset ---------------------------------------------------------------------------------------------------------------
 
 #[skuld::test]
-fn vm_qemu_a_system_reset_ends_the_process_when_the_profile_says_no_reboot(
+fn vm_qemu_a_reset_of_a_no_reboot_machine_is_refused_and_leaves_it_running(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -509,8 +507,39 @@ fn vm_qemu_a_system_reset_ends_the_process_when_the_profile_says_no_reboot(
     let mut machine = target.backend().launch(&spec).unwrap();
     machine.resume().unwrap();
     let record = machine.record();
+    assert!(record.no_reboot);
+    let mut attached = target.backend().attach(&record).unwrap();
 
-    let error = machine.reset().unwrap_err();
+    for (who, error) in [
+        ("launched", machine.reset().unwrap_err()),
+        ("attached", attached.reset().unwrap_err()),
+    ] {
+        assert_eq!(error.kind(), ErrorKind::Unavailable, "{who}: {error}");
+        assert!(error.message().contains("no-reboot"), "{who}: {error}");
+    }
+
+    assert!(is_running(&record), "nothing was sent that could end QEMU");
+    assert_eq!(run_state(&record), "running");
+    machine.kill().unwrap();
+}
+
+#[skuld::test]
+fn vm_qemu_a_system_reset_that_reaches_a_no_reboot_qemu_reports_no_reboot_and_the_process_ends(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let target = QemuTarget::new(install);
+    let (spec, _parent) = target.prepared(home, 0, |spec| spec.profile.no_reboot = true);
+    let mut machine = target.backend().launch(&spec).unwrap();
+    machine.resume().unwrap();
+    // A record from before the flag existed does not say the machine cannot reset, so the request reaches QEMU.
+    let record = MachineRecord {
+        no_reboot: false,
+        ..machine.record()
+    };
+    let mut attached = target.backend().attach(&record).unwrap();
+
+    let error = attached.reset().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("no-reboot"), "{error}");
@@ -594,7 +623,7 @@ fn vm_qemu_whpx_error_lines_in_qemu_log_are_not_a_failure(
     let target = QemuTarget::new(install);
     let (spec, _parent) = target.prepared(home, 0, |_| {});
     let mut machine = target.backend().launch(&spec).unwrap();
-    // What healthy resets write (measured): QEMU keeps running.
+    // What healthy resets write: QEMU keeps running.
     let mut log = std::fs::OpenOptions::new()
         .append(true)
         .open(spec.dir.join("qemu.log"))
@@ -623,7 +652,7 @@ fn vm_qemu_shutdown_of_a_paused_machine_fails_naming_the_state_and_returns(
     let record = machine.record();
     {
         let endpoint = QmpEndpoint::from_record(&record.qmp);
-        Qmp::connect(&endpoint, &ExitWatch::new(), &MemoryProgress::default())
+        Qmp::connect(&endpoint, &ExitWatch::new(host::current()), &MemoryProgress::default())
             .unwrap()
             .stop()
             .unwrap();
@@ -652,7 +681,7 @@ fn vm_qemu_reset_of_a_paused_machine_fails_naming_the_state_and_returns(
     machine.resume().unwrap();
     {
         let endpoint = QmpEndpoint::from_record(&machine.record().qmp);
-        Qmp::connect(&endpoint, &ExitWatch::new(), &MemoryProgress::default())
+        Qmp::connect(&endpoint, &ExitWatch::new(host::current()), &MemoryProgress::default())
             .unwrap()
             .stop()
             .unwrap();

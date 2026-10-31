@@ -158,6 +158,7 @@ impl Backend for FakeBackend {
                 .as_ref()
                 .map(|leftovers| leftover_paths(&leftovers.dir, &spec.id))
                 .unwrap_or_default(),
+            no_reboot: spec.profile.no_reboot,
         };
         let index = {
             let mut launched = self.launched.lock().unwrap();

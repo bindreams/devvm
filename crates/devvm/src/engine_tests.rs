@@ -121,6 +121,7 @@ pub(crate) fn dead_machine(leftovers: Vec<PathBuf>) -> MachineRecord {
         ssh: Vec::new(),
         serial_log: PathBuf::new(),
         leftovers,
+        no_reboot: false,
     };
     sleeper.finish();
     machine
@@ -271,6 +272,7 @@ fn list_marks_running_by_recorded_identity(#[fixture(unicode_home)] home: &Path)
         ssh: Vec::new(),
         serial_log: std::path::PathBuf::new(),
         leftovers: Vec::new(),
+        no_reboot: false,
     };
     let op = dir.op_exclusive().unwrap();
     dir.update(&op, &mut |r: &mut InstanceRecord| r.machine = Some(record.clone()))

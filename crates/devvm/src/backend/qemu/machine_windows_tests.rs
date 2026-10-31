@@ -47,6 +47,7 @@ fn world(dir: &Path) -> World {
         ssh: Vec::new(),
         serial_log: dir.join("serial.log"),
         leftovers: vec![marker.clone(), sock.endpoint.lock_path()],
+        no_reboot: false,
     };
     World {
         dir: dir.to_path_buf(),
@@ -72,6 +73,7 @@ impl World {
             host::current(),
             Arc::new(MemoryProgress::default()),
         )
+        .unwrap()
     }
 
     /// A machine this process launched and resumed, whose log is `log`.
@@ -179,6 +181,48 @@ fn reset_of_a_launched_machine_asks_the_host_before_it_connects(#[fixture(unicod
 }
 
 #[skuld::test]
+fn reset_of_a_no_reboot_machine_is_refused_before_it_connects(#[fixture(unicode_home)] home: &Path) {
+    let mut world = world(home);
+    world.record.no_reboot = true;
+    let mut machine = world.launched(world.dir.join("qemu.log"), host::current());
+    // Nothing listens and the VM is gone: a reset that connected would fail with `ConnectionLost`, not `Unavailable`.
+    world.end_qemu();
+
+    let error = machine.reset().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("no-reboot"), "{error}");
+}
+
+#[skuld::test]
+fn shutdown_waits_for_the_exit_after_the_control_socket_closes_while_qemu_lives(#[fixture(unicode_home)] home: &Path) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let world = world(home);
+    let (server, _) = serve(world.sock.listen(), 1, |session, _| {
+        session.answer(json!({ "status": "running", "running": true }));
+        session.command().expect("system_powerdown");
+        // The connection closes with QEMU still alive.
+    });
+    let mut machine = world.attached();
+    let exited = AtomicBool::new(false);
+
+    let (result, exited_before_it_returned) = std::thread::scope(|scope| {
+        let shutdown = scope.spawn(|| {
+            let result = machine.shutdown();
+            (result, exited.load(Ordering::SeqCst))
+        });
+        server.wait().unwrap();
+        exited.store(true, Ordering::SeqCst);
+        world.end_qemu();
+        shutdown.join().unwrap()
+    });
+
+    result.unwrap();
+    assert!(exited_before_it_returned, "shutdown returned while QEMU was alive");
+}
+
+#[skuld::test]
 fn reset_of_an_attached_machine_sends_only_the_target_query_before_the_host_answers(
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -192,7 +236,8 @@ fn reset_of_an_attached_machine_sends_only_the_target_query_before_the_host_answ
         world.record.clone(),
         &NO_GUEST_RESET,
         Arc::new(MemoryProgress::default()),
-    );
+    )
+    .unwrap();
 
     let error = machine.reset().unwrap_err();
 

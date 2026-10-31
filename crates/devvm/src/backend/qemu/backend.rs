@@ -18,7 +18,7 @@ pub(crate) struct QemuBackend {
     install: Arc<LazyInstall>,
     storage: Arc<QemuStorage>,
     host: &'static dyn Host,
-    /// Where control sockets go. Short, because a socket path is limited to 107 bytes.
+    /// Where control sockets go. Short, because a socket path is limited (`Host::socket_path_max`).
     temp: PathBuf,
     progress: Arc<dyn Progress>,
 }
@@ -41,14 +41,35 @@ impl QemuBackend {
     }
 }
 
+impl QemuBackend {
+    /// `error`, after the frozen QEMU of a launch that failed has been killed and the files it could have made are
+    /// removed. A QEMU that cannot be killed is named in the error: it is still there, frozen.
+    fn abandon(&self, vm: &mut VmProcess, endpoint: &QmpEndpoint, error: Error) -> Error {
+        for path in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => self.progress.message(&format!("cannot delete {}: {e}", path.display())),
+            }
+        }
+        match vm.kill() {
+            Ok(()) => error,
+            Err(kill) => Error::new(
+                error.kind(),
+                format!("{error}; the frozen QEMU could not be killed either ({kill}) and is still running"),
+            ),
+        }
+    }
+}
+
 impl Backend for QemuBackend {
     /// Starts QEMU frozen, in an empty private working directory, with nothing in its environment but `SystemRoot` and
     /// a `PATH` of System32 and its own `bin`. Its output goes to `<instance>/qemu.log`. Resolving the sidecar here is
     /// the only place a launch can download it.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let install = self.install.get()?;
-        let endpoint = QmpEndpoint::for_instance(&self.temp, &spec.id)?;
-        let paths = LaunchPaths::resolve(spec, endpoint.path().to_path_buf(), &install.share);
+        let endpoint = QmpEndpoint::for_instance(&self.temp, &spec.id, self.host.socket_path_max())?;
+        let paths = LaunchPaths::resolve(spec, endpoint.path().to_path_buf(), &install.share)?;
         let args = build_args(spec, &paths)?;
 
         // An earlier run may have left files in the working directory; QEMU starts in an empty one.
@@ -69,14 +90,19 @@ impl Backend for QemuBackend {
             .envs(install.environment(self.host.system_dirs().as_ref())?)
             .current_dir(&cwd);
         let log = qemu_log(&spec.dir);
-        let vm = VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?;
+        let mut vm = VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?;
+        let process = match vm.record() {
+            Ok(process) => process,
+            Err(e) => return Err(self.abandon(&mut vm, &endpoint, e)),
+        };
 
         let record = MachineRecord {
-            process: vm.record()?,
+            process,
             qmp: endpoint.path().display().to_string(),
             ssh: Vec::new(),
             serial_log: spec.serial_log.clone(),
             leftovers: vec![endpoint.path().to_path_buf(), endpoint.lock_path()],
+            no_reboot: spec.profile.no_reboot,
         };
         Ok(Box::new(QemuMachine::launched(
             vm,
@@ -101,7 +127,7 @@ impl Backend for QemuBackend {
             record.clone(),
             self.host,
             self.progress.clone(),
-        )))
+        )?))
     }
 
     fn storage(&self) -> &dyn Storage {

@@ -41,6 +41,7 @@ fn machine() -> MachineRecord {
             endpoint: Endpoint::Normal,
             addr: "127.0.0.1:2222".parse().unwrap(),
         }],
+        no_reboot: false,
     }
 }
 

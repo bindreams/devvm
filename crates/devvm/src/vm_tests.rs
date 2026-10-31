@@ -44,6 +44,7 @@ fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[
         ssh: Vec::new(),
         serial_log: std::path::PathBuf::new(),
         leftovers: Vec::new(),
+        no_reboot: false,
     };
     let op = dir.op_exclusive().unwrap();
     dir.update(&op, &mut |r: &mut InstanceRecord| r.machine = Some(machine.clone()))
@@ -78,6 +79,7 @@ fn remove_deletes_the_leftovers_of_the_machine(#[fixture(unicode_home)] home: &P
             ssh: Vec::new(),
             serial_log: std::path::PathBuf::new(),
             leftovers: vec![socket.clone(), home.join("never-existed")],
+            no_reboot: false,
         },
     );
 
@@ -98,6 +100,7 @@ fn stop_deletes_the_leftovers_of_a_machine_that_is_already_gone(#[fixture(unicod
         ssh: Vec::new(),
         serial_log: std::path::PathBuf::new(),
         leftovers: vec![socket.clone()],
+        no_reboot: false,
     };
     sleeper.finish();
     record_machine(&dir, &machine);
