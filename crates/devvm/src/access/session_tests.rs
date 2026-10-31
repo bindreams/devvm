@@ -581,7 +581,8 @@ fn exec_flushes_both_host_writers_when_the_command_ends(#[fixture(unicode_home)]
     let session = rig.connect();
     let (mut out, mut err) = (CountsFlushes::default(), CountsFlushes::default());
     session.exec("echo hi", &mut out, &mut err).unwrap();
-    assert!((out.flushes, err.flushes) >= (1, 1), "{} {}", out.flushes, err.flushes);
+    assert!(out.flushes >= 1, "stdout was flushed {} times", out.flushes);
+    assert!(err.flushes >= 1, "stderr was flushed {} times", err.flushes);
 }
 
 /// A sink whose flush fails.

@@ -20,3 +20,7 @@ pub fn symlink(target: &Path, link: &Path) {
         )
     })
 }
+
+#[cfg(test)]
+#[path = "symlink_tests.rs"]
+mod symlink_tests;

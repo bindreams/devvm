@@ -216,23 +216,46 @@ fn a_sweep_holds_the_lock_while_it_asks_whether_an_instance_lives(#[fixture(unic
     assert_eq!(held.get(), Some(true), "the lock was free while the sweep asked");
 }
 
+/// Every file in `dir` but the lock file (a locked file cannot be read on Windows) with its content, sorted.
+fn snapshot(dir: &Path) -> Vec<(String, String)> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_name() != ".lock")
+        .map(|entry| {
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read_to_string(entry.path()).unwrap(),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
 /// Runs `operation` while another holder has the lock: it must say it waits and change nothing until the lock is free.
 /// Returns a directory handle for looking at the result.
+///
+/// The message is sent by the lock call, so a write made before the operation asks for the lock is done by then and
+/// shows in the snapshot taken when the message arrives; a write after it cannot happen while the holder has the lock.
 fn waits_for_the_lock(home: &Path, operation: impl FnOnce(SshConfigDir) + Send) -> SshConfigDir {
     let (progress, messages) = ChannelProgress::new();
     let operated = SshConfigDir::new(home.join("ssh")).with_progress(progress);
     let mut holder = FileLock::open(&operated.path().join(".lock")).unwrap();
     assert!(holder.try_lock(Mode::Exclusive).unwrap());
+    let before = snapshot(operated.path());
     std::thread::scope(|scope| {
         // The operation owns the handle, so the message channel closes if it finishes without waiting.
         let waiting = scope.spawn(move || operation(operated));
-        // Sent just before the operation blocks on the lock; the operation cannot have changed anything yet.
         let message = messages
             .recv()
             .expect("the operation finished without waiting for the lock");
         assert_eq!(message, "waiting for the ssh configuration");
+        // Looked at now, asserted after the release: a failed assert here would leave the operation waiting forever.
+        let during = snapshot(&home.join("ssh"));
         holder.unlock().unwrap();
         waiting.join().unwrap();
+        assert_eq!(during, before, "the operation wrote before it had the lock");
     });
     SshConfigDir::new(home.join("ssh"))
 }
