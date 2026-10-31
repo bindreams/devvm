@@ -526,6 +526,63 @@ fn a_file_goes_inside_a_directory_or_a_path_ending_in_a_slash_and_is_the_destina
     }
 }
 
+/// `name` below `parent` with a trailing separator, as typed.
+#[cfg(not(target_os = "macos"))]
+fn typed_dir_with_slash(parent: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let mut typed = parent.join(name).into_os_string();
+    typed.push(std::path::MAIN_SEPARATOR_STR);
+    PathBuf::from(typed)
+}
+
+/// What `dir` holds, by name as the file system keeps it (macOS refuses names that are not Unicode, so the tests that
+/// use them do not run there).
+#[cfg(not(target_os = "macos"))]
+fn names_in(dir: &Path) -> Vec<std::ffi::OsString> {
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A host destination whose name is not Unicode and which ends in a separator is the directory the user typed: the
+/// copy merges into it and makes no directory named after the name's lossy text.
+#[cfg(not(target_os = "macos"))]
+#[skuld::test]
+fn a_destination_with_a_name_that_is_not_unicode_and_a_slash_merges_into_that_directory(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    guest_project(&env);
+    let name = crate::test_support::fixtures::non_unicode_name();
+    let dir = env.local.join(&name);
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("extra.txt"), b"keep").unwrap();
+
+    env.copy_out("/proj", &typed_dir_with_slash(&env.local, &name)).unwrap();
+
+    assert_eq!(names_in(&env.local), [name]);
+    assert_eq!(tree(&dir), ["a.txt", "extra.txt", "sub/", "sub/b.txt"]);
+}
+
+/// The same destination that does not exist is made under its own name, and a file goes inside it.
+#[cfg(not(target_os = "macos"))]
+#[skuld::test]
+fn a_destination_with_a_name_that_is_not_unicode_and_a_slash_is_made_under_that_name(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let env = Env::new(home);
+    env.guest_file("g.txt", b"guest");
+    let name = crate::test_support::fixtures::non_unicode_name();
+
+    env.copy_out("/g.txt", &typed_dir_with_slash(&env.local, &name))
+        .unwrap();
+
+    assert_eq!(names_in(&env.local), std::slice::from_ref(&name));
+    assert_eq!(std::fs::read(env.local.join(&name).join("g.txt")).unwrap(), b"guest");
+}
+
 #[skuld::test]
 fn a_slash_after_a_file_destination_is_an_error(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);

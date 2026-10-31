@@ -5,6 +5,8 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use os_str_bytes::OsStrBytesExt;
+
 use super::copy::{CopySide, Receives};
 use super::guest::GuestSide;
 use super::plan::{Beyond, Item, Kind, Present};
@@ -25,8 +27,16 @@ pub(super) fn ends_with_separator(path: &Path) -> bool {
 /// `path` without trailing separators. A root is left as it is: `C:` would name the current directory of the drive, and
 /// `\?\C:` the volume itself.
 pub(super) fn without_trailing_separator(path: &Path) -> PathBuf {
-    let text = path.as_os_str().to_string_lossy();
-    let trimmed = text.trim_end_matches(std::path::is_separator);
+    // On the `OsStr` itself: the lossy text of a name that is not Unicode would put U+FFFD where its bytes were.
+    let text = path.as_os_str();
+    let mut trimmed = text;
+    while let Some(rest) = ['/', '\\']
+        .into_iter()
+        .filter(|separator| std::path::is_separator(*separator))
+        .find_map(|separator| trimmed.strip_suffix(separator))
+    {
+        trimmed = rest;
+    }
     let is_root =
         trimmed.is_empty() || matches!(Path::new(trimmed).components().next_back(), Some(Component::Prefix(_)));
     if is_root || trimmed.len() == text.len() {
@@ -96,6 +106,20 @@ fn link_removal_failure(as_file: std::io::Error, as_dir: std::io::Error) -> std:
     std::io::Error::new(as_file.kind(), text)
 }
 
+/// Removes the symlink `path`. A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
+fn remove_symlink(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(path)
+        .or_else(|as_file| std::fs::remove_dir(path).map_err(|as_dir| link_removal_failure(as_file, as_dir)))
+}
+
+/// Removes the temporary `temp`, a file or a symlink, if it is there.
+fn remove_temporary(temp: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(temp) {
+        Ok(metadata) if metadata.file_type().is_symlink() => remove_symlink(temp),
+        _ => remove_if_present(temp),
+    }
+}
+
 // Reading =============================================================================================================
 
 /// The tree entry that `metadata` describes at `path`, or `None` for a directory's contents to be walked.
@@ -160,7 +184,7 @@ fn temp_beside(target: &Path) -> PathBuf {
 fn without_temporary(error: Error, temp: &Path, side: &HostSide) -> Error {
     error.after_cleanup(
         &format!("the temporary file {}", side.name(temp)),
-        remove_if_present(temp),
+        remove_temporary(temp),
     )
 }
 
@@ -372,10 +396,7 @@ impl CopySide for HostSide<'_> {
     }
 
     fn remove_link(&self, path: &PathBuf) -> Result<()> {
-        // A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
-        std::fs::remove_file(path)
-            .or_else(|as_file| std::fs::remove_dir(path).map_err(|as_dir| link_removal_failure(as_file, as_dir)))
-            .map_err(|e| local_error("cannot replace the symlink", self.name(path), e))
+        remove_symlink(path).map_err(|e| local_error("cannot replace the symlink", self.name(path), e))
     }
 
     fn probe_links(&self, dest: &PathBuf) -> Result<Option<String>> {

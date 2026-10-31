@@ -38,6 +38,7 @@ russh = { version = "0.65", default-features = false, features = ["ring"] }
 russh-sftp = "3"
 rand = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "fs"] }
+os_str_bytes = "7"
 
 [dev-dependencies]
 skuld = { workspace = true }

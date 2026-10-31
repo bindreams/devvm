@@ -652,6 +652,7 @@ dependencies = [
  "jiff",
  "junction",
  "libc",
+ "os_str_bytes",
  "percent-encoding",
  "qapi",
  "rand",
@@ -1828,6 +1829,15 @@ checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "os_str_bytes"
+version = "7.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73b489f051c9d2f4299ddf8d55e33c65c86a7b76f49359af15f79ebe541d1595"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

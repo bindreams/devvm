@@ -35,6 +35,24 @@ pub fn unicode_home() -> Result<UnicodeHome, String> {
     Ok(UnicodeHome { path, _tmp: tmp })
 }
 
+/// The name `bad<invalid>name`, where `<invalid>` is a byte (Unix) or an unpaired surrogate (Windows) that no Unicode
+/// text holds, so `to_string_lossy` turns it into U+FFFD. macOS file systems refuse such a name.
+pub fn non_unicode_name() -> std::ffi::OsString {
+    #[cfg(unix)]
+    {
+        std::os::unix::ffi::OsStringExt::from_vec(vec![b'b', b'a', b'd', 0xFF, b'n', b'a', b'm', b'e'])
+    }
+    #[cfg(windows)]
+    {
+        let wide: Vec<u16> = "bad"
+            .encode_utf16()
+            .chain([0xD800])
+            .chain("name".encode_utf16())
+            .collect();
+        std::os::windows::ffi::OsStringExt::from_wide(&wide)
+    }
+}
+
 // Fakes ===============================================================================================================
 
 /// A clock the test sets.

@@ -5,7 +5,7 @@ use super::{
     HostSide, finish_file, joined, lexically_normal, link_removal_failure, replace, without_trailing_separator,
 };
 use crate::access::sftp::copy::CopySide;
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{non_unicode_name, unicode_home};
 use crate::test_support::host::{RecordingHost, TestHost};
 use crate::test_support::symlink::symlink;
 
@@ -45,6 +45,48 @@ fn a_trailing_separator_is_dropped_from_anything_but_a_root() {
         assert_eq!(text(&without_trailing_separator(Path::new(r"C:\work\"))), r"C:\work");
         assert_eq!(text(&without_trailing_separator(Path::new("C:work/"))), "C:work");
     }
+}
+
+/// The path is trimmed as the bytes it is, not as the text it lossily reads as: a name that is not Unicode stays the
+/// name the user typed.
+#[skuld::test]
+fn a_trailing_separator_is_dropped_from_a_name_that_is_not_unicode() {
+    let name = non_unicode_name();
+    for separator in ["/", "//", std::path::MAIN_SEPARATOR_STR] {
+        let mut typed = name.clone();
+        typed.push(separator);
+        assert_eq!(
+            without_trailing_separator(Path::new(&typed)).as_os_str(),
+            name.as_os_str(),
+            "{separator}"
+        );
+
+        let mut nested = std::ffi::OsString::from("a/");
+        nested.push(&name);
+        let expected = nested.clone();
+        nested.push(separator);
+        assert_eq!(
+            without_trailing_separator(Path::new(&nested)).as_os_str(),
+            expected.as_os_str(),
+            "a/{separator}"
+        );
+    }
+}
+
+/// A root made of non-Unicode text is still a root: only the separators after it go, or none.
+#[cfg(windows)]
+#[skuld::test]
+fn a_root_that_is_not_unicode_is_trimmed_like_any_other() {
+    let mut share_path = std::ffi::OsString::from(r"\\server-");
+    share_path.push(non_unicode_name());
+    share_path.push(r"\share");
+    let mut typed = share_path.clone();
+    typed.push(r"\");
+    assert_eq!(
+        without_trailing_separator(Path::new(&typed)).as_os_str(),
+        share_path.as_os_str()
+    );
+    assert!(without_trailing_separator(Path::new(&typed)).has_root());
 }
 
 #[skuld::test]
@@ -304,4 +346,23 @@ fn a_move_whose_cleanup_fails_too_names_both(#[fixture(unicode_home)] home: &Pat
         "{text}"
     );
     assert!(temp.is_dir(), "it was left, and the error says so");
+}
+
+/// Windows removes a symlink to a directory as a directory, which `remove_file` cannot do; the cleanup of a temporary
+/// link must not leave it behind.
+#[skuld::test]
+fn a_move_that_fails_removes_a_temporary_that_is_a_link_to_a_directory(#[fixture(unicode_home)] home: &Path) {
+    let (aim, temp, target) = (home.join("aim"), home.join("partial"), home.join("tool"));
+    std::fs::create_dir(&aim).unwrap();
+    symlink(&aim, &temp);
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("held"), "old").unwrap();
+    let error = replace(&HostSide::new(&TestHost, Typed::none()), &temp, &target).unwrap_err();
+    assert!(error.message().contains("cannot move the copy into place"), "{error}");
+    assert!(
+        !error.message().contains("cleaning up failed"),
+        "the temporary was removed: {error}"
+    );
+    assert!(std::fs::symlink_metadata(&temp).is_err(), "the temporary link is gone");
+    assert!(aim.is_dir(), "what the link led to stays");
 }

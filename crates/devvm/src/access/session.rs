@@ -444,6 +444,15 @@ impl Inner {
     }
 }
 
+/// The TCP connection to the guest's forwarded port. `russh` sets TCP_NODELAY only in the `client::connect` that makes
+/// its own connection, and this one is made here, so it is set here: small requests (SFTP's stat, mkdir, rename) must
+/// not wait for Nagle's algorithm.
+async fn connect_tcp(addr: std::net::SocketAddr) -> std::io::Result<TcpStream> {
+    let stream = TcpStream::connect(addr).await?;
+    stream.set_nodelay(true)?;
+    Ok(stream)
+}
+
 /// Everything one connect needs, owned so it can move into the runtime.
 struct Connect {
     target: SshTarget,
@@ -462,7 +471,6 @@ impl Connect {
         Arc::new(client::Config {
             keepalive_interval: Some(self.ka.interval),
             keepalive_max: self.ka.max_missed as usize,
-            nodelay: true,
             ..client::Config::default()
         })
     }
@@ -472,7 +480,7 @@ impl Connect {
         &self,
         config: &Arc<client::Config>,
     ) -> std::result::Result<(client::Handle<ClientHandler>, Arc<Transport>), Failure> {
-        let stream = TcpStream::connect(self.target.addr).await.map_err(Failure::Tcp)?;
+        let stream = connect_tcp(self.target.addr).await.map_err(Failure::Tcp)?;
         let transport = Transport::new();
         let stream = Watched::new(stream, transport.clone());
         let handler = ClientHandler {

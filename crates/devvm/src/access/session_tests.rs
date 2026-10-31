@@ -8,7 +8,7 @@ use russh::keys::{HashAlg, PrivateKey, PublicKey};
 
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
-use crate::access::session::{BootGate, ClientHandler, Connect, Context, Failure, Transport, humanly};
+use crate::access::session::{BootGate, ClientHandler, Connect, Context, Failure, Transport, connect_tcp, humanly};
 use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, SshTarget, VmExit};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
@@ -559,6 +559,19 @@ fn a_boot_bound_that_passes_during_a_retry_carries_the_failure_of_the_attempt_be
         !error.message().contains("boot bound of"),
         "the bound ended the connect without the failure of the attempt before it: {error}"
     );
+}
+
+#[skuld::test]
+fn the_connection_to_the_guest_sends_small_writes_at_once() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let stream = runtime
+        .block_on(connect_tcp(listener.local_addr().unwrap()))
+        .expect("the listener accepts");
+    assert!(stream.nodelay().unwrap(), "Nagle's algorithm is on");
 }
 
 // The boot bound ======================================================================================================
