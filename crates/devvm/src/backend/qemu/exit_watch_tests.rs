@@ -1,6 +1,7 @@
 use super::{End, ExitWatch};
 use crate::backend::qemu::uds::UnixStream;
 use crate::host;
+use crate::test_support::host::{INTERRUPT_FAILED, INTERRUPT_FAILS};
 use crate::test_support::qemu::Sock;
 
 /// A connected stream; the peer is kept by the caller.
@@ -38,6 +39,19 @@ fn an_exit_releases_the_connection_it_interrupted() {
     assert!(watch.lock().connection.is_none());
     assert!(registration.exited());
     drop(registration);
+}
+
+#[skuld::test]
+fn a_failed_interrupt_is_kept_for_the_session_and_does_not_hide_the_exit() {
+    let (_sock, client, _peer) = connected();
+    let watch = ExitWatch::new(&INTERRUPT_FAILS);
+    let registration = watch.register(client).unwrap();
+    assert_eq!(registration.wake_failure(), None);
+
+    watch.report_exit();
+
+    assert!(registration.exited());
+    assert!(registration.wake_failure().unwrap().contains(INTERRUPT_FAILED));
 }
 
 #[skuld::test]

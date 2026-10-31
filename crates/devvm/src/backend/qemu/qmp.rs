@@ -128,16 +128,6 @@ pub(crate) struct Qmp {
     _lock: FileLock,
 }
 
-fn lost(endpoint: &QmpEndpoint, what: &str) -> Error {
-    Error::new(
-        ErrorKind::ConnectionLost,
-        format!(
-            "QEMU closed its control socket {} while devvm was waiting for {what}",
-            endpoint.path().display()
-        ),
-    )
-}
-
 impl Qmp {
     /// Connects to the socket, negotiates, and holds the lock file. It waits for the QEMU process to listen for as long
     /// as `exit` does not report the process gone, trying again every few milliseconds: the listener is up about 30 ms
@@ -217,8 +207,27 @@ impl Qmp {
         Ok(qmp)
     }
 
+    fn lost(&self, what: &str) -> Error {
+        Error::new(
+            ErrorKind::ConnectionLost,
+            format!(
+                "QEMU closed its control socket {} while devvm was waiting for {what}{}",
+                self.endpoint.path().display(),
+                self.wake_failure()
+            ),
+        )
+    }
+
+    /// What to add to an error about a connection that ended: why the exit could not wake the reader, if it could not.
+    fn wake_failure(&self) -> String {
+        match self.registration.wake_failure() {
+            Some(why) => format!(" (devvm could not wake the reader when QEMU exited: {why})"),
+            None => String::new(),
+        }
+    }
+
     fn negotiate(&mut self) -> Result<()> {
-        let greeting = self.read_value()?.ok_or_else(|| lost(&self.endpoint, "its greeting"))?;
+        let greeting = self.read_value()?.ok_or_else(|| self.lost("its greeting"))?;
         serde_json::from_value::<QapiCapabilities>(greeting.clone()).map_err(|e| {
             Error::new(
                 ErrorKind::Internal,
@@ -292,9 +301,10 @@ impl Qmp {
                         ErrorKind::Io
                     },
                     format!(
-                        "cannot send {} to the QEMU control socket {}",
+                        "cannot send {} to the QEMU control socket {}{}",
                         C::NAME,
-                        self.endpoint.path().display()
+                        self.endpoint.path().display(),
+                        self.wake_failure()
                     ),
                     e,
                 )
@@ -302,7 +312,7 @@ impl Qmp {
         let what = format!("the reply to {}", C::NAME);
         let value = loop {
             match self.read_message()? {
-                None => return Err(lost(&self.endpoint, &what)),
+                None => return Err(self.lost(&what)),
                 Some(None) => continue,
                 Some(Some(value)) => break value,
             }
@@ -370,7 +380,7 @@ impl Qmp {
                 ));
             }
             if self.read_message()?.is_none() {
-                return Err(lost(&self.endpoint, "the RESET event of system_reset"));
+                return Err(self.lost("the RESET event of system_reset"));
             }
         }
     }

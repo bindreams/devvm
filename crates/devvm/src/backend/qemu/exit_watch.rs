@@ -47,6 +47,9 @@ struct State {
     /// unregisters or the exit interrupts it. Both take it out of this slot under the mutex, so the interrupt never runs
     /// on a closed handle and a closing session never races it.
     connection: Option<UnixStream>,
+    /// Why waking the connection failed, if it did. The reader may then have been woken another way, or not at all; the
+    /// session says so in the error it returns.
+    wake_failure: Option<String>,
 }
 
 impl ExitWatch {
@@ -83,17 +86,14 @@ impl ExitWatch {
     }
 
     /// Records the exit and wakes everything that waits on it: the registered connection is interrupted, so a read
-    /// blocked on it returns, and a connect wait ends.
+    /// blocked on it returns, and a connect wait ends. A failed interrupt is kept for the session's error.
     pub(crate) fn report_exit(&self) {
         let mut state = self.lock();
         state.end.get_or_insert(End::Exited);
-        if let Some(connection) = state.connection.take() {
-            let woken = self.shared.host.interrupt_connection(&connection);
-            // A reader that stays asleep is a hang with no cause to show: fail loudly where it can be seen.
-            debug_assert!(
-                woken.is_ok(),
-                "cannot wake the reader of a dead QEMU's connection: {woken:?}"
-            );
+        if let Some(connection) = state.connection.take()
+            && let Err(e) = self.shared.host.interrupt_connection(&connection)
+        {
+            state.wake_failure = Some(e.to_string());
         }
         self.shared.changed.notify_all();
     }
@@ -160,6 +160,11 @@ impl Registration {
     /// Whether the process is known to have exited.
     pub(crate) fn exited(&self) -> bool {
         self.watch.ended() == Some(End::Exited)
+    }
+
+    /// Why waking this session's connection failed, if the exit tried and failed.
+    pub(crate) fn wake_failure(&self) -> Option<String> {
+        self.watch.lock().wake_failure.clone()
     }
 }
 

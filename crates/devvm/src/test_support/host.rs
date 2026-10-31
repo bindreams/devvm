@@ -179,3 +179,63 @@ impl Host for NoGuestReset {
         host::current().set_executable(path)
     }
 }
+
+/// What [`InterruptFails`] reports for every connection it is asked to interrupt.
+pub const INTERRUPT_FAILED: &str = "the test host cannot interrupt a connection";
+
+/// A host like the real one whose `interrupt_connection` fails after waking the reader by shutting the connection down,
+/// as the Windows host does when it cannot cancel the read.
+pub struct InterruptFails;
+
+pub static INTERRUPT_FAILS: InterruptFails = InterruptFails;
+
+impl Host for InterruptFails {
+    fn accelerator(&self, arch: Arch) -> std::result::Result<Accel, Unavailable> {
+        host::current().accelerator(arch)
+    }
+
+    fn guest_reset(&self, arch: Arch) -> std::result::Result<(), Unavailable> {
+        host::current().guest_reset(arch)
+    }
+
+    fn socket_path_max(&self) -> usize {
+        host::current().socket_path_max()
+    }
+
+    fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()> {
+        connection.shutdown(std::net::Shutdown::Both)?;
+        Err(std::io::Error::other(INTERRUPT_FAILED))
+    }
+
+    fn ansi_code_page(&self) -> Option<u32> {
+        host::current().ansi_code_page()
+    }
+
+    fn detach(&self, cmd: &mut cosca::Command) -> Result<()> {
+        host::current().detach(cmd)
+    }
+
+    fn exit_width(&self) -> ExitWidth {
+        host::current().exit_width()
+    }
+
+    fn quiet(&self, cmd: &mut std::process::Command) {
+        host::current().quiet(cmd)
+    }
+
+    fn system_dirs(&self) -> Option<SystemDirs> {
+        host::current().system_dirs()
+    }
+
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        host::current().write_private(path, bytes)
+    }
+
+    fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
+        host::current().is_executable(path)
+    }
+
+    fn set_executable(&self, path: &Path) -> std::io::Result<()> {
+        host::current().set_executable(path)
+    }
+}

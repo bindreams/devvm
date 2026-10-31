@@ -13,6 +13,7 @@ use crate::backend::qemu::uds::{UnixListener, UnixStream};
 use crate::host;
 use crate::instance::record::InstanceId;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, UNICODE_DIR};
+use crate::test_support::host::{INTERRUPT_FAILED, INTERRUPT_FAILS};
 use crate::test_support::qemu::Sock;
 
 // A fake QMP server ===================================================================================================
@@ -913,6 +914,25 @@ fn a_command_sent_after_the_process_exited_is_a_lost_connection() {
     let error = qmp.stop().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    finished.send(()).unwrap();
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn an_exit_the_host_could_not_wake_the_reader_for_is_named_in_the_session_error() {
+    let sock = sock();
+    let exit = ExitWatch::new(&INTERRUPT_FAILS);
+    let (finished, finished_rx) = mpsc::channel::<()>();
+    let (server, _) = serve(sock.listen(), 1, move |_, _| {
+        let _ = finished_rx.recv();
+    });
+    let mut qmp = Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).unwrap();
+
+    exit.report_exit();
+    let error = qmp.query_status().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.to_string().contains(INTERRUPT_FAILED), "{error}");
     finished.send(()).unwrap();
     server.join().unwrap();
 }

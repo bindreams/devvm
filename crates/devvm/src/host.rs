@@ -70,7 +70,8 @@ pub(crate) trait Host: Send + Sync {
     /// Wakes a thread blocked reading `connection`'s socket (through a clone of it) and keeps what the peer wrote
     /// before: afterwards a read returns the bytes still buffered, then ends the stream, fails as a closed connection
     /// or reports `WouldBlock`, and never blocks. Needed because Windows can lose the end of an AF_UNIX stream, so a
-    /// reader whose peer died may block for ever.
+    /// reader whose peer died may block for ever. An `Err` means the preferred way failed; a host with a fallback has
+    /// still woken the reader that way (losing unread bytes) and the error says so.
     fn interrupt_connection(&self, connection: &UnixStream) -> std::io::Result<()>;
 
     /// The ANSI code page of this process (`GetACP`); `None` off Windows.
