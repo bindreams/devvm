@@ -4,6 +4,7 @@ use super::{ACP, Claim, NTFS_NAMES, OPENSSH_SFTP, PYYAML, STEP_VAR, missing};
 
 const TEST: &str = "test";
 const OPENSSH: &str = "openssh-sftp";
+const VM: &str = "vm";
 
 fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
     let vars: HashMap<_, _> = vars.iter().copied().collect();
@@ -84,6 +85,13 @@ fn a_step_owes_no_claim_it_does_not_cover() {
 }
 
 #[skuld::test]
+fn the_vm_job_on_windows_must_claim_the_code_page() {
+    assert_eq!(names(missing(VM, "windows", env(&[]))), [ACP.var]);
+    assert!(missing(VM, "windows", env(&made(&[&ACP]))).unwrap().is_empty());
+    assert!(missing(VM, "linux", env(&[])).is_err());
+}
+
+#[skuld::test]
 fn a_step_the_table_does_not_know_is_an_error_not_an_empty_list() {
     assert!(missing("tset", "linux", env(&[])).is_err());
     assert!(missing(OPENSSH, "windows", env(&[])).is_err());
@@ -98,8 +106,8 @@ fn in_github_actions() -> Result<(), String> {
 }
 
 /// Without this, a renamed claim variable, a renamed step or a changed runner condition turns a claim-gated test into
-/// "ignored" on every leg with CI green.
-#[skuld::test(requires = [in_github_actions])]
+/// "ignored" on every leg with CI green. Labelled `vm` so that the vm job (`SKULD_LABELS=vm`) runs it too.
+#[skuld::test(requires = [in_github_actions], labels = [crate::vm_gate::VM])]
 fn this_runner_makes_the_claims_the_ci_step_owes() {
     let step = std::env::var(STEP_VAR)
         .unwrap_or_else(|_| panic!("{STEP_VAR} is not set; the step must name itself in .github/workflows/ci.yaml"));

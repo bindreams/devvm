@@ -83,6 +83,7 @@ jobs:
       # PyYAML: the other legs list the seed test as unavailable, and where it is claimed it fails if uv or PyYAML is
       # missing. A test fails if a step does not make the claims it owes on its OS: the step names itself in
       # DEVVM_CI_STEP, and test_support/claims.rs lists the claims per step and OS.
+      # The vm job names itself the same way.
       - name: Test
         run: cargo test --workspace --locked
         env:
@@ -122,6 +123,7 @@ jobs:
     env:
       # Overrides the workflow's `1`: the gate keeps VM tests on for any value but `1`.
       DEVVM_SKIP_VM_TESTS: "0"
+      DEVVM_CI_STEP: vm
       DEVVM_COVERS_ACP: "1252"
       DEVVM_TEST_UNICODE_BASE: 'C:\Users'
       SKULD_LABELS: vm

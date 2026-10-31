@@ -25,7 +25,8 @@ fn openssh_claimed() -> std::result::Result<(), String> {
     match OPENSSH_SFTP.is_made() {
         true => Ok(()),
         false => Err(format!(
-            "{} is not set; the scripted server is used here, OpenSSH's is covered by CI (the openssh-sftp step on ubuntu-latest)",
+            "{} is not set; the scripted server is used here, OpenSSH's \
+             is covered by CI (the openssh-sftp step on ubuntu-latest)",
             OPENSSH_SFTP.var
         )),
     }

@@ -34,17 +34,18 @@ pub const OPENSSH_SFTP: Claim = Claim {
     value: "1",
 };
 
-/// The variable each workflow step that runs the tests sets to its name in [`OWED`]. Steps differ in what they claim,
-/// so the table cannot be keyed by the runner OS alone.
+/// The variable each workflow step or job that runs the tests sets to its name in [`OWED`]. They differ in what they
+/// claim, so the table cannot be keyed by the runner OS alone.
 pub const STEP_VAR: &str = "DEVVM_CI_STEP";
 
-/// The claims each workflow step (`ci.yaml`) must make on each runner OS (`std::env::consts::OS`). A pair not listed is
-/// not a step of the workflow.
+/// The claims each workflow step or job (`ci.yaml`) must make on each runner OS (`std::env::consts::OS`). A pair not
+/// listed is not a step or job of the workflow.
 const OWED: &[(&str, &str, &[&Claim])] = &[
     ("test", "linux", &[&PYYAML]),
     ("test", "macos", &[]),
     ("test", "windows", &[&ACP, &NTFS_NAMES]),
     ("openssh-sftp", "linux", &[&OPENSSH_SFTP, &PYYAML]),
+    ("vm", "windows", &[&ACP]),
 ];
 
 impl Claim {
