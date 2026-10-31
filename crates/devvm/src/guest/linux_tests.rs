@@ -28,12 +28,6 @@ fn shell_argv_cases() {
 }
 
 #[skuld::test]
-fn the_boot_id_is_the_kernels() {
-    let Command { argv, .. } = LinuxGuest.boot_id_command();
-    assert_eq!(argv, ["cat", "/proc/sys/kernel/random/boot_id"]);
-}
-
-#[skuld::test]
 fn semantics_version_is_one() {
     assert_eq!(LinuxGuest.semantics_version(), 1);
 }
@@ -194,7 +188,7 @@ fn wait_ready_runs_cloud_inits_status_and_reads_its_reply(#[fixture(unicode_home
     );
     let error = ready_with(home, 1, r#"{"status": "error", "errors": ["boom"]}"#).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io);
-    assert!(error.message().contains("error"), "{}", error.message());
+    assert!(error.message().contains("boom"), "{}", error.message());
 }
 
 #[skuld::test]

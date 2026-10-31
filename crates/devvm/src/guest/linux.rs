@@ -81,8 +81,6 @@ impl GuestOs for LinuxGuest {
         sftp_path.to_owned()
     }
 
-    // `split_root` is the trait's: Linux has one root, `/`, and the kernel reads any number of leading `/` as it.
-
     /// Bumped whenever `wrap`, `user:`, `cwd:` or elevation behavior changes.
     fn semantics_version(&self) -> u32 {
         1
@@ -96,7 +94,6 @@ impl GuestOs for LinuxGuest {
         }
     }
 
-    /// Whatever else the command's output lost after its status arrived does not change what cloud-init reported.
     fn wait_ready(&self, ssh: &SshSession) -> Result<Readiness> {
         ready::readiness(&ssh.exec_collect(ready::CLOUD_INIT_STATUS)?)
     }

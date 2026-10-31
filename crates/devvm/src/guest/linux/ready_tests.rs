@@ -1,7 +1,7 @@
-use super::{CLOUD_INIT_STATUS, readiness};
-use crate::ErrorKind;
+use super::readiness;
 use crate::exit::{ExitStatus, Output};
 use crate::guest::Readiness;
+use crate::{Error, ErrorKind};
 
 fn reply(code: i32, stdout: &str) -> Output {
     Output {
@@ -76,11 +76,6 @@ fn a_cloud_init_killed_by_a_signal_is_not_ready_whatever_it_printed() {
 }
 
 #[skuld::test]
-fn the_status_command_waits_and_asks_for_json() {
-    assert_eq!(CLOUD_INIT_STATUS, "cloud-init status --wait --format json");
-}
-
-#[skuld::test]
 fn a_done_reply_is_trusted_only_with_cloud_inits_documented_exit_codes() {
     let done = r#"{"errors": [], "extended_status": "done", "status": "done"}"#;
     for code in [1, 3, 127, 255, -1] {
@@ -118,4 +113,41 @@ fn a_done_reply_with_errors_is_an_error_and_with_recoverable_errors_is_degraded(
     // Empty containers are not errors.
     let empty = r#"{"errors": [], "extended_status": "done", "recoverable_errors": {}, "status": "done"}"#;
     assert_eq!(readiness(&reply(0, empty)).unwrap(), Readiness::Ready);
+}
+
+#[skuld::test]
+fn a_done_reply_with_a_degraded_extended_status_is_degraded_whatever_the_exit_code_says() {
+    let degraded = r#"{"errors": [], "extended_status": "degraded done", "status": "done"}"#;
+    let Readiness::Degraded(what) = readiness(&reply(0, degraded)).unwrap() else {
+        panic!("a degraded extended status is a degraded finish");
+    };
+    assert!(what.contains("degraded done"), "{what}");
+}
+
+#[skuld::test]
+fn a_status_other_than_done_is_an_error_naming_it() {
+    for status in ["disabled", "not started"] {
+        let text = format!(r#"{{"extended_status": "{status}", "status": "{status}"}}"#);
+        let error = readiness(&reply(0, &text)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{status}");
+        assert!(error.message().contains(status), "{status}: {}", error.message());
+    }
+}
+
+#[skuld::test]
+fn a_reply_cut_short_by_a_lost_connection_is_that_loss() {
+    let output = Output {
+        status: ExitStatus::Code(0),
+        stdout: br#"{"extended_status": "do"#.to_vec(),
+        stderr: Vec::new(),
+        loss: Some(Error::new(ErrorKind::ConnectionLost, "the VM exited")),
+    };
+    let error = readiness(&output).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(
+        error.message().contains("the VM exited"),
+        "the loss is named: {}",
+        error.message()
+    );
+    assert!(!error.message().contains("not JSON"), "{}", error.message());
 }

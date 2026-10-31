@@ -12,7 +12,7 @@ mod ready_tests;
 pub(super) const CLOUD_INIT_STATUS: &str = "cloud-init status --wait --format json";
 
 /// Reads the reply of [`CLOUD_INIT_STATUS`]. Anything but a `done` that agrees with its exit code is an error that
-/// quotes the reply.
+/// quotes the reply. A reply that cannot be read because `output.loss` cut it short is an error of the loss's kind.
 pub(super) fn readiness(output: &Output) -> Result<Readiness> {
     let failure = |what: &str| {
         Error::new(
@@ -27,8 +27,21 @@ pub(super) fn readiness(output: &Output) -> Result<Readiness> {
         ExitStatus::Code(code) => *code,
         ExitStatus::Signal { name, .. } => return Err(failure(&format!("it was killed by signal {name}"))),
     };
-    let reply: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| failure(&format!("its reply is not JSON ({e})")))?;
+    let reply: serde_json::Value = match (serde_json::from_slice(&output.stdout), &output.loss) {
+        (Ok(reply), _) => reply,
+        // The connection broke after the status arrived: the reply is cut short, and the loss is the cause.
+        (Err(_), Some(loss)) => {
+            return Err(Error::new(
+                loss.kind(),
+                format!(
+                    "cloud-init's reply was cut short: {} (`{CLOUD_INIT_STATUS}`: {})",
+                    loss.message(),
+                    describe(output)
+                ),
+            ));
+        }
+        (Err(e), None) => return Err(failure(&format!("its reply is not JSON ({e})"))),
+    };
     let Some(status) = reply.get("status").and_then(serde_json::Value::as_str) else {
         return Err(failure("its reply has no `status` text"));
     };
