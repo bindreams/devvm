@@ -2,6 +2,11 @@
 //! the lib's test binary as the helper `snapshot-big` and asserts that it exited 0 (the pattern of
 //! `access/heap_tests.rs`, with its counting allocator).
 
+use std::io::Read;
+use std::path::Path;
+
+use sha2::{Digest, Sha256};
+
 use crate::access::heap_tests::{LIMIT, make_big_source};
 use crate::copy::copy_tests::{add_all, new_repo, paths, take};
 use crate::recipe::hash::EntryContent;
@@ -9,7 +14,21 @@ use crate::test_support::alloc::peak_bytes;
 use crate::test_support::helper;
 use crate::test_support::sshd::{BIG_SIZE, big_file_digest_from, expected_big_digest};
 
-/// The tar block size: a header is one block, and the data and the end of the archive are whole blocks.
+/// The SHA-256 of the file at `path`, read in pieces.
+fn sha256_of(path: &Path) -> crate::Sha256 {
+    let mut file = std::fs::File::open(path).expect("the source file");
+    let mut hasher = Sha256::new();
+    let mut piece = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut piece).expect("the source file reads");
+        if n == 0 {
+            break;
+        }
+        hasher.update(&piece[..n]);
+    }
+    crate::Sha256::from_bytes(hasher.finalize().into())
+}
+
 const BLOCK: u64 = 512;
 
 /// The helper's entry point: `snapshot-big`.
@@ -24,16 +43,12 @@ pub fn snapshot_big(_: &[String]) {
     assert_eq!(paths(&taken.snapshot), ["big.bin"]);
     let entry = &taken.snapshot.manifest.entries()[0];
     assert_eq!(entry.mode, 0o100644);
-    assert!(
-        matches!(entry.content, EntryContent::FileSha256(_)),
-        "{:?}",
-        entry.content
-    );
+    let content = entry.content.clone();
     // One header, the data padded to whole blocks, and the two blocks that end a tar: the length is exact.
     let expected_len = BLOCK + BIG_SIZE.div_ceil(BLOCK) * BLOCK + 2 * BLOCK;
     let archive = &taken.snapshot.archive;
     assert_eq!(std::fs::metadata(archive).unwrap().len(), expected_len);
-    // The data starts right after the header. This also covers the bytes past 4 GiB.
+    // This also covers the bytes past 4 GiB.
     assert_eq!(
         big_file_digest_from(archive, BLOCK).unwrap(),
         expected_big_digest(),
@@ -42,6 +57,13 @@ pub fn snapshot_big(_: &[String]) {
 
     let peak = peak_bytes();
     assert!(peak < LIMIT, "peak heap {peak} bytes is not below {LIMIT}");
+
+    // After the heap is measured: the hashing buffer is the test's. Every byte of the source, not only the windows.
+    assert_eq!(
+        content,
+        EntryContent::FileSha256(sha256_of(&repo.join("big.bin"))),
+        "the manifest hash is the SHA-256 of the file"
+    );
 }
 
 #[skuld::test]
