@@ -195,7 +195,11 @@ fn link_name_in_tar(path: &str, target: &str) -> Vec<u8> {
     let entry = entries.next().unwrap().unwrap();
     assert_eq!(entry.header().entry_type(), tar::EntryType::Symlink);
     assert_eq!(&*entry.path_bytes(), path.as_bytes());
-    let name = entry.link_name_bytes().expect("a symlink has a link name").into_owned();
+    // The tar reports an empty link name as none.
+    let name = entry
+        .link_name_bytes()
+        .map(|name| name.into_owned())
+        .unwrap_or_default();
     assert!(entries.next().is_none(), "one entry for one link");
     name
 }
@@ -204,6 +208,7 @@ fn link_name_in_tar(path: &str, target: &str) -> Vec<u8> {
 fn a_symlink_target_is_archived_byte_for_byte() {
     let long_path = format!("{}/f", "d".repeat(150));
     let targets = [
+        String::new(),
         "a/b".to_owned(),
         "a//b".to_owned(),
         "a/./b".to_owned(),
@@ -218,6 +223,10 @@ fn a_symlink_target_is_archived_byte_for_byte() {
         "d/".repeat(75),
         // 120 bytes whose 99th byte is inside a character.
         "\u{e9}".repeat(60),
+        // A character that starts at byte 99, and ones that run over the end of the 100-byte field from 98 and 97.
+        format!("{}\u{e9}", "t".repeat(99)),
+        format!("{}\u{4e16}", "t".repeat(98)),
+        format!("{}\u{1f600}", "t".repeat(97)),
     ];
     for target in &targets {
         for path in [NAME, long_path.as_str()] {
