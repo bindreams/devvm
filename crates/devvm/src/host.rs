@@ -18,6 +18,7 @@ use crate::{Arch, Result};
 #[path = "host_tests.rs"]
 mod host_tests;
 
+mod entry;
 pub(crate) mod names;
 #[cfg_attr(
     any(unix, windows),
@@ -34,6 +35,7 @@ pub(crate) mod watch;
 #[cfg(windows)]
 pub(crate) mod windows;
 
+pub(crate) use entry::{Entry, is_absent};
 pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(any(unix, windows)))]
@@ -161,6 +163,15 @@ pub(crate) trait Host: Send + Sync {
     /// ignores it. Fails with `PermissionDenied`, naming the cause, where
     /// this host cannot make symlinks (Windows without Developer Mode or an elevated token).
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
+
+    /// Looks at `rel` (`/`-separated, with no `.`, `..` or empty name) below the directory `root` without following a
+    /// link below `root`: `root` is opened, then each name relative to the handle before it, and the last name is
+    /// classified from its own handle. A regular file comes back open, ready to read. A directory above the entry that
+    /// is a link ends the walk ([`Entry::BelowSymlink`]); one that is gone or is not a directory makes the entry
+    /// [`Entry::Absent`], as does a missing last name. `root` itself may be reached through links and must exist.
+    /// Nothing is opened a second time by name, so a rename over a name after it was looked at cannot change what the
+    /// handle is. Fails with `Unsupported` where a host has no such walk.
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
 }
 
 /// Creates `path` with `options` and writes `bytes`, which are on disk when it returns. A file whose write failed is

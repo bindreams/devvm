@@ -9,7 +9,7 @@ use std::sync::Arc;
 use cosca::identity::ProcessId;
 
 use super::names::posix_problem;
-use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write, create_new_with};
+use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -32,6 +32,8 @@ pub(super) trait FileModes: Send + Sync {
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
 
     fn sync_dir(&self, dir: &Path) -> std::io::Result<()>;
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
 
     /// [`Host::publish_dir`]. A host with a rename that refuses to replace does it in one step; one without can only
     /// call [`claim_then_rename`].
@@ -134,5 +136,9 @@ impl<M: FileModes> Host for M {
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         FileModes::make_symlink(self, target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        FileModes::open_entry(self, root, rel)
     }
 }

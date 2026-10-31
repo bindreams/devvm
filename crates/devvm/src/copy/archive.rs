@@ -1,6 +1,5 @@
 //! Writing the tracked files to a tar, hashing them on the way.
 
-use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path};
 
@@ -10,6 +9,7 @@ use tar::{Builder, EntryType, Header};
 use super::FULL_DISK_HINT;
 use super::git::{self, Git, Kind, Tracked};
 use crate::exit::Progress;
+use crate::host::Entry;
 use crate::recipe::hash::{EntryContent, ManifestEntry};
 use crate::{Error, ErrorKind, Result, Sha256};
 
@@ -33,33 +33,35 @@ pub(super) fn write(
 ) -> Result<Vec<ManifestEntry>> {
     let mut builder = Builder::new(out);
     let mut entries = Vec::with_capacity(tracked.len());
-    let mut real_directories = HashSet::new();
     for item in tracked {
         check_one_component_per_segment(&item.path)?;
-        check_parents(root, &item.path, &mut real_directories)?;
         let on_disk = root.join(&item.path);
-        let meta = match std::fs::symlink_metadata(&on_disk) {
-            Ok(meta) => meta,
-            Err(e) if super::is_absent(&e) => continue,
-            Err(e) => {
-                return Err(Error::io(
-                    ErrorKind::Io,
-                    format!("cannot read {}", on_disk.display()),
-                    e,
+        let found = git
+            .host()
+            .open_entry(root, &item.path)
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot read {}", on_disk.display()), e))?;
+        let entry = match (found, item.kind) {
+            (Entry::Absent, _) => continue,
+            (Entry::BelowSymlink(directory), _) => {
+                return Err(Error::new(
+                    ErrorKind::Recipe,
+                    format!(
+                        "cannot copy `{}`: `{}` is a symbolic link, and a copy does not follow one in the middle of a path",
+                        item.path.escape_debug(),
+                        directory.escape_debug()
+                    ),
                 ));
             }
-        };
-        if meta.is_dir() {
-            progress.message(&format!(
-                "skipping `{}`: git tracks a {} there, but it is a directory now",
-                item.path.escape_debug(),
-                if item.kind == Kind::Symlink { "symlink" } else { "file" }
-            ));
-            continue;
-        }
-        let entry = match item.kind {
-            Kind::Symlink => {
-                check_stands_for_link(git, &on_disk, &meta, item)?;
+            (Entry::Directory, kind) => {
+                progress.message(&format!(
+                    "skipping `{}`: git tracks a {} there, but it is a directory now",
+                    item.path.escape_debug(),
+                    if kind == Kind::Symlink { "symlink" } else { "file" }
+                ));
+                continue;
+            }
+            (found, Kind::Symlink) => {
+                check_stands_for_link(git, &on_disk, &found, item)?;
                 let target = git::link_text(git, item)?;
                 append_symlink(&mut builder, dest, &item.path, &target)?;
                 ManifestEntry {
@@ -68,36 +70,32 @@ pub(super) fn write(
                     content: EntryContent::SymlinkTarget(target),
                 }
             }
-            Kind::File | Kind::Executable => {
-                if !meta.is_file() {
-                    let found = if meta.file_type().is_symlink() {
-                        "a symbolic link"
-                    } else {
-                        "neither a file nor a directory"
-                    };
-                    return Err(Error::new(
-                        ErrorKind::Recipe,
-                        format!(
-                            "cannot copy `{}`: git tracks a file there but {} is {found} (commit the change or restore the file)",
-                            item.path.escape_debug(),
-                            on_disk.display()
-                        ),
-                    ));
-                }
-                let executable = item.kind == Kind::Executable;
-                let file = std::fs::File::open(&on_disk)
-                    .map_err(|e| Error::io(ErrorKind::Io, format!("cannot open {}", on_disk.display()), e))?;
+            (Entry::File(file), Kind::File | Kind::Executable) => {
                 let size = file
                     .metadata()
                     .map_err(|e| Error::io(ErrorKind::Io, format!("cannot read {}", on_disk.display()), e))?
                     .len();
-                let mode = tar_mode(executable, read_only);
+                let mode = tar_mode(item.kind == Kind::Executable, read_only);
                 let sha = append_file(&mut builder, dest, &item.path, mode, size, file)?;
                 ManifestEntry {
                     path: item.path.clone(),
                     mode: item.kind.mode(),
                     content: EntryContent::FileSha256(sha),
                 }
+            }
+            (found, Kind::File | Kind::Executable) => {
+                let found = match found {
+                    Entry::Other(what) => format!("neither a file nor a directory ({what})"),
+                    _ => "a symbolic link".to_owned(),
+                };
+                return Err(Error::new(
+                    ErrorKind::Recipe,
+                    format!(
+                        "cannot copy `{}`: git tracks a file there but {} is {found} (commit the change or restore the file)",
+                        item.path.escape_debug(),
+                        on_disk.display()
+                    ),
+                ));
             }
         };
         entries.push(entry);
@@ -123,42 +121,6 @@ pub(super) fn check_one_component_per_segment(path: &str) -> Result<()> {
     ))
 }
 
-/// Fails when a directory above `path` (relative to `root`, `/`-separated) is a symlink, as git does. A missing
-/// directory ends the check: `path` is then gone from disk too. `real_directories` caches directories already checked.
-fn check_parents(root: &Path, path: &str, real_directories: &mut HashSet<String>) -> Result<()> {
-    for (slash, _) in path.match_indices('/') {
-        let directory = &path[..slash];
-        if real_directories.contains(directory) {
-            continue;
-        }
-        let on_disk = root.join(directory);
-        match std::fs::symlink_metadata(&on_disk) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(Error::new(
-                    ErrorKind::Recipe,
-                    format!(
-                        "cannot copy `{}`: `{}` is a symbolic link, and a copy does not follow one in the middle of a path",
-                        path.escape_debug(),
-                        directory.escape_debug()
-                    ),
-                ));
-            }
-            Ok(_) => {
-                real_directories.insert(directory.to_owned());
-            }
-            Err(e) if super::is_absent(&e) => return Ok(()),
-            Err(e) => {
-                return Err(Error::io(
-                    ErrorKind::Io,
-                    format!("cannot read {}", on_disk.display()),
-                    e,
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn tar_mode(executable: bool, read_only: bool) -> u32 {
     match (executable, read_only) {
         (false, false) => 0o644,
@@ -182,17 +144,13 @@ fn header(kind: EntryType, mode: u32, size: u64) -> Header {
 /// A tracked symlink is a link on disk or, where the checkout writes links as files (`core.symlinks` false), the
 /// plain file that stands for it. Elsewhere a regular file is a typechange. Its target comes from git, never from
 /// disk.
-fn check_stands_for_link(git: &Git, on_disk: &Path, meta: &std::fs::Metadata, item: &Tracked) -> Result<()> {
-    if meta.file_type().is_symlink() {
-        return Ok(());
-    }
-    let found = if meta.is_file() {
-        if git::links_are_files(git, item)? {
-            return Ok(());
-        }
-        "a regular file"
-    } else {
-        "neither a link nor a file"
+fn check_stands_for_link(git: &Git, on_disk: &Path, found: &Entry, item: &Tracked) -> Result<()> {
+    let found = match found {
+        Entry::Symlink => return Ok(()),
+        Entry::File(_) if git::links_are_files(git, item)? => return Ok(()),
+        Entry::File(_) => "a regular file".to_owned(),
+        Entry::Other(what) => format!("neither a link nor a file ({what})"),
+        _ => "neither a link nor a file".to_owned(),
     };
     Err(Error::new(
         ErrorKind::Recipe,

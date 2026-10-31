@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use os_str_bytes::OsStringBytes;
 
-use super::is_absent;
 use crate::exit::Progress;
-use crate::host::Host;
+use crate::host::{Host, is_absent};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -84,6 +83,11 @@ impl<'a> Git<'a> {
             progress.message(&format!("{UNSET_NOTE_PREFIX}{}", list.join(", ")));
         }
         Git { host, cleared }
+    }
+
+    /// The host the snapshot runs on.
+    pub(super) fn host(&self) -> &'a dyn Host {
+        self.host
     }
 
     /// A `git` command in `dir` without the cleared variables, and with no console window.

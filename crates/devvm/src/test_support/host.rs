@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
-use crate::host::{self, Accel, Host, ProcessWatch, SystemDirs, Unavailable, names};
+use crate::host::{self, Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, names};
 use crate::{Arch, Result};
 
 /// Reports TCG as the accelerator and delegates everything else to the real host, so the real `detach` is the one the
@@ -99,6 +99,10 @@ impl Host for TestHost {
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         host::current().make_symlink(target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        host::current().open_entry(root, rel)
     }
 }
 
@@ -193,6 +197,10 @@ impl Host for NoAccelHost {
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         TestHost.make_symlink(target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        TestHost.open_entry(root, rel)
     }
 }
 
@@ -416,6 +424,10 @@ impl Host for RecordingHost {
         }
         TestHost.make_symlink(target, link, to_dir)
     }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        TestHost.open_entry(root, rel)
+    }
 }
 
 /// What [`NoGuestReset`] says is missing.
@@ -512,5 +524,9 @@ impl Host for NoGuestReset {
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         host::current().make_symlink(target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        host::current().open_entry(root, rel)
     }
 }

@@ -6,7 +6,10 @@ use std::path::Path;
 
 use rustix::io::Errno;
 
+use super::Entry;
 use super::unsupported::{FileModes, claim_then_rename};
+
+mod entry;
 
 #[cfg(test)]
 #[path = "unix_tests.rs"]
@@ -58,6 +61,10 @@ impl FileModes for UnixHost {
                     format!("the symlink target {target:?} is not valid Unicode"),
                 )
             })
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        entry::open_entry(root, rel)
     }
 
     /// Unix symlinks do not care what they point to.

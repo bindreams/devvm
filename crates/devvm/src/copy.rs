@@ -1,6 +1,6 @@
 //! `copy: { from: git-tracked }`: a snapshot of the files git tracks, as a tar plus the manifest that keys its layer.
 
-use std::io::{self, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
@@ -12,15 +12,6 @@ mod archive;
 mod git;
 
 use git::Git;
-
-/// Whether `e` says the path is not there on this host: gone, below a file, or a name the host cannot hold (Windows
-/// reports `a|b` as an invalid name, not as absent).
-fn is_absent(e: &io::Error) -> bool {
-    matches!(
-        e.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory | io::ErrorKind::InvalidFilename
-    )
-}
 
 /// A full disk leaves nothing to resume: the copy starts over.
 const FULL_DISK_HINT: &str = "free some space and run again";

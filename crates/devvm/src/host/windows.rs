@@ -17,10 +17,11 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWind
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::names::windows_problem;
-use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
+use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
+mod entry;
 mod link;
 mod watch;
 mod whpx;
@@ -226,5 +227,9 @@ impl Host for WindowsHost {
             ),
             _ => e,
         })
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        entry::open_entry(root, rel)
     }
 }

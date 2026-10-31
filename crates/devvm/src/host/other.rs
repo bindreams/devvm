@@ -4,6 +4,7 @@
 use std::fs::OpenOptions;
 use std::path::Path;
 
+use super::Entry;
 use super::unsupported::{FileModes, claim_then_rename};
 
 pub(super) struct OtherHost;
@@ -41,5 +42,12 @@ impl FileModes for OtherHost {
 
     fn make_symlink(&self, _target: &str, _link: &Path, _to_dir: bool) -> std::io::Result<()> {
         Err(std::io::Error::other("this build has no symlink support"))
+    }
+
+    fn open_entry(&self, _root: &Path, _rel: &str) -> std::io::Result<Entry> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this build cannot look at a path without following links",
+        ))
     }
 }
