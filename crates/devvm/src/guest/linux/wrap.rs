@@ -3,9 +3,8 @@
 //! The string is `bash -lc '<script>'`: a login shell, so tools an earlier step installed (rustup's `~/.cargo/env`,
 //! sourced from `~/.profile`) are on `PATH`. The script is `cd`, `export`, then `exec --`. The `cd` is
 //! `CDPATH= cd --`: the profile's `CDPATH` must not redirect a relative directory or make `cd` print the one it
-//! chose. `env(1)` is not used: it reads a leading `-` in the program name as an option and a name containing `=` as
-//! an assignment, and `--` does not prevent either. `exec --` ends the builtin's own option parsing, so `-x` and
-//! `a=b` are program names.
+//! chose. `env(1)` is not used: it reads `-x` as an option and `a=b` as an assignment even after `--`.
+//! `exec --` ends the builtin's own option parsing, so `-x` and `a=b` are program names.
 //!
 //! Elevated commands run as `exec sudo -n -- bash -c '<the same script>'`: the `cd`, the `export`s and the program all
 //! run inside the root shell, so sudo's `env_reset` cannot drop the variables and a directory only root can enter
@@ -54,10 +53,10 @@ fn user_script(cmd: &Command) -> Result<String> {
                     format!("`{name}` is not a valid environment variable name (expected [A-Za-z_][A-Za-z0-9_]*)"),
                 ));
             }
-            if READONLY_VARIABLES.contains(&name.as_str()) {
+            if BASH_OWNED_VARIABLES.contains(&name.as_str()) {
                 return Err(Error::new(
                     ErrorKind::Usage,
-                    format!("`{name}` is a readonly variable in bash and cannot be set for a command"),
+                    format!("`{name}` is a variable bash owns and cannot be set for a command"),
                 ));
             }
             export.push_str(&format!(" {name}={}", quote_checked("an environment value", value)?));
@@ -73,8 +72,45 @@ fn user_script(cmd: &Command) -> Result<String> {
     Ok(steps.join(" && "))
 }
 
-/// The variables a fresh bash 5.2 marks readonly (`readonly -p`): `export` of one fails, and the command never runs.
-const READONLY_VARIABLES: [&str; 6] = ["BASHOPTS", "BASH_VERSINFO", "EUID", "PPID", "SHELLOPTS", "UID"];
+/// The names `export NAME=v` does not pass to the program unchanged (bash 5.2.37, `export NAME=probe && exec --
+/// printenv NAME`):
+/// - readonly, so the `export` fails and the command never runs: `BASHOPTS`, `BASH_VERSINFO`, `EUID`, `PPID`,
+///   `SHELLOPTS`, `UID`;
+/// - the program gets bash's value, or the assignment changes it: `RANDOM`, `SRANDOM`, `BASHPID`, `LINENO`, `HISTCMD`,
+///   `EPOCHSECONDS`, `EPOCHREALTIME`, `BASH_COMMAND`, `BASH_SUBSHELL`, `SHLVL`, `SECONDS`, `OPTIND`, `_`;
+/// - the program gets nothing: `GROUPS`, `FUNCNAME`, `DIRSTACK`, `BASH_ALIASES`, `BASH_CMDS`, `BASH_LINENO`,
+///   `BASH_SOURCE`, `BASH_ARGC`, `BASH_ARGV`, `PIPESTATUS`.
+const BASH_OWNED_VARIABLES: [&str; 29] = [
+    "BASHOPTS",
+    "BASH_VERSINFO",
+    "EUID",
+    "PPID",
+    "SHELLOPTS",
+    "UID",
+    "RANDOM",
+    "SRANDOM",
+    "BASHPID",
+    "LINENO",
+    "HISTCMD",
+    "EPOCHSECONDS",
+    "EPOCHREALTIME",
+    "BASH_COMMAND",
+    "BASH_SUBSHELL",
+    "SHLVL",
+    "SECONDS",
+    "OPTIND",
+    "_",
+    "GROUPS",
+    "FUNCNAME",
+    "DIRSTACK",
+    "BASH_ALIASES",
+    "BASH_CMDS",
+    "BASH_LINENO",
+    "BASH_SOURCE",
+    "BASH_ARGC",
+    "BASH_ARGV",
+    "PIPESTATUS",
+];
 
 /// `cwd` as the operand of `cd --`. `cd -- -` still means `$OLDPWD`, so a value starting with `-` is written as an
 /// explicit relative path.

@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use super::{script, wrap};
+use super::{BASH_OWNED_VARIABLES, script, wrap};
 use crate::host::Host;
 use crate::test_support::host::TestHost;
 use crate::{Command, ErrorKind, RunAs};
@@ -70,27 +70,54 @@ fn a_working_directory_starting_with_a_dash_cannot_be_read_as_an_option_or_oldpw
 }
 
 #[skuld::test]
-fn names_bash_cannot_export_are_usage_errors_naming_the_variable() {
-    // Bash's readonly variables (`readonly -p` in a fresh bash 5.2): `export UID=5` fails with exit 1 at run time.
-    for name in ["UID", "EUID", "PPID", "BASHOPTS", "SHELLOPTS", "BASH_VERSINFO"] {
-        let mut command = cmd(&["true"]);
-        command.env = vec![(name.to_owned(), "5".to_owned())];
-        let error = wrap(&command).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Usage, "{name}");
-        assert!(error.message().contains(name), "{name}: {}", error.message());
-        assert!(error.message().contains("readonly"), "{name}: {}", error.message());
-    }
-    // Close names, and variables bash lets a script set, stay legal.
+fn names_bash_does_not_pass_through_are_usage_errors_naming_the_variable() {
+    // Written out here, independently of `BASH_OWNED_VARIABLES`; the real-bash test below checks every entry of that.
     for name in [
-        "UIDS",
-        "uid",
-        "BASHPID",
-        "BASH_VERSION",
-        "SECONDS",
+        "UID",
+        "EUID",
+        "PPID",
+        "BASHOPTS",
+        "SHELLOPTS",
+        "BASH_VERSINFO",
         "RANDOM",
-        "PATH",
-        "HOME",
+        "SRANDOM",
+        "BASHPID",
+        "LINENO",
+        "HISTCMD",
+        "EPOCHSECONDS",
+        "EPOCHREALTIME",
+        "BASH_COMMAND",
+        "BASH_SUBSHELL",
+        "GROUPS",
+        "FUNCNAME",
+        "DIRSTACK",
+        "BASH_ALIASES",
+        "BASH_CMDS",
+        "BASH_LINENO",
+        "BASH_SOURCE",
+        "BASH_ARGC",
+        "BASH_ARGV",
+        "PIPESTATUS",
+        "SHLVL",
+        "SECONDS",
+        "OPTIND",
+        "_",
     ] {
+        for run_as in [RunAs::User, RunAs::Elevated] {
+            let mut command = cmd(&["true"]);
+            command.run_as = run_as;
+            command.env = vec![(name.to_owned(), "5".to_owned())];
+            let error = wrap(&command).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Usage, "{name}");
+            assert!(
+                error.message().contains(&format!("`{name}`")),
+                "{name}: {}",
+                error.message()
+            );
+        }
+    }
+    // Close names stay legal.
+    for name in ["UIDS", "uid", "random", "BASH_VERSION", "PATH", "HOME"] {
         let mut command = cmd(&["true"]);
         command.env = vec![(name.to_owned(), "5".to_owned())];
         wrap(&command).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -112,7 +139,7 @@ fn an_empty_argv_and_a_bad_env_name_are_usage_errors() {
         assert_eq!(error.kind(), ErrorKind::Usage, "{name:?}");
         assert!(error.message().contains("environment"), "{}", error.message());
     }
-    for name in ["A", "_", "_a1", "Zz_9"] {
+    for name in ["A", "__", "_a1", "Zz_9"] {
         let mut good = cmd(&["true"]);
         good.env = vec![(name.to_owned(), "v".to_owned())];
         wrap(&good).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -218,7 +245,7 @@ fn write_script(dir: &Path, name: &str, body: &str) {
 }
 
 #[skuld::test]
-fn wrap_round_trips_hostile_arguments_through_a_real_sh() {
+fn script_round_trips_hostile_arguments_through_a_real_bash() {
     let hostile = [
         "",
         "a\nb",
@@ -239,7 +266,7 @@ fn wrap_round_trips_hostile_arguments_through_a_real_sh() {
     let mut argv = vec!["printf", r"%s\0"];
     argv.extend(hostile);
 
-    let out = run_in_bash(&wrap(&cmd(&argv)).unwrap(), None);
+    let out = run_in_bash(&script(&cmd(&argv)).unwrap(), None);
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -255,11 +282,42 @@ fn wrap_round_trips_hostile_arguments_through_a_real_sh() {
 #[skuld::test]
 fn a_program_called_dash_x_or_a_equals_b_is_a_program_name() {
     for name in ["-x", "a=b"] {
-        let out = run_in_bash(&wrap(&cmd(&[name])).unwrap(), None);
+        let out = run_in_bash(&script(&cmd(&[name])).unwrap(), None);
         let stderr = String::from_utf8_lossy(&out.stderr);
         // 127 is "no such program"; an option would give 2, and an assignment would leave `exec` with no program.
         assert_eq!(out.status.code(), Some(127), "{name}: {stderr}");
         assert!(stderr.contains(name), "{name}: {stderr}");
+    }
+}
+
+#[skuld::test]
+fn bash_does_not_pass_through_what_it_owns_but_passes_every_other_name() {
+    let probe = "round-trip-probe";
+    // The program sees `printenv NAME`'s output, after the same `export` the wrapper writes.
+    let seen = |script: String| String::from_utf8_lossy(&run_in_bash(&script, None).stdout).into_owned();
+
+    // Each listed name is on the list because the value asked for does not arrive.
+    for name in BASH_OWNED_VARIABLES {
+        let arrived = seen(format!("export {name}={} && exec -- printenv {name}", sq(probe)));
+        assert_ne!(
+            arrived.trim_end(),
+            probe,
+            "{name} is passed through unchanged, so it need not be listed"
+        );
+    }
+
+    // A name that is not listed arrives as asked, through the wrapper's own script.
+    for name in ["UIDS", "uid", "random", "BASH_VERSION", "HOME", "Zz_9"] {
+        let mut command = cmd(&["printenv", name]);
+        command.env = vec![(name.to_owned(), probe.to_owned())];
+        assert_eq!(
+            seen(script(&command).unwrap()),
+            format!(
+                "{probe}
+"
+            ),
+            "{name}"
+        );
     }
 }
 
@@ -309,8 +367,7 @@ fn elevated_wrapper_runs_end_to_end_with_a_stub_sudo() {
     elevated.cwd = Some("/usr".to_owned());
     elevated.env = vec![("MARK".to_owned(), "it's".to_owned())];
 
-    // The full string starts a login shell, whose profile may reset `PATH` and hide the stub; the golden tests cover
-    // the `-l`. This runs the script it carries.
+    // `wrap` adds a login shell, whose profile may reset `PATH` and hide the stub; the golden tests cover the `-l`.
     let out = run_in_bash(&script(&elevated).unwrap(), Some(&stubs));
     assert_eq!(
         out.status.code(),
