@@ -618,7 +618,7 @@ impl SshSession {
 
     /// Runs `command` through the guest's SSH `exec`, copying guest stdout and stderr to `out` and `err` as they
     /// arrive, and flushing both when the command ends. A guest that outpaces the writers is slowed down, not buffered.
-    /// See [`ExecEnd`] for the two ways it ends. Environment is never sent as SSH `env` requests: the command string
+    /// See [`ExecEnd`] for the three ways it ends. Environment is never sent as SSH `env` requests: the command string
     /// carries it.
     ///
     /// Failures: `connection-lost` (keepalive expiry, a dropped connection, the VM exiting, the boot bound),

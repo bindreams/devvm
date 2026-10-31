@@ -107,6 +107,44 @@ fn windows_keys_ignore_case_and_nothing_else() {
     assert_ne!(windows_key("\u{df}"), windows_key("SS"));
 }
 
+/// A Unix file system holds 255 bytes per name, however many characters they are.
+#[skuld::test]
+fn posix_refuses_a_name_over_255_bytes() {
+    let ok = [
+        "a".repeat(255),
+        "\u{e9}".repeat(127),
+        "\u{4e2d}".repeat(85),
+        "\u{1f600}".repeat(63),
+    ];
+    for name in ok {
+        assert_eq!(posix_problem(&name), None, "{} bytes", name.len());
+    }
+    let too_long = [
+        "a".repeat(256),
+        "\u{e9}".repeat(128),
+        "\u{4e2d}".repeat(86),
+        "\u{1f600}".repeat(64),
+    ];
+    for name in too_long {
+        let problem = posix_problem(&name).unwrap_or_else(|| panic!("{} bytes were accepted", name.len()));
+        assert!(problem.contains("255 bytes"), "{problem}");
+    }
+}
+
+/// NTFS holds 255 UTF-16 units per name: a character outside the BMP is two, and the bytes of UTF-8 do not count.
+#[skuld::test]
+fn windows_refuses_a_name_over_255_utf16_units() {
+    let ok = ["a".repeat(255), "\u{4e2d}".repeat(255), "\u{1f600}".repeat(127)];
+    for name in ok {
+        assert_eq!(windows_problem(&name), None, "{} bytes", name.len());
+    }
+    let too_long = ["a".repeat(256), "\u{4e2d}".repeat(256), "\u{1f600}".repeat(128)];
+    for name in too_long {
+        let problem = windows_problem(&name).unwrap_or_else(|| panic!("{} bytes were accepted", name.len()));
+        assert!(problem.contains("255 UTF-16 units"), "{problem}");
+    }
+}
+
 // Measured on NTFS ====================================================================================================
 
 /// Set by the CI job that runs on a Windows runner: the test below creates files with these names there.

@@ -41,16 +41,35 @@ fn common_problem(name: &str) -> Option<String> {
     None
 }
 
-/// The rules of a Unix file system: any bytes except `/` and NUL.
+/// The longest a file name can be: in bytes of UTF-8 on Unix, in UTF-16 units on NTFS.
+const NAME_MAX: usize = 255;
+
+/// The rules of a Unix file system: any bytes except `/` and NUL, at most 255 of them.
 #[cfg_attr(windows, allow(dead_code, reason = "used by the host this binary does not run on"))]
 pub(crate) fn posix_problem(name: &str) -> Option<String> {
-    common_problem(name)
+    if let Some(problem) = common_problem(name) {
+        return Some(problem);
+    }
+    if name.len() > NAME_MAX {
+        return Some(format!(
+            "is {} bytes, over the {NAME_MAX} bytes a file name can have",
+            name.len()
+        ));
+    }
+    None
 }
 
-/// The rules of NTFS and Win32: no `\ : < > " | ? *`, no characters below U+0020, no trailing dot or space, no device names.
+/// The rules of NTFS and Win32: no `\ : < > " | ? *`, no characters below U+0020, no trailing dot or space, no device
+/// names, at most 255 UTF-16 units.
 pub(crate) fn windows_problem(name: &str) -> Option<String> {
     if let Some(problem) = common_problem(name) {
         return Some(problem);
+    }
+    let units = name.encode_utf16().count();
+    if units > NAME_MAX {
+        return Some(format!(
+            "is {units} UTF-16 units, over the {NAME_MAX} UTF-16 units a Windows file name can have"
+        ));
     }
     if let Some(c) = name
         .chars()

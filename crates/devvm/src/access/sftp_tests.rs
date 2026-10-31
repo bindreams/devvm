@@ -1869,6 +1869,102 @@ fn a_destination_name_a_windows_host_cannot_store_is_refused_before_anything_is_
     assert_eq!(tree(&local.join("there")), ["f.txt"]);
 }
 
+// Name length ---------------------------------------------------------------------------------------------------------
+
+/// 256 characters, one over what a file system holds per name in bytes (Unix) or UTF-16 units (Windows).
+fn too_long_a_name() -> String {
+    "a".repeat(256)
+}
+
+/// A name that is too long for the target is refused like one it cannot hold: by the pre-walk, naming it.
+#[skuld::test]
+fn a_destination_name_over_the_target_limit_is_refused_before_anything_is_written(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let mut env = Env::new(home);
+    let file = env.host_file("t/f.txt", b"f");
+    let dir = env.local.join("t");
+    let long = too_long_a_name();
+    for kind in [GuestKind::Linux, GuestKind::Windows] {
+        env.guest = env.os(kind);
+        for (src, dest) in [
+            (&file, format!("/{long}")),
+            (&dir, format!("/{long}")),
+            (&file, format!("/ok/{long}/f")),
+        ] {
+            let error = env.copy_in(src, &dest).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Io, "{kind:?} {dest}: {error}");
+            assert!(error.message().contains(&format!("{long:?}")), "{kind:?}: {error}");
+            assert!(tree(env.root()).is_empty(), "{kind:?}: nothing was created");
+        }
+    }
+}
+
+#[skuld::test]
+fn a_destination_name_over_the_host_limit_is_refused_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.guest_file("g/a.txt", b"a");
+    let long = too_long_a_name();
+    for windows_names in [false, true] {
+        if windows_names {
+            env.host = RecordingHost::with_windows_names();
+        }
+        for src in ["/g", "/g/a.txt"] {
+            let dest = PathBuf::from(format!("{}/{long}", env.local.display()));
+            let error = env.copy_out(src, &dest).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Io, "{src}: {error}");
+            assert!(error.message().contains(&format!("{long:?}")), "{src}: {error}");
+            assert!(tree(&env.local).is_empty(), "{src}: nothing was created");
+        }
+    }
+}
+
+/// The guest's name is found by the pre-walk, after `a.txt`, which sorts first and must not have been written.
+#[skuld::test(requires = [scripted_server])]
+fn cp_out_refuses_a_guest_name_over_the_host_limit_before_writing_anything(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    let long = too_long_a_name();
+    std::fs::create_dir(env.root().join("t")).unwrap();
+    for windows_names in [false, true] {
+        if windows_names {
+            env.host = RecordingHost::with_windows_names();
+        }
+        let out = env.local.join(format!("out{windows_names}"));
+        env.guest_named_file("/t/a.txt", 1);
+        env.guest_named_file(&format!("/t/{long}"), 3);
+        let error = env.copy_out("/t", &out).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+        assert!(error.message().contains(&format!("{long:?}")), "{error}");
+        assert!(!out.exists(), "refused before anything was created");
+
+        // Into a directory, the name comes from the guest path.
+        let dest = env.local.join(format!("dest{windows_names}"));
+        std::fs::create_dir(&dest).unwrap();
+        let error = env.copy_out(&format!("/t/{long}"), &dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+        assert!(error.message().contains(&format!("{long:?}")), "{error}");
+        assert!(tree(&dest).is_empty());
+    }
+}
+
+/// 100 CJK characters are 100 UTF-16 units, so NTFS holds the name, and 300 bytes, which a Linux guest does not.
+#[cfg(windows)]
+#[skuld::test]
+fn cp_in_refuses_a_host_name_over_the_guest_limit_before_writing_anything(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let long = "\u{4e2d}".repeat(100);
+    env.host_file("t/a.txt", b"a");
+    env.host_file(&format!("t/{long}"), b"x");
+    let lone = env.host_file(&format!("lone/{long}"), b"x");
+    std::fs::create_dir(env.root().join("into")).unwrap();
+    for (src, dest) in [(env.local.join("t"), "/dest"), (lone, "/into")] {
+        let error = env.copy_in(&src, dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{dest}: {error}");
+        assert!(error.message().contains(&format!("{long:?}")), "{dest}: {error}");
+        assert_eq!(tree(env.root()), ["into/"], "{dest}: nothing was written");
+    }
+}
+
 // Name rules ----------------------------------------------------------------------------------------------------------
 
 /// `C:a` is relative to the current directory of drive `C:`: a copy out of it is refused, naming it, like a copy into it,
