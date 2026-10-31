@@ -107,7 +107,7 @@ fn a_status_other_than_done_is_an_error_naming_it() {
 enum Cause {
     Signal,
     UndocumentedExit,
-    LostConnection,
+    OutputLost,
     NotJson,
     NoStatus,
     NotDone,
@@ -119,7 +119,7 @@ impl Cause {
     const ALL: [Cause; 8] = [
         Cause::Signal,
         Cause::UndocumentedExit,
-        Cause::LostConnection,
+        Cause::OutputLost,
         Cause::NotJson,
         Cause::NoStatus,
         Cause::NotDone,
@@ -132,7 +132,7 @@ impl Cause {
         match self {
             Cause::Signal => "killed by signal",
             Cause::UndocumentedExit => "exited with exit code",
-            Cause::LostConnection => "connection was lost",
+            Cause::OutputLost => "output was lost",
             Cause::NotJson => "not JSON",
             Cause::NoStatus => "no `status` text",
             Cause::NotDone => "its status is `running`",
@@ -181,59 +181,74 @@ fn every_readiness_error_leads_with_the_first_true_cause_and_keeps_every_fact() 
         ("", Some(Cause::NotJson)),
     ];
     for (fact, status) in &statuses {
-        for lost in [false, true] {
+        for loss_kind in [None, Some(ErrorKind::ConnectionLost), Some(ErrorKind::Io)] {
+            let lost = loss_kind.is_some();
             for (stdout, reply_cause) in &replies {
-                let output = Output {
-                    status: status.clone(),
-                    stdout: stdout.as_bytes().to_vec(),
-                    stderr: MARK.as_bytes().to_vec(),
-                    loss: lost.then(|| Error::new(ErrorKind::ConnectionLost, LOSS)),
-                };
-                let unusable = matches!(reply_cause, Some(Cause::NotJson | Cause::NoStatus));
-                let expected = match status {
-                    ExitStatus::Signal { .. } => Some(Cause::Signal),
-                    ExitStatus::Code(code) if !matches!(code, 0..=2) => Some(Cause::UndocumentedExit),
-                    ExitStatus::Code(_) if unusable && lost => Some(Cause::LostConnection),
-                    ExitStatus::Code(1) if reply_cause.is_none() => Some(Cause::DoneWithExit1),
-                    ExitStatus::Code(_) => *reply_cause,
-                };
-                let row = format!("{status:?} lost={lost} stdout={stdout:?}");
-                let result = readiness(&output);
-                let Some(expected) = expected else {
-                    assert!(result.is_ok(), "{row}: {result:?}");
-                    continue;
-                };
-                let error = result.expect_err(&row);
-                let message = error.message();
-                let head = headline(&error);
+                for stderr in [MARK, ""] {
+                    let output = Output {
+                        status: status.clone(),
+                        stdout: stdout.as_bytes().to_vec(),
+                        stderr: stderr.as_bytes().to_vec(),
+                        loss: loss_kind.map(|kind| Error::new(kind, LOSS)),
+                    };
+                    let unusable = matches!(reply_cause, Some(Cause::NotJson | Cause::NoStatus));
+                    let expected = match status {
+                        ExitStatus::Signal { .. } => Some(Cause::Signal),
+                        ExitStatus::Code(code) if !matches!(code, 0..=2) => Some(Cause::UndocumentedExit),
+                        ExitStatus::Code(_) if unusable && lost => Some(Cause::OutputLost),
+                        ExitStatus::Code(1) if reply_cause.is_none() => Some(Cause::DoneWithExit1),
+                        ExitStatus::Code(_) => *reply_cause,
+                    };
+                    let row = format!("{status:?} loss={loss_kind:?} stdout={stdout:?} stderr={stderr:?}");
+                    let result = readiness(&output);
+                    let Some(expected) = expected else {
+                        assert!(result.is_ok(), "{row}: {result:?}");
+                        continue;
+                    };
+                    let error = result.expect_err(&row);
+                    let message = error.message();
+                    let head = headline(&error);
 
-                // The headline is the expected cause and no other.
-                for cause in Cause::ALL {
+                    // The headline is the expected cause and no other.
+                    for cause in Cause::ALL {
+                        assert_eq!(
+                            head.contains(cause.marker()),
+                            cause == expected,
+                            "{row}: {cause:?}: {head}"
+                        );
+                    }
+                    let kind = match (expected, loss_kind) {
+                        (Cause::OutputLost, Some(kind)) => kind,
+                        _ => ErrorKind::Io,
+                    };
+                    assert_eq!(error.kind(), kind, "{row}: {message}");
+
+                    // Every fact given is in the message.
+                    assert!(message.contains(fact), "{row}: the exit: {message}");
+                    let core = matches!(status, ExitStatus::Signal { core_dumped: true, .. });
+                    assert_eq!(message.contains("core dumped"), core, "{row}: core_dumped: {message}");
+                    if let Some(kind) = loss_kind {
+                        let loss = Error::new(kind, LOSS).to_string();
+                        assert!(message.contains(&loss), "{row}: the loss and its kind: {message}");
+                    }
                     assert_eq!(
-                        head.contains(cause.marker()),
-                        cause == expected,
-                        "{row}: {cause:?}: {head}"
+                        message.contains("stdout:"),
+                        !stdout.is_empty(),
+                        "{row}: stdout fact: {message}"
                     );
+                    if !stdout.is_empty() {
+                        assert!(message.contains(stdout), "{row}: stdout: {message}");
+                    }
+                    // Stderr is in the headline (signal, undocumented exit) or in the facts, never both and never empty.
+                    assert_eq!(
+                        message.matches(MARK).count(),
+                        usize::from(!stderr.is_empty()),
+                        "{row}: stderr: {message}"
+                    );
+                    if stderr.is_empty() {
+                        assert!(!message.contains("stderr:"), "{row}: no empty stderr fact: {message}");
+                    }
                 }
-                let kind = if expected == Cause::LostConnection {
-                    ErrorKind::ConnectionLost
-                } else {
-                    ErrorKind::Io
-                };
-                assert_eq!(error.kind(), kind, "{row}: {message}");
-
-                // Every fact given is in the message.
-                assert!(message.contains(fact), "{row}: the exit: {message}");
-                let core = matches!(status, ExitStatus::Signal { core_dumped: true, .. });
-                assert_eq!(message.contains("core dumped"), core, "{row}: core_dumped: {message}");
-                if lost {
-                    let loss = Error::new(ErrorKind::ConnectionLost, LOSS).to_string();
-                    assert!(message.contains(&loss), "{row}: the loss and its kind: {message}");
-                }
-                if !stdout.is_empty() {
-                    assert!(message.contains(stdout), "{row}: stdout: {message}");
-                }
-                assert_eq!(message.matches(MARK).count(), 1, "{row}: stderr once: {message}");
             }
         }
     }

@@ -19,13 +19,13 @@ pub(super) fn readiness(output: &Output) -> Result<Readiness> {
 }
 
 /// Why `cloud-init status` is not a normal finish, as the headline of the error. The first that holds is the cause:
-/// a signal; an exit code cloud-init does not document (not 0, 1 or 2); a lost connection, when the exit is
-/// documented and the reply cannot be read; the reply's own problem. For a documented exit with a readable reply the
+/// a signal; an exit code cloud-init does not document (not 0, 1 or 2); a loss of the output (see [`Output::loss`]),
+/// when the exit is documented and the reply cannot be read; the reply's own problem. For a documented exit with a readable reply the
 /// reply's text is the cause.
 enum Cause<'a> {
     Signal(&'a str),
     UndocumentedExit(i32),
-    LostConnection(&'a Error),
+    OutputLost(&'a Error),
     Reply(String),
 }
 
@@ -44,7 +44,7 @@ fn assess(output: &Output) -> std::result::Result<Readiness, Cause<'_>> {
         .filter(|reply| reply.get("status").is_some_and(serde_json::Value::is_string));
     let Some(reply) = reply else {
         return Err(match (&output.loss, &parsed) {
-            (Some(loss), _) => Cause::LostConnection(loss),
+            (Some(loss), _) => Cause::OutputLost(loss),
             (None, Err(e)) => Cause::Reply(format!("its reply is not JSON ({e})")),
             (None, Ok(_)) => Cause::Reply("its reply has no `status` text".to_owned()),
         });
@@ -57,7 +57,7 @@ fn assess(output: &Output) -> std::result::Result<Readiness, Cause<'_>> {
 
 impl Cause<'_> {
     /// The error: the cause as the headline, then the exit, `core_dumped`, stdout, and whichever of stderr and the loss
-    /// the headline does not already carry. The kind is the loss's for a lost connection, `Io` otherwise.
+    /// the headline does not already carry. The kind is the loss's when the output was lost, `Io` otherwise.
     fn into_error(self, output: &Output) -> Error {
         let stderr = output.stderr_lossy();
         let stderr = stderr.trim();
@@ -72,22 +72,23 @@ impl Cause<'_> {
         let (kind, headline) = match &self {
             Cause::Signal(name) => (ErrorKind::Io, with_stderr(format!("it was killed by signal {name}"))),
             Cause::UndocumentedExit(code) => (ErrorKind::Io, with_stderr(format!("it exited with exit code {code}"))),
-            Cause::LostConnection(loss) => (
-                loss.kind(),
-                format!("the connection was lost ({loss}) and its reply cannot be read"),
-            ),
+            Cause::OutputLost(loss) => (loss.kind(), format!("the output was lost ({loss})")),
             Cause::Reply(problem) => (ErrorKind::Io, problem.clone()),
         };
         let stderr_led = matches!(self, Cause::Signal(_) | Cause::UndocumentedExit(_)) && !stderr.is_empty();
-        let loss_led = matches!(self, Cause::LostConnection(_));
+        let loss_led = matches!(self, Cause::OutputLost(_));
         let mut facts = match &output.status {
             ExitStatus::Code(code) => format!("exit code {code}"),
             ExitStatus::Signal { name, core_dumped } => {
                 format!("signal {name}{}", if *core_dumped { ", core dumped" } else { "" })
             }
         };
-        facts.push_str(&format!("; stdout: {}", output.stdout_lossy().trim()));
-        if !stderr_led {
+        let stdout = output.stdout_lossy();
+        let stdout = stdout.trim();
+        if !stdout.is_empty() {
+            facts.push_str(&format!("; stdout: {stdout}"));
+        }
+        if !stderr_led && !stderr.is_empty() {
             facts.push_str(&format!("; stderr: {stderr}"));
         }
         if let (Some(loss), false) = (&output.loss, loss_led) {
