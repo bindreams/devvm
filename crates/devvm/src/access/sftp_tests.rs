@@ -11,7 +11,55 @@ use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::RecordingHost;
 use crate::test_support::sshd::{Rig, SshdOptions};
 use crate::test_support::symlink::symlink;
+use crate::test_support::{file_mode, unix_files};
 use crate::{ErrorKind, GuestKind, Result};
+
+// The server ==========================================================================================================
+
+/// Set by the CI job that runs these tests against OpenSSH's own `sftp-server` instead of the scripted one: the copy
+/// is then checked against what a real guest does, and a test that cannot run there says why.
+const OPENSSH_CLAIM: &str = "DEVVM_COVERS_OPENSSH_SFTP";
+
+/// `Ok` when this run claims OpenSSH's server. The reason it does not is for a test to show as not run.
+fn openssh_claimed() -> std::result::Result<(), String> {
+    match std::env::var(OPENSSH_CLAIM) {
+        Ok(claimed) if !claimed.is_empty() => Ok(()),
+        _ => Err(format!(
+            "{OPENSSH_CLAIM} is not set; the scripted server is used here, OpenSSH's is covered by CI (Test job on \
+             ubuntu-latest)"
+        )),
+    }
+}
+
+/// For a test that needs what only the scripted server does (faults, a dropped connection, a server that refuses a
+/// request); where OpenSSH's runs, it is not run.
+fn scripted_server() -> std::result::Result<(), String> {
+    match openssh_claimed() {
+        Ok(()) => Err("needs the scripted server; this run uses OpenSSH's".to_owned()),
+        Err(_) => Ok(()),
+    }
+}
+
+/// A guest of `kind`. With OpenSSH's server its `/` is `root`, the directory the server runs in.
+fn guest_os(openssh: bool, root: &Path, kind: GuestKind) -> Arc<dyn GuestOs> {
+    if openssh {
+        FakeGuests.os_rooted_at(kind, root)
+    } else {
+        FakeGuests.os(kind).unwrap()
+    }
+}
+
+/// The claim is true: the SFTP server of this run is OpenSSH's, which has no root of its own and starts in the
+/// directory it serves, while the scripted server's home is `/`.
+#[skuld::test(requires = [openssh_claimed])]
+fn the_server_of_this_run_is_openssh_as_claimed(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    assert!(
+        env.openssh,
+        "{OPENSSH_CLAIM} is set but the run did not start OpenSSH's server"
+    );
+    assert_eq!(env.sftp.home().unwrap(), env.g("/"));
+}
 
 struct Env {
     rig: Rig,
@@ -23,6 +71,8 @@ struct Env {
     progress: MemoryProgress,
     /// The host side: an empty directory.
     local: PathBuf,
+    /// Whether the guest's SFTP server is OpenSSH's own (see [`OPENSSH_CLAIM`]).
+    openssh: bool,
 }
 
 impl Env {
@@ -31,20 +81,155 @@ impl Env {
     }
 
     fn with(home: &Path, configure: impl FnOnce(&mut SshdOptions)) -> Env {
-        let rig = Rig::with(home, configure);
+        let openssh = openssh_claimed().is_ok();
+        let rig = Rig::with(home, |options| {
+            configure(options);
+            options.openssh_sftp = openssh;
+        });
         let session = rig.connect();
         let sftp = session.sftp().expect("the test server serves SFTP");
         let local = home.join("local");
         std::fs::create_dir(&local).unwrap();
+        let guest = guest_os(openssh, rig.sshd.root(), GuestKind::Linux);
         Env {
             rig,
             _session: session,
             sftp,
             host: RecordingHost::new(),
-            guest: FakeGuests.os(GuestKind::Linux).unwrap(),
+            guest,
             progress: MemoryProgress::default(),
             local,
+            openssh,
         }
+    }
+
+    /// A guest of `kind` whose paths reach the server the way this run's server expects them.
+    fn os(&self, kind: GuestKind) -> Arc<dyn GuestOs> {
+        guest_os(self.openssh, self.root(), kind)
+    }
+
+    /// The guest path `path` as the copy names it in a message: OpenSSH's server has the machine's own paths, so the
+    /// guest's `/` is the directory it serves.
+    fn g(&self, path: &str) -> String {
+        match (self.openssh, path) {
+            (false, _) => path.to_owned(),
+            (true, "/") => self.root().display().to_string(),
+            (true, _) => format!("{}{path}", self.root().display()),
+        }
+    }
+
+    /// The file system path of the guest path `path`.
+    fn at(&self, path: &str) -> PathBuf {
+        self.root().join(path.trim_start_matches('/'))
+    }
+
+    /// `text` with the served directory taken out of the guest paths in it.
+    fn unrooted(&self, text: &str) -> String {
+        match self.openssh {
+            true => text.replace(&format!("{}/", self.root().display()), "/"),
+            false => text.to_owned(),
+        }
+    }
+
+    /// The guest path `path` is a symlink holding `target`. An absolute target is a guest path.
+    fn guest_link(&self, path: &str, target: &str) {
+        if self.openssh {
+            let target = if target.starts_with('/') {
+                self.g(target)
+            } else {
+                target.to_owned()
+            };
+            std::fs::create_dir_all(self.at(path).parent().unwrap()).unwrap();
+            symlink(Path::new(&target), &self.at(path));
+        } else {
+            self.rig.sshd.add_symlink(path, target);
+        }
+    }
+
+    /// What the guest symlink `path` holds, if it is one.
+    fn guest_link_target(&self, path: &str) -> Option<String> {
+        if self.openssh {
+            let held = std::fs::read_link(self.at(path)).ok()?;
+            Some(self.unrooted(&held.to_string_lossy()))
+        } else {
+            self.rig.sshd.link_target(path)
+        }
+    }
+
+    /// The guest symlink `path` holds bytes that are not UTF-8.
+    fn guest_link_with_bad_target(&self, path: &str) {
+        if self.openssh {
+            unix_files::make_symlink_with_target_bytes(b"bad\xfftarget", &self.at(path));
+        } else {
+            self.rig.sshd.add_symlink(path, "bad\u{fffd}target");
+        }
+    }
+
+    /// The permission bits of the guest file `path`; `None` where no one set any.
+    fn guest_mode(&self, path: &str) -> Option<u32> {
+        if self.openssh {
+            file_mode::mode(&self.at(path))
+        } else {
+            self.rig.sshd.mode_of(path)
+        }
+    }
+
+    fn set_guest_mode(&self, path: &str, mode: u32) {
+        if self.openssh {
+            file_mode::set_mode(&self.at(path), mode);
+        } else {
+            self.rig.sshd.set_mode(path, mode);
+        }
+    }
+
+    /// The guest directory `path` cannot be changed: no entry in it can be made, removed or renamed.
+    fn make_guest_dir_read_only(&self, path: &str) {
+        if self.openssh {
+            file_mode::set_mode(&self.at(path), 0o555);
+        } else {
+            self.rig.sshd.make_dir_read_only(path);
+        }
+    }
+
+    /// A guest file of `size` bytes whose name the host may not be able to hold. The scripted server makes it up.
+    fn guest_named_file(&self, path: &str, size: u64) {
+        if self.openssh {
+            std::fs::create_dir_all(self.at(path).parent().unwrap()).unwrap();
+            std::fs::write(self.at(path), vec![0u8; size as usize]).unwrap();
+        } else {
+            self.rig.sshd.add_generated_file(path, size);
+        }
+    }
+
+    /// The guest `path` is neither a file, a directory nor a symlink.
+    fn guest_special_file(&self, path: &str) {
+        if self.openssh {
+            unix_files::make_fifo(&self.at(path));
+        } else {
+            self.rig.sshd.add_special_file(path);
+        }
+    }
+
+    /// The guest directory `dir` lists a name that is `bad`, a byte that is not UTF-8, and `name`, which the library
+    /// decodes lossily and which cannot then be found.
+    fn guest_file_with_bad_name(&self, dir: &str) {
+        if self.openssh {
+            unix_files::make_file_with_name_bytes(&self.at(dir), b"bad\xffname");
+        } else {
+            self.rig.sshd.list_phantom(&format!("{dir}/bad\u{fffd}name"));
+        }
+    }
+
+    /// The paths of the symlinks in the guest, sorted.
+    fn guest_links(&self) -> Vec<String> {
+        let mut found: Vec<String> = tree(self.root())
+            .iter()
+            .filter_map(|entry| entry.split_once(" -> "))
+            .map(|(path, _)| format!("/{path}"))
+            .collect();
+        found.extend(self.rig.sshd.links().into_iter().map(|(path, _)| path));
+        found.sort();
+        found
     }
 
     /// The server's directory, where guest path `/x` lives as `x`.
@@ -77,7 +262,10 @@ impl Env {
 
     /// [`tree`] of the guest directory `dir` (a guest path), with the symlinks the server keeps.
     fn guest_tree(&self, dir: &str) -> Vec<String> {
-        let mut out = tree(&self.root().join(dir.trim_start_matches('/')));
+        let mut out: Vec<String> = tree(&self.root().join(dir.trim_start_matches('/')))
+            .iter()
+            .map(|entry| self.unrooted(entry))
+            .collect();
         let prefix = format!("{}/", dir.trim_end_matches('/'));
         for (path, target) in self.rig.sshd.links() {
             if let Some(rel) = path.strip_prefix(&prefix) {
@@ -159,7 +347,8 @@ const PROJECT: [&str; 3] = ["a.txt", "sub/", "sub/b.txt"];
 
 #[skuld::test]
 fn cp_home_is_the_server_root(#[fixture(unicode_home)] home: &Path) {
-    assert_eq!(Env::new(home).sftp.home().unwrap(), "/");
+    let env = Env::new(home);
+    assert_eq!(env.sftp.home().unwrap(), env.g("/"));
 }
 
 #[skuld::test]
@@ -424,7 +613,10 @@ fn cp_reports_a_missing_source_naming_the_side(#[fixture(unicode_home)] home: &P
 
     let error = env.copy_out("/nope", &env.local.join("x")).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
-    assert!(error.message().contains("guest source /nope"), "{error}");
+    assert!(
+        error.message().contains(&format!("guest source {}", env.g("/nope"))),
+        "{error}"
+    );
     assert!(!env.local.join("x").exists());
 }
 
@@ -477,17 +669,20 @@ fn a_link_given_as_the_source_is_copied_as_a_link_and_with_a_slash_it_is_followe
     symlink(&env.local.join("real"), &env.local.join("lnk"));
     let target = env.local.join("real").display().to_string().replace('\\', "/");
     env.copy_in(&env.local.join("lnk"), "/as-link").unwrap();
-    assert_eq!(env.rig.sshd.link_target("/as-link"), Some(target));
-    assert!(!env.root().join("as-link").exists());
+    assert_eq!(env.guest_link_target("/as-link"), Some(target));
+    assert!(
+        !tree(env.root()).contains(&"as-link/".to_owned()),
+        "the link was copied as a directory"
+    );
     env.copy_in(&with_slash(&env.local.join("lnk")), "/followed").unwrap();
     assert_eq!(env.guest_tree("/followed"), ["a.txt", "inner -> shared"]);
 
     env.guest_file("data/b.txt", b"b");
-    env.rig.sshd.add_symlink("/data/inner", "shared");
-    env.rig.sshd.add_symlink("/lnk", "/data");
+    env.guest_link("/data/inner", "shared");
+    env.guest_link("/lnk", "/data");
     env.copy_out("/lnk", &env.local.join("out-link")).unwrap();
     let held = std::fs::read_link(env.local.join("out-link")).unwrap();
-    assert_eq!(held.to_string_lossy().replace('\\', "/"), "/data");
+    assert_eq!(held.to_string_lossy().replace('\\', "/"), env.g("/data"));
     env.copy_out("/lnk/", &env.local.join("out-followed")).unwrap();
     assert_eq!(tree(&env.local.join("out-followed")), ["b.txt", "inner -> shared"]);
 }
@@ -497,7 +692,7 @@ fn a_link_the_host_cannot_store_is_an_error_naming_it(#[fixture(unicode_home)] h
     let mut env = Env::new(home);
     env.host = RecordingHost::without_symlinks();
     env.guest_file("t/a.txt", b"a");
-    env.rig.sshd.add_symlink("/t/ln", "a.txt");
+    env.guest_link("/t/ln", "a.txt");
     let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("/t/ln"), "{error}");
@@ -509,7 +704,7 @@ fn a_link_the_host_cannot_store_is_an_error_naming_it(#[fixture(unicode_home)] h
 fn a_guest_symlink_target_that_is_not_valid_utf8_is_refused_naming_the_link(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     env.guest_file("t/a.txt", b"a");
-    env.rig.sshd.add_symlink("/t/ln", "bad\u{fffd}target");
+    env.guest_link_with_bad_target("/t/ln");
     let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("/t/ln"), "{error}");
@@ -527,18 +722,14 @@ fn a_read_only_target_and_a_symlink_at_the_destination_are_replaced_never_writte
     let src = env.host_file("src.txt", b"new");
     // Guest: a read-only file, and a link to a file that must stay as it is.
     env.guest_file("ro.txt", b"old");
-    env.rig.sshd.set_mode("/ro.txt", 0o444);
+    env.set_guest_mode("/ro.txt", 0o444);
     env.guest_file("elsewhere.txt", b"keep");
-    env.rig.sshd.add_symlink("/lnk.txt", "/elsewhere.txt");
+    env.guest_link("/lnk.txt", "/elsewhere.txt");
     env.copy_in(&src, "/ro.txt").unwrap();
     assert_eq!(std::fs::read(env.root().join("ro.txt")).unwrap(), b"new");
     env.copy_in(&src, "/lnk.txt").unwrap();
     assert_eq!(std::fs::read(env.root().join("lnk.txt")).unwrap(), b"new");
-    assert_eq!(
-        env.rig.sshd.link_target("/lnk.txt"),
-        None,
-        "the link itself was replaced"
-    );
+    assert_eq!(env.guest_link_target("/lnk.txt"), None, "the link itself was replaced");
     assert_eq!(std::fs::read(env.root().join("elsewhere.txt")).unwrap(), b"keep");
 
     // Host: the same two cases.
@@ -567,8 +758,8 @@ fn a_symlink_child_met_while_merging_is_replaced_never_written_through(#[fixture
     env.guest_file("outside.txt", b"keep");
     std::fs::create_dir(env.root().join("outside")).unwrap();
     std::fs::create_dir(env.root().join("dest")).unwrap();
-    env.rig.sshd.add_symlink("/dest/a.txt", "/outside.txt");
-    env.rig.sshd.add_symlink("/dest/sub", "/outside");
+    env.guest_link("/dest/a.txt", "/outside.txt");
+    env.guest_link("/dest/sub", "/outside");
     env.copy_in(&env.local.join("t"), "/dest").unwrap();
     assert_eq!(env.guest_tree("/dest"), ["a.txt", "sub/", "sub/b.txt"]);
     assert_eq!(std::fs::read(env.root().join("dest/a.txt")).unwrap(), b"new a");
@@ -610,8 +801,8 @@ fn a_destination_that_is_a_symlink_to_a_directory_is_followed_in_both_directions
     for (n, (is_dir, spelling)) in cases.into_iter().enumerate() {
         let (real, lnk) = (format!("/real{n}"), format!("/lnk{n}"));
         env.guest_file(&format!("real{n}/old.txt"), b"old");
-        env.rig.sshd.add_symlink(&format!("{real}/a.txt"), "/outside.txt");
-        env.rig.sshd.add_symlink(&lnk, &real);
+        env.guest_link(&format!("{real}/a.txt"), "/outside.txt");
+        env.guest_link(&lnk, &real);
         let src = if is_dir { env.local.join("t") } else { file.clone() };
         env.copy_in(&src, &format!("{lnk}{spelling}")).unwrap();
         // A directory replaces the link child `a.txt` with its own file; a file leaves it alone.
@@ -626,7 +817,7 @@ fn a_destination_that_is_a_symlink_to_a_directory_is_followed_in_both_directions
             "in, {lnk}{spelling}, directory source {is_dir}"
         );
         assert_eq!(
-            env.rig.sshd.link_target(&lnk),
+            env.guest_link_target(&lnk),
             Some(real),
             "the link stays: {lnk}{spelling}"
         );
@@ -678,22 +869,22 @@ fn a_destination_that_is_a_symlink_to_a_file_counts_as_a_file_in_both_directions
     env.host_file("t/a.txt", b"a");
     let file = env.host_file("f.txt", b"new");
     env.guest_file("target.txt", b"keep");
-    env.rig.sshd.add_symlink("/to-file", "/target.txt");
-    env.rig.sshd.add_symlink("/dangling", "/nowhere");
+    env.guest_link("/to-file", "/target.txt");
+    env.guest_link("/dangling", "/nowhere");
     for lnk in ["/to-file", "/to-file/", "/dangling", "/dangling/"] {
         let error = env.copy_in(&dir, lnk).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Io, "{lnk}: {error}");
         assert!(error.message().contains(&dir.display().to_string()), "{lnk}: {error}");
         assert!(error.message().contains(lnk.trim_end_matches('/')), "{lnk}: {error}");
     }
-    assert_eq!(env.rig.sshd.link_target("/to-file"), Some("/target.txt".to_owned()));
-    assert_eq!(env.rig.sshd.link_target("/dangling"), Some("/nowhere".to_owned()));
+    assert_eq!(env.guest_link_target("/to-file"), Some("/target.txt".to_owned()));
+    assert_eq!(env.guest_link_target("/dangling"), Some("/nowhere".to_owned()));
     assert_eq!(std::fs::read(env.root().join("target.txt")).unwrap(), b"keep");
     // A file replaces the link without a slash, and a slash after a link to a file is an error.
     let error = env.copy_in(&file, "/to-file/").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     env.copy_in(&file, "/to-file").unwrap();
-    assert_eq!(env.rig.sshd.link_target("/to-file"), None);
+    assert_eq!(env.guest_link_target("/to-file"), None);
     assert_eq!(std::fs::read(env.root().join("to-file")).unwrap(), b"new");
     assert_eq!(std::fs::read(env.root().join("target.txt")).unwrap(), b"keep");
 
@@ -733,13 +924,13 @@ fn a_destination_that_is_a_symlink_to_a_file_counts_as_a_file_in_both_directions
 fn a_file_onto_a_dangling_link_replaces_it_and_with_a_slash_is_an_error(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     let file = env.host_file("f.txt", b"new");
-    env.rig.sshd.add_symlink("/dangling", "/nowhere");
+    env.guest_link("/dangling", "/nowhere");
     let error = env.copy_in(&file, "/dangling/").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains(&file.display().to_string()), "{error}");
-    assert_eq!(env.rig.sshd.link_target("/dangling"), Some("/nowhere".to_owned()));
+    assert_eq!(env.guest_link_target("/dangling"), Some("/nowhere".to_owned()));
     env.copy_in(&file, "/dangling").unwrap();
-    assert_eq!(env.rig.sshd.link_target("/dangling"), None);
+    assert_eq!(env.guest_link_target("/dangling"), None);
     assert_eq!(std::fs::read(env.root().join("dangling")).unwrap(), b"new");
 
     env.guest_file("g.txt", b"guest");
@@ -764,15 +955,15 @@ fn a_destination_link_that_cannot_be_looked_at_is_an_error_naming_it_and_the_cau
     let dir = env.local.join("t");
     env.host_file("t/a.txt", b"a");
     let file = env.host_file("f.txt", b"new");
-    env.rig.sshd.add_symlink("/loop-a", "/loop-b");
-    env.rig.sshd.add_symlink("/loop-b", "/loop-a");
+    env.guest_link("/loop-a", "/loop-b");
+    env.guest_link("/loop-b", "/loop-a");
     for src in [&dir, &file] {
         let error = env.copy_in(src, "/loop-a").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Io, "{}: {error}", src.display());
         assert!(error.message().contains("/loop-a"), "{error}");
         assert!(error.message().contains("symbolic links"), "the cause: {error}");
         assert!(!error.message().contains("not a directory"), "{error}");
-        assert_eq!(env.rig.sshd.link_target("/loop-a"), Some("/loop-b".to_owned()));
+        assert_eq!(env.guest_link_target("/loop-a"), Some("/loop-b".to_owned()));
     }
 
     env.guest_file("g/a.txt", b"a");
@@ -787,6 +978,35 @@ fn a_destination_link_that_cannot_be_looked_at_is_an_error_naming_it_and_the_cau
         assert!(!error.message().contains("not a directory"), "{error}");
         assert!(std::fs::symlink_metadata(&a).unwrap().file_type().is_symlink());
     }
+}
+
+/// OpenSSH says "no such file" for a loop as for a link to nothing, so the guest's links are followed by hand: a chain
+/// that ends in nothing is dangling whatever its length, and relative links that lead back to themselves are a loop.
+#[skuld::test]
+fn a_chain_of_guest_links_is_dangling_or_a_loop_by_where_it_ends(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let file = env.host_file("f.txt", b"new");
+    env.guest_link("/c1", "/c2");
+    env.guest_link("/c2", "c3");
+    env.guest_link("/c3", "/nowhere");
+    env.copy_in(&file, "/c1").unwrap();
+    assert_eq!(env.guest_link_target("/c1"), None, "the dangling link was replaced");
+    assert_eq!(std::fs::read(env.root().join("c1")).unwrap(), b"new");
+
+    std::fs::create_dir(env.root().join("d")).unwrap();
+    env.guest_link("/d/r1", "r2");
+    env.guest_link("/d/r2", "../d/./r3");
+    env.guest_link("/d/r3", "r1");
+    for dest in ["/d/r1", "/d/r2", "/d/r3"] {
+        let error = env.copy_in(&file, dest).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Io, "{dest}: {error}");
+        assert!(error.message().contains("symbolic links"), "{dest}: {error}");
+    }
+    assert_eq!(
+        env.guest_link_target("/d/r1"),
+        Some("r2".to_owned()),
+        "the loop is left alone"
+    );
 }
 
 // Metadata ============================================================================================================
@@ -834,8 +1054,8 @@ fn the_executable_bit_is_kept_inside_a_tree_in_both_directions(#[fixture(unicode
     env.host_file("pack/plain.txt", b"p");
     env.host.mark_executable(&env.local.join("pack").join("run.sh"));
     env.copy_in(&env.local.join("pack"), "/pack").unwrap();
-    assert_eq!(env.rig.sshd.mode_of("/pack/run.sh"), Some(0o755));
-    assert_eq!(env.rig.sshd.mode_of("/pack/plain.txt"), Some(0o644));
+    assert_eq!(env.guest_mode("/pack/run.sh"), Some(0o755));
+    assert_eq!(env.guest_mode("/pack/plain.txt"), Some(0o644));
 
     env.copy_out("/pack", &env.local.join("back")).unwrap();
     assert_executable_set_on_partials(&env, &env.local.join("back"), 1);
@@ -849,8 +1069,8 @@ fn cp_modes_follow_the_host_executable_bit_in_and_the_guest_bit_out(#[fixture(un
     env.host.mark_executable(&script);
     env.copy_in(&plain, "/plain").unwrap();
     env.copy_in(&script, "/script").unwrap();
-    assert_eq!(env.rig.sshd.mode_of("/plain"), Some(0o644));
-    assert_eq!(env.rig.sshd.mode_of("/script"), Some(0o755));
+    assert_eq!(env.guest_mode("/plain"), Some(0o644));
+    assert_eq!(env.guest_mode("/script"), Some(0o755));
 
     env.copy_out("/plain", &env.local.join("plain-back")).unwrap();
     assert!(env.host.set_executable_calls().is_empty());
@@ -885,7 +1105,7 @@ fn cp_carries_awkward_names(#[fixture(unicode_home)] home: &Path) {
 fn cp_out_of_a_guest_name_with_a_newline(#[fixture(unicode_home)] home: &Path) {
     // A name no Windows directory can hold, served by the test server's generated files.
     let env = Env::new(home);
-    env.rig.sshd.add_generated_file("/line\nbreak", 5);
+    env.guest_named_file("/line\nbreak", 5);
     env.copy_out("/line\nbreak", &env.local.join("out.bin")).unwrap();
     assert_eq!(std::fs::metadata(env.local.join("out.bin")).unwrap().len(), 5);
 }
@@ -899,6 +1119,26 @@ fn cp_leaves_crlf_alone_both_ways(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(std::fs::read(env.root().join("crlf.txt")).unwrap(), content);
     env.copy_out("/crlf.txt", &env.local.join("back.txt")).unwrap();
     assert_eq!(std::fs::read(env.local.join("back.txt")).unwrap(), content);
+}
+
+/// The copy loop ends on an empty read: an empty file, a size that ends exactly on a chunk, and one byte either side.
+#[skuld::test]
+fn files_of_every_size_around_a_chunk_arrive_unchanged_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    for size in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 2 * CHUNK, 3 * CHUNK + 5] {
+        let content: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let src = env.host_file(&format!("in{size}.bin"), &content);
+        env.copy_in(&src, &format!("/in{size}.bin")).unwrap();
+        assert_eq!(
+            std::fs::read(env.root().join(format!("in{size}.bin"))).unwrap(),
+            content,
+            "in, {size} bytes"
+        );
+        env.guest_file(&format!("out{size}.bin"), &content);
+        let out = env.local.join(format!("out{size}.bin"));
+        env.copy_out(&format!("/out{size}.bin"), &out).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), content, "out, {size} bytes");
+    }
 }
 
 #[skuld::test]
@@ -928,6 +1168,87 @@ fn a_tilde_user_guest_path_is_a_usage_error_before_any_transfer(#[fixture(unicod
     assert!(env.progress.messages().is_empty(), "no transfer was announced");
 }
 
+/// A guest whose user's home is not the root: `~` is what the server says it is, and the copy lands there.
+#[skuld::test(requires = [scripted_server])]
+fn tilde_paths_are_read_against_a_home_that_is_not_the_root(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.home = Some("/home/user".to_owned()));
+    std::fs::create_dir_all(env.root().join("home/user")).unwrap();
+    assert_eq!(env.sftp.home().unwrap(), "/home/user");
+    let proj = project(&env);
+    let file = env.host_file("f.txt", b"f");
+    env.copy_in(&file, "~/in.txt").unwrap();
+    env.copy_in(&file, "~").unwrap();
+    env.copy_in(&file, "~/").unwrap();
+    env.copy_in(&proj, "~/proj").unwrap();
+    env.copy_in(&proj, "~").unwrap();
+    assert_eq!(
+        tree(&env.root().join("home/user")),
+        [
+            "a.txt",
+            "f.txt",
+            "in.txt",
+            "proj/",
+            "proj/a.txt",
+            "proj/sub/",
+            "proj/sub/b.txt",
+            "sub/",
+            "sub/b.txt"
+        ]
+    );
+    assert!(
+        tree(env.root()).iter().all(|entry| entry.starts_with("home")),
+        "nothing landed outside the home"
+    );
+
+    let out = env.local.join("out");
+    env.copy_out("~/proj", &out).unwrap();
+    assert_eq!(tree(&out), PROJECT);
+    env.copy_out("~/in.txt", &env.local.join("in.txt")).unwrap();
+    assert_eq!(std::fs::read(env.local.join("in.txt")).unwrap(), b"f");
+    let error = env.copy_out("~/missing", &env.local.join("m")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
+}
+
+/// A guest that spells paths otherwise than its SFTP server does (a drive letter, say): the user's path is mapped once,
+/// the destination and the source alike, and the copy lands where the server says.
+#[skuld::test(requires = [scripted_server])]
+fn a_guest_path_is_given_to_the_server_as_the_guest_maps_it(#[fixture(unicode_home)] home: &Path) {
+    let mut env = Env::new(home);
+    env.guest = FakeGuests.os_on_drive(GuestKind::Linux, "Z:");
+    let proj = project(&env);
+    let file = env.host_file("f.txt", b"f");
+    env.copy_in(&file, "Z:/in.txt").unwrap();
+    env.copy_in(&file, "Z:/dir/").unwrap();
+    env.copy_in(&proj, "Z:/proj").unwrap();
+    env.copy_in(&proj, "Z:/deep/er/proj/.").unwrap();
+    assert_eq!(
+        tree(env.root()),
+        [
+            "deep/",
+            "deep/er/",
+            "deep/er/proj/",
+            "deep/er/proj/a.txt",
+            "deep/er/proj/sub/",
+            "deep/er/proj/sub/b.txt",
+            "dir/",
+            "dir/f.txt",
+            "in.txt",
+            "proj/",
+            "proj/a.txt",
+            "proj/sub/",
+            "proj/sub/b.txt",
+        ]
+    );
+
+    let out = env.local.join("out");
+    env.copy_out("Z:/proj", &out).unwrap();
+    assert_eq!(tree(&out), PROJECT);
+    env.copy_out("Z:/in.txt", &env.local.join("in.txt")).unwrap();
+    assert_eq!(std::fs::read(env.local.join("in.txt")).unwrap(), b"f");
+    let error = env.copy_out("Z:/missing", &env.local.join("m")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
+}
+
 // Refused before anything is written ==================================================================================
 
 /// Windows hosts cannot hold the names this test needs, so it runs where they can be made.
@@ -935,7 +1256,7 @@ fn a_tilde_user_guest_path_is_a_usage_error_before_any_transfer(#[fixture(unicod
 #[skuld::test]
 fn a_name_a_windows_guest_cannot_store_is_refused_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
     let mut env = Env::new(home);
-    env.guest = FakeGuests.os(GuestKind::Windows).unwrap();
+    env.guest = env.os(GuestKind::Windows);
     for (i, name) in ["a?b", "q*", "x.", "a:b"].into_iter().enumerate() {
         env.host_file(&format!("t{i}/fine.txt"), b"f");
         env.host_file(&format!("t{i}/sub/{name}"), b"x");
@@ -1006,28 +1327,33 @@ fn a_time_sftp_cannot_carry_is_named_and_the_copy_goes_on(#[fixture(unicode_home
     assert!(!notes.iter().any(|line| line.contains("ok.txt")), "{notes:?}");
 }
 
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn a_guest_time_the_server_does_not_show_is_named_and_the_copy_goes_on(#[fixture(unicode_home)] home: &Path) {
-    let env = Env::new(home);
-    // The test server shows no time for a file past 2106.
-    set_mtime(&env.guest_file("g/late.txt", b"l"), 5_000_000_000);
-    env.guest_file("g/ok.txt", b"o");
+    let env = Env::with(home, |options| options.no_times = true);
+    env.guest_file("g/a.txt", b"a");
+    env.guest_file("g/sub/b.txt", b"b");
     let out = env.local.join("out");
     env.copy_out("/g", &out).unwrap();
-    assert_eq!(tree(&out), ["late.txt", "ok.txt"]);
+    assert_eq!(tree(&out), ["a.txt", "sub/", "sub/b.txt"]);
     let notes: Vec<String> = env
         .progress
         .messages()
         .into_iter()
         .filter(|line| line.contains("modification time"))
         .collect();
-    assert_eq!(notes.len(), 1, "{notes:?}");
-    assert!(notes[0].contains("/g/late.txt"), "{notes:?}");
+    assert_eq!(notes.len(), 4, "{notes:?}");
+    for named in ["/g", "/g/a.txt", "/g/sub", "/g/sub/b.txt"] {
+        assert_eq!(
+            notes.iter().filter(|line| line.contains(&format!("{named} "))).count(),
+            1,
+            "{named}: {notes:?}"
+        );
+    }
 }
 
 // Checks before anything is written ===================================================================================
 
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn links_a_guest_cannot_store_fail_the_copy_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
     let env = Env::with(home, |options| options.no_symlinks = true);
     // The plain file sorts before the link and must not arrive.
@@ -1053,7 +1379,7 @@ fn links_a_host_cannot_store_fail_the_copy_before_anything_is_written(#[fixture(
     let mut env = Env::new(home);
     env.host = RecordingHost::without_symlinks();
     env.guest_file("g/a.txt", b"a");
-    env.rig.sshd.add_symlink("/g/ln", "a.txt");
+    env.guest_link("/g/ln", "a.txt");
     let out = env.local.join("out");
     let error = env.copy_out("/g", &out).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
@@ -1073,10 +1399,9 @@ fn the_link_probe_leaves_nothing_behind(#[fixture(unicode_home)] home: &Path) {
     symlink(Path::new("a.txt"), &env.local.join("t").join("ln"));
     env.copy_in(&env.local.join("t"), "/new/deep/dest").unwrap();
     assert_eq!(env.guest_tree("/new/deep/dest"), ["a.txt", "ln -> a.txt"]);
-    assert_eq!(env.rig.sshd.links().len(), 1);
-    assert_eq!(tree(&env.root().join("new/deep/dest")), ["a.txt"]);
+    assert_eq!(env.guest_links().len(), 1);
     env.guest_file("g/a.txt", b"a");
-    env.rig.sshd.add_symlink("/g/ln", "a.txt");
+    env.guest_link("/g/ln", "a.txt");
     env.copy_out("/g", &env.local.join("out")).unwrap();
     assert_eq!(tree(&env.local.join("out")), ["a.txt", "ln -> a.txt"]);
     // The destination did not exist, so the host probe was made in `local`, beside it.
@@ -1144,7 +1469,7 @@ fn what_the_copy_replaces_is_not_checked_for_clashes_below_it(#[fixture(unicode_
     env.host_file("t/lnk/f/g", b"g");
     env.guest_file("real/f", b"keep");
     std::fs::create_dir(env.root().join("dest")).unwrap();
-    env.rig.sshd.add_symlink("/dest/lnk", "/real");
+    env.guest_link("/dest/lnk", "/real");
     env.copy_in(&env.local.join("t"), "/dest").unwrap();
     assert_eq!(env.guest_tree("/dest"), ["lnk/", "lnk/f/", "lnk/f/g"]);
     assert_eq!(std::fs::read(env.root().join("real/f")).unwrap(), b"keep");
@@ -1161,7 +1486,7 @@ fn what_the_copy_replaces_is_not_checked_for_clashes_below_it(#[fixture(unicode_
 }
 
 /// The link probe makes a link at the destination, so it runs after the checks that can fail the copy.
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn a_clash_is_reported_before_the_guest_link_probe_makes_anything(#[fixture(unicode_home)] home: &Path) {
     let env = Env::with(home, |options| options.no_symlinks = true);
     env.host_file("t/x", b"file");
@@ -1177,7 +1502,7 @@ fn a_clash_is_reported_before_the_host_link_probe_makes_anything(#[fixture(unico
     let mut env = Env::new(home);
     env.host = RecordingHost::without_symlinks();
     env.guest_file("g/x", b"file");
-    env.rig.sshd.add_symlink("/g/ln", "x");
+    env.guest_link("/g/ln", "x");
     let out = env.local.join("out");
     std::fs::create_dir_all(out.join("x")).unwrap();
     let error = env.copy_out("/g", &out).unwrap_err();
@@ -1232,11 +1557,7 @@ fn a_host_special_file_fails_the_copy_naming_it_and_nothing_is_written(#[fixture
     let env = Env::new(home);
     env.host_file("t/a.txt", b"a");
     let fifo = env.local.join("t").join("z");
-    let made = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .expect("the test needs the `mkfifo` command");
-    assert!(made.success(), "mkfifo failed");
+    unix_files::make_fifo(&fifo);
     for (src, dest) in [(env.local.join("t"), "/dest"), (fifo.clone(), "/lone")] {
         let error = env.copy_in(&src, dest).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Io, "{error}");
@@ -1250,7 +1571,7 @@ fn a_host_special_file_fails_the_copy_naming_it_and_nothing_is_written(#[fixture
 fn a_guest_special_file_fails_the_copy_naming_it_and_nothing_is_written(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     env.guest_file("g/a.txt", b"a");
-    env.rig.sshd.add_special_file("/g/z");
+    env.guest_special_file("/g/z");
     for (src, dest) in [("/g", "out"), ("/g/z", "lone")] {
         let dest = env.local.join(dest);
         let error = env.copy_out(src, &dest).unwrap_err();
@@ -1270,7 +1591,7 @@ fn a_destination_name_a_windows_guest_cannot_store_is_refused_before_anything_is
     #[fixture(unicode_home)] home: &Path,
 ) {
     let mut env = Env::new(home);
-    env.guest = FakeGuests.os(GuestKind::Windows).unwrap();
+    env.guest = env.os(GuestKind::Windows);
     let file = env.host_file("t/f.txt", b"f");
     let dir = env.local.join("t");
     for (src, dest, name) in [
@@ -1329,7 +1650,7 @@ fn a_destination_name_a_windows_host_cannot_store_is_refused_before_anything_is_
 #[skuld::test]
 fn a_windows_guest_takes_two_host_names_differing_in_case_for_one(#[fixture(unicode_home)] home: &Path) {
     let mut env = Env::new(home);
-    env.guest = FakeGuests.os(GuestKind::Windows).unwrap();
+    env.guest = env.os(GuestKind::Windows);
     env.host_file("t/Readme", b"1");
     env.host_file("t/README", b"2");
     let error = env.copy_in(&env.local.join("t"), "/d").unwrap_err();
@@ -1369,7 +1690,7 @@ fn a_guest_time_before_1970_is_named_and_the_copy_goes_on(#[fixture(unicode_home
 
 // Failures ============================================================================================================
 
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn a_dropped_connection_mid_copy_leaves_no_partial_file_at_the_final_path(#[fixture(unicode_home)] home: &Path) {
     let env = Env::with(home, |options| options.kill_sftp_after = Some(100 * 1024));
     let big = env.host_file("big.bin", &vec![7u8; 2 << 20]);
@@ -1402,7 +1723,7 @@ fn a_dropped_connection_mid_copy_leaves_no_partial_file_at_the_final_path(#[fixt
 fn copy_in_into_a_read_only_guest_directory_reports_the_guest_error(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     std::fs::create_dir(env.root().join("ro")).unwrap();
-    env.rig.sshd.make_dir_read_only("/ro");
+    env.make_guest_dir_read_only("/ro");
     let src = env.host_file("src.txt", b"new");
     let error = env.copy_in(&src, "/ro/x.txt").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
@@ -1413,7 +1734,7 @@ fn copy_in_into_a_read_only_guest_directory_reports_the_guest_error(#[fixture(un
 
 // Which side is named =================================================================================================
 
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn a_guest_write_failure_names_the_guest_not_the_host_file(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     std::fs::create_dir(env.root().join("full")).unwrap();
@@ -1438,7 +1759,7 @@ fn a_guest_write_failure_names_the_guest_not_the_host_file(#[fixture(unicode_hom
     }
 }
 
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn a_guest_read_failure_names_the_guest_not_the_host_file(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
     env.guest_file("full/x.bin", &vec![1u8; 4096]);
@@ -1501,7 +1822,7 @@ fn a_guest_name_that_is_not_valid_utf8_is_refused_by_name_not_called_dangling(#[
     std::fs::create_dir(env.root().join("t")).unwrap();
     // The SFTP library decodes such a name lossily, so the listing holds U+FFFD where the bytes were, and a stat of
     // that name finds nothing.
-    env.rig.sshd.list_phantom("/t/bad\u{fffd}name");
+    env.guest_file_with_bad_name("/t");
     let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("not valid UTF-8"), "{error}");
@@ -1533,7 +1854,7 @@ fn cp_out_refuses_a_guest_name_a_windows_host_cannot_hold(#[fixture(unicode_home
     let names = ["a\\b", "..\\x", "C:\\z", "con", "x.", "a:b", "q?"];
     for (i, name) in names.iter().enumerate() {
         std::fs::create_dir(env.root().join(format!("t{i}"))).unwrap();
-        env.rig.sshd.add_generated_file(&format!("/t{i}/{name}"), 3);
+        env.guest_named_file(&format!("/t{i}/{name}"), 3);
         let out = env.local.join(format!("out{i}"));
         let error = env.copy_out(&format!("/t{i}"), &out).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Io, "{name}: {error}");
@@ -1547,8 +1868,8 @@ fn cp_out_refuses_two_guest_names_a_case_insensitive_host_takes_for_one(#[fixtur
     let mut env = Env::new(home);
     env.host = RecordingHost::with_windows_names();
     std::fs::create_dir(env.root().join("t")).unwrap();
-    env.rig.sshd.add_generated_file("/t/Readme", 3);
-    env.rig.sshd.add_generated_file("/t/README", 3);
+    env.guest_named_file("/t/Readme", 3);
+    env.guest_named_file("/t/README", 3);
     let out = env.local.join("out");
     let error = env.copy_out("/t", &out).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
@@ -1561,7 +1882,7 @@ fn cp_out_refuses_two_guest_names_a_case_insensitive_host_takes_for_one(#[fixtur
 fn cp_out_into_a_directory_checks_the_name_it_takes_from_the_guest_path(#[fixture(unicode_home)] home: &Path) {
     let mut env = Env::new(home);
     env.host = RecordingHost::with_windows_names();
-    env.rig.sshd.add_generated_file("/con", 3);
+    env.guest_named_file("/con", 3);
     let dest = env.local.join("dest");
     std::fs::create_dir(&dest).unwrap();
     let error = env.copy_out("/con", &dest).unwrap_err();
@@ -1570,11 +1891,65 @@ fn cp_out_into_a_directory_checks_the_name_it_takes_from_the_guest_path(#[fixtur
     assert!(tree(&dest).is_empty());
 }
 
+/// A server answers a long listing in several replies, and the copy takes every one of them. The scripted server is
+/// told to answer four entries at a time; OpenSSH's cuts a listing of this size by itself.
+#[skuld::test]
+fn a_directory_listed_in_several_batches_is_copied_whole(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.readdir_batch = Some(4));
+    let names: Vec<String> = (0..300).map(|i| format!("f{i:03}.txt")).collect();
+    for name in &names {
+        env.guest_file(&format!("t/{name}"), name.as_bytes());
+    }
+    env.guest_file("t/sub/inner.txt", b"i");
+    let out = env.local.join("out");
+    env.copy_out("/t", &out).unwrap();
+    let mut want: Vec<String> = names.clone();
+    want.extend(["sub/".to_owned(), "sub/inner.txt".to_owned()]);
+    want.sort();
+    assert_eq!(tree(&out), want);
+}
+
+/// A name that comes again in a later batch is a duplicate of the first, though no one reply holds both.
+#[skuld::test(requires = [scripted_server])]
+fn a_name_listed_again_in_a_later_batch_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.readdir_batch = Some(1));
+    for name in ["a", "b", "c"] {
+        env.guest_file(&format!("t/{name}"), b"x");
+    }
+    env.rig.sshd.list_again("/t/a");
+    let error = env.copy_out("/t", &env.local.join("out")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("names \"a\" twice"), "{error}");
+    assert!(!env.local.join("out").exists());
+}
+
+/// A guest that refuses the rename extension fails the copy naming it, and the temporary file does not stay.
+#[skuld::test(requires = [scripted_server])]
+fn a_guest_that_refuses_posix_rename_fails_the_copy_and_leaves_no_temporary(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.no_posix_rename = true);
+    let file = env.host_file("f.txt", b"new");
+    env.guest_file("old.txt", b"old");
+    let error = env.copy_in(&file, "/old.txt").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("cannot move"), "{error}");
+    assert_eq!(std::fs::read(env.root().join("old.txt")).unwrap(), b"old");
+    assert_eq!(tree(env.root()), ["old.txt"], "the temporary is gone");
+
+    let proj = project(&env);
+    let error = env.copy_in(&proj, "/dest").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert_eq!(
+        tree(env.root()),
+        ["dest/", "old.txt"],
+        "the directory was made, no file or temporary"
+    );
+}
+
 // Guest requests ======================================================================================================
 
 /// Asks the guest side to make the directory `path`.
 fn guest_create_dir(env: &Env, path: &str) -> Result<bool> {
-    let path = path.to_owned();
+    let path = env.g(path);
     env.sftp
         .call("creating a directory", move |remote| remote.create_dir(path))
 }
@@ -1603,7 +1978,7 @@ fn the_guest_refuses_a_file_in_the_way_of_a_directory_naming_it(#[fixture(unicod
     }
 }
 
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn a_guest_that_has_not_even_a_root_ends_the_walk_up_with_an_error(#[fixture(unicode_home)] home: &Path) {
     let env = Env::with(home, |options| options.hollow = true);
     for path in ["/a/b", "a/b", "."] {
@@ -1615,7 +1990,7 @@ fn a_guest_that_has_not_even_a_root_ends_the_walk_up_with_an_error(#[fixture(uni
     }
 }
 
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn the_guest_temporary_is_opened_so_that_it_cannot_be_a_file_that_is_already_there(
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -1635,7 +2010,7 @@ fn the_guest_temporary_is_opened_so_that_it_cannot_be_a_file_that_is_already_the
     );
 }
 
-#[skuld::test]
+#[skuld::test(requires = [scripted_server])]
 fn an_sftp_channel_that_closes_on_a_live_connection_is_not_a_lost_connection(#[fixture(unicode_home)] home: &Path) {
     let env = Env::with(home, |options| options.close_sftp_after = Some(100 * 1024));
     let big = env.host_file("big.bin", &vec![7u8; 2 << 20]);

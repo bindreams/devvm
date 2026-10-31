@@ -75,6 +75,8 @@ enum Open {
     Dir {
         entries: Vec<File>,
         sent: bool,
+        /// How many entries one reply holds.
+        batch: usize,
     },
 }
 
@@ -155,8 +157,8 @@ impl SftpFs {
             .fold(self.state.root.clone(), |dir, part| dir.join(part))
     }
 
-    /// Follows virtual symlinks: the last component if `follow`, and every directory component always. A loop is an
-    /// error.
+    /// Follows virtual symlinks: the last component if `follow`, and every directory component always. A loop is
+    /// "no such file".
     fn resolve(&self, path: &str, follow: bool) -> Result<String, StatusReply> {
         let mut current = normalize(path);
         for _ in 0..40 {
@@ -178,7 +180,8 @@ impl SftpFs {
             };
             current = normalize(&format!("{replaced}/{}", parts[i..].join("/")));
         }
-        Err(failure("too many levels of symbolic links"))
+        // OpenSSH's `sftp-server` has no status for a loop and says "no such file", as it does for a dangling link.
+        Err(StatusCode::NoSuchFile.into())
     }
 
     /// Whether the entries of the directory holding `path` cannot be changed.
@@ -213,15 +216,15 @@ impl SftpFs {
         } else {
             let metadata = std::fs::metadata(self.real(&path)).map_err(from_io)?;
             attrs.size = Some(metadata.len());
+            // SFTP v3 carries 32-bit seconds, and OpenSSH sends the low 32 bits: a time before 1970 is its two's
+            // complement, a time after 2106 wraps around.
             attrs.mtime = metadata
                 .modified()
                 .ok()
-                .and_then(|time| match time.duration_since(std::time::UNIX_EPOCH) {
-                    Ok(since) => u32::try_from(since.as_secs()).ok(),
-                    // OpenSSH sends a time before 1970 as the 32-bit two's complement of its seconds.
-                    Err(before) => u32::try_from(before.duration().as_secs())
-                        .ok()
-                        .map(|seconds| 0u32.wrapping_sub(seconds)),
+                .filter(|_| !self.state.options.no_times)
+                .map(|time| match time.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(since) => since.as_secs() as u32,
+                    Err(before) => 0u32.wrapping_sub(before.duration().as_secs() as u32),
                 });
             attrs.atime = attrs.mtime;
             attrs.permissions = Some(if metadata.is_dir() {
@@ -505,6 +508,7 @@ impl Handler for SftpFs {
         let phantoms: Vec<String> = self.state.phantoms.lock().unwrap().iter().filter_map(child).collect();
         names.extend(phantoms.iter().cloned());
         let mut entries = Vec::new();
+        let mut again = Vec::new();
         for name in names {
             let full = if dir == "/" {
                 format!("/{name}")
@@ -516,21 +520,31 @@ impl Handler for SftpFs {
             } else {
                 self.attributes(&full, false)?
             };
+            if self.state.listed_again.lock().unwrap().contains(&full) {
+                again.push(File::new(name.clone(), attrs.clone()));
+            }
             entries.push(File::new(name, attrs));
         }
+        entries.extend(again);
+        let batch = self.state.options.readdir_batch.unwrap_or(usize::MAX);
         Ok(Handle {
             id,
-            handle: self.new_handle(Open::Dir { entries, sent: false }),
+            handle: self.new_handle(Open::Dir {
+                entries,
+                sent: false,
+                batch,
+            }),
         })
     }
 
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusReply> {
         match self.handles.get_mut(&handle) {
-            Some(Open::Dir { entries, sent }) if !*sent => {
+            Some(Open::Dir { entries, sent, batch }) if !*sent || !entries.is_empty() => {
                 *sent = true;
+                let rest = entries.split_off((*batch).min(entries.len()));
                 Ok(Name {
                     id,
-                    files: std::mem::take(entries),
+                    files: std::mem::replace(entries, rest),
                 })
             }
             Some(Open::Dir { .. }) => Err(StatusCode::Eof.into()),
@@ -580,9 +594,13 @@ impl Handler for SftpFs {
             self.state.held_notify.notify_waiters();
             std::future::pending::<()>().await;
         }
+        let answer = match (path.as_str(), &self.state.options.home) {
+            (".", Some(home)) => home.clone(),
+            _ => self.resolve(&path, true)?,
+        };
         Ok(Name {
             id,
-            files: vec![File::dummy(self.resolve(&path, true)?)],
+            files: vec![File::dummy(answer)],
         })
     }
 
@@ -620,7 +638,7 @@ impl Handler for SftpFs {
     }
 
     async fn extended(&mut self, id: u32, request: String, data: Vec<u8>) -> Result<Packet, StatusReply> {
-        if request != POSIX_RENAME {
+        if request != POSIX_RENAME || self.state.options.no_posix_rename {
             return Err(StatusCode::OpUnsupported.into());
         }
         let (old, new) = two_strings(&data).ok_or_else(|| failure("malformed posix-rename request"))?;

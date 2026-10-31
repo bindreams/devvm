@@ -10,3 +10,4 @@ pub mod http;
 pub mod sshd;
 pub mod stub_backend;
 pub mod symlink;
+pub mod unix_files;

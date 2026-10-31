@@ -1,5 +1,6 @@
 //! Guests for the tests: they need no image, no network and no SSH.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::access::SshSession;
@@ -11,9 +12,39 @@ use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
 pub(crate) struct FakeGuests;
 
+impl FakeGuests {
+    /// A guest that spells its paths with the drive `drive` (`Z:`), which its SFTP server leaves out.
+    pub(crate) fn os_on_drive(&self, kind: GuestKind, drive: &'static str) -> Arc<dyn GuestOs> {
+        Arc::new(FakeGuestOs {
+            kind,
+            paths: SftpPaths::WithoutDrive(drive),
+        })
+    }
+
+    /// A guest whose `/` is the directory `root` of the machine its SFTP server runs on, as the server sees it.
+    pub(crate) fn os_rooted_at(&self, kind: GuestKind, root: &Path) -> Arc<dyn GuestOs> {
+        Arc::new(FakeGuestOs {
+            kind,
+            paths: SftpPaths::Under(root.to_string_lossy().into_owned()),
+        })
+    }
+}
+
+/// How a guest's paths become the paths its SFTP server expects.
+enum SftpPaths {
+    Same,
+    /// The paths start with this drive, which the server's do not.
+    WithoutDrive(&'static str),
+    /// The server's paths start with this directory; one that does already is left as it is.
+    Under(String),
+}
+
 impl Guests for FakeGuests {
     fn os(&self, kind: GuestKind) -> Result<Arc<dyn GuestOs>> {
-        Ok(Arc::new(FakeGuestOs { kind }))
+        Ok(Arc::new(FakeGuestOs {
+            kind,
+            paths: SftpPaths::Same,
+        }))
     }
 
     fn builder(&self, kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
@@ -27,6 +58,7 @@ impl Guests for FakeGuests {
 /// A guest whose file names follow the rules of its kind: a Windows guest refuses what Windows refuses.
 struct FakeGuestOs {
     kind: GuestKind,
+    paths: SftpPaths,
 }
 
 impl GuestOs for FakeGuestOs {
@@ -57,7 +89,18 @@ impl GuestOs for FakeGuestOs {
     }
 
     fn sftp_path(&self, guest_path: &str, _home: &str) -> String {
-        guest_path.to_owned()
+        match &self.paths {
+            SftpPaths::WithoutDrive(drive) => guest_path.strip_prefix(drive).unwrap_or(guest_path).to_owned(),
+            SftpPaths::Under(root) if guest_path.starts_with('/') => {
+                let inside = guest_path == root || guest_path.starts_with(&format!("{root}/"));
+                if inside {
+                    guest_path.to_owned()
+                } else {
+                    format!("{}{guest_path}", root.trim_end_matches('/'))
+                }
+            }
+            SftpPaths::Same | SftpPaths::Under(_) => guest_path.to_owned(),
+        }
     }
 
     fn semantics_version(&self) -> u32 {

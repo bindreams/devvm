@@ -10,7 +10,7 @@
 //! | `close-no-status` | closes the channel with no status |
 //! | `drop-connection` | writes a line, then drops the TCP connection |
 //! | `freeze` | stops reading and writing altogether (a frozen peer) |
-//! | `pattern MiB` | writes MiB MiB of the 256-byte-value pattern to stdout and the same, reversed, to stderr, then exits 0 |
+//! | `pattern MiB` | writes MiB MiB of the 256-byte-value pattern to stdout, the same reversed to stderr, then exits 0 |
 //! | `stdout-mib MiB` | writes MiB MiB of the pattern to stdout, then exits 0 |
 //! | `write-forever` | writes to stdout until the client closes the channel |
 //! | `hold` | does nothing and never answers: no output, no status |
@@ -21,7 +21,8 @@
 //!
 //! Options make connections misbehave: a host key other than the advertised one, a refused client key, a peer that
 //! accepts the connection and never speaks. The SFTP part serves a directory, with virtual symlinks, modes,
-//! read-only directories and data failures that tests declare, and files that are generated or discarded so a multi-GiB copy needs no disk.
+//! read-only directories and data failures that tests declare, and files that are generated or discarded so a multi-GiB
+//! copy needs no disk.
 
 mod fs;
 
@@ -35,6 +36,7 @@ use std::time::Duration;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{Auth, Config, Handler, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, Sig};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
@@ -45,6 +47,9 @@ use crate::access::{BootBound, Keepalive, SshSession, SshTarget, VmExit};
 use crate::exit::NullProgress;
 
 pub use fs::{BIG_SIZE, big_file_digest, expected_big_digest, pattern_byte, sample_windows};
+
+/// Where Debian and Ubuntu put OpenSSH's SFTP server (package `openssh-sftp-server`).
+pub const OPENSSH_SFTP_SERVER: &str = "/usr/lib/openssh/sftp-server";
 
 /// How the server misbehaves.
 #[derive(Clone, Default)]
@@ -70,6 +75,17 @@ pub struct SshdOptions {
     pub hold_realpath: bool,
     /// Say that nothing exists, not even `/`, and refuse every `mkdir`: a guest whose file system cannot be asked.
     pub hollow: bool,
+    /// What `realpath .` answers, the guest user's home; `None` answers `/`.
+    pub home: Option<String>,
+    /// Serve SFTP with OpenSSH's own `sftp-server` ([`OPENSSH_SFTP_SERVER`]), started in [`SshdOptions::root`], instead
+    /// of the scripted one: the options and methods that script the SFTP part do not apply.
+    pub openssh_sftp: bool,
+    /// Show no modification time of any file, as a server that does not keep them.
+    pub no_times: bool,
+    /// Answer a directory listing this many entries at a time; `None` answers it in one reply.
+    pub readdir_batch: Option<usize>,
+    /// Refuse `posix-rename@openssh.com`, as a server that is not OpenSSH does.
+    pub no_posix_rename: bool,
 }
 
 pub(crate) struct State {
@@ -90,6 +106,7 @@ pub(crate) struct State {
     pub(crate) read_only_dirs: Mutex<HashSet<String>>,
     pub(crate) failing_data: Mutex<HashSet<String>>,
     pub(crate) phantoms: Mutex<HashSet<String>>,
+    pub(crate) listed_again: Mutex<HashSet<String>>,
     pub(crate) discarding: Mutex<HashSet<String>>,
     pub(crate) generated: Mutex<HashMap<String, u64>>,
     pub(crate) specials: Mutex<HashSet<String>>,
@@ -123,9 +140,19 @@ impl TestSshd {
             Some(root) => (root.clone(), None),
             None => {
                 let temp = tempfile::tempdir().expect("a temporary directory");
-                (temp.path().to_owned(), Some(temp))
+                let path = if options.openssh_sftp {
+                    // OpenSSH reports its working directory without links in it.
+                    temp.path().canonicalize().expect("the temporary directory exists")
+                } else {
+                    temp.path().to_owned()
+                };
+                (path, Some(temp))
             }
         };
+        assert!(
+            !options.openssh_sftp || Path::new(OPENSSH_SFTP_SERVER).is_file(),
+            "the test needs OpenSSH's SFTP server at {OPENSSH_SFTP_SERVER}: install the package openssh-sftp-server"
+        );
         let state = Arc::new(State {
             good: random_key(),
             bad: random_key(),
@@ -142,6 +169,7 @@ impl TestSshd {
             read_only_dirs: Mutex::default(),
             failing_data: Mutex::default(),
             phantoms: Mutex::default(),
+            listed_again: Mutex::default(),
             specials: Mutex::default(),
             discarding: Mutex::default(),
             generated: Mutex::default(),
@@ -292,6 +320,11 @@ impl TestSshd {
         self.state.phantoms.lock().unwrap().insert(path.to_owned());
     }
 
+    /// A directory listing names `path`, an entry that exists, a second time, at its end.
+    pub fn list_again(&self, path: &str) {
+        self.state.listed_again.lock().unwrap().insert(path.to_owned());
+    }
+
     /// Reads and writes of the files in `dir` fail with a status error, as a full disk or a quota does.
     pub fn fail_data_in(&self, dir: &str) {
         self.state.failing_data.lock().unwrap().insert(dir.to_owned());
@@ -307,12 +340,12 @@ impl TestSshd {
         self.state.sinks.lock().unwrap().get(path).cloned()
     }
 
-    /// `path` is neither a regular file, a directory nor a symlink (a FIFO, say).
     /// The path and the flags of every SFTP `open` the server has received, in order.
     pub fn opened(&self) -> Vec<(String, russh_sftp::protocol::OpenFlags)> {
         self.state.opened.lock().unwrap().clone()
     }
 
+    /// `path` is neither a regular file, a directory nor a symlink (a FIFO, say).
     pub fn add_special_file(&self, path: &str) {
         self.state.specials.lock().unwrap().insert(path.to_owned());
     }
@@ -434,6 +467,10 @@ impl Handler for Connection {
         session.channel_success(channel)?;
         let state = self.state.clone();
         let drop_now = self.drop_now.clone();
+        if state.options.openssh_sftp {
+            runtime::spawn(serve_with_openssh(state, sftp.into_stream()));
+            return Ok(());
+        }
         runtime::spawn(async move {
             let close_now = Arc::new(Notify::new());
             let server = fs::SftpFs::new(state.clone(), drop_now, close_now.clone());
@@ -478,6 +515,31 @@ impl Handler for Connection {
         }
         Ok(())
     }
+}
+
+/// Serves SFTP on `channel` with OpenSSH's `sftp-server`, started in the served directory. The server ends when the
+/// client closes the channel, and the channel closes when the server ends.
+async fn serve_with_openssh(state: Arc<State>, channel: impl AsyncRead + AsyncWrite + Unpin) {
+    let mut child = tokio::process::Command::new(OPENSSH_SFTP_SERVER)
+        .current_dir(&state.root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("OpenSSH's sftp-server starts");
+    let mut stdin = child.stdin.take().expect("a piped stdin");
+    let mut stdout = child.stdout.take().expect("a piped stdout");
+    let (mut from_client, mut to_client) = tokio::io::split(channel);
+    let requests = async move {
+        let _ = tokio::io::copy(&mut from_client, &mut stdin).await;
+        // Dropped, not shut down: closing the pipe is what ends the server.
+        drop(stdin);
+    };
+    let replies = async move {
+        let _ = tokio::io::copy(&mut stdout, &mut to_client).await;
+        let _ = to_client.shutdown().await;
+    };
+    tokio::join!(requests, replies);
 }
 
 /// The 256-byte-value pattern, `len` bytes of it from `offset` on; `reversed` counts down instead of up.

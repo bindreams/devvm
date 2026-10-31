@@ -1,6 +1,7 @@
 //! The guest side of a copy: what the guest's SFTP server is asked, step by step. Each step is one future that runs on
 //! the runtime; [`super::Sftp`] drives them.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use russh_sftp::client::{Config, RawSftpSession, SftpSession};
 use russh_sftp::protocol::{FileAttributes, FileType, OpenFlags, Packet, StatusCode};
 use tokio::io::AsyncWriteExt;
 
-use super::plan::{Beyond, Item, Kind, Present, check_listing, join, parent_of};
+use super::plan::{Beyond, Item, Kind, Present, check_listing, join, normalize, parent_of};
 use super::{Failed, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_name, pump};
 use crate::access::session::Inner;
 use crate::{Error, ErrorKind, Result};
@@ -133,7 +134,43 @@ impl Remote {
     /// Whether the symlink `path` leads to a directory. A dangling link leads to none; a target that cannot be looked at
     /// (a loop, no permission) is an error.
     async fn leads_to_dir(&self, path: &str) -> Result<bool> {
-        Ok(self.stat(path).await?.is_some_and(|attrs| attrs.file_type().is_dir()))
+        match self.stat(path).await? {
+            Some(attrs) => Ok(attrs.file_type().is_dir()),
+            None => {
+                self.refuse_loop(path).await?;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Fails if the symlink `link`, which leads to nothing, is a loop. OpenSSH's `sftp-server` answers "no such file"
+    /// for a loop as it does for a link to nothing, so the links are followed by hand until one is met twice or the
+    /// chain ends.
+    async fn refuse_loop(&self, link: &str) -> Result<()> {
+        let mut seen = HashSet::new();
+        let mut here = link.to_owned();
+        while seen.insert(here.clone()) {
+            let Some(attrs) = self.lstat(&here).await? else {
+                return Ok(());
+            };
+            if attrs.file_type() != FileType::Symlink {
+                return Ok(());
+            }
+            let target = self
+                .session
+                .read_link(here.as_str())
+                .await
+                .map_err(|e| self.error(&format!("cannot read the guest symlink {here}"), e))?;
+            here = if target.starts_with('/') {
+                normalize(&target)
+            } else {
+                normalize(&join(&parent_of(&here), &target))
+            };
+        }
+        Err(Error::new(
+            ErrorKind::Io,
+            format!("cannot look where the guest symlink {link} leads: too many levels of symbolic links"),
+        ))
     }
 
     /// Whether the symlink `path` of a source tree leads to a directory, as far as the guest says: the link is copied
