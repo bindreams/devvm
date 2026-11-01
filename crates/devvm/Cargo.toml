@@ -74,7 +74,7 @@ rustix = { version = "1", features = ["fs"] }
 
 # The fake VM reports its own job and console to the tests (`test_support/fake_vm`).
 [target.'cfg(windows)'.dev-dependencies]
-# Makes the NTFS junction that `read_link` is checked against (`host/windows_tests.rs`).
+# Makes the NTFS junctions that `host/windows_tests.rs` and `copy_windows_tests.rs` check against.
 junction = "2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
