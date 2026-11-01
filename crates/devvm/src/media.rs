@@ -31,9 +31,8 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 /// `into` by an earlier launch is replaced.
 ///
 /// A FAT volume labelled `CIDATA` is read by cloud-init's NoCloud source as well as an ISO9660 one, and needs no ISO
-/// writer. Measured attachments: Ubuntu 24.04 reads it (cloud-init NoCloud) as `-drive if=none,readonly=on,format=raw`
-/// with `virtio-blk-pci`; Windows Server 2025 setup reads `Autounattend.xml` from it as `usb-storage,removable=on` on
-/// `qemu-xhci`, read-only.
+/// writer. The returned disk is attached as a read-only `virtio-blk-pci`; Ubuntu 24.04 reads a FAT12 image attached so.
+/// fatfs picks the FAT type from the size: FAT12 under 4 MiB; the FAT16 or FAT32 of a larger image is unmeasured.
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
 /// the finished image before anything is written; an image that does not hold exactly `files` is an error.
