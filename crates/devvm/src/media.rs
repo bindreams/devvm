@@ -30,7 +30,7 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 /// The image can hold private keys, so `host` writes it as a private file ([`Host::write_private`]). An image left at
 /// `into` by an earlier launch is replaced.
 ///
-/// The volume is FAT, labelled `CIDATA`. Measured: Ubuntu 24.04's cloud-init reads a 1 MiB image attached read-only on
+/// The volume is FAT, labelled `CIDATA`. Measured: Ubuntu 24.04's cloud-init reads an image of about 1 MiB attached read-only on
 /// `virtio-blk-pci`, as the QEMU backend attaches it. Other sizes are unmeasured.
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
