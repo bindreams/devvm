@@ -36,6 +36,9 @@ pub(super) fn write(
     let mut entries = Vec::with_capacity(tracked.len());
     let mut real_directories = HashSet::new();
     for item in tracked {
+        if git.host().cannot_hold_path(&item.path) {
+            continue;
+        }
         check_one_component_per_segment(&item.path)?;
         check_parents(root, &item.path, &mut real_directories)?;
         let on_disk = root.join(&item.path);

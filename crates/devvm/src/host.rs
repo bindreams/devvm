@@ -134,6 +134,11 @@ pub(crate) trait Host: Send + Sync {
     /// host refuses `a\b`, `C:\z`, device names and more); `None` when it can.
     fn file_name_problem(&self, name: &str) -> Option<String>;
 
+    /// Whether this host reads some segment of `rel` (`/`-separated, a path git lists) as other than a file name, so
+    /// the path is no file git tracks here (a Windows host reads `name:stream` and `d:x` that way). Decided from the
+    /// text alone, before the file system is asked anything.
+    fn cannot_hold_path(&self, rel: &str) -> bool;
+
     /// Moves the file or symlink `from` over `to`, replacing what is there even when it is read-only (Windows refuses
     /// to rename over a read-only file). A directory at `to` is an error.
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()>;

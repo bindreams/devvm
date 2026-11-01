@@ -59,3 +59,14 @@ pub(crate) fn windows_problem(name: &str) -> Option<String> {
     }
     None
 }
+
+/// Whether a segment of `path` (`/`-separated) has a `:`, which NTFS and Win32 read as a data stream (`name:stream`)
+/// or a drive (`d:x`), never as part of a file name. Decided from the text alone: asking the file system about such a
+/// name can fail (`d::$DATA` below a directory `d` is access denied) or reach another file.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "used by the host this binary does not run on")
+)]
+pub(crate) fn windows_colon_path(path: &str) -> bool {
+    path.split('/').any(|segment| segment.contains(':'))
+}

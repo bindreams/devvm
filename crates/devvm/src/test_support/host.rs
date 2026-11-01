@@ -77,6 +77,10 @@ impl Host for TestHost {
         host::current().file_name_problem(name)
     }
 
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        host::current().cannot_hold_path(rel)
+    }
+
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         host::current().replace_file(from, to)
     }
@@ -173,6 +177,10 @@ impl Host for NoAccelHost {
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
         TestHost.file_name_problem(name)
+    }
+
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        TestHost.cannot_hold_path(rel)
     }
 
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
@@ -383,6 +391,10 @@ impl Host for RecordingHost {
         TestHost.file_name_problem(name)
     }
 
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        TestHost.cannot_hold_path(rel)
+    }
+
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         TestHost.replace_file(from, to)
     }
@@ -500,6 +512,10 @@ impl Host for NoGuestReset {
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
         host::current().file_name_problem(name)
+    }
+
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        host::current().cannot_hold_path(rel)
     }
 
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {

@@ -17,7 +17,7 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWind
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::entry;
-use super::names::windows_problem;
+use super::names::{windows_colon_path, windows_problem};
 use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -143,6 +143,10 @@ impl Host for WindowsHost {
         windows_problem(name)
     }
 
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        windows_colon_path(rel)
+    }
+
     /// Renaming over a read-only file fails with access denied, so the flag is cleared first and put back if the rename
     /// still fails.
     #[allow(
@@ -231,7 +235,7 @@ impl Host for WindowsHost {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         // `name:stream` reads an alternate data stream of the file `name`, which is no file git tracks.
-        if rel.split('/').any(|name| name.contains(':')) {
+        if windows_colon_path(rel) {
             return Ok(Entry::Absent);
         }
         entry::open_entry(

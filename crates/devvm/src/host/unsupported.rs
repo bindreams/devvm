@@ -114,6 +114,10 @@ impl<M: FileModes> Host for M {
         posix_problem(name)
     }
 
+    fn cannot_hold_path(&self, _rel: &str) -> bool {
+        false
+    }
+
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         std::fs::rename(from, to)
     }
