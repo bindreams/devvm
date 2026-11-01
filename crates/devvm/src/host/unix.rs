@@ -1,41 +1,14 @@
 //! A Unix host, one that devvm 0.1.0 does not run VMs on.
 
-use std::fs::OpenOptions;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::fs::{File, FileType, OpenOptions};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use rustix::io::Errno;
 
 use super::Entry;
+use super::entry;
 use super::unsupported::{FileModes, claim_then_rename};
-
-mod entry;
-
-// How `entry` opens a directory to search it: one module per kind of Unix, each with a `SEARCH_ONLY` flag.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-#[path = "unix/search_path.rs"]
-mod search;
-#[cfg(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
-#[path = "unix/search_apple.rs"]
-mod search;
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "android",
-    target_os = "freebsd",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-)))]
-#[path = "unix/search_read.rs"]
-mod search;
 
 #[cfg(test)]
 #[path = "unix_tests.rs"]
@@ -90,12 +63,35 @@ impl FileModes for UnixHost {
     }
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
-        entry::open_entry(root, rel)
+        entry::open_entry(root, rel, open_regular, describe)
     }
 
     /// Unix symlinks do not care what they point to.
     fn make_symlink(&self, target: &str, link: &Path, _to_dir: bool) -> std::io::Result<()> {
         std::os::unix::fs::symlink(target, link)
+    }
+}
+
+/// Opens `path` for reading, but not a link and not a pipe's other end: a link that appeared since the file was looked
+/// at fails the open, and a FIFO opens without waiting for a writer.
+fn open_regular(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+fn describe(kind: FileType) -> &'static str {
+    if kind.is_fifo() {
+        "a FIFO"
+    } else if kind.is_socket() {
+        "a socket"
+    } else if kind.is_char_device() {
+        "a character device"
+    } else if kind.is_block_device() {
+        "a block device"
+    } else {
+        "of a type this host does not know"
     }
 }
 

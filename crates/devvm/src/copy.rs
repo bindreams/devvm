@@ -41,7 +41,8 @@ pub(crate) struct Snapshot {
     pub archive: PathBuf,
 }
 
-/// Snapshots the files git tracks in the repository that contains `from_dir`, as they are on disk.
+/// Snapshots the files git tracks in the repository that contains `from_dir`, as they are on disk. A project changed
+/// during a snapshot may give a mixed snapshot.
 ///
 /// - Entries come from the index. Skipped, each with no error: a tracked path absent on disk (including a pending
 ///   delete) or whose name the host cannot hold; a directory now (noted to `progress`); an uninitialized submodule

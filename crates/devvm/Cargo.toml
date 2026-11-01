@@ -55,12 +55,9 @@ futures = { version = "0.3", default-features = false, features = ["std", "execu
 # (`backend/qemu/uds.rs`).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
-    "Wdk_Foundation",
-    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Networking_WinSock",
-    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",
@@ -82,11 +79,9 @@ junction = "2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
-    "Win32_Security_Authorization",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
-    "Win32_System_Ioctl",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",

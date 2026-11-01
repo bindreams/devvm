@@ -1,5 +1,6 @@
 //! Writing the tracked files to a tar, hashing them on the way.
 
+use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path};
 
@@ -9,7 +10,7 @@ use tar::{Builder, EntryType, Header};
 use super::FULL_DISK_HINT;
 use super::git::{self, Git, Kind, Tracked};
 use crate::exit::Progress;
-use crate::host::Entry;
+use crate::host::{Entry, is_absent};
 use crate::recipe::hash::{EntryContent, ManifestEntry};
 use crate::{Error, ErrorKind, Result, Sha256};
 
@@ -33,8 +34,10 @@ pub(super) fn write(
 ) -> Result<Vec<ManifestEntry>> {
     let mut builder = Builder::new(out);
     let mut entries = Vec::with_capacity(tracked.len());
+    let mut real_directories = HashSet::new();
     for item in tracked {
         check_one_component_per_segment(&item.path)?;
+        check_parents(root, &item.path, &mut real_directories)?;
         let on_disk = root.join(&item.path);
         let found = git
             .host()
@@ -42,16 +45,6 @@ pub(super) fn write(
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot read {}", on_disk.display()), e))?;
         let entry = match (found, item.kind) {
             (Entry::Absent, _) => continue,
-            (Entry::BelowSymlink(directory), _) => {
-                return Err(Error::new(
-                    ErrorKind::Recipe,
-                    format!(
-                        "cannot copy `{}`: `{}` is a symbolic link, and a copy does not follow one in the middle of a path",
-                        item.path.escape_debug(),
-                        directory.escape_debug()
-                    ),
-                ));
-            }
             (Entry::Directory, kind) => {
                 progress.message(&format!(
                     "skipping `{}`: git tracks a {} there, but it is a directory now",
@@ -102,6 +95,43 @@ pub(super) fn write(
     }
     builder.finish().map_err(|e| Error::write(dest, e, FULL_DISK_HINT))?;
     Ok(entries)
+}
+
+/// Fails when a directory above `path` (relative to `root`, `/`-separated) is a symlink, as git does. A missing
+/// directory ends the check: `path` is then gone from disk too. `real_directories` holds the directories already
+/// seen, and spares a `stat` per file.
+fn check_parents(root: &Path, path: &str, real_directories: &mut HashSet<String>) -> Result<()> {
+    for (slash, _) in path.match_indices('/') {
+        let directory = &path[..slash];
+        if real_directories.contains(directory) {
+            continue;
+        }
+        let on_disk = root.join(directory);
+        match std::fs::symlink_metadata(&on_disk) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(Error::new(
+                    ErrorKind::Recipe,
+                    format!(
+                        "cannot copy `{}`: `{}` is a symbolic link, and a copy does not follow one in the middle of a path",
+                        path.escape_debug(),
+                        directory.escape_debug()
+                    ),
+                ));
+            }
+            Ok(_) => {
+                real_directories.insert(directory.to_owned());
+            }
+            Err(e) if is_absent(&e) => return Ok(()),
+            Err(e) => {
+                return Err(Error::io(
+                    ErrorKind::Io,
+                    format!("cannot read {}", on_disk.display()),
+                    e,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fails when this host reads `path` (`/`-separated, as git lists it) as other than one component per segment. A

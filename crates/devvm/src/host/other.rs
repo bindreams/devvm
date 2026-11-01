@@ -47,7 +47,7 @@ impl FileModes for OtherHost {
     fn open_entry(&self, _root: &Path, _rel: &str) -> std::io::Result<Entry> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "this build cannot look at a path without following links",
+            "this build cannot look at a path by name",
         ))
     }
 }

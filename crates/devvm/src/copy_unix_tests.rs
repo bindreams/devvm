@@ -245,3 +245,24 @@ fn a_tracked_symlink_that_is_a_fifo_now_is_refused_naming_it(#[fixture(unicode_h
     assert!(error.message().contains("`config`"), "{error}");
     assert!(error.message().contains("neither a link nor a file"), "{error}");
 }
+
+/// Mode bits do not bind root, so the test refuses to run as root.
+#[skuld::test]
+fn a_tracked_file_that_cannot_be_read_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    // SAFETY: `geteuid` reads a process attribute.
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "file modes do not bind root: run this test as another user"
+    );
+    let repo = new_repo(home, "repo");
+    put(&repo, "secret.txt", b"x");
+    add_all(&repo);
+    let path = repo.join("secret.txt");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let taken = take(&repo, false, home);
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    let error = taken.err().expect("a file that cannot be read is not skipped");
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(error.message().contains("secret.txt"), "{error}");
+}

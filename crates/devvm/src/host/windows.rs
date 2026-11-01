@@ -1,7 +1,7 @@
 //! The Windows host.
 
 use std::ffi::{OsStr, OsString};
-use std::fs::OpenOptions;
+use std::fs::{File, FileType, OpenOptions};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
@@ -16,12 +16,12 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_W
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
+use super::entry;
 use super::names::windows_problem;
 use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
-mod entry;
 mod link;
 mod watch;
 mod whpx;
@@ -230,6 +230,15 @@ impl Host for WindowsHost {
     }
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
-        entry::open_entry(root, rel)
+        // `name:stream` reads an alternate data stream of the file `name`, which is no file git tracks.
+        if rel.split('/').any(|name| name.contains(':')) {
+            return Ok(Entry::Absent);
+        }
+        entry::open_entry(
+            root,
+            rel,
+            |path| File::open(path),
+            |_: FileType| "of a type this host does not know",
+        )
     }
 }

@@ -164,13 +164,11 @@ pub(crate) trait Host: Send + Sync {
     /// this host cannot make symlinks (Windows without Developer Mode or an elevated token).
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
 
-    /// Looks at `rel` (`/`-separated, with no `.`, `..` or empty name) below the directory `root` without following a
-    /// link below `root`: `root` is opened, then each name relative to the handle before it, and the last name is
-    /// classified from its own handle. A regular file comes back open, ready to read. A directory above the entry that
-    /// is a link ends the walk ([`Entry::BelowSymlink`]); one that is gone or is not a directory makes the entry
-    /// [`Entry::Absent`], as does a missing last name. `root` itself may be reached through links and must exist.
-    /// Nothing is opened a second time by name, so a rename over a name after it was looked at cannot change what the
-    /// handle is. Fails with `Unsupported` where a host has no such walk.
+    /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link
+    /// at the last name: its kind comes from `symlink_metadata`, and a regular file is opened for reading and
+    /// confirmed to be one from the open handle. A path that is gone, or is below a file, or has a name the host
+    /// cannot hold, is [`Entry::Absent`]. A link above the last name is not looked for; the caller checks the
+    /// directories. Fails with `Unsupported` where a host has no such look.
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
 }
 
