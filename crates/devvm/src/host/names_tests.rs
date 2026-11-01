@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::host::names::{posix_problem, windows_problem};
+use crate::test_support::claims::NTFS_NAMES;
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -93,15 +94,13 @@ fn windows_refuses_a_name_over_255_utf16_units() {
 
 // Measured on NTFS ====================================================================================================
 
-/// Set by the CI job that runs on a Windows runner: the test below creates files with these names there.
-const NTFS_CLAIM: &str = "DEVVM_COVERS_NTFS_NAMES";
-
 /// `Ok` when this run claims an NTFS temp directory.
 fn ntfs_claimed() -> Result<(), String> {
-    match std::env::var(NTFS_CLAIM) {
-        Ok(claimed) if !claimed.is_empty() => Ok(()),
-        _ => Err(format!(
-            "{NTFS_CLAIM} is not set; what NTFS stores is measured in CI (Test job on windows-latest)"
+    match NTFS_NAMES.is_made() {
+        true => Ok(()),
+        false => Err(format!(
+            "{} is not set; what NTFS stores is measured in CI (Test step on windows-latest)",
+            NTFS_NAMES.var
         )),
     }
 }

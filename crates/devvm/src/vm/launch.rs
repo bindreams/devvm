@@ -38,13 +38,16 @@ pub(super) fn launch(
     let seed_dir = dir.path().join("seed");
     std::fs::create_dir_all(&seed_dir)
         .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", seed_dir.display()), e))?;
-    let seed = guest.instance_seed(&SeedSpec {
-        hostname: dir.name().as_str().to_owned(),
-        dir: seed_dir,
-        instance_id: *dir.id(),
-        // Placeholder until the instance's keys exist.
-        keys: SeedKeys::default(),
-    })?;
+    let seed = guest.instance_seed(
+        engine.host(),
+        &SeedSpec {
+            hostname: dir.name().as_str().to_owned(),
+            dir: seed_dir,
+            instance_id: *dir.id(),
+            // Placeholder until the instance's keys exist.
+            keys: SeedKeys::default(),
+        },
+    )?;
     // Taken and persisted before the spawn: a launch that dies midway still used its number, so no later machine of the
     // instance is named like it. Incremented on the current record, under the op lock; at the last number the record is
     // rewritten unchanged.

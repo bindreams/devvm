@@ -20,6 +20,7 @@
 //! | `extended-data-and-hold N` | writes a line to extended-data stream N, then does nothing and never answers |
 //! | `status-then-extended-data N` | writes `before the status` to stdout, sends `exit-status 7`, then a line to stream N, closes |
 //! | `echo ...` | prints the rest of the line, exits 0 |
+//! | `cloud-init status --wait --format json` | prints [`SshdOptions::cloud_init`]'s text, exits with its code |
 //! | `read-stdin` | waits for the client to send EOF, then prints `stdin ended` and exits 0 |
 //! | `stall-on-data` | the connection stops reading and writing once the client sends data on this channel (see [`TestSshd::wait_for_held_request`]) |
 //!
@@ -91,6 +92,8 @@ pub struct SshdOptions {
     pub readdir_batch: Option<usize>,
     /// Refuse `posix-rename@openssh.com`, as a server that is not OpenSSH does.
     pub no_posix_rename: bool,
+    /// The exit code and stdout of `cloud-init status --wait --format json`; `None` leaves the command unknown.
+    pub cloud_init: Option<(u32, String)>,
 }
 
 pub(crate) struct State {
@@ -635,6 +638,13 @@ async fn finish(handle: &russh::server::Handle, channel: ChannelId, status: u32)
 
 async fn script(state: Arc<State>, handle: russh::server::Handle, channel: ChannelId, command: String) {
     let words: Vec<&str> = command.split_whitespace().collect();
+    if let ["cloud-init", "status", "--wait", "--format", "json"] = words.as_slice()
+        && let Some((code, reply)) = &state.options.cloud_init
+    {
+        let _ = handle.data(channel, reply.clone().into_bytes()).await;
+        finish(&handle, channel, *code).await;
+        return;
+    }
     match words.as_slice() {
         ["exit", n] => finish(&handle, channel, n.parse().expect("exit takes a number")).await,
         ["say-error-and-exit-125"] => {
