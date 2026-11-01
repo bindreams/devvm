@@ -1,6 +1,7 @@
 //! Hosts for the tests: one whose accelerator always works, and one that has none.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
-use crate::host::{self, Accel, Host, ProcessWatch, SystemDirs, Unavailable, names};
+use crate::host::{self, Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, names};
 use crate::{Arch, Result};
 
 /// Reports TCG as the accelerator and delegates everything else to the real host, so the real `detach` is the one the
@@ -48,6 +49,10 @@ impl Host for TestHost {
         host::current().quiet(cmd)
     }
 
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        host::current().env_name_strip_prefix(name, prefix)
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         host::current().system_dirs()
     }
@@ -72,6 +77,10 @@ impl Host for TestHost {
         host::current().file_name_problem(name)
     }
 
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        host::current().cannot_hold_path(rel)
+    }
+
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         host::current().replace_file(from, to)
     }
@@ -94,6 +103,10 @@ impl Host for TestHost {
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         host::current().make_symlink(target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        host::current().open_entry(root, rel)
     }
 }
 
@@ -138,6 +151,10 @@ impl Host for NoAccelHost {
         TestHost.quiet(cmd)
     }
 
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        TestHost.env_name_strip_prefix(name, prefix)
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         TestHost.system_dirs()
     }
@@ -162,6 +179,10 @@ impl Host for NoAccelHost {
         TestHost.file_name_problem(name)
     }
 
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        TestHost.cannot_hold_path(rel)
+    }
+
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         TestHost.replace_file(from, to)
     }
@@ -184,6 +205,10 @@ impl Host for NoAccelHost {
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         TestHost.make_symlink(target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        TestHost.open_entry(root, rel)
     }
 }
 
@@ -320,6 +345,10 @@ impl Host for RecordingHost {
         TestHost.quiet(cmd)
     }
 
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        TestHost.env_name_strip_prefix(name, prefix)
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         TestHost.system_dirs()
     }
@@ -362,6 +391,10 @@ impl Host for RecordingHost {
         TestHost.file_name_problem(name)
     }
 
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        TestHost.cannot_hold_path(rel)
+    }
+
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         TestHost.replace_file(from, to)
     }
@@ -402,6 +435,10 @@ impl Host for RecordingHost {
             ));
         }
         TestHost.make_symlink(target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        TestHost.open_entry(root, rel)
     }
 }
 
@@ -449,6 +486,10 @@ impl Host for NoGuestReset {
         host::current().quiet(cmd)
     }
 
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        host::current().env_name_strip_prefix(name, prefix)
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         host::current().system_dirs()
     }
@@ -473,6 +514,10 @@ impl Host for NoGuestReset {
         host::current().file_name_problem(name)
     }
 
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        host::current().cannot_hold_path(rel)
+    }
+
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         host::current().replace_file(from, to)
     }
@@ -495,5 +540,9 @@ impl Host for NoGuestReset {
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         host::current().make_symlink(target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        host::current().open_entry(root, rel)
     }
 }

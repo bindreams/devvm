@@ -1,7 +1,7 @@
 //! The Windows host.
 
-use std::ffi::OsString;
-use std::fs::OpenOptions;
+use std::ffi::{OsStr, OsString};
+use std::fs::{File, FileType, OpenOptions};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
@@ -11,13 +11,14 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
-use windows_sys::Win32::Globalization::GetACP;
+use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal, GetACP};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-use super::names::windows_problem;
-use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
+use super::entry;
+use super::names::{windows_colon_path, windows_problem};
+use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -92,6 +93,22 @@ impl Host for WindowsHost {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
+    /// The first `prefix.len()` UTF-16 units are compared by the OS, one for one: an ASCII prefix unit only ever
+    /// matches a single unit, so the rest starts on a unit boundary.
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        debug_assert!(prefix.is_ascii());
+        let name: Vec<u16> = name.encode_wide().collect();
+        let prefix: Vec<u16> = prefix.encode_utf16().collect();
+        let head = name.get(..prefix.len())?;
+        let len = i32::try_from(prefix.len()).expect("a prefix is a few units long");
+        // SAFETY: both pointers describe live slices of `len` units.
+        let ordering = unsafe { CompareStringOrdinal(head.as_ptr(), len, prefix.as_ptr(), len, 1) };
+        // The call fails, with 0, only for a bad pointer, length or flag, and none of them is bad here. Read as "not
+        // equal", it would let a `GIT_*` name through.
+        assert_ne!(ordering, 0, "CompareStringOrdinal rejected two valid slices");
+        (ordering == CSTR_EQUAL).then(|| String::from_utf16_lossy(&name[prefix.len()..]))
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         Some(SystemDirs {
             root: directory(GetWindowsDirectoryW)?,
@@ -124,6 +141,10 @@ impl Host for WindowsHost {
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
         windows_problem(name)
+    }
+
+    fn cannot_hold_path(&self, rel: &str) -> bool {
+        windows_colon_path(rel)
     }
 
     /// Renaming over a read-only file fails with access denied, so the flag is cleared first and put back if the rename
@@ -210,5 +231,18 @@ impl Host for WindowsHost {
             ),
             _ => e,
         })
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        // `name:stream` reads an alternate data stream of the file `name`, which is no file git tracks.
+        if windows_colon_path(rel) {
+            return Ok(Entry::Absent);
+        }
+        entry::open_entry(
+            root,
+            rel,
+            |path| File::open(path),
+            |_: FileType| "of a type this host does not know",
+        )
     }
 }

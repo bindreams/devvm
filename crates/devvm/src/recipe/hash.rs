@@ -316,7 +316,7 @@ impl CopyManifest {
     }
 
     /// Sorts the entries. Rejects (kind `Recipe`) duplicate paths, absolute or empty paths, empty components, `.` and
-    /// `..` components, a trailing slash, backslashes, NUL, a mode git does not use, and a mode that disagrees with
+    /// `..` components, a trailing slash, NUL, a mode git does not use, and a mode that disagrees with
     /// the content kind.
     pub fn new(mut entries: Vec<ManifestEntry>) -> Result<CopyManifest> {
         for entry in &entries {
@@ -342,8 +342,8 @@ fn check_entry(entry: &ManifestEntry) -> Result<()> {
     if path.is_empty() {
         return Err(rejected(path, "empty path"));
     }
-    if path.contains('\\') || path.contains('\0') {
-        return Err(rejected(path, "backslash or NUL in path"));
+    if path.contains('\0') {
+        return Err(rejected(path, "NUL in path"));
     }
     for component in path.split('/') {
         match component {

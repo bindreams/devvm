@@ -1,6 +1,7 @@
 //! What every host devvm 0.1.0 does not run VMs on (Linux, macOS) shares. A host type supplies only what differs, the
 //! file modes ([`FileModes`]), and is a [`Host`] through the blanket impl below.
 
+use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use cosca::identity::ProcessId;
 
 use super::names::posix_problem;
-use super::{Accel, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write, create_new_with};
+use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
@@ -31,6 +32,8 @@ pub(super) trait FileModes: Send + Sync {
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
 
     fn sync_dir(&self, dir: &Path) -> std::io::Result<()>;
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
 
     /// [`Host::publish_dir`]. A host with a rename that refuses to replace does it in one step; one without can only
     /// call [`claim_then_rename`].
@@ -80,6 +83,11 @@ impl<M: FileModes> Host for M {
 
     fn quiet(&self, _cmd: &mut std::process::Command) {}
 
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String> {
+        debug_assert!(prefix.is_ascii());
+        name.to_string_lossy().strip_prefix(prefix).map(str::to_owned)
+    }
+
     fn system_dirs(&self) -> Option<SystemDirs> {
         None
     }
@@ -106,6 +114,10 @@ impl<M: FileModes> Host for M {
         posix_problem(name)
     }
 
+    fn cannot_hold_path(&self, _rel: &str) -> bool {
+        false
+    }
+
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         std::fs::rename(from, to)
     }
@@ -128,5 +140,9 @@ impl<M: FileModes> Host for M {
 
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         FileModes::make_symlink(self, target, link, to_dir)
+    }
+
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
+        FileModes::open_entry(self, root, rel)
     }
 }

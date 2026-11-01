@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::host::names::{posix_problem, windows_problem};
+use crate::host::names::{posix_problem, windows_colon_path, windows_problem};
 use crate::test_support::claims::NTFS_NAMES;
 use crate::test_support::fixtures::unicode_home;
 
@@ -198,5 +198,15 @@ fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &
 fn windows_names_do_not_check_trailing_dots_spaces_or_device_names() {
     for name in ["x.", "x ", "con", "Aux.txt", "COM1", "CONIN$"] {
         assert_eq!(windows_problem(name), None, "{name:?}");
+    }
+}
+
+#[skuld::test]
+fn windows_reads_a_colon_in_any_segment_as_a_stream_or_a_drive() {
+    for path in ["a:b.txt", "d:x/f.txt", "d::$DATA/f.txt", "dir/f:g", "dir/a:b/c", "C:"] {
+        assert!(windows_colon_path(path), "{path:?}");
+    }
+    for path in ["a", "a/b", "dir/\u{416}.txt", "a b/c d", "a|b/c", "back\\slash"] {
+        assert!(!windows_colon_path(path), "{path:?}");
     }
 }

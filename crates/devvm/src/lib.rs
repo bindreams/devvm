@@ -7,6 +7,8 @@ pub(crate) mod backend;
 pub mod config;
 #[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod contain;
+#[allow(dead_code, reason = "unused until the engine builds copy steps")]
+pub(crate) mod copy;
 pub mod dirs;
 #[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub mod engine;
@@ -90,6 +92,8 @@ mod test_helpers {
         ("qemu-launcher", crate::vm_suite::backend::qemu_launcher),
         ("qemu-shutdown", crate::vm_suite::backend::qemu_shutdown),
         ("access-heap", crate::access::heap_tests::access_heap),
+        ("snapshot-big", crate::copy::heap_tests::snapshot_big),
+        ("snapshot-git-env", crate::copy::copy_tests::snapshot_with_git_variables),
     ];
 
     pub fn run_if_requested() {

@@ -2,6 +2,7 @@
 //! the `cfg`s on the module declarations and on [`Current`] below; no code under `host/` selects one.
 //! (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -17,6 +18,7 @@ use crate::{Arch, Result};
 #[path = "host_tests.rs"]
 mod host_tests;
 
+mod entry;
 pub(crate) mod names;
 #[cfg_attr(
     any(unix, windows),
@@ -33,6 +35,7 @@ pub(crate) mod watch;
 #[cfg(windows)]
 pub(crate) mod windows;
 
+pub(crate) use entry::{Entry, is_absent};
 pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(any(unix, windows)))]
@@ -105,6 +108,11 @@ pub(crate) trait Host: Send + Sync {
     /// Prepares a short non-interactive tool (`qemu-img`, `git`, `ssh -G`) to run without a console window.
     fn quiet(&self, cmd: &mut std::process::Command);
 
+    /// What follows `prefix` in the environment variable `name`, if `name` starts with it as this host compares
+    /// names; the rest is lossy UTF-8. `prefix` is ASCII. Windows compares with `CompareStringOrdinal` (ignore case, OS
+    /// uppercase table: U+017F is no `S`); elsewhere bytes must be equal.
+    fn env_name_strip_prefix(&self, name: &OsStr, prefix: &str) -> Option<String>;
+
     /// The Windows and System32 directories from the OS (never from the environment); `None` off Windows.
     fn system_dirs(&self) -> Option<SystemDirs>;
 
@@ -125,6 +133,11 @@ pub(crate) trait Host: Send + Sync {
     /// Why `name`, a file name taken from a guest, cannot be one file name in a directory on this host (a Windows
     /// host refuses `a\b`, `C:\z`, device names and more); `None` when it can.
     fn file_name_problem(&self, name: &str) -> Option<String>;
+
+    /// Whether this host reads some segment of `rel` (`/`-separated, a path git lists) as other than a file name, so
+    /// the path is no file git tracks here (a Windows host reads `name:stream` and `d:x` that way). Decided from the
+    /// text alone, before the file system is asked anything.
+    fn cannot_hold_path(&self, rel: &str) -> bool;
 
     /// Moves the file or symlink `from` over `to`, replacing what is there even when it is read-only (Windows refuses
     /// to rename over a read-only file). A directory at `to` is an error.
@@ -155,6 +168,13 @@ pub(crate) trait Host: Send + Sync {
     /// ignores it. Fails with `PermissionDenied`, naming the cause, where
     /// this host cannot make symlinks (Windows without Developer Mode or an elevated token).
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
+
+    /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link
+    /// at the last name: its kind comes from `symlink_metadata`, and a regular file is opened for reading and
+    /// confirmed to be one from the open handle. A path that is gone, or is below a file, or has a name the host
+    /// cannot hold, is [`Entry::Absent`]. A link above the last name is not looked for; the caller checks the
+    /// directories. Fails with `Unsupported` where a host has no such look.
+    fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
 }
 
 /// Creates `path` with `options` and writes `bytes`, which are on disk when it returns. A file whose write failed is
