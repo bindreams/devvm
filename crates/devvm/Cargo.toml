@@ -41,6 +41,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "
 os_str_bytes = "7"
 # Private keys: kept out of `Debug` output and zeroed on drop (`access/keys.rs`).
 secrecy = "0.10"
+fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
 
 [dev-dependencies]
 skuld = { workspace = true }

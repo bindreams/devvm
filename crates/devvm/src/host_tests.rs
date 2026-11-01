@@ -4,6 +4,7 @@ use super::other::OtherHost;
 use super::{Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
+use crate::test_support::claims::ACP;
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
@@ -398,9 +399,6 @@ fn sync_dir_of_a_missing_directory_fails_where_directories_are_flushed(#[fixture
 
 // The ANSI code page ==================================================================================================
 
-/// The variable a CI job sets to claim that its runs cover this ANSI code page.
-const COVERS_ACP: &str = "DEVVM_COVERS_ACP";
-
 /// Set in the pinned child to its manifest's locale: stops it from spawning another child and tells its claim test the
 /// pin is under test.
 const PINNED_CHILD: &str = "DEVVM_PINNED_CHILD";
@@ -413,9 +411,9 @@ const CLAIM_TEST: &str = "the_host_code_page_is_the_one_this_run_claims";
 /// Runs the claim test only where a job claims a code page. Without a claim the test is ignored and the reason says
 /// which code page this host has and where the others are covered, so a local run never reads as covering 1252.
 fn code_page_claimed() -> Result<(), String> {
-    match std::env::var(COVERS_ACP) {
-        Ok(claimed) if !claimed.is_empty() => Ok(()),
-        _ => Err(format!(
+    match ACP.is_made() {
+        true => Ok(()),
+        false => Err(format!(
             "no code page claimed; this host's ACP is {}; 1252 is covered by CI (Test job and vm job on windows-latest)",
             current()
                 .ansi_code_page()
@@ -427,7 +425,7 @@ fn code_page_claimed() -> Result<(), String> {
 // Labelled `vm` although it boots nothing, so that the vm job (`SKULD_LABELS=vm`) runs it and claims the code page too.
 #[skuld::test(requires = [code_page_claimed], labels = [crate::vm_gate::VM])]
 fn the_host_code_page_is_the_one_this_run_claims() {
-    let claimed = std::env::var(COVERS_ACP).unwrap();
+    let claimed = ACP.value;
     let actual = current().ansi_code_page();
     let why = match std::env::var(PINNED_CHILD) {
         Ok(locale) => {
@@ -439,8 +437,9 @@ fn the_host_code_page_is_the_one_this_run_claims() {
     };
     assert_eq!(
         actual.map(|acp| acp.to_string()),
-        Some(claimed.clone()),
-        "{COVERS_ACP}={claimed} but this process's ANSI code page is {actual:?}: {why}",
+        Some(claimed.to_owned()),
+        "{}={claimed} but this process's ANSI code page is {actual:?}: {why}",
+        ACP.var,
     );
 }
 
@@ -501,7 +500,7 @@ fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
 
     let mut cmd = std::process::Command::new(&exe);
     cmd.env("DEVVM_SKIP_VM_TESTS", "1")
-        .env(COVERS_ACP, "1252")
+        .env(ACP.var, ACP.value)
         .env(PINNED_CHILD, PINNED_LOCALE)
         .env_remove("SKULD_LABELS")
         .env_remove(helper::HELPER_VAR)

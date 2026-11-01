@@ -8,6 +8,7 @@ use secrecy::SecretString;
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, Media};
 use crate::exit::Progress;
+use crate::host::Host;
 use crate::instance::record::InstanceId;
 use crate::recipe::{Shell, Source};
 use crate::store::layers::{LayerDir, LayerMeta};
@@ -19,14 +20,19 @@ mod guest_tests;
 
 #[cfg(test)]
 pub(crate) mod fake;
+pub(crate) mod linux;
 
 pub(crate) trait GuestOs: Send + Sync {
-    /// The per-instance first-boot media (account, keys, hostname).
-    fn instance_seed(&self, seed: &SeedSpec) -> Result<SeedMedia>;
+    /// The per-instance first-boot media (account, keys, hostname). It holds the guest's private key, so `host` writes
+    /// it as a private file.
+    fn instance_seed(&self, host: &dyn Host, seed: &SeedSpec) -> Result<SeedMedia>;
     /// A command whose output is the guest's boot id.
     fn boot_id_command(&self) -> Command;
-    /// The final string the guest's shell executes for `cmd`.
-    fn wrap(&self, cmd: &Command) -> String;
+    /// The final string the guest's shell executes for `cmd`. A command no shell string can carry is a `usage` error
+    /// naming the cause: an empty argv or working directory, a bad environment variable name or one the shell owns
+    /// (the shell would not pass it to the program as asked), a NUL byte, or a string over the guest's single-argument
+    /// size limit.
+    fn wrap(&self, cmd: &Command) -> Result<String>;
     /// `guest_path` as the guest's SFTP server expects it.
     fn sftp_path(&self, guest_path: &str, home: &str) -> String;
     /// The guest path that `sftp_path` turned into `sftp_path`, for a message that names the path as the user wrote it.
@@ -41,7 +47,9 @@ pub(crate) trait GuestOs: Send + Sync {
     /// Bumped whenever `wrap`, `user:`, `cwd:` or elevation behavior changes; part of every layer key.
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;
-    fn wait_ready(&self, ssh: &SshSession) -> Result<()>;
+    /// Blocks until the guest's first boot has finished. An unfinished or failed boot is an error; a boot that finished
+    /// with recoverable problems is [`Readiness::Degraded`], for the caller to report.
+    fn wait_ready(&self, ssh: &SshSession) -> Result<Readiness>;
     /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
     /// the guest does not have is a `recipe` error.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>>;
@@ -92,6 +100,14 @@ pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
     Ok(posix_root(path))
 }
 
+/// How a finished first boot went.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Readiness {
+    Ready,
+    /// The guest is usable, but its first boot finished with recoverable problems; the text names them.
+    Degraded(String),
+}
+
 pub(crate) trait BaseBuilder: Send + Sync {
     /// Builds the root layer from `src` into `staging`; the returned record contributes its expiry.
     fn build_base(&self, src: &Source, ctx: &BuildCtx, staging: &LayerDir) -> Result<LayerMeta>;
@@ -139,7 +155,7 @@ pub(crate) struct BuildCtx {
 /// The guests compiled into this build: none yet.
 pub(crate) struct BuiltinGuests;
 
-fn missing(kind: GuestKind) -> Error {
+pub(crate) fn missing(kind: GuestKind) -> Error {
     Error::new(
         ErrorKind::NotSupported,
         format!("{} guests are not available in this build of devvm", kind.as_str()),

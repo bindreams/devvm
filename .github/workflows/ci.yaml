@@ -68,15 +68,27 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
+      # The seed test reads the cloud-init seed with PyYAML through `uv run --script` (Linux only; see Test below).
+      - name: Install uv
+        if: runner.os == 'Linux'
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: 0.13.6
+          enable-cache: false
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      # windows-latest's ANSI code page is 1252; the claim test fails if the image changes it.
+      # A test fails if a step does not make the claims it owes on its OS: the step names itself in DEVVM_CI_STEP, and
+      # test_support/claims.rs lists them. The vm job names itself the same way.
       - name: Test
         run: cargo test --workspace --locked
         env:
+          DEVVM_CI_STEP: test
           DEVVM_COVERS_ACP: ${{ runner.os == 'Windows' && '1252' || '' }}
           DEVVM_COVERS_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '' }}
+          DEVVM_COVERS_PYYAML: ${{ runner.os == 'Linux' && '1' || '' }}
+          DEVVM_COVERS_BASH_5_2: ${{ runner.os == 'Linux' && '1' || '' }}
 
       # The copy tests again, against OpenSSH's own sftp-server instead of the scripted one. The claim makes them fail,
       # not skip, if the run does not use it.
@@ -90,7 +102,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test -p devvm --lib --locked
         env:
+          DEVVM_CI_STEP: openssh-sftp
           DEVVM_COVERS_OPENSSH_SFTP: "1"
+          DEVVM_COVERS_PYYAML: "1"
+          DEVVM_COVERS_BASH_5_2: "1"
 
       # The packaged crate must carry every file the library includes (the embedded recipes).
       - name: Package
@@ -107,6 +122,7 @@ jobs:
     env:
       # Overrides the workflow's `1`: the gate keeps VM tests on for any value but `1`.
       DEVVM_SKIP_VM_TESTS: "0"
+      DEVVM_CI_STEP: vm
       DEVVM_COVERS_ACP: "1252"
       DEVVM_TEST_UNICODE_BASE: 'C:\Users'
       SKULD_LABELS: vm

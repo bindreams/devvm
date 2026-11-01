@@ -18,6 +18,8 @@ pub(crate) mod guest;
 pub(crate) mod host;
 #[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod instance;
+#[allow(dead_code, reason = "unused until the QEMU backend lands")]
+pub(crate) mod media;
 pub mod recipe;
 pub mod store;
 pub mod types;
