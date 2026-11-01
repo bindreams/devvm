@@ -46,7 +46,7 @@ jobs:
         env:
           SKIP: cargo-clippy
         with:
-          prek-version: 0.5.3
+          prek-version: 0.5.7
 
   test:
     name: Test (${{ matrix.os }})
