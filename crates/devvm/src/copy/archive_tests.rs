@@ -2,7 +2,11 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use crate::ErrorKind;
-use crate::copy::archive::{append_file, append_symlink, check_one_component_per_segment};
+use crate::copy::archive::{append_file, append_symlink, check_one_component_per_segment, write};
+use crate::copy::git::{Git, Kind, Tracked};
+use crate::recipe::hash::ManifestEntry;
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::host::TestHost;
 
 const NAME: &str = "dir/\u{416}.txt";
 const DEST: &str = "out/devvm-copy-x.tar";
@@ -245,4 +249,41 @@ fn a_symlink_target_with_a_nul_is_refused_naming_the_link() {
     let error = append_symlink(&mut builder, Path::new(DEST), NAME, "a\0b").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(error.message().contains(NAME), "{error}");
+}
+
+/// `write` over `paths`, all tracked as plain files below `root`.
+fn write_files(root: &Path, paths: &[&str]) -> crate::Result<Vec<ManifestEntry>> {
+    let progress = MemoryProgress::default();
+    let git = Git::from_process(&TestHost, &progress);
+    let tracked: Vec<_> = paths
+        .iter()
+        .map(|path| Tracked {
+            path: (*path).to_owned(),
+            kind: Kind::File,
+            object: String::new(),
+            repo: root.into(),
+        })
+        .collect();
+    write(&git, &progress, root, &tracked, false, Path::new(DEST), Vec::new())
+}
+
+/// A Windows host reads `name:x` as a stream or a drive, and `d::$DATA` below a directory `d` is refused by the file
+/// system, not reported as absent.
+#[skuld::test]
+fn a_path_with_a_colon_in_any_segment_is_skipped_whatever_is_on_disk(#[fixture(unicode_home)] home: &Path) {
+    std::fs::create_dir(home.join("d")).unwrap();
+    std::fs::create_dir(home.join("dir")).unwrap();
+    std::fs::write(home.join("ok.txt"), b"ok").unwrap();
+    for path in [
+        "d::$DATA/f.txt",
+        "dir::$DATA/f.txt",
+        "a:b.txt",
+        "d:x/f.txt",
+        "dir/f:g",
+        "dir/a:b/c",
+    ] {
+        let entries = write_files(home, &["ok.txt", path]).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let copied: Vec<_> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(copied, ["ok.txt"], "{path}");
+    }
 }
