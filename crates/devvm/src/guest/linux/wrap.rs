@@ -4,6 +4,8 @@
 //! sourced from `~/.profile`) are on `PATH`. The script is `cd`, `export`, then `exec --`. The `cd` is
 //! `CDPATH= cd -P --`: the profile's `CDPATH` must not redirect a relative directory or make `cd` print the one it
 //! chose, and `-P` resolves `..` after a symlink physically, as the kernel does (a plain `cd` folds it textually).
+//! The guest account's startup files are the user's: one that redefines `cd`, `export` or `exec`, or sets
+//! `cdable_vars`, changes what the command does, and devvm does not check.
 //! `env(1)` is not used: it reads `-x` as an option and `a=b` as an assignment even after `--`.
 //! `exec --` ends the builtin's own option parsing, so `-x` and `a=b` are program names.
 //!

@@ -31,8 +31,9 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 /// `into` by an earlier launch is replaced.
 ///
 /// A FAT volume labelled `CIDATA` is read by cloud-init's NoCloud source as well as an ISO9660 one, and needs no ISO
-/// writer. It is attached as a virtio-blk disk. Unmeasured: that Ubuntu 24.04 mounts it that way; the first guest boot
-/// decides, and the fallback is an ISO9660 image with Joliet and Rock Ridge names (the format measured as an `ide-cd`).
+/// writer. Measured attachments: Ubuntu 24.04 reads it (cloud-init NoCloud) as `-drive if=none,readonly=on,format=raw`
+/// with `virtio-blk-pci`; Windows Server 2025 setup reads `Autounattend.xml` from it as `usb-storage,removable=on` on
+/// `qemu-xhci`, read-only.
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
 /// the finished image before anything is written; an image that does not hold exactly `files` is an error.
