@@ -10,10 +10,16 @@ use std::fmt;
 use std::fs::File;
 use std::io;
 
+use super::FileId;
+
 /// An exclusive hold on a file, and the open file that carries it.
 pub(crate) trait Hold: Send + fmt::Debug {
     /// The held file. A duplicate of it, given to a child to inherit, carries the hold on.
     fn file(&self) -> &File;
+
+    /// The identity of the held file, read from the open file and not from a name: a name can be given to another file
+    /// while the hold is kept.
+    fn id(&self) -> io::Result<FileId>;
 
     /// Deletes the held file; the hold ends with it. The file is gone for good only once nobody else holds a duplicate.
     fn delete(self: Box<Self>) -> io::Result<()>;

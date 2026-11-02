@@ -247,3 +247,22 @@ fn traits_are_object_safe_and_thread_safe() {
     let _: Option<Arc<dyn Backend>> = None;
     let _: Option<Box<dyn Machine>> = None;
 }
+
+/// A file that was held and has been unlinked, and a later launch has the name: the earlier holder must not delete the
+/// later launch's files. (A held file cannot be unlinked on Windows.)
+#[cfg(unix)]
+#[skuld::test]
+fn remove_held_deletes_nothing_when_the_name_now_belongs_to_another_file(#[fixture(unicode_home)] home: &Path) {
+    let (paths, claim) = launch_files(home, "a");
+    let stale = held(&claim.path);
+    std::fs::remove_file(&claim.path).unwrap();
+    let (later, _later_claim) = launch_files(home, "a");
+
+    let mut warnings = Vec::new();
+    crate::backend::remove_held(host::current(), stale, &claim.path, &paths, &mut |text| {
+        warnings.push(text)
+    });
+
+    assert_eq!(warnings, Vec::<String>::new());
+    assert!(later.iter().all(|path| path.exists()));
+}

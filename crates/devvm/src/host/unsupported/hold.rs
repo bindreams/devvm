@@ -1,52 +1,78 @@
 //! A hold off Windows: an exclusive `flock`, which belongs to the open file and so to every duplicate of it, an
 //! inherited descriptor included.
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::ffi::OsString;
+use std::fs::{File, Metadata, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 
-use crate::host::{Hold, HoldOutcome};
+use crate::host::{FileId, Hold, HoldOutcome};
+
+/// The identity of the object a `Metadata` describes, as the host gives it (`FileModes::identity`).
+pub(super) type Identity<'a> = &'a dyn Fn(&Metadata) -> Option<FileId>;
 
 #[derive(Debug)]
 struct FlockHold {
     file: File,
     path: PathBuf,
+    /// Read from the descriptor when the hold was taken; `None` for a host that cannot tell files apart.
+    id: Option<FileId>,
 }
 
-/// Creates `path` with `options` (private to the user) and holds it.
-pub(super) fn new(mut options: OpenOptions, path: &Path) -> std::io::Result<Box<dyn Hold>> {
-    let file = options.read(true).write(true).create_new(true).open(path)?;
-    match file.try_lock() {
-        Ok(()) => Ok(Box::new(FlockHold {
+impl FlockHold {
+    fn of(file: File, path: &Path, identity: Identity) -> std::io::Result<FlockHold> {
+        let id = identity(&file.metadata()?);
+        Ok(FlockHold {
             file,
             path: path.to_owned(),
-        })),
-        Err(TryLockError::WouldBlock) => {
-            drop(file);
-            let _ = std::fs::remove_file(path);
-            Err(std::io::Error::other(format!(
-                "{} was locked by another process as it was created",
-                path.display()
-            )))
-        }
-        Err(TryLockError::Error(e)) => {
-            drop(file);
-            let _ = std::fs::remove_file(path);
-            Err(e)
-        }
+            id,
+        })
     }
 }
 
-pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
+/// `path` with `.new` after it: where a hold is made before it has its name.
+fn private_name(path: &Path) -> PathBuf {
+    let mut name: OsString = path.as_os_str().to_owned();
+    name.push(".new");
+    PathBuf::from(name)
+}
+
+/// Creates `path` with `options` (private to the user) and holds it. The name never exists without the hold: the file
+/// is made and locked under its private name, and then linked to `path`, which fails if `path` exists
+/// (`AlreadyExists`, as does a file at the private name, which is another launch's claim in the making).
+pub(super) fn new(mut options: OpenOptions, path: &Path, identity: Identity) -> std::io::Result<Box<dyn Hold>> {
+    let private = private_name(path);
+    let file = options.read(true).write(true).create_new(true).open(&private)?;
+    let made = match file.try_lock() {
+        Ok(()) => {
+            FlockHold::of(file, path, identity).and_then(|hold| std::fs::hard_link(&private, path).map(|()| hold))
+        }
+        Err(TryLockError::WouldBlock) => Err(std::io::Error::other(format!(
+            "{} was locked by another process as it was created",
+            private.display()
+        ))),
+        Err(TryLockError::Error(e)) => Err(e),
+    };
+    // The private name goes whether or not the name was linked.
+    let unlinked = std::fs::remove_file(&private);
+    match (made, unlinked) {
+        (Ok(hold), Ok(())) => Ok(Box::new(hold)),
+        (Ok(hold), Err(e)) => {
+            drop(hold);
+            let _ = std::fs::remove_file(path);
+            Err(e)
+        }
+        (Err(e), _) => Err(e),
+    }
+}
+
+pub(super) fn existing(path: &Path, identity: Identity) -> std::io::Result<HoldOutcome> {
     let file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HoldOutcome::Absent),
         Err(e) => return Err(e),
     };
     match file.try_lock() {
-        Ok(()) => Ok(HoldOutcome::Taken(Box::new(FlockHold {
-            file,
-            path: path.to_owned(),
-        }))),
+        Ok(()) => Ok(HoldOutcome::Taken(Box::new(FlockHold::of(file, path, identity)?))),
         Err(TryLockError::WouldBlock) => Ok(HoldOutcome::Busy),
         Err(TryLockError::Error(e)) => Err(e),
     }
@@ -57,8 +83,17 @@ impl Hold for FlockHold {
         &self.file
     }
 
-    /// Unlinks the name while the lock is still held, so nobody holds a file that has another's name.
+    fn id(&self) -> std::io::Result<FileId> {
+        self.id
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Unsupported, "this build cannot tell files apart"))
+    }
+
+    /// Unlinks the name while the lock is still held, so nobody holds a file that has another's name. A name that is
+    /// already gone is fine: a sweep and a record's cleanup can race for one claim.
     fn delete(self: Box<Self>) -> std::io::Result<()> {
-        std::fs::remove_file(&self.path)
+        match std::fs::remove_file(&self.path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
     }
 }

@@ -23,6 +23,13 @@ fn launch_of(file_name: &str) -> Option<&str> {
     hex.then_some(stem)
 }
 
+/// Whether `file_name` is the private name of a claim file in the making (`Host::hold_new`): `<claim file>.new`.
+fn is_private_claim(file_name: &str) -> bool {
+    file_name
+        .strip_suffix(".new")
+        .is_some_and(|claim| claim.ends_with(".sock.hold") && launch_of(claim).is_some())
+}
+
 impl QemuBackend {
     /// Deletes the files of every machine in the runtime directory that is dead.
     ///
@@ -35,6 +42,8 @@ impl QemuBackend {
     /// - its claim file is free: the machine is dead, and the socket, the lock file and the claim file go, in that order;
     /// - there is no claim file, no socket, and a lock file: a session that came late made it, and it goes;
     /// - there is no claim file but a socket: nobody can tell, and it stays.
+    ///
+    /// A claim file's private name (`<claim file>.new`) goes too: only a launch that died while making the file leaves one.
     pub(super) fn sweep_run_dir(&self, warn: &mut dyn FnMut(String)) {
         let run = self.run_dir();
         let mut directory = match FileLock::open_existing(&run.join("runtime.lock")) {
@@ -60,7 +69,7 @@ impl QemuBackend {
                 return;
             }
         };
-        let mut launches = BTreeSet::new();
+        let (mut launches, mut private_claims) = (BTreeSet::new(), Vec::new());
         for entry in listing {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -71,8 +80,22 @@ impl QemuBackend {
             };
             let is_file = entry.file_type().is_ok_and(|kind| !kind.is_dir() && !kind.is_symlink());
             let name = entry.file_name();
-            if let (true, Some(launch)) = (is_file, name.to_str().and_then(launch_of)) {
+            let Some(name) = name.to_str().filter(|_| is_file) else {
+                continue;
+            };
+            if let Some(launch) = launch_of(name) {
                 launches.insert(launch.to_owned());
+            } else if is_private_claim(name) {
+                private_claims.push(entry.path());
+            }
+        }
+        // No launch is between making a claim file and holding it while this sweep has the directory's lock, so what
+        // is left under a private name was left by a launch that died there.
+        for leftover in private_claims {
+            if let Err(e) = std::fs::remove_file(&leftover)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                warn(format!("cannot delete {}: {e}", leftover.display()));
             }
         }
         for launch in launches {
@@ -88,7 +111,9 @@ impl QemuBackend {
             endpoint.hold_path(),
         );
         match self.host().hold_existing(&claim) {
-            Ok(HoldOutcome::Taken(hold)) => remove_held(hold, &claim, &[socket, lock, claim.clone()], warn),
+            Ok(HoldOutcome::Taken(hold)) => {
+                remove_held(self.host(), hold, &claim, &[socket, lock, claim.clone()], warn)
+            }
             Ok(HoldOutcome::Busy) => {}
             Ok(HoldOutcome::Absent) => {
                 if lock.exists()

@@ -142,3 +142,13 @@ fn file_id_of_a_symlink_is_the_link_not_its_target(#[fixture(unicode_home)] home
     std::os::unix::fs::symlink(&target, &link).unwrap();
     assert_ne!(UnixHost.file_id(&link).unwrap(), UnixHost.file_id(&target).unwrap());
 }
+
+// Holds ---------------------------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn a_new_hold_is_private_to_the_user(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    let hold = UnixHost.hold_new(&path).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    drop(hold);
+}

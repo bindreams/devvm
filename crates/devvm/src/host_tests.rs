@@ -673,3 +673,75 @@ fn the_identity_of_a_held_file_can_be_read(#[fixture(unicode_home)] home: &Path)
     drop(hold);
     assert_eq!(current().file_id(&path).unwrap(), id);
 }
+
+/// The identity comes from the open file, so it is the same file as the name gives while the name is the file's.
+#[skuld::test]
+fn a_hold_knows_the_identity_of_its_file(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    assert_eq!(hold.id().unwrap(), current().file_id(&path).unwrap());
+    drop(hold);
+    let again = taken(current().hold_existing(&path));
+    assert_eq!(again.id().unwrap(), current().file_id(&path).unwrap());
+}
+
+#[skuld::test]
+fn a_hold_new_that_finds_the_name_taken_leaves_the_taken_file_and_makes_nothing_else(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dir = home.join("d");
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+
+    let error = current().hold_new(&path).expect_err("the name is taken");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    let names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["x.hold"]);
+    assert_eq!(current().file_id(&path).unwrap(), hold.id().unwrap());
+}
+
+// The hold of the hosts that have no Windows: run through `OtherHost`, which has the same hold, everywhere.
+
+/// The name a launch draws is made by linking a file that is held already, from a private name; a file at the private
+/// name is another launch's claim in the making, so the name is drawn again.
+#[skuld::test]
+fn a_hold_new_makes_its_file_under_a_private_name_first(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    std::fs::write(home.join("x.sock.hold.new"), b"").unwrap();
+
+    let error = OtherHost.hold_new(&path).expect_err("the private name is taken");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    assert!(!path.exists());
+}
+
+#[skuld::test]
+fn a_hold_new_leaves_no_private_name_behind(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("d");
+    std::fs::create_dir(&dir).unwrap();
+    let hold = OtherHost.hold_new(&dir.join("x.sock.hold")).unwrap();
+    let names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["x.sock.hold"]);
+    assert!(matches!(
+        OtherHost.hold_existing(&dir.join("x.sock.hold")).unwrap(),
+        HoldOutcome::Busy
+    ));
+    drop(hold);
+}
+
+/// A sweep and a record's cleanup can race for one claim: the loser finds the file gone.
+#[skuld::test]
+fn deleting_a_hold_whose_file_is_already_unlinked_is_fine(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = OtherHost.hold_new(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    hold.delete().unwrap();
+}

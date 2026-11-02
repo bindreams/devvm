@@ -196,7 +196,7 @@ pub(crate) fn remove_files(
             return;
         }
     };
-    match host.file_id(&claim.path) {
+    match hold.id() {
         Ok(id) if id == claim.id => {}
         Ok(_) => {
             warn(format!(
@@ -211,12 +211,30 @@ pub(crate) fn remove_files(
             return;
         }
     }
-    remove_held(hold, &claim.path, paths, warn);
+    remove_held(host, hold, &claim.path, paths, warn);
 }
 
 /// Deletes `paths` while `hold` holds `claim`, one of them, and then the claim itself. A file that is already gone is
 /// fine; a failure goes to `warn`, and then the claim stays, so the names stay reserved until the next try.
-pub(crate) fn remove_held(hold: Box<dyn Hold>, claim: &Path, paths: &[PathBuf], warn: &mut dyn FnMut(String)) {
+///
+/// Nothing is deleted, and nothing is said, when `claim` no longer names the held file: whoever deleted that file took
+/// the launch's other files before it, and the name may be a later launch's.
+pub(crate) fn remove_held(
+    host: &dyn Host,
+    hold: Box<dyn Hold>,
+    claim: &Path,
+    paths: &[PathBuf],
+    warn: &mut dyn FnMut(String),
+) {
+    match (hold.id(), host.file_id(claim)) {
+        (Ok(held), Ok(named)) if held == named => {}
+        (Ok(_), Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+        (Ok(_), Ok(_)) => return,
+        (Err(e), _) | (_, Err(e)) => {
+            warn(format!("cannot look at {}: {e}", claim.display()));
+            return;
+        }
+    }
     let mut all_gone = true;
     for path in paths.iter().filter(|path| path.as_path() != claim) {
         match std::fs::remove_file(path) {

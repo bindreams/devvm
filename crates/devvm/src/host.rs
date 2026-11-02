@@ -191,7 +191,9 @@ pub(crate) trait Host: Send + Sync {
     /// so it reads the identity of a file that is held (see [`Hold`]).
     fn file_id(&self, path: &Path) -> std::io::Result<FileId>;
 
-    /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it.
+    /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it. The name never
+    /// exists without the hold: off Windows the file is made and locked as `<path>.new` and then linked to `path`
+    /// (a launch killed in between leaves the `.new` file; a file there is `AlreadyExists` too).
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>>;
 
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file.

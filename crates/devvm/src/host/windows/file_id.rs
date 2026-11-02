@@ -1,6 +1,6 @@
 //! A file's identity on NTFS and ReFS: `FileIdInfo`.
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::mem::{size_of, zeroed};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
@@ -22,6 +22,11 @@ pub(super) fn of(path: &Path) -> std::io::Result<FileId> {
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
+    of_handle(&file)
+}
+
+/// The identity of the open file, which needs `FILE_READ_ATTRIBUTES` access.
+pub(super) fn of_handle(file: &File) -> std::io::Result<FileId> {
     // SAFETY: an all-zero `FILE_ID_INFO` is a valid value (integers and a byte array).
     let mut info: FILE_ID_INFO = unsafe { zeroed() };
     // SAFETY: the handle is open, and the buffer is a `FILE_ID_INFO` of the size passed.

@@ -158,6 +158,18 @@ fn sweep_leaves_a_reserved_launch_that_has_not_connected_and_takes_a_dead_machin
     assert!(launching.claim.path.exists());
 }
 
+/// A launch killed between making its claim file under the private name and linking it leaves that name.
+#[skuld::test]
+fn sweep_deletes_the_private_name_a_launch_left_when_it_died() {
+    let run = run_with_a_lock();
+    let leftover = run.path().join(format!("{STEM_A}.sock.hold.new"));
+    std::fs::write(&leftover, b"").unwrap();
+
+    assert_eq!(sweep(run.path()), Vec::<String>::new());
+
+    assert!(!leftover.exists());
+}
+
 #[skuld::test]
 fn sweep_skips_everything_while_another_sweep_runs() {
     let run = run_with_a_lock();
@@ -183,6 +195,8 @@ fn sweep_leaves_names_of_another_shape_alone() {
         "00000000000000AA.sock.lock",
         "00000000000000aa.sock.old",
         "00000000000000aa.hold",
+        "00000000000000a.sock.hold.new",
+        "00000000000000aa.sock.new",
         "notes.txt",
     ];
     for name in odd {

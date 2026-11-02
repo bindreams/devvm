@@ -12,7 +12,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     SetFileInformationByHandle,
 };
 
-use crate::host::{Hold, HoldOutcome};
+use super::file_id;
+use crate::host::{FileId, Hold, HoldOutcome};
 
 #[derive(Debug)]
 pub(super) struct WindowsHold {
@@ -48,6 +49,10 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
 impl Hold for WindowsHold {
     fn file(&self) -> &File {
         &self.file
+    }
+
+    fn id(&self) -> std::io::Result<FileId> {
+        file_id::of_handle(&self.file)
     }
 
     /// Marks the file for deletion through the handle, so no name is looked up again. It goes when the last handle to
