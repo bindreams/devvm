@@ -41,7 +41,7 @@ fn a_run_dir_whose_path_is_not_utf8_is_swept() {
     use std::os::unix::ffi::OsStrExt;
 
     use super::sweep_tests::Machine;
-    use crate::host::{self, Host};
+    use crate::host;
 
     let parent = crate::test_support::qemu::scratch_run();
     let run = parent.path().join(OsStr::from_bytes(b"r\xff"));
