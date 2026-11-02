@@ -438,9 +438,14 @@ fn vm_qemu_deleting_an_earlier_machines_leftovers_leaves_the_next_launches_files
         "a launch has its own control socket"
     );
 
+    // The machine is frozen, so QEMU has not made its socket yet: only the files the launch made exist.
+    let second_claim = second_record.claim.as_ref().expect("a QEMU machine has a claim");
+    let existing: Vec<&PathBuf> = second_record.leftovers.iter().filter(|path| path.exists()).collect();
+    assert!(existing.contains(&&second_claim.path), "the launch made its claim file");
+
     first_record.remove_leftovers(host::current(), &mut |message| panic!("{message}"));
 
-    for path in &second_record.leftovers {
+    for path in existing {
         assert!(path.exists(), "{} was deleted", path.display());
     }
     second.kill().unwrap();
