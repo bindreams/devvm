@@ -141,12 +141,7 @@ impl Backend for QemuBackend {
     /// and a record can delete them only while no QEMU holds the claim.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let install = self.install.get()?;
-        let Reservation {
-            endpoint,
-            claim,
-            launching,
-            hold,
-        } = QmpEndpoint::reserve(self.host, &self.run)?;
+        let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, &self.run)?;
         let mut vm = None;
         match self.start(spec, &install, &endpoint, hold, &mut vm) {
             Ok((parts, watch)) => {
@@ -172,10 +167,8 @@ impl Backend for QemuBackend {
                     spec.arch,
                     self.host,
                     self.progress.clone(),
-                    launching,
                 )))
             }
-            // `launching` is released by the return, after the files of this launch are gone.
             Err(error) => Err(self.abandon(vm.as_mut(), &endpoint, &claim, error)),
         }
     }

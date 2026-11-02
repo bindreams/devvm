@@ -150,6 +150,22 @@ fn open_existing_returns_none_for_a_missing_file_and_does_not_create_it(#[fixtur
 }
 
 #[skuld::test]
+fn open_in_existing_dir_creates_the_file_and_not_its_directory(#[fixture(unicode_home)] home: &Path) {
+    let made = home.join("a.lock");
+    let mut lock = FileLock::open_in_existing_dir(&made).unwrap();
+    assert!(made.exists());
+    assert!(lock.try_lock(Mode::Exclusive).unwrap());
+
+    let gone = home.join("missing").join("deeper").join("b.lock");
+    let error = FileLock::open_in_existing_dir(&gone).unwrap_err();
+    assert!(
+        error.message().contains(&gone.parent().unwrap().display().to_string()),
+        "{error}"
+    );
+    assert!(!home.join("missing").exists());
+}
+
+#[skuld::test]
 fn open_existing_locks_like_open(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");
     drop(FileLock::open(&path).unwrap());

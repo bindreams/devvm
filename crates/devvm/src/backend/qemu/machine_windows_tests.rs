@@ -93,7 +93,6 @@ impl World {
             Arch::Amd64,
             host,
             Arc::new(MemoryProgress::default()),
-            self.sock.launching(),
         );
         machine.resumed = true;
         machine

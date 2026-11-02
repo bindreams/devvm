@@ -18,7 +18,6 @@ use crate::config::Config;
 use crate::exit::StderrProgress;
 use crate::host::{self, ProcessWatch};
 use crate::store::fetch::{Fetcher, HttpTransport};
-use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::UNICODE_DIR;
 
@@ -171,13 +170,6 @@ impl Sock {
         let Reservation { endpoint, claim, .. } = QmpEndpoint::reserve(host::current(), &socket_run()).unwrap();
         Sock { endpoint, claim }
     }
-
-    /// The lock of a launch before its first connect, as `Reservation::launching` is.
-    pub fn launching(&self) -> FileLock {
-        let mut lock = FileLock::open(&self.endpoint.path().with_extension("launching")).unwrap();
-        assert!(lock.try_lock(Mode::Shared).unwrap());
-        lock
-    }
 }
 
 impl Drop for Sock {
@@ -185,7 +177,6 @@ impl Drop for Sock {
         let _ = std::fs::remove_file(self.endpoint.path());
         let _ = std::fs::remove_file(self.endpoint.lock_path());
         let _ = std::fs::remove_file(self.endpoint.hold_path());
-        let _ = std::fs::remove_file(self.endpoint.path().with_extension("launching"));
     }
 }
 

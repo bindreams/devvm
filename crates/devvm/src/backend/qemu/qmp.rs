@@ -41,15 +41,12 @@ pub(crate) struct QmpEndpoint {
     path: PathBuf,
 }
 
-/// What a launch has reserved: its names, the claim on them, and the marks that keep them safe until the machine runs.
+/// What a launch has reserved: its names and the hold on the claim that keeps them its own until the machine runs.
 #[derive(Debug)]
 pub(crate) struct Reservation {
     pub endpoint: QmpEndpoint,
     /// The hold file as made. It goes in the machine's record; cleanup deletes nothing that it does not still name.
     pub claim: FileClaim,
-    /// `<run>/runtime.lock`, shared: while it is held no sweep of the runtime directory runs, so none can delete the
-    /// names of a launch whose QEMU does not exist yet. Dropped when the first QMP connect has succeeded.
-    pub launching: FileLock,
     /// The hold on the claim file. QEMU inherits a duplicate of it; this one is dropped once QEMU is spawned.
     pub hold: Box<dyn Hold>,
 }
@@ -101,8 +98,10 @@ impl QmpEndpoint {
                 e,
             )
         })?;
-        let mut launching = FileLock::open(&run.join("runtime.lock"))?;
-        launching.lock(Mode::Shared, "a sweep of the runtime directory", &NullProgress)?;
+        // Shared while names are drawn and claimed, so no sweep runs between a claim file's creation and its hold.
+        // Released on return: the hold covers the launch from then on, and a sweep finds it `Busy`.
+        let mut directory = FileLock::open(&run.join("runtime.lock"))?;
+        directory.lock(Mode::Shared, "a sweep of the runtime directory", &NullProgress)?;
         loop {
             let endpoint = QmpEndpoint {
                 path: run.join(format!("{}.sock", hex::encode(draw()))),
@@ -145,7 +144,6 @@ impl QmpEndpoint {
             return Ok(Reservation {
                 claim: FileClaim { path: hold_path, id },
                 endpoint,
-                launching,
                 hold,
             });
         }
@@ -237,7 +235,8 @@ pub(crate) struct Qmp {
 impl Qmp {
     /// Connects to the socket, negotiates, and holds the lock file. It waits for the QEMU process to listen for as long
     /// as `process` has not exited, trying again every few milliseconds: the listener is up about 30 ms after spawn. A
-    /// process that has exited fails before a lock file is touched.
+    /// process that has exited fails before a lock file is touched. The socket's directory must exist: only a launch
+    /// makes the runtime directory (`Host::create_runtime_dir`), and a missing one is an error that names it.
     ///
     /// Never deletes the lock file, whether it succeeds or not: another session may be waiting on that very file, and a
     /// path removed under it could be a later session's. The file is removed by whoever knows no session can be live,
@@ -260,7 +259,7 @@ impl Qmp {
         if process.has_exited()? {
             return Err(exited("before devvm connected"));
         }
-        let mut lock = FileLock::open(&ep.lock_path())?;
+        let mut lock = FileLock::open_in_existing_dir(&ep.lock_path())?;
         lock.lock(
             Mode::Exclusive,
             &format!(

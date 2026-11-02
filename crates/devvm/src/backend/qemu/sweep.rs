@@ -27,9 +27,8 @@ impl QemuBackend {
     /// Deletes the files of every machine in the runtime directory that is dead.
     ///
     /// Nothing is made and nothing is waited for. Without a directory, or one without its `runtime.lock`, there is
-    /// nothing to do. The lock is tried exclusive: a launch holds it shared from its reservation to its first QMP
-    /// connect, and then its claim file exists while its QEMU, which will hold it, does not yet; another sweep may be
-    /// running. Either way the pass ends and the next reap tries again.
+    /// nothing to do. The lock is tried exclusive: a launch holds it shared while it draws and claims a name, and
+    /// another sweep may be running. Either way the pass ends and the next reap tries again.
     ///
     /// For each launch (names of the shape `<16 hex>.sock`, `.sock.lock` and `.sock.hold`, files and no others):
     /// - its claim file is held: the machine is alive, nothing is done;

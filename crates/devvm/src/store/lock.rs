@@ -33,23 +33,40 @@ pub struct FileLock {
 impl FileLock {
     /// Opens the lock file, creating it and its parent directories.
     pub fn open(path: &Path) -> Result<FileLock> {
-        let fail = |source| {
-            Error::io(
-                ErrorKind::Io,
-                format!("cannot open lock file {}", path.display()),
-                source,
-            )
-        };
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(fail)?;
+            std::fs::create_dir_all(parent).map_err(|source| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot open lock file {}", path.display()),
+                    source,
+                )
+            })?;
         }
+        FileLock::open_in_existing_dir(path)
+    }
+
+    /// Opens the lock file, creating it but no directory: for a directory that someone else makes, with permissions of
+    /// their own. A missing directory is an error that names it.
+    pub fn open_in_existing_dir(path: &Path) -> Result<FileLock> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(path)
-            .map_err(fail)?;
+            .map_err(|source| {
+                let text = match path.parent() {
+                    Some(parent) if source.kind() == std::io::ErrorKind::NotFound => {
+                        format!(
+                            "cannot open lock file {}: {} does not exist",
+                            path.display(),
+                            parent.display()
+                        )
+                    }
+                    _ => format!("cannot open lock file {}", path.display()),
+                };
+                Error::io(ErrorKind::Io, text, source)
+            })?;
         Ok(FileLock {
             path: path.to_owned(),
             file,

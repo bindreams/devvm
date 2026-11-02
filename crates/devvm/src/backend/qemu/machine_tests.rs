@@ -60,7 +60,6 @@ fn launched(
         arch,
         host,
         Arc::new(MemoryProgress::default()),
-        sock.launching(),
     );
     machine.resumed = true;
     machine

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use super::{Qmp, QmpEndpoint, Reservation, VmEnd};
+use super::{Qmp, QmpEndpoint, VmEnd};
 use crate::ErrorKind;
 use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
@@ -311,19 +311,31 @@ fn a_run_dir_that_fits_exactly_is_accepted() {
     assert!(!QmpEndpoint::fits(run, longest - 1));
 }
 
+/// From a drawn name to the taken claim a sweep must not run: the name is not yet a launch's.
 #[skuld::test]
-fn reserving_holds_the_run_dirs_lock_shared_until_the_reservation_lets_go() {
+fn reserving_holds_the_run_dirs_lock_shared_while_a_name_is_drawn_and_not_yet_claimed() {
+    let run = scratch_run();
+    let mut sweeper = FileLock::open(&run.path().join("runtime.lock")).unwrap();
+    let mut during = None;
+    QmpEndpoint::reserve_with(host::current(), run.path(), &mut || {
+        during = Some(sweeper.try_lock(Mode::Exclusive).unwrap());
+        7u64.to_be_bytes()
+    })
+    .unwrap();
+    assert_eq!(during, Some(false));
+}
+
+/// The claim is held from the moment the reservation returns, so a sweep that finds it `Busy` skips the launch.
+#[skuld::test]
+fn reserve_lets_go_of_the_run_dirs_lock_when_it_returns() {
     let run = scratch_run();
     let reservation = QmpEndpoint::reserve(host::current(), run.path()).unwrap();
     let mut sweeper = FileLock::open(&run.path().join("runtime.lock")).unwrap();
-    assert!(
-        !sweeper.try_lock(Mode::Exclusive).unwrap(),
-        "a launch is between its reservation and its first connect"
-    );
-    let Reservation { launching, hold, .. } = reservation;
-    drop(launching);
     assert!(sweeper.try_lock(Mode::Exclusive).unwrap());
-    drop(hold);
+    assert!(matches!(
+        host::current().hold_existing(&reservation.claim.path).unwrap(),
+        HoldOutcome::Busy
+    ));
 }
 
 #[skuld::test]
@@ -419,6 +431,22 @@ fn a_machine_that_has_exited_fails_before_a_lock_file_is_touched() {
         .unwrap();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(!sock.endpoint.lock_path().exists());
+}
+
+/// The runtime directory is made by `create_runtime_dir` alone, for the user alone: a session on a machine whose
+/// directory is gone must not make one with the inherited permissions.
+#[skuld::test]
+fn connect_does_not_make_a_missing_run_dir_and_names_it() {
+    let run = scratch_run();
+    let gone = run.path().join("gone");
+    let endpoint = QmpEndpoint::from_record(&gone.join("0000000000000001.sock").display().to_string());
+
+    let error = Qmp::connect(&endpoint, &ManualExit::new().watch(), &MemoryProgress::default())
+        .err()
+        .expect("there is no directory to lock in");
+
+    assert!(error.message().contains(&gone.display().to_string()), "{error}");
+    assert!(!gone.exists());
 }
 
 /// Ends `process` once `server` is done, from a thread of its own, while the calling thread reads the connection.

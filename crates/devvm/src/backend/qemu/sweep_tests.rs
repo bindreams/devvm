@@ -143,25 +143,19 @@ fn sweep_leaves_a_socket_that_has_no_claim_file() {
     assert!(sock.exists() && lock.exists());
 }
 
-/// A launch holds the directory's lock shared from its reservation to its first connect: its claim file exists, but
-/// QEMU does not yet, and a sweep must not take a name it has just reserved.
+/// A launch whose reservation has returned holds its claim, which QEMU will inherit: a sweep finds it `Busy` and
+/// leaves it, and takes the dead machine beside it.
 #[skuld::test]
-fn sweep_skips_everything_while_a_launch_holds_the_runtime_lock_shared() {
+fn sweep_leaves_a_reserved_launch_that_has_not_connected_and_takes_a_dead_machine() {
     let run = run_with_a_lock();
     let mut dead = Machine::new(run.path(), STEM_A);
     dead.dies();
     let launching = QmpEndpoint::reserve(host::current(), run.path()).unwrap();
 
     assert_eq!(sweep(run.path()), Vec::<String>::new());
-    assert!(
-        dead.all_exist(),
-        "a sweep waits for the launch to be past its first connect"
-    );
-    assert!(launching.claim.path.exists());
 
-    drop(launching);
-    sweep(run.path());
     assert!(dead.none_exist());
+    assert!(launching.claim.path.exists());
 }
 
 #[skuld::test]
