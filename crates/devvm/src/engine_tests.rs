@@ -16,6 +16,7 @@ use crate::instance::registry::registry_tests::new_instance_on;
 use crate::recipe::{Flattened, Resources, Source};
 use crate::store::layers::layers_tests::{Env, build, env, key, names, t0};
 use crate::store::layers::{ChainLease, SystemClock};
+use crate::test_support::claimed::claimed;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
@@ -115,12 +116,14 @@ pub(crate) fn stub_fixture(home: &Path, attach: Attach) -> (EngineFixture, Arc<S
 /// The record of a machine whose process is gone, naming `leftovers`.
 pub(crate) fn dead_machine(leftovers: Vec<PathBuf>) -> MachineRecord {
     let sleeper = Sleeper::spawn();
+    let (leftovers, claim) = claimed(leftovers);
     let machine = MachineRecord {
         process: sleeper.record(),
         qmp: String::new(),
         ssh: Vec::new(),
         serial_log: PathBuf::new(),
         leftovers,
+        claim,
         no_reboot: false,
     };
     sleeper.finish();
@@ -272,6 +275,7 @@ fn list_marks_running_by_recorded_identity(#[fixture(unicode_home)] home: &Path)
         ssh: Vec::new(),
         serial_log: std::path::PathBuf::new(),
         leftovers: Vec::new(),
+        claim: None,
         no_reboot: false,
     };
     let op = dir.op_exclusive().unwrap();

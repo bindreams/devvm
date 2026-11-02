@@ -142,8 +142,8 @@ impl ContractTarget for StrictTarget {
         self.inner.has_run(spec)
     }
 
-    fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf> {
-        self.inner.leftovers(spec)
+    fn leftover_files(&self) -> Vec<PathBuf> {
+        self.inner.leftover_files()
     }
 
     fn await_booted(&self, machine: &dyn Machine) -> crate::Result<()> {
@@ -216,7 +216,7 @@ impl Machine for Deleting {
 
     fn resume(&mut self) -> crate::Result<()> {
         self.0.resume()?;
-        self.0.record().remove_leftovers(&mut |_| {});
+        self.0.record().remove_leftovers(crate::host::current(), &mut |_| {});
         Ok(())
     }
 
@@ -292,10 +292,10 @@ impl ContractTarget for FailingTarget {
         self.inner.has_run(spec)
     }
 
-    fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf> {
+    fn leftover_files(&self) -> Vec<PathBuf> {
         match self.fault {
             Fault::NamesNoLeftovers => Vec::new(),
-            _ => self.inner.leftovers(spec),
+            _ => self.inner.leftover_files(),
         }
     }
 
@@ -493,7 +493,7 @@ fn fake_has_run_only_after_the_process_runs(#[fixture(unicode_home)] home: &Path
         .unwrap();
     connect_when_up(&vm, port);
     assert!(target.has_run(&spec));
-    for leftover in target.leftovers(&spec) {
+    for leftover in target.leftover_files() {
         assert!(leftover.exists(), "a running fake machine has {}", leftover.display());
     }
     target

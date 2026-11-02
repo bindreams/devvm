@@ -10,14 +10,15 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
 use crate::Dirs;
+use crate::backend::FileClaim;
 use crate::backend::qemu::args::escape_option_value;
-use crate::backend::qemu::qmp::QmpEndpoint;
+use crate::backend::qemu::qmp::{QmpEndpoint, Reservation};
 use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
 use crate::config::Config;
 use crate::exit::StderrProgress;
 use crate::host::{self, ProcessWatch};
-use crate::instance::record::InstanceId;
 use crate::store::fetch::{Fetcher, HttpTransport};
+use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::UNICODE_DIR;
 
@@ -45,18 +46,16 @@ pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInsta
         })
 }
 
-/// A QMP socket path in a short, non-ASCII directory under the temp directory, and its lock file; both are deleted on
-/// drop.
+/// A QMP socket path in a short, non-ASCII directory under the temp directory, reserved as a launch reserves one; the
+/// files beside it are deleted on drop.
 ///
 /// The directory is the shared [`socket_dir`]: a socket path is limited (`Host::socket_path_max`), which the per-test
-/// directories of `unicode_home` exceed. Socket names carry a random instance id, so tests do not collide, and the
-/// shared directory is never removed, so no test can find it gone.
+/// directories of `unicode_home` exceed. Socket names are random, so tests do not collide, and the shared directory is
+/// never removed, so no test can find it gone. Nobody holds the claim file: a test that wants a live machine holds it.
 pub struct Sock {
     pub endpoint: QmpEndpoint,
+    pub claim: FileClaim,
 }
-
-/// The launch number of the sockets the tests name: the first.
-const LAUNCH: u64 = 1;
 
 /// Shorter fallbacks for [`socket_dir`], each with a space and non-ASCII characters like [`UNICODE_DIR`]: the first
 /// also has a character outside the Basic Multilingual Plane (a UTF-16 surrogate pair).
@@ -67,9 +66,8 @@ const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e1
 /// directory itself (a temporary directory that leaves room for none of them). Nothing is created outside the temporary
 /// directory.
 fn socket_dir_that_fits() -> Option<PathBuf> {
-    let fits = |dir: &Path| {
-        QmpEndpoint::for_launch(dir, &InstanceId::random(), LAUNCH, host::current().socket_path_max()).is_ok()
-    };
+    // Room for a [`scratch_run`] below the directory and a socket in it.
+    let fits = |dir: &Path| QmpEndpoint::fits(&dir.join("r12345"), host::current().socket_path_max());
     let temp = std::env::temp_dir();
     std::iter::once(temp.join(UNICODE_DIR))
         .chain(SHORT_SOCKET_DIRS.iter().map(|short| temp.join(short)))
@@ -87,6 +85,54 @@ pub fn socket_dir() -> PathBuf {
     });
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Makes `dir` as devvm makes a runtime directory: for the user alone, so that devvm accepts it as one. A directory made
+/// any other way is owned by `BUILTIN\Administrators` when the tests run elevated, and devvm refuses it.
+fn make_run_dir(dir: &Path) {
+    host::current()
+        .create_runtime_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot make the runtime directory {}: {e}", dir.display()));
+}
+
+/// The runtime directory of the tests that need only some directory to reserve names in, made once below [`socket_dir`].
+pub fn socket_run() -> PathBuf {
+    static RUN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    RUN.get_or_init(|| {
+        let run = socket_dir().join("s");
+        make_run_dir(&run);
+        run
+    })
+    .clone()
+}
+
+/// A runtime directory of its own below the shared [`socket_dir`], removed with its contents when dropped, for a test
+/// that reserves names or sweeps. Short, so that a socket path in it fits the host's limit.
+pub struct ScratchRun(PathBuf);
+
+impl ScratchRun {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchRun {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+pub fn scratch_run() -> ScratchRun {
+    let mut random = [0u8; 3];
+    getrandom::fill(&mut random).expect("the OS random number generator is available");
+    let run = socket_dir().join(format!("r{}", hex::encode(random)[..5].to_owned()));
+    make_run_dir(&run);
+    assert!(
+        QmpEndpoint::fits(&run, host::current().socket_path_max()),
+        "{} is too long for a control socket",
+        run.display()
+    );
+    ScratchRun(run)
 }
 
 fn has_space_and_non_ascii(path: &Path) -> bool {
@@ -122,15 +168,15 @@ pub fn assert_unicode_socket_path(path: &Path) {
 
 impl Sock {
     pub fn new() -> Sock {
-        Sock {
-            endpoint: QmpEndpoint::for_launch(
-                &socket_dir(),
-                &InstanceId::random(),
-                LAUNCH,
-                host::current().socket_path_max(),
-            )
-            .unwrap(),
-        }
+        let Reservation { endpoint, claim, .. } = QmpEndpoint::reserve(host::current(), &socket_run()).unwrap();
+        Sock { endpoint, claim }
+    }
+
+    /// The lock of a launch before its first connect, as `Reservation::launching` is.
+    pub fn launching(&self) -> FileLock {
+        let mut lock = FileLock::open(&self.endpoint.path().with_extension("launching")).unwrap();
+        assert!(lock.try_lock(Mode::Shared).unwrap());
+        lock
     }
 }
 
@@ -138,6 +184,8 @@ impl Drop for Sock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.endpoint.path());
         let _ = std::fs::remove_file(self.endpoint.lock_path());
+        let _ = std::fs::remove_file(self.endpoint.hold_path());
+        let _ = std::fs::remove_file(self.endpoint.path().with_extension("launching"));
     }
 }
 

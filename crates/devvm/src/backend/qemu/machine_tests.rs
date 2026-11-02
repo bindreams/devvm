@@ -33,6 +33,7 @@ fn record(sock: &Sock, no_reboot: bool) -> (VmProcess, MachineRecord) {
         ssh: Vec::new(),
         serial_log: sock.endpoint.path().with_file_name("serial.log"),
         leftovers: Vec::new(),
+        claim: None,
         no_reboot,
     };
     let vm = VmProcess::attach(&record.process)
@@ -59,6 +60,7 @@ fn launched(
         arch,
         host,
         Arc::new(MemoryProgress::default()),
+        sock.launching(),
     );
     machine.resumed = true;
     machine

@@ -45,7 +45,8 @@ fn world(dir: &Path) -> World {
         qmp: sock.endpoint.path().display().to_string(),
         ssh: Vec::new(),
         serial_log: dir.join("serial.log"),
-        leftovers: vec![marker.clone(), sock.endpoint.lock_path()],
+        leftovers: vec![marker.clone(), sock.endpoint.lock_path(), sock.endpoint.hold_path()],
+        claim: Some(sock.claim.clone()),
         no_reboot: false,
     };
     World {
@@ -92,6 +93,7 @@ impl World {
             Arch::Amd64,
             host,
             Arc::new(MemoryProgress::default()),
+            self.sock.launching(),
         );
         machine.resumed = true;
         machine

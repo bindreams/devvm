@@ -293,7 +293,7 @@ impl Registry {
                 }
             }
             // The machine is dead, so what it left outside the instance directory can go.
-            let retired = dir.retire_machine(&op, machine, &mut |text| {
+            let retired = dir.retire_machine(&op, machine, self.host(), &mut |text| {
                 report.warn(self, format!("instance {name}: {text}"))
             });
             if let Err(e) = retired {

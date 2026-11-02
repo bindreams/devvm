@@ -17,6 +17,7 @@ use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
+use crate::test_support::claimed::claimed;
 use crate::test_support::fake_vm::connect_when_up;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, TestHost};
@@ -44,6 +45,7 @@ fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[
         ssh: Vec::new(),
         serial_log: std::path::PathBuf::new(),
         leftovers: Vec::new(),
+        claim: None,
         no_reboot: false,
     };
     let op = dir.op_exclusive().unwrap();
@@ -71,6 +73,7 @@ fn remove_deletes_the_leftovers_of_the_machine(#[fixture(unicode_home)] home: &P
     let sleeper = Sleeper::spawn();
     let socket = home.join("machine.sock");
     std::fs::write(&socket, b"x").unwrap();
+    let (leftovers, claim) = claimed(vec![socket.clone(), home.join("never-existed")]);
     record_machine(
         &dir,
         &MachineRecord {
@@ -78,7 +81,8 @@ fn remove_deletes_the_leftovers_of_the_machine(#[fixture(unicode_home)] home: &P
             qmp: String::new(),
             ssh: Vec::new(),
             serial_log: std::path::PathBuf::new(),
-            leftovers: vec![socket.clone(), home.join("never-existed")],
+            leftovers,
+            claim,
             no_reboot: false,
         },
     );
@@ -94,12 +98,14 @@ fn stop_deletes_the_leftovers_of_a_machine_that_is_already_gone(#[fixture(unicod
     let sleeper = Sleeper::spawn();
     let socket = home.join("machine.sock");
     std::fs::write(&socket, b"x").unwrap();
+    let (leftovers, claim) = claimed(vec![socket.clone()]);
     let machine = MachineRecord {
         process: sleeper.record(),
         qmp: String::new(),
         ssh: Vec::new(),
         serial_log: std::path::PathBuf::new(),
-        leftovers: vec![socket.clone()],
+        leftovers,
+        claim,
         no_reboot: false,
     };
     sleeper.finish();

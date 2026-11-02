@@ -2,6 +2,7 @@
 
 pub mod alloc;
 pub mod callers;
+pub mod claimed;
 pub mod fake_vm;
 pub mod file_mode;
 pub mod fixtures;

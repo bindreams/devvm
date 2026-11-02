@@ -27,7 +27,7 @@ pub(super) fn launch(
             return Ok(None);
         }
         // A stale record: the machine is dead, so its leftovers go.
-        dir.retire_machine(op, machine, &mut warn_for(engine, dir))?;
+        dir.retire_machine(op, machine, engine.host(), &mut warn_for(engine, dir))?;
     }
 
     let guest = engine.guests().os(record.guest)?;
@@ -48,9 +48,8 @@ pub(super) fn launch(
             keys: SeedKeys::default(),
         },
     )?;
-    // Taken and persisted before the spawn: a launch that dies midway still used its number, so no later machine of the
-    // instance is named like it. Incremented on the current record, under the op lock; at the last number the record is
-    // rewritten unchanged.
+    // Counted and persisted before the spawn: a launch that dies midway still counts. Incremented on the current
+    // record, under the op lock; at the last number the record is rewritten unchanged.
     let mut taken = None;
     let current = dir.update(op, &mut |record| {
         taken = record.launches.checked_add(1);
@@ -58,7 +57,7 @@ pub(super) fn launch(
             record.launches = next;
         }
     })?;
-    let launch = taken.ok_or_else(|| {
+    taken.ok_or_else(|| {
         Error::new(
             ErrorKind::Store,
             format!(
@@ -70,7 +69,6 @@ pub(super) fn launch(
     })?;
     let spec = MachineSpec {
         id: *dir.id(),
-        launch,
         dir: dir.path().to_path_buf(),
         arch: record.arch,
         accel,
@@ -126,7 +124,7 @@ pub(super) fn abandon(
             "its record is kept, and the next stop or remove of the instance ends it",
         );
     }
-    if let Err(clear) = dir.retire_machine(op, &machine.record(), &mut warn_for(engine, dir)) {
+    if let Err(clear) = dir.retire_machine(op, &machine.record(), engine.host(), &mut warn_for(engine, dir)) {
         engine.progress().message(&format!(
             "instance {} could not be started, and its record still names the machine ({}); the next devvm \
              command on it clears that",

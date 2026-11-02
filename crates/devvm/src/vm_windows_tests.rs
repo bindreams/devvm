@@ -16,6 +16,7 @@ use crate::engine::{LaunchHooks, LaunchStep};
 use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::{build_expiring, days, key, names, t0};
+use crate::test_support::claimed::claimed;
 use crate::test_support::fake_vm::{STARTED, answer, connect_when_up};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::helper;
@@ -169,9 +170,6 @@ fn each_launch_of_an_instance_gets_the_next_launch_number(#[fixture(unicode_home
     instance.stop().unwrap();
     instance.start().unwrap();
     assert_eq!(dir.record().unwrap().launches, 2, "a stop does not reset the count");
-
-    let numbers: Vec<u64> = fx.fake.specs().iter().map(|spec| spec.launch).collect();
-    assert_eq!(numbers, [1, 2]);
     instance.remove().unwrap();
 }
 
@@ -506,12 +504,14 @@ fn start_over_a_stale_record_deletes_the_old_machines_leftovers(#[fixture(unicod
     let sleeper = Sleeper::spawn();
     let socket = home.join("stale.sock");
     std::fs::write(&socket, b"x").unwrap();
+    let (leftovers, claim) = claimed(vec![socket.clone()]);
     let stale = MachineRecord {
         process: sleeper.record(),
         qmp: String::new(),
         ssh: Vec::new(),
         serial_log: std::path::PathBuf::new(),
-        leftovers: vec![socket.clone()],
+        leftovers,
+        claim,
         no_reboot: false,
     };
     sleeper.finish();

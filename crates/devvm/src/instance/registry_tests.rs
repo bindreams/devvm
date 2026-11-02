@@ -52,7 +52,7 @@ pub(crate) fn fixture_with(home: &Path, backend: Option<Arc<dyn Backend>>) -> Fi
     let env = env(home);
     let chain = build(&env, key(1), None);
     let progress = Arc::new(MemoryProgress::default());
-    let registry = Registry::new(&env.dirs, progress.clone(), backend);
+    let registry = Registry::new(&env.dirs, progress.clone(), backend, &TestHost);
     Fixture {
         env,
         chain,
@@ -285,7 +285,7 @@ fn make_ownerless_with_a_failing_disarm_flips_nothing(#[fixture(unicode_home)] h
 #[skuld::test]
 fn a_bad_name_is_rejected_by_parse_and_the_state_directory_is_never_created(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
-    let registry = Registry::new(&dirs, Arc::new(MemoryProgress::default()), None);
+    let registry = Registry::new(&dirs, Arc::new(MemoryProgress::default()), None, &TestHost);
     for text in ["../x", "con", "a*", &"a".repeat(64)] {
         assert_eq!(InstanceName::parse(text).unwrap_err().kind(), ErrorKind::InvalidName);
     }
@@ -356,7 +356,7 @@ fn a_waiter_on_the_op_lock_of_a_removed_and_recreated_name_gets_not_found(#[fixt
     let (progress, messages) = ChannelProgress::new();
     let env = env(home);
     let chain = build(&env, key(1), None);
-    let registry = Registry::new(&env.dirs, progress, None);
+    let registry = Registry::new(&env.dirs, progress, None, &TestHost);
     let fx = Fixture {
         env,
         chain,

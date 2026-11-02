@@ -14,6 +14,7 @@ use crate::backend::{Endpoint, Machine, MachineRecord, SshEndpoint};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Host, ProcessWatch};
+use crate::store::lock::FileLock;
 use crate::{Arch, Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -56,6 +57,9 @@ pub(super) struct QemuMachine {
     attached: bool,
     /// Whether QEMU has been let run: a frozen machine has no control socket yet.
     resumed: bool,
+    /// The launch's shared lock on the runtime directory (`Reservation::launching`), kept until the first QMP connect
+    /// has succeeded, when QEMU has bound its socket. `None` for a machine found with `attach`.
+    launching: Option<FileLock>,
 }
 
 impl QemuMachine {
@@ -73,8 +77,10 @@ impl QemuMachine {
         arch: Arch,
         host: &'static dyn Host,
         progress: Arc<dyn Progress>,
+        launching: FileLock,
     ) -> QemuMachine {
         QemuMachine {
+            launching: Some(launching),
             endpoint: QmpEndpoint::from_record(&record.qmp),
             process,
             log,
@@ -112,6 +118,7 @@ impl QemuMachine {
             progress,
             attached: true,
             resumed: true,
+            launching: None,
         })
     }
 
@@ -202,7 +209,7 @@ impl QemuMachine {
 
     fn remove_leftovers(&self) {
         let mut warn = |text: String| self.progress.message(&text);
-        self.record.remove_leftovers(&mut warn);
+        self.record.remove_leftovers(self.host, &mut warn);
     }
 
     /// The loopback address QEMU bound for `endpoint`'s forward, from the forwards `info usernet` listed.
@@ -245,7 +252,10 @@ impl Machine for QemuMachine {
         }
         self.vm.resume()?;
         self.resumed = true;
-        let listed = self.connect()?.forwarded_ports().map_err(|e| self.explain(e))?;
+        let mut qmp = self.connect()?;
+        // QEMU has bound its socket, so a sweep of the runtime directory can see this launch's files for what they are.
+        self.launching = None;
+        let listed = qmp.forwarded_ports().map_err(|e| self.explain(e))?;
         let mut ssh = Vec::new();
         for endpoint in &self.forwards {
             ssh.push((*endpoint, QemuMachine::address_of(*endpoint, &listed)?));

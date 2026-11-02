@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::backend::MachineRecord;
 use crate::exit::Progress;
+use crate::host::Host;
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
@@ -185,9 +186,10 @@ impl InstanceDir {
         &self,
         op: &OpExclusive,
         machine: &MachineRecord,
+        host: &dyn Host,
         warn: &mut dyn FnMut(String),
     ) -> Result<()> {
-        machine.remove_leftovers(warn);
+        machine.remove_leftovers(host, warn);
         self.update(op, &mut |record| record.machine = None).map(drop)
     }
 

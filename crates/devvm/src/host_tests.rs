@@ -615,7 +615,7 @@ fn a_new_hold_creates_the_file_and_nobody_else_takes_it(#[fixture(unicode_home)]
     let hold = current().hold_new(&path).unwrap();
     assert!(path.exists());
     assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
-    let error = current().hold_new(&path).err().expect("the name is taken");
+    let error = current().hold_new(&path).expect_err("the name is taken");
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
     drop(hold);
     assert!(path.exists(), "dropping a hold leaves the file");

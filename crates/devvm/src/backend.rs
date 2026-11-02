@@ -8,7 +8,7 @@ use cosca::identity::ProcessIdRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::contain::Lifetime;
-use crate::host::Accel;
+use crate::host::{Accel, FileId, Hold, HoldOutcome, Host};
 use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
 use crate::{Arch, ErrorKind, Network, Result};
@@ -115,41 +115,116 @@ pub(crate) struct MachineRecord {
     pub ssh: Vec<SshEndpoint>,
     /// The machine's serial console log, named in boot-failure errors by a machine found with `Backend::attach`.
     pub serial_log: PathBuf,
-    /// Files outside the instance directory that die with the machine (QEMU: the QMP socket and its lock file).
+    /// Files outside the instance directory that die with the machine (QEMU: the QMP socket, the lock file of its
+    /// sessions and the hold, in that order: the hold last, since it keeps the name reserved while the others go).
     #[serde(default)]
     pub leftovers: Vec<PathBuf>,
+    /// The file among `leftovers` that this launch made and that is held while the machine runs. `None` in a record
+    /// of a machine that has no such file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<FileClaim>,
     /// The machine was launched with `DeviceProfile::no_reboot`: it exits when its guest reboots, so it cannot be reset
     /// in place.
     #[serde(default)]
     pub no_reboot: bool,
 }
 
+/// The file a launch made to reserve its names: where it is and which file it was when made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FileClaim {
+    pub path: PathBuf,
+    pub id: FileId,
+}
+
 impl MachineRecord {
-    /// Deletes `leftovers`, best effort: a file that is already gone is fine, any other failure goes to `warn`.
-    /// Call it only once the machine is proven dead.
-    pub(crate) fn remove_leftovers(&self, warn: &mut dyn FnMut(String)) {
-        remove_files(&self.leftovers, warn);
+    /// Deletes `leftovers` (see [`remove_files`]). Call it only once the machine is proven dead.
+    pub(crate) fn remove_leftovers(&self, host: &dyn Host, warn: &mut dyn FnMut(String)) {
+        remove_files(host, &self.leftovers, self.claim.as_ref(), warn);
     }
 }
 
-/// Deletes `paths`, best effort: a file that is already gone is fine, any other failure goes to `warn`.
-pub(crate) fn remove_files(paths: &[PathBuf], warn: &mut dyn FnMut(String)) {
-    for path in paths {
+/// Deletes `paths`, the files of a dead machine, best effort. They go only while the caller holds `claim`'s file, the
+/// one the launch made, and it is still that file: a machine that is alive holds it, so its files are never deleted,
+/// and a stale record can never delete the files of a later launch that drew the same name. The claim goes last, so
+/// the names stay reserved until the rest is gone, and stays if any other file could not be deleted.
+///
+/// Nothing is deleted, and `warn` is told, when there is no claim, the claim file is held (a machine is alive), is
+/// another file than the claim says, or is gone while other files remain. A file that is already gone is fine; any
+/// other failure goes to `warn`.
+pub(crate) fn remove_files(
+    host: &dyn Host,
+    paths: &[PathBuf],
+    claim: Option<&FileClaim>,
+    warn: &mut dyn FnMut(String),
+) {
+    let present: Vec<&PathBuf> = paths
+        .iter()
+        .filter(|path| std::fs::symlink_metadata(path).is_ok())
+        .collect();
+    if present.is_empty() {
+        return;
+    }
+    let names = || {
+        present
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let Some(claim) = claim else {
+        warn(format!("not deleting {}: no launch claims them", names()));
+        return;
+    };
+    let hold: Box<dyn Hold> = match host.hold_existing(&claim.path) {
+        Ok(HoldOutcome::Taken(hold)) => hold,
+        Ok(HoldOutcome::Busy) => {
+            warn(format!("not deleting {}: {} is held", names(), claim.path.display()));
+            return;
+        }
+        Ok(HoldOutcome::Absent) => {
+            warn(format!("not deleting {}: {} is gone", names(), claim.path.display()));
+            return;
+        }
+        Err(e) => {
+            warn(format!("cannot hold {}: {e}", claim.path.display()));
+            return;
+        }
+    };
+    match host.file_id(&claim.path) {
+        Ok(id) if id == claim.id => {}
+        Ok(_) => {
+            warn(format!(
+                "not deleting {}: {} is another launch's file",
+                names(),
+                claim.path.display()
+            ));
+            return;
+        }
+        Err(e) => {
+            warn(format!("cannot look at {}: {e}", claim.path.display()));
+            return;
+        }
+    }
+    let mut all_gone = true;
+    for path in paths.iter().filter(|path| **path != claim.path) {
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => warn(format!("cannot delete {}: {e}", path.display())),
+            Err(e) => {
+                all_gone = false;
+                warn(format!("cannot delete {}: {e}", path.display()));
+            }
         }
+    }
+    if all_gone && let Err(e) = hold.delete() {
+        warn(format!("cannot delete {}: {e}", claim.path.display()));
     }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct MachineSpec {
-    /// The instance this machine belongs to; a backend derives names that must not collide from it.
+    /// The instance this machine belongs to.
     pub id: InstanceId,
-    /// Which launch of the instance this is (`InstanceRecord::launches`): never the number of an earlier machine, so a
-    /// backend can name this machine's files by it and never collide with another's.
-    pub launch: u64,
     /// The instance directory. `disk`, `serial_log` and the firmware variables sit in it.
     pub dir: PathBuf,
     pub arch: Arch,

@@ -5,21 +5,22 @@ use std::sync::Arc;
 
 use super::args::{LaunchPaths, build_args, qemu_arch};
 use super::machine::{QemuMachine, qemu_log};
-use super::qmp::QmpEndpoint;
-use super::sidecar::LazyInstall;
+use super::qmp::{QmpEndpoint, Reservation};
+use super::sidecar::{LazyInstall, QemuInstall};
 use super::storage::QemuStorage;
-use crate::backend::{Backend, Machine, MachineRecord, MachineSpec, Storage, remove_files};
+use crate::backend::{Backend, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
-use crate::host::Host;
+use crate::host::{Hold, Host};
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) struct QemuBackend {
     install: Arc<LazyInstall>,
     storage: Arc<QemuStorage>,
     host: &'static dyn Host,
-    /// Where control sockets go. Short, because a socket path is limited (`Host::socket_path_max`).
-    temp: PathBuf,
+    /// Where control sockets go (`Dirs::run`): the user's alone, and short, because a socket path is limited
+    /// (`Host::socket_path_max`).
+    run: PathBuf,
     progress: Arc<dyn Progress>,
 }
 
@@ -28,49 +29,54 @@ impl QemuBackend {
         install: Arc<LazyInstall>,
         storage: Arc<QemuStorage>,
         host: &'static dyn Host,
-        temp: PathBuf,
+        run: PathBuf,
         progress: Arc<dyn Progress>,
     ) -> QemuBackend {
         QemuBackend {
             install,
             storage,
             host,
-            temp,
+            run,
             progress,
         }
     }
 }
 
 impl QemuBackend {
-    /// `error`, after the frozen QEMU of a launch that failed has been killed and the files it could have made are
-    /// removed. A QEMU that cannot be killed is named in the error: it is still there, frozen, and its files stay.
-    fn abandon(&self, vm: &mut VmProcess, endpoint: &QmpEndpoint, error: Error) -> Error {
-        match vm.kill() {
-            Ok(()) => {
-                // Only this launch's own files: its path is used by no other machine.
-                remove_files(&[endpoint.path().to_path_buf(), endpoint.lock_path()], &mut |message| {
-                    self.progress.message(&message)
-                });
-                error
-            }
-            Err(kill) => Error::new(
+    /// `error`, after the frozen QEMU of a launch that failed (`vm`, if it was spawned) has been killed and the files
+    /// it could have made are removed. A QEMU that cannot be killed is named in the error: it is still there, frozen,
+    /// and its files stay.
+    fn abandon(&self, vm: Option<&mut VmProcess>, endpoint: &QmpEndpoint, claim: &FileClaim, error: Error) -> Error {
+        if let Some(vm) = vm
+            && let Err(kill) = vm.kill()
+        {
+            return Error::new(
                 error.kind(),
                 format!("{error}; the frozen QEMU could not be killed either ({kill}) and is still running"),
-            ),
+            );
         }
+        // Only this launch's own files: nobody else draws its name while its claim file is there.
+        let files = [
+            endpoint.path().to_path_buf(),
+            endpoint.lock_path(),
+            endpoint.hold_path(),
+        ];
+        remove_files(self.host, &files, Some(claim), &mut |message| {
+            self.progress.message(&message)
+        });
+        error
     }
-}
 
-impl Backend for QemuBackend {
-    /// Starts QEMU frozen, in an empty private working directory, with nothing in its environment but `SystemRoot` and
-    /// a `PATH` of System32 and its own `bin`. Its output goes to `<instance>/qemu.log`. Resolving the sidecar here is
-    /// the only place a launch can download it.
-    ///
-    /// The control socket is named by the launch number (`QmpEndpoint::for_launch`) and recorded in the machine's
-    /// record, so no earlier or later machine of the instance shares its files. A launch whose name exists is refused.
-    fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
-        let install = self.install.get()?;
-        let endpoint = QmpEndpoint::for_launch(&self.temp, &spec.id, spec.launch, self.host.socket_path_max())?;
+    /// Everything of a launch after its names are reserved, up to the frozen process and its watch. `hold` is given to
+    /// the process to inherit and dropped here, so the launch's own copy never outlives the spawn.
+    fn start(
+        &self,
+        spec: &MachineSpec,
+        install: &QemuInstall,
+        endpoint: &QmpEndpoint,
+        hold: Box<dyn Hold>,
+        started: &mut Option<VmProcess>,
+    ) -> Result<(MachineRecordParts, Arc<dyn crate::host::ProcessWatch>)> {
         let paths = LaunchPaths::resolve(spec, endpoint.path().to_path_buf(), &install.share)?;
         let args = build_args(spec, &paths)?;
 
@@ -91,35 +97,79 @@ impl Backend for QemuBackend {
             .env_clear()
             .envs(install.environment(self.host.system_dirs().as_ref())?)
             .current_dir(&cwd);
+        // QEMU inherits the hold as descriptor 3 and keeps it, unused, until it exits or is killed.
+        let inherited = hold
+            .file()
+            .try_clone()
+            .map_err(|e| Error::io(ErrorKind::Io, "cannot duplicate the launch's hold", e))?;
+        command
+            .fd(INHERITED_HOLD, cosca::Stdio::from_file(inherited))
+            .map_err(|e| Error::new(ErrorKind::Io, format!("cannot pass the launch's hold to QEMU: {e}")))?;
         let log = qemu_log(&spec.dir);
-        let mut vm = VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?;
-        let process = match vm.record() {
-            Ok(process) => process,
-            Err(e) => return Err(self.abandon(&mut vm, &endpoint, e)),
-        };
-        let watch = match self.host.watch_process(vm.id()) {
-            Ok(watch) => watch,
-            Err(e) => return Err(self.abandon(&mut vm, &endpoint, e)),
-        };
+        let vm = started.insert(VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?);
+        drop(hold);
+        let process = vm.record()?;
+        let watch = self.host.watch_process(vm.id())?;
+        Ok((MachineRecordParts { process, log }, watch))
+    }
+}
 
-        let record = MachineRecord {
-            process,
-            qmp: endpoint.path().display().to_string(),
-            ssh: Vec::new(),
-            serial_log: spec.serial_log.clone(),
-            leftovers: vec![endpoint.path().to_path_buf(), endpoint.lock_path()],
-            no_reboot: spec.profile.no_reboot,
-        };
-        Ok(Box::new(QemuMachine::launched(
-            vm,
-            watch,
-            record,
-            spec.forwards.clone(),
-            log,
-            spec.arch,
-            self.host,
-            self.progress.clone(),
-        )))
+/// The descriptor the launch's hold has in QEMU. QEMU does not know of it.
+const INHERITED_HOLD: i32 = 3;
+
+/// What a successful `start` knows of the process.
+struct MachineRecordParts {
+    process: cosca::identity::ProcessIdRecord,
+    log: PathBuf,
+}
+
+impl Backend for QemuBackend {
+    /// Starts QEMU frozen, in an empty private working directory, with nothing in its environment but `SystemRoot` and
+    /// a `PATH` of System32 and its own `bin`. Its output goes to `<instance>/qemu.log`. Resolving the sidecar here is
+    /// the only place a launch can download it.
+    ///
+    /// The control socket's name is drawn at random in the user's runtime directory (`QmpEndpoint::reserve`) together
+    /// with the claim file QEMU inherits, and recorded in the machine's record, so no other machine shares its files
+    /// and a record can delete them only while no QEMU holds the claim.
+    fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
+        let install = self.install.get()?;
+        let Reservation {
+            endpoint,
+            claim,
+            launching,
+            hold,
+        } = QmpEndpoint::reserve(self.host, &self.run)?;
+        let mut vm = None;
+        match self.start(spec, &install, &endpoint, hold, &mut vm) {
+            Ok((parts, watch)) => {
+                let record = MachineRecord {
+                    process: parts.process,
+                    qmp: endpoint.path().display().to_string(),
+                    ssh: Vec::new(),
+                    serial_log: spec.serial_log.clone(),
+                    leftovers: vec![
+                        endpoint.path().to_path_buf(),
+                        endpoint.lock_path(),
+                        endpoint.hold_path(),
+                    ],
+                    claim: Some(claim),
+                    no_reboot: spec.profile.no_reboot,
+                };
+                Ok(Box::new(QemuMachine::launched(
+                    vm.expect("a started launch has its process"),
+                    watch,
+                    record,
+                    spec.forwards.clone(),
+                    parts.log,
+                    spec.arch,
+                    self.host,
+                    self.progress.clone(),
+                    launching,
+                )))
+            }
+            // `launching` is released by the return, after the files of this launch are gone.
+            Err(error) => Err(self.abandon(vm.as_mut(), &endpoint, &claim, error)),
+        }
     }
 
     fn attach(&self, record: &MachineRecord) -> Result<Box<dyn Machine>> {
