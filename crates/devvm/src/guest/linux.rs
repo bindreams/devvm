@@ -65,8 +65,8 @@ impl GuestOs for LinuxGuest {
         Command::new(["cat", "/proc/sys/kernel/random/boot_id"])
     }
 
-    /// The string sshd hands to the account's shell for `cmd`; `usage` for an empty argv, a bad or readonly environment
-    /// name or a NUL byte.
+    /// The string sshd hands to the account's shell for `cmd`; `usage` for an empty argv or working directory, a NUL
+    /// byte or a string over the single-argument size limit.
     fn wrap(&self, cmd: &Command) -> Result<String> {
         wrap::wrap(cmd)
     }

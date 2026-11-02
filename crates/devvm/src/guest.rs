@@ -29,8 +29,7 @@ pub(crate) trait GuestOs: Send + Sync {
     /// A command whose output is the guest's boot id.
     fn boot_id_command(&self) -> Command;
     /// The final string the guest's shell executes for `cmd`. A command no shell string can carry is a `usage` error
-    /// naming the cause: an empty argv or working directory, a bad environment variable name or one the shell owns
-    /// (the shell would not pass it to the program as asked), a NUL byte, or a string over the guest's single-argument
+    /// naming the cause: an empty argv or working directory, a NUL byte, or a string over the guest's single-argument
     /// size limit.
     fn wrap(&self, cmd: &Command) -> Result<String>;
     /// `guest_path` as the guest's SFTP server expects it.
