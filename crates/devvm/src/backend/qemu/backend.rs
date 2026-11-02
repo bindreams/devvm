@@ -43,6 +43,14 @@ impl QemuBackend {
 }
 
 impl QemuBackend {
+    pub(super) fn run_dir(&self) -> &std::path::Path {
+        &self.run
+    }
+
+    pub(super) fn host(&self) -> &'static dyn Host {
+        self.host
+    }
+
     /// `error`, after the frozen QEMU of a launch that failed (`vm`, if it was spawned) has been killed and the files
     /// it could have made are removed. A QEMU that cannot be killed is named in the error: it is still there, frozen,
     /// and its files stay.
@@ -191,6 +199,10 @@ impl Backend for QemuBackend {
 
     fn storage(&self) -> &dyn Storage {
         &*self.storage
+    }
+
+    fn sweep(&self, warn: &mut dyn FnMut(String)) {
+        self.sweep_run_dir(warn);
     }
 
     /// WHPX does not support saving a running machine's memory.

@@ -7,6 +7,7 @@ pub(crate) mod ports;
 pub(crate) mod qmp;
 pub(crate) mod sidecar;
 pub(crate) mod storage;
+mod sweep;
 pub(crate) mod uds;
 
 use std::path::Path;

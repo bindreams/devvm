@@ -44,6 +44,12 @@ pub(crate) trait Backend: Send + Sync {
 
     fn storage(&self) -> &dyn Storage;
 
+    /// Deletes the files that machines left outside their instance directories and that no machine of any devvm setup
+    /// uses any more. A setup other than the caller's may be running machines, so only a file that nothing can be using
+    /// goes. Best effort: a problem is told to `warn` and left for the next sweep. The default does nothing, for a
+    /// backend whose machines leave no such files.
+    fn sweep(&self, _warn: &mut dyn FnMut(String)) {}
+
     /// Whether this backend can save a running machine's memory.
     fn can_save_memory(&self) -> bool;
 }
@@ -205,8 +211,14 @@ pub(crate) fn remove_files(
             return;
         }
     }
+    remove_held(hold, &claim.path, paths, warn);
+}
+
+/// Deletes `paths` while `hold` holds `claim`, one of them, and then the claim itself. A file that is already gone is
+/// fine; a failure goes to `warn`, and then the claim stays, so the names stay reserved until the next try.
+pub(crate) fn remove_held(hold: Box<dyn Hold>, claim: &Path, paths: &[PathBuf], warn: &mut dyn FnMut(String)) {
     let mut all_gone = true;
-    for path in paths.iter().filter(|path| **path != claim.path) {
+    for path in paths.iter().filter(|path| path.as_path() != claim) {
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -217,7 +229,7 @@ pub(crate) fn remove_files(
         }
     }
     if all_gone && let Err(e) = hold.delete() {
-        warn(format!("cannot delete {}: {e}", claim.path.display()));
+        warn(format!("cannot delete {}: {e}", claim.display()));
     }
 }
 
