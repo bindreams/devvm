@@ -48,25 +48,6 @@ pub(super) fn launch(
             keys: SeedKeys::default(),
         },
     )?;
-    // Counted and persisted before the spawn: a launch that dies midway still counts. Incremented on the current
-    // record, under the op lock; at the last number the record is rewritten unchanged.
-    let mut taken = None;
-    let current = dir.update(op, &mut |record| {
-        taken = record.launches.checked_add(1);
-        if let Some(next) = taken {
-            record.launches = next;
-        }
-    })?;
-    taken.ok_or_else(|| {
-        Error::new(
-            ErrorKind::Store,
-            format!(
-                "instance {} has launched {} times, which is as far as the count goes",
-                dir.name(),
-                current.launches
-            ),
-        )
-    })?;
     let spec = MachineSpec {
         id: *dir.id(),
         dir: dir.path().to_path_buf(),

@@ -422,43 +422,6 @@ fn start_on_a_host_without_a_hypervisor_is_unavailable_and_launches_nothing(#[fi
     assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
 }
 
-#[skuld::test]
-fn a_failed_launch_keeps_its_launch_number(#[fixture(unicode_home)] home: &Path) {
-    let (fx, stub, _) = stub_fixture(home, Attach::Gone);
-    let dir = instance_in(&fx, "foo", home);
-    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
-
-    // The stub backend refuses every launch; the number was taken before it was asked.
-    instance.start().expect_err("the stub backend launches nothing");
-    assert_eq!(dir.record().unwrap().launches, 1);
-    instance.start().expect_err("the stub backend launches nothing");
-    assert_eq!(dir.record().unwrap().launches, 2, "a number is never handed out twice");
-    assert!(stub.calls().is_empty());
-}
-
-#[skuld::test]
-fn start_at_the_last_launch_number_is_refused_and_launches_nothing(#[fixture(unicode_home)] home: &Path) {
-    // The stub backend refuses every launch, so a start that wrongly got past the number spawns nothing here either.
-    let (fx, stub, _) = stub_fixture(home, Attach::Gone);
-    let dir = instance_in(&fx, "foo", home);
-    let op = dir.op_exclusive().unwrap();
-    dir.update(&op, &mut |r: &mut InstanceRecord| r.launches = u64::MAX)
-        .unwrap();
-    drop(op);
-
-    let error = Instance::open_in(&fx.engine, "foo")
-        .unwrap()
-        .start()
-        .expect_err("no number is left, and one must never be handed out twice");
-
-    assert_eq!(error.kind(), ErrorKind::Store);
-    assert!(error.message().contains("foo"), "{}", error.message());
-    assert_eq!(dir.record().unwrap().launches, u64::MAX, "nothing was persisted");
-    assert_eq!(fx.fake.launches(), 0);
-    assert!(stub.calls().is_empty());
-    assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
-}
-
 // Helper processes ====================================================================================================
 
 /// Parks the launch of `fake-cli-start` at one step: prints the machine's record and waits for stdin to close, which
