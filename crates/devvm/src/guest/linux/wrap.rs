@@ -6,8 +6,7 @@
 //! `..` after a symlink physically, as the kernel does (a plain `cd` folds it textually). The guest account's startup
 //! files are the user's: one that redefines `cd` or `exec`, or sets `cdable_vars`, can change what the command does,
 //! and devvm does not check.
-//! `exec --` ends the builtin's own option parsing, so `-x` and `a=b` are program names (`env(1)` would read them as an
-//! option and an assignment even after `--`).
+//! `exec --` ends the builtin's own option parsing, so `-x` and `a=b` are program names.
 //!
 //! Elevated commands run as `exec sudo -n -- bash -c '<the same script>'`: the `cd` and the program both run inside the
 //! root shell, so a directory only root can enter works. The interpreter is `bash`, never `sh`: on Ubuntu `/bin/sh` is
