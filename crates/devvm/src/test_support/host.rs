@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
-use crate::host::{self, Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, names};
+use crate::host::{self, Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, names};
 use crate::{Arch, Result};
 
 /// Reports TCG as the accelerator and delegates everything else to the real host, so the real `detach` is the one the
@@ -111,6 +111,22 @@ impl Host for TestHost {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         host::current().open_entry(root, rel)
+    }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().create_runtime_dir(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        host::current().file_id(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        host::current().hold_new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        host::current().hold_existing(path)
     }
 }
 
@@ -217,6 +233,22 @@ impl Host for NoAccelHost {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         TestHost.open_entry(root, rel)
+    }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.create_runtime_dir(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        TestHost.file_id(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        TestHost.hold_new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        TestHost.hold_existing(path)
     }
 }
 
@@ -452,6 +484,22 @@ impl Host for RecordingHost {
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         TestHost.open_entry(root, rel)
     }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.create_runtime_dir(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        TestHost.file_id(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        TestHost.hold_new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        TestHost.hold_existing(path)
+    }
 }
 
 /// What [`NoGuestReset`] says is missing.
@@ -560,5 +608,21 @@ impl Host for NoGuestReset {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         host::current().open_entry(root, rel)
+    }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().create_runtime_dir(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        host::current().file_id(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        host::current().hold_new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        host::current().hold_existing(path)
     }
 }

@@ -1,11 +1,11 @@
 //! A host with no mode bits to set and no symlinks to make. It is the host on no supported platform; it exists so that
 //! the tests of what every unsupported host shares run everywhere.
 
-use std::fs::OpenOptions;
+use std::fs::{DirBuilder, Metadata, OpenOptions};
 use std::path::Path;
 
-use super::Entry;
 use super::unsupported::{FileModes, claim_then_rename};
+use super::{Entry, FileId};
 
 pub(super) struct OtherHost;
 
@@ -22,6 +22,18 @@ impl FileModes for OtherHost {
     /// There are no user ids here; every user is user 0.
     fn euid(&self) -> u32 {
         0
+    }
+
+    fn private_dir(&self) -> DirBuilder {
+        DirBuilder::new()
+    }
+
+    fn other_owner(&self, _metadata: &Metadata) -> Option<String> {
+        None
+    }
+
+    fn identity(&self, _metadata: &Metadata) -> Option<FileId> {
+        None
     }
 
     fn is_executable(&self, _path: &Path) -> std::io::Result<bool> {

@@ -19,6 +19,8 @@ use crate::{Arch, Result};
 mod host_tests;
 
 mod entry;
+mod file_id;
+mod hold;
 pub(crate) mod names;
 #[cfg_attr(
     any(unix, windows),
@@ -36,6 +38,8 @@ pub(crate) mod watch;
 pub(crate) mod windows;
 
 pub(crate) use entry::{Entry, is_absent};
+pub(crate) use file_id::FileId;
+pub(crate) use hold::{Hold, HoldOutcome};
 pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(any(unix, windows)))]
@@ -174,6 +178,24 @@ pub(crate) trait Host: Send + Sync {
     /// ignores it. Fails with `PermissionDenied`, naming the cause, where
     /// this host cannot make symlinks (Windows without Developer Mode or an elevated token).
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
+
+    /// Makes `dir`, one level, for this user alone from the moment it exists (Unix: mode `0700`; Windows: owner the
+    /// user and a protected DACL with the user's one entry), or accepts a directory that exists and is the user's.
+    /// Anything else at `dir` is refused: a file, a link or junction, and a directory of another account
+    /// (`PermissionDenied`, `<dir> is owned by <account>, not by you`). The owner is the whole check: a directory the
+    /// user owns with a looser mode or DACL is accepted, since that is the user's own setting. A missing parent is
+    /// `NotFound`.
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()>;
+
+    /// The identity of the file `path` names, not of what a link there points to. It needs no access to the contents,
+    /// so it reads the identity of a file that is held (see [`Hold`]).
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId>;
+
+    /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it.
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>>;
+
+    /// Holds the existing file `path` if nobody else does. It never waits and never creates the file.
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
 
     /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link
     /// at the last name: its kind comes from `symlink_metadata`, and a regular file is opened for reading and

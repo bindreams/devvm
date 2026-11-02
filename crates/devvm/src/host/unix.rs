@@ -1,14 +1,14 @@
 //! A Unix host, one that devvm 0.1.0 does not run VMs on.
 
-use std::fs::{File, FileType, OpenOptions};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::fs::{DirBuilder, File, FileType, Metadata, OpenOptions};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use rustix::io::Errno;
 
-use super::Entry;
 use super::entry;
 use super::unsupported::{FileModes, claim_then_rename};
+use super::{Entry, FileId};
 
 #[cfg(test)]
 #[path = "unix_tests.rs"]
@@ -31,6 +31,23 @@ impl FileModes for UnixHost {
     fn euid(&self) -> u32 {
         // SAFETY: `geteuid` reads a process attribute and cannot fail.
         unsafe { libc::geteuid() }
+    }
+
+    fn private_dir(&self) -> DirBuilder {
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        builder
+    }
+
+    fn other_owner(&self, metadata: &Metadata) -> Option<String> {
+        (metadata.uid() != self.euid()).then(|| format!("user {}", metadata.uid()))
+    }
+
+    fn identity(&self, metadata: &Metadata) -> Option<FileId> {
+        Some(FileId {
+            volume: metadata.dev(),
+            file: u128::from(metadata.ino()),
+        })
     }
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {

@@ -16,13 +16,17 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_W
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
+use super::Hold;
 use super::entry;
 use super::names::{windows_colon_path, windows_problem, windows_run_dir};
-use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
+use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Error, ErrorKind, Result};
 
+mod file_id;
+mod hold;
 mod link;
+mod runtime_dir;
 mod user;
 mod watch;
 mod whpx;
@@ -245,6 +249,22 @@ impl Host for WindowsHost {
             ),
             _ => e,
         })
+    }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        runtime_dir::create(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        file_id::of(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        hold::new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        hold::existing(path)
     }
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {

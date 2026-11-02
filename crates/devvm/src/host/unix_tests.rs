@@ -114,3 +114,31 @@ fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_hom
         assert!(matches!(found, Ok(Entry::File(_))), "{name}: {found:?}");
     }
 }
+
+// The runtime directory -----------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn the_runtime_directory_is_made_for_the_owner_alone(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    UnixHost.create_runtime_dir(&dir).unwrap();
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+}
+
+#[skuld::test]
+fn a_symlink_at_the_runtime_dir_path_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = home.join("run");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let error = UnixHost.create_runtime_dir(&link).unwrap_err();
+    assert!(error.to_string().contains("link"), "{error}");
+}
+
+#[skuld::test]
+fn file_id_of_a_symlink_is_the_link_not_its_target(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::write(&target, b"").unwrap();
+    let link = home.join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_ne!(UnixHost.file_id(&link).unwrap(), UnixHost.file_id(&target).unwrap());
+}

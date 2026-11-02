@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use super::other::OtherHost;
-use super::{Host, current, host_exit_width};
+use super::{FileId, HoldOutcome, Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
 use crate::test_groups::{Group, PINNED_CHILD, acp_1252};
@@ -525,4 +525,151 @@ fn an_unsupported_host_puts_the_runtime_directory_under_tmpdir_per_user() {
     let var = |name: &str| (name == "TMPDIR").then(|| tmp.clone().into_os_string());
     let dir = OtherHost.run_dir_default(&var).unwrap();
     assert_eq!(dir, tmp.join("devvm-run-0"));
+}
+
+// The runtime directory -----------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn create_runtime_dir_makes_the_directory_and_accepts_it_again(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    current().create_runtime_dir(&dir).unwrap();
+    assert!(dir.is_dir());
+    current().create_runtime_dir(&dir).unwrap();
+}
+
+#[skuld::test]
+fn create_runtime_dir_makes_one_level_and_a_missing_parent_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("missing").join("run");
+    let error = current().create_runtime_dir(&dir).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    assert!(!home.join("missing").exists());
+}
+
+#[skuld::test]
+fn a_file_at_the_runtime_dir_path_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("run");
+    std::fs::write(&path, b"mine").unwrap();
+    let error = current().create_runtime_dir(&path).unwrap_err();
+    assert!(error.to_string().contains("not a directory"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"mine");
+}
+
+/// A directory the test user does not own: `C:\ProgramData` is owned by the system, `/` by root. Nothing is written
+/// into it.
+#[skuld::test]
+fn a_directory_owned_by_someone_else_is_refused_naming_the_owner() {
+    let system = if cfg!(windows) {
+        std::path::PathBuf::from(std::env::var_os("ProgramData").expect("ProgramData is set"))
+    } else {
+        std::path::PathBuf::from("/")
+    };
+    let error = current().create_runtime_dir(&system).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
+    let text = error.to_string();
+    assert!(text.contains(&system.display().to_string()), "{text}");
+    assert!(text.contains("is owned by") && text.contains("not by you"), "{text}");
+}
+
+// File identity -------------------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn file_id_is_equal_for_one_file_and_differs_between_two_that_exist(#[fixture(unicode_home)] home: &Path) {
+    let (a, b) = (home.join("a"), home.join("b"));
+    std::fs::write(&a, b"").unwrap();
+    std::fs::write(&b, b"").unwrap();
+    let first = current().file_id(&a).unwrap();
+    assert_eq!(first, current().file_id(&a).unwrap());
+    assert_ne!(first, current().file_id(&b).unwrap());
+}
+
+#[skuld::test]
+fn file_id_of_a_missing_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = current().file_id(&home.join("gone")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+}
+
+#[skuld::test]
+fn a_file_id_reads_back_from_its_text() {
+    let id = FileId {
+        volume: 0xdead_beef_0000_0001,
+        file: (1u128 << 100) | 7,
+    };
+    let json = serde_json::to_string(&id).unwrap();
+    assert!(json.starts_with('"'), "JSON has no 128-bit number: {json}");
+    assert_eq!(serde_json::from_str::<FileId>(&json).unwrap(), id);
+    assert!(serde_json::from_str::<FileId>("\"nonsense\"").is_err());
+}
+
+// Holds ---------------------------------------------------------------------------------------------------------------
+
+fn taken(outcome: std::io::Result<HoldOutcome>) -> Box<dyn super::Hold> {
+    match outcome.unwrap() {
+        HoldOutcome::Taken(hold) => hold,
+        other => panic!("expected to take the hold, got {other:?}"),
+    }
+}
+
+#[skuld::test]
+fn a_new_hold_creates_the_file_and_nobody_else_takes_it(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    assert!(path.exists());
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
+    let error = current().hold_new(&path).err().expect("the name is taken");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    drop(hold);
+    assert!(path.exists(), "dropping a hold leaves the file");
+}
+
+#[skuld::test]
+fn a_hold_is_free_once_its_holder_is_gone(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    drop(current().hold_new(&path).unwrap());
+    let hold = taken(current().hold_existing(&path));
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
+    drop(hold);
+    drop(taken(current().hold_existing(&path)));
+}
+
+#[skuld::test]
+fn a_missing_file_is_no_hold(#[fixture(unicode_home)] home: &Path) {
+    assert!(matches!(
+        current().hold_existing(&home.join("gone")).unwrap(),
+        HoldOutcome::Absent
+    ));
+    assert!(
+        !home.join("gone").exists(),
+        "a hold on an existing file creates nothing"
+    );
+}
+
+/// What a child that inherited the hold is: another handle to the same open file, which keeps the hold when the
+/// holder closes its own.
+#[skuld::test]
+fn a_duplicate_of_the_held_file_keeps_the_hold_when_the_holder_is_gone(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let inherited = hold.file().try_clone().unwrap();
+    drop(hold);
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
+    drop(inherited);
+    drop(taken(current().hold_existing(&path)));
+}
+
+#[skuld::test]
+fn deleting_a_hold_removes_the_file_and_frees_the_name(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    current().hold_new(&path).unwrap().delete().unwrap();
+    assert!(!path.exists());
+    drop(current().hold_new(&path).unwrap());
+}
+
+/// The identity of a held file is read without the data access a hold refuses to anyone else.
+#[skuld::test]
+fn the_identity_of_a_held_file_can_be_read(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let id = current().file_id(&path).unwrap();
+    drop(hold);
+    assert_eq!(current().file_id(&path).unwrap(), id);
 }

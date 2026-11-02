@@ -2,17 +2,21 @@
 //! file modes ([`FileModes`]), and is a [`Host`] through the blanket impl below.
 
 use std::ffi::{OsStr, OsString};
-use std::fs::OpenOptions;
+use std::fs::{DirBuilder, Metadata, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cosca::identity::ProcessId;
 
 use super::names::{posix_problem, unix_run_dir};
-use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write, create_new_with};
+use super::{
+    Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
+    create_new_with,
+};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
 
+mod hold;
 mod watch;
 
 /// How a host that cannot run VMs treats file modes and symlinks.
@@ -25,6 +29,15 @@ pub(super) trait FileModes: Send + Sync {
 
     /// The effective user id; the runtime directory is per user.
     fn euid(&self) -> u32;
+
+    /// A builder that makes a directory for the owner alone (mode `0700`) from the first moment it exists.
+    fn private_dir(&self) -> DirBuilder;
+
+    /// Who owns the object `metadata` describes, if it is not the user running this process.
+    fn other_owner(&self, metadata: &Metadata) -> Option<String>;
+
+    /// The identity of the object `metadata` describes, if this host has one.
+    fn identity(&self, metadata: &Metadata) -> Option<FileId>;
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool>;
 
@@ -50,6 +63,31 @@ pub(super) fn claim_then_rename(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir(to)?;
     // The claim is empty, since only this call has it.
     std::fs::rename(from, to).map_err(|e| after_failed_write(to, e, || std::fs::remove_dir(to)))
+}
+
+/// A directory at `dir` that is the user's and is no link: `AlreadyExists` for anything else that has the name, and
+/// `PermissionDenied` naming the owner for another account's directory.
+fn accept_existing(host: &dyn FileModes, dir: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} is a link, not a directory", dir.display()),
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} is not a directory", dir.display()),
+        ));
+    }
+    match host.other_owner(&metadata) {
+        None => Ok(()),
+        Some(owner) => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} is owned by {owner}, not by you", dir.display()),
+        )),
+    }
 }
 
 impl<M: FileModes> Host for M {
@@ -151,5 +189,26 @@ impl<M: FileModes> Host for M {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         FileModes::open_entry(self, root, rel)
+    }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        match self.private_dir().create(dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => accept_existing(self, dir),
+            other => other,
+        }
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        self.identity(&metadata)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Unsupported, "this build cannot tell files apart"))
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        hold::new(self.private_options(), path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        hold::existing(path)
     }
 }
