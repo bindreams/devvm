@@ -112,8 +112,9 @@ impl FakeBackend {
     /// Makes the claim file `path`, which nothing holds afterwards: the fake VM is no process that could.
     fn claim(&self, path: &Path) -> Result<FileClaim> {
         let io = |what: &str, e| Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), e);
-        drop(self.host.hold_new(path).map_err(|e| io("create", e))?);
-        let id = self.host.file_id(path).map_err(|e| io("look at", e))?;
+        let hold = self.host.hold_new(path).map_err(|e| io("create", e))?;
+        let id = hold.id().map_err(|e| io("look at", e))?;
+        drop(hold);
         Ok(FileClaim {
             path: path.to_path_buf(),
             id,

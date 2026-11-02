@@ -14,6 +14,7 @@ use crate::instance::record::InstanceId;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, unicode_socket_dir};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress};
+use crate::test_support::host::RecordingHost;
 use crate::test_support::manual_exit::ManualExit;
 use crate::test_support::qemu::{Sock, assert_unicode_socket_path, scratch_run, socket_dir};
 use crate::test_support::refusing::{REFUSED, Refusing};
@@ -210,6 +211,33 @@ fn reserve_makes_a_16_hex_sock_name_with_a_hold_beside_it_and_creates_the_direct
     // QEMU makes the socket and the first session makes the lock file; the launch makes the claim and the lock of the
     // directory.
     assert_eq!(names_in(&run), [format!("{name}.hold"), "runtime.lock".to_owned()]);
+}
+
+/// Only `create_runtime_dir` makes the directory, with its owner and access set in one call; a directory gone since
+/// then is an error that names it, not one made again with the access its parent gives.
+#[skuld::test]
+fn reserve_over_a_run_dir_removed_after_it_was_made_fails_naming_it_and_makes_nothing() {
+    let parent = scratch_run();
+    let run = parent.path().join("d");
+    let host = RecordingHost::new();
+    host.remove_runtime_dirs_after_making_them();
+
+    let error = QmpEndpoint::reserve(&host, &run).unwrap_err();
+
+    assert!(error.message().contains(&run.display().to_string()), "{error}");
+    assert!(!run.exists());
+}
+
+/// The identity of the claim is the held file's, not whatever a name leads to once the hold is made.
+#[skuld::test]
+fn the_claims_identity_comes_from_the_hold_not_from_a_lookup_by_name() {
+    let run = scratch_run();
+    let host = RecordingHost::new();
+    host.fail_file_id();
+
+    let reservation = QmpEndpoint::reserve(&host, run.path()).unwrap();
+
+    assert_eq!(reservation.claim.id, reservation.hold.id().unwrap());
 }
 
 #[skuld::test]

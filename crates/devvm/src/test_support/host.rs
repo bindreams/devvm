@@ -276,6 +276,10 @@ pub struct RecordingHost {
     executable: Mutex<HashSet<PathBuf>>,
     set_executable_calls: Mutex<Vec<PathBuf>>,
     fail_set_executable: AtomicBool,
+    /// `create_runtime_dir` removes the directory it has just made, as a user or a cleaner may between two calls.
+    remove_runtime_dirs: AtomicBool,
+    /// Every `file_id` fails: a test that needs the identity of a held file to come from the hold, not from its name.
+    fail_file_id: AtomicBool,
     directory_calls: Mutex<Vec<DirectoryCall>>,
     fail_sync_dir_of: Mutex<Option<PathBuf>>,
 }
@@ -338,6 +342,16 @@ impl RecordingHost {
     /// Makes every `set_executable` fail.
     pub fn fail_set_executable(&self) {
         self.fail_set_executable.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes `create_runtime_dir` remove the directory right after making it.
+    pub fn remove_runtime_dirs_after_making_them(&self) {
+        self.remove_runtime_dirs.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes every `file_id` fail.
+    pub fn fail_file_id(&self) {
+        self.fail_file_id.store(true, Ordering::SeqCst);
     }
 
     /// Makes `is_executable` say yes for `path`.
@@ -494,7 +508,11 @@ impl Host for RecordingHost {
     }
 
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
-        TestHost.create_runtime_dir(dir)
+        TestHost.create_runtime_dir(dir)?;
+        if self.remove_runtime_dirs.load(Ordering::SeqCst) {
+            std::fs::remove_dir(dir)?;
+        }
+        Ok(())
     }
 
     fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
@@ -502,6 +520,9 @@ impl Host for RecordingHost {
     }
 
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        if self.fail_file_id.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("the test host looks up no file by name"));
+        }
         TestHost.file_id(path)
     }
 

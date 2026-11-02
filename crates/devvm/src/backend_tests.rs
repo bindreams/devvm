@@ -98,11 +98,12 @@ fn launch_files(dir: &Path, name: &str) -> (Vec<PathBuf>, FileClaim) {
     );
     std::fs::write(&socket, b"").unwrap();
     std::fs::write(&lock, b"").unwrap();
-    drop(host::current().hold_new(&hold).unwrap());
+    let made = host::current().hold_new(&hold).unwrap();
     let claim = FileClaim {
-        id: host::current().file_id(&hold).unwrap(),
+        id: made.id().unwrap(),
         path: hold.clone(),
     };
+    drop(made);
     (vec![socket, lock, hold], claim)
 }
 
@@ -183,7 +184,7 @@ fn remove_files_deletes_nothing_while_the_claim_is_held(#[fixture(unicode_home)]
     let (paths, claim) = launch_files(home, "a");
     let alive = held(&claim.path);
     let warnings = removed(&paths, Some(&claim));
-    assert!(warnings.iter().any(|w| w.contains("is held")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("is in use")), "{warnings:?}");
     assert!(paths.iter().all(|path| path.exists()));
     drop(alive);
     removed(&paths, Some(&claim));

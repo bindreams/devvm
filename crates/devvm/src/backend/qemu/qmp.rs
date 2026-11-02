@@ -104,7 +104,8 @@ impl QmpEndpoint {
         })?;
         // Shared while names are drawn and claimed, so no sweep runs between a claim file's creation and its hold.
         // Released on return: the hold covers the launch from then on, and a sweep finds it `Busy`.
-        let mut directory = FileLock::open(&run.join("runtime.lock"))?;
+        // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one call.
+        let mut directory = FileLock::open_in_existing_dir(&run.join("runtime.lock"))?;
         directory.lock(Mode::Shared, "a sweep of the runtime directory", &NullProgress)?;
         loop {
             let endpoint = QmpEndpoint {
@@ -142,8 +143,8 @@ impl QmpEndpoint {
                     .map_err(|e| Error::io(ErrorKind::Io, format!("cannot delete {}", hold_path.display()), e))?;
                 continue;
             }
-            let id = host
-                .file_id(&hold_path)
+            let id = hold
+                .id()
                 .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", hold_path.display()), e))?;
             return Ok(Reservation {
                 claim: FileClaim { path: hold_path, id },

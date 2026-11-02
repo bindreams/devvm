@@ -14,8 +14,9 @@ pub fn claimed(mut leftovers: Vec<PathBuf>) -> (Vec<PathBuf>, Option<FileClaim>)
     let mut name = first.clone().into_os_string();
     name.push(".hold");
     let path = PathBuf::from(name);
-    drop(host::current().hold_new(&path).expect("the claim file is new"));
-    let id = host::current().file_id(&path).expect("the claim file has an identity");
+    let hold = host::current().hold_new(&path).expect("the claim file is new");
+    let id = hold.id().expect("the claim file has an identity");
+    drop(hold);
     leftovers.push(path.clone());
     (leftovers, Some(FileClaim { path, id }))
 }
