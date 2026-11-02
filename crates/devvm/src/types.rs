@@ -92,11 +92,10 @@ pub struct Command {
     pub argv: Vec<String>,
     pub run_as: RunAs,
     pub cwd: Option<String>,
-    pub env: Vec<(String, String)>,
 }
 
 impl Command {
-    /// A command running as the ordinary user, with no working directory or environment of its own.
+    /// A command running as the ordinary user, with no working directory of its own.
     pub fn new<I, S>(argv: I) -> Command
     where
         I: IntoIterator<Item = S>,

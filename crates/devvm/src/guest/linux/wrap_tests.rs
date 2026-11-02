@@ -2,9 +2,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use super::{BASH_OWNED_VARIABLES, script, wrap};
+use super::{script, wrap};
 use crate::host::Host;
-use crate::test_support::claims::BASH_5_2;
 use crate::test_support::host::TestHost;
 use crate::test_support::symlink::symlink;
 use crate::{Command, ErrorKind, RunAs};
@@ -21,11 +20,10 @@ fn sq(text: &str) -> String {
 // Golden strings ======================================================================================================
 
 #[skuld::test]
-fn wrap_applies_cwd_env_and_elevation_in_order() {
+fn wrap_applies_cwd_and_elevation_in_order() {
     let mut user = cmd(&["echo", "a b"]);
     user.cwd = Some("/w".to_owned());
-    user.env = vec![("K".to_owned(), "v'x".to_owned()), ("L".to_owned(), String::new())];
-    let user_script = r"CDPATH= cd -P -- '/w' && export K='v'\''x' L='' && exec -- 'echo' 'a b'";
+    let user_script = r"CDPATH= cd -P -- '/w' && exec -- 'echo' 'a b'";
     assert_eq!(script(&user).unwrap(), user_script);
     assert_eq!(wrap(&user).unwrap(), format!("bash -lc {}", sq(user_script)));
 
@@ -37,24 +35,23 @@ fn wrap_applies_cwd_env_and_elevation_in_order() {
 }
 
 #[skuld::test]
-fn cd_and_export_appear_only_when_asked_for() {
+fn cd_appears_only_when_asked_for() {
     assert_eq!(script(&cmd(&["ls"])).unwrap(), "exec -- 'ls'");
     assert_eq!(wrap(&cmd(&["ls"])).unwrap(), r"bash -lc 'exec -- '\''ls'\'''");
 }
 
 #[skuld::test]
-fn wrap_keeps_env_and_cwd_inside_the_sudo_shell() {
+fn wrap_keeps_cwd_inside_the_sudo_shell() {
     let mut elevated = cmd(&["id"]);
     elevated.run_as = RunAs::Elevated;
     elevated.cwd = Some("/root".to_owned());
-    elevated.env = vec![("A".to_owned(), "1".to_owned())];
 
     let script = script(&elevated).unwrap();
     let (before_inner, inner) = script
         .split_once("bash -c ")
         .expect("the root shell is started by `bash -c`, never `sh -c`");
     assert_eq!(before_inner, "exec sudo -n -- ", "nothing runs before sudo");
-    assert_eq!(inner, sq("CDPATH= cd -P -- '/root' && export A='1' && exec -- 'id'"));
+    assert_eq!(inner, sq("CDPATH= cd -P -- '/root' && exec -- 'id'"));
 }
 
 #[skuld::test]
@@ -72,81 +69,12 @@ fn a_working_directory_starting_with_a_dash_cannot_be_read_as_an_option_or_oldpw
 }
 
 #[skuld::test]
-fn names_bash_does_not_pass_through_are_usage_errors_naming_the_variable() {
-    // Written out here, independently of `BASH_OWNED_VARIABLES`; the real-bash test below checks every entry of that.
-    for name in [
-        "UID",
-        "EUID",
-        "PPID",
-        "BASHOPTS",
-        "SHELLOPTS",
-        "BASH_VERSINFO",
-        "RANDOM",
-        "SRANDOM",
-        "BASHPID",
-        "LINENO",
-        "HISTCMD",
-        "EPOCHSECONDS",
-        "EPOCHREALTIME",
-        "BASH_COMMAND",
-        "BASH_SUBSHELL",
-        "GROUPS",
-        "FUNCNAME",
-        "DIRSTACK",
-        "BASH_ALIASES",
-        "BASH_CMDS",
-        "BASH_LINENO",
-        "BASH_SOURCE",
-        "BASH_ARGC",
-        "BASH_ARGV",
-        "PIPESTATUS",
-        "EXECIGNORE",
-        "SHLVL",
-        "SECONDS",
-        "OPTIND",
-        "_",
-    ] {
-        for run_as in [RunAs::User, RunAs::Elevated] {
-            let mut command = cmd(&["true"]);
-            command.run_as = run_as;
-            command.env = vec![(name.to_owned(), "5".to_owned())];
-            let error = wrap(&command).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Usage, "{name}");
-            assert!(
-                error.message().contains(&format!("`{name}`")),
-                "{name}: {}",
-                error.message()
-            );
-        }
-    }
-    // Close names stay legal.
-    for name in ["UIDS", "uid", "random", "BASH_VERSION", "PATH", "HOME"] {
-        let mut command = cmd(&["true"]);
-        command.env = vec![(name.to_owned(), "5".to_owned())];
-        wrap(&command).unwrap_or_else(|e| panic!("{name}: {e}"));
-    }
-}
-
-#[skuld::test]
-fn an_empty_argv_and_a_bad_env_name_are_usage_errors() {
+fn an_empty_argv_is_a_usage_error() {
     let mut empty = cmd(&[]);
     empty.cwd = Some("/".to_owned());
     let error = wrap(&empty).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Usage);
     assert!(error.message().contains("argv"), "{}", error.message());
-
-    for name in ["", "1A", "A-B", "A B", "A=B", "A\n", "\u{e9}", "A'"] {
-        let mut bad = cmd(&["true"]);
-        bad.env = vec![(name.to_owned(), "v".to_owned())];
-        let error = wrap(&bad).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Usage, "{name:?}");
-        assert!(error.message().contains("environment"), "{}", error.message());
-    }
-    for name in ["A", "__", "_a1", "Zz_9"] {
-        let mut good = cmd(&["true"]);
-        good.env = vec![(name.to_owned(), "v".to_owned())];
-        wrap(&good).unwrap_or_else(|e| panic!("{name}: {e}"));
-    }
 }
 
 #[skuld::test]
@@ -204,9 +132,7 @@ fn a_nul_byte_cannot_travel_in_a_shell_string() {
     in_argv.run_as = RunAs::Elevated;
     let mut in_cwd = cmd(&["echo"]);
     in_cwd.cwd = Some(nul.to_owned());
-    let mut in_value = cmd(&["echo"]);
-    in_value.env = vec![("K".to_owned(), nul.to_owned())];
-    for command in [in_argv, in_cwd, in_value] {
+    for command in [in_argv, in_cwd] {
         let error = wrap(&command).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Usage);
         assert!(error.message().contains("NUL"), "{}", error.message());
@@ -334,66 +260,6 @@ fn a_program_called_dash_x_or_a_equals_b_is_a_program_name() {
     }
 }
 
-/// The bash `BASH_OWNED_VARIABLES` was measured with, as `major.minor` (see the list's documentation).
-const MEASURED_BASH: &str = "5.2";
-
-/// A name no bash owns, that the production script is built for and the test then swaps for each listed name.
-const PROBE_NAME: &str = "DEVVM_PROBE_NAME";
-
-/// The value the test sets. It is a pattern matching the program, `printenv`: `EXECIGNORE` changes the outcome only
-/// when its value matches the program the script executes.
-const PROBE_VALUE: &str = "*printenv";
-
-/// Runs the test only where a job claims its bash is [`MEASURED_BASH`]; the test itself checks the claim is true.
-fn bash_5_2_claimed() -> Result<(), String> {
-    match BASH_5_2.is_made() {
-        true => Ok(()),
-        false => Err(format!(
-            "{} is not set; the names bash owns are measured for bash {MEASURED_BASH}, the guest's, and checked in CI \
-             (Test step on ubuntu-latest)",
-            BASH_5_2.var
-        )),
-    }
-}
-
-#[skuld::test(requires = [bash_5_2_claimed])]
-fn bash_does_not_pass_through_what_it_owns() {
-    let version = run_in_bash(r#"printf '%s.%s' "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}""#, None);
-    assert_eq!(
-        String::from_utf8_lossy(&version.stdout),
-        MEASURED_BASH,
-        "{} is claimed, but the bash these tests run is not {MEASURED_BASH}",
-        BASH_5_2.var
-    );
-
-    // What the program sees is the production script's: `script` refuses an owned name, so it is built for a name that
-    // is not owned and the name is swapped afterwards. `:` stands for the commands a login shell's profile has run
-    // before the script: `PIPESTATUS` reaches the program only in a shell that has run none.
-    let mut command = cmd(&["printenv", PROBE_NAME]);
-    command.env = vec![(PROBE_NAME.to_owned(), PROBE_VALUE.to_owned())];
-    let production = script(&command).unwrap();
-    for name in BASH_OWNED_VARIABLES {
-        let out = run_in_bash(&format!(":\n{}", production.replace(PROBE_NAME, name)), None);
-        assert_ne!(
-            String::from_utf8_lossy(&out.stdout).trim_end(),
-            PROBE_VALUE,
-            "{name} is passed through unchanged, so it need not be listed"
-        );
-    }
-}
-
-#[skuld::test]
-fn bash_passes_every_unlisted_name_as_asked() {
-    // Through the wrapper's own script, on every bash: none of these is owned by any version.
-    let probe = "round-trip-probe";
-    for name in ["UIDS", "uid", "random", "BASH_VERSION", "HOME", "Zz_9"] {
-        let mut command = cmd(&["printenv", name]);
-        command.env = vec![(name.to_owned(), probe.to_owned())];
-        let out = run_in_bash(&script(&command).unwrap(), None);
-        assert_eq!(String::from_utf8_lossy(&out.stdout), format!("{probe}\n"), "{name}");
-    }
-}
-
 /// Runs `pwd` with working directory `cwd` through the wrapper's script, from `base` (the shell's directory), in a shell
 /// whose `CDPATH` is `cdpath`, as a guest's profile might export it. Returns stdout and the exit code.
 fn pwd_in(base: &Path, cdpath: &Path, cwd: &str) -> (String, Option<i32>) {
@@ -455,7 +321,7 @@ fn a_working_directory_is_resolved_physically_as_the_kernel_does() {
 fn elevated_wrapper_runs_end_to_end_with_a_stub_sudo() {
     let stubs = skuld::TempDir::new().unwrap();
     // Like sudo's `env_reset` and a root shell's directory: only PATH (and, on Windows, SYSTEMROOT) survives, and the
-    // command starts in `/`. What the script exports or enters outside the sudo shell is lost, as in the guest.
+    // command starts in `/`. What the script enters outside the sudo shell is lost, as in the guest.
     write_script(
         &stubs,
         "sudo",
@@ -463,12 +329,11 @@ fn elevated_wrapper_runs_end_to_end_with_a_stub_sudo() {
     );
     // A hostile program name: a space, a quote and a dollar sign.
     let program = "we ird's $name";
-    write_script(&stubs, program, r#"printf '%s|%s|%s' "$PWD" "$MARK" "$1""#);
+    write_script(&stubs, program, r#"printf '%s|%s' "$PWD" "$1""#);
 
     let mut elevated = cmd(&[program, "an arg; $x"]);
     elevated.run_as = RunAs::Elevated;
     elevated.cwd = Some("/usr".to_owned());
-    elevated.env = vec![("MARK".to_owned(), "it's".to_owned())];
 
     // `wrap` adds a login shell, whose profile may reset `PATH` and hide the stub; the golden tests cover the `-l`.
     let out = run_in_bash(&script(&elevated).unwrap(), Some(&stubs));
@@ -478,5 +343,5 @@ fn elevated_wrapper_runs_end_to_end_with_a_stub_sudo() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "/usr|it's|an arg; $x");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "/usr|an arg; $x");
 }
