@@ -3,11 +3,13 @@
 //! - `afunix <dir>` (Windows): (a) file identity of AF_UNIX socket files, (b) connecting to a stale socket file,
 //!   (c) connecting to a listener whose backlog is full. Listener: `uds_windows`, as devvm's QMP client uses.
 //! - `afunix-qemu <dir> <qemu-system-x86_64>` (Windows): the same three against QEMU's own QMP socket.
-//! - `lock <dir> [qemu-system-x86_64]` (every OS; QEMU on Windows): (d) an exclusive `File::try_lock` (what
-//!   `FileLock` uses) on a handle the child inherits, the parent then closing its own; held while the child runs,
-//!   released when it exits or is killed. The spawn follows `VmProcess::spawn_frozen` on Windows (contain, detach,
-//!   frozen spawn, resume, release) and is a plain detached spawn elsewhere (devvm launches no VM there in 0.1.0).
-use std::fs::{File, TryLockError};
+//! - `lock <dir> [qemu-system-x86_64]` (every OS; QEMU on Windows): (d) a lock on a handle the child inherits, the
+//!   parent then closing its own; held while the child runs, released when it exits or is killed. Unix: an exclusive
+//!   `File::try_lock` (flock). Windows (d'): LockFileEx locks do not survive the holder's handle, so the holder opens
+//!   the file with share mode 0 and the probe tries to open it (GENERIC_READ, DELETE access) and `DeleteFileW` it; a
+//!   sharing violation is HELD. The spawn follows `VmProcess::spawn_frozen` on Windows (contain, detach, frozen
+//!   spawn, resume, release) and is a plain spawn elsewhere (devvm launches no VM there in 0.1.0).
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio as StdStdio};
@@ -40,17 +42,135 @@ fn child(exit_file: &Path) {
     }
 }
 
-/// Whether another handle to `path` cannot take the exclusive lock.
-fn held(path: &Path) -> bool {
-    let file = File::options().read(true).write(true).open(path).unwrap();
-    match file.try_lock() {
-        Ok(()) => {
-            file.unlock().unwrap();
-            false
-        }
-        Err(TryLockError::WouldBlock) => true,
-        Err(TryLockError::Error(e)) => panic!("probe: {e}"),
+/// What "the lock" is, per platform.
+#[cfg(not(windows))]
+mod hold {
+    use std::fs::{File, TryLockError};
+    use std::path::Path;
+
+    /// Opens `path` (creating it) and takes the exclusive flock-style lock on it.
+    pub fn acquire(path: &Path) -> File {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .unwrap();
+        file.try_lock().expect("holder: lock");
+        file
     }
+
+    /// Whether another handle to `path` cannot take the exclusive lock.
+    pub fn held(path: &Path) -> bool {
+        let file = File::options().read(true).write(true).open(path).unwrap();
+        match file.try_lock() {
+            Ok(()) => {
+                file.unlock().unwrap();
+                false
+            }
+            Err(TryLockError::WouldBlock) => true,
+            Err(TryLockError::Error(e)) => panic!("probe: {e}"),
+        }
+    }
+
+    /// Nothing more to probe than `held`.
+    pub fn detail(_label: &str, _path: &Path, _expect_held: bool) {}
+}
+
+#[cfg(windows)]
+mod hold {
+    use std::fs::File;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::path::Path;
+
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SHARING_VIOLATION, GENERIC_READ};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, DeleteFileW, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    /// Opens `path` (creating it) with share mode 0: no other open of the file succeeds while any handle to this file
+    /// object lives, including the ones a child inherits.
+    pub fn acquire(path: &Path) -> File {
+        File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
+    }
+
+    #[derive(Clone, Copy)]
+    enum Probe {
+        Held,
+        Free,
+        Error(i32),
+    }
+
+    fn classify(raw: Option<i32>) -> Probe {
+        match raw {
+            Some(code) if code as u32 == ERROR_SHARING_VIOLATION => Probe::Held,
+            Some(code) => Probe::Error(code),
+            None => Probe::Error(-1),
+        }
+    }
+
+    fn open_with(path: &Path, access: u32) -> Probe {
+        let result = File::options()
+            .access_mode(access)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(path);
+        match result {
+            Ok(_) => Probe::Free,
+            Err(e) => classify(e.raw_os_error()),
+        }
+    }
+
+    /// `DeleteFileW` on `path`. On success the file is gone.
+    fn delete(path: &Path) -> Probe {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call.
+        if unsafe { DeleteFileW(wide.as_ptr()) } != 0 {
+            Probe::Free
+        } else {
+            classify(std::io::Error::last_os_error().raw_os_error())
+        }
+    }
+
+    /// Whether an open of `path` for reading is refused. A missing file is free (a probe's `DeleteFileW` removed it).
+    pub fn held(path: &Path) -> bool {
+        match open_with(path, GENERIC_READ) {
+            Probe::Held => true,
+            Probe::Free => false,
+            Probe::Error(code) if code as u32 == ERROR_FILE_NOT_FOUND => false,
+            Probe::Error(code) => panic!("probe: os error {code}"),
+        }
+    }
+
+    /// Prints the three probes. `DeleteFileW` removes the file when it succeeds; the next holder recreates it.
+    pub fn detail(label: &str, path: &Path, expect_held: bool) {
+        let show = |name: &str, probe: Probe| {
+            let (text, unexpected) = match probe {
+                Probe::Held => ("HELD".to_owned(), !expect_held),
+                Probe::Free => ("FREE".to_owned(), expect_held),
+                Probe::Error(code) => (format!("ERROR {code}"), true),
+            };
+            println!(
+                "RESULT {label} {name}: {text}{}",
+                if unexpected { " (unexpected)" } else { "" }
+            );
+        };
+        show("open GENERIC_READ", open_with(path, GENERIC_READ));
+        show("open DELETE", open_with(path, DELETE));
+        show("DeleteFileW", delete(path));
+    }
+}
+
+fn held(path: &Path) -> bool {
+    hold::held(path)
 }
 
 // (d) the lock --------------------------------------------------------------------------------------------------------
@@ -59,14 +179,7 @@ fn held(path: &Path) -> bool {
 /// closes its own handle, prints `READY <child pid> <own pid>`, then exits (`exit`) or waits for stdin to close
 /// (`block`).
 fn holder(lock_path: &Path, then: &str, pass: &str, program: &[String]) {
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)
-        .unwrap();
-    file.try_lock().expect("holder: lock");
+    let file = hold::acquire(lock_path);
     let mut child_pid = 0;
     if pass == "pass" {
         let mut cmd = cosca::Command::new();
@@ -99,7 +212,6 @@ fn start(mut cmd: cosca::Command) -> u32 {
 #[cfg(not(windows))]
 fn start(mut cmd: cosca::Command) -> u32 {
     cmd.kill_on_drop(false);
-    cmd.detached();
     let child = cmd.spawn().unwrap();
     let pid = child.id().pid();
     child.detach();
@@ -143,16 +255,19 @@ fn free_after_death(label: &str, lock_path: &Path) -> bool {
     let start = Instant::now();
     if !held(lock_path) {
         println!("RESULT {label}: FREE at once");
+        hold::detail(label, lock_path, false);
         return true;
     }
     while held(lock_path) {
         if start.elapsed() > BOUND {
             println!("RESULT {label}: STILL HELD after {BOUND:?}");
+            hold::detail(label, lock_path, false);
             return false;
         }
         std::thread::sleep(Duration::from_millis(2));
     }
     println!("RESULT {label}: HELD at first, FREE after {:?}", start.elapsed());
+    hold::detail(label, lock_path, false);
     false
 }
 
@@ -161,6 +276,7 @@ fn expect_held(label: &str, lock_path: &Path) {
         "RESULT {label}: {}",
         if held(lock_path) { "HELD" } else { "FREE (unexpected)" }
     );
+    hold::detail(label, lock_path, true);
 }
 
 /// `program` is the child's command line; `ends` makes it exit on its own.
