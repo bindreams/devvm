@@ -1,0 +1,65 @@
+# Throwaway: measurements for U4 PR E Task E0a (see spike/e0a). Deleted before the build lands.
+name: Spike E0a
+
+on:
+  push:
+    branches: [U4-E-runtime]
+    paths: [spike/**, .github/workflows/spike-e0a.yaml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QEMU_URL: https://github.com/bindreams/devvm/releases/download/qemu-11.1.2-2/qemu-11.1.2-2-x86_64-pc-windows-msvc.zip
+  QEMU_SHA256: 08152d492104cceedd03c976e1d882853c97980921b107566c75e338e517c1d9
+
+jobs:
+  measure:
+    name: Measure (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build
+        run: cargo build --release --locked --manifest-path spike/e0a/Cargo.toml
+
+      - name: Fetch the pinned QEMU
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -X GET -fsSL -o "$RUNNER_TEMP/qemu.zip" "$QEMU_URL"
+          echo "$QEMU_SHA256  $RUNNER_TEMP/qemu.zip" | sha256sum -c -
+          7z x -y -o"$RUNNER_TEMP/qemu" "$RUNNER_TEMP/qemu.zip" > /dev/null
+          qemu="$(find "$RUNNER_TEMP/qemu" -name qemu-system-x86_64.exe | head -n 1)"
+          test -n "$qemu"
+          echo "QEMU_EXE=$(cygpath -w "$qemu")" >> "$GITHUB_ENV"
+
+      - name: AF_UNIX on a Windows socket file, uds_windows listener (a, b, c)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: spike/e0a/target/release/e0a-spike afunix "$RUNNER_TEMP/afunix"
+
+      - name: AF_UNIX on QEMU's own socket (a, b, c)
+        if: runner.os == 'Windows' && always()
+        shell: bash
+        run: spike/e0a/target/release/e0a-spike afunix-qemu "$RUNNER_TEMP/afunix-q" "$QEMU_EXE"
+
+      - name: The inherited lock (d), Windows with QEMU
+        if: runner.os == 'Windows' && always()
+        shell: bash
+        run: spike/e0a/target/release/e0a-spike lock "$RUNNER_TEMP/lock" "$QEMU_EXE"
+
+      - name: The inherited lock (d)
+        if: runner.os != 'Windows'
+        run: spike/e0a/target/release/e0a-spike lock "$RUNNER_TEMP/lock"
