@@ -61,5 +61,5 @@ fn command_new_collects_argv_with_user_defaults() {
     let command = Command::new(["echo", "a b"]);
     assert_eq!(command.argv, ["echo", "a b"]);
     assert_eq!(command.run_as, RunAs::User);
-    assert!(command.cwd.is_none() && command.env.is_empty());
+    assert!(command.cwd.is_none());
 }
