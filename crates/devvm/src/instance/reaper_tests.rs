@@ -15,6 +15,7 @@ use crate::instance::reaper::{Entries, ReapReport};
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
 use crate::instance::registry::registry_tests::{Fixture, create, fixture, fixture_with, lock_files};
 use crate::store::layers::layers_tests::names;
+use crate::test_support::claimed::claimed;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
@@ -28,6 +29,16 @@ fn machine(sleeper: &Sleeper) -> MachineRecord {
         leftovers: Vec::new(),
         claim: None,
         no_reboot: false,
+    }
+}
+
+/// A machine record that names `leftovers`, with the claim their launch would have made.
+fn machine_leaving(sleeper: &Sleeper, leftovers: Vec<PathBuf>) -> MachineRecord {
+    let (leftovers, claim) = claimed(leftovers);
+    MachineRecord {
+        leftovers,
+        claim,
+        ..machine(sleeper)
     }
 }
 
@@ -492,10 +503,7 @@ fn reaping_deletes_the_leftovers_of_the_killed_machine(#[fixture(unicode_home)] 
     let owned = create(&fx, Some("foo"));
     set_machine(
         owned.dir(),
-        MachineRecord {
-            leftovers: vec![socket.clone(), home.join("never-existed"), lock.clone()],
-            ..machine(&sleeper)
-        },
+        machine_leaving(&sleeper, vec![socket.clone(), home.join("never-existed"), lock.clone()]),
     );
     drop(owned);
 
@@ -515,10 +523,7 @@ fn the_leftovers_of_a_machine_that_already_exited_are_deleted(#[fixture(unicode_
     let sleeper = Sleeper::spawn();
     let socket = home.join("machine.sock");
     std::fs::write(&socket, b"x").unwrap();
-    let record = MachineRecord {
-        leftovers: vec![socket.clone()],
-        ..machine(&sleeper)
-    };
+    let record = machine_leaving(&sleeper, vec![socket.clone()]);
     sleeper.finish();
     let owned = create(&fx, Some("foo"));
     set_machine(owned.dir(), record);
@@ -543,10 +548,7 @@ fn a_leftover_that_cannot_be_deleted_is_a_warning_and_the_instance_still_goes(#[
     let owned = create(&fx, Some("foo"));
     set_machine(
         owned.dir(),
-        MachineRecord {
-            leftovers: vec![stuck.clone(), socket.clone()],
-            ..machine(&sleeper)
-        },
+        machine_leaving(&sleeper, vec![stuck.clone(), socket.clone()]),
     );
     drop(owned);
 

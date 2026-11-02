@@ -37,13 +37,14 @@ struct Leftovers {
     cleaned_by_kill: bool,
 }
 
-/// The files a fake machine of instance `id` creates under `dir`: a socket and a session lock, then the hold that is
-/// its claim (as the QEMU backend names them).
-pub(crate) fn leftover_paths(dir: &Path, id: &InstanceId) -> Vec<PathBuf> {
+/// The files the `launch`th fake machine of instance `id` creates under `dir`: a socket and a session lock, then the
+/// hold that is its claim (named as the QEMU backend names them). Every launch has names of its own, as a real one
+/// draws them, so a machine never meets the files of an earlier one.
+pub(crate) fn leftover_paths(dir: &Path, id: &InstanceId, launch: usize) -> Vec<PathBuf> {
     vec![
-        dir.join(format!("{id}.sock")),
-        dir.join(format!("{id}.sock.lock")),
-        dir.join(format!("{id}.sock.hold")),
+        dir.join(format!("{id}-{launch}.sock")),
+        dir.join(format!("{id}-{launch}.sock.lock")),
+        dir.join(format!("{id}-{launch}.sock.hold")),
     ]
 }
 
@@ -58,6 +59,8 @@ pub(crate) struct FakeBackend {
     specs: Mutex<Vec<MachineSpec>>,
     /// How many times a machine of this backend was reset.
     resets: Arc<AtomicUsize>,
+    /// How many launches have named their files.
+    named: AtomicUsize,
     storage: FakeStorage,
 }
 
@@ -69,6 +72,7 @@ impl FakeBackend {
             leftovers: None,
             specs: Mutex::new(Vec::new()),
             resets: Arc::new(AtomicUsize::new(0)),
+            named: AtomicUsize::new(0),
             storage: FakeStorage,
         }
     }
@@ -166,7 +170,7 @@ impl Backend for FakeBackend {
             &fake_vm::log(state_dir),
         )?;
         let leftovers = match &self.leftovers {
-            Some(leftovers) => leftover_paths(&leftovers.dir, &spec.id),
+            Some(leftovers) => leftover_paths(&leftovers.dir, &spec.id, self.named.fetch_add(1, Ordering::SeqCst)),
             None => Vec::new(),
         };
         let claim = match leftovers.last() {
