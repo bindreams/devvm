@@ -1,0 +1,20 @@
+# Throwaway measurement for U4 PR E Task E0a (QMP runtime directory). Not part of the workspace; deleted before the build.
+[package]
+name = "e0a-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+cosca = "0.6.0"
+
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.2"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_Networking_WinSock",
+] }
