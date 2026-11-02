@@ -170,6 +170,18 @@ fn sweep_deletes_the_private_name_a_launch_left_when_it_died() {
     assert!(!leftover.exists());
 }
 
+/// A deleter killed between renaming the claim file to its deleting name and deleting it leaves that name.
+#[skuld::test]
+fn sweep_deletes_the_deleting_name_a_delete_left_when_it_died() {
+    let run = run_with_a_lock();
+    let leftover = run.path().join(format!("{STEM_A}.sock.hold.del"));
+    std::fs::write(&leftover, b"").unwrap();
+
+    assert_eq!(sweep(run.path()), Vec::<String>::new());
+
+    assert!(!leftover.exists());
+}
+
 #[skuld::test]
 fn sweep_skips_everything_while_another_sweep_runs() {
     let run = run_with_a_lock();
@@ -197,6 +209,9 @@ fn sweep_leaves_names_of_another_shape_alone() {
         "00000000000000aa.hold",
         "00000000000000a.sock.hold.new",
         "00000000000000aa.sock.new",
+        "00000000000000a.sock.hold.del",
+        "00000000000000aa.sock.del",
+        "00000000000000aa.hold.del",
         "notes.txt",
     ];
     for name in odd {

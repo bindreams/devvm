@@ -702,6 +702,20 @@ fn deleting_a_hold_removes_the_file_and_frees_the_name(#[fixture(unicode_home)] 
     drop(current().hold_new(&path).unwrap());
 }
 
+/// What a child that inherited the hold is: another handle to the file, which outlives the delete. The name is free at
+/// once all the same.
+#[skuld::test]
+fn a_deleted_hold_frees_its_name_while_a_duplicate_of_the_file_is_open(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let duplicate = hold.file().try_clone().unwrap();
+
+    hold.delete().unwrap();
+
+    drop(current().hold_new(&path).expect("the name is free"));
+    drop(duplicate);
+}
+
 /// The identity of a held file is read without the data access a hold refuses to anyone else.
 #[skuld::test]
 fn the_identity_of_a_held_file_can_be_read(#[fixture(unicode_home)] home: &Path) {

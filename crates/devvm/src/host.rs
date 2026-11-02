@@ -39,7 +39,7 @@ pub(crate) mod windows;
 
 pub(crate) use entry::{Entry, is_absent};
 pub(crate) use file_id::FileId;
-pub(crate) use hold::{Hold, HoldOutcome};
+pub(crate) use hold::{DELETING_SUFFIX, Hold, HoldOutcome};
 pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(any(unix, windows)))]

@@ -11,7 +11,7 @@ use std::path::Path;
 use super::backend::QemuBackend;
 use super::qmp::QmpEndpoint;
 use crate::backend::remove_held;
-use crate::host::HoldOutcome;
+use crate::host::{DELETING_SUFFIX, HoldOutcome};
 use crate::store::lock::{FileLock, Mode};
 
 /// The 16 lowercase hex digits that name a launch, if `file_name` is one of its three files.
@@ -23,11 +23,14 @@ fn launch_of(file_name: &str) -> Option<&str> {
     hex.then_some(stem)
 }
 
-/// Whether `file_name` is the private name of a claim file in the making (`Host::hold_new`): `<claim file>.new`.
+/// Whether `file_name` is a private name of a claim file: `<claim file>.new` while it is made (`Host::hold_new`) and
+/// `<claim file>.del` while it is deleted (`Hold::delete`).
 fn is_private_claim(file_name: &str) -> bool {
-    file_name
-        .strip_suffix(".new")
-        .is_some_and(|claim| claim.ends_with(".sock.hold") && launch_of(claim).is_some())
+    [".new", DELETING_SUFFIX].iter().any(|suffix| {
+        file_name
+            .strip_suffix(suffix)
+            .is_some_and(|claim| claim.ends_with(".sock.hold") && launch_of(claim).is_some())
+    })
 }
 
 impl QemuBackend {
@@ -44,7 +47,8 @@ impl QemuBackend {
     /// - there is no claim file, no socket, and a lock file: a session that came late made it, and it goes;
     /// - there is no claim file but a socket: nobody can tell, and it stays.
     ///
-    /// A claim file's private name (`<claim file>.new`) goes too: only a launch that died while making the file leaves one.
+    /// A claim file's private names (`<claim file>.new`, `<claim file>.del`) go too: only a launch that died while
+    /// making the file, or a delete that died, leaves one.
     pub(super) fn sweep_run_dir(&self, warn: &mut dyn FnMut(String)) {
         let run = self.run_dir();
         match self.host().accept_runtime_dir(run) {
@@ -99,7 +103,8 @@ impl QemuBackend {
             }
         }
         // No launch is between making a claim file and holding it while this sweep has the directory's lock, so what
-        // is left under a private name was left by a launch that died there.
+        // is left under `.new` was left by a launch that died there. A `.del` is left by a delete that died, or is
+        // being deleted now (the lock does not keep deletes out), and then the removal below fails and says so.
         for leftover in private_claims {
             if let Err(e) = std::fs::remove_file(&leftover)
                 && e.kind() != std::io::ErrorKind::NotFound
