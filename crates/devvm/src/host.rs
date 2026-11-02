@@ -2,7 +2,7 @@
 //! the `cfg`s on the module declarations and on [`Current`] below; no code under `host/` selects one.
 //! (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -87,6 +87,12 @@ pub(crate) trait Host: Send + Sync {
 
     /// The longest AF_UNIX socket path this OS binds, in bytes: `sun_path` without its terminating NUL.
     fn socket_path_max(&self) -> usize;
+
+    /// Where this user's runtime state (the QMP sockets) goes when `XDG_RUNTIME_DIR` is not usable, resolved from the
+    /// OS and `var` (the environment) and created by nobody. Windows: `<ProgramData>\devvm-run-<16 hex of SHA-256 of
+    /// the user's SID>`, from the known folder and the process token, never from the environment. Elsewhere:
+    /// `<TMPDIR or /tmp>/devvm-run-<euid>`. An error names the OS call that failed.
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf>;
 
     /// Watches the process `id` names. On Windows its exit ends a read of that process's control socket through the
     /// watch's `link` even when the OS never ends the stream (Windows can lose the end of an AF_UNIX stream); elsewhere

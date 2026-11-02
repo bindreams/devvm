@@ -2,7 +2,8 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::Path;
 
-use super::WindowsHost;
+use super::{WindowsHost, user};
+use crate::host::names::windows_run_dir;
 use crate::host::{Entry, Host};
 use crate::test_support::fixtures::unicode_home;
 
@@ -87,4 +88,23 @@ fn a_name_with_a_colon_is_absent_and_a_stream_is_never_read(#[fixture(unicode_ho
     for rel in ["d/a:b", "d/a:b/below", "d/a::$DATA", "a:b"] {
         assert!(matches!(open(home, rel), Entry::Absent), "{rel}");
     }
+}
+
+#[skuld::test]
+fn the_default_is_programdata_devvm_run_and_the_token_sid() {
+    let sid = user::current_sid().unwrap();
+    assert!(sid.starts_with("S-1-5-"), "{sid}");
+    let program_data = user::program_data().unwrap();
+    let from_env = std::env::var_os("ProgramData").expect("ProgramData is set");
+    assert!(
+        program_data
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&from_env.to_string_lossy()),
+        "{} against {}",
+        program_data.display(),
+        from_env.to_string_lossy()
+    );
+    // The environment does not move it.
+    let dir = WindowsHost.run_dir_default(&|_| Some(r"Z:\elsewhere".into())).unwrap();
+    assert_eq!(dir, windows_run_dir(&program_data, &sid));
 }

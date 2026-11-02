@@ -1,14 +1,14 @@
 //! What every host devvm 0.1.0 does not run VMs on (Linux, macOS) shares. A host type supplies only what differs, the
 //! file modes ([`FileModes`]), and is a [`Host`] through the blanket impl below.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::OpenOptions;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cosca::identity::ProcessId;
 
-use super::names::posix_problem;
+use super::names::{posix_problem, unix_run_dir};
 use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write, create_new_with};
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -22,6 +22,9 @@ pub(super) trait FileModes: Send + Sync {
 
     /// [`Host::socket_path_max`].
     fn socket_path_max(&self) -> usize;
+
+    /// The effective user id; the runtime directory is per user.
+    fn euid(&self) -> u32;
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool>;
 
@@ -62,6 +65,10 @@ impl<M: FileModes> Host for M {
 
     fn socket_path_max(&self) -> usize {
         FileModes::socket_path_max(self)
+    }
+
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        Ok(unix_run_dir(var("TMPDIR"), FileModes::euid(self)))
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {

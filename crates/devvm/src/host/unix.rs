@@ -28,6 +28,11 @@ impl FileModes for UnixHost {
         std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path) - 1
     }
 
+    fn euid(&self) -> u32 {
+        // SAFETY: `geteuid` reads a process attribute and cannot fail.
+        unsafe { libc::geteuid() }
+    }
+
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
         Ok(std::fs::metadata(path)?.permissions().mode() & 0o111 != 0)
     }

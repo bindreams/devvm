@@ -1,7 +1,7 @@
 //! Hosts for the tests: one whose accelerator always works, and one that has none.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,6 +27,10 @@ impl Host for TestHost {
 
     fn socket_path_max(&self) -> usize {
         host::current().socket_path_max()
+    }
+
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        host::current().run_dir_default(var)
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
@@ -129,6 +133,10 @@ impl Host for NoAccelHost {
 
     fn socket_path_max(&self) -> usize {
         TestHost.socket_path_max()
+    }
+
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        TestHost.run_dir_default(var)
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
@@ -325,6 +333,10 @@ impl Host for RecordingHost {
         TestHost.socket_path_max()
     }
 
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        TestHost.run_dir_default(var)
+    }
+
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
         TestHost.watch_process(id)
     }
@@ -464,6 +476,10 @@ impl Host for NoGuestReset {
 
     fn socket_path_max(&self) -> usize {
         host::current().socket_path_max()
+    }
+
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        host::current().run_dir_default(var)
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {

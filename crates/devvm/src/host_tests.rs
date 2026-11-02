@@ -518,3 +518,11 @@ fn only_windows_compares_environment_variable_names_without_case() {
     );
     assert_eq!(OtherHost.env_name_strip_prefix("GIT".as_ref(), "GIT_"), None);
 }
+
+#[skuld::test]
+fn an_unsupported_host_puts_the_runtime_directory_under_tmpdir_per_user() {
+    let tmp = std::env::temp_dir();
+    let var = |name: &str| (name == "TMPDIR").then(|| tmp.clone().into_os_string());
+    let dir = OtherHost.run_dir_default(&var).unwrap();
+    assert_eq!(dir, tmp.join("devvm-run-0"));
+}

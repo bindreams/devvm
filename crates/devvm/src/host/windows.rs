@@ -17,12 +17,13 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWind
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use super::entry;
-use super::names::{windows_colon_path, windows_problem};
+use super::names::{windows_colon_path, windows_problem, windows_run_dir};
 use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
-use crate::{Arch, Result};
+use crate::{Arch, Error, ErrorKind, Result};
 
 mod link;
+mod user;
 mod watch;
 mod whpx;
 
@@ -68,6 +69,19 @@ impl Host for WindowsHost {
     /// `sun_path` is 108 bytes.
     fn socket_path_max(&self) -> usize {
         107
+    }
+
+    fn run_dir_default(&self, _var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        let cannot = |what: &str, source| {
+            Error::io(
+                ErrorKind::Config,
+                format!("cannot locate the runtime directory: {what}"),
+                source,
+            )
+        };
+        let program_data = user::program_data().map_err(|e| cannot("the ProgramData folder is unknown", e))?;
+        let sid = user::current_sid().map_err(|e| cannot("the process token's user is unknown", e))?;
+        Ok(windows_run_dir(&program_data, &sid))
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {

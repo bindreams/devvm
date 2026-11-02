@@ -19,6 +19,11 @@ impl FileModes for OtherHost {
         107
     }
 
+    /// There are no user ids here; every user is user 0.
+    fn euid(&self) -> u32 {
+        0
+    }
+
     fn is_executable(&self, _path: &Path) -> std::io::Result<bool> {
         Ok(false)
     }

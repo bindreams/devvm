@@ -9,7 +9,8 @@ use crate::{Error, ErrorKind, Result};
 #[path = "dirs_tests.rs"]
 mod dirs_tests;
 
-/// devvm's four per-user directories; each path ends in `devvm`.
+/// devvm's five per-user directories. The four XDG ones end in `devvm`; `run` ends in `devvm` below
+/// `XDG_RUNTIME_DIR` and is `devvm-run-<...>` where the host names it (`Host::run_dir_default`).
 ///
 /// They are created lazily by their users.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,17 +19,27 @@ pub struct Dirs {
     pub data: PathBuf,
     pub cache: PathBuf,
     pub state: PathBuf,
+    /// Runtime state of running machines (their control sockets): short, and the user's alone.
+    pub run: PathBuf,
 }
 
 impl Dirs {
     /// Resolves from the process environment and the user's home directory.
     pub fn from_env() -> Result<Dirs> {
-        Dirs::from_lookup(home::home_dir(), &|name| std::env::var_os(name))
+        let host = crate::host::current();
+        Dirs::from_lookup(home::home_dir(), &|name| std::env::var_os(name), &|| {
+            host.run_dir_default(&|name| std::env::var_os(name))
+        })
     }
 
     /// Resolves with `var` standing in for the environment. An `XDG_*` value that is empty or not an absolute path is
-    /// ignored, as the XDG specification says.
-    pub fn from_lookup(home: Option<PathBuf>, var: &dyn Fn(&str) -> Option<OsString>) -> Result<Dirs> {
+    /// ignored, as the XDG specification says. `run_default` gives the runtime directory when `XDG_RUNTIME_DIR` is
+    /// not usable; it is not called otherwise.
+    pub fn from_lookup(
+        home: Option<PathBuf>,
+        var: &dyn Fn(&str) -> Option<OsString>,
+        run_default: &dyn Fn() -> Result<PathBuf>,
+    ) -> Result<Dirs> {
         let resolve = |name: &str, default: &[&str]| -> Result<PathBuf> {
             let explicit = var(name).map(PathBuf::from).filter(|path| path.is_absolute());
             let base = match explicit {
@@ -47,7 +58,15 @@ impl Dirs {
             };
             Ok(base.join("devvm"))
         };
+        let run = match var("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+        {
+            Some(path) => path.join("devvm"),
+            None => run_default()?,
+        };
         Ok(Dirs {
+            run,
             config: resolve("XDG_CONFIG_HOME", &[".config"])?,
             data: resolve("XDG_DATA_HOME", &[".local", "share"])?,
             cache: resolve("XDG_CACHE_HOME", &[".cache"])?,
@@ -55,13 +74,14 @@ impl Dirs {
         })
     }
 
-    /// All four directories below `root`, for tests and fixtures.
+    /// All five directories below `root`, for tests and fixtures.
     pub fn under(root: &Path) -> Dirs {
         Dirs {
             config: root.join("config").join("devvm"),
             data: root.join("data").join("devvm"),
             cache: root.join("cache").join("devvm"),
             state: root.join("state").join("devvm"),
+            run: root.join("run").join("devvm"),
         }
     }
 
