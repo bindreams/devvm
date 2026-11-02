@@ -53,7 +53,10 @@ pub(crate) struct Reservation {
 
 /// The longest socket path a launch in `run` can draw, in the bytes that `sun_path` counts.
 fn longest_socket_path(run: &Path) -> usize {
-    run.join(format!("{}.sock", "0".repeat(16))).to_string_lossy().len()
+    run.join(format!("{}.sock", "0".repeat(16)))
+        .as_os_str()
+        .as_encoded_bytes()
+        .len()
 }
 
 impl QmpEndpoint {
@@ -80,8 +83,9 @@ impl QmpEndpoint {
     /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete): there is
     /// no limit on the draws.
     pub(crate) fn reserve_with(host: &dyn Host, run: &Path, draw: &mut dyn FnMut() -> [u8; 8]) -> Result<Reservation> {
-        let (bytes, max) = (longest_socket_path(run), host.socket_path_max());
-        if bytes > max {
+        let max = host.socket_path_max();
+        if !QmpEndpoint::fits(run, max) {
+            let bytes = longest_socket_path(run);
             return Err(Error::new(
                 ErrorKind::Unavailable,
                 format!(
@@ -149,11 +153,14 @@ impl QmpEndpoint {
         }
     }
 
+    /// The endpoint whose socket is at `path`.
+    pub(crate) fn from_path(path: PathBuf) -> QmpEndpoint {
+        QmpEndpoint { path }
+    }
+
     /// The endpoint a `MachineRecord.qmp` names.
     pub(crate) fn from_record(qmp: &str) -> QmpEndpoint {
-        QmpEndpoint {
-            path: PathBuf::from(qmp),
-        }
+        QmpEndpoint::from_path(PathBuf::from(qmp))
     }
 
     pub(crate) fn path(&self) -> &Path {

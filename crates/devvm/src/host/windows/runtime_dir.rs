@@ -72,6 +72,11 @@ pub(super) fn create(dir: &Path) -> io::Result<()> {
     Err(error)
 }
 
+/// [`Host::accept_runtime_dir`].
+pub(super) fn accept(dir: &Path) -> io::Result<()> {
+    accept_existing(dir, &current_sid()?)
+}
+
 /// A directory at `dir` that the user owns and that is no link: `AlreadyExists` for a file or a link, and
 /// `PermissionDenied` naming the owner for another account's directory.
 ///

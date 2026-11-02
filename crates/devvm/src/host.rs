@@ -187,16 +187,23 @@ pub(crate) trait Host: Send + Sync {
     /// `NotFound`.
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()>;
 
+    /// The check [`Host::create_runtime_dir`] applies to a directory that exists, with nothing made: `Ok` for a
+    /// directory that is the user's and is no link, and the same refusals for anything else. A directory that is not
+    /// there is `NotFound`.
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()>;
+
     /// The identity of the file `path` names, not of what a link there points to. It needs no access to the contents,
     /// so it reads the identity of a file that is held (see [`Hold`]).
     fn file_id(&self, path: &Path) -> std::io::Result<FileId>;
 
     /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it. The name never
     /// exists without the hold: off Windows the file is made and locked as `<path>.new` and then linked to `path`
-    /// (a launch killed in between leaves the `.new` file; a file there is `AlreadyExists` too).
+    /// (a launch killed in between leaves the `.new` file; a file there is `AlreadyExists` too). A file system that does not
+    /// allow hard links is an error that names the directory and `XDG_RUNTIME_DIR`.
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>>;
 
-    /// Holds the existing file `path` if nobody else does. It never waits and never creates the file.
+    /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
+    /// `path` is an error: it is not opened through.
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
 
     /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link

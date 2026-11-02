@@ -23,6 +23,12 @@ impl FileModes for UnixHost {
         options
     }
 
+    fn hold_options(&self) -> OpenOptions {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).custom_flags(libc::O_NOFOLLOW);
+        options
+    }
+
     /// `sun_path` less its terminating NUL: 107 on Linux, 103 on macOS and the BSDs.
     fn socket_path_max(&self) -> usize {
         std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path) - 1

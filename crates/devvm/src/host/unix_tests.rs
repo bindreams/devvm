@@ -135,6 +135,16 @@ fn a_symlink_at_the_runtime_dir_path_is_refused(#[fixture(unicode_home)] home: &
 }
 
 #[skuld::test]
+fn a_symlink_at_the_runtime_dir_path_is_refused_by_the_check_that_makes_nothing(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = home.join("run");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let error = UnixHost.accept_runtime_dir(&link).unwrap_err();
+    assert!(error.to_string().contains("link"), "{error}");
+}
+
+#[skuld::test]
 fn file_id_of_a_symlink_is_the_link_not_its_target(#[fixture(unicode_home)] home: &Path) {
     let target = home.join("target");
     std::fs::write(&target, b"").unwrap();
@@ -151,4 +161,20 @@ fn a_new_hold_is_private_to_the_user(#[fixture(unicode_home)] home: &Path) {
     let hold = UnixHost.hold_new(&path).unwrap();
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     drop(hold);
+}
+
+/// A name that is a link is not opened through: what it leads to is somebody else's file, and holding it would lock
+/// that file against its users.
+#[skuld::test]
+fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it(#[fixture(unicode_home)] home: &Path) {
+    let victim = home.join("victim");
+    std::fs::write(&victim, b"theirs").unwrap();
+    let link = home.join("x.sock.hold");
+    std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+    assert!(UnixHost.hold_existing(&link).is_err());
+
+    assert_eq!(std::fs::read(&victim).unwrap(), b"theirs");
+    let file = std::fs::File::open(&victim).unwrap();
+    file.try_lock().expect("nobody holds the victim");
 }

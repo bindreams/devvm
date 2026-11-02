@@ -2,14 +2,14 @@
 
 use std::fs::{File, OpenOptions};
 use std::mem::size_of;
-use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_DISPOSITION_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FileDispositionInfo,
-    SetFileInformationByHandle,
+    DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, FileDispositionInfo, SetFileInformationByHandle,
 };
 
 use super::file_id;
@@ -37,8 +37,13 @@ pub(super) fn new(path: &Path) -> std::io::Result<Box<dyn Hold>> {
     Ok(Box::new(WindowsHold { file }))
 }
 
+/// Holds the file at `path` if nobody else does. A link at the name is opened itself, not followed, and refused.
 pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
-    match options().open(path) {
+    match options().custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path) {
+        Ok(file) if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is a link", path.display()),
+        )),
         Ok(file) => Ok(HoldOutcome::Taken(Box::new(WindowsHold { file }))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HoldOutcome::Absent),
         Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => Ok(HoldOutcome::Busy),

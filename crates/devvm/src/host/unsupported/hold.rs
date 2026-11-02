@@ -3,6 +3,7 @@
 
 use std::ffi::OsString;
 use std::fs::{File, Metadata, OpenOptions, TryLockError};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::host::{FileId, Hold, HoldOutcome};
@@ -29,6 +30,23 @@ impl FlockHold {
     }
 }
 
+/// `error` from linking a claim file to its name, as the caller gets it: a file system that does not allow hard links
+/// answers `EPERM` or `ENOTSUP`, and is told so, with the way to another directory. Any other failure (a name that
+/// exists, among them) is returned as it was.
+fn link_error(error: std::io::Error, path: &Path) -> std::io::Error {
+    if !matches!(error.kind(), ErrorKind::Unsupported | ErrorKind::PermissionDenied) {
+        return error;
+    }
+    let dir = path.parent().unwrap_or(path);
+    std::io::Error::new(
+        error.kind(),
+        format!(
+            "{} does not allow hard links ({error}), which devvm needs there; set XDG_RUNTIME_DIR to use another directory",
+            dir.display()
+        ),
+    )
+}
+
 /// `path` with `.new` after it: where a hold is made before it has its name.
 fn private_name(path: &Path) -> PathBuf {
     let mut name: OsString = path.as_os_str().to_owned();
@@ -43,9 +61,11 @@ pub(super) fn new(mut options: OpenOptions, path: &Path, identity: Identity) -> 
     let private = private_name(path);
     let file = options.read(true).write(true).create_new(true).open(&private)?;
     let made = match file.try_lock() {
-        Ok(()) => {
-            FlockHold::of(file, path, identity).and_then(|hold| std::fs::hard_link(&private, path).map(|()| hold))
-        }
+        Ok(()) => FlockHold::of(file, path, identity).and_then(|hold| {
+            std::fs::hard_link(&private, path)
+                .map(|()| hold)
+                .map_err(|e| link_error(e, path))
+        }),
         Err(TryLockError::WouldBlock) => Err(std::io::Error::other(format!(
             "{} was locked by another process as it was created",
             private.display()
@@ -65,8 +85,9 @@ pub(super) fn new(mut options: OpenOptions, path: &Path, identity: Identity) -> 
     }
 }
 
-pub(super) fn existing(path: &Path, identity: Identity) -> std::io::Result<HoldOutcome> {
-    let file = match OpenOptions::new().read(true).write(true).open(path) {
+/// Holds the file at `path` if nobody else does. `options` open it and refuse a link at the name (`FileModes::hold_options`).
+pub(super) fn existing(options: OpenOptions, path: &Path, identity: Identity) -> std::io::Result<HoldOutcome> {
+    let file = match options.open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HoldOutcome::Absent),
         Err(e) => return Err(e),
@@ -97,3 +118,7 @@ impl Hold for FlockHold {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "hold_tests.rs"]
+mod hold_tests;

@@ -24,6 +24,10 @@ pub(super) trait FileModes: Send + Sync {
     /// Options that create a file readable and writable by its owner only, from the first moment it exists.
     fn private_options(&self) -> OpenOptions;
 
+    /// Options that open an existing file for reading and writing, and refuse a symlink at its name instead of opening
+    /// what it leads to.
+    fn hold_options(&self) -> OpenOptions;
+
     /// [`Host::socket_path_max`].
     fn socket_path_max(&self) -> usize;
 
@@ -198,6 +202,10 @@ impl<M: FileModes> Host for M {
         }
     }
 
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        accept_existing(self, dir)
+    }
+
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
         let metadata = std::fs::symlink_metadata(path)?;
         self.identity(&metadata)
@@ -209,6 +217,6 @@ impl<M: FileModes> Host for M {
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
-        hold::existing(path, &|metadata| self.identity(metadata))
+        hold::existing(self.hold_options(), path, &|metadata| self.identity(metadata))
     }
 }

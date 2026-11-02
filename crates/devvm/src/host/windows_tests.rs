@@ -130,6 +130,16 @@ fn a_junction_at_the_runtime_dir_path_is_refused(#[fixture(unicode_home)] home: 
 }
 
 #[skuld::test]
+fn a_junction_at_the_runtime_dir_path_is_refused_by_the_check_that_makes_nothing(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = home.join("run");
+    junction::create(&target, &link).unwrap();
+    let error = WindowsHost.accept_runtime_dir(&link).unwrap_err();
+    assert!(error.to_string().contains("link"), "{error}");
+}
+
+#[skuld::test]
 fn file_id_of_a_junction_is_the_junction_not_its_target(#[fixture(unicode_home)] home: &Path) {
     let target = home.join("target");
     std::fs::create_dir(&target).unwrap();

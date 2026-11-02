@@ -24,14 +24,14 @@ fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend> {
     ))
 }
 
-fn sweep(run: &Path) -> Vec<String> {
+pub(super) fn sweep(run: &Path) -> Vec<String> {
     let mut warnings = Vec::new();
     backend_in(run, Arc::default()).sweep(&mut |text| warnings.push(text));
     warnings
 }
 
 /// A run directory with its `runtime.lock`, as a first launch leaves it.
-fn run_with_a_lock() -> crate::test_support::qemu::ScratchRun {
+pub(super) fn run_with_a_lock() -> crate::test_support::qemu::ScratchRun {
     let run = scratch_run();
     drop(FileLock::open(&run.path().join("runtime.lock")).unwrap());
     run
@@ -39,7 +39,7 @@ fn run_with_a_lock() -> crate::test_support::qemu::ScratchRun {
 
 /// The files of a machine named `stem` in `run`: its socket, the lock of its sessions and its hold. A machine is alive
 /// while the hold that comes back is; a dropped one is the hold of a machine that has died.
-struct Machine {
+pub(super) struct Machine {
     sock: PathBuf,
     lock: PathBuf,
     hold_file: PathBuf,
@@ -47,8 +47,8 @@ struct Machine {
 }
 
 impl Machine {
-    fn new(run: &Path, stem: &str) -> Machine {
-        let endpoint = QmpEndpoint::from_record(&run.join(format!("{stem}.sock")).display().to_string());
+    pub(super) fn new(run: &Path, stem: &str) -> Machine {
+        let endpoint = QmpEndpoint::from_path(run.join(format!("{stem}.sock")));
         std::fs::write(endpoint.path(), b"socket").unwrap();
         std::fs::write(endpoint.lock_path(), b"").unwrap();
         let alive = host::current().hold_new(&endpoint.hold_path()).unwrap();
@@ -60,7 +60,7 @@ impl Machine {
         }
     }
 
-    fn dies(&mut self) {
+    pub(super) fn dies(&mut self) {
         self.alive = None;
     }
 
@@ -68,16 +68,16 @@ impl Machine {
         [&self.sock, &self.lock, &self.hold_file]
     }
 
-    fn all_exist(&self) -> bool {
+    pub(super) fn all_exist(&self) -> bool {
         self.files().iter().all(|file| file.exists())
     }
 
-    fn none_exist(&self) -> bool {
+    pub(super) fn none_exist(&self) -> bool {
         self.files().iter().all(|file| !file.exists())
     }
 }
 
-const STEM_A: &str = "00000000000000aa";
+pub(super) const STEM_A: &str = "00000000000000aa";
 const STEM_B: &str = "00000000000000bb";
 
 #[skuld::test]
@@ -262,4 +262,54 @@ fn two_registries_over_one_run_dir_never_delete_each_others_live_socket(#[fixtur
         "once the machine is dead, either reap removes its files"
     );
     registry_b.reap();
+}
+
+// A directory that is not the user's ----------------------------------------------------------------------------------
+
+/// A run directory that is a link to one with a dead machine in it, swept: the machine's files stay and one warning
+/// names the link. `link` makes the link at the second path to the directory at the first.
+pub(super) fn sweeping_a_link_touches_nothing_and_warns(home: &Path, link: impl FnOnce(&Path, &Path)) {
+    let target = run_with_a_lock();
+    let mut machine = Machine::new(target.path(), STEM_A);
+    machine.dies();
+    let run = home.join("run");
+    link(target.path(), &run);
+
+    let warnings = sweep(&run);
+
+    assert!(machine.all_exist(), "nothing is deleted through the link");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(&run.display().to_string()), "{warnings:?}");
+    assert!(warnings[0].contains("link"), "{warnings:?}");
+}
+
+/// A directory of another account: `ProgramData` is owned by the system, `/` by root, and each has no `runtime.lock`
+/// the user could open to get past the check.
+#[skuld::test]
+fn sweeping_a_directory_owned_by_someone_else_warns_naming_the_owner_and_touches_nothing() {
+    let system = if cfg!(windows) {
+        std::path::PathBuf::from(std::env::var_os("ProgramData").expect("ProgramData is set"))
+    } else {
+        std::path::PathBuf::from("/")
+    };
+    let before = std::fs::read_dir(&system).unwrap().count();
+
+    let warnings = sweep(&system);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(&system.display().to_string()), "{warnings:?}");
+    assert!(warnings[0].contains("is owned by"), "{warnings:?}");
+    assert_eq!(std::fs::read_dir(&system).unwrap().count(), before);
+}
+
+#[skuld::test]
+fn sweeping_a_file_where_the_run_dir_should_be_warns(#[fixture(unicode_home)] home: &Path) {
+    let run = home.join("run");
+    std::fs::write(&run, b"mine").unwrap();
+
+    let warnings = sweep(&run);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("not a directory"), "{warnings:?}");
+    assert_eq!(std::fs::read(&run).unwrap(), b"mine");
 }

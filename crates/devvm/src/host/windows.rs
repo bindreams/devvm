@@ -255,6 +255,10 @@ impl Host for WindowsHost {
         runtime_dir::create(dir)
     }
 
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        runtime_dir::accept(dir)
+    }
+
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
         file_id::of(path)
     }

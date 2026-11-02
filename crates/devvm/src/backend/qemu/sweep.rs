@@ -34,7 +34,8 @@ impl QemuBackend {
     /// Deletes the files of every machine in the runtime directory that is dead.
     ///
     /// Nothing is made and nothing is waited for. Without a directory, or one without its `runtime.lock`, there is
-    /// nothing to do. The lock is tried exclusive: a launch holds it shared while it draws and claims a name, and
+    /// nothing to do. A directory that a launch would refuse (`Host::accept_runtime_dir`: a link, a file, another
+    /// account's) is warned about and left alone. The lock is tried exclusive: a launch holds it shared while it draws and claims a name, and
     /// another sweep may be running. Either way the pass ends and the next reap tries again.
     ///
     /// For each launch (names of the shape `<16 hex>.sock`, `.sock.lock` and `.sock.hold`, files and no others):
@@ -46,6 +47,14 @@ impl QemuBackend {
     /// A claim file's private name (`<claim file>.new`) goes too: only a launch that died while making the file leaves one.
     pub(super) fn sweep_run_dir(&self, warn: &mut dyn FnMut(String)) {
         let run = self.run_dir();
+        match self.host().accept_runtime_dir(run) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                warn(e.to_string());
+                return;
+            }
+        }
         let mut directory = match FileLock::open_existing(&run.join("runtime.lock")) {
             Ok(Some(lock)) => lock,
             Ok(None) => return,
@@ -104,7 +113,7 @@ impl QemuBackend {
     }
 
     fn sweep_launch(&self, run: &Path, launch: &str, warn: &mut dyn FnMut(String)) {
-        let endpoint = QmpEndpoint::from_record(&run.join(format!("{launch}.sock")).display().to_string());
+        let endpoint = QmpEndpoint::from_path(run.join(format!("{launch}.sock")));
         let (socket, lock, claim) = (
             endpoint.path().to_path_buf(),
             endpoint.lock_path(),
@@ -132,3 +141,11 @@ impl QemuBackend {
 #[cfg(test)]
 #[path = "sweep_tests.rs"]
 mod sweep_tests;
+
+#[cfg(all(test, unix))]
+#[path = "sweep_unix_tests.rs"]
+mod sweep_unix_tests;
+
+#[cfg(all(test, windows))]
+#[path = "sweep_windows_tests.rs"]
+mod sweep_windows_tests;

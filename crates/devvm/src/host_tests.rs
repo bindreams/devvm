@@ -570,6 +570,44 @@ fn a_directory_owned_by_someone_else_is_refused_naming_the_owner() {
     assert!(text.contains("is owned by") && text.contains("not by you"), "{text}");
 }
 
+/// The check `create_runtime_dir` applies to a directory that exists, without making one.
+#[skuld::test]
+fn accept_runtime_dir_makes_nothing_and_a_missing_directory_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    let error = current().accept_runtime_dir(&dir).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    assert!(!dir.exists());
+}
+
+#[skuld::test]
+fn accept_runtime_dir_accepts_the_directory_create_runtime_dir_made(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    current().create_runtime_dir(&dir).unwrap();
+    current().accept_runtime_dir(&dir).unwrap();
+}
+
+#[skuld::test]
+fn accept_runtime_dir_refuses_a_file(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("run");
+    std::fs::write(&path, b"mine").unwrap();
+    let error = current().accept_runtime_dir(&path).unwrap_err();
+    assert!(error.to_string().contains("not a directory"), "{error}");
+}
+
+#[skuld::test]
+fn accept_runtime_dir_refuses_a_directory_owned_by_someone_else_naming_the_owner() {
+    let system = if cfg!(windows) {
+        std::path::PathBuf::from(std::env::var_os("ProgramData").expect("ProgramData is set"))
+    } else {
+        std::path::PathBuf::from("/")
+    };
+    let error = current().accept_runtime_dir(&system).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
+    let text = error.to_string();
+    assert!(text.contains(&system.display().to_string()), "{text}");
+    assert!(text.contains("is owned by") && text.contains("not by you"), "{text}");
+}
+
 // File identity -------------------------------------------------------------------------------------------------------
 
 #[skuld::test]

@@ -117,6 +117,10 @@ impl Host for TestHost {
         host::current().create_runtime_dir(dir)
     }
 
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().accept_runtime_dir(dir)
+    }
+
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
         host::current().file_id(path)
     }
@@ -237,6 +241,10 @@ impl Host for NoAccelHost {
 
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
         TestHost.create_runtime_dir(dir)
+    }
+
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.accept_runtime_dir(dir)
     }
 
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
@@ -489,6 +497,10 @@ impl Host for RecordingHost {
         TestHost.create_runtime_dir(dir)
     }
 
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.accept_runtime_dir(dir)
+    }
+
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
         TestHost.file_id(path)
     }
@@ -612,6 +624,10 @@ impl Host for NoGuestReset {
 
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
         host::current().create_runtime_dir(dir)
+    }
+
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().accept_runtime_dir(dir)
     }
 
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
