@@ -1,20 +1,25 @@
 //! The runtime directory on Windows: the user's alone, from the moment it exists.
 
 use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::os::windows::fs::MetadataExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
     LookupAccountSidW, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SID_NAME_USE,
 };
-use windows_sys::Win32::Storage::FileSystem::{CreateDirectoryW, FILE_ATTRIBUTE_REPARSE_POINT};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateDirectoryW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+};
 
 use super::user::{current_sid, sid_string};
 
@@ -69,8 +74,16 @@ pub(super) fn create(dir: &Path) -> io::Result<()> {
 
 /// A directory at `dir` that the user owns and that is no link: `AlreadyExists` for a file or a link, and
 /// `PermissionDenied` naming the owner for another account's directory.
+///
+/// The path is looked up once. What is checked (no link, a directory) and whose it is are both read from the one
+/// handle, which opens a link itself and does not follow it, so the directory cannot be swapped between the checks.
 fn accept_existing(dir: &Path, me: &str) -> io::Result<()> {
-    let metadata = std::fs::symlink_metadata(dir)?;
+    let handle = OpenOptions::new()
+        .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(dir)?;
+    let metadata = handle.metadata()?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -83,7 +96,7 @@ fn accept_existing(dir: &Path, me: &str) -> io::Result<()> {
             format!("{} is not a directory", dir.display()),
         ));
     }
-    let owner = Owner::of(dir)?;
+    let owner = Owner::of(&handle)?;
     if owner.sid()? == me {
         return Ok(());
     }
@@ -93,24 +106,23 @@ fn accept_existing(dir: &Path, me: &str) -> io::Result<()> {
     ))
 }
 
-/// The owner of a file system object, from `GetNamedSecurityInfoW`.
+/// The owner of an open file system object, from `GetSecurityInfo`.
 struct Owner {
     descriptor: PSECURITY_DESCRIPTOR,
     sid: PSID,
 }
 
 impl Owner {
-    fn of(path: &Path) -> io::Result<Owner> {
-        let wide = wide(path);
+    fn of(handle: &File) -> io::Result<Owner> {
         let mut owner = Owner {
             descriptor: null_mut(),
             sid: null_mut(),
         };
-        // SAFETY: `wide` is NUL-terminated; the out-pointers are valid, and a null group, DACL and SACL pointer are
-        // allowed because those parts are not requested.
+        // SAFETY: the handle is open with `READ_CONTROL`; the out-pointers are valid, and a null group, DACL and SACL
+        // pointer are allowed because those parts are not requested.
         let status = unsafe {
-            GetNamedSecurityInfoW(
-                wide.as_ptr(),
+            GetSecurityInfo(
+                handle.as_raw_handle(),
                 SE_FILE_OBJECT,
                 OWNER_SECURITY_INFORMATION,
                 &mut owner.sid,
@@ -174,7 +186,7 @@ impl Owner {
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        // SAFETY: the descriptor was allocated by `GetNamedSecurityInfoW`, which documents `LocalFree`.
+        // SAFETY: the descriptor was allocated by `GetSecurityInfo`, which documents `LocalFree`.
         unsafe { LocalFree(self.descriptor) };
     }
 }
