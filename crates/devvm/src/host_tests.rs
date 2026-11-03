@@ -4,7 +4,7 @@ use super::other::OtherHost;
 use super::{Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
-use crate::test_groups::{Group, acp_1252};
+use crate::test_groups::{Group, PINNED_CHILD, acp_1252};
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
@@ -399,18 +399,16 @@ fn sync_dir_of_a_missing_directory_fails_where_directories_are_flushed(#[fixture
 
 // The ANSI code page ==================================================================================================
 
-/// Set in the pinned child to its manifest's locale: stops it from spawning another child.
-const PINNED_CHILD: &str = "DEVVM_PINNED_CHILD";
-
 /// The locale whose ANSI code page is 1252 on every host, whatever the host's own locale.
 const PINNED_LOCALE: &str = "en-US";
 
 const GROUP_TEST: &str = "the_host_code_page_is_1252";
 
-/// The `acp_1252` group's precondition is the check: the test fails at setup on a host whose code page is another. In the
-/// pinned child it shows that the manifest's activeCodePage pinned the process to 1252.
+/// In the pinned child, shows the manifest's activeCodePage pinned the process to 1252.
 #[skuld::test]
-fn the_host_code_page_is_1252(#[fixture(acp_1252)] _group: &Group) {}
+fn the_host_code_page_is_1252(#[fixture(acp_1252)] _group: &Group) {
+    assert_eq!(current().ansi_code_page(), Some(1252));
+}
 
 #[skuld::test]
 fn ansi_code_page_is_some_on_windows_and_none_elsewhere() {

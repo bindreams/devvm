@@ -73,11 +73,23 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
         .arg(&cases_path)
         .output()
         .expect("`uv` must be installed to read the seed with PyYAML (set DEVVM_TEST_PYYAML=0 to turn the group off)");
-    assert!(
-        output.status.success(),
-        "PyYAML does not read the seed back exactly ({}):\n{}{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
+    // The script exits 1 on a mismatch; any other failure (uv could not resolve PyYAML, or the script could not import it)
+    // is the host's setup.
+    match output.status.code() {
+        Some(0) => {}
+        Some(1) => panic!(
+            "PyYAML does not read the seed back exactly ({}):
+{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+        _ => panic!(
+            "`uv` could not run the PyYAML reader ({}); set DEVVM_TEST_PYYAML=0 to turn the group off:
+{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+    }
 }

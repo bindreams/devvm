@@ -38,7 +38,9 @@ pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInsta
     LazyInstall::new(dirs, config, fetcher, progress, host::current())
         .get()
         .map_err(|e| {
-            format!("QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory)")
+            format!(
+                "QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory, or set                  DEVVM_TEST_VM=0 to turn the group off)"
+            )
         })
 }
 
@@ -91,8 +93,7 @@ fn has_space_and_non_ascii(path: &Path) -> bool {
     path.contains(' ') && !path.is_ascii()
 }
 
-/// The precondition of the `unicode_socket_dir` test group, for the tests of non-ASCII socket paths: `Err` where the
-/// socket directory has no space or no non-ASCII character, or none fits at all, since they would check nothing there.
+/// `Err` when the socket directory lacks a space or a non-ASCII character, or none fits at all (the tests would check nothing).
 pub fn unicode_socket_dir_fits() -> Result<(), String> {
     let temp = std::env::temp_dir();
     match socket_dir_that_fits() {

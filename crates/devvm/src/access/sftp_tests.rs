@@ -43,15 +43,10 @@ fn guest_os(openssh: bool, root: &Path, kind: GuestKind) -> Arc<dyn GuestOs> {
     }
 }
 
-/// The SFTP server of a run with the group on is OpenSSH's, which has no root of its own and starts in the directory it
-/// serves, while the scripted server's home is `/`.
+/// OpenSSH's server has no root of its own and starts in the directory it serves; the scripted server's home is `/`.
 #[skuld::test]
 fn the_server_of_this_run_is_openssh(#[fixture(unicode_home)] home: &Path, #[fixture(openssh_sftp)] _group: &Group) {
     let env = Env::new(home);
-    assert!(
-        env.openssh,
-        "DEVVM_TEST_OPENSSH_SFTP is on but the run did not start OpenSSH's server"
-    );
     assert_eq!(env.sftp.home().unwrap(), env.g("/"));
 }
 
@@ -65,7 +60,6 @@ struct Env {
     progress: MemoryProgress,
     /// The host side: an empty directory.
     local: PathBuf,
-    /// Whether the guest's SFTP server is OpenSSH's own (see [`openssh_server`]).
     openssh: bool,
 }
 

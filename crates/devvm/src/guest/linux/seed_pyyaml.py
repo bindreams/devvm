@@ -6,12 +6,18 @@
 
 Usage: seed_pyyaml.py CASES.json, a list of {where, meta_data, user_data, hostname, client_public, host_private,
 host_public}. `where` names the case in a failure.
+
+Exits 0 when every case reads back exactly, 1 when one does not, 2 when PyYAML cannot be imported.
 """
 
 import json
 import sys
 
-import yaml
+try:
+    import yaml
+except ImportError as e:
+    print(f"cannot import PyYAML: {e}", file=sys.stderr)
+    sys.exit(2)
 
 
 def load(text):

@@ -42,11 +42,9 @@ pub const TARGET: &str = env!("DEVVM_TARGET");
 #[cfg(test)]
 mod test_support;
 
-/// The test groups: what a test needs of its host, and the switches that turn a group off.
 #[cfg(test)]
 mod test_groups;
 
-/// The labels the tests are selected by.
 #[cfg(test)]
 mod test_harness;
 
