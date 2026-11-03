@@ -1,6 +1,6 @@
 //! Labels the lib's tests declare for skuld to select by (`SKULD_LABELS=<label>`).
 
-/// Selects the `VM_GROUP` group's tests: every test that boots QEMU or runs one of its tools.
+/// Selects the `VM` group's tests: every test that boots QEMU or runs one of its tools.
 #[skuld::label]
 pub const VM: skuld::Label;
 

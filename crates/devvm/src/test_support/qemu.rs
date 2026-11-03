@@ -61,8 +61,8 @@ const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e1
 
 /// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`): the first of
 /// `<temp>/<UNICODE_DIR>`, the shorter `<temp>/<SHORT_SOCKET_DIRS>` (a long Windows user name), then the temporary
-/// directory itself (macOS, whose temporary directory leaves room for no subdirectory with a non-ASCII name). Nothing
-/// is created outside the temporary directory.
+/// directory itself (a temporary directory that leaves room for none of them). Nothing is created outside the temporary
+/// directory.
 fn socket_dir_that_fits() -> Option<PathBuf> {
     let fits = |dir: &Path| {
         QmpEndpoint::for_launch(dir, &InstanceId::random(), LAUNCH, host::current().socket_path_max()).is_ok()
