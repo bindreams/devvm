@@ -18,16 +18,16 @@ use crate::exit::StderrProgress;
 use crate::host::{self, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::store::fetch::{Fetcher, HttpTransport};
+use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::UNICODE_DIR;
-use crate::vm_gate::{VM, vm_tests_enabled};
 
 /// The directory holding a QEMU build's `bin/` and `share/`. When set, the VM tests use it instead of downloading the
 /// pinned build.
 pub const QEMU_DIR_VAR: &str = "DEVVM_TEST_QEMU_DIR";
 
-/// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `DEVVM_SKIP_VM_TESTS=1`.
-#[skuld::fixture(scope = process, requires = [vm_tests_enabled], labels = [VM])]
-pub fn qemu_sidecar() -> Result<Arc<QemuInstall>, String> {
+/// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `DEVVM_TEST_VM=0`.
+#[skuld::fixture(scope = process)]
+pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInstall>, String> {
     let config = Config {
         qemu_path: std::env::var_os(QEMU_DIR_VAR).map(|dir| PathBuf::from(dir).join("bin")),
     };
@@ -91,9 +91,9 @@ fn has_space_and_non_ascii(path: &Path) -> bool {
     path.contains(' ') && !path.is_ascii()
 }
 
-/// A skuld precondition for the tests of non-ASCII socket paths: they are ignored, with the reason, where the socket
-/// directory has no space or no non-ASCII character (only a temporary directory that has neither fits: macOS) or none
-/// fits at all, since they would check nothing there.
+/// The precondition of the `unicode_socket_dir` test group, for the tests of non-ASCII socket paths: `Err` where the
+/// socket directory has no space or no non-ASCII character (only a temporary directory that has neither fits: macOS) or
+/// none fits at all, since they would check nothing there.
 pub fn unicode_socket_dir_fits() -> Result<(), String> {
     let temp = std::env::temp_dir();
     match socket_dir_that_fits() {

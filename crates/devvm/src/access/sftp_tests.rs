@@ -9,7 +9,7 @@ use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
-use crate::test_support::claims::OPENSSH_SFTP;
+use crate::test_groups::{Group, openssh_sftp};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::RecordingHost;
 use crate::test_support::sshd::{Rig, SshdOptions};
@@ -19,25 +19,18 @@ use crate::{ErrorKind, GuestKind, Result};
 
 // The server ==========================================================================================================
 
-/// `Ok` when this run claims OpenSSH's own `sftp-server` instead of the scripted one: the copy is then checked against
-/// what a real guest does. The reason it does not is for a test to show as not run.
-fn openssh_claimed() -> std::result::Result<(), String> {
-    match OPENSSH_SFTP.is_made() {
-        true => Ok(()),
-        false => Err(format!(
-            "{} is not set; the scripted server is used here, OpenSSH's \
-             is covered by CI (the openssh-sftp step on ubuntu-latest)",
-            OPENSSH_SFTP.var
-        )),
-    }
+/// Whether this run's SFTP server is OpenSSH's own `sftp-server` (the `openssh_sftp` group is on) instead of the
+/// scripted one: the copy is then checked against what a real guest does.
+fn openssh_server() -> bool {
+    openssh_sftp::enabled().is_ok()
 }
 
 /// For a test that needs what only the scripted server does (faults, a dropped connection, a server that refuses a
 /// request); where OpenSSH's runs, it is not run.
 fn scripted_server() -> std::result::Result<(), String> {
-    match openssh_claimed() {
-        Ok(()) => Err("needs the scripted server; this run uses OpenSSH's".to_owned()),
-        Err(_) => Ok(()),
+    match openssh_server() {
+        true => Err("needs the scripted server; this run uses OpenSSH's (DEVVM_TEST_OPENSSH_SFTP is not 0)".to_owned()),
+        false => Ok(()),
     }
 }
 
@@ -50,15 +43,14 @@ fn guest_os(openssh: bool, root: &Path, kind: GuestKind) -> Arc<dyn GuestOs> {
     }
 }
 
-/// The claim is true: the SFTP server of this run is OpenSSH's, which has no root of its own and starts in the
-/// directory it serves, while the scripted server's home is `/`.
-#[skuld::test(requires = [openssh_claimed])]
-fn the_server_of_this_run_is_openssh_as_claimed(#[fixture(unicode_home)] home: &Path) {
+/// The SFTP server of a run with the group on is OpenSSH's, which has no root of its own and starts in the directory it
+/// serves, while the scripted server's home is `/`.
+#[skuld::test]
+fn the_server_of_this_run_is_openssh(#[fixture(unicode_home)] home: &Path, #[fixture(openssh_sftp)] _group: &Group) {
     let env = Env::new(home);
     assert!(
         env.openssh,
-        "{} is set but the run did not start OpenSSH's server",
-        OPENSSH_SFTP.var
+        "DEVVM_TEST_OPENSSH_SFTP is on but the run did not start OpenSSH's server"
     );
     assert_eq!(env.sftp.home().unwrap(), env.g("/"));
 }
@@ -73,7 +65,7 @@ struct Env {
     progress: MemoryProgress,
     /// The host side: an empty directory.
     local: PathBuf,
-    /// Whether the guest's SFTP server is OpenSSH's own (see [`OPENSSH_SFTP`]).
+    /// Whether the guest's SFTP server is OpenSSH's own (see [`openssh_server`]).
     openssh: bool,
 }
 
@@ -83,7 +75,7 @@ impl Env {
     }
 
     fn with(home: &Path, configure: impl FnOnce(&mut SshdOptions)) -> Env {
-        let openssh = openssh_claimed().is_ok();
+        let openssh = openssh_server();
         let rig = Rig::with(home, |options| {
             configure(options);
             options.openssh_sftp = openssh;

@@ -42,10 +42,13 @@ pub const TARGET: &str = env!("DEVVM_TARGET");
 #[cfg(test)]
 mod test_support;
 
-/// The gate every VM-booting test goes through (shared with `tests/vm_gate.rs`).
+/// The test groups: what a test needs of its host, and the switches that turn a group off.
 #[cfg(test)]
-#[path = "../tests/support/vm_gate.rs"]
-mod vm_gate;
+mod test_groups;
+
+/// The labels the tests are selected by.
+#[cfg(test)]
+mod test_harness;
 
 /// The tests that boot QEMU, and the contract suite against it.
 #[cfg(test)]

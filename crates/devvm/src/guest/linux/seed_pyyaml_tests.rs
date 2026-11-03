@@ -9,7 +9,7 @@ use serde_json::json;
 
 use super::seed_files;
 use crate::guest::{SeedKeys, SeedSpec};
-use crate::test_support::claims::PYYAML;
+use crate::test_groups::{Group, pyyaml};
 use crate::test_support::fixtures::unicode_home;
 
 /// Scalar values per case.
@@ -25,18 +25,11 @@ const CONTEXTS: [Context; 3] = [
     ("before ---", |c| format!("{c}--- ")),
 ];
 
-/// Runs the test only where a job claims it. Without a claim the test is ignored and the reason says where it runs, so a
-/// local run never reads as covering PyYAML. Where claimed, a missing `uv` or PyYAML fails the test.
-fn pyyaml_claimed() -> Result<(), String> {
-    match PYYAML.is_made() {
-        true => Ok(()),
-        false => Err("no PyYAML claimed; covered by CI (Test job on ubuntu-latest, which installs uv)".to_owned()),
-    }
-}
-
-#[skuld::test(requires = [pyyaml_claimed])]
+/// A host without `uv` or PyYAML fails the test.
+#[skuld::test]
 fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hostname(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(pyyaml)] _group: &Group,
 ) {
     let all: Vec<char> = (0..=0x10_FFFF).filter_map(char::from_u32).collect();
     let cases: Vec<serde_json::Value> = all

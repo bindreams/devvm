@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::host::names::{posix_problem, windows_colon_path, windows_problem};
-use crate::test_support::claims::NTFS_NAMES;
+use crate::test_groups::{Group, ntfs_names};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -94,17 +94,6 @@ fn windows_refuses_a_name_over_255_utf16_units() {
 
 // Measured on NTFS ====================================================================================================
 
-/// `Ok` when this run claims an NTFS temp directory.
-fn ntfs_claimed() -> Result<(), String> {
-    match NTFS_NAMES.is_made() {
-        true => Ok(()),
-        false => Err(format!(
-            "{} is not set; what NTFS stores is measured in CI (Test step on windows-latest)",
-            NTFS_NAMES.var
-        )),
-    }
-}
-
 /// Whether what is written to the file `path` is what is read from it, so the name is a file and not a device.
 fn round_trip(path: &Path) -> Result<(), String> {
     std::fs::write(path, b"stored").map_err(|e| format!("write failed: {e}"))?;
@@ -141,8 +130,11 @@ fn stored(dir: &Path, name: &str) -> Result<(), String> {
 
 /// `windows_problem` is what NTFS does, for the names the rules name and the ones they did not know. Trailing dots and
 /// spaces and device names are the copy contract's, so they are not probed.
-#[skuld::test(requires = [ntfs_claimed])]
-fn windows_problem_agrees_with_what_ntfs_stores(#[fixture(unicode_home)] home: &Path) {
+#[skuld::test]
+fn windows_problem_agrees_with_what_ntfs_stores(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(ntfs_names)] _group: &Group,
+) {
     let names = [
         // Plain.
         "a",
