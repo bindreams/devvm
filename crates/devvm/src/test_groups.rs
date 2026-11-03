@@ -9,9 +9,6 @@
 //! Every group is on by default. A test joins with `#[fixture(<fixture>)] _group: &Group`. CI turns the groups a job
 //! cannot run off workflow-wide and each lane opts the ones it runs back in (`.github/workflows/ci.yaml`).
 
-#[path = "test_groups_tests.rs"]
-mod test_groups_tests;
-
 use crate::host;
 
 /// Proof that the group is enabled (and consented to, where asked).
@@ -101,12 +98,7 @@ test_group!(UNICODE_SOCKET_DIR => unicode_socket_dir, env = "DEVVM_TEST_UNICODE_
 
 /// The `ACP_1252` group's precondition: this process's ANSI code page is 1252.
 fn host_has_code_page_1252(enabled_var: &str) -> Result<(), String> {
-    requires_code_page_1252(enabled_var, host::current().ansi_code_page())
-}
-
-/// [`host_has_code_page_1252`] for the code page `acp` (`None` on a host without one).
-pub(crate) fn requires_code_page_1252(enabled_var: &str, acp: Option<u32>) -> Result<(), String> {
-    match acp {
+    match host::current().ansi_code_page() {
         Some(1252) => Ok(()),
         Some(other) => Err(format!(
             "the group needs ANSI code page 1252, and this host's is {other}; set {enabled_var}=0 to turn it off"

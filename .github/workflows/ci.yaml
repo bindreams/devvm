@@ -93,8 +93,6 @@ jobs:
           DEVVM_TEST_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '0' }}
           # The Windows runner's ANSI code page is 1252.
           DEVVM_TEST_ACP_1252: ${{ runner.os == 'Windows' && '1' || '0' }}
-          # The macOS temp directory leaves no room for a socket path with non-ASCII characters.
-          DEVVM_TEST_UNICODE_SOCKET_DIR: ${{ runner.os == 'macOS' && '0' || '1' }}
 
       # The copy tests again, against OpenSSH's own sftp-server instead of the scripted one.
       - name: Install OpenSSH's SFTP server

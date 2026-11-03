@@ -72,7 +72,7 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
         .arg(&script)
         .arg(&cases_path)
         .output()
-        .expect("`uv` must be installed to read the seed with PyYAML; CI installs it");
+        .expect("`uv` must be installed to read the seed with PyYAML (set DEVVM_TEST_PYYAML=0 to turn the group off)");
     assert!(
         output.status.success(),
         "PyYAML does not read the seed back exactly ({}):\n{}{}",

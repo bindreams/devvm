@@ -92,14 +92,13 @@ fn has_space_and_non_ascii(path: &Path) -> bool {
 }
 
 /// The precondition of the `unicode_socket_dir` test group, for the tests of non-ASCII socket paths: `Err` where the
-/// socket directory has no space or no non-ASCII character (only a temporary directory that has neither fits: macOS) or
-/// none fits at all, since they would check nothing there.
+/// socket directory has no space or no non-ASCII character, or none fits at all, since they would check nothing there.
 pub fn unicode_socket_dir_fits() -> Result<(), String> {
     let temp = std::env::temp_dir();
     match socket_dir_that_fits() {
         Some(dir) if has_space_and_non_ascii(&dir) => Ok(()),
         found => Err(format!(
-            "{} the temporary directory {} is {} bytes and a socket path is limited to {}; covered by the Windows jobs",
+            "{} the temporary directory {} is {} bytes and a socket path is limited to {}",
             if found.is_some() {
                 "no non-ASCII directory fits a socket path:"
             } else {
