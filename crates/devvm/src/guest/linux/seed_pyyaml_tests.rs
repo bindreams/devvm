@@ -15,6 +15,9 @@ use crate::test_support::fixtures::unicode_home;
 /// Scalar values per case.
 const CHUNK: usize = 4096;
 
+/// The label of the case the reader must find different in every field.
+const CANARY: &str = "canary";
+
 type Context = (&'static str, fn(char) -> String);
 
 /// How each scalar value is surrounded in a field. PyYAML drops spaces around a line break and reads `---` after one as
@@ -88,6 +91,20 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
             }
         })
         .collect();
+    // A copy of the first case whose every expected value is one code point longer: the reader must report each of its
+    // fields, or it compared nothing.
+    let mut canary = Case {
+        label: CANARY.to_owned(),
+        meta_data: cases[0].meta_data.clone(),
+        user_data: cases[0].user_data.clone(),
+        expected: cases[0].expected.clone(),
+    };
+    for (_, value) in &mut canary.expected {
+        value.push('!');
+    }
+    let canary_fields: Vec<&str> = canary.expected.iter().map(|(field, _)| *field).collect();
+    let mut cases = cases;
+    cases.push(canary);
     let cases_path = home.join("cases.json");
     let read_path = home.join("read.json");
     std::fs::write(&cases_path, serde_json::to_vec(&cases).unwrap()).unwrap();
@@ -107,7 +124,7 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
             String::from_utf8_lossy(&output.stderr),
         ));
     }
-    let report: Report = std::fs::read(&read_path)
+    let report: Vec<String> = std::fs::read(&read_path)
         .map_err(|e| e.to_string())
         .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
         .unwrap_or_else(|e| {
@@ -116,22 +133,30 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
                 read_path.display()
             ))
         });
-    let fields: usize = cases.iter().map(|case| case.expected.len()).sum();
-    assert_eq!(
-        report.compared, fields,
-        "the PyYAML reader gave a verdict on {} of {fields} fields",
-        report.compared
-    );
+    let canary_prefix = format!("{CANARY}: ");
+    let (canary_lines, differences): (Vec<&String>, Vec<&String>) =
+        report.iter().partition(|line| line.starts_with(&canary_prefix));
     assert!(
-        report.differences.is_empty(),
+        differences.is_empty(),
         "PyYAML does not read the seed back exactly:\n{}",
-        report.differences.join("\n"),
+        differences
+            .iter()
+            .map(|line| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
-}
-
-/// What `seed_pyyaml.py` writes; its docstring has the contract.
-#[derive(serde::Deserialize)]
-struct Report {
-    compared: usize,
-    differences: Vec<String>,
+    let reported: Vec<&str> = canary_lines
+        .iter()
+        .map(|line| line[canary_prefix.len()..].split(" differs at ").next().unwrap())
+        .collect();
+    assert_eq!(
+        reported,
+        canary_fields,
+        "the PyYAML reader must report every field of the {CANARY} case as different; it reported:\n{}",
+        canary_lines
+            .iter()
+            .map(|line| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 }
