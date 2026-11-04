@@ -1,12 +1,11 @@
 //! A hold off Windows: an exclusive `flock`, which belongs to the open file and so to every duplicate of it, an
 //! inherited descriptor included.
 
-use std::ffi::OsString;
 use std::fs::{File, Metadata, OpenOptions, TryLockError};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::host::{FileId, Hold, HoldOutcome};
+use crate::host::{FileId, Hold, HoldOutcome, new_name};
 
 /// The identity of the object a `Metadata` describes, as the host gives it (`FileModes::identity`).
 pub(super) type Identity<'a> = &'a dyn Fn(&Metadata) -> Option<FileId>;
@@ -47,18 +46,11 @@ fn link_error(error: std::io::Error, path: &Path) -> std::io::Error {
     )
 }
 
-/// `path` with `.new` after it: where a hold is made before it has its name.
-fn private_name(path: &Path) -> PathBuf {
-    let mut name: OsString = path.as_os_str().to_owned();
-    name.push(".new");
-    PathBuf::from(name)
-}
-
 /// Creates `path` with `options` (private to the user) and holds it. The name never exists without the hold: the file
 /// is made and locked under its private name, and then linked to `path`, which fails if `path` exists
 /// (`AlreadyExists`, as does a file at the private name, which is another launch's claim in the making).
 pub(super) fn new(mut options: OpenOptions, path: &Path, identity: Identity) -> std::io::Result<Box<dyn Hold>> {
-    let private = private_name(path);
+    let private = new_name(path);
     let file = options.read(true).write(true).create_new(true).open(&private)?;
     let made = match file.try_lock() {
         Ok(()) => FlockHold::of(file, path, identity).and_then(|hold| {

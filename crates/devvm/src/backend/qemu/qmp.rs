@@ -33,10 +33,29 @@ mod qmp_windows_tests;
 
 // Endpoint ============================================================================================================
 
+/// The bytes a launch's name is the hex of.
+const DRAW_BYTES: usize = 8;
+
+/// What follows a launch's 16 hex digits in the names of its three files: the socket, the lock of QMP sessions
+/// (`<socket>.lock`) and the claim (`<socket>.hold`).
+const SOCKET_SUFFIX: &str = ".sock";
+const LOCK_SUFFIX: &str = ".lock";
+const HOLD_SUFFIX: &str = ".hold";
+
+/// Which of a launch's three files a name is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LaunchFileKind {
+    Socket,
+    Lock,
+    Claim,
+}
+
 /// Where a machine's QMP socket is, and the files beside it.
 ///
 /// A launch's names are `<run>/<16 hex>.sock` (QEMU makes it), `<name>.lock` (the lock of QMP sessions) and
-/// `<name>.hold` (the launch's claim on the name, held by QEMU while it runs).
+/// `<name>.hold` (the launch's claim on the name, held by QEMU while it runs). The names are built by
+/// [`QmpEndpoint::drawn`], [`QmpEndpoint::lock_path`] and [`QmpEndpoint::hold_path`], and read back by
+/// [`QmpEndpoint::launch_file`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QmpEndpoint {
     path: PathBuf,
@@ -54,7 +73,8 @@ pub(crate) struct Reservation {
 
 /// The longest socket path a launch in `run` can draw, in the bytes that `sun_path` counts.
 fn longest_socket_path(run: &Path) -> usize {
-    run.join(format!("{}.sock", "0".repeat(16)))
+    QmpEndpoint::drawn(run, [0; DRAW_BYTES])
+        .path
         .as_os_str()
         .as_encoded_bytes()
         .len()
@@ -79,7 +99,11 @@ impl QmpEndpoint {
     /// naming the directory, the limit and `XDG_RUNTIME_DIR`). A name whose claim file exists is drawn again, and so is
     /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete): there is
     /// no limit on the draws.
-    pub(crate) fn reserve_with(host: &dyn Host, run: &Path, draw: &mut dyn FnMut() -> [u8; 8]) -> Result<Reservation> {
+    pub(crate) fn reserve_with(
+        host: &dyn Host,
+        run: &Path,
+        draw: &mut dyn FnMut() -> [u8; DRAW_BYTES],
+    ) -> Result<Reservation> {
         let max = host.socket_path_max();
         if !QmpEndpoint::fits(run, max) {
             let bytes = longest_socket_path(run);
@@ -105,9 +129,7 @@ impl QmpEndpoint {
         let mut directory = FileLock::open_in_existing_dir(&run.join("runtime.lock"))?;
         directory.lock(Mode::Shared, "a sweep of the runtime directory", &NullProgress)?;
         loop {
-            let endpoint = QmpEndpoint {
-                path: run.join(format!("{}.sock", hex::encode(draw()))),
-            };
+            let endpoint = QmpEndpoint::drawn(run, draw());
             let hold_path = endpoint.hold_path();
             let hold = match host.hold_new(&hold_path) {
                 Ok(hold) => hold,
@@ -151,6 +173,30 @@ impl QmpEndpoint {
         }
     }
 
+    /// The endpoint of the launch whose name is the hex of `draw`, in `run`.
+    pub(crate) fn drawn(run: &Path, draw: [u8; DRAW_BYTES]) -> QmpEndpoint {
+        QmpEndpoint::of_launch(run, &hex::encode(draw))
+    }
+
+    /// The endpoint of the launch named `launch` (16 hex digits), in `run`.
+    pub(crate) fn of_launch(run: &Path, launch: &str) -> QmpEndpoint {
+        QmpEndpoint::from_path(run.join(format!("{launch}{SOCKET_SUFFIX}")))
+    }
+
+    /// The launch (its 16 lowercase hex digits) and the kind of file, if `file_name` is one of a launch's three
+    /// files: the inverse of [`QmpEndpoint::drawn`], [`QmpEndpoint::lock_path`] and [`QmpEndpoint::hold_path`].
+    pub(crate) fn launch_file(file_name: &str) -> Option<(&str, LaunchFileKind)> {
+        let (stem, kind) = if let Some(stem) = file_name.strip_suffix(HOLD_SUFFIX) {
+            (stem, LaunchFileKind::Claim)
+        } else if let Some(stem) = file_name.strip_suffix(LOCK_SUFFIX) {
+            (stem, LaunchFileKind::Lock)
+        } else {
+            (file_name, LaunchFileKind::Socket)
+        };
+        let launch = stem.strip_suffix(SOCKET_SUFFIX)?;
+        random::is_hex(launch, DRAW_BYTES).then_some((launch, kind))
+    }
+
     /// The endpoint whose socket is at `path`.
     pub(crate) fn from_path(path: PathBuf) -> QmpEndpoint {
         QmpEndpoint { path }
@@ -167,12 +213,12 @@ impl QmpEndpoint {
 
     /// `<socket path>.lock`: held by whoever talks to the socket, so that QMP use is serialized across processes.
     pub(crate) fn lock_path(&self) -> PathBuf {
-        self.beside(".lock")
+        self.beside(LOCK_SUFFIX)
     }
 
     /// `<socket path>.hold`: the launch's claim, held by QEMU for as long as it runs.
     pub(crate) fn hold_path(&self) -> PathBuf {
-        self.beside(".hold")
+        self.beside(HOLD_SUFFIX)
     }
 
     fn beside(&self, suffix: &str) -> PathBuf {

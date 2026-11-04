@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::host::names::{posix_problem, unix_run_dir, windows_colon_path, windows_problem, windows_run_dir};
+use crate::random;
 use crate::test_groups::{Group, ntfs_names};
 use crate::test_support::fixtures::unicode_home;
 
@@ -237,11 +238,7 @@ fn the_directory_name_is_16_hex_of_the_sid_hash_for_any_sid_length() {
         let dir = windows_run_dir(program_data, sid);
         let name = dir.file_name().unwrap().to_str().unwrap();
         let hex = name.strip_prefix("devvm-run-").unwrap_or_else(|| panic!("{name}"));
-        assert_eq!(hex.len(), 16, "{name}");
-        assert!(
-            hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-            "{name}"
-        );
+        assert!(random::is_hex(hex, 8), "{name}");
         assert_eq!(dir.parent().unwrap(), program_data);
         // The socket path under it, `<dir>\<16 hex>.sock`, is the same length for every account.
         assert_eq!(dir.to_string_lossy().len() + 1 + 21, 63, "{sid}");

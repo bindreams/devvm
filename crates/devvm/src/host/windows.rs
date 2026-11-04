@@ -286,7 +286,7 @@ impl Host for WindowsHost {
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
-        hold::new(path)
+        Ok(Box::new(hold::new(path)?))
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

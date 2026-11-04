@@ -9,18 +9,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use super::backend::QemuBackend;
-use super::qmp::QmpEndpoint;
+use super::qmp::{LaunchFileKind, QmpEndpoint};
 use crate::backend::remove_held;
-use crate::host::{HoldOutcome, claim_of_deleting_name, is_16_hex};
+use crate::host::{HoldOutcome, claim_of_deleting_name, claim_of_new_name};
 use crate::store::lock::{FileLock, Mode};
-
-/// The 16 lowercase hex digits that name a launch, if `file_name` is one of its three files.
-fn launch_of(file_name: &str) -> Option<&str> {
-    let stem = [".sock.hold", ".sock.lock", ".sock"]
-        .iter()
-        .find_map(|suffix| file_name.strip_suffix(suffix))?;
-    is_16_hex(stem).then_some(stem)
-}
 
 /// Which private name of a claim file a file is.
 enum PrivateClaimKind {
@@ -32,8 +24,8 @@ enum PrivateClaimKind {
 
 /// The private name of a claim file that `file_name` is, if it is one.
 fn private_claim_kind(file_name: &str) -> Option<PrivateClaimKind> {
-    let is_of_a_launch = |name: &str| name.ends_with(".sock.hold") && launch_of(name).is_some();
-    if let Some(claim) = file_name.strip_suffix(".new")
+    let is_of_a_launch = |name: &str| matches!(QmpEndpoint::launch_file(name), Some((_, LaunchFileKind::Claim)));
+    if let Some(claim) = claim_of_new_name(file_name)
         && is_of_a_launch(claim)
     {
         Some(PrivateClaimKind::New)
@@ -110,7 +102,7 @@ impl QemuBackend {
             let Some(name) = name.to_str().filter(|_| is_file) else {
                 continue;
             };
-            if let Some(launch) = launch_of(name) {
+            if let Some((launch, _)) = QmpEndpoint::launch_file(name) {
                 launches.insert(launch.to_owned());
             } else if let Some(kind) = private_claim_kind(name) {
                 private_claims.push((entry.path(), kind));
@@ -136,7 +128,7 @@ impl QemuBackend {
     }
 
     fn sweep_launch(&self, run: &Path, launch: &str, warn: &mut dyn FnMut(String)) {
-        let endpoint = QmpEndpoint::from_path(run.join(format!("{launch}.sock")));
+        let endpoint = QmpEndpoint::of_launch(run, launch);
         let (socket, lock, claim) = (
             endpoint.path().to_path_buf(),
             endpoint.lock_path(),

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::random;
 use crate::recipe::hash::{
     CopyManifest, EntryContent, KeyContext, LayerKey, ManifestEntry, RootContent, STEP_SEMANTICS_VERSION, chain_keys,
     root_key, root_key_with, step_key, step_key_with,
@@ -425,8 +426,7 @@ fn child_disk_override_changes_every_layer_key_of_the_chain(#[fixture(unicode_ho
 fn layer_key_displays_and_parses_as_32_hex() {
     let key = Chain::base().last();
     let text = key.to_string();
-    assert_eq!(text.len(), 32);
-    assert!(text.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    assert!(random::is_hex(&text, 16));
     assert_eq!(text.parse::<LayerKey>().unwrap(), key);
     assert_eq!(text.to_uppercase().parse::<LayerKey>().unwrap(), key);
     for bad in ["", "abc", &text[..31], &format!("{text}0"), &format!("g{}", &text[1..])] {

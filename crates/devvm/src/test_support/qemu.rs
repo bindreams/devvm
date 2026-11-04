@@ -123,7 +123,7 @@ impl Drop for ScratchRun {
 }
 
 pub fn scratch_run() -> ScratchRun {
-    let run = socket_dir().join(format!("r{}", hex::encode(random::bytes::<3>())[..5].to_owned()));
+    let run = socket_dir().join(format!("r{}", &hex::encode(random::bytes::<3>())[..5]));
     make_run_dir(&run);
     assert!(
         QmpEndpoint::fits(&run, host::current().socket_path_max()),

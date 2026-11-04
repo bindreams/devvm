@@ -39,7 +39,15 @@ pub(crate) mod windows;
 
 pub(crate) use entry::{Entry, is_absent};
 pub(crate) use file_id::FileId;
-pub(crate) use hold::{Hold, HoldOutcome, claim_of_deleting_name, deleting_name, is_16_hex};
+#[cfg_attr(
+    not(windows),
+    allow(
+        unused_imports,
+        reason = "only the Windows host renames a claim file away; the tests use it everywhere"
+    )
+)]
+pub(crate) use hold::deleting_name;
+pub(crate) use hold::{Hold, HoldOutcome, claim_of_deleting_name, claim_of_new_name, new_name};
 pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(any(unix, windows)))]

@@ -24,10 +24,12 @@ use super::wide;
 use crate::host::{FileId, Hold, HoldOutcome, deleting_name};
 use crate::random;
 
-/// Whether `error` says the file system does not do the `*Ex` form of a disposition. `std`'s `File::delete`
+/// Whether `error` says the file system does not do the `*Ex` form of a call: it gates both fallbacks here, the
+/// disposition ([`mark_deleted`]) and the rename (`rename_to`). `std`'s `File::delete`
 /// (`library/std/src/sys/fs/windows.rs`) falls back from `posix_delete` to `win32_delete` on exactly these three:
 /// `ERROR_INVALID_PARAMETER` and `ERROR_NOT_SUPPORTED`, which `posix_delete` documents (FAT32, exFAT, SMB, Windows
-/// before 10 1607), and `ERROR_INVALID_FUNCTION`.
+/// before 10 1607), and `ERROR_INVALID_FUNCTION`. `std`'s `rename` has no fallback of its own (`MoveFileExW`, then
+/// `FileRenameInfoEx` for a read-only file), so the rename here takes the delete's three.
 fn is_unsupported(error: &std::io::Error) -> bool {
     matches!(
         error.raw_os_error().map(|code| code as u32),
@@ -59,14 +61,22 @@ impl Failure {
         Failure { error, status }
     }
 
-    /// Whether the file is somebody else's to finish: held (`ERROR_SHARING_VIOLATION`), or its deletion is pending. A
-    /// pending deletion is `ERROR_ACCESS_DENIED` like a real refusal, and the status tells them apart.
+    /// Whether a file's deletion is pending: `ERROR_ACCESS_DENIED` like a real refusal, and the status tells them
+    /// apart.
+    fn is_delete_pending(&self) -> bool {
+        self.error.raw_os_error().map(|code| code as u32) == Some(ERROR_ACCESS_DENIED)
+            && self.status == STATUS_DELETE_PENDING
+    }
+
+    /// Whether the file is somebody else's to finish: held (`ERROR_SHARING_VIOLATION`), or its deletion is pending.
     fn is_another_deleters(&self) -> bool {
-        match self.error.raw_os_error().map(|code| code as u32) {
-            Some(ERROR_SHARING_VIOLATION) => true,
-            Some(ERROR_ACCESS_DENIED) => self.status == STATUS_DELETE_PENDING,
-            _ => false,
-        }
+        self.error.raw_os_error().map(|code| code as u32) == Some(ERROR_SHARING_VIOLATION) || self.is_delete_pending()
+    }
+
+    /// Whether a rename found its new name taken: a file is there (`AlreadyExists`), or one whose deletion is pending,
+    /// which a rename refuses as it would a real refusal.
+    fn is_name_taken(&self) -> bool {
+        self.error.kind() == std::io::ErrorKind::AlreadyExists || self.is_delete_pending()
     }
 }
 
@@ -132,20 +142,21 @@ impl WindowsHold {
     /// another delete, a duplicate of another file or a scanner still has. The name the file had is free from here on,
     /// though the file keeps existing until every handle to it is closed.
     ///
-    /// Falls back where [`is_unsupported`], and returns the fallback's error when it fails too. A name that exists is
-    /// not replaced: the digits are drawn again, with no limit on the draws.
+    /// Falls back where [`is_unsupported`], and returns the fallback's error when it fails too. A name that is taken
+    /// ([`Failure::is_name_taken`]: it exists, or its deletion is pending) is not replaced: the digits are drawn again,
+    /// with no limit on the draws.
     fn rename_away_with(&self, draw: &mut dyn FnMut() -> [u8; 8]) -> std::io::Result<()> {
         loop {
             let name = wide(Path::new(&deleting_name(&self.path, draw())))?;
             match self.rename_to(&name) {
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                renamed => return renamed,
+                Err(failure) if failure.is_name_taken() => continue,
+                renamed => return renamed.map_err(|failure| failure.error),
             }
         }
     }
 
     /// Renames the file to `name`, a NUL-terminated wide path, which is not replaced if it exists.
-    fn rename_to(&self, name: &[u16]) -> std::io::Result<()> {
+    fn rename_to(&self, name: &[u16]) -> Result<(), Failure> {
         let name = &name[..name.len() - 1]; // the NUL: the name's length is stated, not terminated
         let name_bytes = std::mem::size_of_val(name);
         // `u64` units give the buffer the alignment of `FILE_RENAME_INFO`.
@@ -166,9 +177,9 @@ impl WindowsHold {
         if renamed != 0 {
             return Ok(());
         }
-        let error = std::io::Error::last_os_error();
-        if !is_unsupported(&error) {
-            return Err(error);
+        let failure = Failure::last();
+        if !is_unsupported(&failure.error) {
+            return Err(failure);
         }
         // SAFETY: as above; the union's `Flags` are cleared, so its `ReplaceIfExists` is false.
         let renamed = unsafe {
@@ -176,7 +187,7 @@ impl WindowsHold {
             SetFileInformationByHandle(self.file.as_raw_handle(), FileRenameInfo, info.cast(), size)
         };
         if renamed == 0 {
-            return Err(std::io::Error::last_os_error());
+            return Err(Failure::last());
         }
         Ok(())
     }
@@ -236,9 +247,9 @@ fn options() -> OpenOptions {
     options
 }
 
-pub(super) fn new(path: &Path) -> std::io::Result<Box<dyn Hold>> {
+pub(super) fn new(path: &Path) -> std::io::Result<WindowsHold> {
     let file = options().create_new(true).open(path)?;
-    Ok(Box::new(WindowsHold::of(file, path)?))
+    WindowsHold::of(file, path)
 }
 
 /// Holds the file at `path` if nobody else does. A link at the name is opened itself, not followed, and refused.

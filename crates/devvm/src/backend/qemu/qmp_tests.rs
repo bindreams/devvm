@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use super::{Qmp, QmpEndpoint, VmEnd};
+use super::{LaunchFileKind, Qmp, QmpEndpoint, VmEnd};
 use crate::ErrorKind;
 use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
 use crate::host::{self, HoldOutcome, Link, ProcessWatch};
+use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, unicode_socket_dir};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress};
@@ -178,6 +179,29 @@ fn names_in(dir: &Path) -> Vec<String> {
     names
 }
 
+/// The sweep reads back what a launch wrote.
+#[skuld::test]
+fn a_launch_files_name_gives_back_its_launch_and_kind() {
+    let endpoint = QmpEndpoint::drawn(Path::new("run"), [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]);
+    let name = |path: &Path| path.file_name().unwrap().to_str().unwrap().to_owned();
+
+    for (path, kind) in [
+        (endpoint.path().to_path_buf(), LaunchFileKind::Socket),
+        (endpoint.lock_path(), LaunchFileKind::Lock),
+        (endpoint.hold_path(), LaunchFileKind::Claim),
+    ] {
+        assert_eq!(
+            QmpEndpoint::launch_file(&name(&path)),
+            Some(("0123456789abcdef", kind)),
+            "{}",
+            path.display()
+        );
+    }
+    assert_eq!(QmpEndpoint::of_launch(Path::new("run"), "0123456789abcdef"), endpoint);
+    assert_eq!(QmpEndpoint::launch_file("0123456789abcdef.hold"), None);
+    assert_eq!(QmpEndpoint::launch_file("0123456789ABCDEF.sock"), None);
+}
+
 #[skuld::test]
 fn reserve_makes_a_16_hex_sock_name_with_a_hold_beside_it_and_creates_the_directory() {
     let parent = scratch_run();
@@ -194,11 +218,7 @@ fn reserve_makes_a_16_hex_sock_name_with_a_hold_beside_it_and_creates_the_direct
         .to_string_lossy()
         .into_owned();
     let hex = name.strip_suffix(".sock").unwrap_or_else(|| panic!("{name}"));
-    assert_eq!(hex.len(), 16, "{name}");
-    assert!(
-        hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-        "{name}"
-    );
+    assert!(random::is_hex(hex, 8), "{name}");
     assert_eq!(reservation.endpoint.path().parent().unwrap(), run);
     assert_eq!(reservation.claim.path, reservation.endpoint.hold_path());
     assert_eq!(reservation.claim.path, run.join(format!("{name}.hold")));

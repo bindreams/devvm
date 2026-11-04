@@ -6,7 +6,7 @@ use crate::backend::Backend;
 use crate::backend::qemu::backend::QemuBackend;
 use crate::backend::qemu::qmp::QmpEndpoint;
 use crate::backend::qemu::storage::QemuStorage;
-use crate::host::{self, Hold, HoldOutcome};
+use crate::host::{self, Hold, HoldOutcome, deleting_name};
 use crate::instance::registry::Registry;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
@@ -78,8 +78,13 @@ impl Machine {
 }
 
 pub(super) const STEM_A: &str = "00000000000000aa";
-/// The 16 hex digits a delete puts between a claim file's name and `.del`.
-pub(super) const DELETING_HEX: &str = "0123456789abcdef";
+/// The deleting name of the claim file of the machine `STEM_A` in `run`.
+pub(super) fn deleting_name_of_a(run: &Path) -> PathBuf {
+    deleting_name(
+        &QmpEndpoint::of_launch(run, STEM_A).hold_path(),
+        [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
+    )
+}
 const STEM_B: &str = "00000000000000bb";
 
 #[skuld::test]
@@ -176,7 +181,7 @@ fn sweep_deletes_the_private_name_a_launch_left_when_it_died() {
 #[skuld::test]
 fn sweep_deletes_the_deleting_name_a_delete_left_when_it_died() {
     let run = run_with_a_lock();
-    let leftover = run.path().join(format!("{STEM_A}.sock.hold.{DELETING_HEX}.del"));
+    let leftover = deleting_name_of_a(run.path());
     std::fs::write(&leftover, b"").unwrap();
 
     assert_eq!(sweep(run.path()), Vec::<String>::new());
