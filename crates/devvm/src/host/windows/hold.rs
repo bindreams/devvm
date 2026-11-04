@@ -12,10 +12,10 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_FLAG_DELETE,
-    FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
-    FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, FileDispositionInfoEx, FileRenameInfo,
-    OPEN_EXISTING, SetFileInformationByHandle,
+    FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx, FileRenameInfo, OPEN_EXISTING,
+    SetFileInformationByHandle,
 };
 
 use super::file_id;
@@ -187,20 +187,23 @@ impl Hold for WindowsHold {
         file_id::of_handle(&self.file)
     }
 
-    /// Renames the file away through the handle and marks it for deletion, so no name is looked up again. A deleted
-    /// file keeps its name until the last handle to it closes (a name that is delete-pending refuses a new file with
-    /// `ERROR_ACCESS_DENIED`), and a handle can outlive this one: a child's, or a scanner's. The rename frees the name
-    /// at once; the file goes when the last handle closes.
+    /// Renames the file away through the handle and marks it for deletion, so no name is looked up again. A handle to
+    /// the same file object can outlive this one (a child's inherited copy), and the name stays until that file object
+    /// closes; the rename frees the final name at once. The marking has POSIX semantics, so the `.del` name goes when
+    /// the file object closes even while somebody else's open (a scanner's) lasts.
     fn delete(self: Box<Self>) -> std::io::Result<()> {
         self.rename_away()?;
-        let info = FILE_DISPOSITION_INFO { DeleteFile: true };
-        // SAFETY: the handle is open with `DELETE` access, and the buffer is a `FILE_DISPOSITION_INFO` of the size passed.
+        let info = FILE_DISPOSITION_INFO_EX {
+            Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        };
+        // SAFETY: the handle is open with `DELETE` access, and the buffer is a `FILE_DISPOSITION_INFO_EX` of the size
+        // passed.
         let marked = unsafe {
             SetFileInformationByHandle(
                 self.file.as_raw_handle(),
-                FileDispositionInfo,
+                FileDispositionInfoEx,
                 (&raw const info).cast(),
-                size_of::<FILE_DISPOSITION_INFO>() as u32,
+                size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
             )
         };
         if marked == 0 {

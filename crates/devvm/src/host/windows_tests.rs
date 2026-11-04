@@ -222,12 +222,8 @@ fn a_hold_deeper_than_max_path_is_deleted_and_leaves_no_name(#[fixture(unicode_h
 
     hold.delete().unwrap();
 
-    // A scanner's handle can keep the `.del` listed for a while; no other name may be left.
-    let left: Vec<OsString> = std::fs::read_dir(&parent)
-        .unwrap()
-        .map(|e| e.unwrap().file_name())
-        .collect();
-    assert!(left.iter().all(|name| name == "x.sock.hold.del"), "{left:?}");
+    // POSIX deletion: the name goes with the hold's file object, whoever else has the file open.
+    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
     assert!(matches!(WindowsHost.hold_existing(&path).unwrap(), HoldOutcome::Absent));
 }
 
