@@ -9,7 +9,7 @@ use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
-use crate::test_groups::{Group, openssh_sftp};
+use crate::test_groups::{Group, openssh_sftp, symlinks};
 use crate::test_harness::SFTP;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::RecordingHost;
@@ -153,7 +153,8 @@ impl Env {
         }
     }
 
-    /// The guest path `path` is a symlink holding `target`. An absolute target is a guest path.
+    /// The guest path `path` is a symlink holding `target`. An absolute target is a guest path. Under OpenSSH's server
+    /// this makes a host symlink, so a test that calls it joins `symlinks`.
     fn guest_link(&self, path: &str, target: &str) {
         if self.openssh {
             let target = if target.starts_with('/') {
@@ -701,7 +702,10 @@ fn cp_reports_a_missing_source_naming_the_side(#[fixture(unicode_home)] home: &P
 /// Links in a tree are copied as links, whatever they lead to: a file, a directory, nothing, themselves or their own
 /// directory.
 #[skuld::test]
-fn links_in_a_tree_are_copied_as_links_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+fn links_in_a_tree_are_copied_as_links_in_both_directions(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     env.host_file("pack/real.txt", b"real");
     std::fs::create_dir(env.local.join("pack").join("sub")).unwrap();
@@ -741,6 +745,7 @@ fn links_in_a_tree_are_copied_as_links_in_both_directions(#[fixture(unicode_home
 #[skuld::test(requires = [scripted_server])]
 fn a_guest_link_whose_target_the_guest_refuses_to_look_at_is_an_error_naming_it_for_a_host_with_link_kinds(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
 ) {
     for (status, said) in [
         (StatusCode::PermissionDenied, "Permission denied"),
@@ -766,6 +771,7 @@ fn a_guest_link_whose_target_the_guest_refuses_to_look_at_is_an_error_naming_it_
 #[skuld::test(requires = [scripted_server])]
 fn a_guest_link_whose_target_the_guest_refuses_to_look_at_is_copied_as_a_link_for_a_host_without_link_kinds(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
 ) {
     for status in [StatusCode::PermissionDenied, StatusCode::BadMessage] {
         let home = home.join(format!("{status:?}"));
@@ -786,7 +792,10 @@ fn a_guest_link_whose_target_the_guest_refuses_to_look_at_is_copied_as_a_link_fo
 
 /// A host with link kinds is told what each link leads to: a directory, a file, or nothing (a file link).
 #[skuld::test]
-fn a_host_with_link_kinds_is_told_what_each_guest_link_leads_to(#[fixture(unicode_home)] home: &Path) {
+fn a_host_with_link_kinds_is_told_what_each_guest_link_leads_to(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let mut env = Env::new(home);
     env.host = RecordingHost::with_link_kinds(true);
     env.guest_file("pack/real.txt", b"real");
@@ -802,6 +811,7 @@ fn a_host_with_link_kinds_is_told_what_each_guest_link_leads_to(#[fixture(unicod
 #[skuld::test]
 fn a_link_given_as_the_source_is_copied_as_a_link_and_with_a_slash_it_is_followed_once(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
 ) {
     let env = Env::new(home);
     env.host_file("real/a.txt", b"a");
@@ -830,7 +840,10 @@ fn a_link_given_as_the_source_is_copied_as_a_link_and_with_a_slash_it_is_followe
 /// `cp link/` fails when `link` leads to a file, and so does `file/`: the `/` asks for a directory. A host source is refused
 /// by the OS, a guest one by the copy (a server may stat `file/` as `file`).
 #[skuld::test]
-fn a_source_with_a_slash_that_is_not_a_directory_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+fn a_source_with_a_slash_that_is_not_a_directory_is_an_error_naming_it(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     let file = env.host_file("f.txt", b"f");
     symlink(&file, &env.local.join("lnk"));
@@ -853,7 +866,10 @@ fn a_source_with_a_slash_that_is_not_a_directory_is_an_error_naming_it(#[fixture
 }
 
 #[skuld::test]
-fn a_link_the_host_cannot_store_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+fn a_link_the_host_cannot_store_is_an_error_naming_it(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let mut env = Env::new(home);
     env.host = RecordingHost::without_symlinks();
     env.guest_file("t/a.txt", b"a");
@@ -882,6 +898,7 @@ fn a_guest_symlink_target_that_is_not_valid_utf8_is_refused_naming_the_link(#[fi
 #[skuld::test]
 fn a_read_only_target_and_a_symlink_at_the_destination_are_replaced_never_written_through(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
 ) {
     let env = Env::new(home);
     let src = env.host_file("src.txt", b"new");
@@ -915,7 +932,10 @@ fn a_read_only_target_and_a_symlink_at_the_destination_are_replaced_never_writte
 }
 
 #[skuld::test]
-fn a_symlink_child_met_while_merging_is_replaced_never_written_through(#[fixture(unicode_home)] home: &Path) {
+fn a_symlink_child_met_while_merging_is_replaced_never_written_through(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     env.host_file("t/a.txt", b"new a");
     env.host_file("t/sub/b.txt", b"new b");
@@ -951,7 +971,10 @@ fn a_symlink_child_met_while_merging_is_replaced_never_written_through(#[fixture
 }
 
 #[skuld::test]
-fn a_file_or_link_replaces_a_symlink_to_a_directory_met_while_merging(#[fixture(unicode_home)] home: &Path) {
+fn a_file_or_link_replaces_a_symlink_to_a_directory_met_while_merging(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     env.guest_file("g/plain", b"guest plain");
     env.guest_file("outside.txt", b"guest outside");
@@ -987,7 +1010,10 @@ fn a_file_or_link_replaces_a_symlink_to_a_directory_met_while_merging(#[fixture(
 /// The typed destination that is a link to a directory is followed, for a directory and a file source, with and without
 /// `/`. The link stays; a link met inside the merged tree is still replaced.
 #[skuld::test]
-fn a_destination_that_is_a_symlink_to_a_directory_is_followed_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+fn a_destination_that_is_a_symlink_to_a_directory_is_followed_in_both_directions(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     env.host_file("t/a.txt", b"new a");
     env.host_file("t/sub/b.txt", b"new b");
@@ -1060,7 +1086,10 @@ fn a_destination_that_is_a_symlink_to_a_directory_is_followed_in_both_directions
 /// A typed destination that is a link to a file (or to nothing) counts as a file: a directory onto it is an error
 /// naming both paths and leaves it alone; a file onto it replaces the link.
 #[skuld::test]
-fn a_destination_that_is_a_symlink_to_a_file_counts_as_a_file_in_both_directions(#[fixture(unicode_home)] home: &Path) {
+fn a_destination_that_is_a_symlink_to_a_file_counts_as_a_file_in_both_directions(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     let dir = env.local.join("t");
     env.host_file("t/a.txt", b"a");
@@ -1118,7 +1147,10 @@ fn a_destination_that_is_a_symlink_to_a_file_counts_as_a_file_in_both_directions
 
 /// A file onto a link to nothing replaces the link; with a `/` it is an error, in both directions.
 #[skuld::test]
-fn a_file_onto_a_dangling_link_replaces_it_and_with_a_slash_is_an_error(#[fixture(unicode_home)] home: &Path) {
+fn a_file_onto_a_dangling_link_replaces_it_and_with_a_slash_is_an_error(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     let file = env.host_file("f.txt", b"new");
     env.guest_link("/dangling", "/nowhere");
@@ -1147,6 +1179,7 @@ fn a_file_onto_a_dangling_link_replaces_it_and_with_a_slash_is_an_error(#[fixtur
 #[skuld::test]
 fn a_destination_link_that_cannot_be_looked_at_is_an_error_naming_it_and_the_cause(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
 ) {
     let env = Env::new(home);
     let dir = env.local.join("t");
@@ -1182,6 +1215,7 @@ fn a_destination_link_that_cannot_be_looked_at_is_an_error_naming_it_and_the_cau
 #[skuld::test]
 fn a_chain_of_guest_links_through_a_symlinked_parent_is_walked_where_the_links_really_are(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
 ) {
     let env = Env::new(home);
     let file = env.host_file("f.txt", b"new");
@@ -1217,7 +1251,10 @@ fn a_chain_of_guest_links_through_a_symlinked_parent_is_walked_where_the_links_r
 /// OpenSSH says "no such file" for a loop as for a link to nothing, so the guest's links are followed by hand: a chain
 /// that ends in nothing is dangling whatever its length, and relative links that lead back to themselves are a loop.
 #[skuld::test]
-fn a_chain_of_guest_links_is_dangling_or_a_loop_by_where_it_ends(#[fixture(unicode_home)] home: &Path) {
+fn a_chain_of_guest_links_is_dangling_or_a_loop_by_where_it_ends(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     let file = env.host_file("f.txt", b"new");
     env.guest_link("/c1", "/c2");
@@ -1249,6 +1286,7 @@ fn a_chain_of_guest_links_is_dangling_or_a_loop_by_where_it_ends(#[fixture(unico
 #[skuld::test]
 fn a_guest_link_that_leads_through_itself_is_a_loop_and_one_through_a_missing_directory_is_dangling(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
 ) {
     let env = Env::new(home);
     let file = env.host_file("f.txt", b"new");
@@ -1805,7 +1843,10 @@ fn a_guest_time_the_server_does_not_show_is_named_and_the_copy_goes_on(#[fixture
 // Checks before anything is written ===================================================================================
 
 #[skuld::test(requires = [scripted_server])]
-fn links_a_guest_cannot_store_fail_the_copy_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
+fn links_a_guest_cannot_store_fail_the_copy_before_anything_is_written(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::with(home, |options| options.no_symlinks = true);
     // The plain file sorts before the link and must not arrive.
     env.host_file("t/a.txt", b"a");
@@ -1826,7 +1867,10 @@ fn links_a_guest_cannot_store_fail_the_copy_before_anything_is_written(#[fixture
 }
 
 #[skuld::test]
-fn links_a_host_cannot_store_fail_the_copy_before_anything_is_written(#[fixture(unicode_home)] home: &Path) {
+fn links_a_host_cannot_store_fail_the_copy_before_anything_is_written(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let mut env = Env::new(home);
     env.host = RecordingHost::without_symlinks();
     env.guest_file("g/a.txt", b"a");
@@ -1844,7 +1888,7 @@ fn links_a_host_cannot_store_fail_the_copy_before_anything_is_written(#[fixture(
 }
 
 #[skuld::test]
-fn the_link_probe_leaves_nothing_behind(#[fixture(unicode_home)] home: &Path) {
+fn the_link_probe_leaves_nothing_behind(#[fixture(unicode_home)] home: &Path, #[fixture(symlinks)] _group: &Group) {
     let env = Env::new(home);
     env.host_file("t/a.txt", b"a");
     symlink(Path::new("a.txt"), &env.local.join("t").join("ln"));
@@ -1913,7 +1957,10 @@ fn a_file_going_inside_a_directory_onto_a_directory_of_its_name_writes_nothing(#
 }
 
 #[skuld::test]
-fn what_the_copy_replaces_is_not_checked_for_clashes_below_it(#[fixture(unicode_home)] home: &Path) {
+fn what_the_copy_replaces_is_not_checked_for_clashes_below_it(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::new(home);
     // The destination's `lnk` leads to a directory holding a file `f`. The copy replaces `lnk` by a directory, so the
     // source's directory `lnk/f` meets nothing.
@@ -1938,7 +1985,10 @@ fn what_the_copy_replaces_is_not_checked_for_clashes_below_it(#[fixture(unicode_
 
 /// The link probe makes a link at the destination, so it runs after the checks that can fail the copy.
 #[skuld::test(requires = [scripted_server])]
-fn a_clash_is_reported_before_the_guest_link_probe_makes_anything(#[fixture(unicode_home)] home: &Path) {
+fn a_clash_is_reported_before_the_guest_link_probe_makes_anything(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let env = Env::with(home, |options| options.no_symlinks = true);
     env.host_file("t/x", b"file");
     symlink(Path::new("x"), &env.local.join("t").join("ln"));
@@ -1949,7 +1999,10 @@ fn a_clash_is_reported_before_the_guest_link_probe_makes_anything(#[fixture(unic
 }
 
 #[skuld::test]
-fn a_clash_is_reported_before_the_host_link_probe_makes_anything(#[fixture(unicode_home)] home: &Path) {
+fn a_clash_is_reported_before_the_host_link_probe_makes_anything(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let mut env = Env::new(home);
     env.host = RecordingHost::without_symlinks();
     env.guest_file("g/x", b"file");

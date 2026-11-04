@@ -5,6 +5,7 @@ use super::{
     HostSide, finish_file, joined, lexically_normal, link_removal_failure, replace, without_trailing_separator,
 };
 use crate::access::sftp::copy::CopySide;
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{non_unicode_name, unicode_home};
 use crate::test_support::host::{RecordingHost, TestHost};
 use crate::test_support::symlink::symlink;
@@ -253,7 +254,10 @@ fn create_dir_on_an_existing_root_finds_it_there(#[fixture(unicode_home)] home: 
 }
 
 #[skuld::test]
-fn create_dir_does_not_follow_a_link_that_is_in_the_way(#[fixture(unicode_home)] home: &Path) {
+fn create_dir_does_not_follow_a_link_that_is_in_the_way(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let side = HostSide::new(&TestHost, Typed::none());
     let real = home.join("real");
     std::fs::create_dir(&real).unwrap();
@@ -351,7 +355,10 @@ fn a_move_whose_cleanup_fails_too_names_both(#[fixture(unicode_home)] home: &Pat
 /// Windows removes a symlink to a directory as a directory, which `remove_file` cannot do; the cleanup of a temporary
 /// link must not leave it behind.
 #[skuld::test]
-fn a_move_that_fails_removes_a_temporary_that_is_a_link_to_a_directory(#[fixture(unicode_home)] home: &Path) {
+fn a_move_that_fails_removes_a_temporary_that_is_a_link_to_a_directory(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let (aim, temp, target) = (home.join("aim"), home.join("partial"), home.join("tool"));
     std::fs::create_dir(&aim).unwrap();
     symlink(&aim, &temp);

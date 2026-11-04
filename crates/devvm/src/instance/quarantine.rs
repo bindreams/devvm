@@ -6,6 +6,7 @@ use crate::instance::locks::Probe;
 use crate::instance::reaper::ReapReport;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
 use crate::instance::registry::Registry;
+use crate::random;
 use crate::store::lock::FileLock;
 
 #[cfg(test)]
@@ -93,12 +94,10 @@ impl Registry {
                 }
             }
         }
-        let mut suffix = [0u8; 8];
-        getrandom::fill(&mut suffix).expect("the OS random number generator is available");
         let target = self
             .quarantine_root()
             .join("instances")
-            .join(format!("{name}-{}", hex::encode(suffix)));
+            .join(format!("{name}-{}", hex::encode(random::bytes::<8>())));
         match self
             .locks()
             .excluding_readers(&mut || {}, || move_if_unchanged(name, path, id, &target))

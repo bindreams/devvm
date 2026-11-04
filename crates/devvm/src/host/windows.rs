@@ -5,24 +5,30 @@ use std::fs::{File, FileType, OpenOptions};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
+use windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD;
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal, GetACP};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
+use super::Hold;
 use super::entry;
-use super::names::{windows_colon_path, windows_problem};
-use super::{Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
+use super::names::{windows_colon_path, windows_problem, windows_run_dir};
+use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
 use crate::exit::ExitWidth;
-use crate::{Arch, Result};
+use crate::{Arch, Error, ErrorKind, Result};
 
+mod file_id;
+mod hold;
 mod link;
+pub(crate) mod runtime_dir;
+pub(crate) mod user;
 mod watch;
 mod whpx;
 
@@ -32,8 +38,35 @@ mod windows_tests;
 
 pub(crate) use watch::WindowsWatch;
 
-/// `ERROR_PRIVILEGE_NOT_HELD`: the user may not create symlinks.
-const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+/// The most UTF-16 units a path has and stays plain: `std`'s `get_long_path` returns a path unprefixed only while its
+/// units and the NUL are fewer than its `LEGACY_MAX_PATH`, 248.
+const MAX_PLAIN_PATH_UNITS: usize = 246;
+
+/// `path` as the NUL-terminated UTF-16 a Win32 call takes: the one conversion for every call in this host that takes a
+/// path. An interior NUL is `InvalidInput`, since the call would read the path only as far as it. The path is made
+/// absolute. It gets the `\\?\` prefix (`\\?\UNC\` for a share) only when it is too long for the plain form, with
+/// `std`'s threshold, so a short path is read by Win32's name rules as `std::fs` reads it. A verbatim or a device
+/// path stays as it is.
+pub(crate) fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
+    if path.as_os_str().encode_wide().any(|unit| unit == 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "file name contained an unexpected NUL byte",
+        ));
+    }
+    let absolute = std::path::absolute(path)?;
+    let units: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+    let (head, rest): (&str, &[u16]) = match absolute.components().next() {
+        Some(Component::Prefix(prefix)) if units.len() > MAX_PLAIN_PATH_UNITS => match prefix.kind() {
+            Prefix::Disk(_) => (r"\\?\", &units),
+            // `\\server\share` becomes `\\?\UNC\server\share`.
+            Prefix::UNC(..) => (r"\\?\UNC\", &units[2..]),
+            _ => ("", &units),
+        },
+        _ => ("", &units),
+    };
+    Ok(head.encode_utf16().chain(rest.iter().copied()).chain(Some(0)).collect())
+}
 
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
 fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
@@ -68,6 +101,19 @@ impl Host for WindowsHost {
     /// `sun_path` is 108 bytes.
     fn socket_path_max(&self) -> usize {
         107
+    }
+
+    fn run_dir_default(&self, _var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        let cannot = |what: &str, source| {
+            Error::io(
+                ErrorKind::Config,
+                format!("cannot locate the runtime directory: {what}"),
+                source,
+            )
+        };
+        let program_data = user::program_data().map_err(|e| cannot("the ProgramData folder is unknown", e))?;
+        let sid = user::current_sid().map_err(|e| cannot("the process token's user is unknown", e))?;
+        Ok(windows_run_dir(&program_data, &sid))
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
@@ -181,13 +227,7 @@ impl Host for WindowsHost {
 
     /// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` fails with `ERROR_ALREADY_EXISTS` for anything at `to`.
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        let wide = |path: &Path| {
-            path.as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect::<Vec<u16>>()
-        };
-        let (from, to) = (wide(from), wide(to));
+        let (from, to) = (wide(from)?, wide(to)?);
         // SAFETY: both are NUL-terminated and outlive the call.
         let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) };
         if moved == 0 {
@@ -225,12 +265,36 @@ impl Host for WindowsHost {
             std::os::windows::fs::symlink_file(&target, link)
         };
         made.map_err(|e| match e.raw_os_error() {
-            Some(ERROR_PRIVILEGE_NOT_HELD) => std::io::Error::new(
+            Some(code) if code == ERROR_PRIVILEGE_NOT_HELD as i32 => std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "Windows lets only Developer Mode or an elevated token create symlinks",
             ),
             _ => e,
         })
+    }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        runtime_dir::create(dir)
+    }
+
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        runtime_dir::accept(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        file_id::of(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        Ok(Box::new(hold::new(path)?))
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        hold::existing(path)
+    }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        hold::remove_deleting_name(path)
     }
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {

@@ -1,8 +1,9 @@
 use std::io::Read;
 use std::path::Path;
 
-use super::Entry;
+use super::{Entry, symlink_metadata_if_present};
 use crate::host::current;
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
 
@@ -47,7 +48,10 @@ fn what_is_not_there_is_absent_whichever_component_is_missing(#[fixture(unicode_
 }
 
 #[skuld::test]
-fn a_symlink_at_the_end_is_a_symlink_and_is_not_followed(#[fixture(unicode_home)] home: &Path) {
+fn a_symlink_at_the_end_is_a_symlink_and_is_not_followed(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     std::fs::write(home.join("target.txt"), b"x").unwrap();
     std::fs::create_dir(home.join("target_dir")).unwrap();
     symlink(&home.join("target.txt"), &home.join("to_file"));
@@ -59,10 +63,43 @@ fn a_symlink_at_the_end_is_a_symlink_and_is_not_followed(#[fixture(unicode_home)
 }
 
 #[skuld::test]
-fn a_root_that_is_itself_a_symlink_is_followed(#[fixture(unicode_home)] home: &Path) {
+fn a_root_that_is_itself_a_symlink_is_followed(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let real = home.join("real");
     std::fs::create_dir(&real).unwrap();
     std::fs::write(real.join("f.txt"), b"x").unwrap();
     symlink(&real, &home.join("link"));
     assert!(matches!(open(&home.join("link"), "f.txt"), Entry::File(_)));
+}
+
+#[skuld::test]
+fn a_name_that_is_not_there_is_none_and_one_that_is_there_is_some(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("file"), b"x").unwrap();
+
+    assert!(symlink_metadata_if_present(&home.join("file")).unwrap().is_some());
+    assert!(symlink_metadata_if_present(&home.join("gone")).unwrap().is_none());
+    assert!(
+        symlink_metadata_if_present(&home.join("file").join("below"))
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A lookup that fails for another reason than absence says so: it is not an absent name.
+#[skuld::test]
+fn a_lookup_that_fails_for_another_reason_is_the_error(#[fixture(unicode_home)] home: &Path) {
+    let error = symlink_metadata_if_present(&home.join("a\0b")).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+}
+
+#[skuld::test]
+fn a_link_is_looked_at_not_followed(#[fixture(unicode_home)] home: &Path, #[fixture(symlinks)] _group: &Group) {
+    symlink(&home.join("nowhere"), &home.join("dangling"));
+
+    let meta = symlink_metadata_if_present(&home.join("dangling")).unwrap().unwrap();
+
+    assert!(meta.file_type().is_symlink());
 }

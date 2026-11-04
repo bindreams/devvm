@@ -90,6 +90,9 @@ impl Backend for StubBackend {
         &self.storage
     }
 
+    /// The stub's machines leave no files.
+    fn sweep(&self, _warn: &mut dyn FnMut(String)) {}
+
     fn can_save_memory(&self) -> bool {
         false
     }

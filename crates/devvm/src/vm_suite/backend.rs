@@ -17,18 +17,19 @@ use crate::backend::qemu::qmp::{Qmp, QmpEndpoint};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::{DISK, QemuStorage, VARS};
 use crate::backend::{
-    Backend, DeviceProfile, DiskBus, Endpoint, Firmware, Machine, MachineRecord, MachineSpec, NetModel, Storage,
+    Backend, DeviceProfile, DiskBus, Endpoint, FileClaim, Firmware, Machine, MachineRecord, MachineSpec, NetModel,
+    Storage,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::exit::StderrProgress;
-use crate::host::{self, Host, ProcessWatch};
+use crate::host::{self, HoldOutcome, Host, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
 use crate::test_groups::{Group, unicode_socket_dir, vm_group};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
-use crate::test_support::qemu::{assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, socket_dir};
+use crate::test_support::qemu::{ScratchRun, assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, scratch_run};
 use crate::{Arch, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
@@ -77,15 +78,19 @@ impl Backend for Observing {
         self.inner.storage()
     }
 
+    fn sweep(&self, warn: &mut dyn FnMut(String)) {
+        self.inner.sweep(warn);
+    }
+
     fn can_save_memory(&self) -> bool {
         self.inner.can_save_memory()
     }
 }
 
-fn backend_over(bin: &Path, host: &'static dyn Host) -> QemuBackend {
+fn backend_over(bin: &Path, host: &'static dyn Host, run: &Path) -> QemuBackend {
     let install = lazy_at(bin);
     let storage = Arc::new(QemuStorage::new(install.clone(), host));
-    QemuBackend::new(install, storage, host, socket_dir(), Arc::new(StderrProgress))
+    QemuBackend::new(install, storage, host, run.to_path_buf(), Arc::new(StderrProgress))
 }
 
 /// A spec for a firmware-only machine in `dir`, on the host's accelerator.
@@ -95,7 +100,6 @@ fn spec_in(dir: &Path, id: InstanceId, lifetime: Lifetime) -> MachineSpec {
         .unwrap_or_else(|e| panic!("the VM tests need WHPX: {e}; {}", vm_group::OPT_OUT));
     MachineSpec {
         id,
-        launch: 1,
         dir: dir.to_path_buf(),
         arch: Arch::Amd64,
         accel,
@@ -120,6 +124,8 @@ struct QemuTarget {
     backend: Arc<Observing>,
     install: Arc<QemuInstall>,
     watches: Arc<Watches>,
+    /// The runtime directory of this target's machines: its own, so a sweep of it sees no other test's files.
+    run: ScratchRun,
 }
 
 impl QemuTarget {
@@ -129,13 +135,15 @@ impl QemuTarget {
 
     fn on(install: &Arc<QemuInstall>, host: &'static dyn Host) -> QemuTarget {
         let watches = Arc::new(Watches::default());
+        let run = scratch_run();
         QemuTarget {
             backend: Arc::new(Observing {
-                inner: backend_over(&install.bin, host),
+                inner: backend_over(&install.bin, host, run.path()),
                 watches: watches.clone(),
             }),
             install: install.clone(),
             watches,
+            run,
         }
     }
 
@@ -204,6 +212,7 @@ impl ContractTarget for QemuTarget {
                 &self.install.bin.display().to_string(),
                 &spec.dir.display().to_string(),
                 &spec.id.to_string(),
+                &self.run.path().display().to_string(),
             ],
         )
         .output()
@@ -229,6 +238,7 @@ impl ContractTarget for QemuTarget {
             &[
                 &self.install.bin.display().to_string(),
                 &serde_json::to_string(record).unwrap(),
+                &self.run.path().display().to_string(),
             ],
         )
         .output()
@@ -260,16 +270,19 @@ impl ContractTarget for QemuTarget {
         self.endpoint(spec).path().exists() || std::fs::metadata(&spec.serial_log).is_ok_and(|log| log.len() > 0)
     }
 
-    fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf> {
-        let endpoint = self.endpoint(spec);
-        vec![endpoint.path().to_path_buf(), endpoint.lock_path()]
+    fn leftover_files(&self) -> Vec<PathBuf> {
+        std::fs::read_dir(self.run.path())
+            .expect("the run directory exists")
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|path| path.file_name().is_some_and(|name| name != "runtime.lock"))
+            .collect()
     }
 }
 
-/// Helper `qemu-launcher <qemu bin> <instance dir> <instance id>`: launches an `OutlivesOwner` machine, resumes and
+/// Helper `qemu-launcher <qemu bin> <instance dir> <instance id> <run dir>`: launches an `OutlivesOwner` machine, resumes and
 /// releases it, prints its record and exits, leaving the machine running. The disk was made by the test.
 pub(crate) fn qemu_launcher(args: &[String]) {
-    let backend = backend_over(Path::new(&args[0]), host::current());
+    let backend = backend_over(Path::new(&args[0]), host::current(), Path::new(&args[3]));
     let spec = spec_in(
         Path::new(&args[1]),
         args[2].parse().expect("the instance id"),
@@ -281,9 +294,9 @@ pub(crate) fn qemu_launcher(args: &[String]) {
     println!("{}", serde_json::to_string(&machine.record()).unwrap());
 }
 
-/// Helper `qemu-shutdown <qemu bin> <machine record json>`: attaches to the machine and shuts it down.
+/// Helper `qemu-shutdown <qemu bin> <machine record json> <run dir>`: attaches to the machine and shuts it down.
 pub(crate) fn qemu_shutdown(args: &[String]) {
-    let backend = backend_over(Path::new(&args[0]), host::current());
+    let backend = backend_over(Path::new(&args[0]), host::current(), Path::new(&args[2]));
     let record: MachineRecord = serde_json::from_str(&args[1]).expect("the argument is a machine record");
     backend
         .attach(&record)
@@ -306,16 +319,28 @@ fn watch_of(record: &MachineRecord) -> Arc<dyn ProcessWatch> {
     host::current().watch_process(vm.id()).unwrap()
 }
 
+/// A QMP session with the machine of `record`.
+fn session_of(record: &MachineRecord) -> Qmp {
+    let endpoint = QmpEndpoint::from_record(&record.qmp);
+    let claim = record.claim.as_ref().expect("a QEMU machine has a claim");
+    Qmp::connect(
+        host::current(),
+        &endpoint,
+        claim,
+        &watch_of(record),
+        &MemoryProgress::default(),
+    )
+    .unwrap()
+}
+
 /// The host port QEMU has bound for the machine's first forward, read over QMP.
 fn forwarded_host_port(record: &MachineRecord) -> u16 {
-    let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &watch_of(record), &MemoryProgress::default()).unwrap();
+    let mut qmp = session_of(record);
     qmp.forwarded_ports().unwrap()[0].host
 }
 
 fn run_state(record: &MachineRecord) -> String {
-    let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &watch_of(record), &MemoryProgress::default()).unwrap();
+    let mut qmp = session_of(record);
     qmp.query_status().unwrap().state
 }
 
@@ -407,12 +432,11 @@ fn vm_qemu_a_killed_frozen_machine_leaves_no_socket_file_no_lock_file_and_no_ser
 
     machine.kill().unwrap();
 
-    for leftover in target.leftovers(&spec) {
-        assert!(!leftover.exists(), "{} was left", leftover.display());
-    }
+    assert_eq!(target.leftover_files(), Vec::<PathBuf>::new());
     assert!(!spec.serial_log.exists() || std::fs::metadata(&spec.serial_log).unwrap().len() == 0);
 }
 
+/// What a late `Vm::drop` of an earlier machine does must not touch the files of a later one.
 #[skuld::test]
 fn vm_qemu_deleting_an_earlier_machines_leftovers_leaves_the_next_launches_files(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
@@ -423,60 +447,94 @@ fn vm_qemu_deleting_an_earlier_machines_leftovers_leaves_the_next_launches_files
     let mut first = target.backend().launch(&spec).unwrap();
     let first_record = first.record();
     first.kill().unwrap();
-    let next = MachineSpec {
-        launch: spec.launch + 1,
-        ..spec.clone()
-    };
-    let mut second = target.backend().launch(&next).unwrap();
+    let mut second = target.backend().launch(&spec).unwrap();
     let second_record = second.record();
     assert_ne!(
         first_record.qmp, second_record.qmp,
-        "a launch number has its own control socket"
+        "a launch has its own control socket"
     );
-    for path in &second_record.leftovers {
-        std::fs::write(path, b"second").unwrap();
-    }
 
-    // What a late `Vm::drop` of the first machine does.
-    first_record.remove_leftovers(&mut |message| panic!("{message}"));
+    // The machine is frozen, so QEMU has not made its socket yet: only the files the launch made exist.
+    let second_claim = second_record.claim.as_ref().expect("a QEMU machine has a claim");
+    let existing: Vec<&PathBuf> = second_record.leftovers.iter().filter(|path| path.exists()).collect();
+    assert!(existing.contains(&&second_claim.path), "the launch made its claim file");
 
-    for path in &second_record.leftovers {
+    first_record.remove_leftovers(host::current(), &mut |message| panic!("{message}"));
+
+    for path in existing {
         assert!(path.exists(), "{} was deleted", path.display());
     }
     second.kill().unwrap();
 }
 
+/// The hold is the proof of life: QEMU holds it from the spawn on, whether or not it ever ran, and the launcher's own
+/// copy is gone.
 #[skuld::test]
-fn vm_qemu_a_launch_whose_socket_name_is_taken_is_refused_and_spawns_nothing(
+fn vm_qemu_a_launched_machine_holds_its_claim_until_it_is_dead(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
     let target = QemuTarget::new(install);
     let (spec, _parent) = target.prepared(home, 0, |_| {});
-    let mut first = target.backend().launch(&spec).unwrap();
-    let first_record = first.record();
-    first.kill().unwrap();
-    // What an earlier machine's crashed cleanup leaves at the name the next launch of the same number would take.
-    std::fs::write(&first_record.qmp, b"stale").unwrap();
-    // A launch clears QEMU's working directory before it spawns; the refusal comes first, so the marker survives.
-    let marker = spec.dir.join("qemu-cwd").join("marker");
-    std::fs::write(&marker, b"untouched").unwrap();
+    let mut machine = target.backend().launch(&spec).unwrap();
+    let record = machine.record();
+    let claim = record.claim.clone().expect("a QEMU machine has a claim");
+    let busy = |claim: &FileClaim| matches!(host::current().hold_existing(&claim.path), Ok(HoldOutcome::Busy));
+    assert!(busy(&claim), "a frozen machine holds its claim");
 
-    let error = target.backend().launch(&spec).err().expect("the name is taken");
+    machine.resume().unwrap();
+    assert!(busy(&claim), "a running machine holds its claim");
+    let mut warnings = Vec::new();
+    record.remove_leftovers(host::current(), &mut |text| warnings.push(text));
+    assert_eq!(
+        warnings,
+        Vec::<String>::new(),
+        "a live machine's files are not deleted, silently"
+    );
+    assert!(record.leftovers.iter().all(|path| path.exists()));
 
-    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
-    assert!(error.message().contains(&first_record.qmp), "{error}");
-    assert_eq!(
-        std::fs::read(&first_record.qmp).unwrap(),
-        b"stale",
-        "the stale file is left alone"
-    );
-    assert_eq!(
-        std::fs::read(&marker).unwrap(),
-        b"untouched",
-        "the refusal came before the working directory was cleared and anything was spawned"
-    );
-    std::fs::remove_file(&first_record.qmp).unwrap();
+    machine.kill().unwrap();
+    assert!(!claim.path.exists(), "the claim goes with the machine");
+}
+
+/// A released machine outlives its launcher, and so does the hold: the process that launched it holds nothing.
+#[skuld::test]
+fn vm_qemu_a_released_machine_still_holds_its_claim_after_its_launcher_has_exited(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let target = QemuTarget::new(install);
+    let (spec, _parent) = target.prepared(home, 0, |_| {});
+    let record = target.launch_elsewhere(&spec).unwrap();
+    let claim = record.claim.clone().expect("a QEMU machine has a claim");
+
+    assert!(matches!(
+        host::current().hold_existing(&claim.path),
+        Ok(HoldOutcome::Busy)
+    ));
+
+    let mut machine = target.backend().attach(&record).unwrap();
+    machine.kill().unwrap();
+    assert!(!claim.path.exists());
+}
+
+/// What the runner launches with when `XDG_RUNTIME_DIR` is unset: the Windows default, `C:\ProgramData\devvm-run-<hash>`.
+#[skuld::test]
+fn vm_qemu_launches_in_the_default_runtime_directory(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let run = host::current().run_dir_default(&|_| None).unwrap();
+    let target = QemuTarget::new(install);
+    let (spec, _parent) = target.prepared(home, 0, |_| {});
+    let backend = backend_over(&install.bin, host::current(), &run);
+    let mut machine = backend.launch(&spec).unwrap();
+    assert!(machine.record().qmp.starts_with(&run.display().to_string()));
+
+    machine.resume().unwrap();
+
+    assert!(is_running(&machine.record()));
+    machine.kill().unwrap();
 }
 
 #[skuld::test]
@@ -533,15 +591,15 @@ fn vm_qemu_a_running_machine_leaves_no_leftovers_after_kill(
     let (spec, _parent) = target.prepared(home, 0, |_| {});
     let mut machine = target.backend().launch(&spec).unwrap();
     machine.resume().unwrap();
-    for leftover in target.leftovers(&spec) {
-        assert!(leftover.exists(), "a running machine has {}", leftover.display());
-    }
+    let running = target.leftover_files();
+    assert!(
+        running.contains(&target.endpoint(&spec).path().to_path_buf()),
+        "a running machine has its socket: {running:?}"
+    );
 
     machine.kill().unwrap();
 
-    for leftover in target.leftovers(&spec) {
-        assert!(!leftover.exists(), "kill left {}", leftover.display());
-    }
+    assert_eq!(target.leftover_files(), Vec::<PathBuf>::new(), "kill left files");
     // `ended_gracefully` is false for a process nobody watched, so the exit code must have been seen.
     let code = target.watches.processes.lock().unwrap()[&spec.id].exit_code();
     assert!(code.is_some(), "no exit code was observed after the kill");
@@ -741,13 +799,7 @@ fn vm_qemu_shutdown_of_a_paused_machine_fails_naming_the_state_and_returns(
     let mut machine = target.backend().launch(&spec).unwrap();
     machine.resume().unwrap();
     let record = machine.record();
-    {
-        let endpoint = QmpEndpoint::from_record(&record.qmp);
-        Qmp::connect(&endpoint, &watch_of(&record), &MemoryProgress::default())
-            .unwrap()
-            .stop()
-            .unwrap();
-    }
+    session_of(&record).stop().unwrap();
 
     let error = machine.shutdown().unwrap_err();
 
@@ -770,14 +822,7 @@ fn vm_qemu_reset_of_a_paused_machine_fails_naming_the_state_and_returns(
     let (spec, _parent) = target.prepared(home, 0, |_| {});
     let mut machine = target.backend().launch(&spec).unwrap();
     machine.resume().unwrap();
-    {
-        let record = machine.record();
-        let endpoint = QmpEndpoint::from_record(&record.qmp);
-        Qmp::connect(&endpoint, &watch_of(&record), &MemoryProgress::default())
-            .unwrap()
-            .stop()
-            .unwrap();
-    }
+    session_of(&machine.record()).stop().unwrap();
 
     let error = machine.reset().unwrap_err();
 

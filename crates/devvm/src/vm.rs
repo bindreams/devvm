@@ -51,7 +51,7 @@ pub trait Guest {
 /// Deletes what `machine` left outside the instance directory. Call it only once the machine is proven dead; a file
 /// that cannot be deleted is a warning naming the instance.
 pub(crate) fn remove_leftovers(engine: &Engine, dir: &InstanceDir, machine: &MachineRecord) {
-    machine.remove_leftovers(&mut warn_for(engine, dir));
+    machine.remove_leftovers(engine.host(), &mut warn_for(engine, dir));
 }
 
 /// Reports a problem with the files of a dead machine of `dir` on the progress channel, naming the instance.
@@ -145,7 +145,7 @@ impl Instance {
         if let Some(mut running) = self.engine.backend()?.find(&machine)? {
             running.shutdown()?;
         }
-        dir.retire_machine(&op, &machine, &mut warn_for(&self.engine, dir))
+        dir.retire_machine(&op, &machine, self.engine.host(), &mut warn_for(&self.engine, dir))
     }
 
     /// Kills the VM by its recorded identity and deletes the instance. Waits for other commands working on it; if
@@ -159,7 +159,7 @@ impl Instance {
                 running.kill()?;
             }
             // A destroy that fails below must not leave a record naming a dead machine.
-            dir.retire_machine(&op, machine, &mut warn_for(&self.engine, dir))?;
+            dir.retire_machine(&op, machine, self.engine.host(), &mut warn_for(&self.engine, dir))?;
         }
         dir.destroy(op)?;
         self.engine

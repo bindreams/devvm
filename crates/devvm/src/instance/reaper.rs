@@ -13,6 +13,8 @@
 //!    - otherwise: take the owner lock without waiting (held: skip), re-read the marker (`none`: skip), take the op lock
 //!      without waiting (busy: skip), kill the recorded VM through its identity, then remove the instance.
 //! 4. Lock files whose owner lock is free and that no directory (placed, `.new` or `.dead`) belongs to are deleted.
+//! 5. The backend sweeps what machines left outside the instance directories (`Backend::sweep`). Those files are not
+//!    this state directory's: the runtime directory is shared by every devvm setup of the user.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -85,6 +87,9 @@ impl Registry {
             Err(e) => report.warn(self, format!("cannot list instances: {}", e.message())),
         }
         self.sweep_locks(&mut report);
+        if let Some(backend) = self.backend() {
+            backend.sweep(&mut |text| report.warn(self, text));
+        }
         report
     }
 
@@ -293,7 +298,7 @@ impl Registry {
                 }
             }
             // The machine is dead, so what it left outside the instance directory can go.
-            let retired = dir.retire_machine(&op, machine, &mut |text| {
+            let retired = dir.retire_machine(&op, machine, self.host(), &mut |text| {
                 report.warn(self, format!("instance {name}: {text}"))
             });
             if let Err(e) = retired {

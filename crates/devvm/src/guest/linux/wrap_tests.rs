@@ -4,6 +4,7 @@ use std::process::Stdio;
 
 use super::{script, wrap};
 use crate::host::Host;
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::host::TestHost;
 use crate::test_support::symlink::symlink;
 use crate::{Command, ErrorKind, RunAs};
@@ -294,7 +295,7 @@ fn a_working_directory_is_entered_literally_whatever_cdpath_and_its_first_charac
 }
 
 #[skuld::test]
-fn a_working_directory_is_resolved_physically_as_the_kernel_does() {
+fn a_working_directory_is_resolved_physically_as_the_kernel_does(#[fixture(symlinks)] _group: &Group) {
     // `base/link` leads to `base/real/deeper`. The kernel resolves `link/..` to `base/real`; a logical `cd` folds the
     // `..` textually and enters `base`.
     let tmp = skuld::TempDir::new().unwrap();

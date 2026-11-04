@@ -1,7 +1,7 @@
 //! Hosts for the tests: one whose accelerator always works, and one that has none.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
-use crate::host::{self, Accel, Entry, Host, ProcessWatch, SystemDirs, Unavailable, names};
+use crate::host::{self, Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, names};
 use crate::{Arch, Result};
 
 /// Reports TCG as the accelerator and delegates everything else to the real host, so the real `detach` is the one the
@@ -27,6 +27,10 @@ impl Host for TestHost {
 
     fn socket_path_max(&self) -> usize {
         host::current().socket_path_max()
+    }
+
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        host::current().run_dir_default(var)
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
@@ -108,6 +112,30 @@ impl Host for TestHost {
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         host::current().open_entry(root, rel)
     }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().create_runtime_dir(dir)
+    }
+
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().accept_runtime_dir(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        host::current().file_id(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        host::current().hold_new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        host::current().hold_existing(path)
+    }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        host::current().remove_deleting_name(path)
+    }
 }
 
 /// What [`NoAccelHost`] says is missing.
@@ -129,6 +157,10 @@ impl Host for NoAccelHost {
 
     fn socket_path_max(&self) -> usize {
         TestHost.socket_path_max()
+    }
+
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        TestHost.run_dir_default(var)
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
@@ -210,6 +242,30 @@ impl Host for NoAccelHost {
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         TestHost.open_entry(root, rel)
     }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.create_runtime_dir(dir)
+    }
+
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.accept_runtime_dir(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        TestHost.file_id(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        TestHost.hold_new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        TestHost.hold_existing(path)
+    }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        TestHost.remove_deleting_name(path)
+    }
 }
 
 /// [`TestHost`] that records the file-permission calls and can be told to fail a private write, to report files as
@@ -228,6 +284,12 @@ pub struct RecordingHost {
     executable: Mutex<HashSet<PathBuf>>,
     set_executable_calls: Mutex<Vec<PathBuf>>,
     fail_set_executable: AtomicBool,
+    /// `create_runtime_dir` removes the directory it has just made, as a user or a cleaner may between two calls.
+    remove_runtime_dirs: AtomicBool,
+    /// Every `file_id` fails: a test that needs the identity of a held file to come from the hold, not from its name.
+    fail_file_id: AtomicBool,
+    /// The paths given to `hold_new`, in call order, failed calls included.
+    holds_made: Mutex<Vec<PathBuf>>,
     directory_calls: Mutex<Vec<DirectoryCall>>,
     fail_sync_dir_of: Mutex<Option<PathBuf>>,
 }
@@ -292,6 +354,21 @@ impl RecordingHost {
         self.fail_set_executable.store(true, Ordering::SeqCst);
     }
 
+    /// Makes `create_runtime_dir` remove the directory right after making it.
+    pub fn remove_runtime_dirs_after_making_them(&self) {
+        self.remove_runtime_dirs.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes every `file_id` fail.
+    pub fn fail_file_id(&self) {
+        self.fail_file_id.store(true, Ordering::SeqCst);
+    }
+
+    /// The paths given to `hold_new`, in call order.
+    pub fn holds_made(&self) -> Vec<PathBuf> {
+        self.holds_made.lock().unwrap().clone()
+    }
+
     /// Makes `is_executable` say yes for `path`.
     pub fn mark_executable(&self, path: &Path) {
         self.executable.lock().unwrap().insert(path.to_owned());
@@ -323,6 +400,10 @@ impl Host for RecordingHost {
 
     fn socket_path_max(&self) -> usize {
         TestHost.socket_path_max()
+    }
+
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        TestHost.run_dir_default(var)
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
@@ -426,6 +507,8 @@ impl Host for RecordingHost {
         self.link_kinds.unwrap_or_else(|| TestHost.symlinks_have_kinds())
     }
 
+    /// Records the call, then fails or makes a real symlink through [`TestHost`]: a test that lets it reach `TestHost`
+    /// joins the `symlinks` group.
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         self.symlinks_made.lock().unwrap().push(to_dir);
         if self.no_symlinks {
@@ -439,6 +522,38 @@ impl Host for RecordingHost {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         TestHost.open_entry(root, rel)
+    }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.create_runtime_dir(dir)?;
+        if self.remove_runtime_dirs.load(Ordering::SeqCst) {
+            std::fs::remove_dir(dir)?;
+        }
+        Ok(())
+    }
+
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        TestHost.accept_runtime_dir(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        if self.fail_file_id.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("the test host looks up no file by name"));
+        }
+        TestHost.file_id(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        self.holds_made.lock().unwrap().push(path.to_owned());
+        TestHost.hold_new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        TestHost.hold_existing(path)
+    }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        TestHost.remove_deleting_name(path)
     }
 }
 
@@ -464,6 +579,10 @@ impl Host for NoGuestReset {
 
     fn socket_path_max(&self) -> usize {
         host::current().socket_path_max()
+    }
+
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
+        host::current().run_dir_default(var)
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
@@ -544,5 +663,29 @@ impl Host for NoGuestReset {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         host::current().open_entry(root, rel)
+    }
+
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().create_runtime_dir(dir)
+    }
+
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
+        host::current().accept_runtime_dir(dir)
+    }
+
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
+        host::current().file_id(path)
+    }
+
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        host::current().hold_new(path)
+    }
+
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
+        host::current().hold_existing(path)
+    }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        host::current().remove_deleting_name(path)
     }
 }

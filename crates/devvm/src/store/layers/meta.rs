@@ -7,6 +7,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::random;
 use crate::recipe::hash::LayerKey;
 use crate::{Error, ErrorKind, Result};
 
@@ -28,9 +29,7 @@ impl Generation {
 
     /// A fresh random generation.
     pub fn random() -> Generation {
-        let mut bytes = [0u8; 16];
-        getrandom::fill(&mut bytes).expect("the OS random number generator is available");
-        Generation(bytes)
+        Generation(random::bytes())
     }
 }
 

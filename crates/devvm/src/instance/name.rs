@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::random;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -44,9 +45,7 @@ impl InstanceName {
 
     /// A fresh name, `run-` and eight random lowercase hex digits.
     pub(crate) fn generate() -> InstanceName {
-        let mut bytes = [0u8; 4];
-        getrandom::fill(&mut bytes).expect("the OS random number generator is available");
-        InstanceName(format!("run-{}", hex::encode(bytes)))
+        InstanceName(format!("run-{}", hex::encode(random::bytes::<4>())))
     }
 
     pub(crate) fn as_str(&self) -> &str {

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use rustix::io::Errno;
 
-use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, publish_with};
+use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with};
 use crate::host::{Entry, Host};
 use crate::test_support::fixtures::unicode_home;
 
@@ -26,6 +26,27 @@ fn only_a_missing_rename_is_told_from_a_refusal_of_this_one() {
     ] {
         assert!(!lacks_a_rename_that_refuses_to_replace(refusal), "{refusal}");
     }
+}
+
+/// `EACCES` is a `PermissionDenied` too, from a directory that cannot be written or a security module, and is no
+/// statement about hard links.
+#[skuld::test]
+fn only_a_file_system_without_hard_links_is_told_from_a_refusal_of_this_link() {
+    for lacking in [Errno::PERM, Errno::NOTSUP, Errno::OPNOTSUPP] {
+        assert!(lacks_hard_links(&std::io::Error::from(lacking)), "{lacking}");
+    }
+    for refusal in [
+        Errno::ACCESS,
+        Errno::EXIST,
+        Errno::NOENT,
+        Errno::NOSPC,
+        Errno::ROFS,
+        Errno::XDEV,
+        Errno::IO,
+    ] {
+        assert!(!lacks_hard_links(&std::io::Error::from(refusal)), "{refusal}");
+    }
+    assert!(!lacks_hard_links(&std::io::Error::other("no OS code")));
 }
 
 fn dir_with_a_file(home: &Path, name: &str) -> std::path::PathBuf {
@@ -113,4 +134,91 @@ fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_hom
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(found, Ok(Entry::File(_))), "{name}: {found:?}");
     }
+}
+
+// The runtime directory -----------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn the_runtime_directory_is_made_for_the_owner_alone(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    UnixHost.create_runtime_dir(&dir).unwrap();
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+}
+
+#[skuld::test]
+fn a_symlink_at_the_runtime_dir_path_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = home.join("run");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let error = UnixHost.create_runtime_dir(&link).unwrap_err();
+    assert!(error.to_string().contains("link"), "{error}");
+}
+
+#[skuld::test]
+fn a_symlink_at_the_runtime_dir_path_is_refused_by_the_check_that_makes_nothing(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = home.join("run");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let error = UnixHost.accept_runtime_dir(&link).unwrap_err();
+    assert!(error.to_string().contains("link"), "{error}");
+}
+
+/// A parent that cannot be searched hides the directory; the error names the directory. Mode bits do not bind root, so
+/// the test refuses to run as root.
+#[skuld::test]
+fn a_runtime_dir_behind_an_unsearchable_parent_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    // SAFETY: `geteuid` reads a process attribute.
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "directory modes do not bind root: run this test as another user"
+    );
+    let parent = home.join("locked");
+    std::fs::create_dir(&parent).unwrap();
+    let dir = parent.join("run");
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o0)).unwrap();
+    let error = UnixHost.accept_runtime_dir(&dir).unwrap_err();
+    // The temporary directory cannot be removed with the mode left as it is.
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
+    assert!(error.to_string().contains(&dir.display().to_string()), "{error}");
+}
+
+#[skuld::test]
+fn file_id_of_a_symlink_is_the_link_not_its_target(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::write(&target, b"").unwrap();
+    let link = home.join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_ne!(UnixHost.file_id(&link).unwrap(), UnixHost.file_id(&target).unwrap());
+}
+
+// Holds ---------------------------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn a_new_hold_is_private_to_the_user(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    let hold = UnixHost.hold_new(&path).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    drop(hold);
+}
+
+/// A name that is a link is not opened through: what it leads to is somebody else's file, and holding it would lock
+/// that file against its users.
+#[skuld::test]
+fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it(#[fixture(unicode_home)] home: &Path) {
+    let victim = home.join("victim");
+    std::fs::write(&victim, b"theirs").unwrap();
+    let link = home.join("x.sock.hold");
+    std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+    let error = UnixHost.hold_existing(&link).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+    assert!(error.to_string().contains("is a link"), "{error}");
+
+    assert_eq!(std::fs::read(&victim).unwrap(), b"theirs");
+    let file = std::fs::File::open(&victim).unwrap();
+    file.try_lock().expect("nobody holds the victim");
 }

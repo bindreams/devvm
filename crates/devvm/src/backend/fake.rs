@@ -12,13 +12,15 @@ use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
-    Backend, DeviceProfile, DiskBus, Endpoint, Machine, MachineRecord, MachineSpec, NetModel, SshEndpoint, Storage,
+    Backend, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel, SshEndpoint,
+    Storage,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
 use crate::instance::record::InstanceId;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerDir, LayerStore};
+use crate::test_support::claimed::claim_file;
 use crate::test_support::fake_vm;
 use crate::{Arch, Error, ErrorKind, Network, Result};
 
@@ -36,9 +38,15 @@ struct Leftovers {
     cleaned_by_kill: bool,
 }
 
-/// The files a fake machine of instance `id` creates under `dir`.
-pub(crate) fn leftover_paths(dir: &Path, id: &InstanceId) -> Vec<PathBuf> {
-    vec![dir.join(format!("{id}.sock")), dir.join(format!("{id}.sock.lock"))]
+/// The files the `launch`th fake machine of instance `id` creates under `dir`: a socket and a session lock, then the
+/// hold that is its claim (named as the QEMU backend names them). Every launch has names of its own, as a real one
+/// draws them, so a machine never meets the files of an earlier one.
+pub(crate) fn leftover_paths(dir: &Path, id: &InstanceId, launch: usize) -> Vec<PathBuf> {
+    vec![
+        dir.join(format!("{id}-{launch}.sock")),
+        dir.join(format!("{id}-{launch}.sock.lock")),
+        dir.join(format!("{id}-{launch}.sock.hold")),
+    ]
 }
 
 /// The file in a layer that an instance disk sits on.
@@ -52,6 +60,8 @@ pub(crate) struct FakeBackend {
     specs: Mutex<Vec<MachineSpec>>,
     /// How many times a machine of this backend was reset.
     resets: Arc<AtomicUsize>,
+    /// How many launches have named their files.
+    named: AtomicUsize,
     storage: FakeStorage,
 }
 
@@ -63,6 +73,7 @@ impl FakeBackend {
             leftovers: None,
             specs: Mutex::new(Vec::new()),
             resets: Arc::new(AtomicUsize::new(0)),
+            named: AtomicUsize::new(0),
             storage: FakeStorage,
         }
     }
@@ -97,6 +108,11 @@ impl FakeBackend {
     /// The spec of every machine launched through this backend, in launch order.
     pub(crate) fn specs(&self) -> Vec<MachineSpec> {
         self.specs.lock().unwrap().clone()
+    }
+
+    /// Makes the claim file `path`, which nothing holds afterwards: the fake VM is no process that could.
+    fn claim(&self, path: &Path) -> Result<FileClaim> {
+        claim_file(self.host, path).map_err(|e| Error::io(ErrorKind::Io, format!("cannot claim {}", path.display()), e))
     }
 
     fn cleaned_by_kill(&self) -> bool {
@@ -148,16 +164,21 @@ impl Backend for FakeBackend {
             spec.lifetime,
             &fake_vm::log(state_dir),
         )?;
+        let leftovers = match &self.leftovers {
+            Some(leftovers) => leftover_paths(&leftovers.dir, &spec.id, self.named.fetch_add(1, Ordering::SeqCst)),
+            None => Vec::new(),
+        };
+        let claim = match leftovers.last() {
+            Some(path) => Some(self.claim(path)?),
+            None => None,
+        };
         let record = MachineRecord {
             process: vm.record()?,
             qmp: String::new(),
             ssh: Vec::new(),
             serial_log: spec.serial_log.clone(),
-            leftovers: self
-                .leftovers
-                .as_ref()
-                .map(|leftovers| leftover_paths(&leftovers.dir, &spec.id))
-                .unwrap_or_default(),
+            leftovers,
+            claim,
             no_reboot: spec.profile.no_reboot,
         };
         let index = {
@@ -176,6 +197,7 @@ impl Backend for FakeBackend {
             cleaned_by_kill: self.cleaned_by_kill(),
             resets: self.resets.clone(),
             attached: false,
+            host: self.host,
         }))
     }
 
@@ -196,12 +218,17 @@ impl Backend for FakeBackend {
             cleaned_by_kill: self.cleaned_by_kill(),
             resets: self.resets.clone(),
             attached: true,
+            host: self.host,
         }))
     }
 
     fn storage(&self) -> &dyn Storage {
         &self.storage
     }
+
+    /// The fake's leftovers are deleted with its machine's record (`MachineRecord::remove_leftovers`), and nothing of
+    /// it is shared between setups, so there is nothing to sweep.
+    fn sweep(&self, _warn: &mut dyn FnMut(String)) {}
 
     fn can_save_memory(&self) -> bool {
         false
@@ -222,6 +249,7 @@ struct FakeMachine {
     resets: Arc<AtomicUsize>,
     /// Found with `attach`: already running, and not this process's to contain.
     attached: bool,
+    host: &'static dyn Host,
 }
 
 impl Machine for FakeMachine {
@@ -248,8 +276,9 @@ impl Machine for FakeMachine {
         if let Some((launched, index)) = &self.launched {
             launched.lock().unwrap()[*index] = self.record.clone();
         }
-        // The running machine creates its files.
-        for path in &self.record.leftovers {
+        // The running machine creates its files; the claim file was made at the launch.
+        let claim = self.record.claim.as_ref().map(|claim| &claim.path);
+        for path in self.record.leftovers.iter().filter(|path| Some(*path) != claim) {
             std::fs::write(path, b"")
                 .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", path.display()), e))?;
         }
@@ -333,7 +362,7 @@ impl FakeMachine {
     fn remove_leftovers(&self) -> Result<()> {
         if self.cleaned_by_kill {
             let mut failures = Vec::new();
-            self.record.remove_leftovers(&mut |text| failures.push(text));
+            self.record.remove_leftovers(self.host, &mut |text| failures.push(text));
             if !failures.is_empty() {
                 return Err(Error::new(ErrorKind::Io, failures.join("; ")));
             }
@@ -381,7 +410,6 @@ impl Storage for FakeStorage {
 pub(crate) fn fake_spec(disk: PathBuf, serial_log: PathBuf, lifetime: Lifetime) -> MachineSpec {
     MachineSpec {
         id: InstanceId::random(),
-        launch: 1,
         dir: disk.parent().expect("a disk has a directory").to_path_buf(),
         arch: Arch::Amd64,
         accel: Accel::Tcg,
@@ -477,8 +505,11 @@ impl ContractTarget for FakeTarget {
             .exists()
     }
 
-    fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf> {
-        leftover_paths(self.run_dir.path(), &spec.id)
+    fn leftover_files(&self) -> Vec<PathBuf> {
+        std::fs::read_dir(self.run_dir.path())
+            .expect("the run directory exists")
+            .map(|entry| entry.expect("a directory entry").path())
+            .collect()
     }
 
     fn launch_elsewhere(&self, spec: &MachineSpec) -> Result<MachineRecord> {

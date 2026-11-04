@@ -1,6 +1,6 @@
 //! Looking at one path below a root, by name.
 
-use std::fs::{self, File, FileType};
+use std::fs::{self, File, FileType, Metadata};
 use std::io;
 use std::path::Path;
 
@@ -23,12 +23,23 @@ pub(crate) enum Entry {
 }
 
 /// Whether `e` says the path is not there on this host: gone, below a file, or a name the host cannot hold (Windows
-/// reports `a|b` as an invalid name, not as absent).
+/// reports `a|b` as an invalid name, not as absent). The single definition of "not there": a lookup that fails for
+/// another reason has not found the path absent.
 pub(crate) fn is_absent(e: &io::Error) -> bool {
     matches!(
         e.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::NotADirectory | io::ErrorKind::InvalidFilename
     )
+}
+
+/// What is at `path`, not following a link: `None` when it is not there ([`is_absent`]), the error for any other
+/// failure.
+pub(crate) fn symlink_metadata_if_present(path: &Path) -> io::Result<Option<Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if is_absent(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// [`Host::open_entry`](super::Host::open_entry) for a host that supplies how a regular file is opened and how any
@@ -40,11 +51,10 @@ pub(super) fn open_entry(
     describe: fn(FileType) -> &'static str,
 ) -> io::Result<Entry> {
     let path = root.join(rel);
-    let kind = match fs::symlink_metadata(&path) {
-        Ok(meta) => meta.file_type(),
-        Err(e) if is_absent(&e) => return Ok(Entry::Absent),
-        Err(e) => return Err(e),
+    let Some(meta) = symlink_metadata_if_present(&path)? else {
+        return Ok(Entry::Absent);
     };
+    let kind = meta.file_type();
     if kind.is_symlink() {
         return Ok(Entry::Symlink);
     }

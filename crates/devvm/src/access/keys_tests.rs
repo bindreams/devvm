@@ -5,6 +5,7 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{DirectoryCall, RecordingHost, TestHost};
 use crate::test_support::symlink::symlink;
@@ -206,7 +207,10 @@ fn a_failed_flush_of_the_parent_after_publishing_is_a_warning_not_an_error(#[fix
 }
 
 #[skuld::test]
-fn a_dangling_link_at_the_final_path_is_not_replaced(#[fixture(unicode_home)] home: &Path) {
+fn a_dangling_link_at_the_final_path_is_not_replaced(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     // `exists()` follows the link and says no, so a check-then-rename would move the keys over it.
     let dir = home.join("keys");
     symlink(&home.join("nowhere"), &dir);
