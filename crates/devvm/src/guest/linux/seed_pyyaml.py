@@ -8,12 +8,17 @@ Usage: seed_pyyaml.py CASES.json OUT.json
 
 CASES.json is a list of {meta_data, user_data}: the text of the two seed files.
 
-OUT.json is a list with one entry per case, in order. An entry is an object with the keys "meta hostname",
-"user hostname", "client_public", "host_private" and "host_public", each the value PyYAML read there: a string as
-itself, anything else as {"type": <type name>, "repr": <repr>}. A string with surrogates (PyYAML makes them from
-"\\ud83d" escapes) is not UTF-8 text, and JSON would write it as escapes that a reader may join or reject, so it is
-reported as {"type": "str with surrogates", "repr": <repr>}. When PyYAML cannot load a file or the document lacks a
-key, the entry is {"error": "<exception type>: <first line of its message>"} instead.
+OUT.json is a list with one entry per case, in order. An entry is one of:
+
+- an object with the keys "meta hostname", "user hostname", "client_public", "host_private" and "host_public". Each
+  value is what PyYAML read there: a string as the list of its code points (ints, so a surrogate that PyYAML makes from
+  a "\\ud83d" escape travels like any other code point), anything else as {"type": <type name>, "repr": <ASCII-escaped
+  repr>};
+- {"error": "<exception type>: <first line of its message>"}, ASCII-escaped, when any exception is raised while
+  loading or navigating the case's documents (a file PyYAML cannot load, a key the document lacks, a value of the wrong
+  shape).
+
+OUT.json is therefore ASCII-safe JSON whatever the seed holds.
 
 Exits 0 after writing OUT.json. Any other exit, including a missing key in a case, means this script did not run to
 completion.
@@ -29,14 +34,14 @@ def load(text):
     return yaml.load(text, Loader=yaml.SafeLoader)
 
 
+def escaped(text):
+    return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
 def describe(value):
     if isinstance(value, str):
-        try:
-            value.encode("utf-8")
-        except UnicodeEncodeError:
-            return {"type": "str with surrogates", "repr": repr(value)}
-        return value
-    return {"type": type(value).__name__, "repr": repr(value)}
+        return [ord(c) for c in value]
+    return {"type": type(value).__name__, "repr": escaped(repr(value))}
 
 
 def read_back(meta_data, user_data):
@@ -62,7 +67,7 @@ def main(cases_path, out_path):
             results.append(read_back(meta_data, user_data))
         except Exception as e:
             first_line = (str(e).splitlines() or [""])[0]
-            results.append({"error": f"{type(e).__name__}: {first_line}"})
+            results.append({"error": escaped(f"{type(e).__name__}: {first_line}")})
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(results, f)
     return 0
