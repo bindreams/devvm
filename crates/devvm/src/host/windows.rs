@@ -38,10 +38,15 @@ mod windows_tests;
 
 pub(crate) use watch::WindowsWatch;
 
+/// The most UTF-16 units a path has and stays plain: `std`'s `get_long_path` (`library/std/src/sys/path/windows.rs`)
+/// returns a path unprefixed only while its units and the NUL are fewer than its `LEGACY_MAX_PATH`, 248.
+const MAX_PLAIN_PATH_UNITS: usize = 246;
+
 /// `path` as the NUL-terminated UTF-16 a Win32 call takes: the one conversion for every call in this host that takes a
 /// path. An interior NUL is `InvalidInput`, since the call would read the path only as far as it. The path is made
-/// absolute and gets the `\\?\` prefix (`\\?\UNC\` for a share), as `std` does, so a path longer than `MAX_PATH` works;
-/// a path that is already verbatim, or a device path, stays as it is.
+/// absolute. It gets the `\\?\` prefix (`\\?\UNC\` for a share) only when it is too long for the plain form, with
+/// `std`'s threshold, so a short path is read by Win32's name rules as `std::fs` reads it. A verbatim or a device
+/// path stays as it is.
 fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
     if path.as_os_str().encode_wide().any(|unit| unit == 0) {
         return Err(std::io::Error::new(
@@ -52,7 +57,7 @@ fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
     let absolute = std::path::absolute(path)?;
     let units: Vec<u16> = absolute.as_os_str().encode_wide().collect();
     let (head, rest): (&str, &[u16]) = match absolute.components().next() {
-        Some(Component::Prefix(prefix)) => match prefix.kind() {
+        Some(Component::Prefix(prefix)) if units.len() > MAX_PLAIN_PATH_UNITS => match prefix.kind() {
             Prefix::Disk(_) => (r"\\?\", &units),
             // `\\server\share` becomes `\\?\UNC\server\share`.
             Prefix::UNC(..) => (r"\\?\UNC\", &units[2..]),

@@ -1,15 +1,18 @@
 use std::fs::OpenOptions;
 use std::mem::size_of;
-use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_DISPOSITION_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
+    DELETE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_INFO,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, SetFileAttributesW,
     SetFileInformationByHandle,
 };
 
+use super::super::wide;
+use super::super::windows_tests::{long_dir, with_nul};
 use crate::host::{HoldOutcome, current};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
@@ -161,4 +164,69 @@ fn removing_a_deleting_name_that_is_not_there_is_not_found(#[fixture(unicode_hom
         .unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+}
+
+/// A path with a NUL is not read as far as the NUL: that would delete the file named before it.
+#[skuld::test]
+fn removing_a_deleting_name_with_a_nul_in_it_is_invalid_input_and_deletes_nothing(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let path = home.join("x.sock.hold.del");
+    std::fs::write(&path, b"left").unwrap();
+
+    let error = current().remove_deleting_name(&with_nul(&path)).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+    assert!(path.exists());
+}
+
+fn set_attributes(path: &Path, attributes: u32) -> std::io::Result<()> {
+    let path = wide(path)?;
+    // SAFETY: `path` is NUL-terminated.
+    match unsafe { SetFileAttributesW(path.as_ptr(), attributes) } {
+        0 => Err(std::io::Error::last_os_error()),
+        _ => Ok(()),
+    }
+}
+
+/// Removes the read-only file at `path` as a deleting name. The attribute is cleared, its error ignored, before the
+/// result is asserted, so a failure leaves a file the test directory's cleanup can delete.
+fn remove_read_only_deleting_name(path: &Path) {
+    std::fs::write(path, b"left").unwrap();
+    set_attributes(path, FILE_ATTRIBUTE_READONLY).unwrap();
+
+    let removed = current().remove_deleting_name(path);
+
+    let _ = set_attributes(path, FILE_ATTRIBUTE_NORMAL);
+    removed.unwrap();
+    assert!(!path.exists());
+}
+
+#[skuld::test]
+fn a_read_only_deleting_name_is_removed(#[fixture(unicode_home)] home: &Path) {
+    remove_read_only_deleting_name(&home.join("x.sock.hold.del"));
+}
+
+#[skuld::test]
+fn a_read_only_deleting_name_deeper_than_max_path_is_removed(#[fixture(unicode_home)] home: &Path) {
+    remove_read_only_deleting_name(&long_dir(home).join("x.sock.hold.del"));
+}
+
+/// No attribute of the file is changed to remove its name: one that a handle keeps open still has them all.
+#[skuld::test]
+fn removing_a_deleting_name_leaves_the_attributes_of_a_file_a_handle_keeps_open(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold.del");
+    std::fs::write(&path, b"left").unwrap();
+    let attributes = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN;
+    set_attributes(&path, attributes).unwrap();
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    let keeper = OpenOptions::new().read(true).share_mode(share).open(&path).unwrap();
+
+    let removed = current().remove_deleting_name(&path);
+
+    let kept = keeper.metadata().unwrap().file_attributes();
+    drop(keeper);
+    let _ = set_attributes(&path, FILE_ATTRIBUTE_NORMAL);
+    removed.unwrap();
+    assert_eq!(kept & attributes, attributes);
 }

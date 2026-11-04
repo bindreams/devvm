@@ -120,14 +120,14 @@ fn the_default_is_programdata_devvm_run_and_the_token_sid() {
 // Paths given to the Win32 calls --------------------------------------------------------------------------------------
 
 /// `path` with a NUL and a few more characters after it: a Win32 call reads it as far as the NUL.
-fn with_nul(path: &Path) -> PathBuf {
+pub(super) fn with_nul(path: &Path) -> PathBuf {
     let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
     units.extend([0, u16::from(b'x')]);
     PathBuf::from(OsString::from_wide(&units))
 }
 
 /// A directory under `home` whose path is longer than `MAX_PATH`.
-fn long_dir(home: &Path) -> PathBuf {
+pub(super) fn long_dir(home: &Path) -> PathBuf {
     let dir = home.join("a".repeat(100)).join("b".repeat(100)).join("c".repeat(100));
     std::fs::create_dir_all(&dir).unwrap();
     assert!(dir.as_os_str().len() > 260, "{}", dir.display());
@@ -141,27 +141,26 @@ fn converted(path: &str) -> String {
     String::from_utf16(&units).unwrap()
 }
 
+/// A short path stays plain, so Win32 reads its names by its name rules, as `std::fs` does.
 #[skuld::test]
-fn a_path_is_made_absolute_and_verbatim_a_share_as_unc_and_a_verbatim_path_stays() {
-    assert_eq!(converted(r"C:\a\b"), r"\\?\C:\a\b");
-    assert_eq!(converted("C:/a/../b"), r"\\?\C:\b");
-    assert_eq!(converted(r"\\server\share\x"), r"\\?\UNC\server\share\x");
+fn a_short_path_is_made_absolute_and_stays_plain_and_a_verbatim_or_device_path_stays() {
+    assert_eq!(converted(r"C:\a\b"), r"C:\a\b");
+    assert_eq!(converted("C:/a/../b"), r"C:\b");
+    assert_eq!(converted(r"\\server\share\x"), r"\\server\share\x");
     assert_eq!(converted(r"\\?\C:\a\b"), r"\\?\C:\a\b");
     assert_eq!(converted(r"\\?\UNC\server\share\x"), r"\\?\UNC\server\share\x");
     assert_eq!(converted(r"\\.\pipe\x"), r"\\.\pipe\x");
 }
 
+/// `std`'s `get_long_path` prefixes a path once its units and the NUL reach `LEGACY_MAX_PATH` (248): 247 units.
 #[skuld::test]
-fn removing_a_deleting_name_with_a_nul_in_it_is_invalid_input_and_deletes_nothing(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let path = home.join("x.sock.hold.del");
-    std::fs::write(&path, b"left").unwrap();
-
-    let error = WindowsHost.remove_deleting_name(&with_nul(&path)).unwrap_err();
-
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
-    assert!(path.exists());
+fn a_path_of_247_units_gets_the_verbatim_prefix_and_one_of_246_does_not() {
+    let disk = |units: usize| format!(r"C:\{}", "a".repeat(units - r"C:\".len()));
+    assert_eq!(converted(&disk(246)), disk(246));
+    assert_eq!(converted(&disk(247)), format!(r"\\?\{}", disk(247)));
+    let share = |units: usize| format!(r"\\server\share\{}", "a".repeat(units - r"\\server\share\".len()));
+    assert_eq!(converted(&share(246)), share(246));
+    assert_eq!(converted(&share(247)), format!(r"\\?\UNC\{}", &share(247)[2..]));
 }
 
 #[skuld::test]
@@ -202,40 +201,6 @@ fn a_deleting_name_deeper_than_max_path_is_removed(#[fixture(unicode_home)] home
     assert!(!path.exists());
 }
 
-/// Removes the read-only file at `path` as a deleting name. `DeleteFileW` refuses it with `ERROR_ACCESS_DENIED`, which
-/// is no pending deletion. The attribute is cleared before the result is read, so a failure leaves a file the test
-/// directory's cleanup can delete.
-#[allow(
-    clippy::permissions_set_readonly_false,
-    reason = "on Windows the flag is the read-only attribute, not Unix mode bits"
-)]
-fn remove_read_only_deleting_name(path: &Path) {
-    std::fs::write(path, b"left").unwrap();
-    let mut permissions = std::fs::metadata(path).unwrap().permissions();
-    permissions.set_readonly(true);
-    std::fs::set_permissions(path, permissions).unwrap();
-
-    let removed = WindowsHost.remove_deleting_name(path);
-
-    if let Ok(metadata) = std::fs::metadata(path) {
-        let mut permissions = metadata.permissions();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(path, permissions).unwrap();
-    }
-    removed.unwrap();
-    assert!(!path.exists());
-}
-
-#[skuld::test]
-fn a_read_only_deleting_name_is_removed(#[fixture(unicode_home)] home: &Path) {
-    remove_read_only_deleting_name(&home.join("x.sock.hold.del"));
-}
-
-#[skuld::test]
-fn a_read_only_deleting_name_deeper_than_max_path_is_removed(#[fixture(unicode_home)] home: &Path) {
-    remove_read_only_deleting_name(&long_dir(home).join("x.sock.hold.del"));
-}
-
 #[skuld::test]
 fn a_directory_deeper_than_max_path_is_published(#[fixture(unicode_home)] home: &Path) {
     let parent = long_dir(home);
@@ -257,7 +222,12 @@ fn a_hold_deeper_than_max_path_is_deleted_and_leaves_no_name(#[fixture(unicode_h
 
     hold.delete().unwrap();
 
-    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+    // A scanner's handle can keep the `.del` listed for a while; no other name may be left.
+    let left: Vec<OsString> = std::fs::read_dir(&parent)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(left.iter().all(|name| name == "x.sock.hold.del"), "{left:?}");
     assert!(matches!(WindowsHost.hold_existing(&path).unwrap(), HoldOutcome::Absent));
 }
 

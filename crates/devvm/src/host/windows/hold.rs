@@ -4,16 +4,18 @@ use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::mem::{offset_of, size_of};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_CANNOT_DELETE, STATUS_DELETE_PENDING,
+    ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, INVALID_HANDLE_VALUE, NTSTATUS, STATUS_DELETE_PENDING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, DeleteFileW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FileDispositionInfo,
-    FileRenameInfo, SetFileAttributesW, SetFileInformationByHandle,
+    CreateFileW, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_FLAG_DELETE,
+    FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
+    FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, FileDispositionInfoEx, FileRenameInfo,
+    OPEN_EXISTING, SetFileInformationByHandle,
 };
 
 use super::file_id;
@@ -78,9 +80,8 @@ unsafe extern "system" {
     fn RtlGetLastNtStatus() -> NTSTATUS;
 }
 
-/// Whether a failed `DeleteFileW` on a deleting name says that somebody else is deleting the file: it is held, or its
-/// deletion is pending. A pending deletion is `ERROR_ACCESS_DENIED`, like a real refusal, so the `status` tells them
-/// apart.
+/// Whether a failed call on a deleting name says that somebody else is deleting the file: it is held, or its deletion
+/// is pending. A pending deletion is `ERROR_ACCESS_DENIED`, like a real refusal, so the `status` tells them apart.
 fn is_deleted_by_another(error: &std::io::Error, status: NTSTATUS) -> bool {
     match error.raw_os_error() {
         Some(code) if code == ERROR_SHARING_VIOLATION as i32 => true,
@@ -89,42 +90,61 @@ fn is_deleted_by_another(error: &std::io::Error, status: NTSTATUS) -> bool {
     }
 }
 
-/// One `DeleteFileW`. A failure carries the `NTSTATUS` read at once, before anything else replaces the thread's last.
-fn delete_file(path: &[u16]) -> Result<(), (std::io::Error, NTSTATUS)> {
-    // SAFETY: `path` is NUL-terminated.
-    if unsafe { DeleteFileW(path.as_ptr()) } != 0 {
-        return Ok(());
-    }
+/// The outcome of `remove_deleting_name` for a call that has just failed: the `NTSTATUS` is read at once, before
+/// anything else replaces the thread's last.
+fn after_failure() -> std::io::Result<()> {
     let error = std::io::Error::last_os_error();
     // SAFETY: reads a thread-local status; no argument.
-    Err((error, unsafe { RtlGetLastNtStatus() }))
+    let status = unsafe { RtlGetLastNtStatus() };
+    if is_deleted_by_another(&error, status) {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
-/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name). The name is looked up by `DeleteFileW`
-/// alone. A file that is held, or whose deletion is pending, is somebody else's to finish. A read-only file
-/// (`STATUS_CANNOT_DELETE`) has the attribute cleared, and `DeleteFileW` runs once more with the same outcomes. Any
-/// other failure is the Win32 error as it is.
+/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name). The name is opened once, for `DELETE`,
+/// without following a link and without refusing anybody else's access, and the file is marked deleted through that
+/// handle, so no attribute is changed and no name is looked up twice. The marking has POSIX semantics, which unlink
+/// the name at once, and ignores the read-only attribute. A file that is held, or whose deletion is pending, is
+/// somebody else's to finish. Any other failure is the Win32 error as it is.
 pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
     let path = wide(path)?;
-    let (error, status) = match delete_file(&path) {
-        Ok(()) => return Ok(()),
-        Err(failure) => failure,
+    // SAFETY: `path` is NUL-terminated, and a null security descriptor and template are allowed.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
     };
-    if is_deleted_by_another(&error, status) {
-        return Ok(());
+    if handle == INVALID_HANDLE_VALUE {
+        return after_failure();
     }
-    if status != STATUS_CANNOT_DELETE {
-        return Err(error);
+    // SAFETY: `handle` is a valid handle that nothing else owns.
+    let file = unsafe { File::from_raw_handle(handle) };
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: the handle is open with `DELETE` access, and the buffer is a `FILE_DISPOSITION_INFO_EX` of the size passed.
+    let marked = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const info).cast(),
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    };
+    if marked == 0 {
+        return after_failure();
     }
-    // SAFETY: `path` is NUL-terminated.
-    if unsafe { SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    match delete_file(&path) {
-        Ok(()) => Ok(()),
-        Err((error, status)) if is_deleted_by_another(&error, status) => Ok(()),
-        Err((error, _)) => Err(error),
-    }
+    Ok(())
 }
 
 /// The options of a hold. Share mode 0 refuses every other open of the file, including DELETE, for as long as any
