@@ -7,12 +7,14 @@ use serde_json::{Value, json};
 
 use super::{LaunchFileKind, Qmp, QmpEndpoint, VmEnd};
 use crate::ErrorKind;
+use crate::backend::FileClaim;
 use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
 use crate::host::{self, HoldOutcome, Link, ProcessWatch};
 use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, unicode_socket_dir};
+use crate::test_support::claimed::claim_file;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress};
 use crate::test_support::host::RecordingHost;
 use crate::test_support::manual_exit::ManualExit;
@@ -159,7 +161,13 @@ impl Sock {
     }
 
     pub(crate) fn connect(&self) -> crate::Result<Qmp> {
-        Qmp::connect(&self.endpoint, &ManualExit::new().watch(), &MemoryProgress::default())
+        Qmp::connect(
+            host::current(),
+            &self.endpoint,
+            &self.claim,
+            &ManualExit::new().watch(),
+            &MemoryProgress::default(),
+        )
     }
 }
 
@@ -455,7 +463,16 @@ fn connect_waits_for_the_listener() {
     let exit = ManualExit::new().watch();
 
     std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).map(drop));
+        let client = scope.spawn(|| {
+            Qmp::connect(
+                host::current(),
+                &sock.endpoint,
+                &sock.claim,
+                &exit,
+                &MemoryProgress::default(),
+            )
+            .map(drop)
+        });
         let (server, _) = serve(sock.listen(), 1, |_, _| {});
         client.join().unwrap().unwrap();
         server.join().unwrap();
@@ -467,11 +484,136 @@ fn a_machine_that_has_exited_fails_before_a_lock_file_is_touched() {
     let sock = sock();
     let exit = ManualExit::new();
     exit.exit();
-    let error = Qmp::connect(&sock.endpoint, &exit.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &exit.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(!sock.endpoint.lock_path().exists());
+}
+
+// The launch's claim --------------------------------------------------------------------------------------------------
+
+/// `sock`'s claim, as a record would name it were the claim file another launch's: the same path, another file's
+/// identity.
+fn claim_of_another_file(sock: &Sock) -> FileClaim {
+    let other = claim_file(host::current(), &sock.endpoint.path().with_extension("other")).unwrap();
+    let _ = std::fs::remove_file(&other.path);
+    FileClaim {
+        path: sock.claim.path.clone(),
+        id: other.id,
+    }
+}
+
+/// Nothing listens, so a connect that got as far as the socket would wait for ever: an error is a refusal before it.
+#[skuld::test]
+fn connect_refuses_a_claim_that_names_another_file_before_the_lock_or_the_socket_is_touched() {
+    let sock = sock();
+    let claim = claim_of_another_file(&sock);
+
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &claim,
+        &ManualExit::new().watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("another launch's file"), "{error}");
+    assert!(
+        error
+            .message()
+            .contains(&sock.endpoint.hold_path().display().to_string()),
+        "{error}"
+    );
+    assert!(!sock.endpoint.lock_path().exists());
+}
+
+#[skuld::test]
+fn connect_refuses_a_claim_whose_file_is_gone_before_the_lock_or_the_socket_is_touched() {
+    let sock = sock();
+    std::fs::remove_file(sock.endpoint.hold_path()).unwrap();
+
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &ManualExit::new().watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("is gone"), "{error}");
+    assert!(!sock.endpoint.lock_path().exists());
+}
+
+/// A watch that, the first time `connect` waits for the listener, runs `once`: the point where another launch can take
+/// the name.
+struct OnFirstPause {
+    inner: Arc<dyn ProcessWatch>,
+    once: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl ProcessWatch for OnFirstPause {
+    fn has_exited(&self) -> crate::Result<bool> {
+        self.inner.has_exited()
+    }
+
+    fn pause(&self) -> crate::Result<bool> {
+        if let Some(once) = self.once.lock().unwrap().take() {
+            once();
+        }
+        Ok(false)
+    }
+
+    fn link(&self, stream: crate::backend::qemu::uds::UnixStream) -> std::io::Result<Box<dyn Link>> {
+        self.inner.link(stream)
+    }
+}
+
+/// The claim is checked again once the socket has accepted: a machine that died and was swept can have its name drawn
+/// by a launch whose QEMU listens by the time a late session retries, and that socket is not this machine's.
+#[skuld::test]
+fn connect_refuses_a_socket_that_a_launch_took_after_the_claim_was_first_checked() {
+    let sock = sock();
+    let taken = Arc::new(Mutex::new(None));
+    let process = Arc::new(OnFirstPause {
+        inner: ManualExit::new().watch(),
+        once: Mutex::new(Some(Box::new({
+            let (claim, endpoint, taken) = (sock.claim.path.clone(), sock.endpoint.clone(), taken.clone());
+            move || {
+                // The old file stays, so the new one cannot be given its identity again.
+                let old = endpoint.path().with_extension("old");
+                std::fs::rename(&claim, &old).unwrap();
+                claim_file(host::current(), &claim).unwrap();
+                *taken.lock().unwrap() = Some(UnixListener::bind(endpoint.path()).unwrap());
+            }
+        }))),
+    });
+
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &(process as Arc<dyn ProcessWatch>),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("another launch's file"), "{error}");
+    let _ = std::fs::remove_file(sock.endpoint.path().with_extension("old"));
 }
 
 /// The runtime directory is made by `create_runtime_dir` alone, for the user alone: a session on a machine whose
@@ -482,9 +624,17 @@ fn connect_does_not_make_a_missing_run_dir_and_names_it() {
     let gone = run.path().join("gone");
     let endpoint = QmpEndpoint::drawn(&gone, 1u64.to_be_bytes());
 
-    let error = Qmp::connect(&endpoint, &ManualExit::new().watch(), &MemoryProgress::default())
-        .err()
-        .expect("there is no directory to lock in");
+    // The claim file went with the directory, so the claim is refused first, naming the claim file in it.
+    let claim = claim_file(host::current(), &run.path().join("claim")).unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &endpoint,
+        &claim,
+        &ManualExit::new().watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .expect("there is no directory to lock in");
 
     assert!(error.message().contains(&gone.display().to_string()), "{error}");
     assert!(!gone.exists());
@@ -507,7 +657,15 @@ fn a_process_that_exits_while_connect_waits_for_the_listener_ends_the_wait() {
     let process = ManualExit::new();
 
     let error = std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()));
+        let client = scope.spawn(|| {
+            Qmp::connect(
+                host::current(),
+                &sock.endpoint,
+                &sock.claim,
+                &process.watch(),
+                &MemoryProgress::default(),
+            )
+        });
         process.exit();
         client.join().unwrap().err().expect("nothing ever listens")
     });
@@ -528,9 +686,15 @@ fn a_peer_that_closes_before_the_greeting_fails_as_a_lost_connection_and_keeps_t
             drop(stream);
             process.exit();
         });
-        let error = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default())
-            .err()
-            .expect("QEMU never greeted");
+        let error = Qmp::connect(
+            host::current(),
+            &sock.endpoint,
+            &sock.claim,
+            &process.watch(),
+            &MemoryProgress::default(),
+        )
+        .err()
+        .expect("QEMU never greeted");
         server.join().unwrap();
         error
     });
@@ -575,9 +739,15 @@ fn a_process_that_cannot_be_asked_fails_connect_with_the_refusal_before_a_lock_f
     let watch = Refusing::new(ManualExit::new().watch());
     watch.refuse_has_exited();
 
-    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert_eq!(error.message(), REFUSED);
@@ -591,9 +761,15 @@ fn a_process_that_cannot_be_paused_on_fails_the_wait_for_the_listener_with_the_r
     watch.refuse_pause();
 
     // Nothing listens, so connect must wait, and the wait is what refuses.
-    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert_eq!(error.message(), REFUSED);
@@ -607,9 +783,15 @@ fn a_process_watch_that_cannot_watch_the_connection_fails_connect_with_an_io_err
     // The connection is made by the kernel's backlog; nothing accepts it, and nothing needs to.
     let _listener = sock.listen();
 
-    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("cannot watch the connection to"), "{error}");
@@ -627,10 +809,19 @@ fn a_connect_error_that_is_not_a_missing_listener_is_an_io_error_naming_the_sock
     let endpoint = QmpEndpoint::from_record(&long.display().to_string());
     let process = ManualExit::new();
 
-    let error = Qmp::connect(&endpoint, &process.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let claim = claim_file(host::current(), &endpoint.hold_path()).unwrap();
+
+    let error = Qmp::connect(
+        host::current(),
+        &endpoint,
+        &claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
     let _ = std::fs::remove_file(endpoint.lock_path());
+    let _ = std::fs::remove_file(endpoint.hold_path());
 
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(
@@ -647,7 +838,14 @@ fn a_read_error_while_the_process_cannot_be_asked_is_reported_and_not_taken_for_
         // QEMU is alive: the connection stays up until the client lets go.
         while session.command().is_some() {}
     });
-    let mut qmp = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     watch.fail_reads_with(std::io::ErrorKind::PermissionDenied);
     watch.refuse_has_exited();
 
@@ -669,7 +867,14 @@ fn a_corrupt_line_is_reported_as_itself_even_when_the_process_has_exited_since()
             process.exit();
         }
     });
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     server.wait().unwrap();
 
     let error = qmp.wait_for_end().unwrap_err();
@@ -696,7 +901,16 @@ fn the_qmp_lock_serializes_two_processes() {
 
     let (progress, messages) = ChannelProgress::new();
     std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &ManualExit::new().watch(), &*progress).map(drop));
+        let client = scope.spawn(|| {
+            Qmp::connect(
+                host::current(),
+                &sock.endpoint,
+                &sock.claim,
+                &ManualExit::new().watch(),
+                &*progress,
+            )
+            .map(drop)
+        });
         let message = messages.recv().unwrap();
         assert!(message.starts_with("waiting for "), "{message}");
         // Releasing the lock is what lets the second connect proceed.
@@ -973,7 +1187,14 @@ fn system_reset_of_a_qemu_that_exits_before_the_reset_event_is_a_lost_connection
         // No RESET event, and the server is done.
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     let error = end_process_after(server, &process, || qmp.system_reset().unwrap_err());
 
     // The exit can come before the reply is written: either way the call did not finish and names what it waited for.
@@ -1015,7 +1236,14 @@ fn wait_for_end_returns_exited_when_the_server_closes_after_shutdown() {
         let _ = acked_rx.recv();
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     qmp.system_powerdown().unwrap();
     acked.send(()).unwrap();
     let end = end_process_after(server, &process, || qmp.wait_for_end());
@@ -1088,9 +1316,15 @@ fn a_server_that_closes_after_the_greeting_is_a_lost_connection() {
     let server = Server { thread, release };
 
     let error = end_process_after(server, &process, || {
-        Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default())
-            .err()
-            .expect("the handshake cannot finish")
+        Qmp::connect(
+            host::current(),
+            &sock.endpoint,
+            &sock.claim,
+            &process.watch(),
+            &MemoryProgress::default(),
+        )
+        .err()
+        .expect("the handshake cannot finish")
     });
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
@@ -1104,7 +1338,14 @@ fn a_server_that_closes_after_query_status_loses_the_next_command() {
         session.answer(json!({ "status": "running", "running": true }));
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     assert_eq!(qmp.query_status().unwrap().state, "running");
     server.join().unwrap();
     process.exit();

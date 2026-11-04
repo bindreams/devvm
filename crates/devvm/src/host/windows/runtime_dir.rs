@@ -29,6 +29,7 @@ use super::wide;
 /// the user. A directory that exists is accepted if the user owns it.
 pub(super) fn create(dir: &Path) -> io::Result<()> {
     let sid = current_sid()?;
+    let path = wide(dir)?;
     let sddl: Vec<u16> = format!("O:{sid}D:P(A;OICI;FA;;;{sid})")
         .encode_utf16()
         .chain(Some(0))
@@ -54,7 +55,6 @@ pub(super) fn create(dir: &Path) -> io::Result<()> {
         lpSecurityDescriptor: descriptor,
         bInheritHandle: 0,
     };
-    let path = wide(dir)?;
     // SAFETY: `path` is NUL-terminated and `attributes` points at the live descriptor.
     let made = unsafe { CreateDirectoryW(path.as_ptr(), &attributes) };
     let error = io::Error::last_os_error();
@@ -76,8 +76,8 @@ pub(super) fn accept(dir: &Path) -> io::Result<()> {
 
 /// A directory at `dir` that the user owns and that is no link: `AlreadyExists` for a file or a link, and
 /// `PermissionDenied` naming the owner for another account's directory, or saying the owner cannot be read when the
-/// DACL denies `READ_CONTROL` (the owner is implicitly granted it, so this is not the user's directory). Any other
-/// failure names the directory.
+/// DACL denies `READ_CONTROL` (the owner is implicitly granted it, so this is not the user's directory) or its deletion
+/// is pending. Any other failure names the directory.
 ///
 /// The path is looked up once. What is checked (no link, a directory) and whose it is are both read from the one
 /// handle, which opens a link itself and does not follow it, so the directory cannot be swapped between the checks.
@@ -111,13 +111,13 @@ fn accept_existing(dir: &Path, me: &str) -> io::Result<()> {
     ))
 }
 
-/// `error` from a call on `dir`, with the directory named. `ERROR_ACCESS_DENIED` is `PermissionDenied` saying the
-/// directory is not the user's.
+/// `error` from a call on `dir`, with the directory named. `ERROR_ACCESS_DENIED` is `PermissionDenied` saying the owner
+/// cannot be read: a directory the user does not own, or one whose deletion is pending.
 fn at(dir: &Path, error: io::Error) -> io::Error {
     if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
         return io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("{} is not yours: cannot read its owner ({error})", dir.display()),
+            format!("cannot read the owner of {} ({error})", dir.display()),
         );
     }
     io::Error::new(error.kind(), format!("{}: {error}", dir.display()))

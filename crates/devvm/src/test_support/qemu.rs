@@ -16,11 +16,14 @@ use crate::backend::qemu::qmp::{QmpEndpoint, Reservation};
 use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
 use crate::config::Config;
 use crate::exit::StderrProgress;
-use crate::host::{self, ProcessWatch};
+use crate::host::{self, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::UNICODE_DIR;
+
+#[path = "qemu_tests.rs"]
+mod qemu_tests;
 
 /// The directory holding a QEMU build's `bin/` and `share/`. When set, the VM tests use it instead of downloading the
 /// pinned build.
@@ -67,7 +70,12 @@ const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e1
 /// directory.
 fn socket_dir_that_fits() -> Option<PathBuf> {
     // Room for a [`scratch_run`] below the directory and a socket in it.
-    let fits = |dir: &Path| QmpEndpoint::fits(&dir.join("r12345"), host::current().socket_path_max());
+    let fits = |dir: &Path| {
+        QmpEndpoint::fits(
+            &dir.join(scratch_name([0; SCRATCH_DRAW_BYTES])),
+            host::current().socket_path_max(),
+        )
+    };
     let temp = std::env::temp_dir();
     std::iter::once(temp.join(UNICODE_DIR))
         .chain(SHORT_SOCKET_DIRS.iter().map(|short| temp.join(short)))
@@ -119,18 +127,55 @@ impl ScratchRun {
 impl Drop for ScratchRun {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_file(scratch_owner(&self.0));
+    }
+}
+
+/// The bytes a [`scratch_run`]'s name is the hex of.
+const SCRATCH_DRAW_BYTES: usize = 3;
+
+/// The name of the [`scratch_run`] drawn from `draw`: `r` and its hex.
+fn scratch_name(draw: [u8; SCRATCH_DRAW_BYTES]) -> String {
+    format!("r{}", hex::encode(draw))
+}
+
+/// `<run>.own`, beside the directory `run`: made new by whoever takes the name, so that no two take one.
+fn scratch_owner(run: &Path) -> PathBuf {
+    let mut name = run.as_os_str().to_owned();
+    name.push(".own");
+    PathBuf::from(name)
+}
+
+/// A [`ScratchRun`] below `parent` under a name drawn from `draw`. A name is taken by creating its `.own` file, which
+/// only one test can do, and a name whose directory is already there (a killed run's leftover) is drawn again.
+fn scratch_run_in(parent: &Path, draw: &mut dyn FnMut() -> [u8; SCRATCH_DRAW_BYTES]) -> ScratchRun {
+    loop {
+        let run = parent.join(scratch_name(draw()));
+        let owner = scratch_owner(&run);
+        match std::fs::File::create_new(&owner) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => panic!("cannot make {}: {e}", owner.display()),
+        }
+        let there = symlink_metadata_if_present(&run)
+            .unwrap_or_else(|e| panic!("cannot look at {}: {e}", run.display()))
+            .is_some();
+        if there {
+            continue;
+        }
+        make_run_dir(&run);
+        return ScratchRun(run);
     }
 }
 
 pub fn scratch_run() -> ScratchRun {
-    let run = socket_dir().join(format!("r{}", &hex::encode(random::bytes::<3>())[..5]));
-    make_run_dir(&run);
+    let run = scratch_run_in(&socket_dir(), &mut random::bytes::<SCRATCH_DRAW_BYTES>);
     assert!(
-        QmpEndpoint::fits(&run, host::current().socket_path_max()),
+        QmpEndpoint::fits(run.path(), host::current().socket_path_max()),
         "{} is too long for a control socket",
-        run.display()
+        run.path().display()
     );
-    ScratchRun(run)
+    run
 }
 
 fn has_space_and_non_ascii(path: &Path) -> bool {

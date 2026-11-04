@@ -246,7 +246,7 @@ fn a_junction_at_the_runtime_dir_path_is_refused_by_the_check_that_makes_nothing
 /// implicit `READ_CONTROL`, so the owner cannot be read: the same refusal as another account's directory with a DACL
 /// that hides it.
 #[skuld::test]
-fn a_directory_whose_owner_cannot_be_read_is_refused_as_not_yours_naming_it(#[fixture(unicode_home)] home: &Path) {
+fn a_directory_whose_owner_cannot_be_read_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
     let dir = home.join("run");
     std::fs::create_dir(&dir).unwrap();
     set_protected_dacl(&dir, "D:P(A;;0x110000;;;OW)");
@@ -257,7 +257,10 @@ fn a_directory_whose_owner_cannot_be_read_is_refused_as_not_yours_naming_it(#[fi
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
         let text = error.to_string();
         assert!(text.contains(&dir.display().to_string()), "{text}");
-        assert!(text.contains("is not yours: cannot read its owner"), "{text}");
+        assert!(
+            text.contains(&format!("cannot read the owner of {}", dir.display())),
+            "{text}"
+        );
     }
 }
 

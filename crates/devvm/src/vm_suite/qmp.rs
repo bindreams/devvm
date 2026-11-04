@@ -12,6 +12,7 @@ use crate::ErrorKind;
 use crate::backend::qemu::qmp::{Qmp, VmEnd};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::uds::UnixStream;
+use crate::host;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::qemu::{BareQemu, qemu_sidecar};
 
@@ -22,7 +23,14 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
 ) {
     let qemu = BareQemu::spawn(install, home);
     let endpoint = qemu.sock.endpoint.clone();
-    let mut session = Qmp::connect(&endpoint, &qemu.process, &MemoryProgress::default()).unwrap();
+    let mut session = Qmp::connect(
+        host::current(),
+        &endpoint,
+        &qemu.sock.claim,
+        &qemu.process,
+        &MemoryProgress::default(),
+    )
+    .unwrap();
 
     // The machine is frozen (-S), and `info usernet` lists the forward with the port QEMU chose.
     assert_eq!(session.query_status().unwrap().state, "prelaunch");

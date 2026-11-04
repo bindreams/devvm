@@ -315,16 +315,28 @@ fn watch_of(record: &MachineRecord) -> Arc<dyn ProcessWatch> {
     host::current().watch_process(vm.id()).unwrap()
 }
 
+/// A QMP session with the machine of `record`.
+fn session_of(record: &MachineRecord) -> Qmp {
+    let endpoint = QmpEndpoint::from_record(&record.qmp);
+    let claim = record.claim.as_ref().expect("a QEMU machine has a claim");
+    Qmp::connect(
+        host::current(),
+        &endpoint,
+        claim,
+        &watch_of(record),
+        &MemoryProgress::default(),
+    )
+    .unwrap()
+}
+
 /// The host port QEMU has bound for the machine's first forward, read over QMP.
 fn forwarded_host_port(record: &MachineRecord) -> u16 {
-    let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &watch_of(record), &MemoryProgress::default()).unwrap();
+    let mut qmp = session_of(record);
     qmp.forwarded_ports().unwrap()[0].host
 }
 
 fn run_state(record: &MachineRecord) -> String {
-    let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let mut qmp = Qmp::connect(&endpoint, &watch_of(record), &MemoryProgress::default()).unwrap();
+    let mut qmp = session_of(record);
     qmp.query_status().unwrap().state
 }
 
@@ -782,13 +794,7 @@ fn vm_qemu_shutdown_of_a_paused_machine_fails_naming_the_state_and_returns(
     let mut machine = target.backend().launch(&spec).unwrap();
     machine.resume().unwrap();
     let record = machine.record();
-    {
-        let endpoint = QmpEndpoint::from_record(&record.qmp);
-        Qmp::connect(&endpoint, &watch_of(&record), &MemoryProgress::default())
-            .unwrap()
-            .stop()
-            .unwrap();
-    }
+    session_of(&record).stop().unwrap();
 
     let error = machine.shutdown().unwrap_err();
 
@@ -811,14 +817,7 @@ fn vm_qemu_reset_of_a_paused_machine_fails_naming_the_state_and_returns(
     let (spec, _parent) = target.prepared(home, 0, |_| {});
     let mut machine = target.backend().launch(&spec).unwrap();
     machine.resume().unwrap();
-    {
-        let record = machine.record();
-        let endpoint = QmpEndpoint::from_record(&record.qmp);
-        Qmp::connect(&endpoint, &watch_of(&record), &MemoryProgress::default())
-            .unwrap()
-            .stop()
-            .unwrap();
-    }
+    session_of(&machine.record()).stop().unwrap();
 
     let error = machine.reset().unwrap_err();
 

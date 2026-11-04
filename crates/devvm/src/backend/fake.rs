@@ -20,6 +20,7 @@ use crate::host::{self, Accel, Host};
 use crate::instance::record::InstanceId;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerDir, LayerStore};
+use crate::test_support::claimed::claim_file;
 use crate::test_support::fake_vm;
 use crate::{Arch, Error, ErrorKind, Network, Result};
 
@@ -111,14 +112,7 @@ impl FakeBackend {
 
     /// Makes the claim file `path`, which nothing holds afterwards: the fake VM is no process that could.
     fn claim(&self, path: &Path) -> Result<FileClaim> {
-        let io = |what: &str, e| Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), e);
-        let hold = self.host.hold_new(path).map_err(|e| io("create", e))?;
-        let id = hold.id().map_err(|e| io("look at", e))?;
-        drop(hold);
-        Ok(FileClaim {
-            path: path.to_path_buf(),
-            id,
-        })
+        claim_file(self.host, path).map_err(|e| Error::io(ErrorKind::Io, format!("cannot claim {}", path.display()), e))
     }
 
     fn cleaned_by_kill(&self) -> bool {
