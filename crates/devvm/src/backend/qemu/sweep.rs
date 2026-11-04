@@ -23,14 +23,17 @@ fn launch_of(file_name: &str) -> Option<&str> {
     hex.then_some(stem)
 }
 
-/// Whether `file_name` is a private name of a claim file: `<claim file>.new` while it is made (`Host::hold_new`) and
-/// `<claim file>.del` while it is deleted (`Hold::delete`).
-fn is_private_claim(file_name: &str) -> bool {
-    [".new", DELETING_SUFFIX].iter().any(|suffix| {
-        file_name
-            .strip_suffix(suffix)
-            .is_some_and(|claim| claim.ends_with(".sock.hold") && launch_of(claim).is_some())
-    })
+/// Whether `file_name` is a private name of a claim file, and if so whether it is a deleting name: `<claim file>.new`
+/// while it is made (`Host::hold_new`), `<claim file>.del` while it is deleted (`Hold::delete`).
+fn private_claim_is_deleting(file_name: &str) -> Option<bool> {
+    [(".new", false), (DELETING_SUFFIX, true)]
+        .iter()
+        .find_map(|&(suffix, deleting)| {
+            file_name
+                .strip_suffix(suffix)
+                .is_some_and(|claim| claim.ends_with(".sock.hold") && launch_of(claim).is_some())
+                .then_some(deleting)
+        })
 }
 
 impl QemuBackend {
@@ -98,19 +101,15 @@ impl QemuBackend {
             };
             if let Some(launch) = launch_of(name) {
                 launches.insert(launch.to_owned());
-            } else if is_private_claim(name) {
-                private_claims.push(entry.path());
+            } else if let Some(deleting) = private_claim_is_deleting(name) {
+                private_claims.push((entry.path(), deleting));
             }
         }
         // No launch is between making a claim file and holding it while this sweep has the directory's lock, so what
         // is left under `.new` was left by a launch that died there. A `.del` is left by a delete that died, or is
         // being deleted now (the lock does not keep deletes out): the host leaves that one to its deleter.
-        for leftover in private_claims {
-            let removed = if leftover
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(DELETING_SUFFIX))
-            {
+        for (leftover, deleting) in private_claims {
+            let removed = if deleting {
                 self.host().remove_deleting_name(&leftover)
             } else {
                 std::fs::remove_file(&leftover)
