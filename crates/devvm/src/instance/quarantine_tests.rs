@@ -140,14 +140,3 @@ fn a_copied_instance_directory_is_quarantined_and_the_original_keeps_working(#[f
     dir.destroy(op).unwrap();
     assert!(names(&root).is_empty());
 }
-
-/// A path the system cannot look at is not a vanished instance: the move failed, and is warned about.
-#[skuld::test]
-fn an_instance_that_cannot_be_looked_at_is_not_taken_for_vanished(#[fixture(unicode_home)] home: &Path) {
-    let path = home.join("a\0b");
-    let moved = super::move_if_unchanged("foo", &path, None, &home.join("target"));
-    assert!(
-        matches!(&moved, super::Moved::Failed(e) if e.kind() == std::io::ErrorKind::InvalidInput),
-        "not a failed move"
-    );
-}

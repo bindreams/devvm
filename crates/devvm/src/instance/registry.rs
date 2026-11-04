@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
-use crate::host::{Host, symlink_metadata_if_present};
+use crate::host::Host;
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
@@ -356,10 +356,8 @@ enum Placement {
 fn place(temp: &std::path::Path, target: &std::path::Path) -> Placement {
     match std::fs::rename(temp, target) {
         Ok(()) => Placement::Placed,
-        Err(e) => match symlink_metadata_if_present(target) {
-            Ok(Some(_)) => Placement::Taken(e),
-            Ok(None) | Err(_) => Placement::Failed(e),
-        },
+        Err(e) if target.exists() => Placement::Taken(e),
+        Err(e) => Placement::Failed(e),
     }
 }
 

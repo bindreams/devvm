@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::backend::MachineRecord;
 use crate::exit::Progress;
-use crate::host::{Host, symlink_metadata_if_present};
+use crate::host::Host;
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
@@ -264,14 +264,10 @@ impl InstanceDir {
 }
 
 /// Deletes `path` and everything under it. A tree that is gone afterwards is success, even when the error came from
-/// a process outside devvm deleting it at the same time. A look that fails says nothing about the tree: the delete's
-/// error is returned.
+/// a process outside devvm deleting it at the same time.
 pub(super) fn remove_tree(path: &std::path::Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(path) {
-        Err(e) => match symlink_metadata_if_present(path) {
-            Ok(None) => Ok(()),
-            Ok(Some(_)) | Err(_) => Err(e),
-        },
-        Ok(()) => Ok(()),
+        Err(_) if !path.exists() => Ok(()),
+        other => other,
     }
 }
