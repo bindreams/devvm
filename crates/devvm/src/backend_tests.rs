@@ -8,7 +8,6 @@ use crate::backend::{Backend, Endpoint, FileClaim, Machine, MachineRecord, SshEn
 use crate::guest::{BaseBuilder, GuestOs, Guests};
 use crate::host::{self, FileId, HoldOutcome};
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::host::RecordingHost;
 
 fn sample() -> MachineRecord {
     MachineRecord {
@@ -150,11 +149,8 @@ fn remove_files_deletes_nothing_when_the_claim_file_is_another_file(#[fixture(un
         },
         ..claim
     };
-    let warnings = removed(&paths, Some(&other));
-    assert!(
-        warnings.iter().any(|w| w.contains("another launch's file")),
-        "{warnings:?}"
-    );
+    // The files belong to that launch; a sweep reclaims them once it is dead.
+    assert_eq!(removed(&paths, Some(&other)), Vec::<String>::new());
     assert!(paths[0].exists() && paths[1].exists() && paths[2].exists());
 }
 
@@ -162,108 +158,9 @@ fn remove_files_deletes_nothing_when_the_claim_file_is_another_file(#[fixture(un
 fn remove_files_deletes_nothing_when_the_claim_file_is_gone_and_others_remain(#[fixture(unicode_home)] home: &Path) {
     let (paths, claim) = launch_files(home, "a");
     std::fs::remove_file(&claim.path).unwrap();
-    let warnings = removed(&paths, Some(&claim));
-    assert!(warnings.iter().any(|w| w.contains("is gone")), "{warnings:?}");
+    // Whoever deleted the claim deleted the other files first; what is there now is a later launch's.
+    assert_eq!(removed(&paths, Some(&claim)), Vec::<String>::new());
     assert!(paths[0].exists() && paths[1].exists());
-}
-
-/// A sweep that ran between the caller's look at the files and its hold on the claim took them: nothing is left to
-/// delete, and nothing is left to warn about.
-#[skuld::test]
-fn remove_files_is_quiet_when_a_concurrent_sweep_took_everything_first(#[fixture(unicode_home)] home: &Path) {
-    let (paths, claim) = launch_files(home, "a");
-    let host = RecordingHost::new();
-    host.delete_before_hold_existing(&paths);
-    let mut warnings = Vec::new();
-
-    remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
-
-    assert_eq!(warnings, Vec::<String>::new());
-}
-
-/// What the warning names is what is left when the claim is found gone, not what was there at the first look.
-#[skuld::test]
-fn remove_files_names_only_the_files_left_when_the_claim_turns_out_gone(#[fixture(unicode_home)] home: &Path) {
-    let (paths, claim) = launch_files(home, "a");
-    let host = RecordingHost::new();
-    host.delete_before_hold_existing(&[paths[0].clone(), paths[2].clone()]);
-    let mut warnings = Vec::new();
-
-    remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
-
-    assert_eq!(
-        warnings,
-        [format!(
-            "not deleting {}: {} is gone",
-            paths[1].display(),
-            claim.path.display()
-        )]
-    );
-}
-
-/// The same when the claim is held by another process: the files a sweep took are not named, and the claim, which
-/// is held and not left over, is not either.
-#[skuld::test]
-fn remove_files_names_only_the_files_left_when_the_claim_turns_out_held(#[fixture(unicode_home)] home: &Path) {
-    let (paths, claim) = launch_files(home, "a");
-    let alive = held(&claim.path);
-    let host = RecordingHost::new();
-    host.delete_before_hold_existing(&paths[..1]);
-    let mut warnings = Vec::new();
-
-    remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
-
-    assert_eq!(
-        warnings,
-        [format!(
-            "not deleting {}: {} is held by another process",
-            paths[1].display(),
-            claim.path.display()
-        )]
-    );
-    drop(alive);
-}
-
-/// A sweep that holds the claim has taken the other files, and only the claim is there: nothing is left to warn about.
-#[skuld::test]
-fn remove_files_is_quiet_when_the_claim_turns_out_held_and_only_it_is_left(#[fixture(unicode_home)] home: &Path) {
-    let (paths, claim) = launch_files(home, "a");
-    let alive = held(&claim.path);
-    let host = RecordingHost::new();
-    host.delete_before_hold_existing(&paths[..2]);
-    let mut warnings = Vec::new();
-
-    remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
-
-    assert_eq!(warnings, Vec::<String>::new());
-    drop(alive);
-}
-
-/// The same when the claim file turns out to be another launch's: the warning names what is left now.
-#[skuld::test]
-fn remove_files_names_only_the_files_left_when_the_claim_turns_out_another_file(#[fixture(unicode_home)] home: &Path) {
-    let (paths, claim) = launch_files(home, "a");
-    let other = FileClaim {
-        id: FileId {
-            file: claim.id.file ^ 1,
-            ..claim.id
-        },
-        ..claim.clone()
-    };
-    let host = RecordingHost::new();
-    host.delete_before_hold_existing(&paths[..1]);
-    let mut warnings = Vec::new();
-
-    remove_files(&host, &paths, Some(&other), &mut |text| warnings.push(text));
-
-    assert_eq!(
-        warnings,
-        [format!(
-            "not deleting {}: {} is another launch's file",
-            paths[1].display(),
-            claim.path.display()
-        )]
-    );
 }
 
 #[skuld::test]
@@ -296,11 +193,8 @@ fn remove_files_names_a_file_that_cannot_be_looked_at_instead_of_taking_it_for_g
 fn remove_files_deletes_nothing_while_the_claim_is_held(#[fixture(unicode_home)] home: &Path) {
     let (paths, claim) = launch_files(home, "a");
     let alive = held(&claim.path);
-    let warnings = removed(&paths, Some(&claim));
-    assert!(
-        warnings.iter().any(|w| w.contains("is held by another process")),
-        "{warnings:?}"
-    );
+    // Another deleter or an inheritor owns the cleanup.
+    assert_eq!(removed(&paths, Some(&claim)), Vec::<String>::new());
     assert!(paths.iter().all(|path| path.exists()));
     drop(alive);
     removed(&paths, Some(&claim));

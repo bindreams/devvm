@@ -290,8 +290,6 @@ pub struct RecordingHost {
     fail_file_id: AtomicBool,
     /// The paths given to `hold_new`, in call order, failed calls included.
     holds_made: Mutex<Vec<PathBuf>>,
-    /// Files that `hold_existing` deletes before it looks at its path: what a concurrent sweep does.
-    delete_before_hold_existing: Mutex<Vec<PathBuf>>,
     directory_calls: Mutex<Vec<DirectoryCall>>,
     fail_sync_dir_of: Mutex<Option<PathBuf>>,
 }
@@ -364,11 +362,6 @@ impl RecordingHost {
     /// Makes every `file_id` fail.
     pub fn fail_file_id(&self) {
         self.fail_file_id.store(true, Ordering::SeqCst);
-    }
-
-    /// Makes `hold_existing` delete `paths` before it looks at its own, as a sweep that runs at that moment does.
-    pub fn delete_before_hold_existing(&self, paths: &[PathBuf]) {
-        *self.delete_before_hold_existing.lock().unwrap() = paths.to_vec();
     }
 
     /// The paths given to `hold_new`, in call order.
@@ -556,9 +549,6 @@ impl Host for RecordingHost {
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
-        for gone in self.delete_before_hold_existing.lock().unwrap().iter() {
-            std::fs::remove_file(gone)?;
-        }
         TestHost.hold_existing(path)
     }
 

@@ -140,6 +140,7 @@ impl QemuBackend {
         let claim = endpoint.hold_path();
         match self.host().hold_existing(&claim) {
             Ok(HoldOutcome::Taken(hold)) => remove_held(self.host(), hold, &claim, &endpoint.launch_files(), warn),
+            // Another deleter or an inheritor of the hold owns the cleanup.
             Ok(HoldOutcome::Busy) => {}
             Ok(HoldOutcome::Absent) => {
                 // A late session can make a lock after the claim is gone, and a socket cannot appear after that: a

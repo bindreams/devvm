@@ -486,9 +486,10 @@ fn vm_qemu_a_launched_machine_holds_its_claim_until_it_is_dead(
     assert!(busy(&claim), "a running machine holds its claim");
     let mut warnings = Vec::new();
     record.remove_leftovers(host::current(), &mut |text| warnings.push(text));
-    assert!(
-        warnings.iter().any(|w| w.contains("is held by another process")),
-        "a live machine's files are not deleted: {warnings:?}"
+    assert_eq!(
+        warnings,
+        Vec::<String>::new(),
+        "a live machine's files are not deleted, silently"
     );
     assert!(record.leftovers.iter().all(|path| path.exists()));
 

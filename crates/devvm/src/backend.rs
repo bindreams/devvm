@@ -178,46 +178,35 @@ impl MachineRecord {
 /// and a stale record can never delete the files of a later launch that drew the same name. The claim goes last, so
 /// the names stay reserved until the rest is gone, and stays if any other file could not be deleted.
 ///
-/// Nothing is deleted when there is no claim, the claim file is held by another process (a machine is alive, or
-/// another devvm or program has it open), is another file than the claim says, or is gone. `warn` is then told which,
-/// naming the files other than the claim that are there when it looks again (a sweep may have taken some meanwhile),
-/// and told nothing when none is. A file that is already gone is fine; any other failure goes to `warn`.
+/// Nothing is deleted when there is no claim, or when the claim file is held by another process, is another file than
+/// the claim says, or is gone. With no claim nothing owns the files, so `warn` is told which are there. In the other
+/// three someone else owns the cleanup (another deleter or an inheritor of the hold; the launch whose file it is; the
+/// deleter of the claim, which goes after every other file, so what is there now is a later launch's) and nothing is
+/// said. A file that is already gone is fine; a failure to look at or hold the claim, or to delete a file, goes to
+/// `warn`.
 pub(crate) fn remove_files(
     host: &dyn Host,
     paths: &[PathBuf],
     claim: Option<&FileClaim>,
     warn: &mut dyn FnMut(String),
 ) {
-    if present(paths).is_empty() {
+    let there = present(paths);
+    if there.is_empty() {
         return;
     }
-    let refusal = match claim {
-        None => "no launch claims them".to_owned(),
-        Some(claim) => match host.hold_existing(&claim.path) {
-            // The identity of the open handle: it cannot be absent, so the claim is the launch's or another's.
-            Ok(HoldOutcome::Taken(hold)) => match hold.id() {
-                Ok(id) if id == claim.id => return remove_held(host, hold, &claim.path, paths, warn),
-                Ok(_) => format!("{} is another launch's file", claim.path.display()),
-                Err(e) => {
-                    warn(format!("cannot look at {}: {e}", claim.path.display()));
-                    return;
-                }
-            },
-            Ok(HoldOutcome::Busy) => format!("{} is held by another process", claim.path.display()),
-            Ok(HoldOutcome::Absent) => format!("{} is gone", claim.path.display()),
-            Err(e) => {
-                warn(format!("cannot hold {}: {e}", claim.path.display()));
-                return;
-            }
-        },
+    let Some(claim) = claim else {
+        warn(format!("not deleting {}: no launch claims them", names(&there)));
+        return;
     };
-    // The claim is not left over: it is held, another launch's, or gone. Only the other files are.
-    let left: Vec<&PathBuf> = present(paths)
-        .into_iter()
-        .filter(|path| claim.is_none_or(|claim| **path != claim.path))
-        .collect();
-    if !left.is_empty() {
-        warn(format!("not deleting {}: {refusal}", names(&left)));
+    match host.hold_existing(&claim.path) {
+        // The identity of the open handle: it cannot be absent, so the claim is the launch's or another's.
+        Ok(HoldOutcome::Taken(hold)) => match hold.id() {
+            Ok(id) if id == claim.id => remove_held(host, hold, &claim.path, paths, warn),
+            Ok(_) => {}
+            Err(e) => warn(format!("cannot look at {}: {e}", claim.path.display())),
+        },
+        Ok(HoldOutcome::Busy | HoldOutcome::Absent) => {}
+        Err(e) => warn(format!("cannot hold {}: {e}", claim.path.display())),
     }
 }
 
