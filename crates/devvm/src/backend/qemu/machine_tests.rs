@@ -33,7 +33,7 @@ fn record(sock: &Sock, no_reboot: bool) -> (VmProcess, MachineRecord) {
         ssh: Vec::new(),
         serial_log: sock.endpoint.path().with_file_name("serial.log"),
         leftovers: Vec::new(),
-        claim: Some(sock.claim.clone()),
+        claim: None,
         no_reboot,
     };
     let vm = VmProcess::attach(&record.process)
@@ -84,22 +84,6 @@ fn the_no_reboot_refusal_is_one_sentence_that_names_the_cause() {
     assert!(
         !NO_REBOOT_REFUSAL.contains("  "),
         "a lost line continuation: {NO_REBOOT_REFUSAL}"
-    );
-}
-
-/// A session is only made against a machine's own files, which its claim says; a record without one cannot say.
-#[skuld::test]
-fn a_session_with_a_machine_whose_record_has_no_claim_is_refused_naming_the_socket() {
-    let sock = Sock::new();
-    let mut machine = launched(&sock, false, host::current(), Arch::Amd64, tripwire());
-    machine.record.claim = None;
-
-    let error = machine.open().err().unwrap();
-
-    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
-    assert!(
-        error.message().contains(&sock.endpoint.path().display().to_string()),
-        "{error}"
     );
 }
 

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use rustix::io::Errno;
 
-use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, publish_with};
+use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with};
 use crate::host::{Entry, Host};
 use crate::test_support::fixtures::unicode_home;
 
@@ -26,6 +26,27 @@ fn only_a_missing_rename_is_told_from_a_refusal_of_this_one() {
     ] {
         assert!(!lacks_a_rename_that_refuses_to_replace(refusal), "{refusal}");
     }
+}
+
+/// `EACCES` is a `PermissionDenied` too, from a directory that cannot be written or a security module, and is no
+/// statement about hard links.
+#[skuld::test]
+fn only_a_file_system_without_hard_links_is_told_from_a_refusal_of_this_link() {
+    for lacking in [Errno::PERM, Errno::NOTSUP, Errno::OPNOTSUPP] {
+        assert!(lacks_hard_links(&std::io::Error::from(lacking)), "{lacking}");
+    }
+    for refusal in [
+        Errno::ACCESS,
+        Errno::EXIST,
+        Errno::NOENT,
+        Errno::NOSPC,
+        Errno::ROFS,
+        Errno::XDEV,
+        Errno::IO,
+    ] {
+        assert!(!lacks_hard_links(&std::io::Error::from(refusal)), "{refusal}");
+    }
+    assert!(!lacks_hard_links(&std::io::Error::other("no OS code")));
 }
 
 fn dir_with_a_file(home: &Path, name: &str) -> std::path::PathBuf {

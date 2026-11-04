@@ -40,6 +40,9 @@ pub(super) trait FileModes: Send + Sync {
     /// Who owns the object `metadata` describes, if it is not the user running this process.
     fn other_owner(&self, metadata: &Metadata) -> Option<String>;
 
+    /// Whether `error` from `link(2)` says that the file system has no hard links, as opposed to refusing this link.
+    fn lacks_hard_links(&self, error: &std::io::Error) -> bool;
+
     /// The identity of the object `metadata` describes, if this host has one.
     fn identity(&self, metadata: &Metadata) -> Option<FileId>;
 
@@ -215,7 +218,12 @@ impl<M: FileModes> Host for M {
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
-        hold::new(self.private_options(), path, &|metadata| self.identity(metadata))
+        hold::new(
+            self.private_options(),
+            path,
+            &|metadata| self.identity(metadata),
+            &|error| self.lacks_hard_links(error),
+        )
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

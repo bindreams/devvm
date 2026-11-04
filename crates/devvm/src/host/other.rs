@@ -14,6 +14,11 @@ impl FileModes for OtherHost {
         OpenOptions::new()
     }
 
+    /// No file system here lacks hard links.
+    fn lacks_hard_links(&self, _error: &std::io::Error) -> bool {
+        false
+    }
+
     fn hold_options(&self) -> OpenOptions {
         let mut options = OpenOptions::new();
         options.read(true).write(true);

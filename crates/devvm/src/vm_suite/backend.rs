@@ -318,15 +318,7 @@ fn watch_of(record: &MachineRecord) -> Arc<dyn ProcessWatch> {
 /// A QMP session with the machine of `record`.
 fn session_of(record: &MachineRecord) -> Qmp {
     let endpoint = QmpEndpoint::from_record(&record.qmp);
-    let claim = record.claim.as_ref().expect("a QEMU machine has a claim");
-    Qmp::connect(
-        host::current(),
-        &endpoint,
-        claim,
-        &watch_of(record),
-        &MemoryProgress::default(),
-    )
-    .unwrap()
+    Qmp::connect(&endpoint, &watch_of(record), &MemoryProgress::default()).unwrap()
 }
 
 /// The host port QEMU has bound for the machine's first forward, read over QMP.

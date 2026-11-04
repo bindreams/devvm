@@ -29,11 +29,14 @@ impl FlockHold {
     }
 }
 
+/// Whether an error from linking a claim file says that the file system lacks hard links (`FileModes::lacks_hard_links`).
+pub(super) type LacksHardLinks<'a> = &'a dyn Fn(&std::io::Error) -> bool;
+
 /// `error` from linking a claim file to its name, as the caller gets it: a file system that does not allow hard links
-/// answers `EPERM` or `ENOTSUP`, and is told so, with the way to another directory. Any other failure (a name that
-/// exists, among them) is returned as it was.
-fn link_error(error: std::io::Error, path: &Path) -> std::io::Error {
-    if !matches!(error.kind(), ErrorKind::Unsupported | ErrorKind::PermissionDenied) {
+/// is told so, with the way to another directory. Any other failure (a name that exists, a permission that is missing,
+/// among them) is returned as it was.
+fn link_error(error: std::io::Error, path: &Path, lacks_hard_links: LacksHardLinks) -> std::io::Error {
+    if !lacks_hard_links(&error) {
         return error;
     }
     let dir = path.parent().unwrap_or(path);
@@ -50,14 +53,19 @@ fn link_error(error: std::io::Error, path: &Path) -> std::io::Error {
 /// Creates and holds `path` (see `Host::hold_new`): made and locked as `<path>.new`, then hard-linked to `path`. A file
 /// at either name is `AlreadyExists`, and the caller then draws another name: a `.new` that could not be removed is a
 /// dead launch's leftover, which the sweep reclaims. Any other failure names the file it could not remove.
-pub(super) fn new(mut options: OpenOptions, path: &Path, identity: Identity) -> std::io::Result<Box<dyn Hold>> {
+pub(super) fn new(
+    mut options: OpenOptions,
+    path: &Path,
+    identity: Identity,
+    lacks_hard_links: LacksHardLinks,
+) -> std::io::Result<Box<dyn Hold>> {
     let private = new_name(path);
     let file = options.read(true).write(true).create_new(true).open(&private)?;
     let made = match file.try_lock() {
         Ok(()) => FlockHold::of(file, path, identity).and_then(|hold| {
             std::fs::hard_link(&private, path)
                 .map(|()| hold)
-                .map_err(|e| link_error(e, path))
+                .map_err(|e| link_error(e, path, lacks_hard_links))
         }),
         Err(TryLockError::WouldBlock) => Err(std::io::Error::other(format!(
             "{} was locked by another process as it was created",

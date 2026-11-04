@@ -18,7 +18,7 @@ use super::ports::{Forward, parse_usernet};
 use super::uds::UnixStream;
 use crate::backend::FileClaim;
 use crate::exit::{NullProgress, Progress};
-use crate::host::{Hold, Host, Link, ProcessWatch, is_absent, symlink_metadata_if_present};
+use crate::host::{Hold, Host, Link, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Error, ErrorKind, Result};
@@ -94,10 +94,8 @@ impl QmpEndpoint {
     /// Refused first, creating nothing: a directory whose sockets would be over the host's limit (`Unavailable`,
     /// naming the directory, the limit and `XDG_RUNTIME_DIR`). A name whose claim file exists is drawn again, and so is
     /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete). Those
-    /// two files are looked for before the claim is made, so no claim is ever made beside a file it did not make. No
-    /// socket can appear at the name afterwards but this launch's QEMU's. A lock file can: a late session of a machine
-    /// that was swept makes one before `Qmp::connect` sees that its claim is gone, and the launch deletes it with its
-    /// own files.
+    /// two files are looked for before the claim is made, so no claim is ever made beside a file it did not make. None
+    /// can appear at the name afterwards: only a QEMU spawned with the claim makes a socket, and this launch made it.
     pub(crate) fn reserve_with(
         host: &dyn Host,
         run: &Path,
@@ -212,32 +210,6 @@ impl QmpEndpoint {
         self.beside(HOLD_SUFFIX)
     }
 
-    /// `Ok` while the file at the claim's name is `claim`'s, and `ConnectionLost` ("gone") when it is another file or
-    /// none, which means the machine's files were swept and the name may be another launch's.
-    fn check_claim(&self, host: &dyn Host, claim: &FileClaim) -> Result<()> {
-        let hold = self.hold_path();
-        let gone = |why: &str| {
-            Error::new(
-                ErrorKind::ConnectionLost,
-                format!(
-                    "cannot reach QEMU at {}: the machine is gone, its claim file {} {why}",
-                    self.path.display(),
-                    hold.display()
-                ),
-            )
-        };
-        match host.file_id(&hold) {
-            Ok(id) if id == claim.id => Ok(()),
-            Ok(_) => Err(gone("is another launch's file")),
-            Err(e) if is_absent(&e) => Err(gone("is gone")),
-            Err(e) => Err(Error::io(
-                ErrorKind::Io,
-                format!("cannot look at {}", hold.display()),
-                e,
-            )),
-        }
-    }
-
     fn beside(&self, suffix: &str) -> PathBuf {
         let mut name: OsString = self.path.clone().into_os_string();
         name.push(suffix);
@@ -306,28 +278,18 @@ impl Qmp {
     /// process that has exited fails before a lock file is touched. The socket's directory must exist: only a launch
     /// makes the runtime directory (`Host::create_runtime_dir`), and a missing one is an error that names it.
     ///
-    /// `claim` is the machine's claim file. A name is drawn again once the machine's files are swept, so the files at
-    /// the endpoint are the machine's only while the file at its claim path is still `claim` (the machine is alive, or
-    /// dead and not yet swept). Anything else is `ConnectionLost`, "gone". That is checked before the lock file is made
-    /// and again once the socket has accepted, before anything is sent: a claim that is still there at that point was
-    /// there when the lock file was made and when the socket was reached, and nobody draws a name whose claim exists,
-    /// so the lock file and the socket are the machine's. A socket of a launch that took the name in between is
-    /// dropped unread.
+    /// The lock is waited for as long as the process has not exited, and the connection is dropped unread if the
+    /// process has exited by the time the socket accepted it. A name is drawn again only once its claim is free, and
+    /// QEMU holds the claim for as long as it runs: a process that is alive after the connection owns the socket.
     ///
     /// Never deletes the lock file, whether it succeeds or not: another session may be waiting on that very file, and a
     /// path removed under it could be a later session's. The file is removed by whoever knows no session can be live,
-    /// the machine's shutdown or kill, which deletes it only while holding the machine's claim.
+    /// the machine's shutdown or kill.
     ///
     /// A read on the session ends once the process has exited and QEMU's bytes are used up. On Windows the exit ends
     /// the read even if the OS never delivers the end of the stream; elsewhere the read ends with the stream, so a
     /// process that keeps the socket open after QEMU exits keeps the read waiting.
-    pub(crate) fn connect(
-        host: &dyn Host,
-        ep: &QmpEndpoint,
-        claim: &FileClaim,
-        process: &Arc<dyn ProcessWatch>,
-        progress: &dyn Progress,
-    ) -> Result<Qmp> {
+    pub(crate) fn connect(ep: &QmpEndpoint, process: &Arc<dyn ProcessWatch>, progress: &dyn Progress) -> Result<Qmp> {
         let exited = |when: &str| {
             Error::new(
                 ErrorKind::ConnectionLost,
@@ -340,16 +302,20 @@ impl Qmp {
         if process.has_exited()? {
             return Err(exited("before devvm connected"));
         }
-        ep.check_claim(host, claim)?;
         let mut lock = FileLock::open_in_existing_dir(&ep.lock_path())?;
-        lock.lock(
-            Mode::Exclusive,
-            &format!(
-                "another devvm process to finish with the QEMU control socket {}",
-                ep.path().display()
-            ),
-            progress,
-        )?;
+        let mut announced = false;
+        while !lock.try_lock(Mode::Exclusive)? {
+            if !announced {
+                announced = true;
+                progress.message(&format!(
+                    "waiting for another devvm process to finish with the QEMU control socket {}",
+                    ep.path().display()
+                ));
+            }
+            if process.pause()? {
+                return Err(exited("while another devvm process held the control socket"));
+            }
+        }
         let stream = loop {
             match UnixStream::connect(ep.path()) {
                 Ok(stream) => break stream,
@@ -367,7 +333,9 @@ impl Qmp {
                 }
             }
         };
-        ep.check_claim(host, claim)?;
+        if process.has_exited()? {
+            return Err(exited("as its control socket accepted a connection"));
+        }
         let link = process.link(stream).map_err(|e| {
             Error::io(
                 ErrorKind::Io,

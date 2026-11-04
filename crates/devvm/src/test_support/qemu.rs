@@ -161,6 +161,7 @@ fn scratch_run_in(parent: &Path, draw: &mut dyn FnMut() -> [u8; SCRATCH_DRAW_BYT
             .unwrap_or_else(|e| panic!("cannot look at {}: {e}", run.display()))
             .is_some();
         if there {
+            let _ = std::fs::remove_file(&owner);
             continue;
         }
         make_run_dir(&run);

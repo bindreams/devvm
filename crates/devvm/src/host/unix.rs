@@ -56,6 +56,10 @@ impl FileModes for UnixHost {
         })
     }
 
+    fn lacks_hard_links(&self, error: &std::io::Error) -> bool {
+        lacks_hard_links(error)
+    }
+
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
         Ok(std::fs::metadata(path)?.permissions().mode() & 0o111 != 0)
     }
@@ -121,6 +125,14 @@ fn describe(kind: FileType) -> &'static str {
     } else {
         "of a type this host does not know"
     }
+}
+
+/// Whether `error` from `link(2)` says that the file system has no hard links: `EPERM` on Linux, `ENOTSUP` or
+/// `EOPNOTSUPP` elsewhere. `EACCES` is no such statement: a directory that cannot be written, or a security module,
+/// answers it for any file system.
+fn lacks_hard_links(error: &std::io::Error) -> bool {
+    Errno::from_io_error(error)
+        .is_some_and(|errno| errno == Errno::PERM || errno == Errno::NOTSUP || errno == Errno::OPNOTSUPP)
 }
 
 /// Whether `errno` from a rename that refuses to replace says that the file system or the kernel has no such rename,

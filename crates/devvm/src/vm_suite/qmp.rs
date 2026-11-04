@@ -12,7 +12,6 @@ use crate::ErrorKind;
 use crate::backend::qemu::qmp::{Qmp, VmEnd};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::uds::UnixStream;
-use crate::host;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::qemu::{BareQemu, qemu_sidecar};
 
@@ -23,14 +22,7 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
 ) {
     let qemu = BareQemu::spawn(install, home);
     let endpoint = qemu.sock.endpoint.clone();
-    let mut session = Qmp::connect(
-        host::current(),
-        &endpoint,
-        &qemu.sock.claim,
-        &qemu.process,
-        &MemoryProgress::default(),
-    )
-    .unwrap();
+    let mut session = Qmp::connect(&endpoint, &qemu.process, &MemoryProgress::default()).unwrap();
 
     // The machine is frozen (-S), and `info usernet` lists the forward with the port QEMU chose.
     assert_eq!(session.query_status().unwrap().state, "prelaunch");
@@ -77,16 +69,11 @@ fn commands_devvm_sends() -> Vec<(&'static str, &'static [&'static str])> {
     ]
 }
 
-#[skuld::test]
-fn every_command_devvm_sends_exists_in_the_live_schema(
-    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let qemu = BareQemu::spawn(install, home);
-    // A bare session: `query-qmp-schema` is not a command devvm sends.
-    let stream = loop {
+/// A connection to `qemu`'s control socket, made once QEMU listens; nothing is sent or read.
+fn connect_bare(qemu: &BareQemu, home: &Path) -> UnixStream {
+    loop {
         match UnixStream::connect(qemu.sock.endpoint.path()) {
-            Ok(stream) => break stream,
+            Ok(stream) => return stream,
             // The wait ends when the process exits.
             Err(e) => assert!(
                 !qemu.process.pause().unwrap(),
@@ -94,7 +81,32 @@ fn every_command_devvm_sends_exists_in_the_live_schema(
                 home.join("qemu.log").display()
             ),
         }
-    };
+    }
+}
+
+/// `Qmp::connect` drops a connection it does not use unread, so QEMU has to take a client that leaves before the
+/// greeting and serve the next.
+#[skuld::test]
+fn qemu_serves_a_session_after_a_client_that_left_before_negotiating(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let qemu = BareQemu::spawn(install, home);
+    drop(connect_bare(&qemu, home));
+
+    let mut session = Qmp::connect(&qemu.sock.endpoint, &qemu.process, &MemoryProgress::default()).unwrap();
+
+    assert_eq!(session.query_status().unwrap().state, "prelaunch");
+}
+
+#[skuld::test]
+fn every_command_devvm_sends_exists_in_the_live_schema(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let qemu = BareQemu::spawn(install, home);
+    // A bare session: `query-qmp-schema` is not a command devvm sends.
+    let stream = connect_bare(&qemu, home);
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
     let mut line = String::new();

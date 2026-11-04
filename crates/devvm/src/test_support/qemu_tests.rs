@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{SCRATCH_DRAW_BYTES, scratch_name, scratch_run_in};
+use super::{SCRATCH_DRAW_BYTES, scratch_name, scratch_owner, scratch_run_in};
 use crate::test_support::fixtures::unicode_home;
 
 /// The draws in `names`, then none: a test that asks for more has drawn a name it should not have needed.
@@ -28,6 +28,10 @@ fn a_scratch_run_refuses_a_directory_that_exists_and_leaves_it(#[fixture(unicode
     drop(run);
 
     assert!(leftover.join("kept").exists());
+    assert!(
+        !scratch_owner(&leftover).exists(),
+        "the name that was drawn again kept its .own file"
+    );
 }
 
 #[skuld::test]

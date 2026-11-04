@@ -3,13 +3,16 @@ use std::path::Path;
 
 use super::link_error;
 
-/// What `link(2)` returns on a file system without hard links: `EPERM` (`PermissionDenied`) on Linux, `ENOTSUP` or
-/// `EOPNOTSUPP` (`Unsupported`) elsewhere.
+/// The host says whether the error is its file system lacking hard links (`FileModes::lacks_hard_links`).
 #[skuld::test]
-fn a_link_the_file_system_refuses_names_the_directory_hard_links_and_xdg_runtime_dir() {
+fn a_link_the_host_says_the_file_system_lacks_names_the_directory_hard_links_and_xdg_runtime_dir() {
     let dir = Path::new("some").join("run");
     for kind in [ErrorKind::Unsupported, ErrorKind::PermissionDenied] {
-        let error = link_error(Error::from(kind), &dir.join("0000000000000000.sock.hold"));
+        let error = link_error(
+            Error::from(kind),
+            &dir.join("0000000000000000.sock.hold"),
+            &|_: &Error| true,
+        );
 
         assert_eq!(error.kind(), kind);
         let text = error.to_string();
@@ -20,11 +23,18 @@ fn a_link_the_file_system_refuses_names_the_directory_hard_links_and_xdg_runtime
 }
 
 #[skuld::test]
-fn a_name_that_exists_and_any_other_failure_are_not_blamed_on_hard_links() {
-    for kind in [ErrorKind::AlreadyExists, ErrorKind::StorageFull, ErrorKind::NotFound] {
+fn an_error_the_host_does_not_blame_on_hard_links_is_returned_as_it_was() {
+    for kind in [
+        ErrorKind::AlreadyExists,
+        ErrorKind::StorageFull,
+        ErrorKind::NotFound,
+        ErrorKind::PermissionDenied,
+        ErrorKind::Unsupported,
+    ] {
         let error = link_error(
             Error::new(kind, "as it was"),
             Path::new("run").join("x.sock.hold").as_path(),
+            &|_: &Error| false,
         );
 
         assert_eq!(error.kind(), kind);
