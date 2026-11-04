@@ -4,6 +4,10 @@
 #[skuld::label]
 pub const VM: skuld::Label;
 
+/// Selects the tests of the SFTP client (`access/sftp_tests.rs`), which also run against OpenSSH's `sftp-server`.
+#[skuld::label]
+pub const SFTP: skuld::Label;
+
 #[skuld::label]
 pub const PYYAML: skuld::Label;
 

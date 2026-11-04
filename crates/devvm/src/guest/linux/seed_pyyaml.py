@@ -7,7 +7,8 @@
 Usage: seed_pyyaml.py CASES.json, a list of {where, meta_data, user_data, hostname, client_public, host_private,
 host_public}. `where` names the case in a failure.
 
-Exits 0 when every case reads back exactly, 1 when one does not, 2 when PyYAML cannot be imported.
+Exits 0 when every case reads back exactly, 3 when one does not, 2 when PyYAML cannot be imported. `uv` exits 1 when
+it cannot resolve PyYAML, as does Python on an uncaught exception, so 1 is never a mismatch.
 """
 
 import json
@@ -67,7 +68,7 @@ def main(path):
                 failures.append(f"{where}: {field} differs at index {at}: {got[field][at : at + 8]!r} for {want[field][at : at + 8]!r}")
     if failures:
         print("\n".join(failures), file=sys.stderr)
-        return 1
+        return 3
     print(f"{len(cases)} cases read back exactly")
     return 0
 

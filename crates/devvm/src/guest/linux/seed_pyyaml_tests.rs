@@ -15,6 +15,9 @@ use crate::test_support::fixtures::unicode_home;
 /// Scalar values per case.
 const CHUNK: usize = 4096;
 
+/// The exit status of `seed_pyyaml.py` when PyYAML reads a field back differently.
+const MISMATCH: i32 = 3;
+
 type Context = (&'static str, fn(char) -> String);
 
 /// How each scalar value is surrounded in a field. PyYAML drops spaces around a line break and reads `---` after one as
@@ -73,11 +76,11 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
         .arg(&cases_path)
         .output()
         .expect("`uv` must be installed to read the seed with PyYAML (set DEVVM_TEST_PYYAML=0 to turn the group off)");
-    // The script exits 1 on a mismatch; any other failure (uv could not resolve PyYAML, or the script could not import it)
-    // is the host's setup.
+    // The script exits 3 on a mismatch. `uv` itself exits 1 when it cannot resolve PyYAML and the script exits 1 on an
+    // uncaught exception, so every other status (a signal too) is the host's setup.
     match output.status.code() {
         Some(0) => {}
-        Some(1) => panic!(
+        Some(MISMATCH) => panic!(
             "PyYAML does not read the seed back exactly ({}):
 {}{}",
             output.status,

@@ -39,7 +39,8 @@ pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInsta
         .get()
         .map_err(|e| {
             format!(
-                "QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory, or set                  DEVVM_TEST_VM=0 to turn the group off)"
+                "QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory, or set \
+                 DEVVM_TEST_VM=0 to turn the group off)"
             )
         })
 }

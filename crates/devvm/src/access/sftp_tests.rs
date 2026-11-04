@@ -10,12 +10,15 @@ use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
 use crate::test_groups::{Group, openssh_sftp};
+use crate::test_harness::SFTP;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::RecordingHost;
 use crate::test_support::sshd::{Rig, SshdOptions};
 use crate::test_support::symlink::symlink;
 use crate::test_support::{file_mode, unix_files};
 use crate::{ErrorKind, GuestKind, Result};
+
+skuld::default_labels!(SFTP);
 
 // The server ==========================================================================================================
 
@@ -24,16 +27,17 @@ use crate::{ErrorKind, GuestKind, Result};
 /// group: it changes what the tests run against, not whether they run.
 const SERVER_VAR: &str = "DEVVM_TEST_SFTP_SERVER";
 
-/// Whether [`SERVER_VAR`] picks OpenSSH's server; `Err` names the valid values when it holds any other.
+/// Whether [`SERVER_VAR`] picks OpenSSH's server; `Err` names the valid values, and how to unset it, when it holds any other.
 fn parameter_picks_openssh() -> std::result::Result<bool, String> {
-    match std::env::var(SERVER_VAR).as_deref() {
-        Err(std::env::VarError::NotPresent) | Ok("scripted") => Ok(false),
-        Ok("openssh") => Ok(true),
-        Ok(other) => Err(format!(
-            "{SERVER_VAR} is {other:?}; the valid values are \"scripted\" and \"openssh\""
-        )),
-        Err(std::env::VarError::NotUnicode(other)) => Err(format!(
-            "{SERVER_VAR} is {other:?}; the valid values are \"scripted\" and \"openssh\""
+    let Some(value) = std::env::var_os(SERVER_VAR) else {
+        return Ok(false);
+    };
+    match value.to_str() {
+        Some("scripted") => Ok(false),
+        Some("openssh") => Ok(true),
+        _ => Err(format!(
+            "{SERVER_VAR} is {value:?}; set it to \"openssh\" for OpenSSH's server, or unset it or set it to \"scripted\" \
+             for the scripted server"
         )),
     }
 }

@@ -2,7 +2,7 @@
 //! `DEVVM_TEST_<GROUP>=0` (the test is then ignored). Declared with `test_group!`; a test joins with
 //! `#[fixture(<fixture>)] _group: &Group`.
 
-use crate::host;
+use crate::{Arch, host};
 
 /// Set, to its manifest's locale, in the child `host_tests` pins to code page 1252: stops it from spawning another.
 pub(crate) const PINNED_CHILD: &str = "DEVVM_PINNED_CHILD";
@@ -49,12 +49,16 @@ pub(crate) fn require_consent(
 
 /// Declares a test group: the fixture `$fixture`, labelled `$label` (declared in `test_harness.rs`), switched off by
 /// `env = "<NAME>"` set to `0`. With `consent = "<what the group does>"` its setup also fails the test unless
-/// `<NAME>_CONSENT` is exactly `1`. With `precondition = <fn>` it fails the test with the `Err` of `<fn>(<NAME>)`, which
-/// names what the host lacks and the opt-out. Without either, a host that lacks what the group needs fails the test
+/// `<NAME>_CONSENT` is exactly `1`. With `precondition = <fn>` (after the consent, if both) it fails the test with the `Err`
+/// of `<fn>(<NAME>)`, which names what the host lacks and the opt-out. Without either, a host that lacks what the group needs fails the test
 /// with whatever it produces.
 ///
 /// The module `$fixture` holds `enabled()`, for code that picks what to run by the group (`Ok` unless `<NAME>` is `0`).
 macro_rules! test_group {
+    ($label:ident => $fixture:ident, env = $env:literal, consent = $what:literal, precondition = $check:path) => {
+        test_group!(@declare $label, $fixture, $env,
+            require_consent($env, $what, |name| std::env::var(name).ok()).and_then(|group| $check($env).map(|()| group)));
+    };
     ($label:ident => $fixture:ident, env = $env:literal, consent = $what:literal) => {
         test_group!(@declare $label, $fixture, $env, require_consent($env, $what, |name| std::env::var(name).ok()));
     };
@@ -82,12 +86,21 @@ macro_rules! test_group {
     };
 }
 
-test_group!(VM => vm_group, env = "DEVVM_TEST_VM", consent = "boots QEMU under the host's hypervisor and downloads the pinned QEMU build");
+test_group!(VM => vm_group, env = "DEVVM_TEST_VM", consent = "boots QEMU under the host's hypervisor and downloads the pinned QEMU build", precondition = host_has_accelerator);
 test_group!(PYYAML => pyyaml, env = "DEVVM_TEST_PYYAML");
 test_group!(OPENSSH_SFTP => openssh_sftp, env = "DEVVM_TEST_OPENSSH_SFTP");
 test_group!(NTFS_NAMES => ntfs_names, env = "DEVVM_TEST_NTFS_NAMES");
 test_group!(ACP_1252 => acp_1252, env = "DEVVM_TEST_ACP_1252", precondition = host_has_code_page_1252);
 test_group!(UNICODE_SOCKET_DIR => unicode_socket_dir, env = "DEVVM_TEST_UNICODE_SOCKET_DIR", precondition = socket_dir_fits_unicode);
+
+fn host_has_accelerator(enabled_var: &str) -> Result<(), String> {
+    host::current()
+        .accelerator(Arch::Amd64)
+        .map(|_| ())
+        .map_err(|unavailable| {
+            format!("the group needs a hypervisor: {unavailable}; set {enabled_var}=0 to turn it off")
+        })
+}
 
 fn host_has_code_page_1252(enabled_var: &str) -> Result<(), String> {
     let code_page = host::current().ansi_code_page();
