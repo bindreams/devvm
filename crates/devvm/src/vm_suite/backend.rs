@@ -92,7 +92,7 @@ fn backend_over(bin: &Path, host: &'static dyn Host) -> QemuBackend {
 fn spec_in(dir: &Path, id: InstanceId, lifetime: Lifetime) -> MachineSpec {
     let accel = host::current()
         .accelerator(Arch::Amd64)
-        .unwrap_or_else(|e| panic!("the VM tests need WHPX: {e}"));
+        .unwrap_or_else(|e| panic!("the VM tests need WHPX: {e}; set DEVVM_TEST_VM=0 to turn the group off"));
     MachineSpec {
         id,
         launch: 1,
