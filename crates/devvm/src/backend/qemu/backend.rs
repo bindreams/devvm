@@ -144,13 +144,14 @@ impl Backend for QemuBackend {
                     ssh: Vec::new(),
                     serial_log: spec.serial_log.clone(),
                     leftovers: endpoint.launch_files().to_vec(),
-                    claim: Some(claim),
+                    claim: Some(claim.clone()),
                     no_reboot: spec.profile.no_reboot,
                 };
                 Ok(Box::new(QemuMachine::launched(
                     vm.expect("a started launch has its process"),
                     watch,
                     record,
+                    claim,
                     spec.forwards.clone(),
                     parts.log,
                     spec.arch,
@@ -162,7 +163,14 @@ impl Backend for QemuBackend {
         }
     }
 
+    /// A record without a claim is refused: a session is only made against a machine's own files, which the claim says.
     fn attach(&self, record: &MachineRecord) -> Result<Box<dyn Machine>> {
+        let Some(claim) = record.claim.clone() else {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("the record of the machine at {} has no claim file", record.qmp),
+            ));
+        };
         let Some(vm) = VmProcess::attach(&record.process)? else {
             return Err(Error::new(
                 ErrorKind::NotFound,
@@ -174,6 +182,7 @@ impl Backend for QemuBackend {
             vm,
             watch,
             record.clone(),
+            claim,
             self.host,
             self.progress.clone(),
         )?))

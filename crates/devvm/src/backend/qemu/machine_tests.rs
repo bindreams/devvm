@@ -12,13 +12,13 @@ use serde_json::json;
 
 use super::{NO_REBOOT_REFUSAL, QemuMachine};
 use crate::backend::qemu::qmp::qmp_tests::serve;
-use crate::backend::{Machine, MachineRecord};
+use crate::backend::{Backend, Machine, MachineRecord};
 use crate::contain::VmProcess;
 use crate::host::{self, Host, ProcessWatch};
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::manual_exit::ManualExit;
-use crate::test_support::qemu::Sock;
+use crate::test_support::qemu::{Sock, backend_in, socket_run};
 use crate::test_support::refusing::Refusing;
 use crate::{Arch, ErrorKind};
 
@@ -55,6 +55,7 @@ fn launched(
         vm,
         watch,
         record,
+        sock.claim.clone(),
         Vec::new(),
         PathBuf::from("qemu.log"),
         arch,
@@ -67,7 +68,15 @@ fn launched(
 
 fn attached(sock: &Sock, no_reboot: bool, host: &'static dyn Host, watch: Arc<dyn ProcessWatch>) -> QemuMachine {
     let (vm, record) = record(sock, no_reboot);
-    QemuMachine::attached(vm, watch, record, host, Arc::new(MemoryProgress::default())).unwrap()
+    QemuMachine::attached(
+        vm,
+        watch,
+        record,
+        sock.claim.clone(),
+        host,
+        Arc::new(MemoryProgress::default()),
+    )
+    .unwrap()
 }
 
 /// A watch that fails the test's assertion when anything connects to QEMU.
@@ -89,12 +98,12 @@ fn the_no_reboot_refusal_is_one_sentence_that_names_the_cause() {
 
 /// A session is only made against a machine's own files, which its claim says; a record without one cannot say.
 #[skuld::test]
-fn a_session_with_a_machine_whose_record_has_no_claim_is_refused_naming_the_socket() {
+fn attach_refuses_a_record_without_a_claim_naming_the_socket() {
     let sock = Sock::new();
-    let mut machine = launched(&sock, false, host::current(), Arch::Amd64, tripwire());
-    machine.record.claim = None;
+    let (_vm, mut record) = record(&sock, false);
+    record.claim = None;
 
-    let error = machine.open().err().unwrap();
+    let error = backend_in(&socket_run(), Arc::default()).attach(&record).err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert!(

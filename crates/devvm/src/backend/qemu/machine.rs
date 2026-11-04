@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::args::guest_port;
 use super::directory_of;
 use super::qmp::{Qmp, QmpEndpoint, VmEnd};
-use crate::backend::{Endpoint, Machine, MachineRecord, SshEndpoint};
+use crate::backend::{Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Host, ProcessWatch};
@@ -39,6 +39,8 @@ pub(super) fn qemu_log(dir: &Path) -> PathBuf {
 pub(super) struct QemuMachine {
     vm: VmProcess,
     record: MachineRecord,
+    /// The record's claim: the file whose identity says the control socket is this machine's (`Qmp::connect`).
+    claim: FileClaim,
     ssh: Vec<(Endpoint, SocketAddr)>,
     /// The forwards this machine was launched with; their host ports are read back once it runs.
     forwards: Vec<Endpoint>,
@@ -68,6 +70,7 @@ impl QemuMachine {
         vm: VmProcess,
         process: Arc<dyn ProcessWatch>,
         record: MachineRecord,
+        claim: FileClaim,
         forwards: Vec<Endpoint>,
         log: PathBuf,
         arch: Arch,
@@ -81,6 +84,7 @@ impl QemuMachine {
             arch: Some(arch),
             vm,
             record,
+            claim,
             ssh: Vec::new(),
             forwards,
             host,
@@ -90,11 +94,12 @@ impl QemuMachine {
         }
     }
 
-    /// A machine that runs already, found from its record.
+    /// A machine that runs already, found from its record, whose `claim` is the record's.
     pub(super) fn attached(
         vm: VmProcess,
         process: Arc<dyn ProcessWatch>,
         record: MachineRecord,
+        claim: FileClaim,
         host: &'static dyn Host,
         progress: Arc<dyn Progress>,
     ) -> Result<QemuMachine> {
@@ -108,6 +113,7 @@ impl QemuMachine {
             forwards: record.ssh.iter().map(|e| e.endpoint).collect(),
             vm,
             record,
+            claim,
             host,
             progress,
             attached: true,
@@ -117,16 +123,7 @@ impl QemuMachine {
 
     /// A session with QEMU. `ConnectionLost` means QEMU is gone or going.
     fn open(&self) -> Result<Qmp> {
-        let claim = self.record.claim.as_ref().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Internal,
-                format!(
-                    "the record of the machine at {} has no claim file",
-                    self.endpoint.path().display()
-                ),
-            )
-        })?;
-        Qmp::connect(self.host, &self.endpoint, claim, &self.process, &*self.progress)
+        Qmp::connect(self.host, &self.endpoint, &self.claim, &self.process, &*self.progress)
     }
 
     fn connect(&self) -> Result<Qmp> {

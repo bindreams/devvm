@@ -530,38 +530,10 @@ fn a_machine_that_has_exited_fails_before_a_lock_file_is_touched() {
     assert!(!sock.endpoint.lock_path().exists());
 }
 
-/// A watch that says the process has exited from its second `has_exited` on: `connect` asks before it takes the lock,
-/// and again only once the socket has accepted and the claim is not the machine's.
-struct ExitsOnSecondAsk {
-    inner: Arc<dyn ProcessWatch>,
-    asked: std::sync::atomic::AtomicUsize,
-}
-
-impl ProcessWatch for ExitsOnSecondAsk {
-    fn has_exited(&self) -> crate::Result<bool> {
-        if self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1 {
-            return Ok(true);
-        }
-        self.inner.has_exited()
-    }
-
-    fn pause(&self) -> crate::Result<bool> {
-        self.inner.pause()
-    }
-
-    fn link(&self, stream: crate::backend::qemu::uds::UnixStream) -> std::io::Result<Box<dyn Link>> {
-        self.inner.link(stream)
-    }
-}
-
 /// Nothing serves the connection, so a connect that went on to negotiate would wait for ever: the error is the drop.
 #[skuld::test]
-fn a_claim_replaced_by_another_launchs_file_once_the_process_has_exited_is_a_lost_connection() {
+fn a_claim_replaced_by_another_launchs_file_is_a_lost_connection_naming_the_claim_file() {
     let sock = sock();
-    let process: Arc<dyn ProcessWatch> = Arc::new(ExitsOnSecondAsk {
-        inner: ManualExit::new().watch(),
-        asked: Default::default(),
-    });
     // The old file stays, so the new one cannot be given its identity again.
     let old = sock.claim.path.with_extension("old");
     std::fs::rename(&sock.claim.path, &old).unwrap();
@@ -569,58 +541,32 @@ fn a_claim_replaced_by_another_launchs_file_once_the_process_has_exited_is_a_los
     // The connection is made by the kernel's backlog; nothing accepts it, and nothing needs to.
     let _listener = sock.listen();
 
-    let error = Qmp::connect(
-        host::current(),
-        &sock.endpoint,
-        &sock.claim,
-        &process,
-        &MemoryProgress::default(),
-    )
-    .err()
-    .unwrap();
+    let error = sock.connect().err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("exited"), "{error}");
-    let _ = std::fs::remove_file(old);
-}
-
-/// The claim is the machine's own: the socket is its own, whether or not the process has exited by now.
-#[skuld::test]
-fn the_machines_own_claim_lets_connect_go_on_without_asking_whether_the_process_exited() {
-    let sock = sock();
-    let process: Arc<dyn ProcessWatch> = Arc::new(ExitsOnSecondAsk {
-        inner: ManualExit::new().watch(),
-        asked: Default::default(),
-    });
-    let (server, _) = serve(sock.listen(), 1, |_, _| {});
-
-    let qmp = Qmp::connect(
-        host::current(),
-        &sock.endpoint,
-        &sock.claim,
-        &process,
-        &MemoryProgress::default(),
+    assert!(
+        error.message().contains(&sock.claim.path.display().to_string()),
+        "{error}"
     );
-
-    assert!(qmp.is_ok(), "{}", qmp.err().unwrap());
-    drop(qmp);
-    server.join().unwrap();
+    assert!(error.message().contains("another launch's file"), "{error}");
+    let _ = std::fs::remove_file(old);
 }
 
 /// Nothing serves the connection and the process never exits, so a connect that did not refuse would wait for ever.
 #[skuld::test]
-fn a_claim_removed_while_the_process_runs_is_unavailable_and_names_the_claim_file() {
+fn a_claim_removed_while_the_process_runs_is_a_lost_connection_naming_the_claim_file() {
     let sock = sock();
     std::fs::remove_file(&sock.claim.path).unwrap();
     let _listener = sock.listen();
 
     let error = sock.connect().err().unwrap();
 
-    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(
         error.message().contains(&sock.claim.path.display().to_string()),
         "{error}"
     );
+    assert!(error.message().contains("gone"), "{error}");
 }
 
 /// The lock is held elsewhere for the whole test: the wait for it ends only because the process exited.

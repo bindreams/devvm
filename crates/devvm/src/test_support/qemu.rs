@@ -12,15 +12,17 @@ use std::sync::Arc;
 use crate::Dirs;
 use crate::backend::FileClaim;
 use crate::backend::qemu::args::escape_option_value;
+use crate::backend::qemu::backend::QemuBackend;
 use crate::backend::qemu::qmp::{QmpEndpoint, Reservation};
 use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
+use crate::backend::qemu::storage::QemuStorage;
 use crate::config::Config;
 use crate::exit::{NullProgress, StderrProgress};
 use crate::host::{self, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_groups::{Group, vm_group};
-use crate::test_support::fixtures::UNICODE_DIR;
+use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR};
 
 #[path = "qemu_tests.rs"]
 mod qemu_tests;
@@ -303,6 +305,19 @@ pub fn lazy_at(bin: &Path) -> Arc<LazyInstall> {
         qemu_path: Some(bin.to_path_buf()),
     };
     Arc::new(LazyInstall::new(dirs, config, fetcher, progress, host::current()))
+}
+
+/// A QEMU backend that reserves and sweeps in `run` and has no QEMU to launch.
+pub fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend> {
+    let install = lazy_at(Path::new("no-qemu-here"));
+    let storage = Arc::new(QemuStorage::new(install.clone(), host::current()));
+    Arc::new(QemuBackend::new(
+        install,
+        storage,
+        host::current(),
+        run.to_path_buf(),
+        progress,
+    ))
 }
 
 /// Runs the sidecar's `qemu-img` and returns its stdout; panics with its stderr when it fails.

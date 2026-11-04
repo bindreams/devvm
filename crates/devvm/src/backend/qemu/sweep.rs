@@ -48,8 +48,8 @@ impl QemuBackend {
     ///
     /// For each launch (names of the shape `<16 hex>.sock`, `.sock.lock` and `.sock.hold`, files and no others):
     /// - its claim file is held: the machine is alive, nothing is done;
-    /// - its claim file is free: the machine is dead or dying, and the socket, the lock file and the claim file go, in that
-    ///   order;
+    /// - its claim file is free: the machine is dead or dying, and the socket, the lock file and the claim file go, in
+    ///   that order;
     /// - there is no claim file, no socket, and a lock file: a session that came late made it, and it goes;
     /// - there is no claim file but a socket: no launch leaves a socket without its claim (the claim is made first and
     ///   deleted last, after the socket and lock are gone), so someone deleted the claim by hand, and the socket stays.

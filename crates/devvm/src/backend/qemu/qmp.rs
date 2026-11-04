@@ -126,7 +126,8 @@ impl QmpEndpoint {
         })?;
         // Shared while names are drawn and claimed, so no sweep runs between a claim file's creation and its hold.
         // Released on return: the hold covers the launch from then on, and a sweep finds it `Busy`.
-        // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one call.
+        // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one
+        // call.
         let mut directory = FileLock::open_in_existing_dir(&run.join("runtime.lock"))?;
         directory.lock(Mode::Shared, "a sweep of the runtime directory", progress)?;
         'drawing: loop {
@@ -289,10 +290,12 @@ impl Qmp {
     ///
     /// The lock is waited for as long as the process has not exited. Once the socket has accepted, the file at
     /// `claim`'s path is compared with `claim`; if it is another launch's file, or none, the connection is dropped
-    /// unread: `ConnectionLost` when the process has exited by now, `Unavailable` when it runs. This checks the claim's
-    /// identity, not the process's liveness: the hold is free before the exit is visible, so a sweep can free the name
-    /// while a dying machine is still listed. Only a draw of the same 64 bits then gives the name to another launch,
-    /// and the check is what makes that harmless.
+    /// unread and the error is `ConnectionLost`: a running QEMU holds its claim, and on Windows a held claim cannot be
+    /// removed by name, so the machine is over or ending. This checks the claim's identity, not the process's
+    /// liveness: the hold is free before the exit is visible, so a sweep can free the name while a dying machine is
+    /// still listed. Only a draw of the same 64 bits then gives the name to another launch, and the check is what makes
+    /// that harmless. Nobody removes a running machine's claim by hand: where that is possible (Unix), the callers wait
+    /// for the process on `ConnectionLost`, and so wait until QEMU ends.
     ///
     /// Never deletes the lock file, whether it succeeds or not: another session may be waiting on that very file, and a
     /// path removed under it could be a later session's. The file is removed by whoever knows no session can be live,
@@ -348,19 +351,18 @@ impl Qmp {
         let state = claim
             .state(host.file_id(&claim.path))
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", claim.path.display()), e))?;
-        let not_ours = match state {
+        let is = match state {
             ClaimState::Ours => None,
             ClaimState::Another => Some("another launch's file"),
             ClaimState::Gone => Some("gone"),
         };
-        if let Some(is) = not_ours {
-            if process.has_exited()? {
-                return Err(exited("as its control socket accepted a connection"));
-            }
+        if let Some(is) = is {
+            // The stream and the lock go with this return, unread.
             return Err(Error::new(
-                ErrorKind::Unavailable,
+                ErrorKind::ConnectionLost,
                 format!(
-                    "cannot reach QEMU at {}: the QEMU process is running and its claim file {} is {is}",
+                    "cannot reach QEMU at {}: claim file {} is {is}: a running QEMU holds its claim, so the machine \
+                     is over or ending",
                     ep.path().display(),
                     claim.path.display()
                 ),
@@ -642,8 +644,8 @@ impl Qmp {
     }
 }
 
-/// Whether a read produced a message: nothing read is the end of the stream, and so is a line cut off before its newline,
-/// which is what a QEMU that died in the middle of a write leaves.
+/// Whether a read produced a message: nothing read is the end of the stream, and so is a line cut off before its
+/// newline, which is what a QEMU that died in the middle of a write leaves.
 fn is_whole_line(read: usize, line: &str) -> bool {
     read > 0 && line.ends_with('\n')
 }

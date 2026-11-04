@@ -3,28 +3,14 @@ use std::sync::Arc;
 
 use crate::Dirs;
 use crate::backend::Backend;
-use crate::backend::qemu::backend::QemuBackend;
 use crate::backend::qemu::qmp::QmpEndpoint;
-use crate::backend::qemu::storage::QemuStorage;
 use crate::exit::NullProgress;
 use crate::host::{self, Hold, HoldOutcome, deleting_name, new_name};
 use crate::instance::registry::Registry;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::other_account::a_directory_of_another_account;
-use crate::test_support::qemu::{lazy_at, scratch_run};
-
-fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend> {
-    let install = lazy_at(Path::new("no-qemu-here"));
-    let storage = Arc::new(QemuStorage::new(install.clone(), host::current()));
-    Arc::new(QemuBackend::new(
-        install,
-        storage,
-        host::current(),
-        run.to_path_buf(),
-        progress,
-    ))
-}
+use crate::test_support::qemu::{backend_in, scratch_run};
 
 pub(super) fn sweep(run: &Path) -> Vec<String> {
     let mut warnings = Vec::new();

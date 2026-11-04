@@ -154,8 +154,8 @@ pub(crate) enum ClaimState {
 }
 
 impl FileClaim {
-    /// Which file `found`, a look at the claim's file, is: the identity of the file at `path` (`Host::file_id`) or of the
-    /// held claim (`Hold::id`). A failure other than a missing file is returned.
+    /// Which file `found`, a look at the file at the claim's `path` (`Host::file_id`), is. Only a lookup by name gives
+    /// `Gone`; the identity of an open handle does not. A failure other than a missing file is returned.
     pub(crate) fn state(&self, found: std::io::Result<FileId>) -> std::io::Result<ClaimState> {
         match found {
             Ok(id) if id == self.id => Ok(ClaimState::Ours),
@@ -225,19 +225,12 @@ pub(crate) fn remove_files(
             return;
         }
     };
-    match claim.state(hold.id()) {
-        Ok(ClaimState::Ours) => {}
-        Ok(ClaimState::Another) => {
+    // The identity of the open handle: it cannot be absent, so the claim is the launch's or another's.
+    match hold.id() {
+        Ok(id) if id == claim.id => {}
+        Ok(_) => {
             warn(format!(
                 "not deleting {}: {} is another launch's file",
-                names(&listed),
-                claim.path.display()
-            ));
-            return;
-        }
-        Ok(ClaimState::Gone) => {
-            warn(format!(
-                "not deleting {}: {} is gone",
                 names(&listed),
                 claim.path.display()
             ));

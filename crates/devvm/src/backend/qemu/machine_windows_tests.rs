@@ -74,6 +74,7 @@ impl World {
             vm,
             host.watch_process(id).unwrap(),
             self.record.clone(),
+            self.sock.claim.clone(),
             host,
             Arc::new(MemoryProgress::default()),
         )
@@ -88,6 +89,7 @@ impl World {
             vm,
             host.watch_process(id).unwrap(),
             self.record.clone(),
+            self.sock.claim.clone(),
             Vec::new(),
             log,
             Arch::Amd64,

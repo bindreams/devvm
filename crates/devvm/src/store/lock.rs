@@ -10,6 +10,10 @@ use crate::{Error, ErrorKind, Result};
 #[path = "lock_tests.rs"]
 pub(crate) mod lock_tests;
 
+#[cfg(all(test, unix))]
+#[path = "lock_unix_tests.rs"]
+mod lock_unix_tests;
+
 /// Whether a lock admits other holders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -56,7 +60,11 @@ impl FileLock {
             .open(path)
             .map_err(|source| {
                 let text = match path.parent() {
-                    Some(parent) if source.kind() == std::io::ErrorKind::NotFound => {
+                    // A dangling symlink at `path` also gives NotFound, and then the parent may be there.
+                    Some(parent)
+                        if source.kind() == std::io::ErrorKind::NotFound
+                            && matches!(crate::host::symlink_metadata_if_present(parent), Ok(None)) =>
+                    {
                         format!(
                             "cannot open lock file {}: {} does not exist",
                             path.display(),
