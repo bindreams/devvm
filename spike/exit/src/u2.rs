@@ -49,7 +49,10 @@ fn measure(dir: &Path, variant: Variant) {
         };
         let creator = match variant {
             Variant::CreatorOpenShareAll => Some(creator),
-            _ => None,
+            _ => {
+                drop(creator);
+                None
+            }
         };
         let second = File::options().read(true).share_mode(share).open(&path).unwrap();
 
