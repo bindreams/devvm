@@ -7,8 +7,8 @@ use std::path::Path;
 use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_INFO,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, SetFileAttributesW,
-    SetFileInformationByHandle,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
+    SetFileAttributesW, SetFileInformationByHandle,
 };
 
 use super::super::wide;
@@ -54,6 +54,40 @@ fn a_delete_replaces_a_deleting_name_a_dead_delete_left(#[fixture(unicode_home)]
 
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
     assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Absent));
+}
+
+/// A `.del` that another handle keeps open (the sweep's own open, a child's inherited copy) is still replaced.
+#[skuld::test]
+fn a_delete_replaces_a_deleting_name_somebody_keeps_open(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    let leftover = home.join("x.sock.hold.del");
+    std::fs::write(&leftover, b"left").unwrap();
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    let keeper = OpenOptions::new().read(true).share_mode(share).open(&leftover).unwrap();
+    let hold = current().hold_new(&path).unwrap();
+
+    hold.delete().unwrap();
+
+    drop(keeper);
+    assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
+}
+
+/// A handle that asks for no data access (as `file_id::of` opens) lets the hold's file be deleted, and the name goes
+/// at once: only a delete with POSIX semantics unlinks it while that handle is open.
+#[skuld::test]
+fn a_deleted_hold_leaves_no_name_while_an_attributes_only_handle_is_open(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let observer = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(0)
+        .open(&path)
+        .unwrap();
+
+    hold.delete().unwrap();
+
+    assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
+    drop(observer);
 }
 
 /// A name that is a link is not opened through: what it leads to is somebody else's file, and holding it would lock

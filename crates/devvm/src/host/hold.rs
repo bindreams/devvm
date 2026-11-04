@@ -13,8 +13,9 @@ use std::io;
 use super::FileId;
 
 /// The suffix of the name a claim file is given just before it is deleted (`<claim file>.del`), where the host can only
-/// free a name by renaming the file away: Windows, where a deleted file keeps its name until its last handle closes.
-/// A deleter that dies in between leaves the name; the sweep deletes it.
+/// free a name by renaming the file away: Windows, where a deleted file keeps its name until its last handle closes
+/// (with POSIX semantics, where the file system has them, until the file object closes). A deleter that dies in
+/// between leaves the name; the sweep deletes it.
 pub(crate) const DELETING_SUFFIX: &str = ".del";
 
 /// An exclusive hold on a file, and the open file that carries it.
