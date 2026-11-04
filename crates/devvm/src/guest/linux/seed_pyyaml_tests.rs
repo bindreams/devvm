@@ -5,11 +5,11 @@ use std::path::Path;
 use std::process::Command;
 
 use secrecy::{ExposeSecret, SecretString};
-use serde_json::json;
+use serde::Serialize;
 
 use super::seed_files;
 use crate::guest::{SeedKeys, SeedSpec};
-use crate::test_support::claims::PYYAML;
+use crate::test_groups::{Group, pyyaml};
 use crate::test_support::fixtures::unicode_home;
 
 /// Scalar values per case.
@@ -25,21 +25,32 @@ const CONTEXTS: [Context; 3] = [
     ("before ---", |c| format!("{c}--- ")),
 ];
 
-/// Runs the test only where a job claims it. Without a claim the test is ignored and the reason says where it runs, so a
-/// local run never reads as covering PyYAML. Where claimed, a missing `uv` or PyYAML fails the test.
-fn pyyaml_claimed() -> Result<(), String> {
-    match PYYAML.is_made() {
-        true => Ok(()),
-        false => Err("no PyYAML claimed; covered by CI (Test job on ubuntu-latest, which installs uv)".to_owned()),
-    }
+/// A seed's two files and what PyYAML must read back from them, each field under the name `seed_pyyaml.py` reads it
+/// with. Serialized, a case is what the script reads.
+#[derive(Serialize)]
+struct Case {
+    label: String,
+    meta_data: String,
+    user_data: String,
+    expected: [(&'static str, String); 5],
 }
 
-#[skuld::test(requires = [pyyaml_claimed])]
+/// The reader did not run to completion: not a finding about the seed.
+fn reader_failed(why: String) -> ! {
+    panic!(
+        "{why}\nIf uv or PyYAML cannot be had on this host, {}.",
+        pyyaml::OPT_OUT
+    )
+}
+
+/// A host without `uv` or PyYAML fails the test.
+#[skuld::test]
 fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hostname(
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(pyyaml)] _group: &Group,
 ) {
     let all: Vec<char> = (0..=0x10_FFFF).filter_map(char::from_u32).collect();
-    let cases: Vec<serde_json::Value> = all
+    let cases: Vec<Case> = all
         .chunks(CHUNK)
         .flat_map(|chunk| CONTEXTS.map(|(context, unit)| (chunk, context, unit)))
         .map(|(chunk, context, unit)| {
@@ -59,18 +70,26 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
                 let file = files.iter().find(|file| file.name == name).unwrap();
                 String::from_utf8(file.bytes.clone()).unwrap()
             };
-            json!({
-                "where": format!("U+{:04X}..U+{:04X} {context}", chunk[0] as u32, chunk[chunk.len() - 1] as u32),
-                "meta_data": file("meta-data"),
-                "user_data": file("user-data"),
-                "hostname": spec.hostname,
-                "client_public": spec.keys.client_public,
-                "host_private": spec.keys.host_private.expose_secret(),
-                "host_public": spec.keys.host_public,
-            })
+            Case {
+                label: format!(
+                    "U+{:04X}..U+{:04X} {context}",
+                    chunk[0] as u32,
+                    chunk[chunk.len() - 1] as u32
+                ),
+                meta_data: file("meta-data"),
+                user_data: file("user-data"),
+                expected: [
+                    ("meta hostname", spec.hostname.clone()),
+                    ("user hostname", spec.hostname),
+                    ("client_public", spec.keys.client_public),
+                    ("host_private", spec.keys.host_private.expose_secret().to_owned()),
+                    ("host_public", spec.keys.host_public),
+                ],
+            }
         })
         .collect();
     let cases_path = home.join("cases.json");
+    let read_path = home.join("read.json");
     std::fs::write(&cases_path, serde_json::to_vec(&cases).unwrap()).unwrap();
 
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/guest/linux/seed_pyyaml.py");
@@ -78,13 +97,28 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
         .args(["run", "--script"])
         .arg(&script)
         .arg(&cases_path)
+        .arg(&read_path)
         .output()
-        .expect("`uv` must be installed to read the seed with PyYAML; CI installs it");
+        .unwrap_or_else(|e| reader_failed(format!("`uv` must be installed to read the seed with PyYAML ({e})")));
+    if !output.status.success() {
+        reader_failed(format!(
+            "the PyYAML reader failed ({}):\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+    let report: Vec<String> = std::fs::read(&read_path)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
+        .unwrap_or_else(|e| {
+            reader_failed(format!(
+                "the PyYAML reader's output {} is unusable: {e}",
+                read_path.display()
+            ))
+        });
     assert!(
-        output.status.success(),
-        "PyYAML does not read the seed back exactly ({}):\n{}{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        report.is_empty(),
+        "PyYAML does not read the seed back exactly:\n{}",
+        report.join("\n"),
     );
 }

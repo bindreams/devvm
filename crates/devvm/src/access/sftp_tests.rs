@@ -9,7 +9,8 @@ use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
-use crate::test_support::claims::OPENSSH_SFTP;
+use crate::test_groups::{Group, openssh_sftp};
+use crate::test_harness::SFTP;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::RecordingHost;
 use crate::test_support::sshd::{Rig, SshdOptions};
@@ -17,27 +18,45 @@ use crate::test_support::symlink::symlink;
 use crate::test_support::{file_mode, unix_files};
 use crate::{ErrorKind, GuestKind, Result};
 
+skuld::default_labels!(SFTP);
+
 // The server ==========================================================================================================
 
-/// `Ok` when this run claims OpenSSH's own `sftp-server` instead of the scripted one: the copy is then checked against
-/// what a real guest does. The reason it does not is for a test to show as not run.
-fn openssh_claimed() -> std::result::Result<(), String> {
-    match OPENSSH_SFTP.is_made() {
-        true => Ok(()),
-        false => Err(format!(
-            "{} is not set; the scripted server is used here, OpenSSH's \
-             is covered by CI (the openssh-sftp step on ubuntu-latest)",
-            OPENSSH_SFTP.var
+/// The test parameter that picks the server of the shared SFTP tests: `scripted` (the default, also when unset) or
+/// `openssh`, OpenSSH's own `sftp-server`, so that the copy is checked against what a real guest does. It is not a
+/// group: it changes what the tests run against, not whether they run.
+const SERVER_VAR: &str = "DEVVM_TEST_SFTP_SERVER";
+
+/// Whether [`SERVER_VAR`] picks OpenSSH's server; `Err` names the valid values, and how to unset it, when it holds
+/// any other.
+fn parameter_picks_openssh() -> std::result::Result<bool, String> {
+    let Some(value) = std::env::var_os(SERVER_VAR) else {
+        return Ok(false);
+    };
+    match value.to_str() {
+        Some("scripted") => Ok(false),
+        Some("openssh") => Ok(true),
+        _ => Err(format!(
+            "{SERVER_VAR} is {value:?}; set it to \"openssh\" for OpenSSH's server, or unset it or set it \
+             to \"scripted\" for the scripted server"
         )),
     }
 }
 
+/// Whether this run's shared SFTP tests use OpenSSH's server; panics on an invalid [`SERVER_VAR`].
+fn openssh_server() -> bool {
+    parameter_picks_openssh().unwrap_or_else(|why| panic!("{why}"))
+}
+
 /// For a test that needs what only the scripted server does (faults, a dropped connection, a server that refuses a
-/// request); where OpenSSH's runs, it is not run.
+/// request); where [`SERVER_VAR`] picks OpenSSH's, it is not run. An invalid value does not ignore the test: the
+/// [`Env`] it builds fails with it.
 fn scripted_server() -> std::result::Result<(), String> {
-    match openssh_claimed() {
-        Ok(()) => Err("needs the scripted server; this run uses OpenSSH's".to_owned()),
-        Err(_) => Ok(()),
+    match parameter_picks_openssh() {
+        Ok(true) => Err(format!(
+            "needs the scripted server; this run uses OpenSSH's ({SERVER_VAR}=openssh)"
+        )),
+        Ok(false) | Err(_) => Ok(()),
     }
 }
 
@@ -50,16 +69,14 @@ fn guest_os(openssh: bool, root: &Path, kind: GuestKind) -> Arc<dyn GuestOs> {
     }
 }
 
-/// The claim is true: the SFTP server of this run is OpenSSH's, which has no root of its own and starts in the
-/// directory it serves, while the scripted server's home is `/`.
-#[skuld::test(requires = [openssh_claimed])]
-fn the_server_of_this_run_is_openssh_as_claimed(#[fixture(unicode_home)] home: &Path) {
-    let env = Env::new(home);
-    assert!(
-        env.openssh,
-        "{} is set but the run did not start OpenSSH's server",
-        OPENSSH_SFTP.var
-    );
+/// OpenSSH's server has no root of its own and starts in the directory it serves; the scripted server's home is `/`.
+/// Always against OpenSSH's server, whatever [`SERVER_VAR`] says: the `openssh_sftp` group is what it needs.
+#[skuld::test]
+fn openssh_sftp_server_starts_in_the_directory_it_serves(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(openssh_sftp)] _group: &Group,
+) {
+    let env = Env::with_server(home, true, |_| {});
     assert_eq!(env.sftp.home().unwrap(), env.g("/"));
 }
 
@@ -73,7 +90,6 @@ struct Env {
     progress: MemoryProgress,
     /// The host side: an empty directory.
     local: PathBuf,
-    /// Whether the guest's SFTP server is OpenSSH's own (see [`OPENSSH_SFTP`]).
     openssh: bool,
 }
 
@@ -83,7 +99,11 @@ impl Env {
     }
 
     fn with(home: &Path, configure: impl FnOnce(&mut SshdOptions)) -> Env {
-        let openssh = openssh_claimed().is_ok();
+        Env::with_server(home, openssh_server(), configure)
+    }
+
+    /// As [`Env::with`], served by OpenSSH's `sftp-server` when `openssh`, else by the scripted server.
+    fn with_server(home: &Path, openssh: bool, configure: impl FnOnce(&mut SshdOptions)) -> Env {
         let rig = Rig::with(home, |options| {
             configure(options);
             options.openssh_sftp = openssh;

@@ -2,10 +2,33 @@
 # requires-python = "==3.12.*"
 # dependencies = ["pyyaml==6.0.1"]
 # ///
-"""Loads cloud-init seeds the way cloud-init does (PyYAML, SafeLoader) and checks every field reads back exactly.
+"""Reads cloud-init seeds the way cloud-init does (PyYAML, SafeLoader), compares what PyYAML read with what the seed
+should hold, and reports each difference as one line of text.
 
-Usage: seed_pyyaml.py CASES.json, a list of {where, meta_data, user_data, hostname, client_public, host_private,
-host_public}. `where` names the case in a failure.
+Usage: seed_pyyaml.py CASES.json OUT.json
+
+CASES.json is a list of cases: {label, meta_data, user_data, expected}. meta_data and user_data are the text of the two
+seed files. expected is a list of five [field, value] pairs, the fields being "meta hostname", "user hostname",
+"client_public", "host_private" and "host_public".
+
+OUT.json is a list of lines, one per difference, empty when every field reads back as expected. The lines are:
+
+- "<field> is not a field this reader reads", once for each field name in CASES that is not one of FIELDS;
+- "<label>: does not read back: <Type>: <first line of the message>" when an exception is raised while loading or
+  navigating the case's documents (a file PyYAML cannot load, a key the document lacks, a value of the wrong shape);
+- "<label>: <field> reads back as <type> <repr>" when the value PyYAML read is not a str;
+- "<label>: <field> differs at code point <i> (read <n> code points, expected <m>): [<window>] for [<window>]" when it
+  is a str that differs. <i> is the first code point that differs. A window is the 4 code points before <i>, then "|",
+  then the 8 from <i> on, space-separated; a code point from "!" to "~" other than "[", "|" and "]" is shown as itself
+  and any other (a space included) as U+XXXX.
+
+The labels and field names CASES gives are written as given. In an error message or repr, each code point outside
+" ".."~", and the backslash, is written as its Python escape. The escaped text is cut after the last code point whose
+escape still fits in 60 characters, and followed by "…(the message is N code points long)" or "…(the repr is N code
+points long)", N counting the unescaped text.
+
+Exits 0 after writing OUT.json. Any other exit, including a missing key in a case, means this script did not run to
+completion.
 """
 
 import json
@@ -13,58 +36,87 @@ import sys
 
 import yaml
 
+SHOWN = 60
+BEFORE = 4
+AFTER = 8
+
 
 def load(text):
     return yaml.load(text, Loader=yaml.SafeLoader)
 
 
-def read_back(case):
-    meta = load(case["meta_data"])
-    user = load(case["user_data"])
-    return {
-        "meta hostname": meta["local-hostname"],
-        "user hostname": user["hostname"],
-        "client_public": user["users"][0]["ssh_authorized_keys"][0],
-        "host_private": user["ssh_keys"]["ed25519_private"],
-        "host_public": user["ssh_keys"]["ed25519_public"],
-    }
+FIELDS = ("meta hostname", "user hostname", "client_public", "host_private", "host_public")
 
 
-def expected(case):
-    return {
-        "meta hostname": case["hostname"],
-        "user hostname": case["hostname"],
-        "client_public": case["client_public"],
-        "host_private": case["host_private"],
-        "host_public": case["host_public"],
-    }
+def read_back(meta_data, user_data):
+    meta = load(meta_data)
+    user = load(user_data)
+    keys = user["ssh_keys"]
+    values = (
+        meta["local-hostname"],
+        user["hostname"],
+        user["users"][0]["ssh_authorized_keys"][0],
+        keys["ed25519_private"],
+        keys["ed25519_public"],
+    )
+    return dict(zip(FIELDS, values, strict=True))
 
 
-def main(path):
-    with open(path, encoding="utf-8") as f:
+def escaped(text, what):
+    """`text` with each code point outside " ".."~", and the backslash, as its Python escape, cut between code points
+    once SHOWN characters are shown."""
+    pieces = [c if " " <= c <= "~" and c != "\\" else ascii(c)[1:-1] for c in text]
+    width = 0
+    for i, piece in enumerate(pieces):
+        width += len(piece)
+        if width > SHOWN:
+            return f"{''.join(pieces[:i])}…(the {what} is {len(text)} code points long)"
+    return "".join(pieces)
+
+
+def show(points):
+    return " ".join(c if "!" <= c <= "~" and c not in "[|]" else f"U+{ord(c):04X}" for c in points)
+
+
+def difference(label, field, got, want):
+    if not isinstance(got, str):
+        return f"{label}: {field} reads back as {type(got).__name__} {escaped(repr(got), 'repr')}"
+    if got == want:
+        return None
+    at = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+    start = max(at - BEFORE, 0)
+
+    def window(text):
+        return f"[{show(text[start:at])} | {show(text[at : at + AFTER])}]"
+
+    return (
+        f"{label}: {field} differs at code point {at} (read {len(got)} code points, expected {len(want)}): "
+        f"{window(got)} for {window(want)}"
+    )
+
+
+def compare(case):
+    label = case["label"]
+    try:
+        values = read_back(case["meta_data"], case["user_data"])
+    except Exception as e:
+        first_line = (str(e).splitlines() or [""])[0]
+        return [f"{label}: does not read back: {type(e).__name__}: {escaped(first_line, 'message')}"]
+    lines = (difference(label, field, values[field], want) for field, want in case["expected"] if field in FIELDS)
+    return [line for line in lines if line is not None]
+
+
+def main(cases_path, out_path):
+    with open(cases_path, encoding="utf-8") as f:
         cases = json.load(f)
-    failures = []
+    named = dict.fromkeys(field for case in cases for field, _ in case["expected"])
+    lines = [f"{field} is not a field this reader reads" for field in named if field not in FIELDS]
     for case in cases:
-        where = case["where"]
-        try:
-            got = read_back(case)
-        except Exception as e:  # a seed that does not load at all
-            failures.append(f"{where}: does not load: {type(e).__name__}: {e}".splitlines()[0])
-            continue
-        want = expected(case)
-        for field in want:
-            if got[field] != want[field]:
-                at = next(
-                    (i for i, (a, b) in enumerate(zip(got[field], want[field])) if a != b),
-                    min(len(got[field]), len(want[field])),
-                )
-                failures.append(f"{where}: {field} differs at index {at}: {got[field][at : at + 8]!r} for {want[field][at : at + 8]!r}")
-    if failures:
-        print("\n".join(failures), file=sys.stderr)
-        return 1
-    print(f"{len(cases)} cases read back exactly")
+        lines.extend(compare(case))
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(lines, f)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv[1], sys.argv[2]))

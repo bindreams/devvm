@@ -25,11 +25,10 @@ use crate::host::{self, Host, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
+use crate::test_groups::{Group, unicode_socket_dir, vm_group};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
-use crate::test_support::qemu::{
-    assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, socket_dir, unicode_socket_dir_fits,
-};
+use crate::test_support::qemu::{assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, socket_dir};
 use crate::{Arch, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
@@ -93,7 +92,7 @@ fn backend_over(bin: &Path, host: &'static dyn Host) -> QemuBackend {
 fn spec_in(dir: &Path, id: InstanceId, lifetime: Lifetime) -> MachineSpec {
     let accel = host::current()
         .accelerator(Arch::Amd64)
-        .unwrap_or_else(|e| panic!("the VM tests need WHPX: {e}"));
+        .unwrap_or_else(|e| panic!("the VM tests need WHPX: {e}; {}", vm_group::OPT_OUT));
     MachineSpec {
         id,
         launch: 1,
@@ -506,10 +505,11 @@ fn vm_qemu_start_failure_reports_qemu_log(
     assert!(!is_running(&machine.record()), "QEMU exited");
 }
 
-#[skuld::test(requires = [unicode_socket_dir_fits])]
+#[skuld::test]
 fn vm_qemu_launch_with_paths_under_space_and_non_ascii(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
+    #[fixture(unicode_socket_dir)] _group: &Group,
 ) {
     let target = QemuTarget::new(install);
     let (spec, _parent) = target.prepared(home, 0, |_| {});

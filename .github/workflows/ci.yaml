@@ -16,8 +16,13 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # The Test job leaves the VM tests out (the vm job runs them); this is the explicit opt-out.
-  DEVVM_SKIP_VM_TESTS: "1"
+  # Test groups (crates/devvm/src/test_groups.rs) are on unless set to 0. The groups a job cannot run are off here, and
+  # each step that runs one opts back in.
+  DEVVM_TEST_VM: "0"
+  DEVVM_TEST_PYYAML: "0"
+  DEVVM_TEST_OPENSSH_SFTP: "0"
+  DEVVM_TEST_NTFS_NAMES: "0"
+  DEVVM_TEST_ACP_1252: "0"
 
 jobs:
   lint:
@@ -79,18 +84,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      # A test fails if a step does not make the claims it owes on its OS: the step names itself in DEVVM_CI_STEP, and
-      # test_support/claims.rs lists them. The vm job names itself the same way.
       - name: Test
         run: cargo test --workspace --locked
         env:
-          DEVVM_CI_STEP: test
-          DEVVM_COVERS_ACP: ${{ runner.os == 'Windows' && '1252' || '' }}
-          DEVVM_COVERS_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '' }}
-          DEVVM_COVERS_PYYAML: ${{ runner.os == 'Linux' && '1' || '' }}
+          DEVVM_TEST_PYYAML: ${{ runner.os == 'Linux' && '1' || '0' }}
+          DEVVM_TEST_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '0' }}
+          DEVVM_TEST_ACP_1252: ${{ runner.os == 'Windows' && '1' || '0' }}
 
-      # The copy tests again, against OpenSSH's own sftp-server instead of the scripted one. The claim makes them fail,
-      # not skip, if the run does not use it.
+      # The copy tests again, against OpenSSH's own sftp-server instead of the scripted one.
       - name: Install OpenSSH's SFTP server
         if: runner.os == 'Linux'
         run: |
@@ -101,9 +102,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test -p devvm --lib --locked
         env:
-          DEVVM_CI_STEP: openssh-sftp
-          DEVVM_COVERS_OPENSSH_SFTP: "1"
-          DEVVM_COVERS_PYYAML: "1"
+          # Only the SFTP tests (the `sftp` label), not the whole suite again.
+          SKULD_LABELS: sftp
+          DEVVM_TEST_OPENSSH_SFTP: "1"
+          DEVVM_TEST_SFTP_SERVER: openssh
 
       # The packaged crate must carry every file the library includes (the embedded recipes).
       - name: Package
@@ -111,19 +113,16 @@ jobs:
         run: cargo package -p devvm --locked
 
   # The tests that boot QEMU, under the Windows Hypervisor Platform of a hosted runner. Every test labelled `vm` runs
-  # here; the Test job leaves them out (DEVVM_SKIP_VM_TESTS=1). The tests fetch the pinned QEMU through devvm's own
+  # here; the Test job leaves them out (DEVVM_TEST_VM=0). The tests fetch the pinned QEMU through devvm's own
   # downloader, as a user's install does.
   vm:
     name: VM tests (windows-latest, WHPX)
     runs-on: windows-latest
     timeout-minutes: 60
     env:
-      # Overrides the workflow's `1`: the gate keeps VM tests on for any value but `1`.
-      DEVVM_SKIP_VM_TESTS: "0"
-      DEVVM_CI_STEP: vm
-      DEVVM_COVERS_ACP: "1252"
       DEVVM_TEST_UNICODE_BASE: 'C:\Users'
-      SKULD_LABELS: vm
+      # The VM group's tests and the 1252 group's.
+      SKULD_LABELS: vm | acp_1252
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -138,6 +137,11 @@ jobs:
 
       - name: Test
         run: cargo test -p devvm --lib --locked
+        env:
+          # A hosted runner is a throwaway sandbox, with WHPX.
+          DEVVM_TEST_VM: "1"
+          DEVVM_TEST_VM_CONSENT: "1"
+          DEVVM_TEST_ACP_1252: "1"
 
   # The workspace must build on the oldest toolchain it declares (`rust-version`), with the locked dependencies.
   msrv:

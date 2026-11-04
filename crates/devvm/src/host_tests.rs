@@ -4,7 +4,7 @@ use super::other::OtherHost;
 use super::{Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
-use crate::test_support::claims::ACP;
+use crate::test_groups::{Group, PINNED_CHILD, acp_1252};
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
@@ -399,48 +399,17 @@ fn sync_dir_of_a_missing_directory_fails_where_directories_are_flushed(#[fixture
 
 // The ANSI code page ==================================================================================================
 
-/// Set in the pinned child to its manifest's locale: stops it from spawning another child and tells its claim test the
-/// pin is under test.
-const PINNED_CHILD: &str = "DEVVM_PINNED_CHILD";
-
 /// The locale whose ANSI code page is 1252 on every host, whatever the host's own locale.
 const PINNED_LOCALE: &str = "en-US";
 
-const CLAIM_TEST: &str = "the_host_code_page_is_the_one_this_run_claims";
+const GROUP_TEST: &str = "the_host_code_page_is_1252";
 
-/// Runs the claim test only where a job claims a code page. Without a claim the test is ignored and the reason says
-/// which code page this host has and where the others are covered, so a local run never reads as covering 1252.
-fn code_page_claimed() -> Result<(), String> {
-    match ACP.is_made() {
-        true => Ok(()),
-        false => Err(format!(
-            "no code page claimed; this host's ACP is {}; 1252 is covered by CI (Test job and vm job on windows-latest)",
-            current()
-                .ansi_code_page()
-                .map_or_else(|| "not applicable".to_owned(), |acp| acp.to_string()),
-        )),
-    }
-}
-
-// Labelled `vm` although it boots nothing, so that the vm job (`SKULD_LABELS=vm`) runs it and claims the code page too.
-#[skuld::test(requires = [code_page_claimed], labels = [crate::vm_gate::VM])]
-fn the_host_code_page_is_the_one_this_run_claims() {
-    let claimed = ACP.value;
-    let actual = current().ansi_code_page();
-    let why = match std::env::var(PINNED_CHILD) {
-        Ok(locale) => {
-            format!("the manifest's activeCodePage={locale} did not pin the process to ANSI code page {claimed}")
-        }
-        Err(_) => {
-            "this host's code page differs from the claim; if CI set the claim, its runner image changed".to_owned()
-        }
-    };
-    assert_eq!(
-        actual.map(|acp| acp.to_string()),
-        Some(claimed.to_owned()),
-        "{}={claimed} but this process's ANSI code page is {actual:?}: {why}",
-        ACP.var,
-    );
+/// Needs the ANSI code page to be 1252: a host whose own is, and the child the pinning test starts. Fails on any other
+/// host unless the group is off. Repeats the group's precondition, so a group that passed without the code page being
+/// 1252 fails here.
+#[skuld::test]
+fn the_host_code_page_is_1252(#[fixture(acp_1252)] _group: &Group) {
+    assert_eq!(current().ansi_code_page(), Some(1252));
 }
 
 #[skuld::test]
@@ -485,7 +454,7 @@ fn reports_passed(stdout: &str, test: &str) -> bool {
 }
 
 /// Covers 1252 on a host whose own code page is another: runs the whole lib suite in a copy of this binary whose
-/// manifest pins `en-US`. Requires the child's report to list the claim test as passed, so a pin that did not take
+/// manifest pins `en-US`. Requires the child's report to list the group test as passed, so a pin that did not take
 /// fails.
 #[skuld::test(requires = [can_pin_code_page_1252])]
 fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
@@ -499,8 +468,8 @@ fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
         .unwrap_or_else(|e| panic!("cannot write the manifest {}: {e}", manifest.display()));
 
     let mut cmd = std::process::Command::new(&exe);
-    cmd.env("DEVVM_SKIP_VM_TESTS", "1")
-        .env(ACP.var, ACP.value)
+    cmd.env("DEVVM_TEST_VM", "0")
+        .env("DEVVM_TEST_ACP_1252", "1")
         .env(PINNED_CHILD, PINNED_LOCALE)
         .env_remove("SKULD_LABELS")
         .env_remove(helper::HELPER_VAR)
@@ -523,8 +492,8 @@ fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert!(
-        reports_passed(&stdout, CLAIM_TEST),
-        "the pinned run (manifest activeCodePage={PINNED_LOCALE}) exited 0 but its report does not list {CLAIM_TEST} \
+        reports_passed(&stdout, GROUP_TEST),
+        "the pinned run (manifest activeCodePage={PINNED_LOCALE}) exited 0 but its report does not list {GROUP_TEST} \
          as passed, so nothing shows it ran at 1252:\n{stdout}",
     );
 }
