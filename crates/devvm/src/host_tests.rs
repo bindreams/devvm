@@ -793,3 +793,24 @@ fn deleting_a_hold_whose_file_is_already_unlinked_is_fine(#[fixture(unicode_home
     std::fs::remove_file(&path).unwrap();
     hold.delete().unwrap();
 }
+
+/// A name that is a link is not opened through, on every host: what it leads to is somebody else's file.
+#[skuld::test]
+fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it_on_every_host(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let victim = home.join("victim");
+    std::fs::write(&victim, b"theirs").unwrap();
+    let link = home.join("x.sock.hold");
+    symlink(&victim, &link);
+    on_both_hosts(|host| {
+        let error = host.hold_existing(&link).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(error.to_string().contains("is a link"), "{error}");
+    });
+    std::fs::File::open(&victim)
+        .unwrap()
+        .try_lock()
+        .expect("nobody holds the victim");
+}

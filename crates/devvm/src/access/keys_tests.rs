@@ -273,3 +273,15 @@ fn a_remove_failure_that_means_the_directory_is_not_empty_leaves_it_to_publish_d
         "an empty directory that cannot be removed is an error"
     );
 }
+
+/// A claim directory that cannot be looked at is an error, not a directory that is not there.
+#[skuld::test]
+fn a_claim_that_cannot_be_looked_at_is_an_error(#[fixture(unicode_home)] home: &Path) {
+    let error = super::clear_dead_claim(&home.join("a\0b")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io);
+}
+
+#[skuld::test]
+fn a_claim_that_is_not_there_is_nothing_to_clear(#[fixture(unicode_home)] home: &Path) {
+    super::clear_dead_claim(&home.join("gone")).unwrap();
+}

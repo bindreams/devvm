@@ -41,9 +41,10 @@ fn private_claim_kind(file_name: &str) -> Option<PrivateClaimKind> {
 impl QemuBackend {
     /// Deletes the files of every machine in the runtime directory that is dead.
     ///
-    /// Nothing is made and nothing is waited for. A directory that a launch would refuse (`Host::accept_runtime_dir`: a link, a file, another
-    /// account's) is warned about and left alone. The lock is tried exclusive: a launch holds it shared while it draws
-    /// and claims a name, and another sweep may be running. Either way the pass ends and the next reap tries again.
+    /// Nothing is made and nothing is waited for. A directory that a launch would refuse
+    /// (`Host::accept_runtime_dir`: a link, a file, another account's) is warned about and left alone. The lock is
+    /// tried exclusive: a launch holds it shared while it draws and claims a name, and another sweep may be running.
+    /// Either way the pass ends and the next reap tries again.
     ///
     /// For each launch (names of the shape `<16 hex>.sock`, `.sock.lock` and `.sock.hold`, files and no others):
     /// - its claim file is held: the machine is alive, nothing is done;
@@ -124,7 +125,7 @@ impl QemuBackend {
                 PrivateClaimKind::New => std::fs::remove_file(&leftover),
             };
             if let Err(e) = removed
-                && e.kind() != std::io::ErrorKind::NotFound
+                && !is_absent(&e)
             {
                 warn(format!("cannot delete {}: {e}", leftover.display()));
             }
@@ -147,19 +148,23 @@ impl QemuBackend {
             }
             Ok(HoldOutcome::Busy) => {}
             Ok(HoldOutcome::Absent) => {
-                // Only the lock is examined: a late session can make a lock after the claim is gone, and a socket
-                // cannot appear after that. A lookup that fails says nothing about the file, so nothing is deleted.
-                match (symlink_metadata_if_present(&lock), symlink_metadata_if_present(&socket)) {
-                    (Ok(Some(_)), Ok(None)) => {
-                        if let Err(e) = std::fs::remove_file(&lock)
-                            && e.kind() != std::io::ErrorKind::NotFound
-                        {
-                            warn(format!("cannot delete {}: {e}", lock.display()));
+                // A late session can make a lock after the claim is gone, and a socket cannot appear after that: a
+                // lock whose socket is gone is left over. A lookup that fails says nothing about the file, so
+                // nothing is deleted.
+                match symlink_metadata_if_present(&lock) {
+                    Ok(None) => {}
+                    Err(e) => warn(format!("cannot look at {}: {e}", lock.display())),
+                    Ok(Some(_)) => match symlink_metadata_if_present(&socket) {
+                        Ok(None) => {
+                            if let Err(e) = std::fs::remove_file(&lock)
+                                && !is_absent(&e)
+                            {
+                                warn(format!("cannot delete {}: {e}", lock.display()));
+                            }
                         }
-                    }
-                    (Err(e), _) => warn(format!("cannot look at {}: {e}", lock.display())),
-                    (_, Err(e)) => warn(format!("cannot look at {}: {e}", socket.display())),
-                    (Ok(None), _) | (Ok(Some(_)), Ok(Some(_))) => {}
+                        Ok(Some(_)) => {}
+                        Err(e) => warn(format!("cannot look at {}: {e}", socket.display())),
+                    },
                 }
             }
             Err(e) => warn(format!("cannot hold {}: {e}", claim.display())),

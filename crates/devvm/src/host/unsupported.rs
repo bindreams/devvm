@@ -25,7 +25,7 @@ pub(super) trait FileModes: Send + Sync {
     fn private_options(&self) -> OpenOptions;
 
     /// Options that open an existing file for reading and writing, and refuse a symlink at its name instead of opening
-    /// what it leads to.
+    /// what it leads to where the system can. `hold::existing` looks at the name first on every host.
     fn hold_options(&self) -> OpenOptions;
 
     /// [`Host::socket_path_max`].

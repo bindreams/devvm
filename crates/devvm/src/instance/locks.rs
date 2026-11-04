@@ -27,6 +27,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::exit::{NullProgress, Progress};
+use crate::host::symlink_metadata_if_present;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
@@ -46,6 +47,13 @@ pub(crate) enum Probe {
     Held,
     /// The lock file does not exist: the instance is gone, or was never there.
     Gone,
+}
+
+/// Whether the lock file `path` is still linked. A look that fails is an error, never "unlinked".
+fn is_linked(path: &Path) -> Result<bool> {
+    symlink_metadata_if_present(path)
+        .map(|found| found.is_some())
+        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", path.display()), e))
 }
 
 fn gone(id: &InstanceId) -> Error {
@@ -162,7 +170,7 @@ impl Locks {
             let mut owner = self.create_lock_file(&path)?;
             owner.lock(Mode::Exclusive, "a lock-file sweep to finish", &NullProgress)?;
             between();
-            if path.exists() {
+            if is_linked(&path)? {
                 drop(self.create_lock_file(&self.op_path(id))?);
                 return Ok(owner);
             }
@@ -181,7 +189,7 @@ impl Locks {
             if !owner.try_lock(Mode::Exclusive)? {
                 return Ok(Probe::Held);
             }
-            if path.exists() {
+            if is_linked(&path)? {
                 drop(self.create_lock_file(&self.op_path(id))?);
                 return Ok(Probe::Free(owner));
             }
@@ -222,7 +230,7 @@ impl Locks {
         let mut lock = self.open_lock_file(&path, &mut || {})?.ok_or_else(|| gone(id))?;
         lock.lock(mode, what, progress)?;
         // The holder we waited for may have removed the instance: we would then hold a lock on an unlinked file.
-        if path.exists() { Ok(lock) } else { Err(gone(id)) }
+        if is_linked(&path)? { Ok(lock) } else { Err(gone(id)) }
     }
 
     /// Unlinks both lock files while no one opens a lock file. An unlink that fails stops it, leaves the owner file for
@@ -289,7 +297,11 @@ impl Locks {
         if !lock.try_lock(Mode::Exclusive)? {
             return Ok(Probe::Held);
         }
-        Ok(if path.exists() { Probe::Free(lock) } else { Probe::Gone })
+        Ok(if is_linked(path)? {
+            Probe::Free(lock)
+        } else {
+            Probe::Gone
+        })
     }
 
     /// The ids that have a lock file, in no particular order.

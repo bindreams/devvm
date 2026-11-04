@@ -28,13 +28,13 @@ mod file_id;
 mod hold;
 mod link;
 mod runtime_dir;
-mod user;
+pub(crate) mod user;
 mod watch;
 mod whpx;
 
 #[cfg(test)]
 #[path = "windows_tests.rs"]
-pub(crate) mod windows_tests;
+mod windows_tests;
 
 pub(crate) use watch::WindowsWatch;
 

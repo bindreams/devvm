@@ -202,3 +202,15 @@ fn handing_over_an_instance_with_a_corrupt_record_reports_the_record_and_writes_
     );
     assert_eq!(std::fs::read(instance.join("owner.json")).unwrap(), marker_before);
 }
+
+/// A path the system cannot look at is not a deleted tree: the error that stopped the delete is returned.
+#[skuld::test]
+fn a_tree_that_cannot_be_looked_at_is_not_taken_for_deleted(#[fixture(unicode_home)] home: &Path) {
+    let error = super::remove_tree(&home.join("a\0b")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+}
+
+#[skuld::test]
+fn a_tree_that_is_gone_is_deleted(#[fixture(unicode_home)] home: &Path) {
+    super::remove_tree(&home.join("gone")).unwrap();
+}

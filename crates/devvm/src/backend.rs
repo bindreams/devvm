@@ -8,7 +8,7 @@ use cosca::identity::ProcessIdRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::contain::Lifetime;
-use crate::host::{Accel, FileId, Hold, HoldOutcome, Host, symlink_metadata_if_present};
+use crate::host::{Accel, FileId, Hold, HoldOutcome, Host, is_absent, symlink_metadata_if_present};
 use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
 use crate::{Arch, ErrorKind, Network, Result};
@@ -155,8 +155,8 @@ impl MachineRecord {
 /// the names stay reserved until the rest is gone, and stays if any other file could not be deleted.
 ///
 /// Nothing is deleted, and `warn` is told, when there is no claim, the claim file is in use (a machine is alive, or
-/// a sweep or another program has it open), is another file than the claim says, or is gone while other files remain. A file that is already gone is fine; any
-/// other failure goes to `warn`.
+/// a sweep or another program has it open), is another file than the claim says, or is gone while other files remain. A
+/// file that is already gone is fine; any other failure goes to `warn`.
 pub(crate) fn remove_files(
     host: &dyn Host,
     paths: &[PathBuf],
@@ -231,7 +231,7 @@ pub(crate) fn remove_held(
     // The name is looked up on purpose: this asks whether the name still leads to the held file.
     match (hold.id(), host.file_id(claim)) {
         (Ok(held), Ok(named)) if held == named => {}
-        (Ok(_), Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+        (Ok(_), Err(e)) if is_absent(&e) => return,
         (Ok(_), Ok(_)) => return,
         (Err(e), _) | (_, Err(e)) => {
             warn(format!("cannot look at {}: {e}", claim.display()));
@@ -242,7 +242,7 @@ pub(crate) fn remove_held(
     for path in paths.iter().filter(|path| path.as_path() != claim) {
         match std::fs::remove_file(path) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if is_absent(&e) => {}
             Err(e) => {
                 all_gone = false;
                 warn(format!("cannot delete {}: {e}", path.display()));

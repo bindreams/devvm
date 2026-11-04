@@ -32,7 +32,8 @@ pub(crate) fn is_absent(e: &io::Error) -> bool {
     )
 }
 
-/// What is at `path`, not following a link: `None` when it is not there ([`is_absent`]), the error for any other failure.
+/// What is at `path`, not following a link: `None` when it is not there ([`is_absent`]), the error for any other
+/// failure.
 pub(crate) fn symlink_metadata_if_present(path: &Path) -> io::Result<Option<Metadata>> {
     match fs::symlink_metadata(path) {
         Ok(meta) => Ok(Some(meta)),

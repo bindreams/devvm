@@ -5,6 +5,8 @@ pub mod callers;
 pub mod claimed;
 pub mod fake_vm;
 pub mod file_mode;
+#[cfg(windows)]
+pub mod file_security;
 pub mod fixtures;
 pub mod helper;
 pub mod host;

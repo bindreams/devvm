@@ -1,8 +1,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
-
 use crate::host::names::{posix_problem, unix_run_dir, windows_colon_path, windows_problem, windows_run_dir};
 use crate::random;
 use crate::test_groups::{Group, ntfs_names};
@@ -260,15 +258,10 @@ fn two_sids_give_two_names_and_one_sid_gives_one() {
     );
 }
 
-/// The first 8 bytes of SHA-256 over the SID string are the name. The literal is a stability pin: a name made by an
+/// The name is the first 8 bytes of SHA-256 over the SID string. The literal is a stability pin: a name made by an
 /// earlier build must not change.
 #[skuld::test]
-fn the_hash_is_sha256_of_the_sid_string() {
+fn the_run_dir_name_of_a_sid_does_not_change() {
     let dir = windows_run_dir(Path::new(r"C:\ProgramData"), "S-1-5-18");
-    let digest = Sha256::digest(b"S-1-5-18");
-    assert_eq!(
-        dir.file_name().unwrap().to_str().unwrap(),
-        format!("devvm-run-{}", hex::encode(&digest[..8]))
-    );
     assert_eq!(dir.file_name().unwrap(), "devvm-run-593347bdfcc9bfa7");
 }

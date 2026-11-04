@@ -20,7 +20,7 @@ fn call_failed(call: &str, source: io::Error) -> io::Error {
 }
 
 /// `S-1-5-...` for `psid`.
-pub(super) fn sid_string(psid: PSID) -> io::Result<String> {
+pub(crate) fn sid_string(psid: PSID) -> io::Result<String> {
     let mut raw: *mut u16 = null_mut();
     // SAFETY: `psid` is a valid SID; on success `raw` is a NUL-terminated string that `LocalFree` frees.
     if unsafe { ConvertSidToStringSidW(psid, &mut raw) } == 0 {
@@ -87,7 +87,7 @@ impl TokenUserBuffer {
 }
 
 /// The SID string of the user the process token names.
-pub(super) fn current_sid() -> io::Result<String> {
+pub(crate) fn current_sid() -> io::Result<String> {
     sid_string(TokenUserBuffer::read()?.sid())
 }
 
