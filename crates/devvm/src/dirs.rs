@@ -14,14 +14,14 @@ mod dirs_tests;
 ///
 /// They are created lazily by their users. `run` fails only when asked for: a command that never touches a control
 /// socket does not depend on the host being able to name it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Dirs {
     pub config: PathBuf,
     pub data: PathBuf,
     pub cache: PathBuf,
     pub state: PathBuf,
-    /// The runtime directory, or the kind and message of why the host could not name it (`Error` is not `Clone`).
-    run: std::result::Result<PathBuf, (ErrorKind, String)>,
+    /// The runtime directory, or why the host could not name it.
+    run: Result<PathBuf>,
 }
 
 impl Dirs {
@@ -64,7 +64,7 @@ impl Dirs {
             .filter(|path| path.is_absolute())
         {
             Some(path) => Ok(path.join("devvm")),
-            None => run_default().map_err(|e| (e.kind(), e.message().to_owned())),
+            None => run_default(),
         };
         Ok(Dirs {
             run,
@@ -88,9 +88,7 @@ impl Dirs {
 
     /// Runtime state of running machines (their control sockets): short, and the user's alone.
     pub fn run(&self) -> Result<&Path> {
-        self.run
-            .as_deref()
-            .map_err(|(kind, message)| Error::new(*kind, message.as_str()))
+        self.run.as_deref().map_err(Error::clone)
     }
 
     pub fn layers(&self) -> PathBuf {

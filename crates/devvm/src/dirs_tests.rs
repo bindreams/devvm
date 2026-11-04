@@ -161,6 +161,24 @@ fn a_failing_run_default_fails_only_the_asking_for_run() {
     assert!(error.message().contains("known folder"), "{error}");
 }
 
+/// The error `run` gives is the one the host's lookup failed with, source included.
+#[skuld::test]
+fn run_keeps_the_source_of_the_failure_to_locate_it() {
+    let failing = || {
+        Err(crate::Error::io(
+            ErrorKind::Config,
+            "cannot find the known folder",
+            std::io::Error::other("no such folder"),
+        ))
+    };
+    let dirs = Dirs::from_lookup(Some(std::env::temp_dir()), &lookup(&[]), &failing).unwrap();
+
+    let error = dirs.run().unwrap_err();
+    let source = std::error::Error::source(&error).expect("the source is kept");
+
+    assert_eq!(source.to_string(), "no such folder");
+}
+
 #[skuld::test]
 fn under_places_run_below_the_root_beside_the_other_four(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
