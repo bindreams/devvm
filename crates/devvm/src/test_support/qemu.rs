@@ -94,7 +94,8 @@ fn has_space_and_non_ascii(path: &Path) -> bool {
     path.contains(' ') && !path.is_ascii()
 }
 
-/// `Err` when the socket directory lacks a space or a non-ASCII character, or none fits at all (the tests would check nothing).
+/// `Err` when the socket directory lacks a space or a non-ASCII character, or none fits at all (the tests would check
+/// nothing).
 pub fn unicode_socket_dir_fits() -> Result<(), String> {
     let temp = std::env::temp_dir();
     match socket_dir_that_fits() {

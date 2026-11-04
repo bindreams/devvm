@@ -181,7 +181,8 @@ fn windows_problem_agrees_with_what_ntfs_stores(
     eprintln!("{table}");
     assert!(
         disagree.is_empty(),
-        "windows_problem disagrees with NTFS on {disagree:?} (the group needs an NTFS temporary directory; {}):\n{table}",
+        "windows_problem disagrees with NTFS on {disagree:?} \
+         (the group needs an NTFS temporary directory; {}):\n{table}",
         ntfs_names::OPT_OUT
     );
 }

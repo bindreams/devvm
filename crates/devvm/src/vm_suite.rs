@@ -1,5 +1,6 @@
 //! Tests that boot QEMU or run one of its tools. Every test here carries the `vm` label (`SKULD_LABELS=vm` selects them)
-//! and joins the `vm_group` test group: it fails naming what is missing unless the group is turned off (`vm_group::OPT_OUT`).
+//! and joins the `vm_group` test group: it fails naming what is missing unless the group is turned off
+//! (`vm_group::OPT_OUT`).
 
 use crate::test_harness::VM;
 

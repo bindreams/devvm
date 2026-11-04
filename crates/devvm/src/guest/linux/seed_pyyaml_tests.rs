@@ -15,11 +15,6 @@ use crate::test_support::fixtures::unicode_home;
 /// Scalar values per case.
 const CHUNK: usize = 4096;
 
-/// The exit status of `seed_pyyaml.py` when PyYAML reads a field back differently, and the first line of its stdout then.
-/// A status alone is not enough: Windows aborts a crashed process with 3.
-const MISMATCH: i32 = 3;
-const MISMATCH_LINE: &str = "mismatch";
-
 type Context = (&'static str, fn(char) -> String);
 
 /// How each scalar value is surrounded in a field. PyYAML drops spaces around a line break and reads `---` after one as
@@ -30,6 +25,64 @@ const CONTEXTS: [Context; 3] = [
     ("before ---", |c| format!("{c}--- ")),
 ];
 
+/// The fields `seed_pyyaml.py` reads back, in the names it writes them under.
+const FIELDS: [&str; 5] = [
+    "meta hostname",
+    "user hostname",
+    "client_public",
+    "host_private",
+    "host_public",
+];
+
+/// A seed's two files, and what PyYAML must read back from them.
+struct Case {
+    label: String,
+    meta_data: String,
+    user_data: String,
+    expected: [String; 5],
+}
+
+/// The host cannot run the reader: not a finding about the seed.
+fn setup_failed(why: String) -> ! {
+    panic!("{why}; {}", pyyaml::OPT_OUT)
+}
+
+/// What PyYAML read in `got` (an entry of `seed_pyyaml.py`'s output, whose contract is in its docstring) that differs
+/// from `case.expected`, one line per field.
+fn differences(case: &Case, got: &serde_json::Value) -> Vec<String> {
+    if let Some(error) = got.get("error") {
+        return vec![format!("{}: does not read back: {error}", case.label)];
+    }
+    FIELDS
+        .iter()
+        .zip(&case.expected)
+        .filter_map(|(field, want)| {
+            let difference = match got.get(field) {
+                Some(serde_json::Value::String(read)) if read == want => return None,
+                Some(serde_json::Value::String(read)) => string_difference(read, want),
+                Some(non_string) => format!(
+                    "reads back as {} {}",
+                    non_string["type"].as_str().unwrap_or("?"),
+                    non_string["repr"].as_str().unwrap_or("?")
+                ),
+                None => "is missing from the reader's output".to_owned(),
+            };
+            Some(format!("{}: {field} {difference}", case.label))
+        })
+        .collect()
+}
+
+/// Where `read` first differs from `want`, as a character index and a window of each side.
+fn string_difference(read: &str, want: &str) -> String {
+    let at = read
+        .chars()
+        .zip(want.chars())
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| read.chars().count().min(want.chars().count()));
+    let window = |text: &str| text.chars().skip(at).take(8).collect::<String>();
+    format!("differs at character {at}: {:?} for {:?}", window(read), window(want))
+}
+
 /// A host without `uv` or PyYAML fails the test.
 #[skuld::test]
 fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hostname(
@@ -37,7 +90,7 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
     #[fixture(pyyaml)] _group: &Group,
 ) {
     let all: Vec<char> = (0..=0x10_FFFF).filter_map(char::from_u32).collect();
-    let cases: Vec<serde_json::Value> = all
+    let cases: Vec<Case> = all
         .chunks(CHUNK)
         .flat_map(|chunk| CONTEXTS.map(|(context, unit)| (chunk, context, unit)))
         .map(|(chunk, context, unit)| {
@@ -57,51 +110,66 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
                 let file = files.iter().find(|file| file.name == name).unwrap();
                 String::from_utf8(file.bytes.clone()).unwrap()
             };
-            json!({
-                "where": format!("U+{:04X}..U+{:04X} {context}", chunk[0] as u32, chunk[chunk.len() - 1] as u32),
-                "meta_data": file("meta-data"),
-                "user_data": file("user-data"),
-                "hostname": spec.hostname,
-                "client_public": spec.keys.client_public,
-                "host_private": spec.keys.host_private.expose_secret(),
-                "host_public": spec.keys.host_public,
-            })
+            Case {
+                label: format!(
+                    "U+{:04X}..U+{:04X} {context}",
+                    chunk[0] as u32,
+                    chunk[chunk.len() - 1] as u32
+                ),
+                meta_data: file("meta-data"),
+                user_data: file("user-data"),
+                expected: [
+                    spec.hostname.clone(),
+                    spec.hostname,
+                    spec.keys.client_public,
+                    spec.keys.host_private.expose_secret().to_owned(),
+                    spec.keys.host_public,
+                ],
+            }
         })
         .collect();
+    let inputs: Vec<_> = cases
+        .iter()
+        .map(|case| json!({"meta_data": case.meta_data, "user_data": case.user_data}))
+        .collect();
     let cases_path = home.join("cases.json");
-    std::fs::write(&cases_path, serde_json::to_vec(&cases).unwrap()).unwrap();
+    let read_path = home.join("read.json");
+    std::fs::write(&cases_path, serde_json::to_vec(&inputs).unwrap()).unwrap();
 
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/guest/linux/seed_pyyaml.py");
     let output = Command::new("uv")
         .args(["run", "--script"])
         .arg(&script)
         .arg(&cases_path)
+        .arg(&read_path)
         .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "`uv` must be installed to read the seed with PyYAML ({e}); {}",
-                pyyaml::OPT_OUT
-            )
-        });
-    // A mismatch is the script's exit 3 and its first stdout line. Anything else (`uv` failing to resolve PyYAML, an
-    // uncaught exception, a crash, a signal) is the host's setup.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match output.status.code() {
-        Some(0) => {}
-        Some(MISMATCH) if stdout.lines().next() == Some(MISMATCH_LINE) => panic!(
-            "PyYAML does not read the seed back exactly ({}):
-{}{}",
+        .unwrap_or_else(|e| setup_failed(format!("`uv` must be installed to read the seed with PyYAML ({e})")));
+    if !output.status.success() {
+        setup_failed(format!(
+            "`uv` could not run the PyYAML reader ({}):\n{}",
             output.status,
-            stdout,
             String::from_utf8_lossy(&output.stderr),
-        ),
-        _ => panic!(
-            "`uv` could not run the PyYAML reader ({}); {}:
-{}{}",
-            output.status,
-            pyyaml::OPT_OUT,
-            stdout,
-            String::from_utf8_lossy(&output.stderr),
-        ),
+        ));
     }
+    let read: Vec<serde_json::Value> = std::fs::read(&read_path)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
+        .unwrap_or_else(|e| {
+            setup_failed(format!(
+                "the PyYAML reader's output {} is unusable: {e}",
+                read_path.display()
+            ))
+        });
+    assert_eq!(read.len(), cases.len(), "the PyYAML reader wrote one entry per case");
+
+    let report: Vec<String> = cases
+        .iter()
+        .zip(&read)
+        .flat_map(|(case, got)| differences(case, got))
+        .collect();
+    assert!(
+        report.is_empty(),
+        "PyYAML does not read the seed back exactly:\n{}",
+        report.join("\n"),
+    );
 }

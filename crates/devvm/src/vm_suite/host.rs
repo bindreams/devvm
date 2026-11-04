@@ -19,7 +19,8 @@ fn whpx_probe_reports_present_on_a_whpx_host(#[fixture(vm_group)] _group: &Group
 fn guest_reset_is_available_on_this_host(#[fixture(vm_group)] _group: &Group) {
     if let Err(unavailable) = host::current().guest_reset(Arch::Amd64) {
         panic!(
-            "this host cannot reset a running guest (WHvResetPartition), which the reboot tests need: {unavailable}; {}",
+            "this host cannot reset a running guest (WHvResetPartition), which the reboot tests need: \
+             {unavailable}; {}",
             vm_group::OPT_OUT
         );
     }
