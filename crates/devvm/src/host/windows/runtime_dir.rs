@@ -23,7 +23,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::user::{current_sid, sid_string};
 
-fn wide(path: &Path) -> Vec<u16> {
+pub(super) fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 

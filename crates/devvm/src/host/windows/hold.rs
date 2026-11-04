@@ -10,11 +10,13 @@ use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_DELETE_PENDING};
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
-    FILE_GENERIC_WRITE, FILE_RENAME_INFO, FileDispositionInfo, FileRenameInfo, SetFileInformationByHandle,
+    DELETE, DeleteFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FileDispositionInfo, FileRenameInfo,
+    SetFileInformationByHandle,
 };
 
 use super::file_id;
+use super::runtime_dir::wide;
 use crate::host::{DELETING_SUFFIX, FileId, Hold, HoldOutcome};
 
 #[derive(Debug)]
@@ -74,8 +76,8 @@ unsafe extern "system" {
     fn RtlGetLastNtStatus() -> NTSTATUS;
 }
 
-/// Whether `error`, from removing a deleting name, says that somebody else is deleting the file: it is held, or its
-/// deletion is pending. A pending deletion is `ERROR_ACCESS_DENIED`, like a real refusal, so the status tells them
+/// Whether `error`, from `DeleteFileW` on a deleting name, says that somebody else is deleting the file: it is held, or
+/// its deletion is pending. A pending deletion is `ERROR_ACCESS_DENIED`, like a real refusal, so the status tells them
 /// apart. Call it straight after the failed call: the status is the thread's last.
 fn is_deleted_by_another(error: &std::io::Error) -> bool {
     match error.raw_os_error() {
@@ -86,11 +88,21 @@ fn is_deleted_by_another(error: &std::io::Error) -> bool {
     }
 }
 
-/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name).
+/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name). `DeleteFileW` itself, not
+/// `std::fs::remove_file`: after a failed delete `std` makes more system calls, which replace the status that
+/// [`is_deleted_by_another`] reads.
 pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Err(e) if is_deleted_by_another(&e) => Ok(()),
-        other => other,
+    let wide = wide(path);
+    // SAFETY: `wide` is NUL-terminated and outlives the call.
+    let deleted = unsafe { DeleteFileW(wide.as_ptr()) };
+    if deleted != 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if is_deleted_by_another(&error) {
+        Ok(())
+    } else {
+        Err(error)
     }
 }
 
