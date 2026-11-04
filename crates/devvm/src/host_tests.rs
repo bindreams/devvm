@@ -4,7 +4,7 @@ use super::other::OtherHost;
 use super::{FileId, HoldOutcome, Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
-use crate::test_groups::{Group, PINNED_CHILD, acp_1252};
+use crate::test_groups::{Group, PINNED_CHILD, acp_1252, symlinks};
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
@@ -297,7 +297,10 @@ fn a_second_failure_while_replacing_a_file_is_named_next_to_the_first() {
 
 /// What a copy meets in a destination tree: a symlink to a directory where the guest has a file or a file symlink.
 #[skuld::test]
-fn replace_file_replaces_a_symlink_to_a_directory_and_leaves_the_directory(#[fixture(unicode_home)] home: &Path) {
+fn replace_file_replaces_a_symlink_to_a_directory_and_leaves_the_directory(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let real = home.join("real");
     std::fs::create_dir(&real).unwrap();
     std::fs::write(real.join("held"), "kept").unwrap();

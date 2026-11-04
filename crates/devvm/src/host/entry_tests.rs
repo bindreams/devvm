@@ -3,6 +3,7 @@ use std::path::Path;
 
 use super::Entry;
 use crate::host::current;
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
 
@@ -47,7 +48,10 @@ fn what_is_not_there_is_absent_whichever_component_is_missing(#[fixture(unicode_
 }
 
 #[skuld::test]
-fn a_symlink_at_the_end_is_a_symlink_and_is_not_followed(#[fixture(unicode_home)] home: &Path) {
+fn a_symlink_at_the_end_is_a_symlink_and_is_not_followed(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     std::fs::write(home.join("target.txt"), b"x").unwrap();
     std::fs::create_dir(home.join("target_dir")).unwrap();
     symlink(&home.join("target.txt"), &home.join("to_file"));
@@ -59,7 +63,10 @@ fn a_symlink_at_the_end_is_a_symlink_and_is_not_followed(#[fixture(unicode_home)
 }
 
 #[skuld::test]
-fn a_root_that_is_itself_a_symlink_is_followed(#[fixture(unicode_home)] home: &Path) {
+fn a_root_that_is_itself_a_symlink_is_followed(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let real = home.join("real");
     std::fs::create_dir(&real).unwrap();
     std::fs::write(real.join("f.txt"), b"x").unwrap();

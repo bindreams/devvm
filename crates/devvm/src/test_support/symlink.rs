@@ -1,7 +1,10 @@
-//! Creating symlinks from tests that run on every OS. On Windows this needs Developer Mode or an elevated token, and
-//! a test that cannot get one fails naming that.
+//! Creating symlinks from tests that run on every OS. On Windows this needs Developer Mode or an elevated token: a test
+//! that makes one joins the `symlinks` group (`#[fixture(symlinks)] _group: &Group`), and fails naming the opt-out
+//! where the host lacks the right.
 
 use std::path::Path;
+
+use crate::test_groups::symlinks;
 
 #[cfg(unix)]
 #[path = "symlink/unix.rs"]
@@ -10,18 +13,14 @@ mod imp;
 #[path = "symlink/other.rs"]
 mod imp;
 
-/// Makes `link` a symlink to `target`, or says why it cannot.
-pub fn try_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-    imp::symlink(target, link)
-}
-
 /// Makes `link` a symlink to `target`.
 pub fn symlink(target: &Path, link: &Path) {
-    try_symlink(target, link).unwrap_or_else(|e| {
+    imp::symlink(target, link).unwrap_or_else(|e| {
         panic!(
-            "cannot create the symlink {} -> {}: {e} (on Windows this needs Developer Mode or an elevated token)",
+            "cannot create the symlink {} -> {}: {e} (on Windows this needs Developer Mode or an elevated token), or {}",
             link.display(),
-            target.display()
+            target.display(),
+            symlinks::OPT_OUT
         )
     })
 }
