@@ -64,12 +64,7 @@ impl QemuBackend {
             );
         }
         // Only this launch's own files: nobody else draws its name while its claim file is there.
-        let files = [
-            endpoint.path().to_path_buf(),
-            endpoint.lock_path(),
-            endpoint.hold_path(),
-        ];
-        remove_files(self.host, &files, Some(claim), &mut |message| {
+        remove_files(self.host, &endpoint.launch_files(), Some(claim), &mut |message| {
             self.progress.message(&message)
         });
         error
@@ -139,7 +134,7 @@ impl Backend for QemuBackend {
     /// The socket and claim file are reserved by `QmpEndpoint::reserve` and recorded in the machine's record.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let install = self.install.get()?;
-        let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, &self.run)?;
+        let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, &self.run, &*self.progress)?;
         let mut vm = None;
         match self.start(spec, &install, &endpoint, hold, &mut vm) {
             Ok((parts, watch)) => {
@@ -148,11 +143,7 @@ impl Backend for QemuBackend {
                     qmp: endpoint.path().display().to_string(),
                     ssh: Vec::new(),
                     serial_log: spec.serial_log.clone(),
-                    leftovers: vec![
-                        endpoint.path().to_path_buf(),
-                        endpoint.lock_path(),
-                        endpoint.hold_path(),
-                    ],
+                    leftovers: endpoint.launch_files().to_vec(),
                     claim: Some(claim),
                     no_reboot: spec.profile.no_reboot,
                 };

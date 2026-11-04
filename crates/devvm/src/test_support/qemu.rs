@@ -15,7 +15,7 @@ use crate::backend::qemu::args::escape_option_value;
 use crate::backend::qemu::qmp::{QmpEndpoint, Reservation};
 use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
 use crate::config::Config;
-use crate::exit::StderrProgress;
+use crate::exit::{NullProgress, StderrProgress};
 use crate::host::{self, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
@@ -212,7 +212,8 @@ pub fn assert_unicode_socket_path(path: &Path) {
 
 impl Sock {
     pub fn new() -> Sock {
-        let Reservation { endpoint, claim, .. } = QmpEndpoint::reserve(host::current(), &socket_run()).unwrap();
+        let Reservation { endpoint, claim, .. } =
+            QmpEndpoint::reserve(host::current(), &socket_run(), &NullProgress).unwrap();
         Sock { endpoint, claim }
     }
 }

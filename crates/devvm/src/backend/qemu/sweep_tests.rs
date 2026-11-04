@@ -6,6 +6,7 @@ use crate::backend::Backend;
 use crate::backend::qemu::backend::QemuBackend;
 use crate::backend::qemu::qmp::QmpEndpoint;
 use crate::backend::qemu::storage::QemuStorage;
+use crate::exit::NullProgress;
 use crate::host::{self, Hold, HoldOutcome, deleting_name, new_name};
 use crate::instance::registry::Registry;
 use crate::store::lock::{FileLock, Mode};
@@ -158,7 +159,7 @@ fn sweep_leaves_a_reserved_launch_that_has_not_connected_and_takes_a_dead_machin
     let run = run_with_a_lock();
     let mut dead = Machine::new(run.path(), STEM_A);
     dead.dies();
-    let launching = QmpEndpoint::reserve(host::current(), run.path()).unwrap();
+    let launching = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
 
     assert_eq!(sweep(run.path()), Vec::<String>::new());
 

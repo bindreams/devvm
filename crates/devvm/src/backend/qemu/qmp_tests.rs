@@ -9,6 +9,7 @@ use super::{LaunchFileKind, Qmp, QmpEndpoint, VmEnd};
 use crate::ErrorKind;
 use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
+use crate::exit::NullProgress;
 use crate::host::{self, HoldOutcome, Link, ProcessWatch};
 use crate::random;
 use crate::store::lock::{FileLock, Mode};
@@ -208,7 +209,7 @@ fn reserve_makes_a_16_hex_sock_name_with_a_hold_beside_it_and_creates_the_direct
     let run = parent.path().join("d");
     assert!(QmpEndpoint::fits(&run, host::current().socket_path_max()));
 
-    let reservation = QmpEndpoint::reserve(host::current(), &run).unwrap();
+    let reservation = QmpEndpoint::reserve(host::current(), &run, &NullProgress).unwrap();
 
     let name = reservation
         .endpoint
@@ -241,7 +242,7 @@ fn reserve_over_a_run_dir_removed_after_it_was_made_fails_naming_it_and_makes_no
     let host = RecordingHost::new();
     host.remove_runtime_dirs_after_making_them();
 
-    let error = QmpEndpoint::reserve(&host, &run).unwrap_err();
+    let error = QmpEndpoint::reserve(&host, &run, &NullProgress).unwrap_err();
 
     assert!(error.message().contains(&run.display().to_string()), "{error}");
     assert!(!run.exists());
@@ -254,7 +255,7 @@ fn the_claims_identity_comes_from_the_hold_not_from_a_lookup_by_name() {
     let host = RecordingHost::new();
     host.fail_file_id();
 
-    let reservation = QmpEndpoint::reserve(&host, run.path()).unwrap();
+    let reservation = QmpEndpoint::reserve(&host, run.path(), &NullProgress).unwrap();
 
     assert_eq!(reservation.claim.id, reservation.hold.id().unwrap());
 }
@@ -262,17 +263,17 @@ fn the_claims_identity_comes_from_the_hold_not_from_a_lookup_by_name() {
 #[skuld::test]
 fn two_reservations_get_two_names() {
     let run = scratch_run();
-    let a = QmpEndpoint::reserve(host::current(), run.path()).unwrap();
-    let b = QmpEndpoint::reserve(host::current(), run.path()).unwrap();
+    let a = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
+    let b = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
     assert_ne!(a.endpoint.path(), b.endpoint.path());
 }
 
 #[skuld::test]
 fn reserve_with_redraws_a_taken_name() {
     let run = scratch_run();
-    let first = QmpEndpoint::reserve_with(host::current(), run.path(), &mut draw_of(7)).unwrap();
+    let first = QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut draw_of(7)).unwrap();
     let mut draws = vec![7u64, 8].into_iter();
-    let second = QmpEndpoint::reserve_with(host::current(), run.path(), &mut || {
+    let second = QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut || {
         draws.next().expect("a draw after the free name 8").to_be_bytes()
     })
     .unwrap();
@@ -286,10 +287,10 @@ fn reserve_with_redraws_a_taken_name() {
 fn reserve_with_goes_on_redrawing_for_as_long_as_names_are_taken() {
     let run = scratch_run();
     let _taken: Vec<_> = (0..50u64)
-        .map(|n| QmpEndpoint::reserve_with(host::current(), run.path(), &mut draw_of(n)).unwrap())
+        .map(|n| QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut draw_of(n)).unwrap())
         .collect();
     let mut next = 0u64;
-    let reservation = QmpEndpoint::reserve_with(host::current(), run.path(), &mut || {
+    let reservation = QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut || {
         next += 1;
         (next - 1).to_be_bytes()
     })
@@ -311,8 +312,10 @@ fn reserve_with_redraws_when_an_orphan_socket_or_lock_has_the_name_and_makes_no_
         std::fs::write(&orphan, b"left by a machine that is gone").unwrap();
         let host = RecordingHost::new();
         let mut draws = vec![n, n + 100].into_iter();
-        let reservation =
-            QmpEndpoint::reserve_with(&host, run.path(), &mut || draws.next().unwrap().to_be_bytes()).unwrap();
+        let reservation = QmpEndpoint::reserve_with(&host, run.path(), &NullProgress, &mut || {
+            draws.next().unwrap().to_be_bytes()
+        })
+        .unwrap();
         assert_eq!(std::fs::read(&orphan).unwrap(), b"left by a machine that is gone");
         assert_eq!(host.holds_made(), [drawn(n + 100).hold_path()]);
         assert_eq!(reservation.endpoint, drawn(n + 100));
@@ -323,7 +326,7 @@ fn reserve_with_redraws_when_an_orphan_socket_or_lock_has_the_name_and_makes_no_
 fn reserve_over_a_too_long_run_dir_is_refused_creating_nothing() {
     let home = socket_dir();
     let run = home.join("x".repeat(host::current().socket_path_max()));
-    let error = QmpEndpoint::reserve(host::current(), &run).unwrap_err();
+    let error = QmpEndpoint::reserve(host::current(), &run, &NullProgress).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains(&run.display().to_string()), "{error}");
     assert!(error.message().contains("XDG_RUNTIME_DIR"), "{error}");
@@ -358,7 +361,7 @@ fn reserving_holds_the_run_dirs_lock_shared_while_a_name_is_drawn_and_not_yet_cl
     let run = scratch_run();
     let mut sweeper = FileLock::open(&run.path().join("runtime.lock")).unwrap();
     let mut during = None;
-    QmpEndpoint::reserve_with(host::current(), run.path(), &mut || {
+    QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut || {
         during = Some(sweeper.try_lock(Mode::Exclusive).unwrap());
         7u64.to_be_bytes()
     })
@@ -370,7 +373,7 @@ fn reserving_holds_the_run_dirs_lock_shared_while_a_name_is_drawn_and_not_yet_cl
 #[skuld::test]
 fn reserve_lets_go_of_the_run_dirs_lock_when_it_returns() {
     let run = scratch_run();
-    let reservation = QmpEndpoint::reserve(host::current(), run.path()).unwrap();
+    let reservation = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
     let mut sweeper = FileLock::open(&run.path().join("runtime.lock")).unwrap();
     assert!(sweeper.try_lock(Mode::Exclusive).unwrap());
     assert!(matches!(
@@ -382,7 +385,7 @@ fn reserve_lets_go_of_the_run_dirs_lock_when_it_returns() {
 #[skuld::test]
 fn the_reservation_holds_its_claim_until_it_is_dropped() {
     let run = scratch_run();
-    let reservation = QmpEndpoint::reserve(host::current(), run.path()).unwrap();
+    let reservation = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
     let claim = reservation.claim.path.clone();
     assert!(matches!(
         host::current().hold_existing(&claim).unwrap(),
@@ -398,11 +401,42 @@ fn the_reservation_holds_its_claim_until_it_is_dropped() {
 #[skuld::test]
 fn from_record_gives_the_same_endpoint_and_files_as_reserve() {
     let run = scratch_run();
-    let made = QmpEndpoint::reserve(host::current(), run.path()).unwrap().endpoint;
+    let made = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress)
+        .unwrap()
+        .endpoint;
     let recorded = QmpEndpoint::from_record(&made.path().display().to_string());
     assert_eq!(recorded, made);
     assert_eq!(recorded.lock_path(), made.lock_path());
     assert_eq!(recorded.hold_path(), made.hold_path());
+}
+
+#[skuld::test]
+fn a_launchs_files_are_the_socket_the_lock_and_the_claim_last() {
+    let endpoint = QmpEndpoint::drawn(Path::new("run"), 1u64.to_be_bytes());
+    assert_eq!(
+        endpoint.launch_files(),
+        [
+            endpoint.path().to_path_buf(),
+            endpoint.lock_path(),
+            endpoint.hold_path()
+        ]
+    );
+}
+
+/// A launch that waits for a sweep says so: the message is the only sign of life while it waits.
+#[skuld::test]
+fn reserve_says_what_it_waits_for_while_a_sweep_holds_the_run_dirs_lock() {
+    let run = scratch_run();
+    let mut sweeper = FileLock::open(&run.path().join("runtime.lock")).unwrap();
+    assert!(sweeper.try_lock(Mode::Exclusive).unwrap());
+    let (progress, messages) = ChannelProgress::new();
+
+    std::thread::scope(|scope| {
+        let launch = scope.spawn(|| QmpEndpoint::reserve(host::current(), run.path(), &*progress));
+        assert_eq!(messages.recv().unwrap(), "waiting for a sweep of the runtime directory");
+        sweeper.unlock().unwrap();
+        launch.join().unwrap().unwrap();
+    });
 }
 
 #[skuld::test]

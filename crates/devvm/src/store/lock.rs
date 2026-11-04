@@ -110,17 +110,42 @@ impl FileLock {
 
     /// Takes the lock, waiting for it with no time limit. On contention it first says `waiting for <what>`.
     pub fn lock(&mut self, mode: Mode, what: &str, progress: &dyn Progress) -> Result<()> {
+        let locked = self.lock_while(mode, what, progress, None)?;
+        debug_assert!(locked, "a wait with no pause ends only with the lock");
+        Ok(())
+    }
+
+    /// [`FileLock::lock`] that can be given up on. With `pause`, the lock is tried again after each call of it, and
+    /// `Ok(true)` from it ends the wait: this returns `Ok(false)`, the lock not taken. A `pause` blocks for a moment or
+    /// until something it watches changes. Without `pause`, the wait is the OS's and ends only with the lock.
+    pub fn lock_while(
+        &mut self,
+        mode: Mode,
+        what: &str,
+        progress: &dyn Progress,
+        pause: Option<&mut dyn FnMut() -> Result<bool>>,
+    ) -> Result<bool> {
         if self.try_lock(mode)? {
-            return Ok(());
+            return Ok(true);
         }
         progress.message(&format!("waiting for {what}"));
-        let result = retry_interrupted(|| match mode {
-            Mode::Shared => self.file.lock_shared(),
-            Mode::Exclusive => self.file.lock(),
-        });
-        result.map_err(|source| self.failure("lock", source))?;
-        self.held = true;
-        Ok(())
+        let Some(pause) = pause else {
+            let result = retry_interrupted(|| match mode {
+                Mode::Shared => self.file.lock_shared(),
+                Mode::Exclusive => self.file.lock(),
+            });
+            result.map_err(|source| self.failure("lock", source))?;
+            self.held = true;
+            return Ok(true);
+        };
+        loop {
+            if pause()? {
+                return Ok(false);
+            }
+            if self.try_lock(mode)? {
+                return Ok(true);
+            }
+        }
     }
 
     /// Releases the lock; the value can be locked again.

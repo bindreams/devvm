@@ -17,7 +17,7 @@ use qapi::{Command, Execute};
 use super::ports::{Forward, parse_usernet};
 use super::uds::UnixStream;
 use crate::backend::FileClaim;
-use crate::exit::{NullProgress, Progress};
+use crate::exit::Progress;
 use crate::host::{Hold, Host, Link, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::lock::{FileLock, Mode};
@@ -85,8 +85,9 @@ impl QmpEndpoint {
     /// Reserves the names of a launch in the runtime directory `run`, which is made if it is not there: draws
     /// `<16 hex>.sock` with the OS's random numbers, and holds the claim file `<name>.sock.hold` that it creates
     /// (`create_new`), so no two launches have one name.
-    pub(crate) fn reserve(host: &dyn Host, run: &Path) -> Result<Reservation> {
-        QmpEndpoint::reserve_with(host, run, &mut random::bytes::<DRAW_BYTES>)
+    /// A wait for a sweep of the directory is said to `progress`.
+    pub(crate) fn reserve(host: &dyn Host, run: &Path, progress: &dyn Progress) -> Result<Reservation> {
+        QmpEndpoint::reserve_with(host, run, progress, &mut random::bytes::<DRAW_BYTES>)
     }
 
     /// `reserve` with the draw given, to test a redraw.
@@ -94,11 +95,13 @@ impl QmpEndpoint {
     /// Refused first, creating nothing: a directory whose sockets would be over the host's limit (`Unavailable`,
     /// naming the directory, the limit and `XDG_RUNTIME_DIR`). A name whose claim file exists is drawn again, and so is
     /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete). Those
-    /// two files are looked for before the claim is made, so no claim is ever made beside a file it did not make. None
-    /// can appear at the name afterwards: only a QEMU spawned with the claim makes a socket, and this launch made it.
+    /// two files are looked for before the claim is made, so no claim is ever made beside a file it did not make. A
+    /// socket cannot appear at the name afterwards: only a QEMU spawned with the claim makes one, and this launch made
+    /// it. A lock file can: a late session of a dead machine that had the name makes it (`Qmp::connect`).
     pub(crate) fn reserve_with(
         host: &dyn Host,
         run: &Path,
+        progress: &dyn Progress,
         draw: &mut dyn FnMut() -> [u8; DRAW_BYTES],
     ) -> Result<Reservation> {
         let max = host.socket_path_max();
@@ -124,7 +127,7 @@ impl QmpEndpoint {
         // Released on return: the hold covers the launch from then on, and a sweep finds it `Busy`.
         // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one call.
         let mut directory = FileLock::open_in_existing_dir(&run.join("runtime.lock"))?;
-        directory.lock(Mode::Shared, "a sweep of the runtime directory", &NullProgress)?;
+        directory.lock(Mode::Shared, "a sweep of the runtime directory", progress)?;
         'drawing: loop {
             let endpoint = QmpEndpoint::drawn(run, draw());
             for other in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
@@ -184,6 +187,11 @@ impl QmpEndpoint {
         };
         let launch = stem.strip_suffix(SOCKET_SUFFIX)?;
         random::is_hex(launch, DRAW_BYTES).then_some((launch, kind))
+    }
+
+    /// The files of the launch, the claim last: it keeps the name reserved while the others are deleted.
+    pub(crate) fn launch_files(&self) -> [PathBuf; 3] {
+        [self.path.clone(), self.lock_path(), self.hold_path()]
     }
 
     /// The endpoint whose socket is at `path`.
@@ -303,18 +311,12 @@ impl Qmp {
             return Err(exited("before devvm connected"));
         }
         let mut lock = FileLock::open_in_existing_dir(&ep.lock_path())?;
-        let mut announced = false;
-        while !lock.try_lock(Mode::Exclusive)? {
-            if !announced {
-                announced = true;
-                progress.message(&format!(
-                    "waiting for another devvm process to finish with the QEMU control socket {}",
-                    ep.path().display()
-                ));
-            }
-            if process.pause()? {
-                return Err(exited("while another devvm process held the control socket"));
-            }
+        let what = format!(
+            "another devvm process to finish with the QEMU control socket {}",
+            ep.path().display()
+        );
+        if !lock.lock_while(Mode::Exclusive, &what, progress, Some(&mut || process.pause()))? {
+            return Err(exited("while another devvm process held the control socket"));
         }
         let stream = loop {
             match UnixStream::connect(ep.path()) {

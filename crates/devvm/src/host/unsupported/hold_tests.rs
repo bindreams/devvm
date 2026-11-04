@@ -3,16 +3,12 @@ use std::path::Path;
 
 use super::link_error;
 
-/// The host says whether the error is its file system lacking hard links (`FileModes::lacks_hard_links`).
+/// The host says the error is its file system lacking hard links (`FileModes::lacks_hard_links`).
 #[skuld::test]
 fn a_link_the_host_says_the_file_system_lacks_names_the_directory_hard_links_and_xdg_runtime_dir() {
     let dir = Path::new("some").join("run");
     for kind in [ErrorKind::Unsupported, ErrorKind::PermissionDenied] {
-        let error = link_error(
-            Error::from(kind),
-            &dir.join("0000000000000000.sock.hold"),
-            &|_: &Error| true,
-        );
+        let error = link_error(Error::from(kind), &dir.join("0000000000000000.sock.hold"), true);
 
         assert_eq!(error.kind(), kind);
         let text = error.to_string();
@@ -34,7 +30,7 @@ fn an_error_the_host_does_not_blame_on_hard_links_is_returned_as_it_was() {
         let error = link_error(
             Error::new(kind, "as it was"),
             Path::new("run").join("x.sock.hold").as_path(),
-            &|_: &Error| false,
+            false,
         );
 
         assert_eq!(error.kind(), kind);

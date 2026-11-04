@@ -218,16 +218,11 @@ impl<M: FileModes> Host for M {
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
-        hold::new(
-            self.private_options(),
-            path,
-            &|metadata| self.identity(metadata),
-            &|error| self.lacks_hard_links(error),
-        )
+        hold::new(self, path)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
-        hold::existing(self.hold_options(), path, &|metadata| self.identity(metadata))
+        hold::existing(self, path)
     }
 
     /// A delete is one `unlink` here, so nobody is ever half way through one.

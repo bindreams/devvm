@@ -6,7 +6,7 @@ use std::sync::mpsc;
 
 use crate::exit::{NullProgress, Progress};
 use crate::store::lock::{FileLock, Mode};
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::helper;
 
 /// Helper process: takes an exclusive lock on `args[0]`, prints `held`, then blocks until stdin closes.
@@ -77,6 +77,55 @@ fn uncontended_lock_emits_no_message(#[fixture(unicode_home)] home: &Path) {
         .unwrap();
     drop(progress);
     assert!(receiver.recv().is_err());
+}
+
+/// `pause` runs between attempts; the first contention is said once, however many pauses follow.
+#[skuld::test]
+fn lock_while_says_it_waits_once_and_gives_up_when_the_pause_says_to_stop(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.lock");
+    let mut holder = FileLock::open(&path).unwrap();
+    assert!(holder.try_lock(Mode::Exclusive).unwrap());
+    let progress = MemoryProgress::default();
+    let mut pauses = 0;
+
+    let locked = FileLock::open(&path)
+        .unwrap()
+        .lock_while(
+            Mode::Exclusive,
+            "layer K",
+            &progress,
+            Some(&mut || {
+                pauses += 1;
+                Ok(pauses == 3)
+            }),
+        )
+        .unwrap();
+
+    assert!(!locked);
+    assert_eq!(pauses, 3);
+    assert_eq!(progress.messages(), ["waiting for layer K"]);
+}
+
+#[skuld::test]
+fn lock_while_takes_the_lock_once_it_is_free(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.lock");
+    let mut holder = FileLock::open(&path).unwrap();
+    assert!(holder.try_lock(Mode::Exclusive).unwrap());
+    let mut lock = FileLock::open(&path).unwrap();
+
+    let locked = lock
+        .lock_while(
+            Mode::Exclusive,
+            "layer K",
+            &NullProgress,
+            Some(&mut || {
+                holder.unlock()?;
+                Ok(false)
+            }),
+        )
+        .unwrap();
+
+    assert!(locked);
 }
 
 #[skuld::test]

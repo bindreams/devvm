@@ -8,6 +8,7 @@ use crate::backend::{Backend, Endpoint, FileClaim, Machine, MachineRecord, SshEn
 use crate::guest::{BaseBuilder, GuestOs, Guests};
 use crate::host::{self, FileId, HoldOutcome};
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::host::RecordingHost;
 
 fn sample() -> MachineRecord {
     MachineRecord {
@@ -164,6 +165,61 @@ fn remove_files_deletes_nothing_when_the_claim_file_is_gone_and_others_remain(#[
     let warnings = removed(&paths, Some(&claim));
     assert!(warnings.iter().any(|w| w.contains("is gone")), "{warnings:?}");
     assert!(paths[0].exists() && paths[1].exists());
+}
+
+/// A sweep that ran between the caller's look at the files and its hold on the claim took them: nothing is left to
+/// delete, and nothing is left to warn about.
+#[skuld::test]
+fn remove_files_is_quiet_when_a_concurrent_sweep_took_everything_first(#[fixture(unicode_home)] home: &Path) {
+    let (paths, claim) = launch_files(home, "a");
+    let host = RecordingHost::new();
+    host.delete_before_hold_existing(&paths);
+    let mut warnings = Vec::new();
+
+    remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
+
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// What the warning names is what is left when the claim is found gone, not what was there at the first look.
+#[skuld::test]
+fn remove_files_names_only_the_files_left_when_the_claim_turns_out_gone(#[fixture(unicode_home)] home: &Path) {
+    let (paths, claim) = launch_files(home, "a");
+    let host = RecordingHost::new();
+    host.delete_before_hold_existing(&[paths[0].clone(), paths[2].clone()]);
+    let mut warnings = Vec::new();
+
+    remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
+
+    assert_eq!(
+        warnings,
+        [format!(
+            "not deleting {}: {} is gone",
+            paths[1].display(),
+            claim.path.display()
+        )]
+    );
+}
+
+/// The same when the claim is held by another process: the files a sweep took are not named.
+#[skuld::test]
+fn remove_files_names_only_the_files_left_when_the_claim_turns_out_held(#[fixture(unicode_home)] home: &Path) {
+    let (paths, claim) = launch_files(home, "a");
+    let alive = held(&claim.path);
+    let host = RecordingHost::new();
+    host.delete_before_hold_existing(&paths[..2]);
+    let mut warnings = Vec::new();
+
+    remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
+
+    assert_eq!(
+        warnings,
+        [format!(
+            "not deleting {0}: {0} is held by another process",
+            claim.path.display()
+        )]
+    );
+    drop(alive);
 }
 
 #[skuld::test]

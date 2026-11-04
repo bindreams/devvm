@@ -137,24 +137,19 @@ impl QemuBackend {
 
     fn sweep_launch(&self, run: &Path, launch: &str, warn: &mut dyn FnMut(String)) {
         let endpoint = QmpEndpoint::of_launch(run, launch);
-        let (socket, lock, claim) = (
-            endpoint.path().to_path_buf(),
-            endpoint.lock_path(),
-            endpoint.hold_path(),
-        );
+        let claim = endpoint.hold_path();
         match self.host().hold_existing(&claim) {
-            Ok(HoldOutcome::Taken(hold)) => {
-                remove_held(self.host(), hold, &claim, &[socket, lock, claim.clone()], warn)
-            }
+            Ok(HoldOutcome::Taken(hold)) => remove_held(self.host(), hold, &claim, &endpoint.launch_files(), warn),
             Ok(HoldOutcome::Busy) => {}
             Ok(HoldOutcome::Absent) => {
                 // A late session can make a lock after the claim is gone, and a socket cannot appear after that: a
                 // lock whose socket is gone is left over. A lookup that fails says nothing about the file, so
                 // nothing is deleted.
+                let (socket, lock) = (endpoint.path(), endpoint.lock_path());
                 match symlink_metadata_if_present(&lock) {
                     Ok(None) => {}
                     Err(e) => warn(format!("cannot look at {}: {e}", lock.display())),
-                    Ok(Some(_)) => match symlink_metadata_if_present(&socket) {
+                    Ok(Some(_)) => match symlink_metadata_if_present(socket) {
                         Ok(None) => {
                             if let Err(e) = std::fs::remove_file(&lock)
                                 && !is_absent(&e)

@@ -163,37 +163,37 @@ pub(crate) fn remove_files(
     claim: Option<&FileClaim>,
     warn: &mut dyn FnMut(String),
 ) {
-    // A lookup that fails counts as present: the delete below reports the system's error, and the claim stays.
-    let present: Vec<&PathBuf> = paths
-        .iter()
-        .filter(|path| !matches!(symlink_metadata_if_present(path), Ok(None)))
-        .collect();
-    if present.is_empty() {
+    let listed = present(paths);
+    if listed.is_empty() {
         return;
     }
-    let names = || {
-        present
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
     let Some(claim) = claim else {
-        warn(format!("not deleting {}: no launch claims them", names()));
+        warn(format!("not deleting {}: no launch claims them", names(&listed)));
         return;
     };
     let hold: Box<dyn Hold> = match host.hold_existing(&claim.path) {
         Ok(HoldOutcome::Taken(hold)) => hold,
+        // A sweep may have taken files since the look above, so the warning names what is there now.
         Ok(HoldOutcome::Busy) => {
-            warn(format!(
-                "not deleting {}: {} is held by another process",
-                names(),
-                claim.path.display()
-            ));
+            let left = present(paths);
+            if !left.is_empty() {
+                warn(format!(
+                    "not deleting {}: {} is held by another process",
+                    names(&left),
+                    claim.path.display()
+                ));
+            }
             return;
         }
         Ok(HoldOutcome::Absent) => {
-            warn(format!("not deleting {}: {} is gone", names(), claim.path.display()));
+            let left = present(paths);
+            if !left.is_empty() {
+                warn(format!(
+                    "not deleting {}: {} is gone",
+                    names(&left),
+                    claim.path.display()
+                ));
+            }
             return;
         }
         Err(e) => {
@@ -206,7 +206,7 @@ pub(crate) fn remove_files(
         Ok(_) => {
             warn(format!(
                 "not deleting {}: {} is another launch's file",
-                names(),
+                names(&listed),
                 claim.path.display()
             ));
             return;
@@ -217,6 +217,23 @@ pub(crate) fn remove_files(
         }
     }
     remove_held(host, hold, &claim.path, paths, warn);
+}
+
+/// The files among `paths` that are there. A lookup that fails counts as there: the delete reports the system's error,
+/// and the claim stays.
+fn present(paths: &[PathBuf]) -> Vec<&PathBuf> {
+    paths
+        .iter()
+        .filter(|path| !matches!(symlink_metadata_if_present(path), Ok(None)))
+        .collect()
+}
+
+fn names(paths: &[&PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The deleting half of [`remove_files`]: `hold` holds `claim`, one of `paths`. Nothing is deleted or said when `claim`
