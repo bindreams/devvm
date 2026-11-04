@@ -34,7 +34,7 @@ mod whpx;
 
 #[cfg(test)]
 #[path = "windows_tests.rs"]
-mod windows_tests;
+pub(crate) mod windows_tests;
 
 pub(crate) use watch::WindowsWatch;
 

@@ -8,7 +8,7 @@ use cosca::identity::ProcessIdRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::contain::Lifetime;
-use crate::host::{Accel, FileId, Hold, HoldOutcome, Host};
+use crate::host::{Accel, FileId, Hold, HoldOutcome, Host, symlink_metadata_if_present};
 use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
 use crate::{Arch, ErrorKind, Network, Result};
@@ -163,9 +163,10 @@ pub(crate) fn remove_files(
     claim: Option<&FileClaim>,
     warn: &mut dyn FnMut(String),
 ) {
+    // A lookup that fails counts as present: the delete below reports the system's error, and the claim stays.
     let present: Vec<&PathBuf> = paths
         .iter()
-        .filter(|path| std::fs::symlink_metadata(path).is_ok())
+        .filter(|path| !matches!(symlink_metadata_if_present(path), Ok(None)))
         .collect();
     if present.is_empty() {
         return;

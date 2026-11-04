@@ -274,6 +274,11 @@ fn the_created_directory_is_owned_by_the_user_with_a_protected_dacl_of_one_entry
     assert_eq!(security.allowed_sids(), vec![me]);
 }
 
+/// Whether the account the tests run as owns `path`.
+pub(crate) fn is_owned_by_this_account(path: &Path) -> bool {
+    Security::of(path).owner() == user::current_sid().unwrap()
+}
+
 /// The owner and the DACL of a path, read the way the OS reports them.
 struct Security {
     descriptor: PSECURITY_DESCRIPTOR,

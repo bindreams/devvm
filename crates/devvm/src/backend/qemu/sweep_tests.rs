@@ -10,6 +10,7 @@ use crate::host::{self, Hold, HoldOutcome, deleting_name, new_name};
 use crate::instance::registry::Registry;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::other_account::a_directory_of_another_account;
 use crate::test_support::qemu::{lazy_at, scratch_run};
 
 fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend> {
@@ -316,11 +317,7 @@ pub(super) fn sweeping_a_link_touches_nothing_and_warns(home: &Path, link: impl 
 /// the user could open to get past the check.
 #[skuld::test]
 fn sweeping_a_directory_owned_by_someone_else_warns_naming_the_owner_and_touches_nothing() {
-    let system = if cfg!(windows) {
-        std::path::PathBuf::from(std::env::var_os("ProgramData").expect("ProgramData is set"))
-    } else {
-        std::path::PathBuf::from("/")
-    };
+    let system = a_directory_of_another_account();
     let before = std::fs::read_dir(&system).unwrap().count();
 
     let warnings = sweep(&system);

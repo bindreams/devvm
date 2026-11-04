@@ -5,7 +5,7 @@ use std::fs::{File, Metadata, OpenOptions, TryLockError};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::host::{FileId, Hold, HoldOutcome, new_name};
+use crate::host::{FileId, Hold, HoldOutcome, after_failed_write, new_name};
 
 /// The identity of the object a `Metadata` describes, as the host gives it (`FileModes::identity`).
 pub(super) type Identity<'a> = &'a dyn Fn(&Metadata) -> Option<FileId>;
@@ -47,7 +47,7 @@ fn link_error(error: std::io::Error, path: &Path) -> std::io::Error {
 }
 
 /// Creates and holds `path` (see `Host::hold_new`): made and locked as `<path>.new`, then hard-linked to `path`. A file
-/// at either name is `AlreadyExists`.
+/// at either name is `AlreadyExists`. A name that a failure could not remove is in the error.
 pub(super) fn new(mut options: OpenOptions, path: &Path, identity: Identity) -> std::io::Result<Box<dyn Hold>> {
     let private = new_name(path);
     let file = options.read(true).write(true).create_new(true).open(&private)?;
@@ -63,16 +63,16 @@ pub(super) fn new(mut options: OpenOptions, path: &Path, identity: Identity) -> 
         ))),
         Err(TryLockError::Error(e)) => Err(e),
     };
-    // The private name goes whether or not the name was linked.
+    // The private name goes whether or not the name was linked. A name that cannot be removed is a dead launch's
+    // leftover, and the sweep reclaims it (`.new` is swept, and so is a free claim file).
     let unlinked = std::fs::remove_file(&private);
     match (made, unlinked) {
         (Ok(hold), Ok(())) => Ok(Box::new(hold)),
         (Ok(hold), Err(e)) => {
             drop(hold);
-            let _ = std::fs::remove_file(path);
-            Err(e)
+            Err(after_failed_write(path, e, || std::fs::remove_file(path)))
         }
-        (Err(e), _) => Err(e),
+        (Err(e), unlinked) => Err(after_failed_write(&private, e, || unlinked)),
     }
 }
 

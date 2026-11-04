@@ -178,6 +178,19 @@ fn remove_files_deletes_nothing_without_a_claim_and_names_the_files(#[fixture(un
     assert!(paths.iter().all(|path| path.exists()));
 }
 
+/// A file that cannot be looked at is not known to be gone: it is named, not skipped.
+#[skuld::test]
+fn remove_files_names_a_file_that_cannot_be_looked_at_instead_of_taking_it_for_gone(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let unlookable = home.join("a\0b");
+
+    let warnings = removed(&[unlookable], None);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("no launch claims"), "{warnings:?}");
+}
+
 /// A machine that is alive holds the claim file, so its files are not a dead machine's.
 #[skuld::test]
 fn remove_files_deletes_nothing_while_the_claim_is_held(#[fixture(unicode_home)] home: &Path) {

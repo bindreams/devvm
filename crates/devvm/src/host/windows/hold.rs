@@ -157,11 +157,9 @@ pub(super) struct WindowsHold {
 }
 
 impl WindowsHold {
-    fn of(file: File, path: &Path) -> std::io::Result<WindowsHold> {
-        Ok(WindowsHold {
-            file,
-            path: std::path::absolute(path)?,
-        })
+    /// `path` is absolute.
+    fn of(file: File, path: PathBuf) -> WindowsHold {
+        WindowsHold { file, path }
     }
 
     /// Renames the file through its handle to its deleting name ([`deleting_name`]) for the digits `draw` gives, with
@@ -275,9 +273,12 @@ fn open_hold(path: &Path, creation: u32) -> Result<File, Failure> {
 }
 
 /// Creates `path`, which must not exist, and holds it. A name that is taken is `AlreadyExists`.
+///
+/// Nothing that can fail comes after the file exists, so no failure leaves one behind.
 pub(super) fn new(path: &Path) -> std::io::Result<WindowsHold> {
-    let file = open_hold(path, CREATE_NEW)?;
-    WindowsHold::of(file, path)
+    let path = std::path::absolute(path)?;
+    let file = open_hold(&path, CREATE_NEW)?;
+    Ok(WindowsHold::of(file, path))
 }
 
 /// Holds the file at `path` if nobody else does. A link at the name is refused. A file that is held
@@ -288,7 +289,10 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
             std::io::ErrorKind::InvalidInput,
             format!("{} is a link", path.display()),
         )),
-        Ok(file) => Ok(HoldOutcome::Taken(Box::new(WindowsHold::of(file, path)?))),
+        Ok(file) => Ok(HoldOutcome::Taken(Box::new(WindowsHold::of(
+            file,
+            std::path::absolute(path)?,
+        )))),
         Err(failure) if failure.error.kind() == std::io::ErrorKind::NotFound => Ok(HoldOutcome::Absent),
         Err(failure) if failure.is_sharing_violation() => Ok(HoldOutcome::Busy),
         Err(failure) => Err(failure.into()),

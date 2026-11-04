@@ -18,7 +18,7 @@ use super::ports::{Forward, parse_usernet};
 use super::uds::UnixStream;
 use crate::backend::FileClaim;
 use crate::exit::{NullProgress, Progress};
-use crate::host::{Hold, Host, Link, ProcessWatch};
+use crate::host::{Hold, Host, Link, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Error, ErrorKind, Result};
@@ -137,36 +137,40 @@ impl QmpEndpoint {
                     ));
                 }
             };
-            let mut taken = false;
-            for other in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
-                match std::fs::symlink_metadata(&other) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => {
-                        return Err(Error::io(
-                            ErrorKind::Io,
-                            format!("cannot look at {}", other.display()),
-                            e,
-                        ));
-                    }
-                    Ok(_) => taken = true,
+            match QmpEndpoint::look_over(&*hold, &endpoint, &hold_path) {
+                Ok(Some(claim)) => {
+                    return Ok(Reservation { claim, endpoint, hold });
+                }
+                // The claim file just made is this launch's own; the other file is nobody's to delete. A socket or
+                // lock found here was already unclaimed (its claim file did not exist), so this branch makes none.
+                Ok(None) => {
+                    hold.delete()
+                        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot delete {}", hold_path.display()), e))?;
+                }
+                // The claim file goes on this path too: nothing would reclaim it but the next sweep.
+                Err(error) => {
+                    return Err(error.after_cleanup(&hold_path.display().to_string(), hold.delete()));
                 }
             }
-            if taken {
-                // The claim file just made is this launch's own; the other file is nobody's to delete. A socket or lock
-                // found here was already unclaimed (its claim file did not exist), so this branch makes none.
-                hold.delete()
-                    .map_err(|e| Error::io(ErrorKind::Io, format!("cannot delete {}", hold_path.display()), e))?;
-                continue;
-            }
-            let id = hold
-                .id()
-                .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", hold_path.display()), e))?;
-            return Ok(Reservation {
-                claim: FileClaim { path: hold_path, id },
-                endpoint,
-                hold,
-            });
         }
+    }
+
+    /// The claim for the file `hold` holds, or `None` when the name is taken: its socket or lock file exists.
+    fn look_over(hold: &dyn Hold, endpoint: &QmpEndpoint, hold_path: &Path) -> Result<Option<FileClaim>> {
+        for other in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
+            let found = symlink_metadata_if_present(&other)
+                .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", other.display()), e))?;
+            if found.is_some() {
+                return Ok(None);
+            }
+        }
+        let id = hold
+            .id()
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", hold_path.display()), e))?;
+        Ok(Some(FileClaim {
+            path: hold_path.to_path_buf(),
+            id,
+        }))
     }
 
     /// The endpoint of the launch whose name is the hex of `draw`, in `run`.

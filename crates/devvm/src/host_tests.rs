@@ -9,6 +9,7 @@ use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::test_support::host::TestHost;
+use crate::test_support::other_account::a_directory_of_another_account;
 use crate::test_support::symlink::symlink;
 #[cfg(windows)]
 use skuld::env;
@@ -561,11 +562,7 @@ fn a_file_at_the_runtime_dir_path_is_refused(#[fixture(unicode_home)] home: &Pat
 /// into it.
 #[skuld::test]
 fn a_directory_owned_by_someone_else_is_refused_naming_the_owner() {
-    let system = if cfg!(windows) {
-        std::path::PathBuf::from(std::env::var_os("ProgramData").expect("ProgramData is set"))
-    } else {
-        std::path::PathBuf::from("/")
-    };
+    let system = a_directory_of_another_account();
     let error = current().create_runtime_dir(&system).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
     let text = error.to_string();
@@ -599,11 +596,7 @@ fn accept_runtime_dir_refuses_a_file(#[fixture(unicode_home)] home: &Path) {
 
 #[skuld::test]
 fn accept_runtime_dir_refuses_a_directory_owned_by_someone_else_naming_the_owner() {
-    let system = if cfg!(windows) {
-        std::path::PathBuf::from(std::env::var_os("ProgramData").expect("ProgramData is set"))
-    } else {
-        std::path::PathBuf::from("/")
-    };
+    let system = a_directory_of_another_account();
     let error = current().accept_runtime_dir(&system).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
     let text = error.to_string();

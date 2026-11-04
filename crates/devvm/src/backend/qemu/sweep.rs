@@ -11,7 +11,7 @@ use std::path::Path;
 use super::backend::QemuBackend;
 use super::qmp::{LaunchFileKind, QmpEndpoint};
 use crate::backend::remove_held;
-use crate::host::{HoldOutcome, claim_of_deleting_name, claim_of_new_name};
+use crate::host::{HoldOutcome, claim_of_deleting_name, claim_of_new_name, is_absent, symlink_metadata_if_present};
 use crate::store::lock::{FileLock, Mode};
 
 /// Which private name of a claim file a file is.
@@ -97,7 +97,14 @@ impl QemuBackend {
                     return;
                 }
             };
-            let is_file = entry.file_type().is_ok_and(|kind| !kind.is_dir() && !kind.is_symlink());
+            let is_file = match entry.file_type() {
+                Ok(kind) => !kind.is_dir() && !kind.is_symlink(),
+                Err(e) if is_absent(&e) => continue,
+                Err(e) => {
+                    warn(format!("cannot look at {}: {e}", entry.path().display()));
+                    continue;
+                }
+            };
             let name = entry.file_name();
             let Some(name) = name.to_str().filter(|_| is_file) else {
                 continue;
@@ -141,13 +148,18 @@ impl QemuBackend {
             Ok(HoldOutcome::Busy) => {}
             Ok(HoldOutcome::Absent) => {
                 // Only the lock is examined: a late session can make a lock after the claim is gone, and a socket
-                // cannot appear after that.
-                if lock.exists()
-                    && !socket.exists()
-                    && let Err(e) = std::fs::remove_file(&lock)
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    warn(format!("cannot delete {}: {e}", lock.display()));
+                // cannot appear after that. A lookup that fails says nothing about the file, so nothing is deleted.
+                match (symlink_metadata_if_present(&lock), symlink_metadata_if_present(&socket)) {
+                    (Ok(Some(_)), Ok(None)) => {
+                        if let Err(e) = std::fs::remove_file(&lock)
+                            && e.kind() != std::io::ErrorKind::NotFound
+                        {
+                            warn(format!("cannot delete {}: {e}", lock.display()));
+                        }
+                    }
+                    (Err(e), _) => warn(format!("cannot look at {}: {e}", lock.display())),
+                    (_, Err(e)) => warn(format!("cannot look at {}: {e}", socket.display())),
+                    (Ok(None), _) | (Ok(Some(_)), Ok(Some(_))) => {}
                 }
             }
             Err(e) => warn(format!("cannot hold {}: {e}", claim.display())),
