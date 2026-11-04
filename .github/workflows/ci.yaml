@@ -103,6 +103,7 @@ jobs:
         run: cargo test -p devvm --lib --locked
         env:
           DEVVM_TEST_OPENSSH_SFTP: "1"
+          DEVVM_TEST_SFTP_SERVER: openssh
           DEVVM_TEST_PYYAML: "1"
 
       # The packaged crate must carry every file the library includes (the embedded recipes).

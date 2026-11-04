@@ -160,7 +160,7 @@ impl TestSshd {
         };
         assert!(
             !options.openssh_sftp || Path::new(OPENSSH_SFTP_SERVER).is_file(),
-            "the test needs OpenSSH's SFTP server at {OPENSSH_SFTP_SERVER}: install the package openssh-sftp-server, or set DEVVM_TEST_OPENSSH_SFTP=0 to turn the group off"
+            "the test needs OpenSSH's SFTP server at {OPENSSH_SFTP_SERVER}: install the package openssh-sftp-server, or opt out: set DEVVM_TEST_OPENSSH_SFTP=0 to turn the group off, and unset DEVVM_TEST_SFTP_SERVER (or set it to scripted) for the shared SFTP tests"
         );
         let state = Arc::new(State {
             good: random_key(),
