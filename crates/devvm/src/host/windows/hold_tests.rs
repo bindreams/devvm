@@ -4,6 +4,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
+use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_DISPOSITION_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
     SetFileInformationByHandle,
@@ -12,7 +13,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use crate::host::{HoldOutcome, current};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::symlink::try_symlink;
+use crate::test_support::symlink::symlink;
 
 /// The access a hold is opened with includes `DELETE`, which share mode 0 still refuses to everyone else.
 #[skuld::test]
@@ -51,6 +52,7 @@ fn a_delete_replaces_a_deleting_name_a_dead_delete_left(#[fixture(unicode_home)]
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
     assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Absent));
 }
+
 /// A name that is a link is not opened through: what it leads to is somebody else's file, and holding it would lock
 /// that file against its users.
 #[skuld::test]
@@ -61,22 +63,12 @@ fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it(
     let victim = home.join("victim");
     std::fs::write(&victim, b"theirs").unwrap();
     let link = home.join("x.sock.hold");
-    try_symlink(&victim, &link).unwrap_or_else(|e| {
-        panic!(
-            "cannot create a symlink: {e} (it needs Developer Mode or an elevated token), or {}",
-            symlinks::OPT_OUT
-        )
-    });
+    symlink(&victim, &link);
 
-    assert!(current().hold_existing(&link).is_err());
+    let refused = current().hold_existing(&link).unwrap_err();
 
-    assert_eq!(std::fs::read(&victim).unwrap(), b"theirs");
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .share_mode(0)
-        .open(&victim)
-        .expect("nobody has the victim open");
+    assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput, "{refused}");
+    assert!(refused.to_string().ends_with("is a link"), "{refused}");
 }
 
 // A leftover deleting name --------------------------------------------------------------------------------------------
@@ -130,7 +122,11 @@ fn removing_a_deleting_name_whose_deletion_is_pending_is_no_error(#[fixture(unic
     assert_ne!(marked, 0, "{}", std::io::Error::last_os_error());
     drop(marker);
     let refused = std::fs::File::open(&path).unwrap_err();
-    assert_eq!(refused.raw_os_error(), Some(5), "the name is delete-pending: {refused}");
+    assert_eq!(
+        refused.raw_os_error(),
+        Some(ERROR_ACCESS_DENIED as i32),
+        "the name is delete-pending: {refused}"
+    );
 
     current().remove_deleting_name(&path).unwrap();
 
@@ -148,7 +144,7 @@ fn removing_a_deleting_name_fails_on_an_access_denied_that_is_no_pending_deletio
 
     let error = current().remove_deleting_name(&path).unwrap_err();
 
-    assert_eq!(error.raw_os_error(), Some(5), "{error}");
+    assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32), "{error}");
 }
 
 #[skuld::test]
