@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::MachineRecord;
 use crate::host::remove_if_present;
 use crate::instance::name::InstanceName;
+use crate::random;
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
 use crate::{Arch, Error, ErrorKind, GuestKind, Network, Result};
@@ -32,9 +33,7 @@ pub(crate) struct InstanceId([u8; 16]);
 
 impl InstanceId {
     pub(crate) fn random() -> InstanceId {
-        let mut bytes = [0u8; 16];
-        getrandom::fill(&mut bytes).expect("the OS random number generator is available");
-        InstanceId(bytes)
+        InstanceId(random::bytes())
     }
 }
 
@@ -256,8 +255,7 @@ pub(crate) fn is_write_file_temporary(name: &str) -> bool {
 /// mixture, and a crash leaves no half-written `file`.
 pub(crate) fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
     use std::io::Write;
-    let mut suffix = [0u8; TEMP_DIGITS / 2];
-    getrandom::fill(&mut suffix).expect("the OS random number generator is available");
+    let suffix = random::bytes::<{ TEMP_DIGITS / 2 }>();
     let temp = dir.join(format!("{file}{TEMP_MARK}{}", hex::encode(suffix)));
     let target = dir.join(file);
     let fail = |action: &str, path: &Path, source| {

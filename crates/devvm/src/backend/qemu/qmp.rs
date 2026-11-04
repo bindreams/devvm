@@ -19,6 +19,7 @@ use super::uds::UnixStream;
 use crate::backend::FileClaim;
 use crate::exit::{NullProgress, Progress};
 use crate::host::{Hold, Host, Link, ProcessWatch};
+use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -69,11 +70,7 @@ impl QmpEndpoint {
     /// `<16 hex>.sock` with the OS's random numbers, and holds the claim file `<name>.sock.hold` that it creates
     /// (`create_new`), so no two launches have one name.
     pub(crate) fn reserve(host: &dyn Host, run: &Path) -> Result<Reservation> {
-        QmpEndpoint::reserve_with(host, run, &mut || {
-            let mut bytes = [0u8; 8];
-            getrandom::fill(&mut bytes).expect("the OS random number generator is available");
-            bytes
-        })
+        QmpEndpoint::reserve_with(host, run, &mut random::bytes::<8>)
     }
 
     /// `reserve` with the draw given, to test a redraw.

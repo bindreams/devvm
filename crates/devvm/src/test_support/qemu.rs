@@ -17,6 +17,7 @@ use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
 use crate::config::Config;
 use crate::exit::StderrProgress;
 use crate::host::{self, ProcessWatch};
+use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::UNICODE_DIR;
@@ -122,9 +123,7 @@ impl Drop for ScratchRun {
 }
 
 pub fn scratch_run() -> ScratchRun {
-    let mut random = [0u8; 3];
-    getrandom::fill(&mut random).expect("the OS random number generator is available");
-    let run = socket_dir().join(format!("r{}", hex::encode(random)[..5].to_owned()));
+    let run = socket_dir().join(format!("r{}", hex::encode(random::bytes::<3>())[..5].to_owned()));
     make_run_dir(&run);
     assert!(
         QmpEndpoint::fits(&run, host::current().socket_path_max()),

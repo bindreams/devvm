@@ -22,6 +22,7 @@ use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMAN
 use super::file_id;
 use super::wide;
 use crate::host::{FileId, Hold, HoldOutcome, deleting_name};
+use crate::random;
 
 /// Whether `error` says the file system does not do the `*Ex` form of a disposition. `std`'s `File::delete`
 /// (`library/std/src/sys/fs/windows.rs`) falls back from `posix_delete` to `win32_delete` on exactly these three:
@@ -269,11 +270,7 @@ impl Hold for WindowsHold {
     /// when the file object closes even while somebody else's open (a scanner's) lasts; elsewhere it goes when the
     /// last handle closes.
     fn delete(self: Box<Self>) -> std::io::Result<()> {
-        self.delete_with(&mut || {
-            let mut draw = [0u8; 8];
-            getrandom::fill(&mut draw).expect("the OS random number generator is available");
-            draw
-        })
+        self.delete_with(&mut random::bytes::<8>)
     }
 }
 
