@@ -56,8 +56,7 @@ pub(crate) fn require_consent(
 /// `env = "<NAME>"` set to `0`. With `consent = "<what the group does>"` its setup also fails the test unless
 /// `<NAME>_CONSENT` is exactly `1`. With `precondition = <fn>` it fails the test with the `Err` of `<fn>(OPT_OUT)`,
 /// which names what the host lacks and the opt-out (except in the child `PINNED_CHILD` marks, which cannot opt out).
-/// Without either, a host that lacks what the group needs
-/// fails the test with whatever it produces.
+/// Without either, a host that lacks what the group needs fails the test with whatever it produces.
 ///
 /// The module `$fixture` holds `enabled()`, for code that picks what to run by the group (`Ok` unless `<NAME>` is `0`),
 /// and `OPT_OUT`, the words a failure message uses to say how to turn the group off.

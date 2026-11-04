@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 use secrecy::{ExposeSecret, SecretString};
-use serde_json::json;
+use serde::Serialize;
 
 use super::seed_files;
 use crate::guest::{SeedKeys, SeedSpec};
@@ -25,45 +25,59 @@ const CONTEXTS: [Context; 3] = [
     ("before ---", |c| format!("{c}--- ")),
 ];
 
-/// The fields `seed_pyyaml.py` reads back, in the names it writes them under.
-const FIELDS: [&str; 5] = [
-    "meta hostname",
-    "user hostname",
-    "client_public",
-    "host_private",
-    "host_public",
-];
+/// Most characters of the reader's text that a line of the report shows; the rest is counted.
+const SHOWN: usize = 60;
 
-/// A seed's two files, and what PyYAML must read back from them.
+/// A seed's two files, and what PyYAML must read back from them: each field under the name `seed_pyyaml.py` writes it
+/// with.
 struct Case {
     label: String,
     meta_data: String,
     user_data: String,
-    expected: [String; 5],
+    expected: [(&'static str, String); 5],
 }
 
-/// The host cannot run the reader: not a finding about the seed.
-fn setup_failed(why: String) -> ! {
-    panic!("{why}; {}", pyyaml::OPT_OUT)
+/// What `seed_pyyaml.py` reads for a case.
+#[derive(Serialize)]
+struct Input<'a> {
+    meta_data: &'a str,
+    user_data: &'a str,
+}
+
+/// The reader did not run to completion: not a finding about the seed.
+fn reader_failed(why: String) -> ! {
+    panic!(
+        "{why}\nIf uv or PyYAML cannot be had on this host, {}.",
+        pyyaml::OPT_OUT
+    )
+}
+
+/// `text`, or its first [`SHOWN`] characters and its length when it is longer.
+fn shortened(text: &str) -> String {
+    let length = text.chars().count();
+    if length <= SHOWN {
+        return text.to_owned();
+    }
+    format!("{}…({length} chars)", text.chars().take(SHOWN).collect::<String>())
 }
 
 /// What PyYAML read in `got` (an entry of `seed_pyyaml.py`'s output, whose contract is in its docstring) that differs
 /// from `case.expected`, one line per field.
 fn differences(case: &Case, got: &serde_json::Value) -> Vec<String> {
     if let Some(error) = got.get("error") {
+        let error = error.as_str().map_or_else(|| error.to_string(), shortened);
         return vec![format!("{}: does not read back: {error}", case.label)];
     }
-    FIELDS
+    case.expected
         .iter()
-        .zip(&case.expected)
         .filter_map(|(field, want)| {
-            let difference = match got.get(field) {
+            let difference = match got.get(*field) {
                 Some(serde_json::Value::String(read)) if read == want => return None,
                 Some(serde_json::Value::String(read)) => string_difference(read, want),
                 Some(non_string) => format!(
                     "reads back as {} {}",
                     non_string["type"].as_str().unwrap_or("?"),
-                    non_string["repr"].as_str().unwrap_or("?")
+                    non_string["repr"].as_str().map_or_else(|| "?".to_owned(), shortened)
                 ),
                 None => "is missing from the reader's output".to_owned(),
             };
@@ -119,18 +133,21 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
                 meta_data: file("meta-data"),
                 user_data: file("user-data"),
                 expected: [
-                    spec.hostname.clone(),
-                    spec.hostname,
-                    spec.keys.client_public,
-                    spec.keys.host_private.expose_secret().to_owned(),
-                    spec.keys.host_public,
+                    ("meta hostname", spec.hostname.clone()),
+                    ("user hostname", spec.hostname),
+                    ("client_public", spec.keys.client_public),
+                    ("host_private", spec.keys.host_private.expose_secret().to_owned()),
+                    ("host_public", spec.keys.host_public),
                 ],
             }
         })
         .collect();
     let inputs: Vec<_> = cases
         .iter()
-        .map(|case| json!({"meta_data": case.meta_data, "user_data": case.user_data}))
+        .map(|case| Input {
+            meta_data: &case.meta_data,
+            user_data: &case.user_data,
+        })
         .collect();
     let cases_path = home.join("cases.json");
     let read_path = home.join("read.json");
@@ -143,10 +160,10 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
         .arg(&cases_path)
         .arg(&read_path)
         .output()
-        .unwrap_or_else(|e| setup_failed(format!("`uv` must be installed to read the seed with PyYAML ({e})")));
+        .unwrap_or_else(|e| reader_failed(format!("`uv` must be installed to read the seed with PyYAML ({e})")));
     if !output.status.success() {
-        setup_failed(format!(
-            "`uv` could not run the PyYAML reader ({}):\n{}",
+        reader_failed(format!(
+            "the PyYAML reader failed ({}):\n{}",
             output.status,
             String::from_utf8_lossy(&output.stderr),
         ));
@@ -155,7 +172,7 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
         .map_err(|e| e.to_string())
         .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
         .unwrap_or_else(|e| {
-            setup_failed(format!(
+            reader_failed(format!(
                 "the PyYAML reader's output {} is unusable: {e}",
                 read_path.display()
             ))
