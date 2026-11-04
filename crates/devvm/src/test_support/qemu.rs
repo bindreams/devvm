@@ -18,16 +18,16 @@ use crate::exit::StderrProgress;
 use crate::host::{self, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::store::fetch::{Fetcher, HttpTransport};
+use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::UNICODE_DIR;
-use crate::vm_gate::{VM, vm_tests_enabled};
 
 /// The directory holding a QEMU build's `bin/` and `share/`. When set, the VM tests use it instead of downloading the
 /// pinned build.
 pub const QEMU_DIR_VAR: &str = "DEVVM_TEST_QEMU_DIR";
 
-/// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `DEVVM_SKIP_VM_TESTS=1`.
-#[skuld::fixture(scope = process, requires = [vm_tests_enabled], labels = [VM])]
-pub fn qemu_sidecar() -> Result<Arc<QemuInstall>, String> {
+/// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `vm_group::OPT_OUT`.
+#[skuld::fixture(scope = process)]
+pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInstall>, String> {
     let config = Config {
         qemu_path: std::env::var_os(QEMU_DIR_VAR).map(|dir| PathBuf::from(dir).join("bin")),
     };
@@ -38,7 +38,10 @@ pub fn qemu_sidecar() -> Result<Arc<QemuInstall>, String> {
     LazyInstall::new(dirs, config, fetcher, progress, host::current())
         .get()
         .map_err(|e| {
-            format!("QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory)")
+            format!(
+                "QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory, or {})",
+                vm_group::OPT_OUT
+            )
         })
 }
 
@@ -61,8 +64,8 @@ const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e1
 
 /// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`): the first of
 /// `<temp>/<UNICODE_DIR>`, the shorter `<temp>/<SHORT_SOCKET_DIRS>` (a long Windows user name), then the temporary
-/// directory itself (macOS, whose temporary directory leaves room for no subdirectory with a non-ASCII name). Nothing
-/// is created outside the temporary directory.
+/// directory itself (a temporary directory that leaves room for none of them). Nothing is created outside the temporary
+/// directory.
 fn socket_dir_that_fits() -> Option<PathBuf> {
     let fits = |dir: &Path| {
         QmpEndpoint::for_launch(dir, &InstanceId::random(), LAUNCH, host::current().socket_path_max()).is_ok()
@@ -91,15 +94,14 @@ fn has_space_and_non_ascii(path: &Path) -> bool {
     path.contains(' ') && !path.is_ascii()
 }
 
-/// A skuld precondition for the tests of non-ASCII socket paths: they are ignored, with the reason, where the socket
-/// directory has no space or no non-ASCII character (only a temporary directory that has neither fits: macOS) or none
-/// fits at all, since they would check nothing there.
+/// `Err` when the socket directory lacks a space or a non-ASCII character, or none fits at all (the tests would check
+/// nothing).
 pub fn unicode_socket_dir_fits() -> Result<(), String> {
     let temp = std::env::temp_dir();
     match socket_dir_that_fits() {
         Some(dir) if has_space_and_non_ascii(&dir) => Ok(()),
         found => Err(format!(
-            "{} the temporary directory {} is {} bytes and a socket path is limited to {}; covered by the Windows jobs",
+            "{} the temporary directory {} is {} bytes and a socket path is limited to {}",
             if found.is_some() {
                 "no non-ASCII directory fits a socket path:"
             } else {

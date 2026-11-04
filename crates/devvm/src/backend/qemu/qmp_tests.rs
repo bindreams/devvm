@@ -11,9 +11,10 @@ use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
 use crate::host::{self, Link, ProcessWatch};
 use crate::instance::record::InstanceId;
+use crate::test_groups::{Group, unicode_socket_dir};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress};
 use crate::test_support::manual_exit::ManualExit;
-use crate::test_support::qemu::{Sock, assert_unicode_socket_path, socket_dir, unicode_socket_dir_fits};
+use crate::test_support::qemu::{Sock, assert_unicode_socket_path, socket_dir};
 use crate::test_support::refusing::{REFUSED, Refusing};
 
 // A fake QMP server ===================================================================================================
@@ -275,8 +276,8 @@ fn the_host_limit_is_the_sun_path_length_less_its_nul() {
 
 // Connecting ==========================================================================================================
 
-#[skuld::test(requires = [unicode_socket_dir_fits])]
-fn a_path_with_a_space_and_non_ascii_works() {
+#[skuld::test]
+fn a_path_with_a_space_and_non_ascii_works(#[fixture(unicode_socket_dir)] _group: &Group) {
     let sock = sock();
     assert_unicode_socket_path(sock.endpoint.path());
     let (server, log) = serve(sock.listen(), 1, |session, _| {

@@ -1,7 +1,8 @@
 //! Tests that boot QEMU or run one of its tools. Every test here carries the `vm` label (`SKULD_LABELS=vm` selects them)
-//! and goes through the VM gate: it fails naming what is missing unless `DEVVM_SKIP_VM_TESTS=1`.
+//! and joins the `vm_group` test group: it fails naming what is missing unless the group is turned off
+//! (`vm_group::OPT_OUT`).
 
-use crate::vm_gate::VM;
+use crate::test_harness::VM;
 
 skuld::default_labels!(VM);
 
