@@ -9,7 +9,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS, LocalFree};
+use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
@@ -75,7 +75,9 @@ pub(super) fn accept(dir: &Path) -> io::Result<()> {
 }
 
 /// A directory at `dir` that the user owns and that is no link: `AlreadyExists` for a file or a link, and
-/// `PermissionDenied` naming the owner for another account's directory.
+/// `PermissionDenied` naming the owner for another account's directory, or saying the owner cannot be read when the
+/// DACL denies `READ_CONTROL` (the owner is implicitly granted it, so this is not the user's directory). Any other
+/// failure names the directory.
 ///
 /// The path is looked up once. What is checked (no link, a directory) and whose it is are both read from the one
 /// handle, which opens a link itself and does not follow it, so the directory cannot be swapped between the checks.
@@ -84,8 +86,9 @@ fn accept_existing(dir: &Path, me: &str) -> io::Result<()> {
         .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(dir)?;
-    let metadata = handle.metadata()?;
+        .open(dir)
+        .map_err(|e| at(dir, e))?;
+    let metadata = handle.metadata().map_err(|e| at(dir, e))?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -98,14 +101,26 @@ fn accept_existing(dir: &Path, me: &str) -> io::Result<()> {
             format!("{} is not a directory", dir.display()),
         ));
     }
-    let owner = Owner::of(&handle)?;
-    if owner.sid()? == me {
+    let owner = Owner::of(&handle).map_err(|e| at(dir, e))?;
+    if owner.sid().map_err(|e| at(dir, e))? == me {
         return Ok(());
     }
     Err(io::Error::new(
         io::ErrorKind::PermissionDenied,
         format!("{} is owned by {}, not by you", dir.display(), owner.label()),
     ))
+}
+
+/// `error` from a call on `dir`, with the directory named. `ERROR_ACCESS_DENIED` is `PermissionDenied` saying the
+/// directory is not the user's.
+fn at(dir: &Path, error: io::Error) -> io::Error {
+    if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+        return io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is not yours: cannot read its owner ({error})", dir.display()),
+        );
+    }
+    io::Error::new(error.kind(), format!("{}: {error}", dir.display()))
 }
 
 /// The owner of an open file system object, from `GetSecurityInfo`.

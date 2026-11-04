@@ -70,9 +70,11 @@ pub(super) fn claim_then_rename(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// A directory at `dir` that is the user's and is no link: `AlreadyExists` for anything else that has the name, and
-/// `PermissionDenied` naming the owner for another account's directory.
+/// `PermissionDenied` naming the owner for another account's directory. A failed look-up (a parent that cannot be
+/// searched) keeps its kind and names the directory.
 fn accept_existing(host: &dyn FileModes, dir: &Path) -> std::io::Result<()> {
-    let metadata = std::fs::symlink_metadata(dir)?;
+    let metadata =
+        std::fs::symlink_metadata(dir).map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
     if metadata.file_type().is_symlink() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,

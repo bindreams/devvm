@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::{WindowsHost, user, wide};
 use crate::host::names::windows_run_dir;
 use crate::host::{Entry, HoldOutcome, Host};
-use crate::test_support::file_security::Security;
+use crate::test_support::file_security::{Security, set_protected_dacl};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -240,6 +240,25 @@ fn a_junction_at_the_runtime_dir_path_is_refused_by_the_check_that_makes_nothing
     junction::create(&target, &link).unwrap();
     let error = WindowsHost.accept_runtime_dir(&link).unwrap_err();
     assert!(error.to_string().contains("link"), "{error}");
+}
+
+/// An `OWNER RIGHTS` entry (here `DELETE` and `SYNCHRONIZE`, so the test can remove the directory) replaces the owner's
+/// implicit `READ_CONTROL`, so the owner cannot be read: the same refusal as another account's directory with a DACL
+/// that hides it.
+#[skuld::test]
+fn a_directory_whose_owner_cannot_be_read_is_refused_as_not_yours_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    std::fs::create_dir(&dir).unwrap();
+    set_protected_dacl(&dir, "D:P(A;;0x110000;;;OW)");
+    for error in [
+        WindowsHost.accept_runtime_dir(&dir).unwrap_err(),
+        WindowsHost.create_runtime_dir(&dir).unwrap_err(),
+    ] {
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
+        let text = error.to_string();
+        assert!(text.contains(&dir.display().to_string()), "{text}");
+        assert!(text.contains("is not yours: cannot read its owner"), "{text}");
+    }
 }
 
 #[skuld::test]

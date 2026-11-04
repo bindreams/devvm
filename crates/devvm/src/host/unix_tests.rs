@@ -144,6 +144,27 @@ fn a_symlink_at_the_runtime_dir_path_is_refused_by_the_check_that_makes_nothing(
     assert!(error.to_string().contains("link"), "{error}");
 }
 
+/// A parent that cannot be searched hides the directory; the error names the directory. Mode bits do not bind root, so
+/// the test refuses to run as root.
+#[skuld::test]
+fn a_runtime_dir_behind_an_unsearchable_parent_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    // SAFETY: `geteuid` reads a process attribute.
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "directory modes do not bind root: run this test as another user"
+    );
+    let parent = home.join("locked");
+    std::fs::create_dir(&parent).unwrap();
+    let dir = parent.join("run");
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0)).unwrap();
+    let error = UnixHost.accept_runtime_dir(&dir).unwrap_err();
+    // The temporary directory cannot be removed with the mode left as it is.
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
+    assert!(error.to_string().contains(&dir.display().to_string()), "{error}");
+}
+
 #[skuld::test]
 fn file_id_of_a_symlink_is_the_link_not_its_target(#[fixture(unicode_home)] home: &Path) {
     let target = home.join("target");

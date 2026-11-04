@@ -154,9 +154,9 @@ impl MachineRecord {
 /// and a stale record can never delete the files of a later launch that drew the same name. The claim goes last, so
 /// the names stay reserved until the rest is gone, and stays if any other file could not be deleted.
 ///
-/// Nothing is deleted, and `warn` is told, when there is no claim, the claim file is in use (a machine is alive, or
-/// a sweep or another program has it open), is another file than the claim says, or is gone while other files remain. A
-/// file that is already gone is fine; any other failure goes to `warn`.
+/// Nothing is deleted, and `warn` is told, when there is no claim, the claim file is held by another process (a
+/// machine is alive, or another devvm or program has it open), is another file than the claim says, or is gone while
+/// other files remain. A file that is already gone is fine; any other failure goes to `warn`.
 pub(crate) fn remove_files(
     host: &dyn Host,
     paths: &[PathBuf],
@@ -185,7 +185,11 @@ pub(crate) fn remove_files(
     let hold: Box<dyn Hold> = match host.hold_existing(&claim.path) {
         Ok(HoldOutcome::Taken(hold)) => hold,
         Ok(HoldOutcome::Busy) => {
-            warn(format!("not deleting {}: {} is in use", names(), claim.path.display()));
+            warn(format!(
+                "not deleting {}: {} is held by another process",
+                names(),
+                claim.path.display()
+            ));
             return;
         }
         Ok(HoldOutcome::Absent) => {

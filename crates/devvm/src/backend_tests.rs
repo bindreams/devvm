@@ -197,7 +197,10 @@ fn remove_files_deletes_nothing_while_the_claim_is_held(#[fixture(unicode_home)]
     let (paths, claim) = launch_files(home, "a");
     let alive = held(&claim.path);
     let warnings = removed(&paths, Some(&claim));
-    assert!(warnings.iter().any(|w| w.contains("is in use")), "{warnings:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("is held by another process")),
+        "{warnings:?}"
+    );
     assert!(paths.iter().all(|path| path.exists()));
     drop(alive);
     removed(&paths, Some(&claim));
