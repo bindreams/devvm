@@ -16,14 +16,25 @@ mod imp;
 
 /// Makes `link` a symlink to `target`.
 pub fn symlink(target: &Path, link: &Path) {
-    imp::symlink(target, link).unwrap_or_else(|e| {
-        panic!(
-            "cannot create the symlink {} -> {}: {e} (on Windows this needs Developer Mode or an elevated token), or {}",
-            link.display(),
-            target.display(),
+    imp::symlink(target, link).unwrap_or_else(|e| panic!("{}", failure(target, link, &e, imp::lacks_the_right(&e))))
+}
+
+/// The message of a failed [`symlink`]. `lacks_the_right`: the error is the one a host without the right gives; only
+/// that one is answered with the opt-out.
+fn failure(target: &Path, link: &Path, error: &std::io::Error, lacks_the_right: bool) -> String {
+    let message = format!(
+        "cannot create the symlink {} -> {}: {error}",
+        link.display(),
+        target.display()
+    );
+    if lacks_the_right {
+        format!(
+            "{message} (this needs Developer Mode or an elevated token), or {}",
             symlinks::OPT_OUT
         )
-    })
+    } else {
+        message
+    }
 }
 
 #[cfg(test)]
