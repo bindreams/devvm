@@ -8,7 +8,7 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 
-use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_DELETE_PENDING};
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
     FILE_GENERIC_WRITE, FILE_RENAME_INFO, FileDispositionInfo, FileRenameInfo, SetFileInformationByHandle,
@@ -63,6 +63,34 @@ impl WindowsHold {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
+    }
+}
+
+// `windows-sys` has no binding for it.
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    /// The `NTSTATUS` the calling thread's last system call ended with, which Win32 maps to an error code that can
+    /// stand for several statuses.
+    fn RtlGetLastNtStatus() -> NTSTATUS;
+}
+
+/// Whether `error`, from removing a deleting name, says that somebody else is deleting the file: it is held, or its
+/// deletion is pending. A pending deletion is `ERROR_ACCESS_DENIED`, like a real refusal, so the status tells them
+/// apart. Call it straight after the failed call: the status is the thread's last.
+fn is_deleted_by_another(error: &std::io::Error) -> bool {
+    match error.raw_os_error() {
+        Some(code) if code == ERROR_SHARING_VIOLATION as i32 => true,
+        // SAFETY: reads a thread-local status; no argument.
+        Some(code) if code == ERROR_ACCESS_DENIED as i32 => unsafe { RtlGetLastNtStatus() == STATUS_DELETE_PENDING },
+        _ => false,
+    }
+}
+
+/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name).
+pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if is_deleted_by_another(&e) => Ok(()),
+        other => other,
     }
 }
 

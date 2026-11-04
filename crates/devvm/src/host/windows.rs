@@ -271,6 +271,10 @@ impl Host for WindowsHost {
         hold::existing(path)
     }
 
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        hold::remove_deleting_name(path)
+    }
+
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         // `name:stream` reads an alternate data stream of the file `name`, which is no file git tracks.
         if windows_colon_path(rel) {

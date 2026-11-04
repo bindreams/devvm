@@ -104,9 +104,18 @@ impl QemuBackend {
         }
         // No launch is between making a claim file and holding it while this sweep has the directory's lock, so what
         // is left under `.new` was left by a launch that died there. A `.del` is left by a delete that died, or is
-        // being deleted now (the lock does not keep deletes out), and then the removal below fails and says so.
+        // being deleted now (the lock does not keep deletes out): the host leaves that one to its deleter.
         for leftover in private_claims {
-            if let Err(e) = std::fs::remove_file(&leftover)
+            let removed = if leftover
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(DELETING_SUFFIX))
+            {
+                self.host().remove_deleting_name(&leftover)
+            } else {
+                std::fs::remove_file(&leftover)
+            };
+            if let Err(e) = removed
                 && e.kind() != std::io::ErrorKind::NotFound
             {
                 warn(format!("cannot delete {}: {e}", leftover.display()));

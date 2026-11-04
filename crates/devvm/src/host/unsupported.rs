@@ -219,4 +219,9 @@ impl<M: FileModes> Host for M {
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         hold::existing(self.hold_options(), path, &|metadata| self.identity(metadata))
     }
+
+    /// A delete is one `unlink` here, so nobody is ever half way through one.
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_file(path)
+    }
 }

@@ -132,6 +132,10 @@ impl Host for TestHost {
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         host::current().hold_existing(path)
     }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        host::current().remove_deleting_name(path)
+    }
 }
 
 /// What [`NoAccelHost`] says is missing.
@@ -257,6 +261,10 @@ impl Host for NoAccelHost {
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         TestHost.hold_existing(path)
+    }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        TestHost.remove_deleting_name(path)
     }
 }
 
@@ -533,6 +541,10 @@ impl Host for RecordingHost {
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         TestHost.hold_existing(path)
     }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        TestHost.remove_deleting_name(path)
+    }
 }
 
 /// What [`NoGuestReset`] says is missing.
@@ -661,5 +673,9 @@ impl Host for NoGuestReset {
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         host::current().hold_existing(path)
+    }
+
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
+        host::current().remove_deleting_name(path)
     }
 }

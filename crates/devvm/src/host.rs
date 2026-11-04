@@ -206,6 +206,11 @@ pub(crate) trait Host: Send + Sync {
     /// `path` is an error: it is not opened through.
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
 
+    /// Removes `path`, a leftover claim file under its deleting name ([`DELETING_SUFFIX`]). `Ok` also when someone is
+    /// deleting it right now (Windows: it is held, or its deletion is pending), which is theirs to finish and then
+    /// leaves the file. Any other failure, `NotFound` included, is returned.
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()>;
+
     /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link
     /// at the last name: its kind comes from `symlink_metadata`, and a regular file is opened for reading and
     /// confirmed to be one from the open handle. A path that is gone, or is below a file, or has a name the host
