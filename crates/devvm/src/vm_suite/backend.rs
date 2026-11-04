@@ -29,7 +29,9 @@ use crate::store::layers::{Built, ChainLease, LayerStore};
 use crate::test_groups::{Group, unicode_socket_dir, vm_group};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
-use crate::test_support::qemu::{ScratchRun, assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, scratch_run, socket_dir};
+use crate::test_support::qemu::{
+    ScratchRun, assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, scratch_run, socket_dir,
+};
 use crate::{Arch, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
