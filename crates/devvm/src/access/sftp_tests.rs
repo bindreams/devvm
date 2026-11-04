@@ -27,7 +27,8 @@ skuld::default_labels!(SFTP);
 /// group: it changes what the tests run against, not whether they run.
 const SERVER_VAR: &str = "DEVVM_TEST_SFTP_SERVER";
 
-/// Whether [`SERVER_VAR`] picks OpenSSH's server; `Err` names the valid values, and how to unset it, when it holds any other.
+/// Whether [`SERVER_VAR`] picks OpenSSH's server; `Err` names the valid values, and how to unset it, when it holds
+/// any other.
 fn parameter_picks_openssh() -> std::result::Result<bool, String> {
     let Some(value) = std::env::var_os(SERVER_VAR) else {
         return Ok(false);
@@ -36,8 +37,8 @@ fn parameter_picks_openssh() -> std::result::Result<bool, String> {
         Some("scripted") => Ok(false),
         Some("openssh") => Ok(true),
         _ => Err(format!(
-            "{SERVER_VAR} is {value:?}; set it to \"openssh\" for OpenSSH's server, or unset it or set it to \"scripted\" \
-             for the scripted server"
+            "{SERVER_VAR} is {value:?}; set it to \"openssh\" for OpenSSH's server, or unset it or set it \
+             to \"scripted\" for the scripted server"
         )),
     }
 }

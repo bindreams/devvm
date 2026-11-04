@@ -25,7 +25,7 @@ use crate::test_support::fixtures::UNICODE_DIR;
 /// pinned build.
 pub const QEMU_DIR_VAR: &str = "DEVVM_TEST_QEMU_DIR";
 
-/// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `DEVVM_TEST_VM=0`.
+/// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `vm_group::OPT_OUT`.
 #[skuld::fixture(scope = process)]
 pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInstall>, String> {
     let config = Config {
@@ -39,8 +39,8 @@ pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInsta
         .get()
         .map_err(|e| {
             format!(
-                "QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory, or set \
-                 DEVVM_TEST_VM=0 to turn the group off)"
+                "QEMU is not available for the VM tests: {e} (set {QEMU_DIR_VAR} to a QEMU build's directory, or {})",
+                vm_group::OPT_OUT
             )
         })
 }

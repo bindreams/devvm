@@ -15,8 +15,10 @@ use crate::test_support::fixtures::unicode_home;
 /// Scalar values per case.
 const CHUNK: usize = 4096;
 
-/// The exit status of `seed_pyyaml.py` when PyYAML reads a field back differently.
+/// The exit status of `seed_pyyaml.py` when PyYAML reads a field back differently, and the first line of its stdout then.
+/// A status alone is not enough: Windows aborts a crashed process with 3.
 const MISMATCH: i32 = 3;
+const MISMATCH_LINE: &str = "mismatch";
 
 type Context = (&'static str, fn(char) -> String);
 
@@ -75,23 +77,30 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
         .arg(&script)
         .arg(&cases_path)
         .output()
-        .expect("`uv` must be installed to read the seed with PyYAML (set DEVVM_TEST_PYYAML=0 to turn the group off)");
-    // The script exits 3 on a mismatch. `uv` itself exits 1 when it cannot resolve PyYAML and the script exits 1 on an
-    // uncaught exception, so every other status (a signal too) is the host's setup.
+        .unwrap_or_else(|e| {
+            panic!(
+                "`uv` must be installed to read the seed with PyYAML ({e}); {}",
+                pyyaml::OPT_OUT
+            )
+        });
+    // A mismatch is the script's exit 3 and its first stdout line. Anything else (`uv` failing to resolve PyYAML, an
+    // uncaught exception, a crash, a signal) is the host's setup.
+    let stdout = String::from_utf8_lossy(&output.stdout);
     match output.status.code() {
         Some(0) => {}
-        Some(MISMATCH) => panic!(
+        Some(MISMATCH) if stdout.lines().next() == Some(MISMATCH_LINE) => panic!(
             "PyYAML does not read the seed back exactly ({}):
 {}{}",
             output.status,
-            String::from_utf8_lossy(&output.stdout),
+            stdout,
             String::from_utf8_lossy(&output.stderr),
         ),
         _ => panic!(
-            "`uv` could not run the PyYAML reader ({}); set DEVVM_TEST_PYYAML=0 to turn the group off:
+            "`uv` could not run the PyYAML reader ({}); {}:
 {}{}",
             output.status,
-            String::from_utf8_lossy(&output.stdout),
+            pyyaml::OPT_OUT,
+            stdout,
             String::from_utf8_lossy(&output.stderr),
         ),
     }

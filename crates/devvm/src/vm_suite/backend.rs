@@ -25,7 +25,7 @@ use crate::host::{self, Host, ProcessWatch};
 use crate::instance::record::InstanceId;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
-use crate::test_groups::{Group, unicode_socket_dir};
+use crate::test_groups::{Group, unicode_socket_dir, vm_group};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::qemu::{assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, socket_dir};
@@ -92,7 +92,7 @@ fn backend_over(bin: &Path, host: &'static dyn Host) -> QemuBackend {
 fn spec_in(dir: &Path, id: InstanceId, lifetime: Lifetime) -> MachineSpec {
     let accel = host::current()
         .accelerator(Arch::Amd64)
-        .unwrap_or_else(|e| panic!("the VM tests need WHPX: {e}; set DEVVM_TEST_VM=0 to turn the group off"));
+        .unwrap_or_else(|e| panic!("the VM tests need WHPX: {e}; {}", vm_group::OPT_OUT));
     MachineSpec {
         id,
         launch: 1,

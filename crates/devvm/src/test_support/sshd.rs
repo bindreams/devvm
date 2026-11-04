@@ -51,6 +51,7 @@ use crate::access::keys::InstanceKeys;
 use crate::access::runtime;
 use crate::access::{BootBound, Keepalive, SshSession, SshTarget, VmExit};
 use crate::exit::NullProgress;
+use crate::test_groups::openssh_sftp;
 
 pub use fs::{BIG_SIZE, big_file_digest, big_file_digest_from, expected_big_digest, pattern_byte, sample_windows};
 
@@ -160,7 +161,8 @@ impl TestSshd {
         };
         assert!(
             !options.openssh_sftp || Path::new(OPENSSH_SFTP_SERVER).is_file(),
-            "the test needs OpenSSH's SFTP server at {OPENSSH_SFTP_SERVER}: install the package openssh-sftp-server, or opt out: set DEVVM_TEST_OPENSSH_SFTP=0 to turn the group off, and unset DEVVM_TEST_SFTP_SERVER (or set it to scripted) for the shared SFTP tests"
+            "the test needs OpenSSH's SFTP server at {OPENSSH_SFTP_SERVER}: install the package openssh-sftp-server,              or opt out: {}, and unset DEVVM_TEST_SFTP_SERVER (or set it to scripted) for the shared SFTP tests",
+            openssh_sftp::OPT_OUT
         );
         let state = Arc::new(State {
             good: random_key(),

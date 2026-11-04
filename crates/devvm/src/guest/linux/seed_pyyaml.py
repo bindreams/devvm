@@ -7,8 +7,9 @@
 Usage: seed_pyyaml.py CASES.json, a list of {where, meta_data, user_data, hostname, client_public, host_private,
 host_public}. `where` names the case in a failure.
 
-Exits 0 when every case reads back exactly, 3 when one does not, 2 when PyYAML cannot be imported. `uv` exits 1 when
-it cannot resolve PyYAML, as does Python on an uncaught exception, so 1 is never a mismatch.
+Exits 0 when every case reads back exactly. A mismatch exits 3 with the line `mismatch` first on stdout and one failure
+per line on stderr. Any other exit or output is not a mismatch: `uv` exits 1 or 2 when it cannot resolve PyYAML, 2 when
+PyYAML cannot be imported, 1 on an uncaught exception.
 """
 
 import json
@@ -47,6 +48,24 @@ def expected(case):
     }
 
 
+def differences(case):
+    """One line per field of `case` that does not read back exactly."""
+    got = read_back(case)
+    lines = []
+    for field, want in expected(case).items():
+        if got[field] == want:
+            continue
+        if not isinstance(got[field], str):
+            lines.append(f"{field} reads back as {type(got[field]).__name__}: {got[field]!r:.40}")
+            continue
+        at = next(
+            (i for i, (a, b) in enumerate(zip(got[field], want)) if a != b),
+            min(len(got[field]), len(want)),
+        )
+        lines.append(f"{field} differs at index {at}: {got[field][at : at + 8]!r} for {want[at : at + 8]!r}")
+    return lines
+
+
 def main(path):
     with open(path, encoding="utf-8") as f:
         cases = json.load(f)
@@ -54,19 +73,11 @@ def main(path):
     for case in cases:
         where = case["where"]
         try:
-            got = read_back(case)
-        except Exception as e:  # a seed that does not load at all
-            failures.append(f"{where}: does not load: {type(e).__name__}: {e}".splitlines()[0])
-            continue
-        want = expected(case)
-        for field in want:
-            if got[field] != want[field]:
-                at = next(
-                    (i for i, (a, b) in enumerate(zip(got[field], want[field])) if a != b),
-                    min(len(got[field]), len(want[field])),
-                )
-                failures.append(f"{where}: {field} differs at index {at}: {got[field][at : at + 8]!r} for {want[field][at : at + 8]!r}")
+            failures += [f"{where}: {line}" for line in differences(case)]
+        except Exception as e:  # a seed that does not load or compare at all
+            failures.append(f"{where}: does not read back: {type(e).__name__}: {e}".splitlines()[0])
     if failures:
+        print("mismatch")
         print("\n".join(failures), file=sys.stderr)
         return 3
     print(f"{len(cases)} cases read back exactly")

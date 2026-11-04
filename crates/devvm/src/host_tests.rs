@@ -404,8 +404,9 @@ const PINNED_LOCALE: &str = "en-US";
 
 const GROUP_TEST: &str = "the_host_code_page_is_1252";
 
-/// Runs where the ANSI code page is 1252: on a host whose own is, and in the child the pinning test starts. Repeats the
-/// group's precondition, so a group that passed without the code page being 1252 fails here.
+/// Needs the ANSI code page to be 1252: a host whose own is, and the child the pinning test starts. Fails on any other
+/// host unless the group is off. Repeats the group's precondition, so a group that passed without the code page being
+/// 1252 fails here.
 #[skuld::test]
 fn the_host_code_page_is_1252(#[fixture(acp_1252)] _group: &Group) {
     assert_eq!(current().ansi_code_page(), Some(1252));
