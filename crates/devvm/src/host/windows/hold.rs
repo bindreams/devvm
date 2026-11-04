@@ -7,15 +7,13 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, ERROR_SHARING_VIOLATION,
-    INVALID_HANDLE_VALUE, NTSTATUS, STATUS_DELETE_PENDING, STATUS_SUCCESS,
+    ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, ERROR_SHARING_VIOLATION, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_FLAG_DELETE,
-    FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
-    FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, FileDispositionInfoEx, FileRenameInfo,
-    FileRenameInfoEx, OPEN_EXISTING, SetFileInformationByHandle,
+    FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FileDispositionInfo,
+    FileDispositionInfoEx, FileRenameInfo, FileRenameInfoEx, OPEN_EXISTING, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
 
@@ -23,6 +21,11 @@ use super::file_id;
 use super::wide;
 use crate::host::{FileId, Hold, HoldOutcome, deleting_name};
 use crate::random;
+
+/// Whether another open of the file refuses this one.
+fn is_sharing_violation(error: &std::io::Error) -> bool {
+    error.raw_os_error().map(|code| code as u32) == Some(ERROR_SHARING_VIOLATION)
+}
 
 /// Whether `error` says the file system does not do the `*Ex` form of a call: it gates both fallbacks here, the
 /// disposition ([`mark_deleted`]) and the rename (`rename_to`). `std`'s `File::delete`
@@ -37,66 +40,8 @@ fn is_unsupported(error: &std::io::Error) -> bool {
     )
 }
 
-// `windows-sys` has no binding for it.
-#[link(name = "ntdll")]
-unsafe extern "system" {
-    /// The `NTSTATUS` the calling thread's last system call ended with, which Win32 maps to an error code that can
-    /// stand for several statuses.
-    fn RtlGetLastNtStatus() -> NTSTATUS;
-}
-
-/// A failed system call: its Win32 error and the `NTSTATUS` it ended with.
-struct Failure {
-    error: std::io::Error,
-    status: NTSTATUS,
-}
-
-impl Failure {
-    /// The failure of the calling thread's last system call, which must be the one that failed: both are read from the
-    /// thread's last call, so nothing may call the system in between.
-    fn last() -> Failure {
-        let error = std::io::Error::last_os_error();
-        // SAFETY: reads a thread-local status; no argument.
-        let status = unsafe { RtlGetLastNtStatus() };
-        Failure { error, status }
-    }
-
-    /// Whether a file's deletion is pending: `ERROR_ACCESS_DENIED` like a real refusal, and the status tells them
-    /// apart.
-    fn is_delete_pending(&self) -> bool {
-        self.error.raw_os_error().map(|code| code as u32) == Some(ERROR_ACCESS_DENIED)
-            && self.status == STATUS_DELETE_PENDING
-    }
-
-    /// Whether another open of the file refuses this one (`ERROR_SHARING_VIOLATION`).
-    fn is_sharing_violation(&self) -> bool {
-        self.error.raw_os_error().map(|code| code as u32) == Some(ERROR_SHARING_VIOLATION)
-    }
-
-    /// The failure as the caller gets it: a name whose deletion is pending is `AlreadyExists`, as one that a file has
-    /// (the system answers `ERROR_ACCESS_DENIED`, which no caller can tell from a refusal); any other is the system's
-    /// error as it is.
-    fn into_error(self) -> std::io::Error {
-        if self.is_delete_pending() {
-            return std::io::Error::new(std::io::ErrorKind::AlreadyExists, "deletion of the file is pending");
-        }
-        self.error
-    }
-}
-
-/// An error that no system call of ours ended with, such as a path that has no wide form: it has no status.
-impl From<std::io::Error> for Failure {
-    fn from(error: std::io::Error) -> Failure {
-        Failure {
-            error,
-            status: STATUS_SUCCESS,
-        }
-    }
-}
-
-/// The one open of a file here: `CreateFileW` of `path` (a null security descriptor and template), whose failure keeps
-/// the `NTSTATUS` it ended with.
-fn open(path: &Path, access: u32, share: u32, creation: u32, flags: u32) -> Result<File, Failure> {
+/// The one open of a file here: `CreateFileW` of `path` (a null security descriptor and template).
+fn open(path: &Path, access: u32, share: u32, creation: u32, flags: u32) -> std::io::Result<File> {
     let name = wide(path)?;
     // SAFETY: `name` is NUL-terminated, and a null security descriptor and template are allowed.
     let handle = unsafe {
@@ -111,19 +56,19 @@ fn open(path: &Path, access: u32, share: u32, creation: u32, flags: u32) -> Resu
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        return Err(Failure::last());
+        return Err(std::io::Error::last_os_error());
     }
     // SAFETY: `handle` is a valid handle that nothing else owns; dropping the file closes it.
     Ok(File::from(unsafe { OwnedHandle::from_raw_handle(handle) }))
 }
 
 /// Marks `file`, open with `DELETE` access, for deletion: `FileDispositionInfoEx` with `FILE_DISPOSITION_FLAG_DELETE`
-/// and `flags`. POSIX semantics unlink the name when the file object closes, whoever else has the file open. Where the
+/// and POSIX semantics, which unlink the name when the file object closes, whoever else has the file open. Where the
 /// file system or Windows has no `*Ex` form, `FileDispositionInfo` deletes the file when the last handle closes
-/// (`std`'s `win32_delete`), and `flags` do not apply.
-fn mark_deleted(file: &File, flags: u32) -> Result<(), Failure> {
+/// (`std`'s `win32_delete`).
+fn mark_deleted(file: &File) -> std::io::Result<()> {
     let info = FILE_DISPOSITION_INFO_EX {
-        Flags: FILE_DISPOSITION_FLAG_DELETE | flags,
+        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     };
     // SAFETY: the handle is open with `DELETE` access, and the buffer is a `FILE_DISPOSITION_INFO_EX` of the size
     // passed.
@@ -138,9 +83,9 @@ fn mark_deleted(file: &File, flags: u32) -> Result<(), Failure> {
     if marked != 0 {
         return Ok(());
     }
-    let failure = Failure::last();
-    if !is_unsupported(&failure.error) {
-        return Err(failure);
+    let error = std::io::Error::last_os_error();
+    if !is_unsupported(&error) {
+        return Err(error);
     }
     let info = FILE_DISPOSITION_INFO { DeleteFile: true };
     // SAFETY: as above, with a `FILE_DISPOSITION_INFO`.
@@ -153,7 +98,7 @@ fn mark_deleted(file: &File, flags: u32) -> Result<(), Failure> {
         )
     };
     if marked == 0 {
-        return Err(Failure::last());
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
@@ -180,16 +125,11 @@ impl WindowsHold {
     /// though the file keeps existing until every handle to it is closed.
     ///
     /// Falls back where [`is_unsupported`], and returns the fallback's error when it fails too. A name that is taken
-    /// (`AlreadyExists`: a file is there, or its deletion is pending, [`Failure::into_error`]) is not replaced: the
-    /// digits are drawn again, with no limit on the draws.
-    ///
-    /// A rename of a file whose own deletion is pending is refused as a pending target is, and would draw forever. It
-    /// cannot happen here: the hold is share mode 0, so only [`mark_deleted`] through this handle can mark the file,
-    /// and `delete_with` does that last, after the rename.
+    /// (`AlreadyExists`) is not replaced: the digits are drawn again, with no limit on the draws.
     fn rename_away_with(&self, draw: &mut dyn FnMut() -> [u8; 8]) -> std::io::Result<()> {
         loop {
             let name = wide(&deleting_name(&self.path, draw()))?;
-            match self.rename_to(&name).map_err(Failure::into_error) {
+            match self.rename_to(&name) {
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 renamed => return renamed,
             }
@@ -197,7 +137,7 @@ impl WindowsHold {
     }
 
     /// Renames the file to `name`, a NUL-terminated wide path, which is not replaced if it exists.
-    fn rename_to(&self, name: &[u16]) -> Result<(), Failure> {
+    fn rename_to(&self, name: &[u16]) -> std::io::Result<()> {
         let name = &name[..name.len() - 1]; // the NUL: the name's length is stated, not terminated
         let name_bytes = std::mem::size_of_val(name);
         // `u64` units give the buffer the alignment of `FILE_RENAME_INFO`.
@@ -218,9 +158,9 @@ impl WindowsHold {
         if renamed != 0 {
             return Ok(());
         }
-        let failure = Failure::last();
-        if !is_unsupported(&failure.error) {
-            return Err(failure);
+        let error = std::io::Error::last_os_error();
+        if !is_unsupported(&error) {
+            return Err(error);
         }
         // SAFETY: as above; the union's `Flags` are cleared, so its `ReplaceIfExists` is false.
         let renamed = unsafe {
@@ -228,7 +168,7 @@ impl WindowsHold {
             SetFileInformationByHandle(self.file.as_raw_handle(), FileRenameInfo, info.cast(), size)
         };
         if renamed == 0 {
-            return Err(Failure::last());
+            return Err(std::io::Error::last_os_error());
         }
         Ok(())
     }
@@ -236,40 +176,26 @@ impl WindowsHold {
     /// [`Hold::delete`] with the digits of the deleting name drawn by `draw`.
     fn delete_with(self, draw: &mut dyn FnMut() -> [u8; 8]) -> std::io::Result<()> {
         self.rename_away_with(draw)?;
-        mark_deleted(&self.file, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS).map_err(|failure| failure.error)
+        mark_deleted(&self.file)
     }
 }
 
-/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name): the name is opened once, for `DELETE`
-/// (`FILE_FLAG_OPEN_REPARSE_POINT`: a link is removed, not followed), and marked for deletion through that handle as
-/// `std`'s `unlink` does for a read-only file (`posix_delete`), with no second look-up of the name that could find
-/// another file. A file that is held (`ERROR_SHARING_VIOLATION`), or whose deletion is pending, is somebody else's to
-/// finish. Any other failure, `NotFound` included, is the system's error as it is.
+/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name): `std::fs::remove_file`, which opens the name
+/// once, for `DELETE` (a link is removed, not followed), and deletes through that handle with POSIX semantics, a
+/// read-only file included. A file that is held (`ERROR_SHARING_VIOLATION`) is somebody else's to finish: `Ok`. Any
+/// other failure, `NotFound` included, is the system's error as it is, as is a name whose deletion is pending, which
+/// only somebody deleting the file by hand, or a file system without POSIX deletes, leaves: the next sweep tries again.
 pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
-    let marked = open(
-        path,
-        DELETE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        OPEN_EXISTING,
-        FILE_FLAG_OPEN_REPARSE_POINT,
-    )
-    .and_then(|file| {
-        mark_deleted(
-            &file,
-            FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
-        )
-    });
-    match marked {
-        Ok(()) => Ok(()),
-        Err(failure) if failure.is_sharing_violation() || failure.is_delete_pending() => Ok(()),
-        Err(failure) => Err(failure.error),
+    match std::fs::remove_file(path) {
+        Err(error) if is_sharing_violation(&error) => Ok(()),
+        removed => removed,
     }
 }
 
 /// Opens `path` as a hold: share mode 0 refuses every other open of the file, including `DELETE`, for as long as any
 /// handle to this open file exists, the inherited ones too. `DELETE` access is for [`Hold::delete`]. A link at the name
 /// is opened itself, not followed.
-fn open_hold(path: &Path, creation: u32) -> Result<File, Failure> {
+fn open_hold(path: &Path, creation: u32) -> std::io::Result<File> {
     open(
         path,
         DELETE | FILE_GENERIC_READ | FILE_GENERIC_WRITE,
@@ -279,15 +205,14 @@ fn open_hold(path: &Path, creation: u32) -> Result<File, Failure> {
     )
 }
 
-/// Creates `path`, which must not exist, and holds it. A name that is taken is `AlreadyExists`, one whose deletion is
-/// pending included.
+/// Creates `path`, which must not exist, and holds it. A name that is taken is `AlreadyExists`.
 pub(super) fn new(path: &Path) -> std::io::Result<WindowsHold> {
-    let file = open_hold(path, CREATE_NEW).map_err(Failure::into_error)?;
+    let file = open_hold(path, CREATE_NEW)?;
     WindowsHold::of(file, path)
 }
 
-/// Holds the file at `path` if nobody else does. A link at the name is refused. A file that is held, or whose deletion
-/// is pending, is `Busy`: somebody else has it, or is deleting it, and it is not absent.
+/// Holds the file at `path` if nobody else does. A link at the name is refused. A file that is held
+/// (`ERROR_SHARING_VIOLATION`) is `Busy`: somebody else has it, and it is not absent.
 pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
     match open_hold(path, OPEN_EXISTING) {
         Ok(file) if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => Err(std::io::Error::new(
@@ -295,9 +220,9 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
             format!("{} is a link", path.display()),
         )),
         Ok(file) => Ok(HoldOutcome::Taken(Box::new(WindowsHold::of(file, path)?))),
-        Err(failure) if failure.error.kind() == std::io::ErrorKind::NotFound => Ok(HoldOutcome::Absent),
-        Err(failure) if failure.is_sharing_violation() || failure.is_delete_pending() => Ok(HoldOutcome::Busy),
-        Err(failure) => Err(failure.error),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HoldOutcome::Absent),
+        Err(error) if is_sharing_violation(&error) => Ok(HoldOutcome::Busy),
+        Err(error) => Err(error),
     }
 }
 
@@ -310,7 +235,9 @@ impl Hold for WindowsHold {
         file_id::of_handle(&self.file)
     }
 
-    /// Renames the file away through the handle and marks it for deletion, so no name is looked up again. A handle to
+    /// Renames the file away through the handle and marks it for deletion, so no name is looked up again. No name is
+    /// left delete-pending by it: the hold is share mode 0, so nobody else can mark the file, and the rename comes
+    /// before the mark. A handle to
     /// the same file object can outlive this one (a child's inherited copy), and the name stays until that file object
     /// closes; the rename frees the final name at once. Where the file system has POSIX semantics, the `.del` name goes
     /// when the file object closes even while somebody else's open (a scanner's) lasts; elsewhere it goes when the

@@ -215,8 +215,8 @@ pub(crate) trait Host: Send + Sync {
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
 
     /// Removes `path`, a leftover claim file under its deleting name ([`deleting_name`]): its name may stay until the
-    /// last handle to the file closes. `Ok` also when someone is deleting it right now (Windows: it is held, or its
-    /// deletion is pending), which is theirs to finish. Any other failure, `NotFound` included, is returned.
+    /// last handle to the file closes. `Ok` also when someone is deleting it right now (Windows: it is held), which is
+    /// theirs to finish. Any other failure, `NotFound` included, is returned.
     fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()>;
 
     /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link

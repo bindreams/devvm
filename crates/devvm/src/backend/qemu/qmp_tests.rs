@@ -481,7 +481,7 @@ fn a_machine_that_has_exited_fails_before_a_lock_file_is_touched() {
 fn connect_does_not_make_a_missing_run_dir_and_names_it() {
     let run = scratch_run();
     let gone = run.path().join("gone");
-    let endpoint = QmpEndpoint::from_record(&gone.join("0000000000000001.sock").display().to_string());
+    let endpoint = QmpEndpoint::drawn(&gone, 1u64.to_be_bytes());
 
     let error = Qmp::connect(&endpoint, &ManualExit::new().watch(), &MemoryProgress::default())
         .err()

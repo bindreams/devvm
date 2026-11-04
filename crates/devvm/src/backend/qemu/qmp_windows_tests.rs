@@ -1,20 +1,18 @@
 //! What only Windows has. The session against a QEMU that exits while its end of the connection stays open: on a host
 //! whose streams end with the peer's process, no test can keep the peer's end open past its exit; each such test is
-//! thread-only (the "process" is an event the test sets), so none of them spawn anything. And the reservation over a
-//! name whose deletion is pending.
+//! thread-only (the "process" is an event the test sets), so none of them spawn anything.
 
 use std::sync::mpsc;
 
 use serde_json::json;
 
 use super::qmp_tests::{Server, Session, serve, sock};
-use super::{Qmp, QmpEndpoint, VmEnd};
+use super::{Qmp, VmEnd};
 use crate::ErrorKind;
-use crate::host::{self, ProcessWatch};
-use crate::test_support::delete_pending::make_delete_pending;
+use crate::host::ProcessWatch;
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::manual_exit::ManualExit;
-use crate::test_support::qemu::{Sock, scratch_run};
+use crate::test_support::qemu::Sock;
 use std::sync::Arc;
 
 /// A connection to a server that wrote `lines` on its own right after the handshake and then holds the connection open
@@ -150,21 +148,4 @@ fn a_command_sent_after_the_process_exited_is_a_lost_connection() {
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     finished.send(()).unwrap();
     server.join().unwrap();
-}
-
-/// A drawn name whose claim file is delete-pending (a file marked for deletion that a handle keeps open) is taken: the
-/// launch draws again, as it does for a claim file that exists.
-#[skuld::test]
-fn reserve_with_redraws_a_name_whose_claim_file_is_delete_pending() {
-    let run = scratch_run();
-    let pending = QmpEndpoint::drawn(run.path(), 1u64.to_be_bytes()).hold_path();
-    std::fs::write(&pending, b"pending").unwrap();
-    let keeper = make_delete_pending(&pending);
-    let mut draws = vec![1u64, 2].into_iter();
-
-    let reservation =
-        QmpEndpoint::reserve_with(host::current(), run.path(), &mut || draws.next().unwrap().to_be_bytes()).unwrap();
-
-    assert_eq!(reservation.endpoint, QmpEndpoint::drawn(run.path(), 2u64.to_be_bytes()));
-    drop(keeper);
 }
