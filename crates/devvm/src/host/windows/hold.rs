@@ -16,7 +16,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use super::file_id;
-use super::runtime_dir::wide;
+use super::wide;
 use crate::host::{DELETING_SUFFIX, FileId, Hold, HoldOutcome};
 
 #[derive(Debug)]
@@ -88,21 +88,27 @@ fn is_deleted_by_another(error: &std::io::Error) -> bool {
     }
 }
 
-/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name). `DeleteFileW` itself, not
-/// `std::fs::remove_file`: after a failed delete `std` makes more system calls, which replace the status that
-/// [`is_deleted_by_another`] reads.
+/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name). `DeleteFileW` first: after a failed delete
+/// `std` makes more system calls, which replace the status that [`is_deleted_by_another`] reads. Any other failure is
+/// `std::fs::remove_file`'s to settle: it handles a long path and a read-only file.
 pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
+    // `DeleteFileW` reads a path as far as its first NUL, which would delete a different file.
+    if path.as_os_str().encode_wide().any(|unit| unit == 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "file name contained an unexpected NUL byte",
+        ));
+    }
     let wide = wide(path);
     // SAFETY: `wide` is NUL-terminated and outlives the call.
     let deleted = unsafe { DeleteFileW(wide.as_ptr()) };
     if deleted != 0 {
         return Ok(());
     }
-    let error = std::io::Error::last_os_error();
-    if is_deleted_by_another(&error) {
+    if is_deleted_by_another(&std::io::Error::last_os_error()) {
         Ok(())
     } else {
-        Err(error)
+        std::fs::remove_file(path)
     }
 }
 

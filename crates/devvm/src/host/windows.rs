@@ -40,6 +40,11 @@ pub(crate) use watch::WindowsWatch;
 /// `ERROR_PRIVILEGE_NOT_HELD`: the user may not create symlinks.
 const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
 
+/// `path` as the NUL-terminated UTF-16 a Win32 call takes.
+fn wide(path: &Path) -> Vec<u16> {
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
 fn directory(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
     let mut buffer = vec![0u16; 260];
@@ -199,12 +204,6 @@ impl Host for WindowsHost {
 
     /// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` fails with `ERROR_ALREADY_EXISTS` for anything at `to`.
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        let wide = |path: &Path| {
-            path.as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect::<Vec<u16>>()
-        };
         let (from, to) = (wide(from), wide(to));
         // SAFETY: both are NUL-terminated and outlive the call.
         let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) };

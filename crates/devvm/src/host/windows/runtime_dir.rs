@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
@@ -22,10 +22,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use super::user::{current_sid, sid_string};
-
-pub(super) fn wide(path: &Path) -> Vec<u16> {
-    path.as_os_str().encode_wide().chain(Some(0)).collect()
-}
+use super::wide;
 
 /// Makes `dir` with owner and DACL set in the one call that creates it: the owner is the user and the DACL is
 /// protected (nothing inherited from `C:\ProgramData`, where Users may create entries) with one entry, full access for
