@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::private_claim_kind;
 use crate::Dirs;
 use crate::backend::Backend;
 use crate::backend::qemu::qmp::QmpEndpoint;
@@ -300,19 +301,42 @@ pub(super) fn sweeping_a_link_touches_nothing_and_warns(home: &Path, link: impl 
     assert!(warnings[0].contains("link"), "{warnings:?}");
 }
 
+/// The entries of `dir` that a sweep acts on when it gets past its checks: a launch's files and a claim's private
+/// names. Other entries of a shared directory come and go while a test runs, and a sweep leaves them alone.
+fn entries_a_sweep_acts_on(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            QmpEndpoint::launch_file(name).is_some() || private_claim_kind(name).is_some()
+        })
+        .collect()
+}
+
 /// A directory of another account: `ProgramData` is owned by the system, `/` by root, and each has no `runtime.lock`
 /// the user could open to get past the check.
 #[skuld::test]
 fn sweeping_a_directory_owned_by_someone_else_warns_naming_the_owner_and_touches_nothing() {
     let system = a_directory_of_another_account();
-    let before = std::fs::read_dir(&system).unwrap().count();
+    let before = entries_a_sweep_acts_on(&system);
 
     let warnings = sweep(&system);
 
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains(&system.display().to_string()), "{warnings:?}");
     assert!(warnings[0].contains("is owned by"), "{warnings:?}");
-    assert_eq!(std::fs::read_dir(&system).unwrap().count(), before);
+    assert!(
+        !system.join("runtime.lock").exists(),
+        "the lock of the directory is not made"
+    );
+    for entry in before {
+        assert!(
+            std::fs::symlink_metadata(&entry).is_ok(),
+            "{} was removed or renamed",
+            entry.display()
+        );
+    }
 }
 
 #[skuld::test]

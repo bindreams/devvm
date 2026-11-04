@@ -78,6 +78,10 @@ impl Backend for Observing {
         self.inner.storage()
     }
 
+    fn sweep(&self, warn: &mut dyn FnMut(String)) {
+        self.inner.sweep(warn);
+    }
+
     fn can_save_memory(&self) -> bool {
         self.inner.can_save_memory()
     }

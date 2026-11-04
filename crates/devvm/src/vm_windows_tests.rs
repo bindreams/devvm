@@ -353,6 +353,10 @@ impl Backend for LateRecords {
         self.0.storage()
     }
 
+    fn sweep(&self, warn: &mut dyn FnMut(String)) {
+        self.0.sweep(warn);
+    }
+
     fn can_save_memory(&self) -> bool {
         false
     }
@@ -603,6 +607,10 @@ impl Backend for Spied {
         self.inner.storage()
     }
 
+    fn sweep(&self, warn: &mut dyn FnMut(String)) {
+        self.inner.sweep(warn);
+    }
+
     fn can_save_memory(&self) -> bool {
         false
     }
@@ -687,6 +695,10 @@ impl Backend for NotesOpLock {
 
     fn storage(&self) -> &dyn Storage {
         self.inner.storage()
+    }
+
+    fn sweep(&self, warn: &mut dyn FnMut(String)) {
+        self.inner.sweep(warn);
     }
 
     fn can_save_memory(&self) -> bool {

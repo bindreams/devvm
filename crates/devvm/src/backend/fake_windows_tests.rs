@@ -41,6 +41,10 @@ impl Backend for EndpointsAfterResume {
         self.0.storage()
     }
 
+    fn sweep(&self, warn: &mut dyn FnMut(String)) {
+        self.0.sweep(warn);
+    }
+
     fn can_save_memory(&self) -> bool {
         false
     }
@@ -192,6 +196,10 @@ impl Backend for DeletesLeftoversOnResume {
 
     fn storage(&self) -> &dyn Storage {
         self.0.storage()
+    }
+
+    fn sweep(&self, warn: &mut dyn FnMut(String)) {
+        self.0.sweep(warn);
     }
 
     fn can_save_memory(&self) -> bool {

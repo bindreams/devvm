@@ -226,6 +226,10 @@ impl Backend for FakeBackend {
         &self.storage
     }
 
+    /// The fake's leftovers are deleted with its machine's record (`MachineRecord::remove_leftovers`), and nothing of
+    /// it is shared between setups, so there is nothing to sweep.
+    fn sweep(&self, _warn: &mut dyn FnMut(String)) {}
+
     fn can_save_memory(&self) -> bool {
         false
     }

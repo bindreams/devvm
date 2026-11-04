@@ -46,9 +46,9 @@ pub(crate) trait Backend: Send + Sync {
 
     /// Deletes the files that machines left outside their instance directories and that no machine of any devvm setup
     /// uses any more. A setup other than the caller's may be running machines, so only a file that nothing can be using
-    /// goes. Best effort: a problem is told to `warn` and left for the next sweep. The default does nothing, for a
-    /// backend whose machines leave no such files.
-    fn sweep(&self, _warn: &mut dyn FnMut(String)) {}
+    /// goes. Best effort: a problem is told to `warn` and left for the next sweep. A backend whose machines leave no
+    /// such files does nothing.
+    fn sweep(&self, warn: &mut dyn FnMut(String));
 
     /// Whether this backend can save a running machine's memory.
     fn can_save_memory(&self) -> bool;
@@ -178,70 +178,47 @@ impl MachineRecord {
 /// and a stale record can never delete the files of a later launch that drew the same name. The claim goes last, so
 /// the names stay reserved until the rest is gone, and stays if any other file could not be deleted.
 ///
-/// Nothing is deleted, and `warn` is told, when there is no claim, the claim file is held by another process (a
-/// machine is alive, or another devvm or program has it open), is another file than the claim says, or is gone while
-/// other files remain. A file that is already gone is fine; any other failure goes to `warn`.
+/// Nothing is deleted when there is no claim, the claim file is held by another process (a machine is alive, or
+/// another devvm or program has it open), is another file than the claim says, or is gone. `warn` is then told which,
+/// naming the files other than the claim that are there when it looks again (a sweep may have taken some meanwhile),
+/// and told nothing when none is. A file that is already gone is fine; any other failure goes to `warn`.
 pub(crate) fn remove_files(
     host: &dyn Host,
     paths: &[PathBuf],
     claim: Option<&FileClaim>,
     warn: &mut dyn FnMut(String),
 ) {
-    let listed = present(paths);
-    if listed.is_empty() {
+    if present(paths).is_empty() {
         return;
     }
-    let Some(claim) = claim else {
-        warn(format!("not deleting {}: no launch claims them", names(&listed)));
-        return;
-    };
-    let hold: Box<dyn Hold> = match host.hold_existing(&claim.path) {
-        Ok(HoldOutcome::Taken(hold)) => hold,
-        // A sweep may have taken files since the look above, so the warning names what is there now.
-        Ok(HoldOutcome::Busy) => {
-            let left = present(paths);
-            if !left.is_empty() {
-                warn(format!(
-                    "not deleting {}: {} is held by another process",
-                    names(&left),
-                    claim.path.display()
-                ));
+    let refusal = match claim {
+        None => "no launch claims them".to_owned(),
+        Some(claim) => match host.hold_existing(&claim.path) {
+            // The identity of the open handle: it cannot be absent, so the claim is the launch's or another's.
+            Ok(HoldOutcome::Taken(hold)) => match hold.id() {
+                Ok(id) if id == claim.id => return remove_held(host, hold, &claim.path, paths, warn),
+                Ok(_) => format!("{} is another launch's file", claim.path.display()),
+                Err(e) => {
+                    warn(format!("cannot look at {}: {e}", claim.path.display()));
+                    return;
+                }
+            },
+            Ok(HoldOutcome::Busy) => format!("{} is held by another process", claim.path.display()),
+            Ok(HoldOutcome::Absent) => format!("{} is gone", claim.path.display()),
+            Err(e) => {
+                warn(format!("cannot hold {}: {e}", claim.path.display()));
+                return;
             }
-            return;
-        }
-        Ok(HoldOutcome::Absent) => {
-            let left = present(paths);
-            if !left.is_empty() {
-                warn(format!(
-                    "not deleting {}: {} is gone",
-                    names(&left),
-                    claim.path.display()
-                ));
-            }
-            return;
-        }
-        Err(e) => {
-            warn(format!("cannot hold {}: {e}", claim.path.display()));
-            return;
-        }
+        },
     };
-    // The identity of the open handle: it cannot be absent, so the claim is the launch's or another's.
-    match hold.id() {
-        Ok(id) if id == claim.id => {}
-        Ok(_) => {
-            warn(format!(
-                "not deleting {}: {} is another launch's file",
-                names(&listed),
-                claim.path.display()
-            ));
-            return;
-        }
-        Err(e) => {
-            warn(format!("cannot look at {}: {e}", claim.path.display()));
-            return;
-        }
+    // The claim is not left over: it is held, another launch's, or gone. Only the other files are.
+    let left: Vec<&PathBuf> = present(paths)
+        .into_iter()
+        .filter(|path| claim.is_none_or(|claim| **path != claim.path))
+        .collect();
+    if !left.is_empty() {
+        warn(format!("not deleting {}: {refusal}", names(&left)));
     }
-    remove_held(host, hold, &claim.path, paths, warn);
 }
 
 /// The files among `paths` that are there. A lookup that fails counts as there: the delete reports the system's error,

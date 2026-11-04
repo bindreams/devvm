@@ -201,9 +201,32 @@ fn remove_files_names_only_the_files_left_when_the_claim_turns_out_gone(#[fixtur
     );
 }
 
-/// The same when the claim is held by another process: the files a sweep took are not named.
+/// The same when the claim is held by another process: the files a sweep took are not named, and the claim, which
+/// is held and not left over, is not either.
 #[skuld::test]
 fn remove_files_names_only_the_files_left_when_the_claim_turns_out_held(#[fixture(unicode_home)] home: &Path) {
+    let (paths, claim) = launch_files(home, "a");
+    let alive = held(&claim.path);
+    let host = RecordingHost::new();
+    host.delete_before_hold_existing(&paths[..1]);
+    let mut warnings = Vec::new();
+
+    remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
+
+    assert_eq!(
+        warnings,
+        [format!(
+            "not deleting {}: {} is held by another process",
+            paths[1].display(),
+            claim.path.display()
+        )]
+    );
+    drop(alive);
+}
+
+/// A sweep that holds the claim has taken the other files, and only the claim is there: nothing is left to warn about.
+#[skuld::test]
+fn remove_files_is_quiet_when_the_claim_turns_out_held_and_only_it_is_left(#[fixture(unicode_home)] home: &Path) {
     let (paths, claim) = launch_files(home, "a");
     let alive = held(&claim.path);
     let host = RecordingHost::new();
@@ -212,14 +235,35 @@ fn remove_files_names_only_the_files_left_when_the_claim_turns_out_held(#[fixtur
 
     remove_files(&host, &paths, Some(&claim), &mut |text| warnings.push(text));
 
+    assert_eq!(warnings, Vec::<String>::new());
+    drop(alive);
+}
+
+/// The same when the claim file turns out to be another launch's: the warning names what is left now.
+#[skuld::test]
+fn remove_files_names_only_the_files_left_when_the_claim_turns_out_another_file(#[fixture(unicode_home)] home: &Path) {
+    let (paths, claim) = launch_files(home, "a");
+    let other = FileClaim {
+        id: FileId {
+            file: claim.id.file ^ 1,
+            ..claim.id
+        },
+        ..claim.clone()
+    };
+    let host = RecordingHost::new();
+    host.delete_before_hold_existing(&paths[..1]);
+    let mut warnings = Vec::new();
+
+    remove_files(&host, &paths, Some(&other), &mut |text| warnings.push(text));
+
     assert_eq!(
         warnings,
         [format!(
-            "not deleting {0}: {0} is held by another process",
+            "not deleting {}: {} is another launch's file",
+            paths[1].display(),
             claim.path.display()
         )]
     );
-    drop(alive);
 }
 
 #[skuld::test]
