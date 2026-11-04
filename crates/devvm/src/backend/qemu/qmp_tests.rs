@@ -276,8 +276,8 @@ fn reserve_with_redraws_a_taken_name() {
         draws.next().expect("a draw after the free name 8").to_be_bytes()
     })
     .unwrap();
-    assert_eq!(first.endpoint.path().file_name().unwrap(), "0000000000000007.sock");
-    assert_eq!(second.endpoint.path().file_name().unwrap(), "0000000000000008.sock");
+    assert_eq!(first.endpoint, QmpEndpoint::drawn(run.path(), 7u64.to_be_bytes()));
+    assert_eq!(second.endpoint, QmpEndpoint::drawn(run.path(), 8u64.to_be_bytes()));
     assert!(draws.next().is_none(), "no draw after 8 was needed");
 }
 
@@ -296,32 +296,27 @@ fn reserve_with_goes_on_redrawing_for_as_long_as_names_are_taken() {
     .unwrap();
     assert_eq!(next, 51);
     assert_eq!(
-        reservation.endpoint.path().file_name().unwrap(),
-        "0000000000000032.sock"
+        reservation.endpoint,
+        QmpEndpoint::drawn(run.path(), 50u64.to_be_bytes())
     );
 }
 
 #[skuld::test]
 fn reserve_with_redraws_when_an_orphan_socket_or_lock_has_the_name_and_leaves_that_file() {
     let run = scratch_run();
-    for (n, orphan) in [(1u64, "0000000000000001.sock"), (2, "0000000000000002.sock.lock")] {
-        std::fs::write(run.path().join(orphan), b"left by a machine that is gone").unwrap();
+    let drawn = |n: u64| QmpEndpoint::drawn(run.path(), n.to_be_bytes());
+    for (n, orphan) in [(1u64, drawn(1).path().to_path_buf()), (2, drawn(2).lock_path())] {
+        std::fs::write(&orphan, b"left by a machine that is gone").unwrap();
         let mut draws = vec![n, n + 100].into_iter();
         let reservation =
             QmpEndpoint::reserve_with(host::current(), run.path(), &mut || draws.next().unwrap().to_be_bytes())
                 .unwrap();
-        assert_eq!(
-            std::fs::read(run.path().join(orphan)).unwrap(),
-            b"left by a machine that is gone"
-        );
+        assert_eq!(std::fs::read(&orphan).unwrap(), b"left by a machine that is gone");
         assert!(
-            !run.path().join(format!("{:016x}.sock.hold", n)).exists(),
+            !drawn(n).hold_path().exists(),
             "the claim made for the taken name was given back"
         );
-        assert_eq!(
-            reservation.endpoint.path().file_name().unwrap().to_string_lossy(),
-            format!("{:016x}.sock", n + 100)
-        );
+        assert_eq!(reservation.endpoint, drawn(n + 100));
     }
 }
 

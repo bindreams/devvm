@@ -3,6 +3,8 @@
 pub mod alloc;
 pub mod callers;
 pub mod claimed;
+#[cfg(windows)]
+pub mod delete_pending;
 pub mod fake_vm;
 pub mod file_mode;
 pub mod fixtures;

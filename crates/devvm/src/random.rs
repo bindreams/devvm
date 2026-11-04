@@ -11,7 +11,7 @@ pub(crate) fn bytes<const N: usize>() -> [u8; N] {
     bytes
 }
 
-/// Whether `text` is the lowercase hex of `bytes` bytes: the inverse of `hex::encode(random::bytes::<N>())`.
+/// Whether `text` is the lowercase hex of `bytes` bytes.
 pub(crate) fn is_hex(text: &str, bytes: usize) -> bool {
     text.len() == 2 * bytes && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }

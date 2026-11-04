@@ -1,20 +1,18 @@
 use std::fs::OpenOptions;
-use std::mem::size_of;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_INFO,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
-    SetFileAttributesW, SetFileInformationByHandle,
+    FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, SetFileAttributesW,
 };
 
 use super::super::wide;
 use super::super::windows_tests::{long_dir, with_nul};
-use crate::host::{claim_of_deleting_name, current, deleting_name};
+use crate::host::{HoldOutcome, claim_of_deleting_name, current, deleting_name};
 use crate::test_groups::{Group, symlinks};
+use crate::test_support::delete_pending::make_delete_pending;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
 
@@ -109,7 +107,7 @@ fn a_delete_whose_drawn_deleting_name_is_delete_pending_draws_again(#[fixture(un
     let path = home.join("x.sock.hold");
     let pending = deleting_name(&path, [1u8; 8]);
     std::fs::write(&pending, b"pending").unwrap();
-    let keeper = make_delete_pending(Path::new(&pending));
+    let keeper = make_delete_pending(&pending);
     let hold = super::new(&path).unwrap();
     let mut draws = [[1u8; 8], [2u8; 8]].into_iter();
     let mut drawn = 0;
@@ -124,6 +122,34 @@ fn a_delete_whose_drawn_deleting_name_is_delete_pending_draws_again(#[fixture(un
     assert!(!path.exists());
     drop(keeper);
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
+}
+
+/// A name whose deletion is pending is taken, as one a file has: `AlreadyExists`, so a caller that draws names draws
+/// again.
+#[skuld::test]
+fn holding_a_new_name_whose_deletion_is_pending_is_already_exists(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    std::fs::write(&path, b"pending").unwrap();
+    let keeper = make_delete_pending(&path);
+
+    let refused = current().hold_new(&path).unwrap_err();
+
+    assert_eq!(refused.kind(), std::io::ErrorKind::AlreadyExists, "{refused}");
+    drop(keeper);
+}
+
+/// A file whose deletion is pending is held, or being deleted, by somebody else: `Busy`, never `Absent`, which would
+/// let the sweep delete what is beside it.
+#[skuld::test]
+fn holding_an_existing_name_whose_deletion_is_pending_is_busy(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    std::fs::write(&path, b"pending").unwrap();
+    let keeper = make_delete_pending(&path);
+
+    let outcome = current().hold_existing(&path).unwrap();
+
+    assert!(matches!(outcome, HoldOutcome::Busy), "{outcome:?}");
+    drop(keeper);
 }
 
 /// A handle that asks for no data access (as `file_id::of` opens) lets the hold's file be deleted, and the name goes
@@ -191,31 +217,6 @@ fn removing_a_deleting_name_someone_holds_is_no_error_and_leaves_it(#[fixture(un
 
     assert!(path.exists());
     drop(hold);
-}
-
-/// Marks the file at `path` for deletion and returns a handle that keeps it open: the name stays, delete-pending.
-fn make_delete_pending(path: &Path) -> std::fs::File {
-    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-    let keeper = OpenOptions::new().read(true).share_mode(share).open(path).unwrap();
-    let marker = OpenOptions::new()
-        .read(true)
-        .access_mode(DELETE)
-        .share_mode(share)
-        .open(path)
-        .unwrap();
-    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
-    // SAFETY: the handle is open with `DELETE` access, and the buffer is a `FILE_DISPOSITION_INFO` of the size passed.
-    let marked = unsafe {
-        SetFileInformationByHandle(
-            marker.as_raw_handle(),
-            FileDispositionInfo,
-            (&raw const info).cast(),
-            size_of::<FILE_DISPOSITION_INFO>() as u32,
-        )
-    };
-    assert_ne!(marked, 0, "{}", std::io::Error::last_os_error());
-    drop(marker);
-    keeper
 }
 
 /// A file marked for deletion keeps its name while another handle is open, and an open of it is

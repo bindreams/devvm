@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use super::sweep_tests::{STEM_A, run_with_a_lock, sweep, sweeping_a_link_touches_nothing_and_warns};
+use crate::backend::qemu::qmp::QmpEndpoint;
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -17,8 +18,9 @@ fn a_claim_file_that_is_a_symlink_is_not_opened_through_by_the_sweep() {
     let run = run_with_a_lock();
     let victim = run.path().join("victim");
     std::fs::write(&victim, b"theirs").unwrap();
-    std::fs::write(run.path().join(format!("{STEM_A}.sock")), b"socket").unwrap();
-    let claim = run.path().join(format!("{STEM_A}.sock.hold"));
+    let endpoint = QmpEndpoint::of_launch(run.path(), STEM_A);
+    std::fs::write(endpoint.path(), b"socket").unwrap();
+    let claim = endpoint.hold_path();
     std::os::unix::fs::symlink(&victim, &claim).unwrap();
 
     let warnings = sweep(run.path());

@@ -6,7 +6,7 @@ use crate::backend::Backend;
 use crate::backend::qemu::backend::QemuBackend;
 use crate::backend::qemu::qmp::QmpEndpoint;
 use crate::backend::qemu::storage::QemuStorage;
-use crate::host::{self, Hold, HoldOutcome, deleting_name};
+use crate::host::{self, Hold, HoldOutcome, deleting_name, new_name};
 use crate::instance::registry::Registry;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
@@ -48,7 +48,7 @@ pub(super) struct Machine {
 
 impl Machine {
     pub(super) fn new(run: &Path, stem: &str) -> Machine {
-        let endpoint = QmpEndpoint::from_path(run.join(format!("{stem}.sock")));
+        let endpoint = QmpEndpoint::of_launch(run, stem);
         std::fs::write(endpoint.path(), b"socket").unwrap();
         std::fs::write(endpoint.lock_path(), b"").unwrap();
         let alive = host::current().hold_new(&endpoint.hold_path()).unwrap();
@@ -128,7 +128,7 @@ fn sweep_takes_the_dead_and_leaves_the_alive_among_several() {
 #[skuld::test]
 fn a_session_lock_recreated_after_cleanup_is_swept_by_the_next_reap() {
     let run = run_with_a_lock();
-    let lock = run.path().join(format!("{STEM_A}.sock.lock"));
+    let lock = QmpEndpoint::of_launch(run.path(), STEM_A).lock_path();
     std::fs::write(&lock, b"").unwrap();
 
     assert_eq!(sweep(run.path()), Vec::<String>::new());
@@ -140,9 +140,9 @@ fn a_session_lock_recreated_after_cleanup_is_swept_by_the_next_reap() {
 #[skuld::test]
 fn sweep_leaves_a_socket_that_has_no_claim_file() {
     let run = run_with_a_lock();
-    let sock = run.path().join(format!("{STEM_A}.sock"));
-    let lock = run.path().join(format!("{STEM_A}.sock.lock"));
-    std::fs::write(&sock, b"socket").unwrap();
+    let endpoint = QmpEndpoint::of_launch(run.path(), STEM_A);
+    let (sock, lock) = (endpoint.path(), endpoint.lock_path());
+    std::fs::write(sock, b"socket").unwrap();
     std::fs::write(&lock, b"").unwrap();
 
     sweep(run.path());
@@ -169,7 +169,7 @@ fn sweep_leaves_a_reserved_launch_that_has_not_connected_and_takes_a_dead_machin
 #[skuld::test]
 fn sweep_deletes_the_private_name_a_launch_left_when_it_died() {
     let run = run_with_a_lock();
-    let leftover = run.path().join(format!("{STEM_A}.sock.hold.new"));
+    let leftover = new_name(&QmpEndpoint::of_launch(run.path(), STEM_A).hold_path());
     std::fs::write(&leftover, b"").unwrap();
 
     assert_eq!(sweep(run.path()), Vec::<String>::new());
@@ -232,7 +232,7 @@ fn sweep_leaves_names_of_another_shape_alone() {
         std::fs::write(run.path().join(name), b"mine").unwrap();
     }
     // A directory with a name of the shape is not a file of ours either.
-    let directory = run.path().join(format!("{STEM_B}.sock"));
+    let directory = QmpEndpoint::of_launch(run.path(), STEM_B).path().to_path_buf();
     std::fs::create_dir(&directory).unwrap();
     std::fs::write(directory.join("inside"), b"mine").unwrap();
 
