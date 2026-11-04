@@ -157,7 +157,7 @@ fn a_runtime_dir_behind_an_unsearchable_parent_is_refused_naming_it(#[fixture(un
     let parent = home.join("locked");
     std::fs::create_dir(&parent).unwrap();
     let dir = parent.join("run");
-    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o0)).unwrap();
     let error = UnixHost.accept_runtime_dir(&dir).unwrap_err();
     // The temporary directory cannot be removed with the mode left as it is.
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
