@@ -103,6 +103,7 @@ test_group!(
 test_group!(PYYAML => pyyaml, env = "DEVVM_TEST_PYYAML");
 test_group!(OPENSSH_SFTP => openssh_sftp, env = "DEVVM_TEST_OPENSSH_SFTP");
 test_group!(NTFS_NAMES => ntfs_names, env = "DEVVM_TEST_NTFS_NAMES");
+test_group!(SYMLINKS => symlinks, env = "DEVVM_TEST_SYMLINKS");
 test_group!(ACP_1252 => acp_1252, env = "DEVVM_TEST_ACP_1252", precondition = host_has_code_page_1252);
 test_group!(
     UNICODE_SOCKET_DIR => unicode_socket_dir,

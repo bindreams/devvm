@@ -10,7 +10,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use crate::host::{HoldOutcome, current};
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::symlink::try_symlink;
 
 /// The access a hold is opened with includes `DELETE`, which share mode 0 still refuses to everyone else.
 #[skuld::test]
@@ -49,8 +51,35 @@ fn a_delete_replaces_a_deleting_name_a_dead_delete_left(#[fixture(unicode_home)]
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
     assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Absent));
 }
+/// A name that is a link is not opened through: what it leads to is somebody else's file, and holding it would lock
+/// that file against its users.
+#[skuld::test]
+fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let victim = home.join("victim");
+    std::fs::write(&victim, b"theirs").unwrap();
+    let link = home.join("x.sock.hold");
+    try_symlink(&victim, &link).unwrap_or_else(|e| {
+        panic!(
+            "cannot create a symlink: {e} (it needs Developer Mode or an elevated token), or {}",
+            symlinks::OPT_OUT
+        )
+    });
 
-// A leftover deleting name -------------------------------------------------------------------------------------------
+    assert!(current().hold_existing(&link).is_err());
+
+    assert_eq!(std::fs::read(&victim).unwrap(), b"theirs");
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(&victim)
+        .expect("nobody has the victim open");
+}
+
+// A leftover deleting name --------------------------------------------------------------------------------------------
 
 #[skuld::test]
 fn removing_a_deleting_name_deletes_a_file_nobody_has_open(#[fixture(unicode_home)] home: &Path) {

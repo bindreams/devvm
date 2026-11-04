@@ -10,9 +10,14 @@ mod imp;
 #[path = "symlink/other.rs"]
 mod imp;
 
+/// Makes `link` a symlink to `target`, or says why it cannot.
+pub fn try_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    imp::symlink(target, link)
+}
+
 /// Makes `link` a symlink to `target`.
 pub fn symlink(target: &Path, link: &Path) {
-    imp::symlink(target, link).unwrap_or_else(|e| {
+    try_symlink(target, link).unwrap_or_else(|e| {
         panic!(
             "cannot create the symlink {} -> {}: {e} (on Windows this needs Developer Mode or an elevated token)",
             link.display(),

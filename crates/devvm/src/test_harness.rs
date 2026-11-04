@@ -22,3 +22,6 @@ pub const ACP_1252: skuld::Label;
 
 #[skuld::label]
 pub const UNICODE_SOCKET_DIR: skuld::Label;
+
+#[skuld::label]
+pub const SYMLINKS: skuld::Label;
