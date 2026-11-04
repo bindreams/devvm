@@ -24,7 +24,7 @@ use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMAN
 
 use super::file_id;
 use super::wide;
-use crate::host::{FileId, Hold, HoldOutcome, deleting_name};
+use crate::host::{DELETING_DRAW_BYTES, FileId, Hold, HoldOutcome, deleting_name, is_absent};
 use crate::random;
 
 // `windows-sys` has no binding for it.
@@ -173,7 +173,7 @@ impl WindowsHold {
     /// (`AlreadyExists`), or a file there whose deletion is pending, which the system refuses with
     /// `ERROR_ACCESS_DENIED` ([`Failure::is_delete_pending`]): a delete between its mark and the close of its file
     /// object.
-    fn rename_away_with(&self, draw: &mut dyn FnMut() -> [u8; 8]) -> std::io::Result<()> {
+    fn rename_away_with(&self, draw: &mut dyn FnMut() -> [u8; DELETING_DRAW_BYTES]) -> std::io::Result<()> {
         loop {
             let name = wide(&deleting_name(&self.path, draw()))?;
             match self.rename_to(&name) {
@@ -225,7 +225,7 @@ impl WindowsHold {
     }
 
     /// [`Hold::delete`] with the digits of the deleting name drawn by `draw`.
-    fn delete_with(self, draw: &mut dyn FnMut() -> [u8; 8]) -> std::io::Result<()> {
+    fn delete_with(self, draw: &mut dyn FnMut() -> [u8; DELETING_DRAW_BYTES]) -> std::io::Result<()> {
         self.rename_away_with(draw)?;
         Ok(mark_deleted(&self.file, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS)?)
     }
@@ -293,7 +293,7 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
             file,
             std::path::absolute(path)?,
         )))),
-        Err(failure) if failure.error.kind() == std::io::ErrorKind::NotFound => Ok(HoldOutcome::Absent),
+        Err(failure) if is_absent(&failure.error) => Ok(HoldOutcome::Absent),
         Err(failure) if failure.is_sharing_violation() => Ok(HoldOutcome::Busy),
         Err(failure) => Err(failure.into()),
     }
@@ -311,7 +311,7 @@ impl Hold for WindowsHold {
     /// Renames the file away through the handle, then marks it for deletion; no name is looked up again. The final name
     /// is free at once; the `.del` name goes when the file object closes (POSIX semantics) or the last handle closes.
     fn delete(self: Box<Self>) -> std::io::Result<()> {
-        self.delete_with(&mut random::bytes::<8>)
+        self.delete_with(&mut random::bytes::<DELETING_DRAW_BYTES>)
     }
 }
 

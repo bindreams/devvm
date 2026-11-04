@@ -86,14 +86,16 @@ impl QmpEndpoint {
     /// `<16 hex>.sock` with the OS's random numbers, and holds the claim file `<name>.sock.hold` that it creates
     /// (`create_new`), so no two launches have one name.
     pub(crate) fn reserve(host: &dyn Host, run: &Path) -> Result<Reservation> {
-        QmpEndpoint::reserve_with(host, run, &mut random::bytes::<8>)
+        QmpEndpoint::reserve_with(host, run, &mut random::bytes::<DRAW_BYTES>)
     }
 
     /// `reserve` with the draw given, to test a redraw.
     ///
     /// Refused first, creating nothing: a directory whose sockets would be over the host's limit (`Unavailable`,
     /// naming the directory, the limit and `XDG_RUNTIME_DIR`). A name whose claim file exists is drawn again, and so is
-    /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete).
+    /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete). Those
+    /// two files are looked for before the claim is made, so no claim is ever made beside a file it did not make. None
+    /// can appear at the name afterwards: only a QEMU spawned with the claim makes a socket, and this launch made it.
     pub(crate) fn reserve_with(
         host: &dyn Host,
         run: &Path,
@@ -123,8 +125,15 @@ impl QmpEndpoint {
         // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one call.
         let mut directory = FileLock::open_in_existing_dir(&run.join("runtime.lock"))?;
         directory.lock(Mode::Shared, "a sweep of the runtime directory", &NullProgress)?;
-        loop {
+        'drawing: loop {
             let endpoint = QmpEndpoint::drawn(run, draw());
+            for other in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
+                let found = symlink_metadata_if_present(&other)
+                    .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", other.display()), e))?;
+                if found.is_some() {
+                    continue 'drawing;
+                }
+            }
             let hold_path = endpoint.hold_path();
             let hold = match host.hold_new(&hold_path) {
                 Ok(hold) => hold,
@@ -137,40 +146,20 @@ impl QmpEndpoint {
                     ));
                 }
             };
-            match QmpEndpoint::look_over(&*hold, &endpoint, &hold_path) {
-                Ok(Some(claim)) => {
-                    return Ok(Reservation { claim, endpoint, hold });
-                }
-                // The claim file just made is this launch's own; the other file is nobody's to delete. A socket or
-                // lock found here was already unclaimed (its claim file did not exist), so this branch makes none.
-                Ok(None) => {
-                    hold.delete()
-                        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot delete {}", hold_path.display()), e))?;
-                }
-                // The claim file goes on this path too: nothing would reclaim it but the next sweep.
-                Err(error) => {
+            // The claim file goes on this path too: nothing would reclaim it but the next sweep.
+            let id = match hold.id() {
+                Ok(id) => id,
+                Err(e) => {
+                    let error = Error::io(ErrorKind::Io, format!("cannot look at {}", hold_path.display()), e);
                     return Err(error.after_cleanup(&hold_path.display().to_string(), hold.delete()));
                 }
-            }
+            };
+            return Ok(Reservation {
+                claim: FileClaim { path: hold_path, id },
+                endpoint,
+                hold,
+            });
         }
-    }
-
-    /// The claim for the file `hold` holds, or `None` when the name is taken: its socket or lock file exists.
-    fn look_over(hold: &dyn Hold, endpoint: &QmpEndpoint, hold_path: &Path) -> Result<Option<FileClaim>> {
-        for other in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
-            let found = symlink_metadata_if_present(&other)
-                .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", other.display()), e))?;
-            if found.is_some() {
-                return Ok(None);
-            }
-        }
-        let id = hold
-            .id()
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", hold_path.display()), e))?;
-        Ok(Some(FileClaim {
-            path: hold_path.to_path_buf(),
-            id,
-        }))
     }
 
     /// The endpoint of the launch whose name is the hex of `draw`, in `run`.

@@ -12,15 +12,16 @@ mod dirs_tests;
 /// devvm's five per-user directories. The four XDG ones end in `devvm`; `run` ends in `devvm` below
 /// `XDG_RUNTIME_DIR` and is `devvm-run-<...>` where the host names it (`Host::run_dir_default`).
 ///
-/// They are created lazily by their users.
+/// They are created lazily by their users. `run` fails only when asked for: a command that never touches a control
+/// socket does not depend on the host being able to name it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dirs {
     pub config: PathBuf,
     pub data: PathBuf,
     pub cache: PathBuf,
     pub state: PathBuf,
-    /// Runtime state of running machines (their control sockets): short, and the user's alone.
-    pub run: PathBuf,
+    /// The runtime directory, or the kind and message of why the host could not name it (`Error` is not `Clone`).
+    run: std::result::Result<PathBuf, (ErrorKind, String)>,
 }
 
 impl Dirs {
@@ -34,7 +35,7 @@ impl Dirs {
 
     /// Resolves with `var` standing in for the environment. An `XDG_*` value that is empty or not an absolute path is
     /// ignored, as the XDG specification says. `run_default` gives the runtime directory when `XDG_RUNTIME_DIR` is
-    /// not usable; it is not called otherwise.
+    /// not usable; it is not called otherwise, and its failure is [`Dirs::run`]'s, not this function's.
     pub fn from_lookup(
         home: Option<PathBuf>,
         var: &dyn Fn(&str) -> Option<OsString>,
@@ -62,8 +63,8 @@ impl Dirs {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
         {
-            Some(path) => path.join("devvm"),
-            None => run_default()?,
+            Some(path) => Ok(path.join("devvm")),
+            None => run_default().map_err(|e| (e.kind(), e.message().to_owned())),
         };
         Ok(Dirs {
             run,
@@ -81,8 +82,15 @@ impl Dirs {
             data: root.join("data").join("devvm"),
             cache: root.join("cache").join("devvm"),
             state: root.join("state").join("devvm"),
-            run: root.join("run").join("devvm"),
+            run: Ok(root.join("run").join("devvm")),
         }
+    }
+
+    /// Runtime state of running machines (their control sockets): short, and the user's alone.
+    pub fn run(&self) -> Result<&Path> {
+        self.run
+            .as_deref()
+            .map_err(|(kind, message)| Error::new(*kind, message.as_str()))
     }
 
     pub fn layers(&self) -> PathBuf {

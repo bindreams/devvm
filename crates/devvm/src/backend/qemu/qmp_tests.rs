@@ -166,7 +166,7 @@ impl Sock {
 // Endpoint ============================================================================================================
 
 /// A draw that gives the 8 bytes `n`, big-endian.
-fn draw_of(n: u64) -> impl FnMut() -> [u8; 8] {
+fn draw_of(n: u64) -> impl FnMut() -> [u8; super::DRAW_BYTES] {
     move || n.to_be_bytes()
 }
 
@@ -218,7 +218,7 @@ fn reserve_makes_a_16_hex_sock_name_with_a_hold_beside_it_and_creates_the_direct
         .to_string_lossy()
         .into_owned();
     let hex = name.strip_suffix(".sock").unwrap_or_else(|| panic!("{name}"));
-    assert!(random::is_hex(hex, 8), "{name}");
+    assert!(random::is_hex(hex, super::DRAW_BYTES), "{name}");
     assert_eq!(reservation.endpoint.path().parent().unwrap(), run);
     assert_eq!(reservation.claim.path, reservation.endpoint.hold_path());
     assert_eq!(reservation.claim.path, run.join(format!("{name}.hold")));
@@ -301,21 +301,20 @@ fn reserve_with_goes_on_redrawing_for_as_long_as_names_are_taken() {
     );
 }
 
+/// No claim is made for the taken name: a launch killed between making one and giving it back would leave a free
+/// claim beside a file it did not make, and the next sweep would delete both.
 #[skuld::test]
-fn reserve_with_redraws_when_an_orphan_socket_or_lock_has_the_name_and_leaves_that_file() {
+fn reserve_with_redraws_when_an_orphan_socket_or_lock_has_the_name_and_makes_no_claim_for_it() {
     let run = scratch_run();
     let drawn = |n: u64| QmpEndpoint::drawn(run.path(), n.to_be_bytes());
     for (n, orphan) in [(1u64, drawn(1).path().to_path_buf()), (2, drawn(2).lock_path())] {
         std::fs::write(&orphan, b"left by a machine that is gone").unwrap();
+        let host = RecordingHost::new();
         let mut draws = vec![n, n + 100].into_iter();
         let reservation =
-            QmpEndpoint::reserve_with(host::current(), run.path(), &mut || draws.next().unwrap().to_be_bytes())
-                .unwrap();
+            QmpEndpoint::reserve_with(&host, run.path(), &mut || draws.next().unwrap().to_be_bytes()).unwrap();
         assert_eq!(std::fs::read(&orphan).unwrap(), b"left by a machine that is gone");
-        assert!(
-            !drawn(n).hold_path().exists(),
-            "the claim made for the taken name was given back"
-        );
+        assert_eq!(host.holds_made(), [drawn(n + 100).hold_path()]);
         assert_eq!(reservation.endpoint, drawn(n + 100));
     }
 }

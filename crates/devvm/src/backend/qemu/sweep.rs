@@ -60,7 +60,7 @@ impl QemuBackend {
         let run = self.run_dir();
         match self.host().accept_runtime_dir(run) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) if is_absent(&e) => return,
             Err(e) => {
                 warn(e.to_string());
                 return;

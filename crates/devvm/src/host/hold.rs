@@ -41,6 +41,9 @@ pub(crate) fn claim_of_new_name(name: &str) -> Option<&str> {
 /// file object closes). A deleter that dies in between leaves the name; the sweep deletes it.
 const DELETING_SUFFIX: &str = ".del";
 
+/// The bytes the digits of a deleting name are the hex of.
+pub(crate) const DELETING_DRAW_BYTES: usize = 8;
+
 /// The deleting name of the claim file `claim`, for the digits `draw` is the hex of.
 #[cfg_attr(
     not(windows),
@@ -49,7 +52,7 @@ const DELETING_SUFFIX: &str = ".del";
         reason = "only the Windows host renames a claim file away; the tests use it everywhere"
     )
 )]
-pub(crate) fn deleting_name(claim: &Path, draw: [u8; 8]) -> PathBuf {
+pub(crate) fn deleting_name(claim: &Path, draw: [u8; DELETING_DRAW_BYTES]) -> PathBuf {
     let mut name = claim.as_os_str().to_owned();
     name.push(format!(".{}{DELETING_SUFFIX}", hex::encode(draw)));
     PathBuf::from(name)
@@ -58,7 +61,7 @@ pub(crate) fn deleting_name(claim: &Path, draw: [u8; 8]) -> PathBuf {
 /// The claim file's name, if `name` is its deleting name: the inverse of [`deleting_name`].
 pub(crate) fn claim_of_deleting_name(name: &str) -> Option<&str> {
     let (claim, digits) = name.strip_suffix(DELETING_SUFFIX)?.rsplit_once('.')?;
-    random::is_hex(digits, 8).then_some(claim)
+    random::is_hex(digits, DELETING_DRAW_BYTES).then_some(claim)
 }
 
 // The hold ============================================================================================================

@@ -6,6 +6,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{FromRawHandle, OwnedHandle, RawHandle};
 use std::path::PathBuf;
 use std::ptr::null_mut;
+use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -26,14 +27,15 @@ pub(crate) fn sid_string(psid: PSID) -> io::Result<String> {
     if unsafe { ConvertSidToStringSidW(psid, &mut raw) } == 0 {
         return Err(call_failed("ConvertSidToStringSidW", io::Error::last_os_error()));
     }
-    let text = wide_to_string(raw);
+    // A SID string is ASCII.
+    let text = wide_to_os_string(raw).to_string_lossy().into_owned();
     // SAFETY: `raw` came from `ConvertSidToStringSidW`, which documents `LocalFree` for it.
     unsafe { LocalFree(raw.cast()) };
     Ok(text)
 }
 
-/// The text of the NUL-terminated UTF-16 string `raw`.
-fn wide_to_string(raw: *const u16) -> String {
+/// The NUL-terminated UTF-16 string `raw`, unpaired surrogates and all.
+fn wide_to_os_string(raw: *const u16) -> OsString {
     // SAFETY: `raw` is NUL-terminated, so scanning up to the NUL stays inside the allocation.
     let units = unsafe {
         let mut len = 0;
@@ -42,7 +44,7 @@ fn wide_to_string(raw: *const u16) -> String {
         }
         std::slice::from_raw_parts(raw, len)
     };
-    OsString::from_wide(units).to_string_lossy().into_owned()
+    OsString::from_wide(units)
 }
 
 /// The process token's user, as `TOKEN_USER` in 8-byte-aligned storage. The SID points into the same buffer.
@@ -86,9 +88,15 @@ impl TokenUserBuffer {
     }
 }
 
-/// The SID string of the user the process token names.
+/// The SID string of the user the process token names. Read once: the token's user does not change, and a read that
+/// failed is tried again by the next call.
 pub(crate) fn current_sid() -> io::Result<String> {
-    sid_string(TokenUserBuffer::read()?.sid())
+    static SID: OnceLock<String> = OnceLock::new();
+    if let Some(sid) = SID.get() {
+        return Ok(sid.clone());
+    }
+    let sid = sid_string(TokenUserBuffer::read()?.sid())?;
+    Ok(SID.get_or_init(|| sid).clone())
 }
 
 /// `C:\ProgramData`, from the known folder and not from the environment.
@@ -104,8 +112,8 @@ pub(super) fn program_data() -> io::Result<PathBuf> {
             io::Error::from_raw_os_error(status),
         ));
     }
-    let text = wide_to_string(raw);
+    let path = PathBuf::from(wide_to_os_string(raw));
     // SAFETY: `raw` came from `SHGetKnownFolderPath`, which documents `CoTaskMemFree` for it.
     unsafe { CoTaskMemFree(raw.cast()) };
-    Ok(PathBuf::from(text))
+    Ok(path)
 }

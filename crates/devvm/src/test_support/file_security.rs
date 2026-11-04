@@ -1,4 +1,3 @@
-use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::LocalFree;
@@ -9,7 +8,7 @@ use windows_sys::Win32::Security::{
     SE_DACL_PROTECTED,
 };
 
-use crate::host::windows::user;
+use crate::host::windows::{user, wide};
 
 /// The owner and the DACL of a path, read the way the OS reports them.
 pub struct Security {
@@ -20,7 +19,7 @@ pub struct Security {
 
 impl Security {
     pub fn of(path: &Path) -> Security {
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let wide = wide(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let mut security = Security {
             descriptor: std::ptr::null_mut(),
             owner: std::ptr::null_mut(),

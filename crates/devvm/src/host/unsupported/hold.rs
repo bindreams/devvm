@@ -5,7 +5,7 @@ use std::fs::{File, Metadata, OpenOptions, TryLockError};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::host::{FileId, Hold, HoldOutcome, after_failed_write, new_name, symlink_metadata_if_present};
+use crate::host::{FileId, Hold, HoldOutcome, after_failed_write, is_absent, new_name, symlink_metadata_if_present};
 
 /// The identity of the object a `Metadata` describes, as the host gives it (`FileModes::identity`).
 pub(super) type Identity<'a> = &'a dyn Fn(&Metadata) -> Option<FileId>;
@@ -92,7 +92,7 @@ pub(super) fn existing(options: OpenOptions, path: &Path, identity: Identity) ->
     }
     let file = match options.open(path) {
         Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HoldOutcome::Absent),
+        Err(e) if is_absent(&e) => return Ok(HoldOutcome::Absent),
         // `options` refuse a link that appeared since the look, with an error that differs by system.
         Err(_) if matches!(symlink_metadata_if_present(path), Ok(Some(meta)) if meta.is_symlink()) => {
             return Err(is_a_link(path));
@@ -120,7 +120,7 @@ impl Hold for FlockHold {
     /// already gone is fine: a sweep and a record's cleanup can race for one claim.
     fn delete(self: Box<Self>) -> std::io::Result<()> {
         match std::fs::remove_file(&self.path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) if is_absent(&e) => Ok(()),
             other => other,
         }
     }

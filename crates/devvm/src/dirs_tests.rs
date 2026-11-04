@@ -128,7 +128,7 @@ fn dirs_qemu_is_under_cache_and_ssh_under_state(#[fixture(unicode_home)] home: &
 fn run_is_xdg_runtime_dir_joined_with_devvm(#[fixture(unicode_home)] home: &Path) {
     let vars = [("XDG_RUNTIME_DIR", home.join("r").into_os_string())];
     let dirs = Dirs::from_lookup(Some(home.to_path_buf()), &lookup(&vars), &run_default).unwrap();
-    assert_eq!(dirs.run, home.join("r").join("devvm"));
+    assert_eq!(dirs.run().unwrap(), home.join("r").join("devvm"));
 }
 
 #[skuld::test]
@@ -136,7 +136,7 @@ fn an_empty_or_relative_xdg_runtime_dir_is_ignored(#[fixture(unicode_home)] home
     for value in ["", "rel/dir"] {
         let vars = [("XDG_RUNTIME_DIR", OsString::from(value))];
         let dirs = Dirs::from_lookup(Some(home.to_path_buf()), &lookup(&vars), &run_default).unwrap();
-        assert_eq!(dirs.run, PathBuf::from(DEFAULT_RUN), "{value:?}");
+        assert_eq!(dirs.run().unwrap(), PathBuf::from(DEFAULT_RUN), "{value:?}");
     }
 }
 
@@ -147,18 +147,22 @@ fn run_default_is_not_consulted_when_xdg_runtime_dir_is_set(#[fixture(unicode_ho
     Dirs::from_lookup(Some(home.to_path_buf()), &lookup(&vars), &refusing).unwrap();
 }
 
+/// A command that never touches a QEMU socket must not fail on a runtime directory it cannot locate.
 #[skuld::test]
-fn a_failing_run_default_fails_the_resolution() {
+fn a_failing_run_default_fails_only_the_asking_for_run() {
     let failing = || Err(crate::Error::new(ErrorKind::Config, "cannot find the known folder"));
     let base = std::env::temp_dir();
     let vars = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]
         .map(|name| (name, base.join(name).into_os_string()));
-    let error = Dirs::from_lookup(None, &lookup(&vars), &failing).unwrap_err();
+    let dirs = Dirs::from_lookup(None, &lookup(&vars), &failing).unwrap();
+    assert_eq!(dirs.config, base.join("XDG_CONFIG_HOME").join("devvm"));
+    let error = dirs.run().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Config);
     assert!(error.message().contains("known folder"), "{error}");
 }
 
 #[skuld::test]
 fn under_places_run_below_the_root_beside_the_other_four(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
-    assert_eq!(dirs.run, home.join("run").join("devvm"));
+    assert_eq!(dirs.run().unwrap(), home.join("run").join("devvm"));
 }

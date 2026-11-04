@@ -288,6 +288,8 @@ pub struct RecordingHost {
     remove_runtime_dirs: AtomicBool,
     /// Every `file_id` fails: a test that needs the identity of a held file to come from the hold, not from its name.
     fail_file_id: AtomicBool,
+    /// The paths given to `hold_new`, in call order, failed calls included.
+    holds_made: Mutex<Vec<PathBuf>>,
     directory_calls: Mutex<Vec<DirectoryCall>>,
     fail_sync_dir_of: Mutex<Option<PathBuf>>,
 }
@@ -360,6 +362,11 @@ impl RecordingHost {
     /// Makes every `file_id` fail.
     pub fn fail_file_id(&self) {
         self.fail_file_id.store(true, Ordering::SeqCst);
+    }
+
+    /// The paths given to `hold_new`, in call order.
+    pub fn holds_made(&self) -> Vec<PathBuf> {
+        self.holds_made.lock().unwrap().clone()
     }
 
     /// Makes `is_executable` say yes for `path`.
@@ -537,6 +544,7 @@ impl Host for RecordingHost {
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
+        self.holds_made.lock().unwrap().push(path.to_owned());
         TestHost.hold_new(path)
     }
 

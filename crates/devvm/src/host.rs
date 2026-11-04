@@ -46,7 +46,7 @@ pub(crate) use file_id::FileId;
         reason = "only the Windows host renames a claim file away; the tests use it everywhere"
     )
 )]
-pub(crate) use hold::deleting_name;
+pub(crate) use hold::{DELETING_DRAW_BYTES, deleting_name};
 pub(crate) use hold::{Hold, HoldOutcome, claim_of_deleting_name, claim_of_new_name, new_name};
 pub(crate) use watch::{Link, ProcessWatch};
 

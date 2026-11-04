@@ -47,7 +47,7 @@ const MAX_PLAIN_PATH_UNITS: usize = 246;
 /// absolute. It gets the `\\?\` prefix (`\\?\UNC\` for a share) only when it is too long for the plain form, with
 /// `std`'s threshold, so a short path is read by Win32's name rules as `std::fs` reads it. A verbatim or a device
 /// path stays as it is.
-fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
+pub(crate) fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
     if path.as_os_str().encode_wide().any(|unit| unit == 0) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
