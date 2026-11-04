@@ -24,8 +24,8 @@ OUT.json is a list of lines, one per difference, empty when every field reads ba
 
 The labels and field names CASES gives are written as given. In an error message or repr, each code point outside
 " ".."~", and the backslash, is written as its Python escape. The escaped text is cut after the last code point whose
-escape still fits in 60 characters, and followed by "…(the message is N code points long)" or "…(the repr is N code points
-long)", N counting the unescaped text.
+escape still fits in 60 characters, and followed by "…(the message is N code points long)" or "…(the repr is N code
+points long)", N counting the unescaped text.
 
 Exits 0 after writing OUT.json. Any other exit, including a missing key in a case, means this script did not run to
 completion.
