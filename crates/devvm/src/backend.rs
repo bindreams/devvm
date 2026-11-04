@@ -142,6 +142,30 @@ pub(crate) struct FileClaim {
     pub id: FileId,
 }
 
+/// How the file at a claim's path compares with the claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClaimState {
+    /// The file the claim says.
+    Ours,
+    /// A file that is not the claim's: the name was taken by another launch.
+    Another,
+    /// No file.
+    Gone,
+}
+
+impl FileClaim {
+    /// Which file `found`, a look at the claim's file, is: the identity of the file at `path` (`Host::file_id`) or of the
+    /// held claim (`Hold::id`). A failure other than a missing file is returned.
+    pub(crate) fn state(&self, found: std::io::Result<FileId>) -> std::io::Result<ClaimState> {
+        match found {
+            Ok(id) if id == self.id => Ok(ClaimState::Ours),
+            Ok(_) => Ok(ClaimState::Another),
+            Err(e) if is_absent(&e) => Ok(ClaimState::Gone),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 impl MachineRecord {
     /// Deletes `leftovers` (see [`remove_files`]). Call it only once the machine is proven dead.
     pub(crate) fn remove_leftovers(&self, host: &dyn Host, warn: &mut dyn FnMut(String)) {
@@ -201,11 +225,19 @@ pub(crate) fn remove_files(
             return;
         }
     };
-    match hold.id() {
-        Ok(id) if id == claim.id => {}
-        Ok(_) => {
+    match claim.state(hold.id()) {
+        Ok(ClaimState::Ours) => {}
+        Ok(ClaimState::Another) => {
             warn(format!(
                 "not deleting {}: {} is another launch's file",
+                names(&listed),
+                claim.path.display()
+            ));
+            return;
+        }
+        Ok(ClaimState::Gone) => {
+            warn(format!(
+                "not deleting {}: {} is gone",
                 names(&listed),
                 claim.path.display()
             ));

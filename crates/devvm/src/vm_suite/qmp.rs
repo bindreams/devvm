@@ -12,6 +12,7 @@ use crate::ErrorKind;
 use crate::backend::qemu::qmp::{Qmp, VmEnd};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::uds::UnixStream;
+use crate::host;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::qemu::{BareQemu, qemu_sidecar};
 
@@ -22,7 +23,14 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
 ) {
     let qemu = BareQemu::spawn(install, home);
     let endpoint = qemu.sock.endpoint.clone();
-    let mut session = Qmp::connect(&endpoint, &qemu.process, &MemoryProgress::default()).unwrap();
+    let mut session = Qmp::connect(
+        host::current(),
+        &endpoint,
+        &qemu.sock.claim,
+        &qemu.process,
+        &MemoryProgress::default(),
+    )
+    .unwrap();
 
     // The machine is frozen (-S), and `info usernet` lists the forward with the port QEMU chose.
     assert_eq!(session.query_status().unwrap().state, "prelaunch");
@@ -84,8 +92,8 @@ fn connect_bare(qemu: &BareQemu, home: &Path) -> UnixStream {
     }
 }
 
-/// `Qmp::connect` drops a connection it does not use unread, so QEMU has to take a client that leaves before the
-/// greeting and serve the next.
+/// `Qmp::connect` drops a connection unread when the claim is not the machine's, so QEMU has to take a client that
+/// leaves before the greeting and serve the next.
 #[skuld::test]
 fn qemu_serves_a_session_after_a_client_that_left_before_negotiating(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
@@ -94,7 +102,14 @@ fn qemu_serves_a_session_after_a_client_that_left_before_negotiating(
     let qemu = BareQemu::spawn(install, home);
     drop(connect_bare(&qemu, home));
 
-    let mut session = Qmp::connect(&qemu.sock.endpoint, &qemu.process, &MemoryProgress::default()).unwrap();
+    let mut session = Qmp::connect(
+        host::current(),
+        &qemu.sock.endpoint,
+        &qemu.sock.claim,
+        &qemu.process,
+        &MemoryProgress::default(),
+    )
+    .unwrap();
 
     assert_eq!(session.query_status().unwrap().state, "prelaunch");
 }

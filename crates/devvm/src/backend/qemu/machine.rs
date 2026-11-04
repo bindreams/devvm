@@ -117,7 +117,16 @@ impl QemuMachine {
 
     /// A session with QEMU. `ConnectionLost` means QEMU is gone or going.
     fn open(&self) -> Result<Qmp> {
-        Qmp::connect(&self.endpoint, &self.process, &*self.progress)
+        let claim = self.record.claim.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                format!(
+                    "the record of the machine at {} has no claim file",
+                    self.endpoint.path().display()
+                ),
+            )
+        })?;
+        Qmp::connect(self.host, &self.endpoint, claim, &self.process, &*self.progress)
     }
 
     fn connect(&self) -> Result<Qmp> {
