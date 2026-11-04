@@ -19,12 +19,12 @@ OUT.json is a list of lines, one per difference, empty when every field reads ba
 - "<label>: <field> reads back as <type> <repr>" when the value PyYAML read is not a str;
 - "<label>: <field> differs at code point <i> (read <n> code points, expected <m>): [<window>] for [<window>]" when it
   is a str that differs. <i> is the first code point that differs. A window is the 4 code points before <i>, then "|",
-  then the 8 from <i> on, space-separated; a code point from "!" to "~" other than the backslash is shown as itself and
-  any other (a space included) as U+XXXX.
+  then the 8 from <i> on, space-separated; a code point from "!" to "~" other than "[", "|" and "]" is shown as itself
+  and any other (a space included) as U+XXXX.
 
 The labels and field names CASES gives are written as given. In an error message or repr, each code point outside
-" ".."~", and the backslash, is written as its Python escape. Such text longer than 60 characters is cut at the last
-code point that fits and followed by "…(the message is N code points long)" or "…(the repr is N code points
+" ".."~", and the backslash, is written as its Python escape. The escaped text is cut after the last code point whose
+escape still fits in 60 characters, and followed by "…(the message is N code points long)" or "…(the repr is N code points
 long)", N counting the unescaped text.
 
 Exits 0 after writing OUT.json. Any other exit, including a missing key in a case, means this script did not run to
@@ -75,7 +75,7 @@ def escaped(text, what):
 
 
 def show(points):
-    return " ".join(chr(p) if 0x21 <= p <= 0x7E and p != 0x5C else f"U+{p:04X}" for p in map(ord, points))
+    return " ".join(c if "!" <= c <= "~" and c not in "[|]" else f"U+{ord(c):04X}" for c in points)
 
 
 def difference(label, field, got, want):
