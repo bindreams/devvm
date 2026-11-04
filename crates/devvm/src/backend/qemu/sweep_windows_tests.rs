@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::sweep_tests::{STEM_A, run_with_a_lock, sweep, sweeping_a_link_touches_nothing_and_warns};
+use super::sweep_tests::{DELETING_HEX, STEM_A, run_with_a_lock, sweep, sweeping_a_link_touches_nothing_and_warns};
 use crate::host;
 use crate::test_support::fixtures::unicode_home;
 
@@ -13,7 +13,7 @@ fn sweeping_a_run_dir_that_is_a_junction_touches_nothing_and_warns(#[fixture(uni
 #[skuld::test]
 fn sweep_leaves_a_deleting_name_a_running_delete_holds_and_does_not_warn() {
     let run = run_with_a_lock();
-    let deleting = run.path().join(format!("{STEM_A}.sock.hold.del"));
+    let deleting = run.path().join(format!("{STEM_A}.sock.hold.{DELETING_HEX}.del"));
     let hold = host::current().hold_new(&deleting).unwrap();
 
     assert_eq!(sweep(run.path()), Vec::<String>::new());

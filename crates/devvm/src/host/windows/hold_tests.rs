@@ -13,7 +13,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::super::wide;
 use super::super::windows_tests::{long_dir, with_nul};
-use crate::host::{HoldOutcome, current};
+use crate::host::current;
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
@@ -43,32 +43,46 @@ fn a_deleted_hold_leaves_no_deleting_name_once_its_duplicates_are_closed(#[fixtu
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
 }
 
-/// A delete that died after renaming leaves `<name>.del`; the next delete of a file at that name replaces it.
+/// A delete that died after renaming leaves its deleting name, which the sweep removes; another delete leaves it be.
 #[skuld::test]
-fn a_delete_replaces_a_deleting_name_a_dead_delete_left(#[fixture(unicode_home)] home: &Path) {
+fn a_delete_leaves_the_deleting_name_a_dead_delete_left(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.sock.hold");
-    std::fs::write(home.join("x.sock.hold.del"), b"left").unwrap();
+    let left = home.join("x.sock.hold.0123456789abcdef.del");
+    std::fs::write(&left, b"left").unwrap();
     let hold = current().hold_new(&path).unwrap();
 
     hold.delete().unwrap();
 
-    assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
-    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Absent));
+    assert_eq!(std::fs::read(&left).unwrap(), b"left");
+    assert_eq!(std::fs::read_dir(home).unwrap().count(), 1);
 }
 
-/// A `.del` that another handle keeps open (the sweep's own open, a child's inherited copy) is still replaced.
+/// A duplicate of a deleted hold's file (a child's inherited copy) keeps that file's deleting name. The next delete of
+/// a file at the same name takes a deleting name of its own, and the name the duplicate keeps is of the shape the
+/// sweep removes: `<name>.<16 hex>.del`.
 #[skuld::test]
-fn a_delete_replaces_a_deleting_name_somebody_keeps_open(#[fixture(unicode_home)] home: &Path) {
+fn a_delete_takes_a_deleting_name_of_its_own_while_a_duplicate_keeps_the_first(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.sock.hold");
-    let leftover = home.join("x.sock.hold.del");
-    std::fs::write(&leftover, b"left").unwrap();
-    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-    let keeper = OpenOptions::new().read(true).share_mode(share).open(&leftover).unwrap();
-    let hold = current().hold_new(&path).unwrap();
+    let first = current().hold_new(&path).unwrap();
+    let duplicate = first.file().try_clone().unwrap();
+    first.delete().unwrap();
+    let second = current().hold_new(&path).unwrap();
 
-    hold.delete().unwrap();
+    second.delete().unwrap();
 
-    drop(keeper);
+    let kept: Vec<String> = std::fs::read_dir(home)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let digits = kept[0]
+        .strip_prefix("x.sock.hold.")
+        .and_then(|rest| rest.strip_suffix(".del"));
+    assert!(
+        digits.is_some_and(|digits| digits.len() == 16 && digits.bytes().all(|b| b.is_ascii_hexdigit())),
+        "{kept:?}"
+    );
+    drop(duplicate);
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
 }
 
@@ -195,6 +209,16 @@ fn removing_a_deleting_name_fails_on_an_access_denied_that_is_no_pending_deletio
 fn removing_a_deleting_name_that_is_not_there_is_not_found(#[fixture(unicode_home)] home: &Path) {
     let error = current()
         .remove_deleting_name(&home.join("x.sock.hold.del"))
+        .unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+}
+
+/// `NotFound` is the trait's contract for a name that is not there, a missing directory included.
+#[skuld::test]
+fn removing_a_deleting_name_in_a_directory_that_is_not_there_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = current()
+        .remove_deleting_name(&home.join("missing").join("x.sock.hold.del"))
         .unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);

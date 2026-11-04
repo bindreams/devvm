@@ -14,20 +14,24 @@ use crate::backend::remove_held;
 use crate::host::{DELETING_SUFFIX, HoldOutcome};
 use crate::store::lock::{FileLock, Mode};
 
+/// Whether `text` is 16 lowercase hex digits.
+fn is_16_hex(text: &str) -> bool {
+    text.len() == 16 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// The 16 lowercase hex digits that name a launch, if `file_name` is one of its three files.
 fn launch_of(file_name: &str) -> Option<&str> {
     let stem = [".sock.hold", ".sock.lock", ".sock"]
         .iter()
         .find_map(|suffix| file_name.strip_suffix(suffix))?;
-    let hex = stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    hex.then_some(stem)
+    is_16_hex(stem).then_some(stem)
 }
 
 /// Which private name of a claim file a file is.
 enum PrivateClaimKind {
     /// `<claim file>.new`, while it is made (`Host::hold_new`).
     New,
-    /// `<claim file>.del`, while it is deleted (`Hold::delete`).
+    /// `<claim file>.<16 hex>.del`, while it is deleted (`Hold::delete`).
     Deleting,
 }
 
@@ -38,7 +42,11 @@ fn private_claim_kind(file_name: &str) -> Option<PrivateClaimKind> {
         && is_of_a_launch(claim)
     {
         Some(PrivateClaimKind::New)
-    } else if let Some(claim) = file_name.strip_suffix(DELETING_SUFFIX)
+    } else if let Some(claim) = file_name
+        .strip_suffix(DELETING_SUFFIX)
+        .and_then(|rest| rest.rsplit_once('.'))
+        .filter(|(_, digits)| is_16_hex(digits))
+        .map(|(claim, _)| claim)
         && is_of_a_launch(claim)
     {
         Some(PrivateClaimKind::Deleting)
@@ -61,7 +69,7 @@ impl QemuBackend {
     /// - there is no claim file, no socket, and a lock file: a session that came late made it, and it goes;
     /// - there is no claim file but a socket: nobody can tell, and it stays.
     ///
-    /// A claim file's private names (`<claim file>.new`, `<claim file>.del`) go too: only a launch that died while
+    /// A claim file's private names (`<claim file>.new`, `<claim file>.<16 hex>.del`) go too: only a launch that died while
     /// making the file, or a delete that died, leaves one.
     pub(super) fn sweep_run_dir(&self, warn: &mut dyn FnMut(String)) {
         let run = self.run_dir();

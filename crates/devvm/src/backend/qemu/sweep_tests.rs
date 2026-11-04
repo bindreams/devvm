@@ -78,6 +78,8 @@ impl Machine {
 }
 
 pub(super) const STEM_A: &str = "00000000000000aa";
+/// The 16 hex digits a delete puts between a claim file's name and `.del`.
+pub(super) const DELETING_HEX: &str = "0123456789abcdef";
 const STEM_B: &str = "00000000000000bb";
 
 #[skuld::test]
@@ -174,7 +176,7 @@ fn sweep_deletes_the_private_name_a_launch_left_when_it_died() {
 #[skuld::test]
 fn sweep_deletes_the_deleting_name_a_delete_left_when_it_died() {
     let run = run_with_a_lock();
-    let leftover = run.path().join(format!("{STEM_A}.sock.hold.del"));
+    let leftover = run.path().join(format!("{STEM_A}.sock.hold.{DELETING_HEX}.del"));
     std::fs::write(&leftover, b"").unwrap();
 
     assert_eq!(sweep(run.path()), Vec::<String>::new());
@@ -210,6 +212,13 @@ fn sweep_leaves_names_of_another_shape_alone() {
         "00000000000000a.sock.hold.new",
         "00000000000000aa.sock.new",
         "00000000000000a.sock.hold.del",
+        "00000000000000aa.sock.hold.del",
+        "00000000000000aa.sock.hold.0123456789abcde.del",
+        "00000000000000aa.sock.hold.0123456789abcdef0.del",
+        "00000000000000aa.sock.hold.0123456789abcdeg.del",
+        "00000000000000aa.sock.hold.0123456789ABCDEF.del",
+        "00000000000000a.sock.hold.0123456789abcdef.del",
+        "00000000000000aa.sock.0123456789abcdef.del",
         "00000000000000aa.sock.del",
         "00000000000000aa.hold.del",
         "notes.txt",

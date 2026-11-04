@@ -206,8 +206,8 @@ pub(crate) trait Host: Send + Sync {
     /// `path` is an error: it is not opened through.
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
 
-    /// Removes `path`, a leftover claim file under its deleting name ([`DELETING_SUFFIX`]), as `std::fs::remove_file`
-    /// does: its name may stay until the last handle to the file closes. `Ok` also when someone is deleting it right
+    /// Removes `path`, a leftover claim file under its deleting name ([`DELETING_SUFFIX`]): its name may stay until
+    /// the last handle to the file closes. `Ok` also when someone is deleting it right
     /// now (Windows: it is held, or its deletion is pending), which is theirs to finish. Any other failure, `NotFound`
     /// included, is returned.
     fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()>;
