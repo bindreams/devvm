@@ -30,36 +30,16 @@ use super::wide;
 pub(super) fn create(dir: &Path) -> io::Result<()> {
     let sid = current_sid()?;
     let path = wide(dir)?;
-    let sddl: Vec<u16> = format!("O:{sid}D:P(A;OICI;FA;;;{sid})")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
-    // SAFETY: `sddl` is NUL-terminated; on success `descriptor` is allocated for `LocalFree`.
-    let converted = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            null_mut(),
-        )
-    };
-    if converted == 0 {
-        return Err(io::Error::other(format!(
-            "ConvertStringSecurityDescriptorToSecurityDescriptorW failed ({})",
-            io::Error::last_os_error()
-        )));
-    }
+    let descriptor = Descriptor::from_sddl(&format!("O:{sid}D:P(A;OICI;FA;;;{sid})"))?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor,
+        lpSecurityDescriptor: descriptor.as_ptr(),
         bInheritHandle: 0,
     };
     // SAFETY: `path` is NUL-terminated and `attributes` points at the live descriptor.
     let made = unsafe { CreateDirectoryW(path.as_ptr(), &attributes) };
     let error = io::Error::last_os_error();
-    // SAFETY: `descriptor` came from the conversion above and nothing uses it past this point.
-    unsafe { LocalFree(descriptor) };
+    drop(descriptor);
     if made != 0 {
         return Ok(());
     }
@@ -123,14 +103,52 @@ fn at(dir: &Path, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{}: {error}", dir.display()))
 }
 
+/// A security descriptor parsed from its SDDL text.
+pub(crate) struct Descriptor(PSECURITY_DESCRIPTOR);
+
+impl Descriptor {
+    pub(crate) fn from_sddl(sddl: &str) -> io::Result<Descriptor> {
+        let sddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+        let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+        // SAFETY: `sddl` is NUL-terminated; on success `descriptor` is allocated for `LocalFree`.
+        let converted = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                null_mut(),
+            )
+        };
+        if converted == 0 {
+            return Err(io::Error::other(format!(
+                "ConvertStringSecurityDescriptorToSecurityDescriptorW failed ({})",
+                io::Error::last_os_error()
+            )));
+        }
+        Ok(Descriptor(descriptor))
+    }
+
+    /// Valid while `self` lives.
+    pub(crate) fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
+        self.0
+    }
+}
+
+impl Drop for Descriptor {
+    fn drop(&mut self) {
+        // SAFETY: allocated by the conversion, which documents `LocalFree`.
+        unsafe { LocalFree(self.0) };
+    }
+}
+
 /// The owner of an open file system object, from `GetSecurityInfo`.
-struct Owner {
+pub(crate) struct Owner {
     descriptor: PSECURITY_DESCRIPTOR,
     sid: PSID,
 }
 
 impl Owner {
-    fn of(handle: &File) -> io::Result<Owner> {
+    pub(crate) fn of(handle: &File) -> io::Result<Owner> {
         let mut owner = Owner {
             descriptor: null_mut(),
             sid: null_mut(),
@@ -155,7 +173,7 @@ impl Owner {
         Ok(owner)
     }
 
-    fn sid(&self) -> io::Result<String> {
+    pub(crate) fn sid(&self) -> io::Result<String> {
         sid_string(self.sid)
     }
 

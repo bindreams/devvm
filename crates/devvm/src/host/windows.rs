@@ -27,7 +27,7 @@ use crate::{Arch, Error, ErrorKind, Result};
 mod file_id;
 mod hold;
 mod link;
-mod runtime_dir;
+pub(crate) mod runtime_dir;
 pub(crate) mod user;
 mod watch;
 mod whpx;
