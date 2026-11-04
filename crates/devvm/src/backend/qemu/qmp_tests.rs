@@ -10,7 +10,6 @@ use crate::ErrorKind;
 use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
 use crate::host::{self, HoldOutcome, Link, ProcessWatch};
-use crate::instance::record::InstanceId;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, unicode_socket_dir};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress};
