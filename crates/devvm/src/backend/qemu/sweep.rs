@@ -23,17 +23,28 @@ fn launch_of(file_name: &str) -> Option<&str> {
     hex.then_some(stem)
 }
 
-/// Whether `file_name` is a private name of a claim file, and if so whether it is a deleting name: `<claim file>.new`
-/// while it is made (`Host::hold_new`), `<claim file>.del` while it is deleted (`Hold::delete`).
-fn private_claim_is_deleting(file_name: &str) -> Option<bool> {
-    [(".new", false), (DELETING_SUFFIX, true)]
-        .iter()
-        .find_map(|&(suffix, deleting)| {
-            file_name
-                .strip_suffix(suffix)
-                .is_some_and(|claim| claim.ends_with(".sock.hold") && launch_of(claim).is_some())
-                .then_some(deleting)
-        })
+/// Which private name of a claim file a file is.
+enum PrivateClaimKind {
+    /// `<claim file>.new`, while it is made (`Host::hold_new`).
+    New,
+    /// `<claim file>.del`, while it is deleted (`Hold::delete`).
+    Deleting,
+}
+
+/// The private name of a claim file that `file_name` is, if it is one.
+fn private_claim_kind(file_name: &str) -> Option<PrivateClaimKind> {
+    let is_of_a_launch = |name: &str| name.ends_with(".sock.hold") && launch_of(name).is_some();
+    if let Some(claim) = file_name.strip_suffix(".new")
+        && is_of_a_launch(claim)
+    {
+        Some(PrivateClaimKind::New)
+    } else if let Some(claim) = file_name.strip_suffix(DELETING_SUFFIX)
+        && is_of_a_launch(claim)
+    {
+        Some(PrivateClaimKind::Deleting)
+    } else {
+        None
+    }
 }
 
 impl QemuBackend {
@@ -101,18 +112,17 @@ impl QemuBackend {
             };
             if let Some(launch) = launch_of(name) {
                 launches.insert(launch.to_owned());
-            } else if let Some(deleting) = private_claim_is_deleting(name) {
-                private_claims.push((entry.path(), deleting));
+            } else if let Some(kind) = private_claim_kind(name) {
+                private_claims.push((entry.path(), kind));
             }
         }
         // No launch is between making a claim file and holding it while this sweep has the directory's lock, so what
         // is left under `.new` was left by a launch that died there. A `.del` is left by a delete that died, or is
         // being deleted now (the lock does not keep deletes out): the host leaves that one to its deleter.
-        for (leftover, deleting) in private_claims {
-            let removed = if deleting {
-                self.host().remove_deleting_name(&leftover)
-            } else {
-                std::fs::remove_file(&leftover)
+        for (leftover, kind) in private_claims {
+            let removed = match kind {
+                PrivateClaimKind::Deleting => self.host().remove_deleting_name(&leftover),
+                PrivateClaimKind::New => std::fs::remove_file(&leftover),
             };
             if let Err(e) = removed
                 && e.kind() != std::io::ErrorKind::NotFound
