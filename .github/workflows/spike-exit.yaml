@@ -1,0 +1,56 @@
+# Throwaway: process exit ordering and delete semantics for devvm#40 (see spike/exit). Never merged.
+name: Spike exit
+
+on:
+  push:
+    branches: [spike-exit]
+    paths: [spike/exit/**, .github/workflows/spike-exit.yaml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TRIALS: "2000"
+
+jobs:
+  measure:
+    name: Measure (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build
+        run: cargo build --release --locked --manifest-path spike/exit/Cargo.toml
+
+      - name: OS build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cmd //c ver
+
+      - name: OS build (Linux)
+        if: runner.os != 'Windows'
+        run: uname -a
+
+      - name: U1, the child exits normally
+        shell: bash
+        run: spike/exit/target/release/exit-spike u1 normal "$TRIALS" "$RUNNER_TEMP/u1-normal"
+
+      - name: U1, the child is killed
+        if: always()
+        shell: bash
+        run: spike/exit/target/release/exit-spike u1 killed "$TRIALS" "$RUNNER_TEMP/u1-killed"
+
+      - name: U2, remove_file with a second handle open
+        if: runner.os == 'Windows' && always()
+        shell: bash
+        run: spike/exit/target/release/exit-spike u2 "$RUNNER_TEMP/u2" "$TEMP/u2"
