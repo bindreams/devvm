@@ -1,11 +1,14 @@
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::mem::size_of;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, SetFileAttributesW,
+    DELETE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_INFO,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
+    SetFileAttributesW, SetFileInformationByHandle,
 };
 
 use super::super::wide;
@@ -14,6 +17,32 @@ use crate::host::{claim_of_deleting_name, current, deleting_name};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
+
+/// Marks the file at `path` for deletion and returns a handle that keeps it open: the name stays, delete-pending, until
+/// the handle is dropped. Any open of the name fails with `ERROR_ACCESS_DENIED` (`STATUS_DELETE_PENDING`).
+fn make_delete_pending(path: &Path) -> File {
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    let keeper = OpenOptions::new().read(true).share_mode(share).open(path).unwrap();
+    let marker = OpenOptions::new()
+        .read(true)
+        .access_mode(DELETE)
+        .share_mode(share)
+        .open(path)
+        .unwrap();
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: the handle is open with `DELETE` access, and the buffer is a `FILE_DISPOSITION_INFO` of the size passed.
+    let marked = unsafe {
+        SetFileInformationByHandle(
+            marker.as_raw_handle(),
+            FileDispositionInfo,
+            (&raw const info).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    assert_ne!(marked, 0, "{}", std::io::Error::last_os_error());
+    drop(marker);
+    keeper
+}
 
 /// The access a hold is opened with includes `DELETE`, which share mode 0 still refuses to everyone else.
 #[skuld::test]
@@ -99,6 +128,31 @@ fn a_delete_whose_drawn_deleting_name_exists_draws_again(#[fixture(unicode_home)
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 1);
 }
 
+/// A drawn deleting name that is delete-pending (a file marked for deletion that a handle keeps open: another delete
+/// between its mark and its close) is refused with `ERROR_ACCESS_DENIED`, not `AlreadyExists`; it is drawn again all
+/// the same.
+#[skuld::test]
+fn a_delete_whose_drawn_deleting_name_is_delete_pending_draws_again(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    let pending = deleting_name(&path, [1u8; 8]);
+    std::fs::write(&pending, b"pending").unwrap();
+    let keeper = make_delete_pending(&pending);
+    let hold = super::new(&path).unwrap();
+    let mut draws = [[1u8; 8], [2u8; 8]].into_iter();
+    let mut drawn = 0;
+
+    hold.delete_with(&mut || {
+        drawn += 1;
+        draws.next().expect("no more than two draws")
+    })
+    .unwrap();
+
+    assert_eq!(drawn, 2);
+    assert!(!path.exists());
+    drop(keeper);
+    assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
+}
+
 /// A handle that asks for no data access (as `file_id::of` opens) lets the hold's file be deleted, and the name goes
 /// at once: only a delete with POSIX semantics unlinks it while that handle is open.
 #[skuld::test]
@@ -166,9 +220,31 @@ fn removing_a_deleting_name_someone_holds_is_no_error_and_leaves_it(#[fixture(un
     drop(hold);
 }
 
-/// A refusal that is not a sharing violation is the error: a directory is `ERROR_ACCESS_DENIED`.
+/// A file marked for deletion keeps its name while another handle is open (another delete between its mark and its
+/// close), and an open of it is `ERROR_ACCESS_DENIED` (`STATUS_DELETE_PENDING`): somebody else's to finish.
 #[skuld::test]
-fn removing_a_deleting_name_fails_on_an_access_denied(#[fixture(unicode_home)] home: &Path) {
+fn removing_a_deleting_name_whose_deletion_is_pending_is_no_error(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold.del");
+    std::fs::write(&path, b"left").unwrap();
+    let keeper = make_delete_pending(&path);
+    let refused = std::fs::File::open(&path).unwrap_err();
+    assert_eq!(
+        refused.raw_os_error(),
+        Some(ERROR_ACCESS_DENIED as i32),
+        "the name is delete-pending: {refused}"
+    );
+
+    current().remove_deleting_name(&path).unwrap();
+
+    drop(keeper);
+    assert!(!path.exists());
+}
+
+/// `ERROR_ACCESS_DENIED` that is not a pending deletion still fails: a directory is refused the same way.
+#[skuld::test]
+fn removing_a_deleting_name_fails_on_an_access_denied_that_is_no_pending_deletion(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let path = home.join("x.sock.hold.del");
     std::fs::create_dir(&path).unwrap();
 
