@@ -39,7 +39,7 @@ pub(crate) mod windows;
 
 pub(crate) use entry::{Entry, is_absent};
 pub(crate) use file_id::FileId;
-pub(crate) use hold::{DELETING_SUFFIX, Hold, HoldOutcome};
+pub(crate) use hold::{Hold, HoldOutcome, claim_of_deleting_name, deleting_name, is_16_hex};
 pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(any(unix, windows)))]
@@ -198,18 +198,17 @@ pub(crate) trait Host: Send + Sync {
 
     /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it. The name never
     /// exists without the hold: off Windows the file is made and locked as `<path>.new` and then linked to `path`
-    /// (a launch killed in between leaves the `.new` file; a file there is `AlreadyExists` too). A file system that does not
-    /// allow hard links is an error that names the directory and `XDG_RUNTIME_DIR`.
+    /// (a launch killed in between leaves the `.new` file; a file there is `AlreadyExists` too). A file system that
+    /// does not allow hard links is an error that names the directory and `XDG_RUNTIME_DIR`.
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>>;
 
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
     /// `path` is an error: it is not opened through.
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
 
-    /// Removes `path`, a leftover claim file under its deleting name ([`DELETING_SUFFIX`]): its name may stay until
-    /// the last handle to the file closes. `Ok` also when someone is deleting it right
-    /// now (Windows: it is held, or its deletion is pending), which is theirs to finish. Any other failure, `NotFound`
-    /// included, is returned.
+    /// Removes `path`, a leftover claim file under its deleting name ([`deleting_name`]): its name may stay until the
+    /// last handle to the file closes. `Ok` also when someone is deleting it right now (Windows: it is held, or its
+    /// deletion is pending), which is theirs to finish. Any other failure, `NotFound` included, is returned.
     fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()>;
 
     /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link

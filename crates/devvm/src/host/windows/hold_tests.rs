@@ -13,7 +13,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::super::wide;
 use super::super::windows_tests::{long_dir, with_nul};
-use crate::host::current;
+use super::{WindowsHold, options};
+use crate::host::{claim_of_deleting_name, current};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
@@ -75,15 +76,31 @@ fn a_delete_takes_a_deleting_name_of_its_own_while_a_duplicate_keeps_the_first(#
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     assert_eq!(kept.len(), 1, "{kept:?}");
-    let digits = kept[0]
-        .strip_prefix("x.sock.hold.")
-        .and_then(|rest| rest.strip_suffix(".del"));
-    assert!(
-        digits.is_some_and(|digits| digits.len() == 16 && digits.bytes().all(|b| b.is_ascii_hexdigit())),
-        "{kept:?}"
-    );
+    assert_eq!(claim_of_deleting_name(&kept[0]), Some("x.sock.hold"), "{kept:?}");
     drop(duplicate);
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 0);
+}
+
+/// A drawn deleting name that exists (a delete that died left it, or a delete that is running has it) is drawn again,
+/// and the file at it is not replaced.
+#[skuld::test]
+fn a_delete_whose_drawn_deleting_name_exists_draws_again(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    let planted = home.join("x.sock.hold.0101010101010101.del");
+    std::fs::write(&planted, b"planted").unwrap();
+    let hold = WindowsHold::of(options().create_new(true).open(&path).unwrap(), &path).unwrap();
+    let mut draws = [[1u8; 8], [2u8; 8]].into_iter();
+    let mut drawn = 0;
+
+    hold.delete_with(&mut || {
+        drawn += 1;
+        draws.next().expect("no more than two draws")
+    })
+    .unwrap();
+
+    assert_eq!(drawn, 2);
+    assert_eq!(std::fs::read(&planted).unwrap(), b"planted");
+    assert_eq!(std::fs::read_dir(home).unwrap().count(), 1);
 }
 
 /// A handle that asks for no data access (as `file_id::of` opens) lets the hold's file be deleted, and the name goes

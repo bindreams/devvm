@@ -6,9 +6,11 @@
 //! it belongs to the handle that took it, not to the file, and an inherited handle does not carry it. Measured.)
 //! Elsewhere: an exclusive `flock`, which belongs to the open file and so to every duplicate of it.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
 use std::io;
+use std::path::Path;
 
 use super::FileId;
 
@@ -16,7 +18,25 @@ use super::FileId;
 /// drawn for that delete), where the host can only free a name by renaming the file away: Windows, where a deleted
 /// file keeps its name until its last handle closes (with POSIX semantics, where the file system has them, until the
 /// file object closes). A deleter that dies in between leaves the name; the sweep deletes it.
-pub(crate) const DELETING_SUFFIX: &str = ".del";
+const DELETING_SUFFIX: &str = ".del";
+
+/// The deleting name of the claim file `claim`, for the digits `draw` is the hex of.
+pub(crate) fn deleting_name(claim: &Path, draw: [u8; 8]) -> OsString {
+    let mut name = claim.as_os_str().to_owned();
+    name.push(format!(".{}{DELETING_SUFFIX}", hex::encode(draw)));
+    name
+}
+
+/// The claim file's name, if `name` is its deleting name: the inverse of [`deleting_name`].
+pub(crate) fn claim_of_deleting_name(name: &str) -> Option<&str> {
+    let (claim, digits) = name.strip_suffix(DELETING_SUFFIX)?.rsplit_once('.')?;
+    is_16_hex(digits).then_some(claim)
+}
+
+/// Whether `text` is 16 lowercase hex digits: the hex of 8 bytes.
+pub(crate) fn is_16_hex(text: &str) -> bool {
+    text.len() == 16 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
 
 /// An exclusive hold on a file, and the open file that carries it.
 pub(crate) trait Hold: Send + fmt::Debug {
@@ -28,8 +48,8 @@ pub(crate) trait Hold: Send + fmt::Debug {
     fn id(&self) -> io::Result<FileId>;
 
     /// Deletes the held file; the hold ends with it. The name is free when this returns, whoever else has the open
-    /// file: where a name outlives the deletion of its file, the file is renamed to `<name>.<16 hex>.del` first. The file is
-    /// gone for good only once nobody else holds a duplicate.
+    /// file: where a name outlives the deletion of its file, the file is renamed to its [`deleting_name`] first. The
+    /// file is gone for good only once nobody else holds a duplicate.
     fn delete(self: Box<Self>) -> io::Result<()>;
 }
 
@@ -42,3 +62,7 @@ pub(crate) enum HoldOutcome {
     /// There is no such file.
     Absent,
 }
+
+#[cfg(test)]
+#[path = "hold_tests.rs"]
+mod hold_tests;

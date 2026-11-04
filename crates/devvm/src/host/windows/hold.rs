@@ -1,6 +1,5 @@
 //! A hold on Windows: the file open with share mode 0.
 
-use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::mem::{offset_of, size_of};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -22,7 +21,7 @@ use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMAN
 
 use super::file_id;
 use super::wide;
-use crate::host::{DELETING_SUFFIX, FileId, Hold, HoldOutcome};
+use crate::host::{FileId, Hold, HoldOutcome, deleting_name};
 
 /// Whether `error` says the file system does not do the `*Ex` form of a disposition. `std`'s `File::delete`
 /// (`library/std/src/sys/fs/windows.rs`) falls back from `posix_delete` to `win32_delete` on exactly these three:
@@ -126,23 +125,28 @@ impl WindowsHold {
         })
     }
 
-    /// Renames the file through its handle to `<name>.<16 random hex>.del`, with POSIX semantics, which let the rename
-    /// go through while somebody has the file open (`FileRenameInfoEx`); where the file system has none,
-    /// `FileRenameInfo`. The name is drawn for this delete alone, so it is never one that another delete, a duplicate
-    /// of another file or a scanner still has. The name the file had is free from here on, though the file keeps
-    /// existing until every handle to it is closed.
+    /// Renames the file through its handle to its deleting name ([`deleting_name`]) for the digits `draw` gives, with
+    /// POSIX semantics, which let the rename go through while somebody has the file open (`FileRenameInfoEx`); where
+    /// the file system has none, `FileRenameInfo`. The name is drawn for this delete alone, so it is never one that
+    /// another delete, a duplicate of another file or a scanner still has. The name the file had is free from here on,
+    /// though the file keeps existing until every handle to it is closed.
     ///
-    /// Falls back on `ERROR_INVALID_PARAMETER` only, which a missing `*Ex` class gives, and returns the `*Ex` error
-    /// when the fallback fails too: `std`'s `unlink` and `rename` (`library/std/src/sys/fs/windows.rs`) return "the
-    /// original error if any of the above fails".
-    fn rename_away(&self) -> std::io::Result<()> {
-        let mut random = [0u8; 8];
-        getrandom::fill(&mut random).expect("the OS random number generator is available");
-        let mut name: OsString = self.path.as_os_str().to_owned();
-        name.push(format!(".{}{DELETING_SUFFIX}", hex::encode(random)));
-        let mut name = wide(Path::new(&name))?;
-        name.pop(); // the NUL: the name's length is stated, not terminated
-        let name_bytes = name.len() * size_of::<u16>();
+    /// Falls back where [`is_unsupported`], and returns the fallback's error when it fails too. A name that exists is
+    /// not replaced: the digits are drawn again, with no limit on the draws.
+    fn rename_away_with(&self, draw: &mut dyn FnMut() -> [u8; 8]) -> std::io::Result<()> {
+        loop {
+            let name = wide(Path::new(&deleting_name(&self.path, draw())))?;
+            match self.rename_to(&name) {
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                renamed => return renamed,
+            }
+        }
+    }
+
+    /// Renames the file to `name`, a NUL-terminated wide path, which is not replaced if it exists.
+    fn rename_to(&self, name: &[u16]) -> std::io::Result<()> {
+        let name = &name[..name.len() - 1]; // the NUL: the name's length is stated, not terminated
+        let name_bytes = std::mem::size_of_val(name);
         // `u64` units give the buffer the alignment of `FILE_RENAME_INFO`.
         let mut buffer =
             vec![0u64; (offset_of!(FILE_RENAME_INFO, FileName) + name_bytes).div_ceil(size_of::<u64>()) + 1];
@@ -162,7 +166,7 @@ impl WindowsHold {
             return Ok(());
         }
         let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(ERROR_INVALID_PARAMETER as i32) {
+        if !is_unsupported(&error) {
             return Err(error);
         }
         // SAFETY: as above; the union's `Flags` are cleared, so its `ReplaceIfExists` is false.
@@ -171,9 +175,15 @@ impl WindowsHold {
             SetFileInformationByHandle(self.file.as_raw_handle(), FileRenameInfo, info.cast(), size)
         };
         if renamed == 0 {
-            return Err(error);
+            return Err(std::io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// [`Hold::delete`] with the digits of the deleting name drawn by `draw`.
+    fn delete_with(self, draw: &mut dyn FnMut() -> [u8; 8]) -> std::io::Result<()> {
+        self.rename_away_with(draw)?;
+        mark_deleted(&self.file, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS).map_err(|failure| failure.error)
     }
 }
 
@@ -259,8 +269,11 @@ impl Hold for WindowsHold {
     /// when the file object closes even while somebody else's open (a scanner's) lasts; elsewhere it goes when the
     /// last handle closes.
     fn delete(self: Box<Self>) -> std::io::Result<()> {
-        self.rename_away()?;
-        mark_deleted(&self.file, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS).map_err(|failure| failure.error)
+        self.delete_with(&mut || {
+            let mut draw = [0u8; 8];
+            getrandom::fill(&mut draw).expect("the OS random number generator is available");
+            draw
+        })
     }
 }
 
