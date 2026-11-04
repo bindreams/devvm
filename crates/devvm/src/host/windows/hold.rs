@@ -3,16 +3,17 @@
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::mem::{offset_of, size_of};
-use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_DELETE_PENDING};
+use windows_sys::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, NTSTATUS, STATUS_CANNOT_DELETE, STATUS_DELETE_PENDING,
+};
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, DeleteFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FileDispositionInfo, FileRenameInfo,
-    SetFileInformationByHandle,
+    DELETE, DeleteFileW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FileDispositionInfo,
+    FileRenameInfo, SetFileAttributesW, SetFileInformationByHandle,
 };
 
 use super::file_id;
@@ -39,7 +40,8 @@ impl WindowsHold {
     fn rename_away(&self) -> std::io::Result<()> {
         let mut name: OsString = self.path.as_os_str().to_owned();
         name.push(DELETING_SUFFIX);
-        let name: Vec<u16> = name.encode_wide().collect();
+        let mut name = wide(Path::new(&name))?;
+        name.pop(); // the NUL: the name's length is stated, not terminated
         let name_bytes = name.len() * size_of::<u16>();
         // `u64` units give the buffer the alignment of `FILE_RENAME_INFO`.
         let mut buffer =
@@ -76,39 +78,52 @@ unsafe extern "system" {
     fn RtlGetLastNtStatus() -> NTSTATUS;
 }
 
-/// Whether `error`, from `DeleteFileW` on a deleting name, says that somebody else is deleting the file: it is held, or
-/// its deletion is pending. A pending deletion is `ERROR_ACCESS_DENIED`, like a real refusal, so the status tells them
-/// apart. Call it straight after the failed call: the status is the thread's last.
-fn is_deleted_by_another(error: &std::io::Error) -> bool {
+/// Whether a failed `DeleteFileW` on a deleting name says that somebody else is deleting the file: it is held, or its
+/// deletion is pending. A pending deletion is `ERROR_ACCESS_DENIED`, like a real refusal, so the `status` tells them
+/// apart.
+fn is_deleted_by_another(error: &std::io::Error, status: NTSTATUS) -> bool {
     match error.raw_os_error() {
         Some(code) if code == ERROR_SHARING_VIOLATION as i32 => true,
-        // SAFETY: reads a thread-local status; no argument.
-        Some(code) if code == ERROR_ACCESS_DENIED as i32 => unsafe { RtlGetLastNtStatus() == STATUS_DELETE_PENDING },
+        Some(code) if code == ERROR_ACCESS_DENIED as i32 => status == STATUS_DELETE_PENDING,
         _ => false,
     }
 }
 
-/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name). `DeleteFileW` first: after a failed delete
-/// `std` makes more system calls, which replace the status that [`is_deleted_by_another`] reads. Any other failure is
-/// `std::fs::remove_file`'s to settle: it handles a long path and a read-only file.
-pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
-    // `DeleteFileW` reads a path as far as its first NUL, which would delete a different file.
-    if path.as_os_str().encode_wide().any(|unit| unit == 0) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "file name contained an unexpected NUL byte",
-        ));
-    }
-    let wide = wide(path);
-    // SAFETY: `wide` is NUL-terminated and outlives the call.
-    let deleted = unsafe { DeleteFileW(wide.as_ptr()) };
-    if deleted != 0 {
+/// One `DeleteFileW`. A failure carries the `NTSTATUS` read at once, before anything else replaces the thread's last.
+fn delete_file(path: &[u16]) -> Result<(), (std::io::Error, NTSTATUS)> {
+    // SAFETY: `path` is NUL-terminated.
+    if unsafe { DeleteFileW(path.as_ptr()) } != 0 {
         return Ok(());
     }
-    if is_deleted_by_another(&std::io::Error::last_os_error()) {
-        Ok(())
-    } else {
-        std::fs::remove_file(path)
+    let error = std::io::Error::last_os_error();
+    // SAFETY: reads a thread-local status; no argument.
+    Err((error, unsafe { RtlGetLastNtStatus() }))
+}
+
+/// [`Host::remove_deleting_name`](crate::host::Host::remove_deleting_name). The name is looked up by `DeleteFileW`
+/// alone. A file that is held, or whose deletion is pending, is somebody else's to finish. A read-only file
+/// (`STATUS_CANNOT_DELETE`) has the attribute cleared, and `DeleteFileW` runs once more with the same outcomes. Any
+/// other failure is the Win32 error as it is.
+pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
+    let path = wide(path)?;
+    let (error, status) = match delete_file(&path) {
+        Ok(()) => return Ok(()),
+        Err(failure) => failure,
+    };
+    if is_deleted_by_another(&error, status) {
+        return Ok(());
+    }
+    if status != STATUS_CANNOT_DELETE {
+        return Err(error);
+    }
+    // SAFETY: `path` is NUL-terminated.
+    if unsafe { SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    match delete_file(&path) {
+        Ok(()) => Ok(()),
+        Err((error, status)) if is_deleted_by_another(&error, status) => Ok(()),
+        Err((error, _)) => Err(error),
     }
 }
 

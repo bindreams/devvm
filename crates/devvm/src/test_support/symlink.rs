@@ -14,27 +14,23 @@ mod imp;
 #[path = "symlink/other.rs"]
 mod imp;
 
-/// Makes `link` a symlink to `target`.
+/// Makes `link` a symlink to `target`. A failure names the opt-out only when the error is the one a host without the
+/// right gives.
 pub fn symlink(target: &Path, link: &Path) {
-    imp::symlink(target, link).unwrap_or_else(|e| panic!("{}", failure(target, link, &e, imp::lacks_the_right(&e))))
-}
-
-/// The message of a failed [`symlink`]. `lacks_the_right`: the error is the one a host without the right gives; only
-/// that one is answered with the opt-out.
-fn failure(target: &Path, link: &Path, error: &std::io::Error, lacks_the_right: bool) -> String {
-    let message = format!(
-        "cannot create the symlink {} -> {}: {error}",
-        link.display(),
-        target.display()
-    );
-    if lacks_the_right {
-        format!(
-            "{message} (this needs Developer Mode or an elevated token), or {}",
-            symlinks::OPT_OUT
-        )
-    } else {
-        message
-    }
+    imp::symlink(target, link).unwrap_or_else(|error| {
+        let message = format!(
+            "cannot create the symlink {} -> {}: {error}",
+            link.display(),
+            target.display()
+        );
+        if imp::lacks_the_right(&error) {
+            panic!(
+                "{message} (this needs Developer Mode or an elevated token), or {}",
+                symlinks::OPT_OUT
+            )
+        }
+        panic!("{message}")
+    })
 }
 
 #[cfg(test)]

@@ -54,7 +54,7 @@ pub(super) fn create(dir: &Path) -> io::Result<()> {
         lpSecurityDescriptor: descriptor,
         bInheritHandle: 0,
     };
-    let path = wide(dir);
+    let path = wide(dir)?;
     // SAFETY: `path` is NUL-terminated and `attributes` points at the live descriptor.
     let made = unsafe { CreateDirectoryW(path.as_ptr(), &attributes) };
     let error = io::Error::last_os_error();

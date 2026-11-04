@@ -5,12 +5,13 @@ use std::fs::{File, FileType, OpenOptions};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
+use windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD;
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal, GetACP};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
@@ -37,12 +38,29 @@ mod windows_tests;
 
 pub(crate) use watch::WindowsWatch;
 
-/// `ERROR_PRIVILEGE_NOT_HELD`: the user may not create symlinks.
-const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
-
-/// `path` as the NUL-terminated UTF-16 a Win32 call takes.
-fn wide(path: &Path) -> Vec<u16> {
-    path.as_os_str().encode_wide().chain(Some(0)).collect()
+/// `path` as the NUL-terminated UTF-16 a Win32 call takes: the one conversion for every call in this host that takes a
+/// path. An interior NUL is `InvalidInput`, since the call would read the path only as far as it. The path is made
+/// absolute and gets the `\\?\` prefix (`\\?\UNC\` for a share), as `std` does, so a path longer than `MAX_PATH` works;
+/// a path that is already verbatim, or a device path, stays as it is.
+fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
+    if path.as_os_str().encode_wide().any(|unit| unit == 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "file name contained an unexpected NUL byte",
+        ));
+    }
+    let absolute = std::path::absolute(path)?;
+    let units: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+    let (head, rest): (&str, &[u16]) = match absolute.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => (r"\\?\", &units),
+            // `\\server\share` becomes `\\?\UNC\server\share`.
+            Prefix::UNC(..) => (r"\\?\UNC\", &units[2..]),
+            _ => ("", &units),
+        },
+        _ => ("", &units),
+    };
+    Ok(head.encode_utf16().chain(rest.iter().copied()).chain(Some(0)).collect())
 }
 
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
@@ -204,7 +222,7 @@ impl Host for WindowsHost {
 
     /// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` fails with `ERROR_ALREADY_EXISTS` for anything at `to`.
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        let (from, to) = (wide(from), wide(to));
+        let (from, to) = (wide(from)?, wide(to)?);
         // SAFETY: both are NUL-terminated and outlive the call.
         let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) };
         if moved == 0 {
@@ -242,7 +260,7 @@ impl Host for WindowsHost {
             std::os::windows::fs::symlink_file(&target, link)
         };
         made.map_err(|e| match e.raw_os_error() {
-            Some(ERROR_PRIVILEGE_NOT_HELD) => std::io::Error::new(
+            Some(code) if code == ERROR_PRIVILEGE_NOT_HELD as i32 => std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "Windows lets only Developer Mode or an elevated token create symlinks",
             ),

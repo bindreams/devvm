@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
@@ -10,9 +10,9 @@ use windows_sys::Win32::Security::{
     SE_DACL_PROTECTED,
 };
 
-use super::{WindowsHost, user};
+use super::{WindowsHost, user, wide};
 use crate::host::names::windows_run_dir;
-use crate::host::{Entry, Host};
+use crate::host::{Entry, HoldOutcome, Host};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -115,6 +115,150 @@ fn the_default_is_programdata_devvm_run_and_the_token_sid() {
     // The environment does not move it.
     let dir = WindowsHost.run_dir_default(&|_| Some(r"Z:\elsewhere".into())).unwrap();
     assert_eq!(dir, windows_run_dir(&program_data, &sid));
+}
+
+// Paths given to the Win32 calls --------------------------------------------------------------------------------------
+
+/// `path` with a NUL and a few more characters after it: a Win32 call reads it as far as the NUL.
+fn with_nul(path: &Path) -> PathBuf {
+    let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
+    units.extend([0, u16::from(b'x')]);
+    PathBuf::from(OsString::from_wide(&units))
+}
+
+/// A directory under `home` whose path is longer than `MAX_PATH`.
+fn long_dir(home: &Path) -> PathBuf {
+    let dir = home.join("a".repeat(100)).join("b".repeat(100)).join("c".repeat(100));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(dir.as_os_str().len() > 260, "{}", dir.display());
+    dir
+}
+
+/// The converted text of `path`, without the terminating NUL.
+fn converted(path: &str) -> String {
+    let mut units = wide(Path::new(path)).unwrap();
+    assert_eq!(units.pop(), Some(0));
+    String::from_utf16(&units).unwrap()
+}
+
+#[skuld::test]
+fn a_path_is_made_absolute_and_verbatim_a_share_as_unc_and_a_verbatim_path_stays() {
+    assert_eq!(converted(r"C:\a\b"), r"\\?\C:\a\b");
+    assert_eq!(converted("C:/a/../b"), r"\\?\C:\b");
+    assert_eq!(converted(r"\\server\share\x"), r"\\?\UNC\server\share\x");
+    assert_eq!(converted(r"\\?\C:\a\b"), r"\\?\C:\a\b");
+    assert_eq!(converted(r"\\?\UNC\server\share\x"), r"\\?\UNC\server\share\x");
+    assert_eq!(converted(r"\\.\pipe\x"), r"\\.\pipe\x");
+}
+
+#[skuld::test]
+fn removing_a_deleting_name_with_a_nul_in_it_is_invalid_input_and_deletes_nothing(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let path = home.join("x.sock.hold.del");
+    std::fs::write(&path, b"left").unwrap();
+
+    let error = WindowsHost.remove_deleting_name(&with_nul(&path)).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+    assert!(path.exists());
+}
+
+#[skuld::test]
+fn publishing_a_directory_with_a_nul_in_either_path_is_invalid_input_and_moves_nothing(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let (from, to) = (home.join("from"), home.join("to"));
+    std::fs::create_dir(&from).unwrap();
+
+    let source = WindowsHost.publish_dir(&with_nul(&from), &to).unwrap_err();
+    let target = WindowsHost.publish_dir(&from, &with_nul(&to)).unwrap_err();
+
+    assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput, "{source}");
+    assert_eq!(target.kind(), std::io::ErrorKind::InvalidInput, "{target}");
+    assert!(from.exists());
+    assert!(!to.exists());
+}
+
+#[skuld::test]
+fn creating_the_runtime_dir_with_a_nul_in_the_path_is_invalid_input_and_makes_nothing(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dir = home.join("run");
+
+    let error = WindowsHost.create_runtime_dir(&with_nul(&dir)).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+    assert!(!dir.exists());
+}
+
+#[skuld::test]
+fn a_deleting_name_deeper_than_max_path_is_removed(#[fixture(unicode_home)] home: &Path) {
+    let path = long_dir(home).join("x.sock.hold.del");
+    std::fs::write(&path, b"left").unwrap();
+
+    WindowsHost.remove_deleting_name(&path).unwrap();
+
+    assert!(!path.exists());
+}
+
+/// Removes the read-only file at `path` as a deleting name. `DeleteFileW` refuses it with `ERROR_ACCESS_DENIED`, which
+/// is no pending deletion. The attribute is cleared before the result is read, so a failure leaves a file the test
+/// directory's cleanup can delete.
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "on Windows the flag is the read-only attribute, not Unix mode bits"
+)]
+fn remove_read_only_deleting_name(path: &Path) {
+    std::fs::write(path, b"left").unwrap();
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(path, permissions).unwrap();
+
+    let removed = WindowsHost.remove_deleting_name(path);
+
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+    removed.unwrap();
+    assert!(!path.exists());
+}
+
+#[skuld::test]
+fn a_read_only_deleting_name_is_removed(#[fixture(unicode_home)] home: &Path) {
+    remove_read_only_deleting_name(&home.join("x.sock.hold.del"));
+}
+
+#[skuld::test]
+fn a_read_only_deleting_name_deeper_than_max_path_is_removed(#[fixture(unicode_home)] home: &Path) {
+    remove_read_only_deleting_name(&long_dir(home).join("x.sock.hold.del"));
+}
+
+#[skuld::test]
+fn a_directory_deeper_than_max_path_is_published(#[fixture(unicode_home)] home: &Path) {
+    let parent = long_dir(home);
+    let (from, to) = (parent.join("from"), parent.join("to"));
+    std::fs::create_dir(&from).unwrap();
+    std::fs::write(from.join("f"), b"in").unwrap();
+
+    WindowsHost.publish_dir(&from, &to).unwrap();
+
+    assert!(!from.exists());
+    assert_eq!(std::fs::read(to.join("f")).unwrap(), b"in");
+}
+
+#[skuld::test]
+fn a_hold_deeper_than_max_path_is_deleted_and_leaves_no_name(#[fixture(unicode_home)] home: &Path) {
+    let parent = long_dir(home);
+    let path = parent.join("x.sock.hold");
+    let hold = WindowsHost.hold_new(&path).unwrap();
+
+    hold.delete().unwrap();
+
+    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+    assert!(matches!(WindowsHost.hold_existing(&path).unwrap(), HoldOutcome::Absent));
 }
 
 // The runtime directory -----------------------------------------------------------------------------------------------

@@ -1,7 +1,5 @@
-use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::mem::size_of;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
@@ -163,35 +161,4 @@ fn removing_a_deleting_name_that_is_not_there_is_not_found(#[fixture(unicode_hom
         .unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-}
-
-/// `DeleteFileW` refuses a read-only file with `ERROR_ACCESS_DENIED`, which is no pending deletion.
-#[skuld::test]
-fn removing_a_deleting_name_deletes_a_read_only_file(#[fixture(unicode_home)] home: &Path) {
-    let path = home.join("x.sock.hold.del");
-    std::fs::write(&path, b"left").unwrap();
-    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-    permissions.set_readonly(true);
-    std::fs::set_permissions(&path, permissions).unwrap();
-
-    current().remove_deleting_name(&path).unwrap();
-
-    assert!(!path.exists());
-}
-
-/// A path is not read as far as its first NUL: that would delete the file named before it.
-#[skuld::test]
-fn removing_a_deleting_name_with_a_nul_in_it_is_invalid_input_and_deletes_nothing(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let path = home.join("x.sock.hold.del");
-    std::fs::write(&path, b"left").unwrap();
-    let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
-    units.extend([0, u16::from(b'x')]);
-    let with_nul = OsString::from_wide(&units);
-
-    let error = current().remove_deleting_name(Path::new(&with_nul)).unwrap_err();
-
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
-    assert!(path.exists());
 }
