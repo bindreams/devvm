@@ -19,13 +19,13 @@ OUT.json is a list of lines, one per difference, empty when every field reads ba
 - "<label>: <field> reads back as <type> <repr>" when the value PyYAML read is not a str;
 - "<label>: <field> differs at code point <i> (read <n> code points, expected <m>): [<window>] for [<window>]" when it
   is a str that differs. <i> is the first code point that differs. A window is the 4 code points before <i>, then "|",
-  then the 8 from <i> on, space-separated; a code point from "!" to "~" is shown as itself and any other (a space
-  included) as U+XXXX.
+  then the 8 from <i> on, space-separated; a code point from "!" to "~" other than the backslash is shown as itself and
+  any other (a space included) as U+XXXX.
 
-An error message or repr is escaped to ASCII (a backslash doubled, any other non-ASCII code point as a Python escape),
-so an escape in the line always stands for one code point. Escaped text longer than 60 characters is cut at the last
+The labels and field names CASES gives are written as given. In an error message or repr, each code point outside
+" ".."~", and the backslash, is written as its Python escape. Such text longer than 60 characters is cut at the last
 code point that fits and followed by "…(the message is N code points long)" or "…(the repr is N code points
-long)", N counting the unescaped text; the marker is the only non-ASCII text in a line.
+long)", N counting the unescaped text.
 
 Exits 0 after writing OUT.json. Any other exit, including a missing key in a case, means this script did not run to
 completion.
@@ -63,9 +63,9 @@ def read_back(meta_data, user_data):
 
 
 def escaped(text, what):
-    """`text` as ASCII, a backslash doubled and any other non-ASCII code point as a Python escape, cut between code
-    points once SHOWN characters are shown."""
-    pieces = [c.replace("\\", "\\\\").encode("ascii", "backslashreplace").decode("ascii") for c in text]
+    """`text` with each code point outside " ".."~", and the backslash, as its Python escape, cut between code points
+    once SHOWN characters are shown."""
+    pieces = [c if " " <= c <= "~" and c != "\\" else ascii(c)[1:-1] for c in text]
     width = 0
     for i, piece in enumerate(pieces):
         width += len(piece)
@@ -75,7 +75,7 @@ def escaped(text, what):
 
 
 def show(points):
-    return " ".join(chr(p) if 0x21 <= p <= 0x7E else f"U+{p:04X}" for p in map(ord, points))
+    return " ".join(chr(p) if 0x21 <= p <= 0x7E and p != 0x5C else f"U+{p:04X}" for p in map(ord, points))
 
 
 def difference(label, field, got, want):
