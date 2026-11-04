@@ -107,7 +107,7 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
             String::from_utf8_lossy(&output.stderr),
         ));
     }
-    let report: Vec<String> = std::fs::read(&read_path)
+    let report: Report = std::fs::read(&read_path)
         .map_err(|e| e.to_string())
         .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
         .unwrap_or_else(|e| {
@@ -116,9 +116,22 @@ fn every_unicode_scalar_value_reads_back_through_pyyaml_in_every_key_and_the_hos
                 read_path.display()
             ))
         });
-    assert!(
-        report.is_empty(),
-        "PyYAML does not read the seed back exactly:\n{}",
-        report.join("\n"),
+    let fields: usize = cases.iter().map(|case| case.expected.len()).sum();
+    assert_eq!(
+        report.compared, fields,
+        "the PyYAML reader gave a verdict on {} of {fields} fields",
+        report.compared
     );
+    assert!(
+        report.differences.is_empty(),
+        "PyYAML does not read the seed back exactly:\n{}",
+        report.differences.join("\n"),
+    );
+}
+
+/// What `seed_pyyaml.py` writes; its docstring has the contract.
+#[derive(serde::Deserialize)]
+struct Report {
+    compared: usize,
+    differences: Vec<String>,
 }

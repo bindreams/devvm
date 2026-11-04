@@ -11,17 +11,21 @@ CASES.json is a list of cases: {label, meta_data, user_data, expected}. meta_dat
 seed files. expected is a list of five [field, value] pairs, the fields being "meta hostname", "user hostname",
 "client_public", "host_private" and "host_public".
 
-OUT.json is a list of strings, one per difference, empty when every field reads back as expected. The lines are:
+OUT.json is {"compared": <fields given a verdict>, "differences": [<line>, ...]}, the list empty when every field reads back
+as expected. The lines are:
 
 - "<label>: does not read back: <Type>: <first line of the message>" when an exception is raised while loading or
   navigating the case's documents (a file PyYAML cannot load, a key the document lacks, a value of the wrong shape);
+- "<label>: <field> is not a field this reader reads" for an expected field read_back does not produce;
 - "<label>: <field> reads back as <type> <repr>" when the value PyYAML read is not a str;
-- "<label>: <field> differs at code point <i> (read <n> code points, expected <m>): <window> for <window>" when it is a
-  str that differs. <i> is the first code point that differs. A window is the 4 code points before <i> and the 8 from
-  <i> on, space-separated; a code point from "!" to "~" is shown as itself and any other (a space included) as U+XXXX.
+- "<label>: <field> differs at code point <i> (read <n> code points, expected <m>): [<window>] for [<window>]" when it
+  is a str that differs. <i> is the first code point that differs. A window is the 4 code points before <i>, then "|",
+  then the 8 from <i> on, space-separated; a code point from "!" to "~" is shown as itself and any other (a space
+  included) as U+XXXX.
 
-An error message or repr longer than 60 characters is cut there and followed by "(... is N characters long)", N
-counting the unescaped text. Every line is escaped once, so OUT.json is ASCII whatever the seed holds.
+An error message or repr longer than 60 characters is cut there and followed by "…(the message is N characters
+long)" or "…(the repr is N characters long)", N counting the text before the cut. Every line is then escaped with
+backslashreplace, so OUT.json is ASCII whatever the seed holds.
 
 Exits 0 after writing OUT.json. Any other exit, including a missing key in a case, means this script did not run to
 completion.
@@ -56,7 +60,7 @@ def read_back(meta_data, user_data):
 def shortened(text, what):
     if len(text) <= SHOWN:
         return text
-    return f"{text[:SHOWN]}...(the {what} is {len(text)} characters long)"
+    return f"{text[:SHOWN]}…(the {what} is {len(text)} characters long)"
 
 
 def show(points):
@@ -69,10 +73,14 @@ def difference(label, field, got, want):
     if got == want:
         return None
     at = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
-    window = slice(max(at - BEFORE, 0), at + AFTER)
+    start = max(at - BEFORE, 0)
+
+    def window(text):
+        return f"[{show(text[start:at])} | {show(text[at : at + AFTER])}]"
+
     return (
         f"{label}: {field} differs at code point {at} (read {len(got)} code points, expected {len(want)}): "
-        f"[{show(got[window])}] for [{show(want[window])}]"
+        f"{window(got)} for {window(want)}"
     )
 
 
@@ -82,19 +90,30 @@ def compare(case):
         values = read_back(case["meta_data"], case["user_data"])
     except Exception as e:
         first_line = (str(e).splitlines() or [""])[0]
-        return [f"{label}: does not read back: {type(e).__name__}: {shortened(first_line, 'message')}"]
-    lines = (difference(label, field, values[field], want) for field, want in case["expected"])
-    return [line for line in lines if line is not None]
+        line = f"{label}: does not read back: {type(e).__name__}: {shortened(first_line, 'message')}"
+        return [line], len(case["expected"])
+    lines = []
+    compared = 0
+    for field, want in case["expected"]:
+        if field not in values:
+            lines.append(f"{label}: {field} is not a field this reader reads")
+        elif (line := difference(label, field, values[field], want)) is not None:
+            lines.append(line)
+        compared += 1
+    return lines, compared
 
 
 def main(cases_path, out_path):
     with open(cases_path, encoding="utf-8") as f:
         cases = json.load(f)
     lines = []
+    compared = 0
     for case in cases:
-        lines.extend(line.encode("ascii", "backslashreplace").decode("ascii") for line in compare(case))
+        case_lines, case_compared = compare(case)
+        lines.extend(line.encode("ascii", "backslashreplace").decode("ascii") for line in case_lines)
+        compared += case_compared
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(lines, f)
+        json.dump({"compared": compared, "differences": lines}, f)
     return 0
 
 
