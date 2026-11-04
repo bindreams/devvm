@@ -138,6 +138,9 @@ fn a_delete_whose_drawn_deleting_name_is_delete_pending_draws_again(#[fixture(un
     std::fs::write(&pending, b"pending").unwrap();
     let keeper = make_delete_pending(&pending);
     let hold = super::new(&path).unwrap();
+    // Measured on NTFS: a POSIX rename onto a pending name is `ERROR_ACCESS_DENIED` with `STATUS_DELETE_PENDING`.
+    let refused = hold.rename_to(&wide(&pending).unwrap()).unwrap_err();
+    assert!(refused.is_delete_pending(), "{}", refused.error);
     let mut draws = [[1u8; 8], [2u8; 8]].into_iter();
     let mut drawn = 0;
 

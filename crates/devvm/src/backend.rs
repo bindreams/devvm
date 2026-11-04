@@ -220,7 +220,8 @@ pub(crate) fn remove_files(
 /// Nothing is deleted, and nothing is said, when `claim` no longer names the held file: whoever deleted that file took
 /// the launch's other files before it, and the name may be a later launch's.
 ///
-/// The others go through `std`: only the holder of the claim deletes them, and another deleter finds the claim held.
+/// The others go through `std`. While the claim exists only its holder deletes them: another caller finds it held. Once
+/// the claim is gone, the sweep deletes a lock whose socket is gone too, with no claim (`sweep_launch`).
 pub(crate) fn remove_held(
     host: &dyn Host,
     hold: Box<dyn Hold>,
