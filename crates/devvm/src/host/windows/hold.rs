@@ -1,4 +1,7 @@
 //! A hold on Windows: the file open with share mode 0.
+//!
+//! A final name is never delete-pending from our deletes (the rename away comes before the mark), so no call here looks
+//! for that.
 
 use std::fs::File;
 use std::mem::{offset_of, size_of};
@@ -57,12 +60,8 @@ impl Failure {
             && self.status == STATUS_DELETE_PENDING
     }
 
-    /// Whether the file system or Windows has no `*Ex` form of the call: it gates both fallbacks here, the disposition
-    /// ([`mark_deleted`]) and the rename (`rename_to`). `std`'s `File::delete` (`library/std/src/sys/fs/windows.rs`)
-    /// falls back from `posix_delete` to `win32_delete` on exactly these three: `ERROR_INVALID_PARAMETER` and
-    /// `ERROR_NOT_SUPPORTED`, which `posix_delete` documents (FAT32, exFAT, SMB, Windows before 10 1607), and
-    /// `ERROR_INVALID_FUNCTION`. `std`'s `rename` has no fallback of its own (`MoveFileExW`, then `FileRenameInfoEx`
-    /// for a read-only file), so the rename here takes the delete's three.
+    /// Whether the file system or Windows has no `*Ex` form of the call; gates the disposition ([`mark_deleted`]) and
+    /// rename (`rename_to`) fallbacks. Matches the three errors std's `File::delete` falls back on.
     fn is_unsupported(&self) -> bool {
         matches!(
             self.error.raw_os_error().map(|code| code as u32),
@@ -176,10 +175,6 @@ impl WindowsHold {
     /// (`AlreadyExists`), or a file there whose deletion is pending, which the system refuses with
     /// `ERROR_ACCESS_DENIED` ([`Failure::is_delete_pending`]): a delete between its mark and the close of its file
     /// object.
-    ///
-    /// A rename of a file whose own deletion is pending is refused as a pending target is, and would draw forever. It
-    /// cannot happen here: the hold is share mode 0, so only [`mark_deleted`] through this handle can mark the file,
-    /// and `delete_with` does that last, after the rename.
     fn rename_away_with(&self, draw: &mut dyn FnMut() -> [u8; 8]) -> std::io::Result<()> {
         loop {
             let name = wide(&deleting_name(&self.path, draw()))?;
@@ -279,16 +274,14 @@ fn open_hold(path: &Path, creation: u32) -> Result<File, Failure> {
     )
 }
 
-/// Creates `path`, which must not exist, and holds it. A name that is taken is `AlreadyExists`. A final name is never
-/// delete-pending from our deletes (the rename away comes before the mark), so that is not looked for.
+/// Creates `path`, which must not exist, and holds it. A name that is taken is `AlreadyExists`.
 pub(super) fn new(path: &Path) -> std::io::Result<WindowsHold> {
     let file = open_hold(path, CREATE_NEW)?;
     WindowsHold::of(file, path)
 }
 
 /// Holds the file at `path` if nobody else does. A link at the name is refused. A file that is held
-/// (`ERROR_SHARING_VIOLATION`) is `Busy`: somebody else has it, and it is not absent. A final name is never
-/// delete-pending from our deletes, so that is not looked for.
+/// (`ERROR_SHARING_VIOLATION`) is `Busy`: somebody else has it, and it is not absent.
 pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
     match open_hold(path, OPEN_EXISTING) {
         Ok(file) if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => Err(std::io::Error::new(
@@ -311,13 +304,8 @@ impl Hold for WindowsHold {
         file_id::of_handle(&self.file)
     }
 
-    /// Renames the file away through the handle and marks it for deletion, so no name is looked up again. A handle to
-    /// the same file object can outlive this one (a child's inherited copy), and the name stays until that file object
-    /// closes; the rename frees the final name at once. Where the file system has POSIX semantics, the `.del` name goes
-    /// when the file object closes even while somebody else's open (a scanner's) lasts; elsewhere it goes when the
-    /// last handle closes. The `.del` name is delete-pending from the mark until then, and opens of it fail with
-    /// `ERROR_ACCESS_DENIED`; the final name never is, because the hold is share mode 0 and the rename comes before
-    /// the mark.
+    /// Renames the file away through the handle, then marks it for deletion; no name is looked up again. The final name
+    /// is free at once; the `.del` name goes when the file object closes (POSIX semantics) or the last handle closes.
     fn delete(self: Box<Self>) -> std::io::Result<()> {
         self.delete_with(&mut random::bytes::<8>)
     }

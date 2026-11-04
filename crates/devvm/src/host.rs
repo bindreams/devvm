@@ -211,7 +211,7 @@ pub(crate) trait Host: Send + Sync {
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>>;
 
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
-    /// `path` is an error: it is not opened through.
+    /// `path` is `InvalidInput`, "is a link": it is not opened through.
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
 
     /// Removes `path`, a leftover claim file under its deleting name ([`deleting_name`]): its name may stay until the

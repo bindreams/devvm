@@ -214,14 +214,12 @@ pub(crate) fn remove_files(
     remove_held(host, hold, &claim.path, paths, warn);
 }
 
-/// Deletes `paths` while `hold` holds `claim`, one of them, and then the claim itself. A file that is already gone is
-/// fine; a failure goes to `warn`, and then the claim stays, so the names stay reserved until the next try.
+/// The deleting half of [`remove_files`]: `hold` holds `claim`, one of `paths`. Nothing is deleted or said when `claim`
+/// no longer names the held file: whoever deleted it took the launch's other files first, and the name may be a later
+/// launch's.
 ///
-/// Nothing is deleted, and nothing is said, when `claim` no longer names the held file: whoever deleted that file took
-/// the launch's other files before it, and the name may be a later launch's.
-///
-/// The others go through `std`. While the claim exists only its holder deletes them: another caller finds it held. Once
-/// the claim is gone, the sweep deletes a lock whose socket is gone too, with no claim (`sweep_launch`).
+/// The socket and lock go before the claim, which is what leaves no socket without its claim. While the claim exists
+/// only its holder deletes them; once it is gone, the sweep deletes a lock whose socket is gone too (`sweep_launch`).
 pub(crate) fn remove_held(
     host: &dyn Host,
     hold: Box<dyn Hold>,

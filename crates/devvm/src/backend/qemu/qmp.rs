@@ -36,8 +36,6 @@ mod qmp_windows_tests;
 /// The bytes a launch's name is the hex of.
 const DRAW_BYTES: usize = 8;
 
-/// What follows a launch's 16 hex digits in the names of its three files: the socket, the lock of QMP sessions
-/// (`<socket>.lock`) and the claim (`<socket>.hold`).
 const SOCKET_SUFFIX: &str = ".sock";
 const LOCK_SUFFIX: &str = ".lock";
 const HOLD_SUFFIX: &str = ".hold";
@@ -53,9 +51,7 @@ pub(crate) enum LaunchFileKind {
 /// Where a machine's QMP socket is, and the files beside it.
 ///
 /// A launch's names are `<run>/<16 hex>.sock` (QEMU makes it), `<name>.lock` (the lock of QMP sessions) and
-/// `<name>.hold` (the launch's claim on the name, held by QEMU while it runs). The names are built by
-/// [`QmpEndpoint::drawn`], [`QmpEndpoint::lock_path`] and [`QmpEndpoint::hold_path`], and read back by
-/// [`QmpEndpoint::launch_file`].
+/// `<name>.hold` (the launch's claim on the name, held by QEMU while it runs).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QmpEndpoint {
     path: PathBuf,
@@ -97,8 +93,7 @@ impl QmpEndpoint {
     ///
     /// Refused first, creating nothing: a directory whose sockets would be over the host's limit (`Unavailable`,
     /// naming the directory, the limit and `XDG_RUNTIME_DIR`). A name whose claim file exists is drawn again, and so is
-    /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete): there is
-    /// no limit on the draws.
+    /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete).
     pub(crate) fn reserve_with(
         host: &dyn Host,
         run: &Path,
@@ -157,7 +152,8 @@ impl QmpEndpoint {
                 }
             }
             if taken {
-                // The claim file just made is this launch's own; the other file is nobody's to delete.
+                // The claim file just made is this launch's own; the other file is nobody's to delete. A socket or lock
+                // found here was already unclaimed (its claim file did not exist), so this branch makes none.
                 hold.delete()
                     .map_err(|e| Error::io(ErrorKind::Io, format!("cannot delete {}", hold_path.display()), e))?;
                 continue;

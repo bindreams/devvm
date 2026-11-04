@@ -38,8 +38,8 @@ mod windows_tests;
 
 pub(crate) use watch::WindowsWatch;
 
-/// The most UTF-16 units a path has and stays plain: `std`'s `get_long_path` (`library/std/src/sys/path/windows.rs`)
-/// returns a path unprefixed only while its units and the NUL are fewer than its `LEGACY_MAX_PATH`, 248.
+/// The most UTF-16 units a path has and stays plain: `std`'s `get_long_path` returns a path unprefixed only while its
+/// units and the NUL are fewer than its `LEGACY_MAX_PATH`, 248.
 const MAX_PLAIN_PATH_UNITS: usize = 246;
 
 /// `path` as the NUL-terminated UTF-16 a Win32 call takes: the one conversion for every call in this host that takes a

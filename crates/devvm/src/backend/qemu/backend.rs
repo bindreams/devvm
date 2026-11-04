@@ -136,9 +136,7 @@ impl Backend for QemuBackend {
     /// a `PATH` of System32 and its own `bin`. Its output goes to `<instance>/qemu.log`. Resolving the sidecar here is
     /// the only place a launch can download it.
     ///
-    /// The control socket's name is drawn at random in the user's runtime directory (`QmpEndpoint::reserve`) together
-    /// with the claim file QEMU inherits, and recorded in the machine's record, so no other machine shares its files
-    /// and a record can delete them only while no QEMU holds the claim.
+    /// The socket and claim file are reserved by `QmpEndpoint::reserve` and recorded in the machine's record.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let install = self.install.get()?;
         let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, &self.run)?;

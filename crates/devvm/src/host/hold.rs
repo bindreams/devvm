@@ -73,8 +73,7 @@ pub(crate) trait Hold: Send + fmt::Debug {
     fn id(&self) -> io::Result<FileId>;
 
     /// Deletes the held file; the hold ends with it. The name is free when this returns, whoever else has the open
-    /// file: where a name outlives the deletion of its file, the file is renamed to its [`deleting_name`] first. The
-    /// file is gone for good only once nobody else holds a duplicate.
+    /// file. The file is gone for good only once nobody else holds a duplicate.
     fn delete(self: Box<Self>) -> io::Result<()>;
 }
 

@@ -41,8 +41,7 @@ fn private_claim_kind(file_name: &str) -> Option<PrivateClaimKind> {
 impl QemuBackend {
     /// Deletes the files of every machine in the runtime directory that is dead.
     ///
-    /// Nothing is made and nothing is waited for. Without a directory, or one without its `runtime.lock`, there is
-    /// nothing to do. A directory that a launch would refuse (`Host::accept_runtime_dir`: a link, a file, another
+    /// Nothing is made and nothing is waited for. A directory that a launch would refuse (`Host::accept_runtime_dir`: a link, a file, another
     /// account's) is warned about and left alone. The lock is tried exclusive: a launch holds it shared while it draws
     /// and claims a name, and another sweep may be running. Either way the pass ends and the next reap tries again.
     ///
@@ -51,7 +50,8 @@ impl QemuBackend {
     /// - its claim file is free: the machine is dead, and the socket, the lock file and the claim file go, in that
     ///   order;
     /// - there is no claim file, no socket, and a lock file: a session that came late made it, and it goes;
-    /// - there is no claim file but a socket: nobody can tell, and it stays.
+    /// - there is no claim file but a socket: no launch leaves a socket without its claim (the claim is made first and
+    ///   deleted last, after the socket and lock are gone), so someone deleted the claim by hand, and the socket stays.
     ///
     /// A claim file's private names (`<claim file>.new`, `<claim file>.<16 hex>.del`) go too: only a launch that died
     /// while making the file, or a delete that died, leaves one.
@@ -140,6 +140,8 @@ impl QemuBackend {
             }
             Ok(HoldOutcome::Busy) => {}
             Ok(HoldOutcome::Absent) => {
+                // Only the lock is examined: a late session can make a lock after the claim is gone, and a socket
+                // cannot appear after that.
                 if lock.exists()
                     && !socket.exists()
                     && let Err(e) = std::fs::remove_file(&lock)

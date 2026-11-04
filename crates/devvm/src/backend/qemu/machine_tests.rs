@@ -135,7 +135,7 @@ fn reset_of_an_attached_no_reboot_machine_is_refused_before_it_asks_qemu_anythin
 fn reset_of_an_attached_machine_sends_only_the_target_query_before_the_host_answers() {
     let sock = Sock::new();
     let (server, log) = serve(sock.listen(), 1, |session, _| {
-        session.answer(json!({ "arch": "x86_64" }));
+        assert_eq!(session.answer(json!({ "arch": "x86_64" })), "query-target");
         assert!(session.command().is_none(), "a command followed the target query");
     });
     let mut machine = attached(&sock, false, &NO_GUEST_RESET, ManualExit::new().watch());

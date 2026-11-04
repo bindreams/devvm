@@ -46,9 +46,8 @@ fn link_error(error: std::io::Error, path: &Path) -> std::io::Error {
     )
 }
 
-/// Creates `path` with `options` (private to the user) and holds it. The name never exists without the hold: the file
-/// is made and locked under its private name, and then linked to `path`, which fails if `path` exists
-/// (`AlreadyExists`, as does a file at the private name, which is another launch's claim in the making).
+/// Creates and holds `path` (see `Host::hold_new`): made and locked as `<path>.new`, then hard-linked to `path`. A file
+/// at either name is `AlreadyExists`.
 pub(super) fn new(mut options: OpenOptions, path: &Path, identity: Identity) -> std::io::Result<Box<dyn Hold>> {
     let private = new_name(path);
     let file = options.read(true).write(true).create_new(true).open(&private)?;
@@ -82,6 +81,13 @@ pub(super) fn existing(options: OpenOptions, path: &Path, identity: Identity) ->
     let file = match options.open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HoldOutcome::Absent),
+        // `options` refuse a link, with an error that differs by system.
+        Err(_) if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_symlink()) => {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("{} is a link", path.display()),
+            ));
+        }
         Err(e) => return Err(e),
     };
     match file.try_lock() {

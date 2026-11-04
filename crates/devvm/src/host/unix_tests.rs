@@ -172,7 +172,9 @@ fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it(#[fixture
     let link = home.join("x.sock.hold");
     std::os::unix::fs::symlink(&victim, &link).unwrap();
 
-    assert!(UnixHost.hold_existing(&link).is_err());
+    let error = UnixHost.hold_existing(&link).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+    assert!(error.to_string().contains("is a link"), "{error}");
 
     assert_eq!(std::fs::read(&victim).unwrap(), b"theirs");
     let file = std::fs::File::open(&victim).unwrap();
