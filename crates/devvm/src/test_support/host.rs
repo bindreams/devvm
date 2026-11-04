@@ -500,6 +500,8 @@ impl Host for RecordingHost {
         self.link_kinds.unwrap_or_else(|| TestHost.symlinks_have_kinds())
     }
 
+    /// Records the call, then fails or makes a real symlink through [`TestHost`]: a test that lets it reach `TestHost`
+    /// joins the `symlinks` group.
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()> {
         self.symlinks_made.lock().unwrap().push(to_dir);
         if self.no_symlinks {
