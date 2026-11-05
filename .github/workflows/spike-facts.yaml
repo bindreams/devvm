@@ -1,0 +1,222 @@
+# Throwaway: OS facts for the "failed check is not gone / delete-pending / lock identity" class (see spike/facts). Never merged.
+name: Spike facts
+
+on:
+  push:
+    branches: [spike-facts]
+    paths: [spike/facts/**, .github/workflows/spike-facts.yaml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FACTS: spike/facts/target/release/facts-spike
+  SPIKE_ACLS: "1"
+  SPIKE_RESERVED: "1"
+
+jobs:
+  windows:
+    name: Facts (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      QEMU_URL: https://github.com/bindreams/devvm/releases/download/qemu-11.1.2-2/qemu-11.1.2-2-x86_64-pc-windows-msvc.zip
+      QEMU_SHA256: 08152d492104cceedd03c976e1d882853c97980921b107566c75e338e517c1d9
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build
+        run: |
+          cargo build --release --locked --manifest-path spike/facts/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/results"
+          rustc -V
+          cmd //c ver
+          id
+
+      - name: Once (known folder)
+        run: $FACTS once 2>&1 | tee "$RUNNER_TEMP/results/once.txt"
+
+      - name: NTFS (runner temp)
+        if: always()
+        run: $FACTS fs ntfs "$RUNNER_TEMP/facts" 2>&1 | tee "$RUNNER_TEMP/results/ntfs.txt"
+
+      - name: Sockets (runner temp)
+        if: always()
+        run: $FACTS sockets ntfs "$RUNNER_TEMP/sock" 2>&1 | tee "$RUNNER_TEMP/results/sockets-ntfs.txt"
+
+      - name: Volumes (exFAT, FAT32, ReFS in a VHD)
+        if: always()
+        continue-on-error: true
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          make_volume() {
+            local label=$1 fs=$2 letter=$3 size=$4
+            local vhd; vhd="$(cygpath -w "$RUNNER_TEMP")\\$label.vhd"
+            cat > "$RUNNER_TEMP/$label.dp" <<EOF
+          create vdisk file="$vhd" maximum=$size type=expandable
+          attach vdisk
+          create partition primary
+          format fs=$fs quick label=$label
+          assign letter=$letter
+          EOF
+            diskpart /s "$(cygpath -w "$RUNNER_TEMP/$label.dp")"
+          }
+          for spec in "exfat exfat R 256" "fat32 fat32 S 512" "refs refs T 2048"; do
+            set -- $spec
+            make_volume "$1" "$2" "$3" "$4" || { echo "volume $1 failed"; continue; }
+            "$FACTS" fs "$1" "$3:/facts" 2>&1 | tee "$RUNNER_TEMP/results/$1.txt" || true
+          done
+
+      - name: SMB loopback share
+        if: always()
+        continue-on-error: true
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          mkdir -p /c/smb-root
+          net share spike='C:\smb-root' /GRANT:Everyone,FULL
+          SPIKE_CYCLES=3000 "$FACTS" fs smb '\\localhost\spike\facts' 2>&1 | tee "$RUNNER_TEMP/results/smb.txt"
+
+      - name: QEMU children
+        if: always()
+        continue-on-error: true
+        run: |
+          curl -X GET -fsSL -o "$RUNNER_TEMP/qemu.zip" "$QEMU_URL"
+          echo "$QEMU_SHA256  $RUNNER_TEMP/qemu.zip" | sha256sum -c -
+          7z x -y -o"$RUNNER_TEMP/qemu" "$RUNNER_TEMP/qemu.zip" > /dev/null
+          qemu="$(find "$RUNNER_TEMP/qemu" -name qemu-system-x86_64.exe | head -n 1)"
+          test -n "$qemu"
+          powershell -NoProfile -File spike/facts/qemu-children.ps1 -Qemu "$(cygpath -w "$qemu")" -Dir "$(cygpath -w "$RUNNER_TEMP/qchild")" 2>&1 | tee "$RUNNER_TEMP/results/qemu-children.txt"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: facts-windows
+          path: ${{ runner.temp }}/results
+
+  linux:
+    name: Facts (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build
+        run: |
+          cargo build --release --locked --manifest-path spike/facts/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/results"
+          rustc -V
+          uname -a
+          id
+          df -T "$RUNNER_TEMP" /dev/shm
+
+      - name: Default file system (runner temp)
+        run: |
+          label="$(stat -f -c %T "$RUNNER_TEMP")"
+          "$FACTS" fs "$label" "$RUNNER_TEMP/facts" 2>&1 | tee "$RUNNER_TEMP/results/default.txt"
+          "$FACTS" sockets "$label" "$RUNNER_TEMP/sock" 2>&1 | tee "$RUNNER_TEMP/results/sockets-default.txt"
+
+      - name: tmpfs
+        if: always()
+        continue-on-error: true
+        run: |
+          sudo mkdir -p /mnt/tmpfs
+          sudo mount -t tmpfs -o "size=256m,uid=$(id -u),gid=$(id -g)" tmpfs /mnt/tmpfs
+          "$FACTS" fs tmpfs /mnt/tmpfs/facts 2>&1 | tee "$RUNNER_TEMP/results/tmpfs.txt"
+          "$FACTS" sockets tmpfs /mnt/tmpfs/sock 2>&1 | tee "$RUNNER_TEMP/results/sockets-tmpfs.txt"
+
+      - name: XDG_RUNTIME_DIR
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"
+          if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+            "$FACTS" sockets xdg-runtime "$XDG_RUNTIME_DIR/facts-sock" 2>&1 | tee "$RUNNER_TEMP/results/sockets-xdg.txt"
+          fi
+
+      - name: Loop-mounted file systems (ext4, vfat, exfat)
+        if: always()
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y --no-install-recommends exfatprogs dosfstools
+          for spec in "ext4 mkfs.ext4 -" "vfat mkfs.vfat uid=$(id -u),gid=$(id -g)" "exfat mkfs.exfat uid=$(id -u),gid=$(id -g)"; do
+            set -- $spec
+            label=$1; mkfs=$2; opts=$3
+            img="$RUNNER_TEMP/$label.img"
+            truncate -s 256M "$img"
+            sudo "$mkfs" "$img" > /dev/null || { echo "mkfs $label failed"; continue; }
+            sudo mkdir -p "/mnt/$label"
+            if [ "$opts" = "-" ]; then mountopts=loop; else mountopts="loop,$opts"; fi
+            sudo mount -o "$mountopts" "$img" "/mnt/$label" || { echo "mount $label failed"; continue; }
+            sudo chown "$(id -u):$(id -g)" "/mnt/$label" || true
+            "$FACTS" fs "$label" "/mnt/$label/facts" 2>&1 | tee "$RUNNER_TEMP/results/$label.txt" || true
+          done
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: facts-linux
+          path: ${{ runner.temp }}/results
+
+  macos:
+    name: Facts (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build
+        run: |
+          cargo build --release --locked --manifest-path spike/facts/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/results"
+          rustc -V
+          sw_vers
+          uname -a
+          id
+          df -h "$RUNNER_TEMP"; mount | head -20
+
+      - name: Default file system (runner temp)
+        run: |
+          "$FACTS" fs apfs "$RUNNER_TEMP/facts" 2>&1 | tee "$RUNNER_TEMP/results/apfs.txt"
+          "$FACTS" sockets apfs "$RUNNER_TEMP/sock" 2>&1 | tee "$RUNNER_TEMP/results/sockets-apfs.txt"
+          echo "TMPDIR=$TMPDIR"
+          "$FACTS" sockets apfs-tmpdir "${TMPDIR%/}/facts-sock" 2>&1 | tee "$RUNNER_TEMP/results/sockets-tmpdir.txt"
+
+      - name: Disk images (exFAT, FAT32, HFS+)
+        if: always()
+        continue-on-error: true
+        run: |
+          for spec in "exfat ExFAT" "fat32 MS-DOS_FAT32" "hfsplus HFS+"; do
+            set -- $spec
+            label=$1; fs="${2//_/ }"
+            img="$RUNNER_TEMP/$label.dmg"
+            hdiutil create -size 256m -fs "$fs" -volname "SPIKE$label" "$img" || { echo "create $label failed"; continue; }
+            hdiutil attach "$img" -mountpoint "/Volumes/spike-$label" || { echo "attach $label failed"; continue; }
+            "$FACTS" fs "$label" "/Volumes/spike-$label/facts" 2>&1 | tee "$RUNNER_TEMP/results/$label.txt" || true
+          done
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: facts-macos
+          path: ${{ runner.temp }}/results
