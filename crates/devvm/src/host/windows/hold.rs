@@ -18,7 +18,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
     FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO,
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, FileDispositionInfoEx, FileRenameInfo,
-    FileRenameInfoEx, OPEN_EXISTING, SetFileInformationByHandle,
+    FileRenameInfoEx, OPEN_ALWAYS, OPEN_EXISTING, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
 
@@ -281,18 +281,40 @@ pub(super) fn new(path: &Path) -> std::io::Result<WindowsHold> {
     Ok(WindowsHold::of(file, path))
 }
 
+/// `InvalidInput`, "is a link", if `file`, opened with `FILE_FLAG_OPEN_REPARSE_POINT`, is the link at `path` and not
+/// what it leads to.
+fn refuse_link(file: &File, path: &Path) -> std::io::Result<()> {
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is a link", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// [`Host::open_lock_file`](crate::host::Host::open_lock_file): opened with `FILE_FLAG_OPEN_REPARSE_POINT`, which opens
+/// a link itself, so the link check on the handle is what refuses it.
+pub(super) fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
+    let creation = if create { OPEN_ALWAYS } else { OPEN_EXISTING };
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    let access = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+    let file = open(path, access, share, creation, FILE_FLAG_OPEN_REPARSE_POINT)?;
+    refuse_link(&file, path)?;
+    Ok(file)
+}
+
 /// Holds the file at `path` if nobody else does. A link at the name is refused. A file that is held
 /// (`ERROR_SHARING_VIOLATION`) is `Busy`: somebody else has it, and it is not absent.
 pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
     match open_hold(path, OPEN_EXISTING) {
-        Ok(file) if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{} is a link", path.display()),
-        )),
-        Ok(file) => Ok(HoldOutcome::Taken(Box::new(WindowsHold::of(
-            file,
-            std::path::absolute(path)?,
-        )))),
+        Ok(file) => {
+            refuse_link(&file, path)?;
+            Ok(HoldOutcome::Taken(Box::new(WindowsHold::of(
+                file,
+                std::path::absolute(path)?,
+            ))))
+        }
         Err(failure) if is_absent(&failure.error) => Ok(HoldOutcome::Absent),
         Err(failure) if failure.is_sharing_violation() => Ok(HoldOutcome::Busy),
         Err(failure) => Err(failure.into()),

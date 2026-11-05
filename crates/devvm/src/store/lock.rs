@@ -1,10 +1,10 @@
 //! OS file locks: the only exclusion primitive in devvm. The OS releases them when the holder dies.
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
-use crate::host::Comparison;
+use crate::host::{Comparison, Host};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -52,30 +52,21 @@ impl FileLock {
 
     /// Opens the lock file, creating it but no directory: for a directory that someone else makes, with permissions of
     /// their own. A missing directory is an error that names it.
+    ///
+    /// No open of a lock file follows a link: a link at `path` is an error ([`Host::open_lock_file`]).
     pub fn open_in_existing_dir(path: &Path) -> Result<FileLock> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|source| {
-                let text = match path.parent() {
-                    // A dangling symlink at `path` also gives NotFound, and then the parent may be there.
-                    Some(parent)
-                        if source.kind() == std::io::ErrorKind::NotFound
-                            && matches!(crate::host::symlink_metadata_if_present(parent), Ok(None)) =>
-                    {
-                        format!(
-                            "cannot open lock file {}: {} does not exist",
-                            path.display(),
-                            parent.display()
-                        )
-                    }
-                    _ => format!("cannot open lock file {}", path.display()),
-                };
-                Error::io(ErrorKind::Io, text, source)
-            })?;
+        let file = crate::host::current().open_lock_file(path, true).map_err(|source| {
+            // The file is made if it is missing, so only its directory can be.
+            let text = match path.parent() {
+                Some(parent) if source.kind() == std::io::ErrorKind::NotFound => format!(
+                    "cannot open lock file {}: {} does not exist",
+                    path.display(),
+                    parent.display()
+                ),
+                _ => format!("cannot open lock file {}", path.display()),
+            };
+            Error::io(ErrorKind::Io, text, source)
+        })?;
         Ok(FileLock {
             path: path.to_owned(),
             file,
@@ -83,15 +74,16 @@ impl FileLock {
         })
     }
 
-    /// Opens an existing lock file without creating it or its directories; `None` if it is absent.
+    /// Opens an existing lock file without creating it or its directories; `None` if it is absent
+    /// ([`crate::host::is_absent`]).
     pub fn open_existing(path: &Path) -> Result<Option<FileLock>> {
-        match OpenOptions::new().read(true).write(true).open(path) {
+        match crate::host::current().open_lock_file(path, false) {
             Ok(file) => Ok(Some(FileLock {
                 path: path.to_owned(),
                 file,
                 held: false,
             })),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) if crate::host::is_absent(&source) => Ok(None),
             Err(source) => Err(Error::io(
                 ErrorKind::Io,
                 format!("cannot open lock file {}", path.display()),
@@ -169,36 +161,25 @@ impl FileLock {
     }
 
     /// How the file at [`FileLock::path`] compares with the file this lock is on: `Same`; `Different`, another file
-    /// put at the name after this was opened (the file unlinked, renamed away or replaced); or `Absent`, no file there.
+    /// put at the name after this was opened (the file unlinked, renamed away or replaced, by a link too); or `Absent`,
+    /// no file there.
     ///
     /// The open handle stays open across the look, which is what makes the answer sound: a file system gives the id of
     /// a file to another only after the last handle to it closes. The caller keeps unlinkers away for the look (see
-    /// `Locks`); a lookup that fails is an error, never `Absent`. A link at the path is an error too: opening follows
-    /// it and the look does not, so the two would differ for ever.
+    /// `Locks`); a lookup that fails is an error, never `Absent`.
     pub(crate) fn is_at_path(&self) -> Result<Comparison> {
         let host = crate::host::current();
         let held = host
             .file_id_of_open(&self.file)
             .map_err(|e| self.failure("look at", e))?;
-        match held.compare(host.file_id(&self.path)) {
-            Ok(Comparison::Different) => match crate::host::symlink_metadata_if_present(&self.path) {
-                Ok(Some(meta)) if meta.file_type().is_symlink() => Err(Error::new(
-                    ErrorKind::Io,
-                    format!("the lock file {} is a link", self.path.display()),
-                )),
-                Ok(_) => Ok(Comparison::Different),
-                Err(e) => Err(self.failure("look at", e)),
-            },
-            Ok(other) => Ok(other),
-            Err(e) => Err(self.failure("look at", e)),
-        }
+        held.compare(host.file_id(&self.path))
+            .map_err(|e| self.failure("look at", e))
     }
 
     /// Whether the volume of this file has POSIX unlink and rename (NTFS, ReFS), which the lock files of `Locks` rely
-    /// on.
-    pub(crate) fn volume_has_posix_unlink_rename(&self) -> Result<bool> {
-        crate::host::current()
-            .volume_has_posix_unlink_rename(&self.file)
+    /// on, by the answer of `host`.
+    pub(crate) fn volume_has_posix_unlink_rename(&self, host: &dyn Host) -> Result<bool> {
+        host.volume_has_posix_unlink_rename(&self.file)
             .map_err(|e| self.failure("look at the volume of", e))
     }
 

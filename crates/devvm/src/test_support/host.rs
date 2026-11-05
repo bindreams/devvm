@@ -138,6 +138,10 @@ impl Host for TestHost {
         host::current().hold_new(path)
     }
 
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        host::current().open_lock_file(path, create)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         host::current().hold_existing(path)
     }
@@ -276,6 +280,10 @@ impl Host for NoAccelHost {
         TestHost.hold_new(path)
     }
 
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        TestHost.open_lock_file(path, create)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         TestHost.hold_existing(path)
     }
@@ -292,6 +300,8 @@ impl Host for NoAccelHost {
 pub struct RecordingHost {
     windows_names: bool,
     no_symlinks: bool,
+    /// `volume_has_posix_unlink_rename` says no, as it does for exFAT or FAT32.
+    no_posix_unlink: bool,
     /// What `symlinks_have_kinds` answers; the real host's answer when unset.
     link_kinds: Option<bool>,
     /// The `to_dir` of every `make_symlink` call, in call order, failed calls included.
@@ -337,6 +347,14 @@ impl RecordingHost {
     pub fn without_symlinks() -> RecordingHost {
         RecordingHost {
             no_symlinks: true,
+            ..RecordingHost::default()
+        }
+    }
+
+    /// A host whose volumes have no POSIX unlink and rename, as a Windows host with the state directory on exFAT.
+    pub fn without_posix_unlink() -> RecordingHost {
+        RecordingHost {
+            no_posix_unlink: true,
             ..RecordingHost::default()
         }
     }
@@ -565,12 +583,19 @@ impl Host for RecordingHost {
     }
 
     fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        if self.no_posix_unlink {
+            return Ok(false);
+        }
         TestHost.volume_has_posix_unlink_rename(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         self.holds_made.lock().unwrap().push(path.to_owned());
         TestHost.hold_new(path)
+    }
+
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        TestHost.open_lock_file(path, create)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
@@ -712,6 +737,10 @@ impl Host for NoGuestReset {
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         host::current().hold_new(path)
+    }
+
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        host::current().open_lock_file(path, create)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

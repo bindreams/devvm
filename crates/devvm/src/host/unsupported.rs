@@ -24,8 +24,8 @@ pub(super) trait FileModes: Send + Sync {
     /// Options that create a file readable and writable by its owner only, from the first moment it exists.
     fn private_options(&self) -> OpenOptions;
 
-    /// Options that open an existing file for reading and writing, and refuse a symlink at its name instead of opening
-    /// what it leads to where the system can. `hold::existing` looks at the name first on every host.
+    /// Options that open a file for reading and writing, and refuse a symlink at its name instead of opening what it
+    /// leads to where the system can. `hold::open_refusing_links` looks at the name first on every host.
     fn hold_options(&self) -> OpenOptions;
 
     /// [`Host::socket_path_max`].
@@ -228,6 +228,10 @@ impl<M: FileModes> Host for M {
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         hold::new(self, path)
+    }
+
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        hold::open_refusing_links(self, path, create)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

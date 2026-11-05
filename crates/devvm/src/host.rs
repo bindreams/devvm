@@ -219,6 +219,11 @@ pub(crate) trait Host: Send + Sync {
     /// does not allow hard links is an error that names the directory and `XDG_RUNTIME_DIR`.
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>>;
 
+    /// Opens the lock file `path` for reading and writing with the default sharing (other opens, deletes and renames
+    /// are allowed), making it if `create`. A link at `path` is `InvalidInput`, "is a link": it is not opened through,
+    /// so a lock is never taken on what a link leads to.
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File>;
+
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
     /// `path` is `InvalidInput`, "is a link": it is not opened through.
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;

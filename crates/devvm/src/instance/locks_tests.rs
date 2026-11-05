@@ -4,18 +4,19 @@ use std::process::Stdio;
 
 use crate::ErrorKind;
 use crate::exit::NullProgress;
-use crate::host::Comparison;
+use crate::host::{self, Comparison};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::record::InstanceId;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::helper;
+use crate::test_support::host::RecordingHost;
 use crate::test_support::name_change::NameChange;
 use crate::test_support::symlink::symlink;
 
 fn locks(home: &Path) -> Locks {
-    Locks::new(home.join("locks"))
+    Locks::new(home.join("locks"), host::current())
 }
 
 #[skuld::test]
@@ -273,7 +274,7 @@ fn op_wait_that_wakes_on_a_replaced_file_takes_the_file_at_the_name(#[fixture(un
 }
 
 #[skuld::test]
-fn a_link_at_a_lock_name_is_an_error_naming_the_file_and_not_a_loop(
+fn a_link_at_a_lock_name_is_an_error_naming_the_file_held_or_free_target_alike(
     #[fixture(unicode_home)] home: &Path,
     #[fixture(symlinks)] _group: &Group,
 ) {
@@ -281,20 +282,39 @@ fn a_link_at_a_lock_name_is_an_error_naming_the_file_and_not_a_loop(
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
     let (owner, op) = (locks.owner_path(&id), locks.op_path(&id));
+    let mut targets = Vec::new();
     for path in [&owner, &op] {
-        let target = path.with_extension("target");
+        let mut target = path.clone().into_os_string();
+        target.push(".target");
+        let target = std::path::PathBuf::from(target);
         std::fs::rename(path, &target).unwrap();
         symlink(&target, path);
+        targets.push(target);
     }
     let named = |error: crate::Error, path: &Path| {
         assert!(error.message().contains(&path.display().to_string()), "{error}");
         assert!(error.message().contains("link"), "{error}");
     };
-    named(locks.acquire_owner_new(&id).map(drop).unwrap_err(), &owner);
-    named(locks.try_owner_recreating(&id).map(drop).unwrap_err(), &owner);
-    named(locks.try_owner(&id).map(drop).unwrap_err(), &owner);
-    named(locks.try_op_exclusive(&id).map(drop).unwrap_err(), &op);
-    named(locks.op_shared(&id, "x", &NullProgress).map(drop).unwrap_err(), &op);
+    let check = || {
+        named(locks.acquire_owner_new(&id).map(drop).unwrap_err(), &owner);
+        named(locks.try_owner_recreating(&id).map(drop).unwrap_err(), &owner);
+        named(locks.try_owner(&id).map(drop).unwrap_err(), &owner);
+        named(locks.try_op_exclusive(&id).map(drop).unwrap_err(), &op);
+        named(locks.op_shared(&id, "x", &NullProgress).map(drop).unwrap_err(), &op);
+        named(locks.op_exclusive(&id, "x", &NullProgress).map(drop).unwrap_err(), &op);
+    };
+    // Held by another open in this process: the link is still the answer, and no take waits for the target.
+    let held: Vec<FileLock> = targets
+        .iter()
+        .map(|target| {
+            let mut lock = FileLock::open(target).unwrap();
+            assert!(lock.try_lock(Mode::Exclusive).unwrap());
+            lock
+        })
+        .collect();
+    check();
+    drop(held);
+    check();
 }
 
 #[skuld::test]
@@ -666,9 +686,25 @@ fn a_failed_unlink_of_the_op_file_leaves_the_owner_file_for_the_sweep(#[fixture(
 }
 
 #[skuld::test]
-fn a_volume_without_posix_unlink_is_not_supported_and_names_the_requirement() {
-    let error = crate::instance::locks::unsupported_volume(Path::new("state/locks"));
-    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
-    assert!(error.message().contains("state/locks"), "{}", error.message());
-    assert!(error.message().contains("NTFS or ReFS"), "{}", error.message());
+fn a_lock_take_on_a_volume_without_posix_unlink_is_not_supported_and_names_the_requirement(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let host: &'static RecordingHost = Box::leak(Box::new(RecordingHost::without_posix_unlink()));
+    let locks = Locks::new(home.join("locks"), host);
+    let id = InstanceId::random();
+
+    let errors = [
+        locks.acquire_owner_new(&id).map(drop).unwrap_err(),
+        locks.try_owner_recreating(&id).map(drop).unwrap_err(),
+        locks.excluding_readers(&mut || {}, || ()).unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+        assert!(error.message().contains("NTFS or ReFS"), "{}", error.message());
+        assert!(
+            error.message().contains(&home.join("locks").display().to_string()),
+            "{}",
+            error.message()
+        );
+    }
 }

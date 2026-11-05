@@ -258,15 +258,37 @@ fn a_lock_is_absent_from_its_path_once_the_name_is_unlinked(#[fixture(unicode_ho
 }
 
 #[skuld::test]
-fn a_link_at_the_lock_name_is_an_error_naming_the_file(
+fn a_link_at_the_lock_name_is_an_error_at_every_open(
     #[fixture(unicode_home)] home: &Path,
     #[fixture(symlinks)] _group: &Group,
 ) {
-    let (target, link) = (home.join("target"), home.join("a.lock"));
+    let (target, dangling, link) = (home.join("target"), home.join("nowhere"), home.join("a.lock"));
     std::fs::write(&target, b"").unwrap();
-    symlink(&target, &link);
-    let lock = FileLock::open(&link).unwrap();
-    let error = lock.is_at_path().unwrap_err();
-    assert!(error.message().contains(&link.display().to_string()), "{error}");
-    assert!(error.message().contains("link"), "{error}");
+    for leads_to in [&target, &dangling] {
+        let _ = std::fs::remove_file(&link);
+        symlink(leads_to, &link);
+        let errors = [
+            FileLock::open(&link).unwrap_err(),
+            FileLock::open_in_existing_dir(&link).unwrap_err(),
+            FileLock::open_existing(&link).map(drop).unwrap_err(),
+        ];
+        for error in errors {
+            assert!(error.message().contains(&link.display().to_string()), "{error}");
+            assert!(error.message().contains("link"), "{error}");
+        }
+    }
+    assert!(!dangling.exists(), "no open made the target of a dangling link");
+}
+
+#[skuld::test]
+fn open_existing_reads_every_absent_path_as_none(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("file");
+    std::fs::write(&file, b"").unwrap();
+    for path in [
+        home.join("missing").join("a.lock"),
+        file.join("a.lock"),
+        home.join("a|b.lock"),
+    ] {
+        assert!(FileLock::open_existing(&path).unwrap().is_none(), "{}", path.display());
+    }
 }
