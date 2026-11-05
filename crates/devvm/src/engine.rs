@@ -100,7 +100,7 @@ impl Engine {
     }
 
     pub(crate) fn with_parts(parts: EngineParts) -> Arc<Engine> {
-        let registry = Registry::new(&parts.dirs, parts.progress.clone(), parts.backend.clone());
+        let registry = Registry::new(&parts.dirs, parts.progress.clone(), parts.backend.clone(), parts.host);
         Arc::new(Engine {
             dirs: parts.dirs,
             host: parts.host,

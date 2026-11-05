@@ -1,20 +1,24 @@
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use super::{Qmp, QmpEndpoint, VmEnd};
+use super::{LaunchFileKind, Qmp, QmpEndpoint, VmEnd};
 use crate::ErrorKind;
 use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
-use crate::host::{self, Link, ProcessWatch};
-use crate::instance::record::InstanceId;
+use crate::exit::NullProgress;
+use crate::host::{self, HoldOutcome, Link, ProcessWatch};
+use crate::random;
+use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, unicode_socket_dir};
+use crate::test_support::claimed::claim_file;
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress};
+use crate::test_support::host::RecordingHost;
 use crate::test_support::manual_exit::ManualExit;
-use crate::test_support::qemu::{Sock, assert_unicode_socket_path, socket_dir};
+use crate::test_support::qemu::{Sock, assert_unicode_socket_path, scratch_run, socket_dir};
 use crate::test_support::refusing::{REFUSED, Refusing};
 
 // A fake QMP server ===================================================================================================
@@ -157,110 +161,289 @@ impl Sock {
     }
 
     pub(crate) fn connect(&self) -> crate::Result<Qmp> {
-        Qmp::connect(&self.endpoint, &ManualExit::new().watch(), &MemoryProgress::default())
+        Qmp::connect(
+            host::current(),
+            &self.endpoint,
+            &self.claim,
+            &ManualExit::new().watch(),
+            &MemoryProgress::default(),
+        )
     }
 }
 
 // Endpoint ============================================================================================================
 
-/// `endpoint`'s file name without `dvm-<id>-` and `.sock`.
-fn launch_part(endpoint: &QmpEndpoint, id: &InstanceId) -> String {
-    let name = endpoint.path().file_name().unwrap().to_string_lossy().into_owned();
-    name.strip_prefix(&format!("dvm-{id}-"))
-        .and_then(|rest| rest.strip_suffix(".sock"))
-        .unwrap_or_else(|| panic!("{name}"))
-        .to_owned()
+/// A draw that gives the 8 bytes `n`, big-endian.
+fn draw_of(n: u64) -> impl FnMut() -> [u8; super::DRAW_BYTES] {
+    move || n.to_be_bytes()
 }
 
-fn endpoint_for(temp: &Path, id: &InstanceId, launch: u64) -> crate::Result<QmpEndpoint> {
-    QmpEndpoint::for_launch(temp, id, launch, host::current().socket_path_max())
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+/// The sweep reads back what a launch wrote.
+#[skuld::test]
+fn a_launch_files_name_gives_back_its_launch_and_kind() {
+    let endpoint = QmpEndpoint::drawn(Path::new("run"), [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]);
+    let name = |path: &Path| path.file_name().unwrap().to_str().unwrap().to_owned();
+
+    for (path, kind) in [
+        (endpoint.path().to_path_buf(), LaunchFileKind::Socket),
+        (endpoint.lock_path(), LaunchFileKind::Lock),
+        (endpoint.hold_path(), LaunchFileKind::Claim),
+    ] {
+        assert_eq!(
+            QmpEndpoint::launch_file(&name(&path)),
+            Some(("0123456789abcdef", kind)),
+            "{}",
+            path.display()
+        );
+    }
+    assert_eq!(QmpEndpoint::of_launch(Path::new("run"), "0123456789abcdef"), endpoint);
+    assert_eq!(QmpEndpoint::launch_file("0123456789abcdef.hold"), None);
+    assert_eq!(QmpEndpoint::launch_file("0123456789ABCDEF.sock"), None);
 }
 
 #[skuld::test]
-fn two_launches_of_one_instance_get_different_socket_and_lock_paths() {
-    let temp = Path::new("temp");
-    let id = InstanceId::random();
-    let a = endpoint_for(temp, &id, 1).unwrap();
-    let b = endpoint_for(temp, &id, 2).unwrap();
-    assert_ne!(a.path(), b.path());
-    assert_ne!(a.lock_path(), b.lock_path());
-    assert!(a.path().starts_with(temp));
-    assert_eq!(launch_part(&a, &id), "1");
-    assert_eq!(launch_part(&b, &id), "2");
-    let last = endpoint_for(temp, &id, u64::MAX).unwrap();
-    assert_eq!(launch_part(&last, &id), u64::MAX.to_string());
+fn reserve_makes_a_16_hex_sock_name_with_a_hold_beside_it_and_creates_the_directory() {
+    let parent = scratch_run();
+    let run = parent.path().join("d");
+    assert!(QmpEndpoint::fits(&run, host::current().socket_path_max()));
+
+    let reservation = QmpEndpoint::reserve(host::current(), &run, &NullProgress).unwrap();
+
+    let name = reservation
+        .endpoint
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let hex = name.strip_suffix(".sock").unwrap_or_else(|| panic!("{name}"));
+    assert!(random::is_hex(hex, super::DRAW_BYTES), "{name}");
+    assert_eq!(reservation.endpoint.path().parent().unwrap(), run);
+    assert_eq!(reservation.claim.path, reservation.endpoint.hold_path());
+    assert_eq!(reservation.claim.path, run.join(format!("{name}.hold")));
+    assert_eq!(reservation.endpoint.lock_path(), run.join(format!("{name}.lock")));
+    assert_eq!(
+        reservation.claim.id,
+        host::current().file_id(&reservation.claim.path).unwrap()
+    );
+    // QEMU makes the socket and the first session makes the lock file; the launch makes the claim and the lock of the
+    // directory.
+    assert_eq!(names_in(&run), [format!("{name}.hold"), "runtime.lock".to_owned()]);
+}
+
+/// Only `create_runtime_dir` makes the directory, with its owner and access set in one call; a directory gone since
+/// then is an error that names it, not one made again with the access its parent gives.
+#[skuld::test]
+fn reserve_over_a_run_dir_removed_after_it_was_made_fails_naming_it_and_makes_nothing() {
+    let parent = scratch_run();
+    let run = parent.path().join("d");
+    let host = RecordingHost::new();
+    host.remove_runtime_dirs_after_making_them();
+
+    let error = QmpEndpoint::reserve(&host, &run, &NullProgress).unwrap_err();
+
+    assert!(error.message().contains(&run.display().to_string()), "{error}");
+    assert!(!run.exists());
+}
+
+/// The identity of the claim is the held file's, not whatever a name leads to once the hold is made.
+#[skuld::test]
+fn the_claims_identity_comes_from_the_hold_not_from_a_lookup_by_name() {
+    let run = scratch_run();
+    let host = RecordingHost::new();
+    host.fail_file_id();
+
+    let reservation = QmpEndpoint::reserve(&host, run.path(), &NullProgress).unwrap();
+
+    assert_eq!(reservation.claim.id, reservation.hold.id().unwrap());
 }
 
 #[skuld::test]
-fn the_same_launch_number_of_one_instance_names_the_same_path() {
-    let temp = Path::new("temp");
-    let id = InstanceId::random();
-    assert_eq!(endpoint_for(temp, &id, 5).unwrap(), endpoint_for(temp, &id, 5).unwrap());
+fn two_reservations_get_two_names() {
+    let run = scratch_run();
+    let a = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
+    let b = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
+    assert_ne!(a.endpoint.path(), b.endpoint.path());
 }
 
 #[skuld::test]
-fn endpoints_of_different_instances_differ() {
-    let temp = Path::new("temp");
-    let a = endpoint_for(temp, &InstanceId::random(), 1).unwrap();
-    let b = endpoint_for(temp, &InstanceId::random(), 1).unwrap();
-    assert_ne!(a.path(), b.path());
+fn reserve_with_redraws_a_taken_name() {
+    let run = scratch_run();
+    let first = QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut draw_of(7)).unwrap();
+    let mut draws = vec![7u64, 8].into_iter();
+    let second = QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut || {
+        draws.next().expect("a draw after the free name 8").to_be_bytes()
+    })
+    .unwrap();
+    assert_eq!(first.endpoint, QmpEndpoint::drawn(run.path(), 7u64.to_be_bytes()));
+    assert_eq!(second.endpoint, QmpEndpoint::drawn(run.path(), 8u64.to_be_bytes()));
+    assert!(draws.next().is_none(), "no draw after 8 was needed");
+}
+
+/// A name the first draw hits again goes on for as long as it takes: there is no count of tries.
+#[skuld::test]
+fn reserve_with_goes_on_redrawing_for_as_long_as_names_are_taken() {
+    let run = scratch_run();
+    let _taken: Vec<_> = (0..50u64)
+        .map(|n| QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut draw_of(n)).unwrap())
+        .collect();
+    let mut next = 0u64;
+    let reservation = QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut || {
+        next += 1;
+        (next - 1).to_be_bytes()
+    })
+    .unwrap();
+    assert_eq!(next, 51);
+    assert_eq!(
+        reservation.endpoint,
+        QmpEndpoint::drawn(run.path(), 50u64.to_be_bytes())
+    );
+}
+
+/// No claim is made for the taken name: a launch killed between making one and giving it back would leave a free
+/// claim beside a file it did not make, and the next sweep would delete both.
+#[skuld::test]
+fn reserve_with_redraws_when_an_orphan_socket_or_lock_has_the_name_and_makes_no_claim_for_it() {
+    let run = scratch_run();
+    let drawn = |n: u64| QmpEndpoint::drawn(run.path(), n.to_be_bytes());
+    for (n, orphan) in [(1u64, drawn(1).path().to_path_buf()), (2, drawn(2).lock_path())] {
+        std::fs::write(&orphan, b"left by a machine that is gone").unwrap();
+        let host = RecordingHost::new();
+        let mut draws = vec![n, n + 100].into_iter();
+        let reservation = QmpEndpoint::reserve_with(&host, run.path(), &NullProgress, &mut || {
+            draws.next().unwrap().to_be_bytes()
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&orphan).unwrap(), b"left by a machine that is gone");
+        assert_eq!(host.holds_made(), [drawn(n + 100).hold_path()]);
+        assert_eq!(reservation.endpoint, drawn(n + 100));
+    }
 }
 
 #[skuld::test]
-fn from_record_gives_the_same_endpoint_and_lock_as_for_launch() {
-    let id = InstanceId::random();
-    let made = endpoint_for(Path::new("temp"), &id, 3).unwrap();
+fn reserve_over_a_too_long_run_dir_is_refused_creating_nothing() {
+    let home = socket_dir();
+    let run = home.join("x".repeat(host::current().socket_path_max()));
+    let error = QmpEndpoint::reserve(host::current(), &run, &NullProgress).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains(&run.display().to_string()), "{error}");
+    assert!(error.message().contains("XDG_RUNTIME_DIR"), "{error}");
+    assert!(
+        error
+            .message()
+            .contains(&format!("{}-byte", host::current().socket_path_max())),
+        "{error}"
+    );
+    assert!(!run.exists());
+}
+
+#[skuld::test]
+fn the_limit_counts_utf8_bytes_not_characters() {
+    // 30 four-byte characters are 120 bytes.
+    let wide = Path::new("C:\\t").join("\u{1f600}".repeat(30));
+    assert!(!QmpEndpoint::fits(&wide, 107));
+    assert!(QmpEndpoint::fits(Path::new("C:\\t"), 107));
+}
+
+#[skuld::test]
+fn a_run_dir_that_fits_exactly_is_accepted() {
+    let run = Path::new("run");
+    let longest = run.join("0000000000000000.sock").to_string_lossy().len();
+    assert!(QmpEndpoint::fits(run, longest));
+    assert!(!QmpEndpoint::fits(run, longest - 1));
+}
+
+/// From a drawn name to the taken claim a sweep must not run: the name is not yet a launch's.
+#[skuld::test]
+fn reserving_holds_the_run_dirs_lock_shared_while_a_name_is_drawn_and_not_yet_claimed() {
+    let run = scratch_run();
+    let mut sweeper = FileLock::open(&run.path().join("runtime.lock")).unwrap();
+    let mut during = None;
+    QmpEndpoint::reserve_with(host::current(), run.path(), &NullProgress, &mut || {
+        during = Some(sweeper.try_lock(Mode::Exclusive).unwrap());
+        7u64.to_be_bytes()
+    })
+    .unwrap();
+    assert_eq!(during, Some(false));
+}
+
+/// The claim is held from the moment the reservation returns, so a sweep that finds it `Busy` skips the launch.
+#[skuld::test]
+fn reserve_lets_go_of_the_run_dirs_lock_when_it_returns() {
+    let run = scratch_run();
+    let reservation = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
+    let mut sweeper = FileLock::open(&run.path().join("runtime.lock")).unwrap();
+    assert!(sweeper.try_lock(Mode::Exclusive).unwrap());
+    assert!(matches!(
+        host::current().hold_existing(&reservation.claim.path).unwrap(),
+        HoldOutcome::Busy
+    ));
+}
+
+#[skuld::test]
+fn the_reservation_holds_its_claim_until_it_is_dropped() {
+    let run = scratch_run();
+    let reservation = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress).unwrap();
+    let claim = reservation.claim.path.clone();
+    assert!(matches!(
+        host::current().hold_existing(&claim).unwrap(),
+        HoldOutcome::Busy
+    ));
+    drop(reservation);
+    assert!(matches!(
+        host::current().hold_existing(&claim).unwrap(),
+        HoldOutcome::Taken(_)
+    ));
+}
+
+#[skuld::test]
+fn from_record_gives_the_same_endpoint_and_files_as_reserve() {
+    let run = scratch_run();
+    let made = QmpEndpoint::reserve(host::current(), run.path(), &NullProgress)
+        .unwrap()
+        .endpoint;
     let recorded = QmpEndpoint::from_record(&made.path().display().to_string());
     assert_eq!(recorded, made);
     assert_eq!(recorded.lock_path(), made.lock_path());
-    let mut expected = made.path().as_os_str().to_owned();
-    expected.push(".lock");
-    assert_eq!(made.lock_path(), PathBuf::from(expected));
+    assert_eq!(recorded.hold_path(), made.hold_path());
 }
 
 #[skuld::test]
-fn a_launch_whose_socket_or_lock_file_exists_is_refused_naming_it() {
-    let home = &socket_dir();
-    let id = InstanceId::random();
-    let free = endpoint_for(home, &id, 4).unwrap();
-    for stale in [free.path().to_path_buf(), free.lock_path()] {
-        std::fs::write(&stale, b"left by an earlier machine").unwrap();
-        let error = endpoint_for(home, &id, 4).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
-        assert!(error.message().contains(&stale.display().to_string()), "{error}");
-        assert_eq!(
-            std::fs::read(&stale).unwrap(),
-            b"left by an earlier machine",
-            "a refused launch leaves the file alone"
-        );
-        endpoint_for(home, &id, 5).expect("the next launch number is free");
-        std::fs::remove_file(&stale).unwrap();
-    }
-    endpoint_for(home, &id, 4).expect("with both files gone, the name is free again");
-}
-
-#[skuld::test]
-fn a_socket_path_over_the_given_limit_is_refused_before_launch() {
-    let temp = Path::new("temp");
-    let id = InstanceId::random();
-    // The same launch number gives a path of the same length, so the length of one is the exact limit of the next.
-    let length = QmpEndpoint::for_launch(temp, &id, 1, usize::MAX)
-        .unwrap()
-        .path()
-        .to_string_lossy()
-        .len();
-
-    assert!(
-        QmpEndpoint::for_launch(temp, &id, 1, length).is_ok(),
-        "a path of exactly the limit fits"
+fn a_launchs_files_are_the_socket_the_lock_and_the_claim_last() {
+    let endpoint = QmpEndpoint::drawn(Path::new("run"), 1u64.to_be_bytes());
+    assert_eq!(
+        endpoint.launch_files(),
+        [
+            endpoint.path().to_path_buf(),
+            endpoint.lock_path(),
+            endpoint.hold_path()
+        ]
     );
-    let error = QmpEndpoint::for_launch(temp, &id, 1, length - 1).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
-    assert!(error.message().contains(&format!("{}-byte", length - 1)), "{error}");
+}
 
-    // The limit counts UTF-8 bytes, not characters: 30 four-byte characters are 120 bytes.
-    let wide = Path::new("C:\\t").join("\u{1f600}".repeat(30));
-    assert!(QmpEndpoint::for_launch(&wide, &id, 1, 107).is_err());
+/// A launch that waits for a sweep says so: the message is the only sign of life while it waits.
+#[skuld::test]
+fn reserve_says_what_it_waits_for_while_a_sweep_holds_the_run_dirs_lock() {
+    let run = scratch_run();
+    let mut sweeper = FileLock::open(&run.path().join("runtime.lock")).unwrap();
+    assert!(sweeper.try_lock(Mode::Exclusive).unwrap());
+    let (progress, messages) = ChannelProgress::new();
+
+    std::thread::scope(|scope| {
+        let launch = scope.spawn(|| QmpEndpoint::reserve(host::current(), run.path(), &*progress));
+        assert_eq!(messages.recv().unwrap(), "waiting for a sweep of the runtime directory");
+        sweeper.unlock().unwrap();
+        launch.join().unwrap().unwrap();
+    });
 }
 
 #[skuld::test]
@@ -313,7 +496,16 @@ fn connect_waits_for_the_listener() {
     let exit = ManualExit::new().watch();
 
     std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &exit, &MemoryProgress::default()).map(drop));
+        let client = scope.spawn(|| {
+            Qmp::connect(
+                host::current(),
+                &sock.endpoint,
+                &sock.claim,
+                &exit,
+                &MemoryProgress::default(),
+            )
+            .map(drop)
+        });
         let (server, _) = serve(sock.listen(), 1, |_, _| {});
         client.join().unwrap().unwrap();
         server.join().unwrap();
@@ -325,11 +517,111 @@ fn a_machine_that_has_exited_fails_before_a_lock_file_is_touched() {
     let sock = sock();
     let exit = ManualExit::new();
     exit.exit();
-    let error = Qmp::connect(&sock.endpoint, &exit.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &exit.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(!sock.endpoint.lock_path().exists());
+}
+
+/// Nothing serves the connection, so a connect that went on to negotiate would wait for ever: the error is the drop.
+#[skuld::test]
+fn a_claim_replaced_by_another_launchs_file_is_a_lost_connection_naming_the_claim_file() {
+    let sock = sock();
+    // The old file stays, so the new one cannot be given its identity again.
+    let old = sock.claim.path.with_extension("old");
+    std::fs::rename(&sock.claim.path, &old).unwrap();
+    claim_file(host::current(), &sock.claim.path).unwrap();
+    // The connection is made by the kernel's backlog; nothing accepts it, and nothing needs to.
+    let _listener = sock.listen();
+
+    let error = sock.connect().err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(
+        error.message().contains(&sock.claim.path.display().to_string()),
+        "{error}"
+    );
+    assert!(error.message().contains("another launch's file"), "{error}");
+    let _ = std::fs::remove_file(old);
+}
+
+/// Nothing serves the connection and the process never exits, so a connect that did not refuse would wait for ever.
+#[skuld::test]
+fn a_claim_removed_while_the_process_runs_is_a_lost_connection_naming_the_claim_file() {
+    let sock = sock();
+    std::fs::remove_file(&sock.claim.path).unwrap();
+    let _listener = sock.listen();
+
+    let error = sock.connect().err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(
+        error.message().contains(&sock.claim.path.display().to_string()),
+        "{error}"
+    );
+    assert!(error.message().contains("gone"), "{error}");
+}
+
+/// The lock is held elsewhere for the whole test: the wait for it ends only because the process exited.
+#[skuld::test]
+fn a_process_that_exits_while_connect_waits_for_the_lock_ends_the_wait() {
+    let sock = sock();
+    let process = ManualExit::new();
+    let mut holder = FileLock::open_in_existing_dir(&sock.endpoint.lock_path()).unwrap();
+    holder
+        .lock(Mode::Exclusive, "the test", &MemoryProgress::default())
+        .unwrap();
+    let (progress, messages) = ChannelProgress::new();
+
+    let error = std::thread::scope(|scope| {
+        let client = scope.spawn(|| {
+            Qmp::connect(
+                host::current(),
+                &sock.endpoint,
+                &sock.claim,
+                &process.watch(),
+                &*progress,
+            )
+        });
+        let message = messages.recv().unwrap();
+        assert!(message.starts_with("waiting for "), "{message}");
+        process.exit();
+        client.join().unwrap().err().expect("the lock was never free")
+    });
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("exited"), "{error}");
+    drop(holder);
+}
+
+/// The runtime directory is made by `create_runtime_dir` alone, for the user alone: a session on a machine whose
+/// directory is gone must not make one with the inherited permissions.
+#[skuld::test]
+fn connect_does_not_make_a_missing_run_dir_and_names_it() {
+    let run = scratch_run();
+    let gone = run.path().join("gone");
+    let endpoint = QmpEndpoint::drawn(&gone, 1u64.to_be_bytes());
+
+    let sock = sock();
+    let error = Qmp::connect(
+        host::current(),
+        &endpoint,
+        &sock.claim,
+        &ManualExit::new().watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .expect("there is no directory to lock in");
+
+    assert!(error.message().contains(&gone.display().to_string()), "{error}");
+    assert!(!gone.exists());
 }
 
 /// Ends `process` once `server` is done, from a thread of its own, while the calling thread reads the connection.
@@ -349,7 +641,15 @@ fn a_process_that_exits_while_connect_waits_for_the_listener_ends_the_wait() {
     let process = ManualExit::new();
 
     let error = std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()));
+        let client = scope.spawn(|| {
+            Qmp::connect(
+                host::current(),
+                &sock.endpoint,
+                &sock.claim,
+                &process.watch(),
+                &MemoryProgress::default(),
+            )
+        });
         process.exit();
         client.join().unwrap().err().expect("nothing ever listens")
     });
@@ -370,9 +670,15 @@ fn a_peer_that_closes_before_the_greeting_fails_as_a_lost_connection_and_keeps_t
             drop(stream);
             process.exit();
         });
-        let error = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default())
-            .err()
-            .expect("QEMU never greeted");
+        let error = Qmp::connect(
+            host::current(),
+            &sock.endpoint,
+            &sock.claim,
+            &process.watch(),
+            &MemoryProgress::default(),
+        )
+        .err()
+        .expect("QEMU never greeted");
         server.join().unwrap();
         error
     });
@@ -417,9 +723,15 @@ fn a_process_that_cannot_be_asked_fails_connect_with_the_refusal_before_a_lock_f
     let watch = Refusing::new(ManualExit::new().watch());
     watch.refuse_has_exited();
 
-    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert_eq!(error.message(), REFUSED);
@@ -433,9 +745,15 @@ fn a_process_that_cannot_be_paused_on_fails_the_wait_for_the_listener_with_the_r
     watch.refuse_pause();
 
     // Nothing listens, so connect must wait, and the wait is what refuses.
-    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert_eq!(error.message(), REFUSED);
@@ -449,9 +767,15 @@ fn a_process_watch_that_cannot_watch_the_connection_fails_connect_with_an_io_err
     // The connection is made by the kernel's backlog; nothing accepts it, and nothing needs to.
     let _listener = sock.listen();
 
-    let error = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let error = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("cannot watch the connection to"), "{error}");
@@ -469,9 +793,17 @@ fn a_connect_error_that_is_not_a_missing_listener_is_an_io_error_naming_the_sock
     let endpoint = QmpEndpoint::from_record(&long.display().to_string());
     let process = ManualExit::new();
 
-    let error = Qmp::connect(&endpoint, &process.watch(), &MemoryProgress::default())
-        .err()
-        .unwrap();
+    let sock = sock();
+
+    let error = Qmp::connect(
+        host::current(),
+        &endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .err()
+    .unwrap();
     let _ = std::fs::remove_file(endpoint.lock_path());
 
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
@@ -489,7 +821,14 @@ fn a_read_error_while_the_process_cannot_be_asked_is_reported_and_not_taken_for_
         // QEMU is alive: the connection stays up until the client lets go.
         while session.command().is_some() {}
     });
-    let mut qmp = Qmp::connect(&sock.endpoint, &watch.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     watch.fail_reads_with(std::io::ErrorKind::PermissionDenied);
     watch.refuse_has_exited();
 
@@ -511,7 +850,14 @@ fn a_corrupt_line_is_reported_as_itself_even_when_the_process_has_exited_since()
             process.exit();
         }
     });
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     server.wait().unwrap();
 
     let error = qmp.wait_for_end().unwrap_err();
@@ -538,7 +884,16 @@ fn the_qmp_lock_serializes_two_processes() {
 
     let (progress, messages) = ChannelProgress::new();
     std::thread::scope(|scope| {
-        let client = scope.spawn(|| Qmp::connect(&sock.endpoint, &ManualExit::new().watch(), &*progress).map(drop));
+        let client = scope.spawn(|| {
+            Qmp::connect(
+                host::current(),
+                &sock.endpoint,
+                &sock.claim,
+                &ManualExit::new().watch(),
+                &*progress,
+            )
+            .map(drop)
+        });
         let message = messages.recv().unwrap();
         assert!(message.starts_with("waiting for "), "{message}");
         // Releasing the lock is what lets the second connect proceed.
@@ -815,7 +1170,14 @@ fn system_reset_of_a_qemu_that_exits_before_the_reset_event_is_a_lost_connection
         // No RESET event, and the server is done.
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     let error = end_process_after(server, &process, || qmp.system_reset().unwrap_err());
 
     // The exit can come before the reply is written: either way the call did not finish and names what it waited for.
@@ -857,7 +1219,14 @@ fn wait_for_end_returns_exited_when_the_server_closes_after_shutdown() {
         let _ = acked_rx.recv();
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     qmp.system_powerdown().unwrap();
     acked.send(()).unwrap();
     let end = end_process_after(server, &process, || qmp.wait_for_end());
@@ -930,9 +1299,15 @@ fn a_server_that_closes_after_the_greeting_is_a_lost_connection() {
     let server = Server { thread, release };
 
     let error = end_process_after(server, &process, || {
-        Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default())
-            .err()
-            .expect("the handshake cannot finish")
+        Qmp::connect(
+            host::current(),
+            &sock.endpoint,
+            &sock.claim,
+            &process.watch(),
+            &MemoryProgress::default(),
+        )
+        .err()
+        .expect("the handshake cannot finish")
     });
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
@@ -946,7 +1321,14 @@ fn a_server_that_closes_after_query_status_loses_the_next_command() {
         session.answer(json!({ "status": "running", "running": true }));
     });
 
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     assert_eq!(qmp.query_status().unwrap().state, "running");
     server.join().unwrap();
     process.exit();

@@ -64,9 +64,10 @@ impl ErrorKind {
     }
 }
 
-type Source = Box<dyn std::error::Error + Send + Sync + 'static>;
+/// Shared, so that an `Error` can be cloned with its source.
+type Source = std::sync::Arc<dyn std::error::Error + Send + Sync + 'static>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
     message: String,
@@ -84,7 +85,7 @@ impl Error {
 
     /// Attaches the underlying error, reachable through [`std::error::Error::source`].
     pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Error {
-        self.source = Some(Box::new(source));
+        self.source = Some(std::sync::Arc::new(source));
         self
     }
 

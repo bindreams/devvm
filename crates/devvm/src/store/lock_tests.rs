@@ -6,7 +6,7 @@ use std::sync::mpsc;
 
 use crate::exit::{NullProgress, Progress};
 use crate::store::lock::{FileLock, Mode};
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::helper;
 
 /// Helper process: takes an exclusive lock on `args[0]`, prints `held`, then blocks until stdin closes.
@@ -79,6 +79,55 @@ fn uncontended_lock_emits_no_message(#[fixture(unicode_home)] home: &Path) {
     assert!(receiver.recv().is_err());
 }
 
+/// `pause` runs between attempts; the first contention is said once, however many pauses follow.
+#[skuld::test]
+fn lock_while_says_it_waits_once_and_gives_up_when_the_pause_says_to_stop(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.lock");
+    let mut holder = FileLock::open(&path).unwrap();
+    assert!(holder.try_lock(Mode::Exclusive).unwrap());
+    let progress = MemoryProgress::default();
+    let mut pauses = 0;
+
+    let locked = FileLock::open(&path)
+        .unwrap()
+        .lock_while(
+            Mode::Exclusive,
+            "layer K",
+            &progress,
+            Some(&mut || {
+                pauses += 1;
+                Ok(pauses == 3)
+            }),
+        )
+        .unwrap();
+
+    assert!(!locked);
+    assert_eq!(pauses, 3);
+    assert_eq!(progress.messages(), ["waiting for layer K"]);
+}
+
+#[skuld::test]
+fn lock_while_takes_the_lock_once_it_is_free(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.lock");
+    let mut holder = FileLock::open(&path).unwrap();
+    assert!(holder.try_lock(Mode::Exclusive).unwrap());
+    let mut lock = FileLock::open(&path).unwrap();
+
+    let locked = lock
+        .lock_while(
+            Mode::Exclusive,
+            "layer K",
+            &NullProgress,
+            Some(&mut || {
+                holder.unlock()?;
+                Ok(false)
+            }),
+        )
+        .unwrap();
+
+    assert!(locked);
+}
+
 #[skuld::test]
 fn lock_is_released_when_holder_process_is_killed(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");
@@ -147,6 +196,22 @@ fn open_existing_returns_none_for_a_missing_file_and_does_not_create_it(#[fixtur
     assert!(FileLock::open_existing(&path).unwrap().is_none());
     assert!(!path.exists());
     assert!(!path.parent().unwrap().exists());
+}
+
+#[skuld::test]
+fn open_in_existing_dir_creates_the_file_and_not_its_directory(#[fixture(unicode_home)] home: &Path) {
+    let made = home.join("a.lock");
+    let mut lock = FileLock::open_in_existing_dir(&made).unwrap();
+    assert!(made.exists());
+    assert!(lock.try_lock(Mode::Exclusive).unwrap());
+
+    let gone = home.join("missing").join("deeper").join("b.lock");
+    let error = FileLock::open_in_existing_dir(&gone).unwrap_err();
+    assert!(
+        error.message().contains(&gone.parent().unwrap().display().to_string()),
+        "{error}"
+    );
+    assert!(!home.join("missing").exists());
 }
 
 #[skuld::test]

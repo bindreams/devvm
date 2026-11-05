@@ -1,6 +1,8 @@
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
-use crate::host::names::{posix_problem, windows_colon_path, windows_problem};
+use crate::host::names::{posix_problem, unix_run_dir, windows_colon_path, windows_problem, windows_run_dir};
+use crate::random;
 use crate::test_groups::{Group, ntfs_names};
 use crate::test_support::fixtures::unicode_home;
 
@@ -203,4 +205,63 @@ fn windows_reads_a_colon_in_any_segment_as_a_stream_or_a_drive() {
     for path in ["a", "a/b", "dir/\u{416}.txt", "a b/c d", "a|b/c", "back\\slash"] {
         assert!(!windows_colon_path(path), "{path:?}");
     }
+}
+
+#[skuld::test]
+fn the_unix_default_is_tmpdir_then_slash_tmp_with_the_euid() {
+    let tmp = std::env::temp_dir();
+    assert_eq!(
+        unix_run_dir(Some(tmp.clone().into_os_string()), 501),
+        tmp.join("devvm-run-501")
+    );
+    assert_eq!(unix_run_dir(None, 0), PathBuf::from("/tmp/devvm-run-0"));
+    assert_eq!(
+        unix_run_dir(Some(OsString::new()), 7),
+        PathBuf::from("/tmp/devvm-run-7")
+    );
+    assert_eq!(
+        unix_run_dir(Some(OsString::from("rel")), 7),
+        PathBuf::from("/tmp/devvm-run-7")
+    );
+}
+
+/// The 52-character SID of a user and the 63-character `S-1-5-80-...` SID of a service.
+const USER_SID: &str = "S-1-5-21-4294967295-4294967295-4294967295-4294967295";
+const SERVICE_SID: &str = "S-1-5-80-4294967295-4294967295-4294967295-4294967295-4294967295";
+
+#[skuld::test]
+fn the_directory_name_is_16_hex_of_the_sid_hash_for_any_sid_length() {
+    assert_eq!(USER_SID.len(), 52);
+    assert_eq!(SERVICE_SID.len(), 63);
+    let program_data = Path::new(r"C:\ProgramData");
+    for sid in [USER_SID, SERVICE_SID, "S-1-5-18"] {
+        let dir = windows_run_dir(program_data, sid);
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        let hex = name.strip_prefix("devvm-run-").unwrap_or_else(|| panic!("{name}"));
+        assert!(random::is_hex(hex, 8), "{name}");
+        assert_eq!(dir.parent().unwrap(), program_data);
+        // The socket path under it, `<dir>\<16 hex>.sock`, is the same length for every account.
+        assert_eq!(dir.to_string_lossy().len() + 1 + 21, 63, "{sid}");
+    }
+}
+
+#[skuld::test]
+fn two_sids_give_two_names_and_one_sid_gives_one() {
+    let program_data = Path::new(r"C:\ProgramData");
+    assert_eq!(
+        windows_run_dir(program_data, USER_SID),
+        windows_run_dir(program_data, USER_SID)
+    );
+    assert_ne!(
+        windows_run_dir(program_data, USER_SID),
+        windows_run_dir(program_data, SERVICE_SID)
+    );
+}
+
+/// The name is the first 8 bytes of SHA-256 over the SID string. The literal is a stability pin: a name made by an
+/// earlier build must not change.
+#[skuld::test]
+fn the_run_dir_name_of_a_sid_does_not_change() {
+    let dir = windows_run_dir(Path::new(r"C:\ProgramData"), "S-1-5-18");
+    assert_eq!(dir.file_name().unwrap(), "devvm-run-593347bdfcc9bfa7");
 }

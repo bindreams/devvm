@@ -1,6 +1,6 @@
-//! The session against a QEMU that exits while its end of the connection stays open. Windows only: on a host whose
-//! streams end with the peer's process, no test can keep the peer's end open past its exit. Each test is thread-only (the
-//! "process" is an event the test sets), so none of them spawn anything.
+//! What only Windows has. The session against a QEMU that exits while its end of the connection stays open: on a host
+//! whose streams end with the peer's process, no test can keep the peer's end open past its exit; each such test is
+//! thread-only (the "process" is an event the test sets), so none of them spawn anything.
 
 use std::sync::mpsc;
 
@@ -9,7 +9,7 @@ use serde_json::json;
 use super::qmp_tests::{Server, Session, serve, sock};
 use super::{Qmp, VmEnd};
 use crate::ErrorKind;
-use crate::host::ProcessWatch;
+use crate::host::{self, ProcessWatch};
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::manual_exit::ManualExit;
 use crate::test_support::qemu::Sock;
@@ -28,7 +28,14 @@ fn connected_to_a_server_that_wrote(
         written.send(()).unwrap();
         while session.command().is_some() {}
     });
-    let qmp = Qmp::connect(&sock.endpoint, process, &MemoryProgress::default()).unwrap();
+    let qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        process,
+        &MemoryProgress::default(),
+    )
+    .unwrap();
     written_rx.recv().unwrap();
     (server, qmp)
 }
@@ -97,7 +104,14 @@ fn a_process_that_exits_while_a_read_is_blocked_ends_the_read() {
         asked.send(name).unwrap();
         let _ = finished_rx.recv();
     });
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
 
     let error = std::thread::scope(|scope| {
         let client = scope.spawn(move || qmp.query_status());
@@ -120,7 +134,14 @@ fn a_read_that_starts_after_the_process_exited_ends_at_once() {
     let (server, _) = serve(sock.listen(), 1, move |_, _| {
         let _ = finished_rx.recv();
     });
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
 
     process.exit();
     assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
@@ -140,7 +161,14 @@ fn a_command_sent_after_the_process_exited_is_a_lost_connection() {
     let (server, _) = serve(sock.listen(), 1, move |_, _| {
         let _ = finished_rx.recv();
     });
-    let mut qmp = Qmp::connect(&sock.endpoint, &process.watch(), &MemoryProgress::default()).unwrap();
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &process.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
 
     process.exit();
     let error = qmp.stop().unwrap_err();

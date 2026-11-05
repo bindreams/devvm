@@ -46,10 +46,11 @@ pub(crate) trait ContractTarget {
     /// killed. Observed from outside the backend: a killed machine never asked.
     fn ended_gracefully(&self, spec: &MachineSpec) -> bool;
 
-    /// The files outside the instance directory that belong to the machine launched from `spec`, whether or not they
-    /// exist now. The machine's record names them from the launch on, before the resume, and a machine that was killed
-    /// or shut down leaves none of them.
-    fn leftovers(&self, spec: &MachineSpec) -> Vec<PathBuf>;
+    /// The files that the machines of this target leave outside their instance directories, as they are now: those in
+    /// the one directory where this target's machines make them, less the directory's own shared files. A machine's
+    /// record names the files it made from the launch on, before the resume, and a machine that was killed or shut down
+    /// leaves none of them.
+    fn leftover_files(&self) -> Vec<PathBuf>;
 
     /// Waits until a resumed machine has booted far enough to act on a graceful shutdown. A machine that needs no
     /// guest keeps this default.
@@ -86,9 +87,23 @@ fn first_endpoint(machine: &dyn Machine) -> SocketAddr {
     machine.ssh_endpoints().first().expect("a machine has an endpoint").1
 }
 
-/// The record names every leftover of `spec`'s machine; the engine persists this record before the resume.
-fn assert_names_the_leftovers(target: &dyn ContractTarget, spec: &MachineSpec, record: &MachineRecord) {
-    for leftover in target.leftovers(spec) {
+/// The leftover files that exist now, to tell a machine's own from the ones that were there before it.
+fn leftovers_before(target: &dyn ContractTarget) -> HashSet<PathBuf> {
+    target.leftover_files().into_iter().collect()
+}
+
+/// The leftover files that have appeared since `before`.
+fn new_leftovers(target: &dyn ContractTarget, before: &HashSet<PathBuf>) -> Vec<PathBuf> {
+    target
+        .leftover_files()
+        .into_iter()
+        .filter(|file| !before.contains(file))
+        .collect()
+}
+
+/// The record names every leftover the machine has made so far; the engine persists this record before the resume.
+fn assert_names_the_leftovers(target: &dyn ContractTarget, before: &HashSet<PathBuf>, record: &MachineRecord) {
+    for leftover in new_leftovers(target, before) {
         assert!(
             record.leftovers.contains(&leftover),
             "the record taken before the resume does not name {}",
@@ -97,10 +112,9 @@ fn assert_names_the_leftovers(target: &dyn ContractTarget, spec: &MachineSpec, r
     }
 }
 
-fn assert_no_leftovers(target: &dyn ContractTarget, spec: &MachineSpec, after: &str) {
-    for leftover in target.leftovers(spec) {
-        assert!(!leftover.exists(), "{after} left {}", leftover.display());
-    }
+fn assert_no_leftovers(target: &dyn ContractTarget, before: &HashSet<PathBuf>, after: &str) {
+    let left = new_leftovers(target, before);
+    assert!(left.is_empty(), "{after} left {left:?}");
 }
 
 /// Ends the process of a released machine, by its recorded identity, when the test fails before it has: nothing else
@@ -112,7 +126,7 @@ impl Drop for KillsOnDrop<'_> {
         if let Ok(Some(mut vm)) = VmProcess::attach(&self.0.process) {
             let _ = vm.kill();
         }
-        self.0.remove_leftovers(&mut |_| {});
+        self.0.remove_leftovers(crate::host::current(), &mut |_| {});
     }
 }
 
@@ -155,15 +169,16 @@ pub(crate) fn launch_reports_a_live_process_and_loopback_endpoints(target: &dyn 
 pub(crate) fn a_frozen_machine_has_not_run_and_kill_leaves_nothing(target: &dyn ContractTarget, root: &Path) {
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
+    let before = leftovers_before(target);
     let mut machine = target.backend().launch(&spec).unwrap();
     let record = machine.record();
-    assert_names_the_leftovers(target, &spec, &record);
+    assert_names_the_leftovers(target, &before, &record);
 
     assert!(!target.has_run(&spec), "a frozen machine has not run");
     machine.kill().unwrap();
     assert!(!is_running(&record), "kill leaves no process");
     assert!(!target.has_run(&spec), "a killed frozen machine never ran");
-    assert_no_leftovers(target, &spec, "kill");
+    assert_no_leftovers(target, &before, "kill");
 }
 
 /// How a running machine is ended.
@@ -179,20 +194,22 @@ pub(crate) fn a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(targe
     let world = world(target, root);
     for (n, end) in [End::Kill, End::Shutdown].into_iter().enumerate() {
         let spec = prepared(target, &world, root, n as u32);
+        let before = leftovers_before(target);
         let mut machine = target.backend().launch(&spec).unwrap();
         let before_the_run = machine.record();
-        assert_names_the_leftovers(target, &spec, &before_the_run);
+        assert_names_the_leftovers(target, &before, &before_the_run);
 
         machine.resume().unwrap();
         accepts_eventually(&before_the_run, first_endpoint(&*machine));
         target.await_booted(&*machine).unwrap();
         // The files must exist while the machine runs, or "none left afterwards" proves nothing.
-        let leftovers = target.leftovers(&spec);
+        let leftovers = new_leftovers(target, &before);
         assert!(
             !leftovers.is_empty(),
             "a target names the files its running machine creates"
         );
-        for leftover in &leftovers {
+        assert_names_the_leftovers(target, &before, &before_the_run);
+        for leftover in &before_the_run.leftovers {
             assert!(leftover.exists(), "a running machine has {}", leftover.display());
         }
         match end {
@@ -203,7 +220,7 @@ pub(crate) fn a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(targe
             !is_running(&before_the_run),
             "{end:?} returned while the process was still running"
         );
-        assert_no_leftovers(target, &spec, &format!("{end:?}"));
+        assert_no_leftovers(target, &before, &format!("{end:?}"));
         assert_eq!(
             target.ended_gracefully(&spec),
             matches!(end, End::Shutdown),
@@ -215,9 +232,10 @@ pub(crate) fn a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(targe
 pub(crate) fn a_released_machine_outlives_its_launcher_and_attach_finds_it(target: &dyn ContractTarget, root: &Path) {
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
+    let before = leftovers_before(target);
     let record = target.launch_elsewhere(&spec).unwrap();
     let _released = KillsOnDrop(&record);
-    assert_names_the_leftovers(target, &spec, &record);
+    assert_names_the_leftovers(target, &before, &record);
 
     // The launcher process has exited by now.
     assert!(is_running(&record), "a released machine survives its launcher");
@@ -295,9 +313,10 @@ pub(crate) fn shutdown_stops_the_process(target: &dyn ContractTarget, root: &Pat
 pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn ContractTarget, root: &Path) {
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
+    let before = leftovers_before(target);
     let record = target.launch_elsewhere(&spec).unwrap();
     let _released = KillsOnDrop(&record);
-    assert_names_the_leftovers(target, &spec, &record);
+    assert_names_the_leftovers(target, &before, &record);
     assert!(is_running(&record), "a released machine survives its launcher");
 
     // The other process asks the machine to shut down and returns once it has exited, or fails. Nothing here waits
@@ -307,7 +326,7 @@ pub(crate) fn shutdown_from_another_process_stops_the_machine(target: &dyn Contr
         !is_running(&record),
         "shutdown returned while the process was still running"
     );
-    assert_no_leftovers(target, &spec, "a shutdown from another process");
+    assert_no_leftovers(target, &before, "a shutdown from another process");
     assert!(
         target.ended_gracefully(&spec),
         "a shutdown from another process ended the machine without asking it to"

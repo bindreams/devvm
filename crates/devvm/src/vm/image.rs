@@ -220,7 +220,7 @@ impl Drop for Vm {
         match dir.try_op_exclusive() {
             Ok(Some(op)) => {
                 if let Some(dead) = &dead
-                    && let Err(e) = dir.retire_machine(&op, dead, &mut warn_for(engine, dir))
+                    && let Err(e) = dir.retire_machine(&op, dead, engine.host(), &mut warn_for(engine, dir))
                 {
                     progress.message(&format!(
                         "instance {} still has a record naming its dead VM ({}); the next devvm command clears it",

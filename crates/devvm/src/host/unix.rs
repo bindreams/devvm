@@ -1,14 +1,14 @@
 //! A Unix host, one that devvm 0.1.0 does not run VMs on.
 
-use std::fs::{File, FileType, OpenOptions};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::fs::{DirBuilder, File, FileType, Metadata, OpenOptions};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use rustix::io::Errno;
 
-use super::Entry;
 use super::entry;
 use super::unsupported::{FileModes, claim_then_rename};
+use super::{Entry, FileId};
 
 #[cfg(test)]
 #[path = "unix_tests.rs"]
@@ -23,9 +23,41 @@ impl FileModes for UnixHost {
         options
     }
 
+    fn hold_options(&self) -> OpenOptions {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).custom_flags(libc::O_NOFOLLOW);
+        options
+    }
+
     /// `sun_path` less its terminating NUL: 107 on Linux, 103 on macOS and the BSDs.
     fn socket_path_max(&self) -> usize {
         std::mem::size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path) - 1
+    }
+
+    fn euid(&self) -> u32 {
+        // SAFETY: `geteuid` reads a process attribute and cannot fail.
+        unsafe { libc::geteuid() }
+    }
+
+    fn private_dir(&self) -> DirBuilder {
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        builder
+    }
+
+    fn other_owner(&self, metadata: &Metadata) -> Option<String> {
+        (metadata.uid() != self.euid()).then(|| format!("user {}", metadata.uid()))
+    }
+
+    fn identity(&self, metadata: &Metadata) -> Option<FileId> {
+        Some(FileId {
+            volume: metadata.dev(),
+            file: u128::from(metadata.ino()),
+        })
+    }
+
+    fn lacks_hard_links(&self, error: &std::io::Error) -> bool {
+        lacks_hard_links(error)
     }
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
@@ -93,6 +125,14 @@ fn describe(kind: FileType) -> &'static str {
     } else {
         "of a type this host does not know"
     }
+}
+
+/// Whether `error` from `link(2)` says that the file system has no hard links: `EPERM` on Linux, `ENOTSUP` or
+/// `EOPNOTSUPP` elsewhere. `EACCES` is no such statement: a directory that cannot be written, or a security module,
+/// answers it for any file system.
+fn lacks_hard_links(error: &std::io::Error) -> bool {
+    Errno::from_io_error(error)
+        .is_some_and(|errno| errno == Errno::PERM || errno == Errno::NOTSUP || errno == Errno::OPNOTSUPP)
 }
 
 /// Whether `errno` from a rename that refuses to replace says that the file system or the kernel has no such rename,

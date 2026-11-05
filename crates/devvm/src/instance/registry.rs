@@ -6,6 +6,7 @@ use std::time::SystemTime;
 
 use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
+use crate::host::Host;
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
@@ -30,6 +31,7 @@ pub(crate) struct Registry {
     progress: Arc<dyn Progress>,
     /// How the reaper finds and kills the machines of dead owners; `None` in a build without a VM backend.
     backend: Option<Arc<dyn Backend>>,
+    host: &'static dyn Host,
 }
 
 /// What `create` needs to make an instance.
@@ -82,14 +84,24 @@ pub(crate) struct Owned {
 
 impl Registry {
     /// Touches nothing on disk.
-    pub(crate) fn new(dirs: &Dirs, progress: Arc<dyn Progress>, backend: Option<Arc<dyn Backend>>) -> Registry {
+    pub(crate) fn new(
+        dirs: &Dirs,
+        progress: Arc<dyn Progress>,
+        backend: Option<Arc<dyn Backend>>,
+        host: &'static dyn Host,
+    ) -> Registry {
         Registry {
             root: dirs.instances(),
             quarantine: dirs.instance_quarantine(),
             locks: Arc::new(Locks::new(dirs.instance_locks())),
             progress,
             backend,
+            host,
         }
+    }
+
+    pub(super) fn host(&self) -> &'static dyn Host {
+        self.host
     }
 
     pub(super) fn backend(&self) -> Option<&Arc<dyn Backend>> {
@@ -303,7 +315,6 @@ impl Registry {
                 cpus: new.cpus,
                 memory: new.memory,
                 network: new.network,
-                launches: 0,
                 machine: None,
             }
             .write(temp)?;

@@ -53,6 +53,7 @@ use crate::access::session::Inner;
 use crate::exit::Progress;
 use crate::guest::GuestOs;
 use crate::host::Host;
+use crate::random;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -73,9 +74,7 @@ pub(crate) struct Sftp {
 }
 
 fn partial_name() -> String {
-    let mut random = [0u8; 6];
-    getrandom::fill(&mut random).expect("the OS random number generator is available");
-    format!(".devvm-partial-{}", hex::encode(random))
+    format!(".devvm-partial-{}", hex::encode(random::bytes::<6>()))
 }
 
 /// Which end of a [`pump`] failed.

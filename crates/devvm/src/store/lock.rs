@@ -10,6 +10,10 @@ use crate::{Error, ErrorKind, Result};
 #[path = "lock_tests.rs"]
 pub(crate) mod lock_tests;
 
+#[cfg(all(test, unix))]
+#[path = "lock_unix_tests.rs"]
+mod lock_unix_tests;
+
 /// Whether a lock admits other holders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -33,23 +37,44 @@ pub struct FileLock {
 impl FileLock {
     /// Opens the lock file, creating it and its parent directories.
     pub fn open(path: &Path) -> Result<FileLock> {
-        let fail = |source| {
-            Error::io(
-                ErrorKind::Io,
-                format!("cannot open lock file {}", path.display()),
-                source,
-            )
-        };
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(fail)?;
+            std::fs::create_dir_all(parent).map_err(|source| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot open lock file {}", path.display()),
+                    source,
+                )
+            })?;
         }
+        FileLock::open_in_existing_dir(path)
+    }
+
+    /// Opens the lock file, creating it but no directory: for a directory that someone else makes, with permissions of
+    /// their own. A missing directory is an error that names it.
+    pub fn open_in_existing_dir(path: &Path) -> Result<FileLock> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(path)
-            .map_err(fail)?;
+            .map_err(|source| {
+                let text = match path.parent() {
+                    // A dangling symlink at `path` also gives NotFound, and then the parent may be there.
+                    Some(parent)
+                        if source.kind() == std::io::ErrorKind::NotFound
+                            && matches!(crate::host::symlink_metadata_if_present(parent), Ok(None)) =>
+                    {
+                        format!(
+                            "cannot open lock file {}: {} does not exist",
+                            path.display(),
+                            parent.display()
+                        )
+                    }
+                    _ => format!("cannot open lock file {}", path.display()),
+                };
+                Error::io(ErrorKind::Io, text, source)
+            })?;
         Ok(FileLock {
             path: path.to_owned(),
             file,
@@ -93,17 +118,42 @@ impl FileLock {
 
     /// Takes the lock, waiting for it with no time limit. On contention it first says `waiting for <what>`.
     pub fn lock(&mut self, mode: Mode, what: &str, progress: &dyn Progress) -> Result<()> {
+        let locked = self.lock_while(mode, what, progress, None)?;
+        debug_assert!(locked, "a wait with no pause ends only with the lock");
+        Ok(())
+    }
+
+    /// [`FileLock::lock`] that can be given up on. With `pause`, the lock is tried again after each call of it, and
+    /// `Ok(true)` from it ends the wait: this returns `Ok(false)`, the lock not taken. A `pause` blocks for a moment or
+    /// until something it watches changes. Without `pause`, the wait is the OS's and ends only with the lock.
+    pub fn lock_while(
+        &mut self,
+        mode: Mode,
+        what: &str,
+        progress: &dyn Progress,
+        pause: Option<&mut dyn FnMut() -> Result<bool>>,
+    ) -> Result<bool> {
         if self.try_lock(mode)? {
-            return Ok(());
+            return Ok(true);
         }
         progress.message(&format!("waiting for {what}"));
-        let result = retry_interrupted(|| match mode {
-            Mode::Shared => self.file.lock_shared(),
-            Mode::Exclusive => self.file.lock(),
-        });
-        result.map_err(|source| self.failure("lock", source))?;
-        self.held = true;
-        Ok(())
+        let Some(pause) = pause else {
+            let result = retry_interrupted(|| match mode {
+                Mode::Shared => self.file.lock_shared(),
+                Mode::Exclusive => self.file.lock(),
+            });
+            result.map_err(|source| self.failure("lock", source))?;
+            self.held = true;
+            return Ok(true);
+        };
+        loop {
+            if pause()? {
+                return Ok(false);
+            }
+            if self.try_lock(mode)? {
+                return Ok(true);
+            }
+        }
     }
 
     /// Releases the lock; the value can be locked again.

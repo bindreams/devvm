@@ -1,6 +1,11 @@
 //! Which file names a host's file system can hold. The rules are plain functions so the tests can apply a Windows
 //! host's rules on any OS.
 
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
 #[cfg(test)]
 #[path = "names_tests.rs"]
 mod names_tests;
@@ -69,4 +74,27 @@ pub(crate) fn windows_problem(name: &str) -> Option<String> {
 )]
 pub(crate) fn windows_colon_path(path: &str) -> bool {
     path.split('/').any(|segment| segment.contains(':'))
+}
+
+/// The runtime directory of a Unix host without `XDG_RUNTIME_DIR`: `<TMPDIR or /tmp>/devvm-run-<euid>`. `/tmp` is
+/// shared by every user, so the directory is per user. An empty or relative `TMPDIR` is ignored.
+#[cfg_attr(windows, allow(dead_code, reason = "used by the host this binary does not run on"))]
+pub(crate) fn unix_run_dir(tmpdir: Option<OsString>, euid: u32) -> PathBuf {
+    let base = tmpdir
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join(format!("devvm-run-{euid}"))
+}
+
+/// The runtime directory of a Windows user: `<program_data>\devvm-run-<16 hex>`, the hex being the first 8 bytes of
+/// SHA-256 over the SID string. Every account gets a name of one length, so the socket path under it never depends on
+/// how long the SID is (a service SID has 63 characters, a user's 52).
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "used by the host this binary does not run on")
+)]
+pub(crate) fn windows_run_dir(program_data: &Path, sid: &str) -> PathBuf {
+    let digest = Sha256::digest(sid.as_bytes());
+    program_data.join(format!("devvm-run-{}", hex::encode(&digest[..8])))
 }

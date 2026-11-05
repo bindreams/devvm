@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::MachineRecord;
 use crate::host::remove_if_present;
 use crate::instance::name::InstanceName;
+use crate::random;
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
 use crate::{Arch, Error, ErrorKind, GuestKind, Network, Result};
@@ -32,9 +33,7 @@ pub(crate) struct InstanceId([u8; 16]);
 
 impl InstanceId {
     pub(crate) fn random() -> InstanceId {
-        let mut bytes = [0u8; 16];
-        getrandom::fill(&mut bytes).expect("the OS random number generator is available");
-        InstanceId(bytes)
+        InstanceId(random::bytes())
     }
 }
 
@@ -85,10 +84,6 @@ pub(crate) struct InstanceRecord {
     pub cpus: u32,
     pub memory: u64,
     pub network: Network,
-    /// How many launches have been started for this instance: a launch takes the next number, under the op lock and
-    /// before it spawns, and a number is never taken twice. A machine's files are named by it, so no two machines of an
-    /// instance share a path.
-    pub launches: u64,
     pub machine: Option<MachineRecord>,
 }
 
@@ -120,9 +115,6 @@ struct Wire {
     cpus: u32,
     memory: u64,
     network: String,
-    /// Absent in a record written before launches were counted.
-    #[serde(default)]
-    launches: u64,
     machine: Option<MachineRecord>,
 }
 
@@ -208,7 +200,6 @@ fn from_wire(wire: Wire) -> std::result::Result<InstanceRecord, String> {
         cpus: wire.cpus,
         memory: wire.memory,
         network: network_parse(&wire.network)?,
-        launches: wire.launches,
         machine: wire.machine,
     })
 }
@@ -247,25 +238,21 @@ fn read_file<T>(
     Ok(parse(&text).map(Some))
 }
 
-/// What [`write_file`] appends to a name for the file it writes first, followed by [`TEMP_DIGITS`] hex digits.
+/// What [`write_file`] appends to a name for the file it writes first, followed by the hex of [`TEMP_BYTES`] bytes.
 const TEMP_MARK: &str = ".tmp-";
-const TEMP_DIGITS: usize = 8;
+const TEMP_BYTES: usize = 4;
 
 /// Whether `name` is the temporary file of a [`write_file`] that was killed before its rename.
 pub(crate) fn is_write_file_temporary(name: &str) -> bool {
-    name.rsplit_once(TEMP_MARK).is_some_and(|(base, digits)| {
-        !base.is_empty()
-            && digits.len() == TEMP_DIGITS
-            && digits.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
+    name.rsplit_once(TEMP_MARK)
+        .is_some_and(|(base, digits)| !base.is_empty() && random::is_hex(digits, TEMP_BYTES))
 }
 
 /// Writes `text` to `dir/file` through a temp file and a rename, so a reader sees the old or the new content, never a
 /// mixture, and a crash leaves no half-written `file`.
 pub(crate) fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
     use std::io::Write;
-    let mut suffix = [0u8; TEMP_DIGITS / 2];
-    getrandom::fill(&mut suffix).expect("the OS random number generator is available");
+    let suffix = random::bytes::<TEMP_BYTES>();
     let temp = dir.join(format!("{file}{TEMP_MARK}{}", hex::encode(suffix)));
     let target = dir.join(file);
     let fail = |action: &str, path: &Path, source| {
@@ -333,7 +320,6 @@ impl InstanceRecord {
             cpus: self.cpus,
             memory: self.memory,
             network: network_text(self.network).to_owned(),
-            launches: self.launches,
             machine: self.machine.clone(),
         };
         let text = serde_json::to_string_pretty(&wire).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;

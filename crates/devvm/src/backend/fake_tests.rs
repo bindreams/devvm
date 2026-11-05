@@ -1,10 +1,11 @@
 use std::path::Path;
 
-use super::FakeTarget;
+use super::{FakeBackend, FakeTarget};
 use crate::backend::contract::{self, ContractTarget};
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{env, key, request};
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::host::RecordingHost;
 use crate::{Arch, ErrorKind};
 
 #[skuld::test]
@@ -78,4 +79,16 @@ fn fake_import_base_of_a_missing_image_is_an_io_error(#[fixture(unicode_home)] h
         matches!(built, Err(e) if e.kind() == ErrorKind::Io),
         "there is no image"
     );
+}
+
+/// The claim's identity is the held file's, not the one a name leads to after the hold is made.
+#[skuld::test]
+fn fake_claim_takes_its_identity_from_the_hold_not_from_a_lookup_by_name(#[fixture(unicode_home)] home: &Path) {
+    let host = RecordingHost::new();
+    host.fail_file_id();
+    let host: &'static RecordingHost = Box::leak(Box::new(host));
+
+    let claim = FakeBackend::new(host).claim(&home.join("a.sock.hold")).unwrap();
+
+    assert_eq!(claim.id, crate::host::current().file_id(&claim.path).unwrap());
 }

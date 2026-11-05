@@ -1,14 +1,15 @@
 use std::path::Path;
 
 use super::other::OtherHost;
-use super::{Host, current, host_exit_width};
+use super::{FileId, HoldOutcome, Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
-use crate::test_groups::{Group, PINNED_CHILD, acp_1252};
+use crate::test_groups::{Group, PINNED_CHILD, acp_1252, symlinks};
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::test_support::host::TestHost;
+use crate::test_support::other_account::a_directory_of_another_account;
 use crate::test_support::symlink::symlink;
 #[cfg(windows)]
 use skuld::env;
@@ -297,7 +298,10 @@ fn a_second_failure_while_replacing_a_file_is_named_next_to_the_first() {
 
 /// What a copy meets in a destination tree: a symlink to a directory where the guest has a file or a file symlink.
 #[skuld::test]
-fn replace_file_replaces_a_symlink_to_a_directory_and_leaves_the_directory(#[fixture(unicode_home)] home: &Path) {
+fn replace_file_replaces_a_symlink_to_a_directory_and_leaves_the_directory(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
     let real = home.join("real");
     std::fs::create_dir(&real).unwrap();
     std::fs::write(real.join("held"), "kept").unwrap();
@@ -517,4 +521,296 @@ fn only_windows_compares_environment_variable_names_without_case() {
         Some("")
     );
     assert_eq!(OtherHost.env_name_strip_prefix("GIT".as_ref(), "GIT_"), None);
+}
+
+#[skuld::test]
+fn an_unsupported_host_puts_the_runtime_directory_under_tmpdir_per_user() {
+    let tmp = std::env::temp_dir();
+    let var = |name: &str| (name == "TMPDIR").then(|| tmp.clone().into_os_string());
+    let dir = OtherHost.run_dir_default(&var).unwrap();
+    assert_eq!(dir, tmp.join("devvm-run-0"));
+}
+
+// The runtime directory -----------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn create_runtime_dir_makes_the_directory_and_accepts_it_again(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    current().create_runtime_dir(&dir).unwrap();
+    assert!(dir.is_dir());
+    current().create_runtime_dir(&dir).unwrap();
+}
+
+#[skuld::test]
+fn create_runtime_dir_makes_one_level_and_a_missing_parent_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("missing").join("run");
+    let error = current().create_runtime_dir(&dir).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    assert!(!home.join("missing").exists());
+}
+
+#[skuld::test]
+fn a_file_at_the_runtime_dir_path_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("run");
+    std::fs::write(&path, b"mine").unwrap();
+    let error = current().create_runtime_dir(&path).unwrap_err();
+    assert!(error.to_string().contains("not a directory"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"mine");
+}
+
+/// A directory the test user does not own: `C:\ProgramData` is owned by the system, `/` by root. Nothing is written
+/// into it.
+#[skuld::test]
+fn a_directory_owned_by_someone_else_is_refused_naming_the_owner() {
+    let system = a_directory_of_another_account();
+    let error = current().create_runtime_dir(&system).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
+    let text = error.to_string();
+    assert!(text.contains(&system.display().to_string()), "{text}");
+    assert!(text.contains("is owned by") && text.contains("not by you"), "{text}");
+}
+
+/// The check `create_runtime_dir` applies to a directory that exists, without making one.
+#[skuld::test]
+fn accept_runtime_dir_makes_nothing_and_a_missing_directory_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    let error = current().accept_runtime_dir(&dir).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    assert!(!dir.exists());
+}
+
+#[skuld::test]
+fn accept_runtime_dir_accepts_the_directory_create_runtime_dir_made(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("run");
+    current().create_runtime_dir(&dir).unwrap();
+    current().accept_runtime_dir(&dir).unwrap();
+}
+
+#[skuld::test]
+fn accept_runtime_dir_refuses_a_file(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("run");
+    std::fs::write(&path, b"mine").unwrap();
+    let error = current().accept_runtime_dir(&path).unwrap_err();
+    assert!(error.to_string().contains("not a directory"), "{error}");
+}
+
+#[skuld::test]
+fn accept_runtime_dir_refuses_a_directory_owned_by_someone_else_naming_the_owner() {
+    let system = a_directory_of_another_account();
+    let error = current().accept_runtime_dir(&system).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
+    let text = error.to_string();
+    assert!(text.contains(&system.display().to_string()), "{text}");
+    assert!(text.contains("is owned by") && text.contains("not by you"), "{text}");
+}
+
+// File identity -------------------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn file_id_is_equal_for_one_file_and_differs_between_two_that_exist(#[fixture(unicode_home)] home: &Path) {
+    let (a, b) = (home.join("a"), home.join("b"));
+    std::fs::write(&a, b"").unwrap();
+    std::fs::write(&b, b"").unwrap();
+    let first = current().file_id(&a).unwrap();
+    assert_eq!(first, current().file_id(&a).unwrap());
+    assert_ne!(first, current().file_id(&b).unwrap());
+}
+
+#[skuld::test]
+fn file_id_of_a_missing_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = current().file_id(&home.join("gone")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+}
+
+#[skuld::test]
+fn a_file_id_reads_back_from_its_text() {
+    let id = FileId {
+        volume: 0xdead_beef_0000_0001,
+        file: (1u128 << 100) | 7,
+    };
+    let json = serde_json::to_string(&id).unwrap();
+    assert!(json.starts_with('"'), "JSON has no 128-bit number: {json}");
+    assert_eq!(serde_json::from_str::<FileId>(&json).unwrap(), id);
+    assert!(serde_json::from_str::<FileId>("\"nonsense\"").is_err());
+}
+
+// Holds ---------------------------------------------------------------------------------------------------------------
+
+fn taken(outcome: std::io::Result<HoldOutcome>) -> Box<dyn super::Hold> {
+    match outcome.unwrap() {
+        HoldOutcome::Taken(hold) => hold,
+        other => panic!("expected to take the hold, got {other:?}"),
+    }
+}
+
+#[skuld::test]
+fn a_new_hold_creates_the_file_and_nobody_else_takes_it(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    assert!(path.exists());
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
+    let error = current().hold_new(&path).expect_err("the name is taken");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    drop(hold);
+    assert!(path.exists(), "dropping a hold leaves the file");
+}
+
+#[skuld::test]
+fn a_hold_is_free_once_its_holder_is_gone(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    drop(current().hold_new(&path).unwrap());
+    let hold = taken(current().hold_existing(&path));
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
+    drop(hold);
+    drop(taken(current().hold_existing(&path)));
+}
+
+#[skuld::test]
+fn a_missing_file_is_no_hold(#[fixture(unicode_home)] home: &Path) {
+    assert!(matches!(
+        current().hold_existing(&home.join("gone")).unwrap(),
+        HoldOutcome::Absent
+    ));
+    assert!(
+        !home.join("gone").exists(),
+        "a hold on an existing file creates nothing"
+    );
+}
+
+/// What a child that inherited the hold is: another handle to the same open file, which keeps the hold when the
+/// holder closes its own.
+#[skuld::test]
+fn a_duplicate_of_the_held_file_keeps_the_hold_when_the_holder_is_gone(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let inherited = hold.file().try_clone().unwrap();
+    drop(hold);
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
+    drop(inherited);
+    drop(taken(current().hold_existing(&path)));
+}
+
+#[skuld::test]
+fn deleting_a_hold_removes_the_file_and_frees_the_name(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    current().hold_new(&path).unwrap().delete().unwrap();
+    assert!(!path.exists());
+    drop(current().hold_new(&path).unwrap());
+}
+
+/// What a child that inherited the hold is: another handle to the file, which outlives the delete. The name is free at
+/// once all the same.
+#[skuld::test]
+fn a_deleted_hold_frees_its_name_while_a_duplicate_of_the_file_is_open(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let duplicate = hold.file().try_clone().unwrap();
+
+    hold.delete().unwrap();
+
+    drop(current().hold_new(&path).expect("the name is free"));
+    drop(duplicate);
+}
+
+/// The identity of a held file is read without the data access a hold refuses to anyone else.
+#[skuld::test]
+fn the_identity_of_a_held_file_can_be_read(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let id = current().file_id(&path).unwrap();
+    drop(hold);
+    assert_eq!(current().file_id(&path).unwrap(), id);
+}
+
+/// The identity comes from the open file, so it is the same file as the name gives while the name is the file's.
+#[skuld::test]
+fn a_hold_knows_the_identity_of_its_file(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+    assert_eq!(hold.id().unwrap(), current().file_id(&path).unwrap());
+    drop(hold);
+    let again = taken(current().hold_existing(&path));
+    assert_eq!(again.id().unwrap(), current().file_id(&path).unwrap());
+}
+
+#[skuld::test]
+fn a_hold_new_that_finds_the_name_taken_leaves_the_taken_file_and_makes_nothing_else(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dir = home.join("d");
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("x.hold");
+    let hold = current().hold_new(&path).unwrap();
+
+    let error = current().hold_new(&path).expect_err("the name is taken");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    let names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["x.hold"]);
+    assert_eq!(current().file_id(&path).unwrap(), hold.id().unwrap());
+}
+
+// The hold of the hosts that have no Windows: run through `OtherHost`, which has the same hold, everywhere.
+
+/// The name a launch draws is made by linking a file that is held already, from a private name; a file at the private
+/// name is another launch's claim in the making, so the name is drawn again.
+#[skuld::test]
+fn a_hold_new_makes_its_file_under_a_private_name_first(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    std::fs::write(home.join("x.sock.hold.new"), b"").unwrap();
+
+    let error = OtherHost.hold_new(&path).expect_err("the private name is taken");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    assert!(!path.exists());
+}
+
+#[skuld::test]
+fn a_hold_new_leaves_no_private_name_behind(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("d");
+    std::fs::create_dir(&dir).unwrap();
+    let hold = OtherHost.hold_new(&dir.join("x.sock.hold")).unwrap();
+    let names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["x.sock.hold"]);
+    assert!(matches!(
+        OtherHost.hold_existing(&dir.join("x.sock.hold")).unwrap(),
+        HoldOutcome::Busy
+    ));
+    drop(hold);
+}
+
+/// A sweep and a record's cleanup can race for one claim: the loser finds the file gone.
+#[skuld::test]
+fn deleting_a_hold_whose_file_is_already_unlinked_is_fine(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.hold");
+    let hold = OtherHost.hold_new(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    hold.delete().unwrap();
+}
+
+/// A name that is a link is not opened through, on every host: what it leads to is somebody else's file.
+#[skuld::test]
+fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it_on_every_host(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let victim = home.join("victim");
+    std::fs::write(&victim, b"theirs").unwrap();
+    let link = home.join("x.sock.hold");
+    symlink(&victim, &link);
+    on_both_hosts(|host| {
+        let error = host.hold_existing(&link).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(error.to_string().contains("is a link"), "{error}");
+    });
+    std::fs::File::open(&victim)
+        .unwrap()
+        .try_lock()
+        .expect("nobody holds the victim");
 }

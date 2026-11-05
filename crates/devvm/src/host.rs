@@ -2,7 +2,7 @@
 //! the `cfg`s on the module declarations and on [`Current`] below; no code under `host/` selects one.
 //! (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -19,6 +19,8 @@ use crate::{Arch, Result};
 mod host_tests;
 
 mod entry;
+mod file_id;
+mod hold;
 pub(crate) mod names;
 #[cfg_attr(
     any(unix, windows),
@@ -35,7 +37,17 @@ pub(crate) mod watch;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-pub(crate) use entry::{Entry, is_absent};
+pub(crate) use entry::{Entry, is_absent, symlink_metadata_if_present};
+pub(crate) use file_id::FileId;
+#[cfg_attr(
+    not(windows),
+    allow(
+        unused_imports,
+        reason = "only the Windows host renames a claim file away; the tests use it everywhere"
+    )
+)]
+pub(crate) use hold::{DELETING_DRAW_BYTES, deleting_name};
+pub(crate) use hold::{Hold, HoldOutcome, claim_of_deleting_name, claim_of_new_name, new_name};
 pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(any(unix, windows)))]
@@ -87,6 +99,12 @@ pub(crate) trait Host: Send + Sync {
 
     /// The longest AF_UNIX socket path this OS binds, in bytes: `sun_path` without its terminating NUL.
     fn socket_path_max(&self) -> usize;
+
+    /// Where this user's runtime state (the QMP sockets) goes when `XDG_RUNTIME_DIR` is not usable, resolved from the
+    /// OS and `var` (the environment) and created by nobody. Windows: `<ProgramData>\devvm-run-<16 hex of SHA-256 of
+    /// the user's SID>`, from the known folder and the process token, never from the environment. Elsewhere:
+    /// `<TMPDIR or /tmp>/devvm-run-<euid>`. An error names the OS call that failed.
+    fn run_dir_default(&self, var: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf>;
 
     /// Watches the process `id` names. On Windows its exit ends a read of that process's control socket through the
     /// watch's `link` even when the OS never ends the stream (Windows can lose the end of an AF_UNIX stream); elsewhere
@@ -168,6 +186,38 @@ pub(crate) trait Host: Send + Sync {
     /// ignores it. Fails with `PermissionDenied`, naming the cause, where
     /// this host cannot make symlinks (Windows without Developer Mode or an elevated token).
     fn make_symlink(&self, target: &str, link: &Path, to_dir: bool) -> std::io::Result<()>;
+
+    /// Makes `dir`, one level, for this user alone from the moment it exists (Unix: mode `0700`; Windows: owner the
+    /// user and a protected DACL with the user's one entry), or accepts a directory that exists and is the user's.
+    /// Anything else at `dir` is refused: a file, a link or junction, and a directory of another account
+    /// (`PermissionDenied`, `<dir> is owned by <account>, not by you`). The owner is the whole check: a directory the
+    /// user owns with a looser mode or DACL is accepted, since that is the user's own setting. A missing parent is
+    /// `NotFound`.
+    fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()>;
+
+    /// The check [`Host::create_runtime_dir`] applies to a directory that exists, with nothing made: `Ok` for a
+    /// directory that is the user's and is no link, and the same refusals for anything else. A directory that is not
+    /// there is `NotFound`.
+    fn accept_runtime_dir(&self, dir: &Path) -> std::io::Result<()>;
+
+    /// The identity of the file `path` names, not of what a link there points to. It needs no access to the contents,
+    /// so it reads the identity of a file that is held (see [`Hold`]).
+    fn file_id(&self, path: &Path) -> std::io::Result<FileId>;
+
+    /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it. The name never
+    /// exists without the hold: off Windows the file is made and locked as `<path>.new` and then linked to `path`
+    /// (a launch killed in between leaves the `.new` file; a file there is `AlreadyExists` too). A file system that
+    /// does not allow hard links is an error that names the directory and `XDG_RUNTIME_DIR`.
+    fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>>;
+
+    /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
+    /// `path` is `InvalidInput`, "is a link": it is not opened through.
+    fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
+
+    /// Removes `path`, a leftover claim file under its deleting name ([`deleting_name`]): its name may stay until the
+    /// last handle to the file closes. `Ok` also when someone is deleting it right now (Windows: it is held, or its
+    /// deletion is pending), which is theirs to finish. Any other failure, `NotFound` included, is returned.
+    fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()>;
 
     /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link
     /// at the last name: its kind comes from `symlink_metadata`, and a regular file is opened for reading and

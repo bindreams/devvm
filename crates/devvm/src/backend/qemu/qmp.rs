@@ -16,9 +16,10 @@ use qapi::{Command, Execute};
 
 use super::ports::{Forward, parse_usernet};
 use super::uds::UnixStream;
+use crate::backend::{ClaimState, FileClaim};
 use crate::exit::Progress;
-use crate::host::{Link, ProcessWatch};
-use crate::instance::record::InstanceId;
+use crate::host::{Hold, Host, Link, ProcessWatch, symlink_metadata_if_present};
+use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -32,63 +33,177 @@ mod qmp_windows_tests;
 
 // Endpoint ============================================================================================================
 
-/// Where a machine's QMP socket is, and the lock file beside it.
+/// The bytes a launch's name is the hex of.
+const DRAW_BYTES: usize = 8;
+
+const SOCKET_SUFFIX: &str = ".sock";
+const LOCK_SUFFIX: &str = ".lock";
+const HOLD_SUFFIX: &str = ".hold";
+
+/// Which of a launch's three files a name is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LaunchFileKind {
+    Socket,
+    Lock,
+    Claim,
+}
+
+/// Where a machine's QMP socket is, and the files beside it.
+///
+/// A launch's names are `<run>/<16 hex>.sock` (QEMU makes it), `<name>.lock` (the lock of QMP sessions) and
+/// `<name>.hold` (the launch's claim on the name, held by QEMU while it runs).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QmpEndpoint {
     path: PathBuf,
 }
 
+/// What a launch has reserved: its names and the hold on the claim that keeps them its own until the machine runs.
+#[derive(Debug)]
+pub(crate) struct Reservation {
+    pub endpoint: QmpEndpoint,
+    /// The hold file as made. It goes in the machine's record; cleanup deletes nothing that it does not still name.
+    pub claim: FileClaim,
+    /// The hold on the claim file. QEMU inherits a duplicate of it; this one is dropped once QEMU is spawned.
+    pub hold: Box<dyn Hold>,
+}
+
+/// The longest socket path a launch in `run` can draw, in the bytes that `sun_path` counts.
+fn longest_socket_path(run: &Path) -> usize {
+    QmpEndpoint::drawn(run, [0; DRAW_BYTES])
+        .path
+        .as_os_str()
+        .as_encoded_bytes()
+        .len()
+}
+
 impl QmpEndpoint {
-    /// `<temp>/dvm-<32 hex of the id>-<launch>.sock`, with `launch` in decimal: short, so it fits `sun_path` under any
-    /// temp directory. `launch` is the instance's launch number (`MachineSpec::launch`), which is never handed out
-    /// twice, so no machine's path is another's and deleting a dead machine's files by path cannot touch a later
-    /// machine's.
+    /// Whether every socket path in `run` fits `path_max` bytes (`Host::socket_path_max`).
+    pub(crate) fn fits(run: &Path, path_max: usize) -> bool {
+        longest_socket_path(run) <= path_max
+    }
+
+    /// Reserves the names of a launch in the runtime directory `run`, which is made if it is not there: draws
+    /// `<16 hex>.sock` with the OS's random numbers, and holds the claim file `<name>.sock.hold` that it creates
+    /// (`create_new`), so no two launches have one name.
+    /// A wait for a sweep of the directory is said to `progress`.
+    pub(crate) fn reserve(host: &dyn Host, run: &Path, progress: &dyn Progress) -> Result<Reservation> {
+        QmpEndpoint::reserve_with(host, run, progress, &mut random::bytes::<DRAW_BYTES>)
+    }
+
+    /// `reserve` with the draw given, to test a redraw.
     ///
-    /// Refused, with the file named: a path over `path_max` bytes (`Host::socket_path_max`), and a socket or lock file
-    /// that already exists at the name, which belongs to somebody else. Nothing is deleted or reused.
-    pub(crate) fn for_launch(temp: &Path, id: &InstanceId, launch: u64, path_max: usize) -> Result<QmpEndpoint> {
-        let path = temp.join(format!("dvm-{id}-{launch}.sock"));
-        let bytes = path.to_string_lossy().len();
-        if bytes > path_max {
+    /// Refused first, creating nothing: a directory whose sockets would be over the host's limit (`Unavailable`,
+    /// naming the directory, the limit and `XDG_RUNTIME_DIR`). A name whose claim file exists is drawn again, and so is
+    /// one whose socket or lock file exists (left by a machine that is gone, and not this launch's to delete). Those
+    /// two files are looked for before the claim is made, so no claim is ever made beside a file it did not make. A
+    /// socket cannot appear at the name afterwards: only a QEMU spawned with the claim makes one, and this launch made
+    /// it. A lock file can: a session of a dead machine that had the name makes it (`Qmp::connect`), even one that is
+    /// then refused. The launch's cleanup and the sweep delete it.
+    pub(crate) fn reserve_with(
+        host: &dyn Host,
+        run: &Path,
+        progress: &dyn Progress,
+        draw: &mut dyn FnMut() -> [u8; DRAW_BYTES],
+    ) -> Result<Reservation> {
+        let max = host.socket_path_max();
+        if !QmpEndpoint::fits(run, max) {
+            let bytes = longest_socket_path(run);
             return Err(Error::new(
                 ErrorKind::Unavailable,
                 format!(
-                    "the QEMU control socket path {} is {bytes} bytes, over the {path_max}-byte limit of an AF_UNIX \
-                     path; use a shorter temporary directory (TMP or TEMP)",
-                    path.display()
+                    "the QEMU control socket paths in {} would be {bytes} bytes, over the {max}-byte limit of an \
+                     AF_UNIX path; set XDG_RUNTIME_DIR to a shorter directory",
+                    run.display()
                 ),
             ));
         }
-        let endpoint = QmpEndpoint { path };
-        for taken in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
-            match std::fs::symlink_metadata(&taken) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        host.create_runtime_dir(run).map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot use {} for QEMU's control sockets", run.display()),
+                e,
+            )
+        })?;
+        // Shared while names are drawn and claimed, so no sweep runs between a claim file's creation and its hold.
+        // Released on return: the hold covers the launch from then on, and a sweep finds it `Busy`.
+        // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one
+        // call.
+        let mut directory = FileLock::open_in_existing_dir(&run.join("runtime.lock"))?;
+        directory.lock(Mode::Shared, "a sweep of the runtime directory", progress)?;
+        'drawing: loop {
+            let endpoint = QmpEndpoint::drawn(run, draw());
+            for other in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
+                let found = symlink_metadata_if_present(&other)
+                    .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", other.display()), e))?;
+                if found.is_some() {
+                    continue 'drawing;
+                }
+            }
+            let hold_path = endpoint.hold_path();
+            let hold = match host.hold_new(&hold_path) {
+                Ok(hold) => hold,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => {
                     return Err(Error::io(
                         ErrorKind::Io,
-                        format!("cannot look at {}", taken.display()),
+                        format!("cannot create {}", hold_path.display()),
                         e,
                     ));
                 }
-                Ok(_) => {
-                    return Err(Error::new(
-                        ErrorKind::AlreadyExists,
-                        format!(
-                            "{} already exists, so this launch number is used up; start again for the next one",
-                            taken.display()
-                        ),
-                    ));
+            };
+            // The claim file goes on this path too: nothing would reclaim it but the next sweep.
+            let id = match hold.id() {
+                Ok(id) => id,
+                Err(e) => {
+                    let error = Error::io(ErrorKind::Io, format!("cannot look at {}", hold_path.display()), e);
+                    return Err(error.after_cleanup(&hold_path.display().to_string(), hold.delete()));
                 }
-            }
+            };
+            return Ok(Reservation {
+                claim: FileClaim { path: hold_path, id },
+                endpoint,
+                hold,
+            });
         }
-        Ok(endpoint)
+    }
+
+    /// The endpoint of the launch whose name is the hex of `draw`, in `run`.
+    pub(crate) fn drawn(run: &Path, draw: [u8; DRAW_BYTES]) -> QmpEndpoint {
+        QmpEndpoint::of_launch(run, &hex::encode(draw))
+    }
+
+    /// The endpoint of the launch named `launch` (16 hex digits), in `run`.
+    pub(crate) fn of_launch(run: &Path, launch: &str) -> QmpEndpoint {
+        QmpEndpoint::from_path(run.join(format!("{launch}{SOCKET_SUFFIX}")))
+    }
+
+    /// The launch (its 16 lowercase hex digits) and the kind of file, if `file_name` is one of a launch's three
+    /// files: the inverse of [`QmpEndpoint::drawn`], [`QmpEndpoint::lock_path`] and [`QmpEndpoint::hold_path`].
+    pub(crate) fn launch_file(file_name: &str) -> Option<(&str, LaunchFileKind)> {
+        let (stem, kind) = if let Some(stem) = file_name.strip_suffix(HOLD_SUFFIX) {
+            (stem, LaunchFileKind::Claim)
+        } else if let Some(stem) = file_name.strip_suffix(LOCK_SUFFIX) {
+            (stem, LaunchFileKind::Lock)
+        } else {
+            (file_name, LaunchFileKind::Socket)
+        };
+        let launch = stem.strip_suffix(SOCKET_SUFFIX)?;
+        random::is_hex(launch, DRAW_BYTES).then_some((launch, kind))
+    }
+
+    /// The files of the launch, the claim last: it keeps the name reserved while the others are deleted.
+    pub(crate) fn launch_files(&self) -> [PathBuf; 3] {
+        [self.path.clone(), self.lock_path(), self.hold_path()]
+    }
+
+    /// The endpoint whose socket is at `path`.
+    pub(crate) fn from_path(path: PathBuf) -> QmpEndpoint {
+        QmpEndpoint { path }
     }
 
     /// The endpoint a `MachineRecord.qmp` names.
     pub(crate) fn from_record(qmp: &str) -> QmpEndpoint {
-        QmpEndpoint {
-            path: PathBuf::from(qmp),
-        }
+        QmpEndpoint::from_path(PathBuf::from(qmp))
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -97,8 +212,17 @@ impl QmpEndpoint {
 
     /// `<socket path>.lock`: held by whoever talks to the socket, so that QMP use is serialized across processes.
     pub(crate) fn lock_path(&self) -> PathBuf {
+        self.beside(LOCK_SUFFIX)
+    }
+
+    /// `<socket path>.hold`: the launch's claim, held by QEMU for as long as it runs.
+    pub(crate) fn hold_path(&self) -> PathBuf {
+        self.beside(HOLD_SUFFIX)
+    }
+
+    fn beside(&self, suffix: &str) -> PathBuf {
         let mut name: OsString = self.path.clone().into_os_string();
-        name.push(".lock");
+        name.push(suffix);
         PathBuf::from(name)
     }
 }
@@ -161,17 +285,32 @@ pub(crate) struct Qmp {
 impl Qmp {
     /// Connects to the socket, negotiates, and holds the lock file. It waits for the QEMU process to listen for as long
     /// as `process` has not exited, trying again every few milliseconds: the listener is up about 30 ms after spawn. A
-    /// process that has exited fails before a lock file is touched.
+    /// process that has exited fails before a lock file is touched. The socket's directory must exist: only a launch
+    /// makes the runtime directory (`Host::create_runtime_dir`), and a missing one is an error that names it.
+    ///
+    /// The lock is waited for as long as the process has not exited. Once the socket has accepted, the file at
+    /// `claim`'s path is compared with `claim`; if it is another launch's file, or none, the connection is dropped
+    /// unread and the error is `ConnectionLost`: a running QEMU holds its claim, and on Windows a held claim cannot be
+    /// removed by name, so the machine is over or ending. This checks the claim's identity, not the process's
+    /// liveness: the hold is free before the exit is visible, so a sweep can free the name while a dying machine is
+    /// still listed. Only a draw of the same 64 bits then gives the name to another launch, and the check is what makes
+    /// that harmless. Nobody removes a running machine's claim by hand: where that is possible (Unix), the callers wait
+    /// for the process on `ConnectionLost`, and so wait until QEMU ends.
     ///
     /// Never deletes the lock file, whether it succeeds or not: another session may be waiting on that very file, and a
     /// path removed under it could be a later session's. The file is removed by whoever knows no session can be live,
-    /// the machine's shutdown or kill. Each launch has its own path, so a deletion by path only ever touches that
-    /// machine's files.
+    /// the machine's shutdown or kill.
     ///
     /// A read on the session ends once the process has exited and QEMU's bytes are used up. On Windows the exit ends
     /// the read even if the OS never delivers the end of the stream; elsewhere the read ends with the stream, so a
     /// process that keeps the socket open after QEMU exits keeps the read waiting.
-    pub(crate) fn connect(ep: &QmpEndpoint, process: &Arc<dyn ProcessWatch>, progress: &dyn Progress) -> Result<Qmp> {
+    pub(crate) fn connect(
+        host: &dyn Host,
+        ep: &QmpEndpoint,
+        claim: &FileClaim,
+        process: &Arc<dyn ProcessWatch>,
+        progress: &dyn Progress,
+    ) -> Result<Qmp> {
         let exited = |when: &str| {
             Error::new(
                 ErrorKind::ConnectionLost,
@@ -184,15 +323,14 @@ impl Qmp {
         if process.has_exited()? {
             return Err(exited("before devvm connected"));
         }
-        let mut lock = FileLock::open(&ep.lock_path())?;
-        lock.lock(
-            Mode::Exclusive,
-            &format!(
-                "another devvm process to finish with the QEMU control socket {}",
-                ep.path().display()
-            ),
-            progress,
-        )?;
+        let mut lock = FileLock::open_in_existing_dir(&ep.lock_path())?;
+        let what = format!(
+            "another devvm process to finish with the QEMU control socket {}",
+            ep.path().display()
+        );
+        if !lock.lock_while(Mode::Exclusive, &what, progress, Some(&mut || process.pause()))? {
+            return Err(exited("while another devvm process held the control socket"));
+        }
         let stream = loop {
             match UnixStream::connect(ep.path()) {
                 Ok(stream) => break stream,
@@ -210,6 +348,26 @@ impl Qmp {
                 }
             }
         };
+        let state = claim
+            .state(host.file_id(&claim.path))
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", claim.path.display()), e))?;
+        let is = match state {
+            ClaimState::Ours => None,
+            ClaimState::Another => Some("another launch's file"),
+            ClaimState::Gone => Some("gone"),
+        };
+        if let Some(is) = is {
+            // The stream and the lock go with this return, unread.
+            return Err(Error::new(
+                ErrorKind::ConnectionLost,
+                format!(
+                    "cannot reach QEMU at {}: claim file {} is {is}: a running QEMU holds its claim, so the machine \
+                     is over or ending",
+                    ep.path().display(),
+                    claim.path.display()
+                ),
+            ));
+        }
         let link = process.link(stream).map_err(|e| {
             Error::io(
                 ErrorKind::Io,
@@ -486,8 +644,8 @@ impl Qmp {
     }
 }
 
-/// Whether a read produced a message: nothing read is the end of the stream, and so is a line cut off before its newline,
-/// which is what a QEMU that died in the middle of a write leaves.
+/// Whether a read produced a message: nothing read is the end of the stream, and so is a line cut off before its
+/// newline, which is what a QEMU that died in the middle of a write leaves.
 fn is_whole_line(read: usize, line: &str) -> bool {
     read > 0 && line.ends_with('\n')
 }
