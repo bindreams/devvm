@@ -130,6 +130,10 @@ impl Host for TestHost {
         host::current().file_id_of_open(file)
     }
 
+    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
+        host::current().check_lock_volume(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         host::current().hold_new(path)
     }
@@ -262,6 +266,10 @@ impl Host for NoAccelHost {
 
     fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
         TestHost.file_id_of_open(file)
+    }
+
+    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
+        TestHost.check_lock_volume(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
@@ -556,6 +564,10 @@ impl Host for RecordingHost {
         TestHost.file_id_of_open(file)
     }
 
+    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
+        TestHost.check_lock_volume(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         self.holds_made.lock().unwrap().push(path.to_owned());
         TestHost.hold_new(path)
@@ -692,6 +704,10 @@ impl Host for NoGuestReset {
 
     fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
         host::current().file_id_of_open(file)
+    }
+
+    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
+        host::current().check_lock_volume(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {

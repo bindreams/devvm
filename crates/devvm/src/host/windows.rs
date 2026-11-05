@@ -29,6 +29,7 @@ mod hold;
 mod link;
 pub(crate) mod runtime_dir;
 pub(crate) mod user;
+mod volume;
 mod watch;
 mod whpx;
 
@@ -287,6 +288,10 @@ impl Host for WindowsHost {
 
     fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
         file_id::of_handle(file)
+    }
+
+    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
+        volume::check_lock_volume(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {

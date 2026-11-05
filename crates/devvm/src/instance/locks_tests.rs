@@ -4,6 +4,7 @@ use std::process::Stdio;
 
 use crate::ErrorKind;
 use crate::exit::NullProgress;
+use crate::host::Comparison;
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::record::InstanceId;
 use crate::store::lock::{FileLock, Mode};
@@ -133,25 +134,111 @@ fn acquire_retries_when_another_file_is_at_the_name_before_verification(#[fixtur
 }
 
 #[skuld::test]
-fn try_owner_on_a_file_replaced_after_the_open_is_gone(#[fixture(unicode_home)] home: &Path) {
+fn try_owner_on_a_file_replaced_after_the_open_opens_the_file_at_the_name(#[fixture(unicode_home)] home: &Path) {
     for change in NameChange::ALL {
         let locks = locks(home);
         let id = InstanceId::random();
         drop(locks.acquire_owner_new(&id).unwrap());
         let path = locks.owner_path(&id);
+        let mut looks = 0;
         let probe = locks
-            .try_owner_with(&id, &mut || {}, &mut || change.apply(&path))
+            .try_owner_with(&id, &mut || {}, &mut || {
+                looks += 1;
+                if looks == 1 {
+                    change.apply(&path);
+                }
+            })
             .unwrap();
-        assert!(
-            matches!(probe, Probe::Gone),
-            "{change:?}: a lock on another file proves nothing"
+        assert_eq!(
+            looks, 2,
+            "{change:?}: a file at the name is not gone, the probe opens it"
         );
+        let Probe::Free(lock) = probe else {
+            panic!("{change:?}: nobody holds the file at the name");
+        };
+        assert_eq!(lock.is_at_path().unwrap(), Comparison::Same, "{change:?}");
+        drop(lock);
         locks.remove(&id).unwrap();
     }
 }
 
 #[skuld::test]
-fn op_wait_that_wakes_on_a_replaced_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
+fn try_owner_on_a_replaced_file_that_is_held_reads_held(#[fixture(unicode_home)] home: &Path) {
+    for change in NameChange::ALL {
+        let locks = locks(home);
+        let id = InstanceId::random();
+        drop(locks.acquire_owner_new(&id).unwrap());
+        let path = locks.owner_path(&id);
+        let mut holder = None;
+        let mut looks = 0;
+        let probe = locks
+            .try_owner_with(&id, &mut || {}, &mut || {
+                looks += 1;
+                if looks == 1 {
+                    change.apply(&path);
+                    let mut other = FileLock::open(&path).unwrap();
+                    assert!(other.try_lock(Mode::Exclusive).unwrap());
+                    holder = Some(other);
+                }
+            })
+            .unwrap();
+        assert!(matches!(probe, Probe::Held), "{change:?}: the file at the name is held");
+        drop(holder);
+        locks.remove(&id).unwrap();
+    }
+}
+
+#[skuld::test]
+fn a_probe_holds_instances_dir_shared_from_the_open_to_the_look(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let dir_path = home.join("locks").join("instances.dir");
+    let mut unlinker_blocked = None;
+    let probe = locks
+        .try_owner_with(&id, &mut || {}, &mut || {
+            let mut unlinker = FileLock::open(&dir_path).unwrap();
+            unlinker_blocked = Some(!unlinker.try_lock(Mode::Exclusive).unwrap());
+        })
+        .unwrap();
+    assert!(matches!(probe, Probe::Free(_)));
+    assert_eq!(
+        unlinker_blocked,
+        Some(true),
+        "an unlinker could run between the open and the look"
+    );
+}
+
+#[skuld::test]
+fn acquire_puts_back_a_deleted_instances_dir_and_keeps_the_file_it_locked(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    let dir_path = home.join("locks").join("instances.dir");
+    let mut calls = 0;
+    let owner = locks
+        .acquire_owner_new_with(&id, &mut || {
+            calls += 1;
+            if calls == 1 {
+                std::fs::remove_file(&dir_path).unwrap();
+            }
+        })
+        .unwrap();
+    assert_eq!(calls, 1, "the lock file is still the one at its name");
+    assert!(dir_path.is_file(), "the lock file is put back");
+    drop(owner);
+}
+
+#[skuld::test]
+fn a_look_at_the_directory_that_fails_is_the_error_and_creates_nothing(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    // A NUL in a path is an error of the look, whatever the platform.
+    let error = locks.reading(Path::new("a\0b"), || 7).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(!home.join("locks").exists());
+}
+
+#[skuld::test]
+fn op_wait_that_wakes_on_a_replaced_file_takes_the_file_at_the_name(#[fixture(unicode_home)] home: &Path) {
     for change in NameChange::ALL {
         for shared in [false, true] {
             let locks = locks(home);
@@ -162,19 +249,23 @@ fn op_wait_that_wakes_on_a_replaced_file_is_not_found(#[fixture(unicode_home)] h
             std::thread::scope(|scope| {
                 let waiter = scope.spawn(|| {
                     if shared {
-                        locks.op_shared(&id, "the instance", &*progress).map(drop)
+                        locks.op_shared(&id, "the instance", &*progress)
                     } else {
-                        locks.op_exclusive(&id, "the instance", &*progress).map(drop)
+                        locks.op_exclusive(&id, "the instance", &*progress)
                     }
                 });
                 assert_eq!(messages.recv().unwrap(), "waiting for the instance");
                 change.apply(&locks.op_path(&id));
                 drop(holder);
-                let error = waiter
+                let lock = waiter
                     .join()
                     .unwrap()
-                    .expect_err("the file waited for is not the one at the name");
-                assert_eq!(error.kind(), ErrorKind::NotFound, "{change:?}, shared {shared}");
+                    .expect("a file is at the name: the instance is not gone");
+                assert_eq!(
+                    lock.is_at_path().unwrap(),
+                    Comparison::Same,
+                    "{change:?}, shared {shared}"
+                );
             });
             locks.remove(&id).unwrap();
         }

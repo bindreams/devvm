@@ -646,6 +646,12 @@ fn file_id_of_an_open_file_stays_when_its_name_leads_to_another_file(#[fixture(u
 }
 
 #[skuld::test]
+fn the_volume_of_the_test_home_takes_locks(#[fixture(unicode_home)] home: &Path) {
+    let file = std::fs::File::create(home.join("a")).unwrap();
+    current().check_lock_volume(&file).unwrap();
+}
+
+#[skuld::test]
 fn comparing_a_file_id_with_a_look_at_a_name_says_same_different_or_absent() {
     let id = FileId { volume: 1, file: 2 };
     let other = FileId { volume: 1, file: 3 };

@@ -209,6 +209,11 @@ pub(crate) trait Host: Send + Sync {
     /// `InvalidInput` where the volume has no file ids (exFAT, FAT32).
     fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId>;
 
+    /// Whether the volume of the open lock file `file` can hold devvm's lock files. On Windows the volume must have
+    /// POSIX unlink and rename (NTFS, ReFS): the error says the devvm state directory must be on NTFS or ReFS. Any
+    /// other host accepts every volume.
+    fn check_lock_volume(&self, file: &File) -> std::io::Result<()>;
+
     /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it. The name never
     /// exists without the hold: off Windows the file is made and locked as `<path>.new` and then linked to `path`
     /// (a launch killed in between leaves the `.new` file; a file there is `AlreadyExists` too). A file system that

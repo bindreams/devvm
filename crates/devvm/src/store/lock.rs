@@ -168,45 +168,32 @@ impl FileLock {
         &self.path
     }
 
-    /// Whether the file at [`FileLock::path`] is the file this lock is on, and not another one put at the name after
-    /// this was opened (the file unlinked, renamed away or replaced). `Ok(false)` also when nothing is there.
+    /// How the file at [`FileLock::path`] compares with the file this lock is on: `Same`; `Different`, another file
+    /// put at the name after this was opened (the file unlinked, renamed away or replaced); or `Absent`, no file there.
     ///
     /// The open handle stays open across the look, which is what makes the answer sound: a file system gives the id of
     /// a file to another only after the last handle to it closes. The caller keeps unlinkers away for the look (see
-    /// `Locks`); a lookup that fails is an error, never `false`. A link at the path is an error too: opening follows
-    /// it and the look does not, so the two would differ for ever. Where the volume has no file ids (exFAT, FAT32) it
-    /// is an error saying the state directory must be on NTFS or ReFS.
-    pub fn is_at_path(&self) -> Result<bool> {
+    /// `Locks`); a lookup that fails is an error, never `Absent`. A link at the path is an error too: opening follows
+    /// it and the look does not, so the two would differ for ever. A volume that cannot hold lock files (exFAT,
+    /// FAT32, SMB) is an error saying the state directory must be on NTFS or ReFS.
+    pub(crate) fn is_at_path(&self) -> Result<Comparison> {
         let host = crate::host::current();
-        let held = host.file_id_of_open(&self.file).map_err(|e| self.id_failure(e))?;
+        host.check_lock_volume(&self.file).map_err(|e| self.failure("use", e))?;
+        let held = host
+            .file_id_of_open(&self.file)
+            .map_err(|e| self.failure("look at", e))?;
         match held.compare(host.file_id(&self.path)) {
-            Ok(Comparison::Same) => Ok(true),
-            Ok(Comparison::Absent) => Ok(false),
             Ok(Comparison::Different) => match crate::host::symlink_metadata_if_present(&self.path) {
                 Ok(Some(meta)) if meta.file_type().is_symlink() => Err(Error::new(
                     ErrorKind::Io,
                     format!("the lock file {} is a link", self.path.display()),
                 )),
-                Ok(_) => Ok(false),
+                Ok(_) => Ok(Comparison::Different),
                 Err(e) => Err(self.failure("look at", e)),
             },
+            Ok(other) => Ok(other),
             Err(e) => Err(self.failure("look at", e)),
         }
-    }
-
-    /// The error for the id of this lock's open file that could not be read.
-    fn id_failure(&self, source: std::io::Error) -> Error {
-        if source.kind() != std::io::ErrorKind::InvalidInput {
-            return self.failure("look at", source);
-        }
-        Error::io(
-            ErrorKind::Io,
-            format!(
-                "cannot identify the lock file {}: the devvm state directory must be on NTFS or ReFS",
-                self.path.display()
-            ),
-            source,
-        )
     }
 
     fn failure(&self, action: &str, source: std::io::Error) -> Error {
