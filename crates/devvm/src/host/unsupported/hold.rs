@@ -2,11 +2,12 @@
 //! inherited descriptor included.
 
 use std::fs::{File, TryLockError};
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use super::FileModes;
-use crate::host::{FileId, Hold, HoldOutcome, after_failed_write, is_absent, new_name, symlink_metadata_if_present};
+use crate::host::{
+    FileId, Hold, HoldOutcome, after_failed_write, is_a_link, is_absent, new_name, symlink_metadata_if_present,
+};
 
 #[derive(Debug)]
 struct FlockHold {
@@ -81,10 +82,6 @@ pub(super) fn new(host: &dyn FileModes, path: &Path) -> std::io::Result<Box<dyn 
         }
         (Err(e), unlinked) => Err(after_failed_write(&private, e, || unlinked)),
     }
-}
-
-fn is_a_link(path: &Path) -> std::io::Error {
-    std::io::Error::new(ErrorKind::InvalidInput, format!("{} is a link", path.display()))
 }
 
 /// Opens the file at `path` for reading and writing with `FileModes::hold_options`, making it if `create`. A link at

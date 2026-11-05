@@ -32,6 +32,11 @@ pub(crate) fn is_absent(e: &io::Error) -> bool {
     )
 }
 
+/// The error for a link met where a file is wanted: `InvalidInput`, "is a link".
+pub(crate) fn is_a_link(path: &Path) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, format!("{} is a link", path.display()))
+}
+
 /// What is at `path`, not following a link: `None` when it is not there ([`is_absent`]), the error for any other
 /// failure.
 pub(crate) fn symlink_metadata_if_present(path: &Path) -> io::Result<Option<Metadata>> {

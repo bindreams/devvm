@@ -218,6 +218,22 @@ fn open_in_existing_dir_creates_the_file_and_not_its_directory(#[fixture(unicode
     assert!(!home.join("missing").exists());
 }
 
+/// The directory is there, as a link that leads nowhere: the open fails with "not found", and the error does not say
+/// the directory is missing.
+#[skuld::test]
+fn a_dangling_link_as_the_parent_is_not_reported_as_a_missing_directory(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let (parent, path) = (home.join("dir"), home.join("dir").join("a.lock"));
+    symlink(&home.join("nowhere"), &parent);
+
+    let error = FileLock::open_in_existing_dir(&path).unwrap_err();
+
+    assert!(error.message().contains(&path.display().to_string()), "{error}");
+    assert!(!error.message().contains("does not exist"), "{error}");
+}
+
 #[skuld::test]
 fn open_existing_locks_like_open(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");

@@ -5,6 +5,7 @@
 
 use std::fs::File;
 use std::mem::{offset_of, size_of};
+use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
@@ -25,7 +26,7 @@ use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMAN
 
 use super::file_id;
 use super::wide;
-use crate::host::{DELETING_DRAW_BYTES, FileId, Hold, HoldOutcome, deleting_name, is_absent};
+use crate::host::{DELETING_DRAW_BYTES, FileId, Hold, HoldOutcome, deleting_name, is_a_link, is_absent};
 use crate::random;
 
 // `windows-sys` has no binding for it.
@@ -291,10 +292,9 @@ const LINK_OPEN: u32 = FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS
 /// `IsReparseTagNameSurrogate` tests it. Other tags (cloud files, deduplication) are the file itself.
 const REPARSE_TAG_NAME_SURROGATE: u32 = 0x2000_0000;
 
-/// `InvalidInput`, "is a link", if `file`, opened with [`LINK_OPEN`], is the link at `path` and not what it leads to: a
-/// reparse point whose tag is a name surrogate. A directory is `IsADirectory`: it opened only for [`LINK_OPEN`], and a
-/// lock or a hold is on a file.
-fn refuse_link(file: &File, path: &Path) -> std::io::Result<()> {
+/// The reparse tag of `file`, which must be a reparse point: the query is not made for any other file, since a volume
+/// without reparse points (FAT, exFAT) need not answer it.
+fn reparse_tag(file: &File) -> std::io::Result<u32> {
     let mut info = FILE_ATTRIBUTE_TAG_INFO {
         FileAttributes: 0,
         ReparseTag: 0,
@@ -311,13 +311,18 @@ fn refuse_link(file: &File, path: &Path) -> std::io::Result<()> {
     if read == 0 {
         return Err(std::io::Error::last_os_error());
     }
-    if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && info.ReparseTag & REPARSE_TAG_NAME_SURROGATE != 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{} is a link", path.display()),
-        ));
+    Ok(info.ReparseTag)
+}
+
+/// `InvalidInput`, "is a link", if `file`, opened with [`LINK_OPEN`], is the link at `path` and not what it leads to: a
+/// reparse point whose tag is a name surrogate. A directory is `IsADirectory`: it opened only for [`LINK_OPEN`], and a
+/// lock or a hold is on a file.
+fn refuse_link(file: &File, path: &Path) -> std::io::Result<()> {
+    let attributes = file.metadata()?.file_attributes();
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && reparse_tag(file)? & REPARSE_TAG_NAME_SURROGATE != 0 {
+        return Err(is_a_link(path));
     }
-    if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::IsADirectory,
             format!("{} is a directory", path.display()),

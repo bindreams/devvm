@@ -317,7 +317,8 @@ impl Locks {
 
     /// [`Locks::open_dir`] with `create`, whose result is never `None`.
     fn make_dir(&self) -> Result<FileLock> {
-        self.checked(FileLock::open(&self.dir.join("instances.dir"))?)
+        self.open_dir(true)?
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "opening instances.dir with create gave no file"))
     }
 
     /// `dir`, the lock file of `instances.dir`, if its volume allows the lock design.

@@ -56,13 +56,19 @@ impl FileLock {
     /// No open of a lock file follows a link: a link at `path` is an error ([`Host::open_lock_file`]).
     pub fn open_in_existing_dir(path: &Path) -> Result<FileLock> {
         let file = crate::host::current().open_lock_file(path, true).map_err(|source| {
-            // The file is made if it is missing, so only its directory can be.
+            // The file is made if it is missing, so only its directory can be; a link at the directory is there, and
+            // leads nowhere.
             let text = match path.parent() {
-                Some(parent) if source.kind() == std::io::ErrorKind::NotFound => format!(
-                    "cannot open lock file {}: {} does not exist",
-                    path.display(),
-                    parent.display()
-                ),
+                Some(parent)
+                    if source.kind() == std::io::ErrorKind::NotFound
+                        && matches!(crate::host::symlink_metadata_if_present(parent), Ok(None)) =>
+                {
+                    format!(
+                        "cannot open lock file {}: {} does not exist",
+                        path.display(),
+                        parent.display()
+                    )
+                }
                 _ => format!("cannot open lock file {}", path.display()),
             };
             Error::io(ErrorKind::Io, text, source)

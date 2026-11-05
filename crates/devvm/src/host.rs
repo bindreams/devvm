@@ -37,7 +37,7 @@ pub(crate) mod watch;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-pub(crate) use entry::{Entry, is_absent, symlink_metadata_if_present};
+pub(crate) use entry::{Entry, is_a_link, is_absent, symlink_metadata_if_present};
 pub(crate) use file_id::{Comparison, FileId};
 #[cfg_attr(
     not(windows),
