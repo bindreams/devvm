@@ -174,11 +174,9 @@ impl FileLock {
     /// The open handle stays open across the look, which is what makes the answer sound: a file system gives the id of
     /// a file to another only after the last handle to it closes. The caller keeps unlinkers away for the look (see
     /// `Locks`); a lookup that fails is an error, never `Absent`. A link at the path is an error too: opening follows
-    /// it and the look does not, so the two would differ for ever. A volume that cannot hold lock files (exFAT,
-    /// FAT32, SMB) is an error saying the state directory must be on NTFS or ReFS.
+    /// it and the look does not, so the two would differ for ever.
     pub(crate) fn is_at_path(&self) -> Result<Comparison> {
         let host = crate::host::current();
-        host.check_lock_volume(&self.file).map_err(|e| self.failure("use", e))?;
         let held = host
             .file_id_of_open(&self.file)
             .map_err(|e| self.failure("look at", e))?;
@@ -194,6 +192,14 @@ impl FileLock {
             Ok(other) => Ok(other),
             Err(e) => Err(self.failure("look at", e)),
         }
+    }
+
+    /// Whether the volume of this file has POSIX unlink and rename (NTFS, ReFS), which the lock files of `Locks` rely
+    /// on.
+    pub(crate) fn volume_has_posix_unlink_rename(&self) -> Result<bool> {
+        crate::host::current()
+            .volume_has_posix_unlink_rename(&self.file)
+            .map_err(|e| self.failure("look at the volume of", e))
     }
 
     fn failure(&self, action: &str, source: std::io::Error) -> Error {

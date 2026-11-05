@@ -222,8 +222,8 @@ impl<M: FileModes> Host for M {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Unsupported, "this build cannot tell files apart"))
     }
 
-    fn check_lock_volume(&self, _file: &File) -> std::io::Result<()> {
-        Ok(())
+    fn volume_has_posix_unlink_rename(&self, _file: &File) -> std::io::Result<bool> {
+        Ok(true)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {

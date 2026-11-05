@@ -130,8 +130,8 @@ impl Host for TestHost {
         host::current().file_id_of_open(file)
     }
 
-    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
-        host::current().check_lock_volume(file)
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        host::current().volume_has_posix_unlink_rename(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
@@ -268,8 +268,8 @@ impl Host for NoAccelHost {
         TestHost.file_id_of_open(file)
     }
 
-    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
-        TestHost.check_lock_volume(file)
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        TestHost.volume_has_posix_unlink_rename(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
@@ -564,8 +564,8 @@ impl Host for RecordingHost {
         TestHost.file_id_of_open(file)
     }
 
-    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
-        TestHost.check_lock_volume(file)
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        TestHost.volume_has_posix_unlink_rename(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
@@ -706,8 +706,8 @@ impl Host for NoGuestReset {
         host::current().file_id_of_open(file)
     }
 
-    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
-        host::current().check_lock_volume(file)
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        host::current().volume_has_posix_unlink_rename(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {

@@ -447,6 +447,51 @@ fn reading_an_absent_directory_reads_nothing_and_creates_nothing(#[fixture(unico
     assert!(!home.join("locks").exists());
 }
 
+/// A look at a name that is not there is `FileId::compare`'s absent: gone, below a file, or a name the host cannot hold.
+#[skuld::test]
+fn reading_a_directory_that_is_not_there_reads_nothing_whatever_makes_it_absent(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    std::fs::write(home.join("file"), b"x").unwrap();
+    let absent = [home.join("gone"), home.join("file").join("below"), home.join("a|b")];
+    for seen in &absent {
+        assert!(locks.reading(seen, || 7).unwrap().is_none(), "{}", seen.display());
+    }
+    assert!(!home.join("locks").exists());
+
+    drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
+    for seen in &absent {
+        assert!(locks.reading(seen, || 7).unwrap().is_none(), "{}", seen.display());
+    }
+}
+
+/// A link at the name is something there, followed or not: `reading` does not follow it.
+#[skuld::test]
+fn reading_a_directory_that_is_a_link_reads_it_even_when_the_link_dangles(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let locks = locks(home);
+    let (real, to_dir, dangling) = (home.join("real"), home.join("to_dir"), home.join("dangling"));
+    std::fs::create_dir(&real).unwrap();
+    symlink(&real, &to_dir);
+    symlink(&home.join("nowhere"), &dangling);
+    for seen in [&to_dir, &dangling] {
+        let mut seen_first = false;
+        let read = locks.reading_with(seen, &mut || seen_first = true, || 7).unwrap();
+        assert_eq!(read, Some(7), "{}", seen.display());
+        assert!(
+            seen_first,
+            "{}: found while instances.dir did not exist",
+            seen.display()
+        );
+        std::fs::remove_dir_all(home.join("locks")).unwrap();
+    }
+    drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
+    for seen in [&to_dir, &dangling] {
+        assert_eq!(locks.reading(seen, || 7).unwrap(), Some(7), "{}", seen.display());
+    }
+}
+
 #[skuld::test]
 fn a_reader_that_stalls_after_seeing_a_directory_still_reads_under_the_lock_of_a_first_create(
     #[fixture(unicode_home)] home: &Path,

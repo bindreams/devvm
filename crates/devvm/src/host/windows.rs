@@ -290,8 +290,8 @@ impl Host for WindowsHost {
         file_id::of_handle(file)
     }
 
-    fn check_lock_volume(&self, file: &File) -> std::io::Result<()> {
-        volume::check_lock_volume(file)
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        volume::has_posix_unlink_rename(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {

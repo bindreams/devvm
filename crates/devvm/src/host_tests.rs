@@ -648,7 +648,7 @@ fn file_id_of_an_open_file_stays_when_its_name_leads_to_another_file(#[fixture(u
 #[skuld::test]
 fn the_volume_of_the_test_home_takes_locks(#[fixture(unicode_home)] home: &Path) {
     let file = std::fs::File::create(home.join("a")).unwrap();
-    current().check_lock_volume(&file).unwrap();
+    assert!(current().volume_has_posix_unlink_rename(&file).unwrap());
 }
 
 #[skuld::test]
