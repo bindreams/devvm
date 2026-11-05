@@ -205,8 +205,8 @@ pub(crate) trait Host: Send + Sync {
     fn file_id(&self, path: &Path) -> std::io::Result<FileId>;
 
     /// The identity of the open file `file`: of the file itself, whatever its name leads to now. While `file` stays open
-    /// the id cannot be given to another file (ext4 reuses an inode only after the last close). Fails with
-    /// `InvalidInput` where the volume has no file ids (exFAT, FAT32).
+    /// the id cannot be given to another file (ext4 reuses an inode only after the last close). On Windows it fails
+    /// with `InvalidInput` on a volume without file ids (exFAT, FAT32); a build without file ids fails `Unsupported`.
     fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId>;
 
     /// Whether the volume of the open file `file` has POSIX unlink and rename, which devvm's lock files rely on (NTFS

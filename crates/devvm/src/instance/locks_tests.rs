@@ -664,3 +664,11 @@ fn a_failed_unlink_of_the_op_file_leaves_the_owner_file_for_the_sweep(#[fixture(
     locks.remove(&id).unwrap();
     assert!(!locks.op_path(&id).exists() && !locks.owner_path(&id).exists());
 }
+
+#[skuld::test]
+fn a_volume_without_posix_unlink_is_not_supported_and_names_the_requirement() {
+    let error = crate::instance::locks::unsupported_volume(Path::new("state/locks"));
+    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+    assert!(error.message().contains("state/locks"), "{}", error.message());
+    assert!(error.message().contains("NTFS or ReFS"), "{}", error.message());
+}
