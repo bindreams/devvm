@@ -285,6 +285,10 @@ impl Host for WindowsHost {
         file_id::of(path)
     }
 
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        file_id::of_handle(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         Ok(Box::new(hold::new(path)?))
     }

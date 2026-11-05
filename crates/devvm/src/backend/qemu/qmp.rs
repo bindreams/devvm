@@ -16,9 +16,9 @@ use qapi::{Command, Execute};
 
 use super::ports::{Forward, parse_usernet};
 use super::uds::UnixStream;
-use crate::backend::{ClaimState, FileClaim};
+use crate::backend::FileClaim;
 use crate::exit::Progress;
-use crate::host::{Hold, Host, Link, ProcessWatch, symlink_metadata_if_present};
+use crate::host::{Comparison, Hold, Host, Link, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Error, ErrorKind, Result};
@@ -349,12 +349,13 @@ impl Qmp {
             }
         };
         let state = claim
-            .state(host.file_id(&claim.path))
+            .id
+            .compare(host.file_id(&claim.path))
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", claim.path.display()), e))?;
         let is = match state {
-            ClaimState::Ours => None,
-            ClaimState::Another => Some("another launch's file"),
-            ClaimState::Gone => Some("gone"),
+            Comparison::Same => None,
+            Comparison::Different => Some("another launch's file"),
+            Comparison::Absent => Some("gone"),
         };
         if let Some(is) = is {
             // The stream and the lock go with this return, unread.

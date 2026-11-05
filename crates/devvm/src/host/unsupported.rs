@@ -2,7 +2,7 @@
 //! file modes ([`FileModes`]), and is a [`Host`] through the blanket impl below.
 
 use std::ffi::{OsStr, OsString};
-use std::fs::{DirBuilder, Metadata, OpenOptions};
+use std::fs::{DirBuilder, File, Metadata, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -214,6 +214,11 @@ impl<M: FileModes> Host for M {
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
         let metadata = std::fs::symlink_metadata(path)?;
         self.identity(&metadata)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Unsupported, "this build cannot tell files apart"))
+    }
+
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        self.identity(&file.metadata()?)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Unsupported, "this build cannot tell files apart"))
     }
 

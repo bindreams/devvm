@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use super::other::OtherHost;
-use super::{FileId, HoldOutcome, Host, current, host_exit_width};
+use super::{Comparison, FileId, HoldOutcome, Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
 use crate::test_groups::{Group, PINNED_CHILD, acp_1252, symlinks};
@@ -620,6 +620,48 @@ fn file_id_is_equal_for_one_file_and_differs_between_two_that_exist(#[fixture(un
 fn file_id_of_a_missing_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
     let error = current().file_id(&home.join("gone")).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+}
+
+#[skuld::test]
+fn file_id_of_an_open_file_is_the_id_of_its_name(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a");
+    std::fs::write(&path, b"").unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    assert_eq!(
+        current().file_id_of_open(&file).unwrap(),
+        current().file_id(&path).unwrap()
+    );
+}
+
+#[skuld::test]
+fn file_id_of_an_open_file_stays_when_its_name_leads_to_another_file(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a");
+    std::fs::write(&path, b"").unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    let before = current().file_id_of_open(&file).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    assert_eq!(current().file_id_of_open(&file).unwrap(), before);
+    assert_ne!(current().file_id(&path).unwrap(), before);
+}
+
+#[skuld::test]
+fn comparing_a_file_id_with_a_look_at_a_name_says_same_different_or_absent() {
+    let id = FileId { volume: 1, file: 2 };
+    let other = FileId { volume: 1, file: 3 };
+    assert_eq!(id.compare(Ok(id)).unwrap(), Comparison::Same);
+    assert_eq!(id.compare(Ok(other)).unwrap(), Comparison::Different);
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::NotADirectory,
+        std::io::ErrorKind::InvalidFilename,
+    ] {
+        assert_eq!(id.compare(Err(kind.into())).unwrap(), Comparison::Absent, "{kind:?}");
+    }
+    let error = id
+        .compare(Err(std::io::ErrorKind::PermissionDenied.into()))
+        .expect_err("a look that failed is no answer");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
 }
 
 #[skuld::test]

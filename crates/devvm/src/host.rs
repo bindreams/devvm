@@ -4,7 +4,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,7 +38,7 @@ pub(crate) mod watch;
 pub(crate) mod windows;
 
 pub(crate) use entry::{Entry, is_absent, symlink_metadata_if_present};
-pub(crate) use file_id::FileId;
+pub(crate) use file_id::{Comparison, FileId};
 #[cfg_attr(
     not(windows),
     allow(
@@ -203,6 +203,11 @@ pub(crate) trait Host: Send + Sync {
     /// The identity of the file `path` names, not of what a link there points to. It needs no access to the contents,
     /// so it reads the identity of a file that is held (see [`Hold`]).
     fn file_id(&self, path: &Path) -> std::io::Result<FileId>;
+
+    /// The identity of the open file `file`: of the file itself, whatever its name leads to now. While `file` stays open
+    /// the id cannot be given to another file (ext4 reuses an inode only after the last close). Fails with
+    /// `InvalidInput` where the volume has no file ids (exFAT, FAT32).
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId>;
 
     /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it. The name never
     /// exists without the hold: off Windows the file is made and locked as `<path>.new` and then linked to `path`

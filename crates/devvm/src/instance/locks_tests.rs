@@ -7,8 +7,11 @@ use crate::exit::NullProgress;
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::record::InstanceId;
 use crate::store::lock::{FileLock, Mode};
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::helper;
+use crate::test_support::name_change::NameChange;
+use crate::test_support::symlink::symlink;
 
 fn locks(home: &Path) -> Locks {
     Locks::new(home.join("locks"))
@@ -102,6 +105,105 @@ fn acquire_retries_when_the_file_is_unlinked_before_verification(#[fixture(unico
     assert!(locks.op_path(&id).is_file());
     assert!(matches!(locks.try_owner(&id).unwrap(), Probe::Held));
     drop(owner);
+}
+
+#[skuld::test]
+fn acquire_retries_when_another_file_is_at_the_name_before_verification(#[fixture(unicode_home)] home: &Path) {
+    for change in NameChange::ALL {
+        let locks = locks(home);
+        let id = InstanceId::random();
+        let path = locks.owner_path(&id);
+        let mut calls = 0;
+        let owner = locks
+            .acquire_owner_new_with(&id, &mut || {
+                calls += 1;
+                if calls == 1 {
+                    change.apply(&path);
+                }
+            })
+            .unwrap();
+        assert_eq!(calls, 2, "{change:?}: a file at the name is not the locked file");
+        assert!(
+            matches!(locks.try_owner(&id).unwrap(), Probe::Held),
+            "{change:?}: the lock is on the file at the name"
+        );
+        drop(owner);
+        locks.remove(&id).unwrap();
+    }
+}
+
+#[skuld::test]
+fn try_owner_on_a_file_replaced_after_the_open_is_gone(#[fixture(unicode_home)] home: &Path) {
+    for change in NameChange::ALL {
+        let locks = locks(home);
+        let id = InstanceId::random();
+        drop(locks.acquire_owner_new(&id).unwrap());
+        let path = locks.owner_path(&id);
+        let probe = locks
+            .try_owner_with(&id, &mut || {}, &mut || change.apply(&path))
+            .unwrap();
+        assert!(
+            matches!(probe, Probe::Gone),
+            "{change:?}: a lock on another file proves nothing"
+        );
+        locks.remove(&id).unwrap();
+    }
+}
+
+#[skuld::test]
+fn op_wait_that_wakes_on_a_replaced_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    for change in NameChange::ALL {
+        for shared in [false, true] {
+            let locks = locks(home);
+            let id = InstanceId::random();
+            drop(locks.acquire_owner_new(&id).unwrap());
+            let holder = locks.op_exclusive(&id, "holder", &NullProgress).unwrap();
+            let (progress, messages) = ChannelProgress::new();
+            std::thread::scope(|scope| {
+                let waiter = scope.spawn(|| {
+                    if shared {
+                        locks.op_shared(&id, "the instance", &*progress).map(drop)
+                    } else {
+                        locks.op_exclusive(&id, "the instance", &*progress).map(drop)
+                    }
+                });
+                assert_eq!(messages.recv().unwrap(), "waiting for the instance");
+                change.apply(&locks.op_path(&id));
+                drop(holder);
+                let error = waiter
+                    .join()
+                    .unwrap()
+                    .expect_err("the file waited for is not the one at the name");
+                assert_eq!(error.kind(), ErrorKind::NotFound, "{change:?}, shared {shared}");
+            });
+            locks.remove(&id).unwrap();
+        }
+    }
+}
+
+#[skuld::test]
+fn a_link_at_a_lock_name_is_an_error_naming_the_file_and_not_a_loop(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let (owner, op) = (locks.owner_path(&id), locks.op_path(&id));
+    for path in [&owner, &op] {
+        let target = path.with_extension("target");
+        std::fs::rename(path, &target).unwrap();
+        symlink(&target, path);
+    }
+    let named = |error: crate::Error, path: &Path| {
+        assert!(error.message().contains(&path.display().to_string()), "{error}");
+        assert!(error.message().contains("link"), "{error}");
+    };
+    named(locks.acquire_owner_new(&id).map(drop).unwrap_err(), &owner);
+    named(locks.try_owner_recreating(&id).map(drop).unwrap_err(), &owner);
+    named(locks.try_owner(&id).map(drop).unwrap_err(), &owner);
+    named(locks.try_op_exclusive(&id).map(drop).unwrap_err(), &op);
+    named(locks.op_shared(&id, "x", &NullProgress).map(drop).unwrap_err(), &op);
 }
 
 #[skuld::test]

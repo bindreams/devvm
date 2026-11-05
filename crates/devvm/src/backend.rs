@@ -8,7 +8,7 @@ use cosca::identity::ProcessIdRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::contain::Lifetime;
-use crate::host::{Accel, FileId, Hold, HoldOutcome, Host, is_absent, symlink_metadata_if_present};
+use crate::host::{Accel, Comparison, FileId, Hold, HoldOutcome, Host, is_absent, symlink_metadata_if_present};
 use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
 use crate::{Arch, ErrorKind, Network, Result};
@@ -142,30 +142,6 @@ pub(crate) struct FileClaim {
     pub id: FileId,
 }
 
-/// How the file at a claim's path compares with the claim.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ClaimState {
-    /// The file the claim says.
-    Ours,
-    /// A file that is not the claim's: the name was taken by another launch.
-    Another,
-    /// No file.
-    Gone,
-}
-
-impl FileClaim {
-    /// Which file `found`, a look at the file at the claim's `path` (`Host::file_id`), is. Only a lookup by name gives
-    /// `Gone`; the identity of an open handle does not. A failure other than a missing file is returned.
-    pub(crate) fn state(&self, found: std::io::Result<FileId>) -> std::io::Result<ClaimState> {
-        match found {
-            Ok(id) if id == self.id => Ok(ClaimState::Ours),
-            Ok(_) => Ok(ClaimState::Another),
-            Err(e) if is_absent(&e) => Ok(ClaimState::Gone),
-            Err(e) => Err(e),
-        }
-    }
-}
-
 impl MachineRecord {
     /// Deletes `leftovers` (see [`remove_files`]). Call it only once the machine is proven dead.
     pub(crate) fn remove_leftovers(&self, host: &dyn Host, warn: &mut dyn FnMut(String)) {
@@ -241,11 +217,10 @@ pub(crate) fn remove_held(
     warn: &mut dyn FnMut(String),
 ) {
     // The name is looked up on purpose: this asks whether the name still leads to the held file.
-    match (hold.id(), host.file_id(claim)) {
-        (Ok(held), Ok(named)) if held == named => {}
-        (Ok(_), Err(e)) if is_absent(&e) => return,
-        (Ok(_), Ok(_)) => return,
-        (Err(e), _) | (_, Err(e)) => {
+    match hold.id().and_then(|held| held.compare(host.file_id(claim))) {
+        Ok(Comparison::Same) => {}
+        Ok(Comparison::Different | Comparison::Absent) => return,
+        Err(e) => {
             warn(format!("cannot look at {}: {e}", claim.display()));
             return;
         }

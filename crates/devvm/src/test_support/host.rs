@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -123,6 +124,10 @@ impl Host for TestHost {
 
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
         host::current().file_id(path)
+    }
+
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        host::current().file_id_of_open(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
@@ -253,6 +258,10 @@ impl Host for NoAccelHost {
 
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
         TestHost.file_id(path)
+    }
+
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        TestHost.file_id_of_open(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
@@ -543,6 +552,10 @@ impl Host for RecordingHost {
         TestHost.file_id(path)
     }
 
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        TestHost.file_id_of_open(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         self.holds_made.lock().unwrap().push(path.to_owned());
         TestHost.hold_new(path)
@@ -675,6 +688,10 @@ impl Host for NoGuestReset {
 
     fn file_id(&self, path: &Path) -> std::io::Result<FileId> {
         host::current().file_id(path)
+    }
+
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        host::current().file_id_of_open(file)
     }
 
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {

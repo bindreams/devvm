@@ -6,8 +6,11 @@ use std::sync::mpsc;
 
 use crate::exit::{NullProgress, Progress};
 use crate::store::lock::{FileLock, Mode};
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::helper;
+use crate::test_support::name_change::NameChange;
+use crate::test_support::symlink::symlink;
 
 /// Helper process: takes an exclusive lock on `args[0]`, prints `held`, then blocks until stdin closes.
 pub fn hold_lock(args: &[String]) {
@@ -223,4 +226,47 @@ fn open_existing_locks_like_open(#[fixture(unicode_home)] home: &Path) {
     let mut other = FileLock::open(&path).unwrap();
     assert!(!other.try_lock(Mode::Exclusive).unwrap());
     assert!(!other.try_lock(Mode::Shared).unwrap());
+}
+
+#[skuld::test]
+fn a_lock_is_at_its_path_until_the_name_leads_to_another_file(#[fixture(unicode_home)] home: &Path) {
+    for (n, change) in NameChange::ALL.into_iter().enumerate() {
+        let path = home.join(format!("a{n}.lock"));
+        let lock = FileLock::open(&path).unwrap();
+        assert!(lock.is_at_path().unwrap(), "{change:?}: before the change");
+        change.apply(&path);
+        assert!(path.exists(), "{change:?}: a file is at the name");
+        assert!(!lock.is_at_path().unwrap(), "{change:?}: after the change");
+    }
+}
+
+#[skuld::test]
+fn a_lock_is_not_at_its_path_once_the_name_is_unlinked(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.lock");
+    let lock = FileLock::open(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(!lock.is_at_path().unwrap());
+}
+
+#[skuld::test]
+fn a_link_at_the_lock_name_is_an_error_naming_the_file(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let (target, link) = (home.join("target"), home.join("a.lock"));
+    std::fs::write(&target, b"").unwrap();
+    symlink(&target, &link);
+    let lock = FileLock::open(&link).unwrap();
+    let error = lock.is_at_path().unwrap_err();
+    assert!(error.message().contains(&link.display().to_string()), "{error}");
+    assert!(error.message().contains("link"), "{error}");
+}
+
+#[skuld::test]
+fn a_volume_without_file_ids_is_an_error_naming_the_requirement(#[fixture(unicode_home)] home: &Path) {
+    let lock = FileLock::open(&home.join("a.lock")).unwrap();
+    let error = lock.id_failure(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    assert!(error.message().contains("NTFS or ReFS"), "{error}");
+    let other = lock.id_failure(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(!other.message().contains("NTFS"), "{other}");
 }
