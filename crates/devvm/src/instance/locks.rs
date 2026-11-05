@@ -114,7 +114,7 @@ impl Locks {
                     return Ok(None);
                 }
                 after_seen();
-                self.open_dir(true)?.expect("open_dir(true) makes instances.dir")
+                self.make_dir()?
             }
         };
         let _shared = take(dir_lock, Mode::Shared, &mut || {})?;
@@ -125,7 +125,7 @@ impl Locks {
     /// directory or opens a lock file. `before_wait` runs just before waiting for them. `f` must not take or wait for
     /// any other lock.
     pub(crate) fn excluding_readers<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
-        let dir = self.open_dir(true)?.expect("open_dir(true) makes instances.dir");
+        let dir = self.make_dir()?;
         let _lock = take(dir, Mode::Exclusive, before_wait)?;
         Ok(f())
     }
@@ -302,21 +302,26 @@ impl Locks {
     /// `instances.dir` is made if it is missing: devvm never deletes it, so a missing one was damaged from outside,
     /// and a lock file is not gone for that, as in [`Locks::reading`].
     fn is_current(&self, lock: &FileLock) -> Result<(Comparison, FileLock)> {
-        let dir = self.open_dir(true)?.expect("open_dir(true) makes instances.dir");
+        let dir = self.make_dir()?;
         let dir = take(dir, Mode::Shared, &mut || {})?;
         Ok((lock.is_at_path()?, dir))
     }
 
     /// Opens `instances.dir`, making it if `create`, else `None` if it is absent; not locked. Its volume is the volume
-    /// of every lock file in it, so the one place that opens it checks it.
+    /// of every lock file in it, so the places that open it check it.
     fn open_dir(&self, create: bool) -> Result<Option<FileLock>> {
-        let path = self.dir.join("instances.dir");
-        let dir = if create {
-            Some(FileLock::open(&path)?)
-        } else {
-            FileLock::open_existing(&path)?
-        };
-        let Some(dir) = dir else { return Ok(None) };
+        FileLock::open_with(&self.dir.join("instances.dir"), create)?
+            .map(|dir| self.checked(dir))
+            .transpose()
+    }
+
+    /// [`Locks::open_dir`] with `create`, whose result is never `None`.
+    fn make_dir(&self) -> Result<FileLock> {
+        self.checked(FileLock::open(&self.dir.join("instances.dir"))?)
+    }
+
+    /// `dir`, the lock file of `instances.dir`, if its volume allows the lock design.
+    fn checked(&self, dir: FileLock) -> Result<FileLock> {
         if !dir.volume_has_posix_unlink_rename(self.host)? {
             return Err(Error::new(
                 ErrorKind::NotSupported,
@@ -327,7 +332,7 @@ impl Locks {
                 ),
             ));
         }
-        Ok(Some(dir))
+        Ok(dir)
     }
 
     /// Opens the lock file at `path` under a shared hold of `instances.dir` that lasts as long as the result does, so a
@@ -338,12 +343,7 @@ impl Locks {
             return Ok(None);
         };
         let dir = take(dir, Mode::Shared, before_wait)?;
-        let file = if create {
-            Some(FileLock::open(path)?)
-        } else {
-            FileLock::open_existing(path)?
-        };
-        Ok(file.map(|file| LockInDir { dir, file }))
+        Ok(FileLock::open_with(path, create)?.map(|file| LockInDir { dir, file }))
     }
 
     /// Tries the lock file at `path` exclusive without waiting, and compares the file at its name with the one locked,

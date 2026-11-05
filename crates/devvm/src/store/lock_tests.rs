@@ -281,6 +281,25 @@ fn a_link_at_the_lock_name_is_an_error_at_every_open(
 }
 
 #[skuld::test]
+fn a_directory_symlink_at_the_lock_name_is_an_error_at_every_open(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let (target, link) = (home.join("target"), home.join("a.lock"));
+    std::fs::create_dir(&target).unwrap();
+    symlink(&target, &link);
+    let errors = [
+        FileLock::open(&link).unwrap_err(),
+        FileLock::open_in_existing_dir(&link).unwrap_err(),
+        FileLock::open_existing(&link).map(drop).unwrap_err(),
+    ];
+    for error in errors {
+        assert!(error.message().contains(&link.display().to_string()), "{error}");
+        assert!(error.message().contains("link"), "{error}");
+    }
+}
+
+#[skuld::test]
 fn open_existing_reads_every_absent_path_as_none(#[fixture(unicode_home)] home: &Path) {
     let file = home.join("file");
     std::fs::write(&file, b"").unwrap();

@@ -74,6 +74,15 @@ impl FileLock {
         })
     }
 
+    /// [`FileLock::open`] with `create`, else [`FileLock::open_existing`]; `Some` with `create`.
+    pub fn open_with(path: &Path, create: bool) -> Result<Option<FileLock>> {
+        if create {
+            FileLock::open(path).map(Some)
+        } else {
+            FileLock::open_existing(path)
+        }
+    }
+
     /// Opens an existing lock file without creating it or its directories; `None` if it is absent
     /// ([`crate::host::is_absent`]).
     pub fn open_existing(path: &Path) -> Result<Option<FileLock>> {

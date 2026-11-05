@@ -220,6 +220,45 @@ fn a_hold_deeper_than_max_path_is_deleted_and_leaves_no_name(#[fixture(unicode_h
     assert!(matches!(WindowsHost.hold_existing(&path).unwrap(), HoldOutcome::Absent));
 }
 
+/// A junction needs no privilege, so this runs in every group.
+#[skuld::test]
+fn a_junction_at_a_lock_name_is_a_link_at_every_open(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = home.join("a.lock");
+    junction::create(&target, &link).unwrap();
+    for create in [true, false] {
+        let error = WindowsHost.open_lock_file(&link, create).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "create {create}: {error}"
+        );
+        assert!(error.to_string().ends_with("is a link"), "create {create}: {error}");
+    }
+    assert!(matches!(
+        WindowsHost.hold_existing(&link).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    ));
+}
+
+/// A directory opens only because a link to one must (`FILE_FLAG_BACKUP_SEMANTICS`); it is not a lock file.
+#[skuld::test]
+fn a_directory_at_a_lock_name_is_an_error_at_every_open(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("a.lock");
+    std::fs::create_dir(&dir).unwrap();
+    for create in [true, false] {
+        let error = WindowsHost.open_lock_file(&dir, create).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::IsADirectory,
+            "create {create}: {error}"
+        );
+    }
+    let error = WindowsHost.hold_existing(&dir).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::IsADirectory, "{error}");
+}
+
 // The runtime directory -----------------------------------------------------------------------------------------------
 
 #[skuld::test]
