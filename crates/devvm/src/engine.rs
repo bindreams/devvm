@@ -87,22 +87,16 @@ pub struct Engine {
 
 impl Engine {
     /// The engine for this process: the real host, the directories and the configuration file from the environment,
-    /// the QEMU backend and the Linux guest. Downloads go through `transport`. Creates nothing on disk and downloads
-    /// nothing; an unreadable `config.yaml` fails here, naming the file.
+    /// the QEMU backend and the Linux guest. Downloads go through `transport`. Downloads nothing; an unreadable
+    /// `config.yaml` fails here, naming the file. Last, reaps the leftovers of dead devvm processes (see [`Engine::reap`]),
+    /// which warns on `progress` and never fails.
     pub fn from_env(progress: Arc<dyn Progress>, transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
         let dirs = Dirs::from_env()?;
         let config = Config::load(&dirs)?;
         let host = host::current();
         let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport, progress.clone()));
-        let QemuParts { backend, guests } = qemu_parts(
-            &dirs,
-            dirs.run().map(Path::to_path_buf),
-            config,
-            fetcher,
-            host,
-            progress.clone(),
-        );
-        Ok(Engine::with_parts(EngineParts {
+        let QemuParts { backend, guests } = qemu_parts(&dirs, config, fetcher, host, progress.clone());
+        let engine = Engine::with_parts(EngineParts {
             dirs,
             host,
             backend: Some(backend),
@@ -111,7 +105,9 @@ impl Engine {
             progress,
             hooks: Arc::new(NoHooks),
             boot_bound: DEFAULT_BOOT_BOUND,
-        }))
+        });
+        engine.reap();
+        Ok(engine)
     }
 
     /// `from_env` reporting progress on stderr.
@@ -135,13 +131,15 @@ impl Engine {
         })
     }
 
-    /// The instance called `name` (case-insensitive). Does not reap: the caller does, once per command.
+    /// The instance called `name` (case-insensitive).
     pub fn instance(self: &Arc<Engine>, name: &str) -> Result<Instance> {
         Instance::open_in(self, name)
     }
 
     /// Removes instances whose owner is gone and finishes half-done removals. Never fails: what it cannot do is
-    /// reported as a warning on the progress channel and retried by the next call.
+    /// reported as a warning on the progress channel and retried by the next call. `from_env` does this once, when
+    /// the engine is made; call it for a pass in a long-lived process. Until then, what a process leaves when it dies
+    /// later stays: a name half-created by it answers "already exists".
     pub fn reap(&self) {
         self.registry.reap();
     }

@@ -56,7 +56,7 @@ impl Image {
     }
 
     /// Starts a VM that lives as long as the returned handle: it dies with this process and is destroyed when the
-    /// handle is dropped. Reaps the leftovers of dead devvm processes first.
+    /// handle is dropped.
     pub fn start(&self, opts: &StartOptions) -> Result<Vm> {
         self.start_vm(opts, Lifetime::DiesWithOwner)
     }
@@ -64,7 +64,6 @@ impl Image {
     /// `start` with a given VM lifetime. `OutlivesOwner` is `up`: the VM is handed over (`Vm::hand_over`) once it is
     /// ready, and only then outlives this process.
     pub(crate) fn start_vm(&self, opts: &StartOptions, lifetime: Lifetime) -> Result<Vm> {
-        self.engine.reap();
         let owned = self.create_owned(None, opts)?;
         // From here on the handle cleans up after any failure.
         let vm = Vm {
@@ -84,11 +83,9 @@ impl Image {
         Ok(vm)
     }
 
-    /// Creates an instance called `name`, not started, that stays until it is removed. Reaps the leftovers of dead
-    /// devvm processes first.
+    /// Creates an instance called `name`, not started, that stays until it is removed.
     pub fn create(&self, name: &str, opts: &StartOptions) -> Result<Instance> {
         let name = InstanceName::parse(name)?;
-        self.engine.reap();
         let dir = self.create_owned(Some(name), opts)?.make_ownerless(&mut || Ok(()))?;
         Ok(Instance {
             engine: self.engine.clone(),

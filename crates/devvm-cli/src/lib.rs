@@ -109,11 +109,7 @@ pub fn install_panic_hook() {
 // Entry points ========================================================================================================
 
 fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
-    // Every command first reaps what dead devvm processes left behind. Failing to do so never fails the command.
     let engine = Engine::from_env_stderr(deps.transport.clone());
-    if let Ok(engine) = &engine {
-        engine.reap();
-    }
     match command {
         Cmd::Ls { all, json } => list(&engine?, all, json),
         Cmd::Rm { name } => {

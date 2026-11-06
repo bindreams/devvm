@@ -21,6 +21,7 @@ use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{key, request};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
+use crate::test_support::qemu::scratch_run;
 use crate::test_support::transport::RefusingTransport;
 use crate::{Arch, Dirs, Error, GuestKind, Result};
 
@@ -30,7 +31,6 @@ struct QemuEngine {
     engine: Arc<Engine>,
     home: PathBuf,
     dirs: Dirs,
-    run: Result<PathBuf>,
     transport: Arc<RefusingTransport>,
     progress: Arc<MemoryProgress>,
     /// Keeps the state the engine reads: the store, and the instance `foo` in it.
@@ -38,27 +38,18 @@ struct QemuEngine {
 }
 
 impl QemuEngine {
-    /// An engine over `Dirs::under(home)` with `run` as the runtime directory, or the reason the host cannot name it.
-    fn over(home: &Path, run: Result<PathBuf>) -> QemuEngine {
-        let dirs = Dirs::under(home);
+    /// An engine over `dirs`, whose five directories are below `home`.
+    fn over(home: &Path, dirs: Dirs) -> QemuEngine {
         let state = engine_fixture(home, memory());
         instance_in(&state, "foo", home);
         let (transport, progress) = (Arc::new(RefusingTransport::default()), memory());
         let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), progress.clone()));
-        let QemuParts { backend, guests } = qemu_parts(
-            &dirs,
-            run.clone(),
-            Config::default(),
-            fetcher,
-            &TestHost,
-            progress.clone(),
-        );
+        let QemuParts { backend, guests } = qemu_parts(&dirs, Config::default(), fetcher, &TestHost, progress.clone());
         let engine = engine_with(dirs.clone(), &TestHost, Some(backend), guests, progress.clone());
         QemuEngine {
             engine,
             home: home.to_path_buf(),
             dirs,
-            run,
             transport,
             progress,
             _state: state,
@@ -66,7 +57,21 @@ impl QemuEngine {
     }
 
     fn new(home: &Path) -> QemuEngine {
-        QemuEngine::over(home, Dirs::under(home).run().map(Path::to_path_buf))
+        QemuEngine::over(home, Dirs::under(home))
+    }
+
+    /// An engine over the layout of `Dirs::under(home)` except for the runtime directory: `run` is where the host
+    /// puts it, or why it cannot name one.
+    fn with_run(home: &Path, run: Result<PathBuf>) -> QemuEngine {
+        let vars = ["config", "data", "cache", "state"].map(|name| {
+            (
+                format!("XDG_{}_HOME", name.to_uppercase()),
+                home.join(name).into_os_string(),
+            )
+        });
+        let var = |name: &str| vars.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone());
+        let dirs = Dirs::from_lookup(Some(home.to_path_buf()), &var, &|| run.clone()).unwrap();
+        QemuEngine::over(home, dirs)
     }
 
     /// The URLs the engine has asked its transport for.
@@ -135,7 +140,9 @@ fn a_transport_that_refuses_fails_only_the_command_that_downloads(#[fixture(unic
 
 #[skuld::test]
 fn a_launch_resolves_qemu_through_the_transport_it_was_given(#[fixture(unicode_home)] home: &Path) {
-    let qemu = QemuEngine::new(home);
+    // `Dirs::under(home)` can be too long for a socket path: the launch refuses that before it downloads.
+    let run = scratch_run();
+    let qemu = QemuEngine::with_run(home, Ok(run.path().to_path_buf()));
 
     let error = qemu.launch();
 
@@ -160,7 +167,7 @@ fn the_engine_serves_a_linux_guest(#[fixture(unicode_home)] home: &Path) {
 
 #[skuld::test]
 fn without_a_runtime_directory_the_reap_warns_and_a_launch_fails_naming_it(#[fixture(unicode_home)] home: &Path) {
-    let qemu = QemuEngine::over(home, Err(Error::new(ErrorKind::Config, RUN_DIR_ERROR)));
+    let qemu = QemuEngine::with_run(home, Err(Error::new(ErrorKind::Config, RUN_DIR_ERROR)));
 
     assert_eq!(qemu.engine.list(ListFilter::All).unwrap().len(), 1);
     qemu.engine.reap();
@@ -183,7 +190,7 @@ fn without_a_runtime_directory_the_reap_warns_and_a_launch_fails_naming_it(#[fix
 fn building_the_engine_and_listing_create_no_runtime_directory(#[fixture(unicode_home)] home: &Path) {
     let qemu = QemuEngine::new(home);
     let absent = |when: &str| {
-        let run = qemu.run.as_ref().unwrap();
+        let run = qemu.dirs.run().unwrap();
         assert!(
             symlink_metadata_if_present(run).unwrap().is_none(),
             "{when}: {} exists",
@@ -196,4 +203,16 @@ fn building_the_engine_and_listing_create_no_runtime_directory(#[fixture(unicode
     absent("after list");
     qemu.engine.reap();
     absent("after reap");
+}
+
+#[skuld::test]
+fn a_launch_over_a_runtime_directory_it_refuses_downloads_nothing(#[fixture(unicode_home)] home: &Path) {
+    let too_long = home.join("x".repeat(crate::host::current().socket_path_max()));
+    let qemu = QemuEngine::with_run(home, Ok(too_long));
+
+    let error = qemu.launch();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("XDG_RUNTIME_DIR"), "{error}");
+    assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
 }

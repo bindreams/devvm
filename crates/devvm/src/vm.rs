@@ -81,11 +81,10 @@ impl Instance {
     pub fn open(name: &str) -> Result<Instance> {
         let name = InstanceName::parse(name)?;
         let engine = Engine::from_env_stderr(Arc::new(LazyHttp::new()))?;
-        engine.reap();
         Instance::open_in(&engine, name.as_str())
     }
 
-    /// `open` in a given engine, which does not reap: whoever made the engine does, once.
+    /// `open` in a given engine.
     pub(crate) fn open_in(engine: &Arc<Engine>, name: &str) -> Result<Instance> {
         let name = InstanceName::parse(name)?;
         let dir = engine.registry().open(&name)?;

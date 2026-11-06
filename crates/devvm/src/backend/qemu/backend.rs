@@ -130,9 +130,10 @@ impl Backend for QemuBackend {
     /// the only place a launch can download it.
     ///
     /// The socket and claim file are reserved by `QmpEndpoint::reserve` and recorded in the machine's record. A host
-    /// that cannot name the runtime directory fails the launch before anything is downloaded.
+    /// that cannot name or use the runtime directory fails the launch before anything is downloaded.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
         let run = self.run()?;
+        QmpEndpoint::prepare_run_dir(self.host, run)?;
         let install = self.install.get()?;
         let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, run, &*self.progress)?;
         let mut vm = None;
