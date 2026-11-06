@@ -72,6 +72,16 @@ impl QemuStorage {
         })
     }
 
+    /// The size in bytes of the disk `image` as a guest sees it.
+    fn virtual_size(&self, image: &Path) -> Result<u64> {
+        self.info(image)?["virtual-size"].as_u64().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("qemu-img info {} did not print a virtual-size", image.display()),
+            )
+        })
+    }
+
     /// The directory holding the firmware variables templates.
     fn share(&self) -> Result<PathBuf> {
         Ok(self.install.get()?.share.clone())
@@ -109,6 +119,16 @@ impl Storage for QemuStorage {
         let vars = require_vars(layer.path(), "the layer")?;
         let backing = layer.path().join(DISK);
         let beside = directory_of(into, "the instance disk")?.join(VARS);
+        let layer_size = self.virtual_size(&backing)?;
+        if size < layer_size {
+            return Err(Error::new(
+                ErrorKind::Usage,
+                format!(
+                    "resources.disk is {size} bytes, smaller than the {layer_size} bytes of the layer {}",
+                    layer.path().display()
+                ),
+            ));
+        }
         self.qemu_img(&[
             "create".as_ref(),
             "-f".as_ref(),

@@ -180,10 +180,9 @@ fn committing_an_instance_disk_with_no_backing_file_is_refused(
     assert!(error.message().contains("no backing file"), "{error}");
 }
 
-/// `qemu-img` does not refuse it (the guest sees a disk shorter than the layer), so the storage does not either; whether
-/// a resource request may be that small is for the engine to decide.
+/// `qemu-img create -b` accepts it, and the guest then sees a disk shorter than the layer.
 #[skuld::test]
-fn a_disk_smaller_than_its_backing_image_is_made_with_the_requested_size(
+fn a_disk_smaller_than_its_layer_is_refused_naming_both_sizes_and_creates_nothing(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -193,11 +192,35 @@ fn a_disk_smaller_than_its_backing_image_is_made_with_the_requested_size(
     let instance = home.join("small").join("disk.img");
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
-    storage
+    let error = storage
         .create_instance_disk(base.tip().dir(), &instance, (BASE_LEN / 2) as u64)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
+    let message = error.message();
+    assert!(message.contains(&(BASE_LEN / 2).to_string()), "{error}");
+    assert!(message.contains(&BASE_LEN.to_string()), "{error}");
+    assert!(message.contains("resources.disk"), "{error}");
+    assert!(!instance.exists(), "a disk was made that the guest would see truncated");
+    assert!(!instance.parent().unwrap().join(VARS).exists(), "{error}");
+}
+
+#[skuld::test]
+fn a_disk_equal_to_its_layer_is_made(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let base = base_layer(&world, &storage, home);
+    let instance = home.join("exact").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    storage
+        .create_instance_disk(base.tip().dir(), &instance, BASE_LEN as u64)
         .unwrap();
 
-    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], BASE_LEN / 2);
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], BASE_LEN);
     assert!(instance.parent().unwrap().join(VARS).is_file());
 }
 
