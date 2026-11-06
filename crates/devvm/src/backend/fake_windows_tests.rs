@@ -400,7 +400,7 @@ fn the_fake_shuts_down_by_asking_the_vm_and_kill_never_asks(#[fixture(unicode_ho
         target
             .backend()
             .storage()
-            .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+            .create_instance_disk(parent.tip().dir(), &spec.disk, Some(1 << 20))
             .unwrap();
         let mut machine = target.backend().launch(&spec).unwrap();
         machine.resume().unwrap();
@@ -465,7 +465,7 @@ fn a_shutdown_before_the_boot_was_awaited_fails_the_strict_target(#[fixture(unic
     let backend = target.backend();
     backend
         .storage()
-        .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+        .create_instance_disk(parent.tip().dir(), &spec.disk, Some(1 << 20))
         .unwrap();
     let mut machine = backend.launch(&spec).unwrap();
     machine.resume().unwrap();
@@ -489,7 +489,7 @@ fn fake_has_run_only_after_the_process_runs(#[fixture(unicode_home)] home: &Path
     target
         .backend()
         .storage()
-        .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+        .create_instance_disk(parent.tip().dir(), &spec.disk, Some(1 << 20))
         .unwrap();
 
     let mut machine = target.backend().launch(&spec).unwrap();
@@ -579,7 +579,7 @@ fn a_relaunch_in_the_same_directory_reads_only_its_own_run(#[fixture(unicode_hom
     target
         .backend()
         .storage()
-        .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+        .create_instance_disk(parent.tip().dir(), &spec.disk, Some(1 << 20))
         .unwrap();
     let mut first = target.backend().launch(&spec).unwrap();
     first.resume().unwrap();
@@ -607,7 +607,7 @@ fn fake_reset_counts_and_needs_a_machine_that_has_run(#[fixture(unicode_home)] h
     target
         .backend()
         .storage()
-        .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+        .create_instance_disk(parent.tip().dir(), &spec.disk, Some(1 << 20))
         .unwrap();
     let mut machine = target.backend().launch(&spec).unwrap();
 

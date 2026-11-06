@@ -40,7 +40,7 @@ fn an_instance_disk_over_a_layer_without_its_variables_is_refused_naming_the_fil
     std::fs::create_dir_all(into.parent().unwrap()).unwrap();
 
     let error = storage
-        .create_instance_disk(layer.tip().dir(), &into, 1 << 20)
+        .create_instance_disk(layer.tip().dir(), &into, Some(1 << 20))
         .unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Store, "{error}");
@@ -80,7 +80,7 @@ fn an_instance_disk_with_no_directory_is_refused_naming_it_before_qemu_img_runs(
     let layer = layer(home, true);
 
     let error = storage
-        .create_instance_disk(layer.tip().dir(), Path::new(""), 1 << 20)
+        .create_instance_disk(layer.tip().dir(), Path::new(""), Some(1 << 20))
         .unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");

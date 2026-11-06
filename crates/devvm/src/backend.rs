@@ -54,10 +54,14 @@ pub(crate) trait Backend: Send + Sync {
     fn can_save_memory(&self) -> bool;
 }
 
+/// The size of an instance disk when the recipe sets none.
+pub(crate) const DEFAULT_DISK: u64 = 40 << 30;
+
 pub(crate) trait Storage: Send + Sync {
-    /// Makes `into` a copy-on-write disk of `size` bytes on top of `layer`. `Recipe` and nothing made when `size` is
-    /// smaller than the layer's disk: the guest would see a truncated disk.
-    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: u64) -> Result<()>;
+    /// Makes `into` a copy-on-write disk on top of `layer`. `Some(size)` is the size the recipe sets: `Recipe` and
+    /// nothing made when it is smaller than the layer's disk, which the guest would see truncated. `None` is
+    /// `DEFAULT_DISK`, or the layer's disk when that is bigger.
+    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: Option<u64>) -> Result<()>;
 
     /// Turns an instance's disk into a layer. Writes only into `staging` and never modifies a parent layer.
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()>;

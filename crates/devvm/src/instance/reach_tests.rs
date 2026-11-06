@@ -213,7 +213,7 @@ fn gc_keeps_the_generations_of_an_instance_on_a_superseded_generation(#[fixture(
                 chain: &chain,
                 guest: crate::GuestKind::Linux,
                 arch: crate::Arch::Amd64,
-                disk_size: 1 << 20,
+                disk_size: Some(1 << 20),
                 cpus: 1,
                 memory: 1 << 30,
                 network: crate::Network::Nat,

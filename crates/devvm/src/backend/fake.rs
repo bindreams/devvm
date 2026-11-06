@@ -375,7 +375,7 @@ impl FakeMachine {
 pub(crate) struct FakeStorage;
 
 impl Storage for FakeStorage {
-    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, _size: u64) -> Result<()> {
+    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, _size: Option<u64>) -> Result<()> {
         let text = format!("backing={}", layer.path().join(LAYER_DISK).display());
         std::fs::write(into, text)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write the disk {}", into.display()), e))

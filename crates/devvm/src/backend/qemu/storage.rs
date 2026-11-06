@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::directory_of;
 use super::sidecar::LazyInstall;
-use crate::backend::Storage;
+use crate::backend::{DEFAULT_DISK, Storage};
 use crate::host::Host;
 use crate::store::layers::LayerDir;
 use crate::{Arch, Error, ErrorKind, Result};
@@ -122,12 +122,15 @@ fn require_vars(dir: &Path, what: &str) -> Result<PathBuf> {
 }
 
 impl Storage for QemuStorage {
-    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: u64) -> Result<()> {
+    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: Option<u64>) -> Result<()> {
         let vars = require_vars(layer.path(), "the layer")?;
         let backing = layer.path().join(DISK);
         let beside = directory_of(into, "the instance disk")?.join(VARS);
         let layer_size = self.virtual_size(&backing)?;
-        if size < layer_size {
+        // `qemu-img create` rounds a size up to 512 bytes, so that is the size the disk would get.
+        if let Some(size) = size
+            && size.checked_next_multiple_of(512).is_some_and(|made| made < layer_size)
+        {
             return Err(Error::new(
                 ErrorKind::Recipe,
                 format!(
@@ -137,6 +140,7 @@ impl Storage for QemuStorage {
                 ),
             ));
         }
+        let size = size.unwrap_or(DEFAULT_DISK.max(layer_size));
         self.qemu_img(&[
             "create".as_ref(),
             "-f".as_ref(),

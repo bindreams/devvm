@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::backend::Storage;
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::{DISK, QemuStorage, VARS};
+use crate::backend::{DEFAULT_DISK, Storage};
 use crate::host;
 use crate::store::layers::layers_tests::{Env, env, key, request};
 use crate::store::layers::{Built, ChainLease};
@@ -59,7 +59,7 @@ fn create_instance_disk_is_a_cow_overlay_of_the_layer(
     let instance = home.join("inst").join("disk.img");
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
     storage
-        .create_instance_disk(base.tip().dir(), &instance, 8 << 20)
+        .create_instance_disk(base.tip().dir(), &instance, Some(8 << 20))
         .unwrap();
 
     let info = qemu_img_info(install, &instance, false);
@@ -86,7 +86,7 @@ fn disk_size_larger_than_the_backing_image_is_accepted(
     let instance = home.join("big.img");
 
     storage
-        .create_instance_disk(base.tip().dir(), &instance, 64 << 20)
+        .create_instance_disk(base.tip().dir(), &instance, Some(64 << 20))
         .unwrap();
 
     assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], 64 << 20);
@@ -108,7 +108,7 @@ fn a_chain_of_layers_resolves_however_deep_it_is(
         let instance = home.join(format!("instance-{depth}")).join("disk.img");
         std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
         storage
-            .create_instance_disk(tip.tip().dir(), &instance, 8 << 20)
+            .create_instance_disk(tip.tip().dir(), &instance, Some(8 << 20))
             .unwrap();
         let instance_before = std::fs::read(&instance).unwrap();
         tip = world
@@ -193,7 +193,7 @@ fn a_disk_smaller_than_its_layer_is_refused_naming_both_sizes_and_creates_nothin
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
     let error = storage
-        .create_instance_disk(base.tip().dir(), &instance, (BASE_LEN / 2) as u64)
+        .create_instance_disk(base.tip().dir(), &instance, Some((BASE_LEN / 2) as u64))
         .unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
@@ -227,7 +227,7 @@ fn a_disk_equal_to_its_layer_is_made(
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
     storage
-        .create_instance_disk(base.tip().dir(), &instance, BASE_LEN as u64)
+        .create_instance_disk(base.tip().dir(), &instance, Some(BASE_LEN as u64))
         .unwrap();
 
     assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], BASE_LEN);
@@ -236,6 +236,76 @@ fn a_disk_equal_to_its_layer_is_made(
         vars.is_some_and(|meta| meta.is_file()),
         "the firmware variables were not copied beside the disk"
     );
+}
+
+/// `qemu-img create` rounds a size up to 512 bytes, so a request that rounds to the layer's size makes a full disk.
+#[skuld::test]
+fn a_disk_that_rounds_up_to_its_layer_is_made(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let base = base_layer(&world, &storage, home);
+    let instance = home.join("rounded").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    storage
+        .create_instance_disk(base.tip().dir(), &instance, Some(BASE_LEN as u64 - 1))
+        .unwrap();
+
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], BASE_LEN);
+}
+
+#[skuld::test]
+fn a_disk_with_no_size_is_the_default_when_the_layer_is_smaller(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let base = base_layer(&world, &storage, home);
+    let instance = home.join("default").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    storage.create_instance_disk(base.tip().dir(), &instance, None).unwrap();
+
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], DEFAULT_DISK);
+}
+
+/// The default is a floor nobody chose, so it never refuses a layer bigger than itself.
+#[skuld::test]
+fn a_disk_with_no_size_is_the_layers_when_the_layer_is_over_the_default(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let layer_size = DEFAULT_DISK + (1 << 30);
+    let source = home.join("huge.qcow2");
+    qemu_img(
+        install,
+        &[
+            "create".as_ref(),
+            "-f".as_ref(),
+            "qcow2".as_ref(),
+            source.as_os_str(),
+            layer_size.to_string().as_ref(),
+        ],
+    );
+    let huge = world
+        .store
+        .build(&request(key(2)), None, |staging| {
+            storage.import_base(&source, Arch::Amd64, staging.dir)?;
+            Ok(Built::default())
+        })
+        .unwrap();
+    let instance = home.join("huge").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    storage.create_instance_disk(huge.tip().dir(), &instance, None).unwrap();
+
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], layer_size);
 }
 
 #[skuld::test]
@@ -321,7 +391,7 @@ fn import_base_refuses_a_qcow2_with_a_backing_file(
     let base = base_layer(&world, &storage, home);
     let overlay = home.join("overlay.qcow2");
     storage
-        .create_instance_disk(base.tip().dir(), &overlay, 2 << 20)
+        .create_instance_disk(base.tip().dir(), &overlay, Some(2 << 20))
         .unwrap();
 
     let error = world
@@ -348,7 +418,9 @@ fn vars_are_copied_per_instance_and_do_not_alias(
     let (first, second) = (home.join("one").join("disk.img"), home.join("two").join("disk.img"));
     for disk in [&first, &second] {
         std::fs::create_dir_all(disk.parent().unwrap()).unwrap();
-        storage.create_instance_disk(base.tip().dir(), disk, 4 << 20).unwrap();
+        storage
+            .create_instance_disk(base.tip().dir(), disk, Some(4 << 20))
+            .unwrap();
     }
     let vars_of = |disk: &Path| disk.parent().unwrap().join(VARS);
     assert_eq!(std::fs::read(vars_of(&first)).unwrap(), template);

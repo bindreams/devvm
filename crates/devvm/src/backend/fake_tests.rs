@@ -23,7 +23,7 @@ fn fake_launch_names_the_layer_a_disk_sits_on_when_it_is_gone(#[fixture(unicode_
     target
         .backend()
         .storage()
-        .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+        .create_instance_disk(parent.tip().dir(), &spec.disk, Some(1 << 20))
         .unwrap();
     std::fs::remove_file(parent.tip().dir().path().join("disk.qcow2")).unwrap();
 
@@ -60,7 +60,7 @@ fn fake_import_base_makes_the_image_the_layers_disk(#[fixture(unicode_home)] hom
     target
         .backend()
         .storage()
-        .create_instance_disk(imported.tip().dir(), &spec.disk, 1 << 20)
+        .create_instance_disk(imported.tip().dir(), &spec.disk, Some(1 << 20))
         .unwrap();
 }
 
