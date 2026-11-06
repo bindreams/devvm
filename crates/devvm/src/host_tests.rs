@@ -943,3 +943,20 @@ fn a_link_that_could_not_be_removed_reports_the_first_failure_and_then_the_secon
     let twice = super::link_removal_failure(std::io::Error::other("busy"), std::io::Error::other("busy"));
     assert_eq!(twice.to_string(), "busy");
 }
+
+// Free space ==========================================================================================================
+
+#[skuld::test]
+fn the_real_host_reports_free_space_for_a_directory_and_for_one_not_made_yet(#[fixture(unicode_home)] home: &Path) {
+    let free = current().free_space(home).expect("the directory exists");
+    assert!(free > 0, "the temp volume has no free space");
+    current()
+        .free_space(&home.join("not").join("made").join("yet"))
+        .expect("a directory below an existing one is asked of that one");
+}
+
+#[skuld::test]
+fn a_host_that_cannot_tell_free_space_says_so(#[fixture(unicode_home)] home: &Path) {
+    let error = OtherHost.free_space(home).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+}

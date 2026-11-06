@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::args::{LaunchPaths, build_args, qemu_arch};
+use super::checks::qemu_check;
 use super::machine::{QemuMachine, qemu_log};
 use super::qmp::{QmpEndpoint, Reservation};
 use super::sidecar::{LazyInstall, QemuInstall};
 use super::storage::QemuStorage;
-use crate::backend::{Backend, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
+use crate::backend::{Backend, Check, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Hold, Host, remove_tree};
@@ -195,6 +196,10 @@ impl Backend for QemuBackend {
 
     fn sweep(&self, warn: &mut dyn FnMut(String)) {
         self.sweep_run_dir(warn);
+    }
+
+    fn checks(&self) -> Vec<Check> {
+        vec![qemu_check(&self.install)]
     }
 
     /// WHPX does not support saving a running machine's memory.

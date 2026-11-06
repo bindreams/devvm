@@ -27,6 +27,8 @@ pub mod store;
 pub mod types;
 pub mod vm;
 
+#[doc(hidden)]
+pub use backend::Check;
 pub use dirs::Dirs;
 pub use engine::{Engine, ListFilter};
 pub use error::{Error, ErrorKind, Result};

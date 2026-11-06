@@ -523,18 +523,18 @@ pub(crate) fn extract_and_wait(args: &[String]) {
         .unwrap();
 }
 
-fn touch(path: PathBuf) {
+pub(crate) fn touch(path: PathBuf) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, b"x").unwrap();
 }
 
-fn make_tools(dir: &Path) {
+pub(crate) fn make_tools(dir: &Path) {
     for tool in ["qemu-img", "qemu-system-x86_64"] {
         touch(dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX)));
     }
 }
 
-fn make_firmware(dir: &Path) {
+pub(crate) fn make_firmware(dir: &Path) {
     for name in ["edk2-x86_64-code.fd", "edk2-i386-vars.fd"] {
         touch(dir.join(name));
     }

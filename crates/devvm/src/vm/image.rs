@@ -7,10 +7,11 @@ use crate::backend::Machine;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
 use crate::exit::Output;
-use crate::host::{self, Host, Unavailable};
+use crate::host::Unavailable;
 use crate::instance::name::InstanceName;
 use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
+use crate::store::fetch::LazyHttp;
 use crate::store::layers::ChainLease;
 use crate::vm::{Guest, Handle, Instance, no_access_layer, remove_leftovers, warn_for};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, GuestKind, Result, StartOptions};
@@ -129,14 +130,14 @@ impl Recipe {
     }
 }
 
-/// Whether this host can run VMs; what is missing otherwise.
+/// Whether this host can run VMs; what is missing otherwise. An engine that cannot be made (an unreadable
+/// `config.yaml`) is what is missing.
 pub fn availability() -> std::result::Result<(), Unavailable> {
-    availability_on(host::current())
-}
-
-/// `availability` on a given host.
-fn availability_on(host: &dyn Host) -> std::result::Result<(), Unavailable> {
-    host.accelerator(Arch::host()).map(drop)
+    Engine::from_env_stderr(Arc::new(LazyHttp::new()))
+        .map_err(|e| Unavailable {
+            missing: e.message().to_owned(),
+        })?
+        .availability()
 }
 
 /// A VM that lives as long as this handle. Dropping it kills the machine and destroys the instance; if the instance is

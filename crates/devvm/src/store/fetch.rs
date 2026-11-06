@@ -493,6 +493,7 @@ fn hash_file_state(path: &Path) -> Result<Sha2> {
     }
 }
 
-fn hash_file(path: &Path) -> Result<[u8; 32]> {
+/// The SHA-256 of the file at `path`.
+pub(crate) fn hash_file(path: &Path) -> Result<[u8; 32]> {
     Ok(hash_file_state(path)?.finalize().into())
 }

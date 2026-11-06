@@ -37,7 +37,7 @@ pub(crate) mod watch;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-pub(crate) use entry::{Entry, is_a_link, is_absent, look_failed, symlink_metadata_if_present};
+pub(crate) use entry::{Entry, is_a_link, is_absent, look_failed, nearest_existing, symlink_metadata_if_present};
 pub(crate) use file_id::{Comparison, FileId};
 #[cfg_attr(
     not(windows),
@@ -232,6 +232,10 @@ pub(crate) trait Host: Send + Sync {
     /// last handle to the file closes. `Ok` also when someone is deleting it right now (Windows: it is held, or its
     /// deletion is pending), which is theirs to finish. Any other failure, `NotFound` included, is returned.
     fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()>;
+
+    /// The bytes free to this user in `dir`, or in its nearest ancestor that exists when `dir` is not made yet. A
+    /// failed look at an ancestor is the error, never "no space"; a host that cannot tell fails `Unsupported`.
+    fn free_space(&self, dir: &Path) -> std::io::Result<u64>;
 
     /// Looks at `rel` (`/`-separated, a path git lists) below the directory `root`, by name, without following a link
     /// at the last name: its kind comes from `symlink_metadata`, and a regular file is opened for reading and

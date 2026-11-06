@@ -11,7 +11,7 @@ use cosca::identity::ProcessId;
 use super::names::{posix_problem, unix_run_dir};
 use super::{
     Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
-    create_new_with, look_failed,
+    create_new_with, look_failed, nearest_existing,
 };
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -57,6 +57,9 @@ pub(super) trait FileModes: Send + Sync {
     fn sync_dir(&self, dir: &Path) -> std::io::Result<()>;
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
+
+    /// The bytes free to this user on the volume of `existing`, a path that is there.
+    fn free_bytes(&self, existing: &Path) -> std::io::Result<u64>;
 
     /// [`Host::publish_dir`]. A host with a rename that refuses to replace does it in one step; one without can only
     /// call [`claim_then_rename`].
@@ -197,6 +200,10 @@ impl<M: FileModes> Host for M {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         FileModes::open_entry(self, root, rel)
+    }
+
+    fn free_space(&self, dir: &Path) -> std::io::Result<u64> {
+        self.free_bytes(nearest_existing(dir)?)
     }
 
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {

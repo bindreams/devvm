@@ -199,7 +199,7 @@ impl Source {
         self.config.get(|| Config::load(&self.dirs))
     }
 
-    fn entry(&self) -> Result<&ManifestEntry> {
+    pub(crate) fn entry(&self) -> Result<&ManifestEntry> {
         self.entry
             .as_ref()
             .map_err(|e| Error::new(e.kind(), e.message().to_owned()))
@@ -487,6 +487,11 @@ impl LazyInstall {
     /// The configuration the install is resolved from, loaded by the first call that succeeds.
     pub(crate) fn config(&self) -> Result<&Config> {
         self.source.config()
+    }
+
+    /// The pinned build for this target, or why devvm publishes none.
+    pub(crate) fn entry(&self) -> Result<&ManifestEntry> {
+        self.source.entry()
     }
 
     /// The install, resolved once. A failure is not cached.

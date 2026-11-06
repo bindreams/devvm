@@ -14,6 +14,7 @@ use devvm::store::fetch::{LazyHttp, Transport};
 use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
 
 mod args;
+mod doctor;
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod lib_tests;
@@ -128,7 +129,7 @@ fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
         Cmd::Cp { .. } => Err(not_implemented("cp")),
         Cmd::Start { .. } => Err(not_implemented("start")),
         Cmd::Stop { .. } => Err(not_implemented("stop")),
-        Cmd::Doctor => Err(not_implemented("doctor")),
+        Cmd::Doctor => doctor::doctor(engine?.as_ref()),
     }
 }
 

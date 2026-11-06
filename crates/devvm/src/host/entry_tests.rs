@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use super::{Entry, look_failed, symlink_metadata_if_present};
+use super::{Entry, look_failed, nearest_existing, symlink_metadata_if_present};
 use crate::host::current;
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
@@ -117,4 +117,26 @@ fn a_link_is_looked_at_not_followed(#[fixture(unicode_home)] home: &Path, #[fixt
     let meta = symlink_metadata_if_present(&home.join("dangling")).unwrap().unwrap();
 
     assert!(meta.file_type().is_symlink());
+}
+
+#[skuld::test]
+fn the_nearest_existing_path_is_the_path_itself_when_it_exists(#[fixture(unicode_home)] home: &Path) {
+    std::fs::create_dir(home.join("dir")).unwrap();
+    assert_eq!(nearest_existing(&home.join("dir")).unwrap(), home.join("dir"));
+}
+
+#[skuld::test]
+fn the_nearest_existing_path_skips_every_missing_component(#[fixture(unicode_home)] home: &Path) {
+    std::fs::create_dir(home.join("dir")).unwrap();
+    let missing = home.join("dir").join("a").join("b").join("c");
+    assert_eq!(nearest_existing(&missing).unwrap(), home.join("dir"));
+}
+
+#[skuld::test]
+fn below_a_file_the_nearest_existing_path_is_the_file(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("file"), b"x").unwrap();
+    assert_eq!(
+        nearest_existing(&home.join("file").join("x")).unwrap(),
+        home.join("file")
+    );
 }

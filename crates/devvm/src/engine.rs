@@ -19,6 +19,8 @@ use crate::store::fetch::{Fetcher, Transport};
 use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
 
+mod checks;
+
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 pub(crate) mod engine_tests;
