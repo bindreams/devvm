@@ -161,7 +161,7 @@ impl QemuTarget {
         std::fs::create_dir_all(&spec.dir).unwrap();
         self.backend
             .storage()
-            .create_instance_disk(parent.tip().dir(), &spec.disk, 1 << 20)
+            .create_instance_disk(parent.tip().dir(), &spec.disk, Some(1 << 20))
             .unwrap();
         (spec, parent)
     }

@@ -41,7 +41,7 @@ impl crate::backend::Storage for HoldsItsDisk {
         &self,
         _layer: &crate::store::layers::LayerDir,
         into: &Path,
-        _size: u64,
+        _size: Option<u64>,
     ) -> crate::Result<()> {
         let file = std::fs::OpenOptions::new()
             .write(true)

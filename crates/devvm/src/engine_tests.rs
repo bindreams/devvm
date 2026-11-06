@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::backend::fake::{FakeBackend, FakeStorage};
+use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, MachineRecord};
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, ListFilter, NoHooks};
@@ -139,6 +139,11 @@ pub(crate) fn record_machine(dir: &InstanceDir, machine: &MachineRecord) {
 
 /// The image on the fixture's layer (key 1), leased through the engine's own store.
 pub(crate) fn image_of(engine: &Arc<Engine>) -> Image {
+    image_with(engine, Resources::default())
+}
+
+/// `image_of` on a recipe that declares `resources`.
+pub(crate) fn image_with(engine: &Arc<Engine>, resources: Resources) -> Image {
     let chain = engine
         .store()
         .unwrap()
@@ -149,7 +154,7 @@ pub(crate) fn image_of(engine: &Arc<Engine>) -> Image {
         name: "test".to_owned(),
         guest: GuestKind::Linux,
         root: Source::Embedded("test".to_owned()),
-        resources: Resources::default(),
+        resources,
         steps: Vec::new(),
     };
     Image::from_chain(engine.clone(), chain, &flat)
@@ -158,7 +163,7 @@ pub(crate) fn image_of(engine: &Arc<Engine>) -> Image {
 /// An ownerless, stopped instance called `name`, created from `created_from`.
 pub(crate) fn instance_in(fx: &EngineFixture, name: &str, created_from: &Path) -> InstanceDir {
     let guard = fx.env.store.begin_record().unwrap();
-    let mut new = new_instance_on(&fx.chain, Some(name), &FakeStorage);
+    let mut new = new_instance_on(&fx.chain, Some(name), fx.fake.storage());
     new.created_from = created_from.to_path_buf();
     fx.engine
         .registry()
