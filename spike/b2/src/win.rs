@@ -1,5 +1,7 @@
 //! Claims 3, 4 and 5: long paths, a missing drive letter, and UNC paths whose server or share is missing.
 
+mod forms;
+
 use crate::calls::{RmOrder, probe, row, show};
 use crate::ladder::{Kind, Ladder, absent_path, remove_all};
 use std::fs;
@@ -13,6 +15,7 @@ pub fn run(command: &str, label: &str, dir: &Path, max_length: Option<usize>) ->
         "drive" => drive(label, dir),
         "unc" => unc(label),
         "edge" => edge(label, dir),
+        "forms" => forms::run(label, dir),
         "sweep" => remove_all(&dir.join("L")),
         other => Err(io::Error::other(format!("unknown command {other}"))),
     }
@@ -24,7 +27,11 @@ fn len(p: &Path) -> usize {
 }
 
 fn verbatim(p: &Path) -> PathBuf {
-    PathBuf::from(format!(r"\\?\{}", p.display()))
+    let s = p.display().to_string();
+    match s.strip_prefix(r"\\") {
+        Some(unc) => PathBuf::from(format!(r"\\?\UNC\{unc}")),
+        None => PathBuf::from(format!(r"\\?\{s}")),
+    }
 }
 
 /// Puts a probed name back: the probe's `remove_*` calls take it away.
@@ -84,12 +91,18 @@ fn long(label: &str, dir: &Path, max_length: Option<usize>) -> io::Result<()> {
     Ok(())
 }
 
-/// Claim 4: a drive letter with no volume, against a letter that has one.
-fn drive(label: &str, dir: &Path) -> io::Result<()> {
+/// The drive letters in use, and a letter that has no volume (Q-Z preferred).
+fn drive_letters() -> (String, char) {
     let mask = unsafe { GetLogicalDrives() };
     let used = |c: char| mask & (1 << (c as u8 - b'A')) != 0;
     let in_use: String = ('A'..='Z').filter(|&c| used(c)).collect();
     let unused = ('Q'..='Z').rev().chain(('A'..='P').rev()).find(|&c| !used(c)).expect("a free drive letter");
+    (in_use, unused)
+}
+
+/// Claim 4: a drive letter with no volume, against a letter that has one.
+fn drive(label: &str, dir: &Path) -> io::Result<()> {
+    let (in_use, unused) = drive_letters();
     let present = std::path::absolute(dir)?.display().to_string().chars().next().expect("drive letter");
     row("env", label, 0, &[("in_use", in_use), ("missing_drive", unused.to_string()), ("present_drive", present.to_string())]);
 

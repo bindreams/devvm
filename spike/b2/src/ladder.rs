@@ -122,7 +122,8 @@ impl Ladder {
             }
             if stuck.is_none() && k < max_node {
                 if let Err(e) = self.descend() {
-                    stuck = Some(format!("mkdir chain node {}: {}", k + 1, crate::calls::err(&e)));
+                    let at = self.node.as_os_str().len() + STRIDE;
+                    stuck = Some(format!("mkdir chain node {} (len {at}): {}", k + 1, crate::calls::err(&e)));
                 }
             }
         }

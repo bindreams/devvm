@@ -46,6 +46,16 @@ jobs:
         if: always()
         run: $B2 edge ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/edge.txt"
 
+      - name: Path limit, existing directories, forms (C, D, UNC, subst)
+        if: always()
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          $B2 forms C 'C:\b2-forms' 2>&1 | tee "$RUNNER_TEMP/results/forms-c.txt"
+          $B2 forms D "$RUNNER_TEMP/b2-forms" 2>&1 | tee "$RUNNER_TEMP/results/forms-d.txt"
+          $B2 forms UNC '\\localhost\C$\b2-forms-unc' 2>&1 | tee "$RUNNER_TEMP/results/forms-unc.txt"
+          $B2 forms subst "$RUNNER_TEMP/b2-forms-subst" 2>&1 | tee "$RUNNER_TEMP/results/forms-subst.txt"
+
       - name: Missing drive letter
         if: always()
         run: $B2 drive ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/drive.txt"
