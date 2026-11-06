@@ -114,10 +114,7 @@ impl Registry {
             Ok(Moved::Newer(text)) => report.warn(self, format!("leaving instance {name} alone: {text}")),
             Ok(Moved::Failed(e)) => report.warn(
                 self,
-                format!(
-                    "cannot move unreadable instance {name} to {} ({e}); the next devvm command retries",
-                    target.display()
-                ),
+                format!("cannot move unreadable instance {name} to quarantine ({e}); the next devvm command retries"),
             ),
             Err(e) => report.warn(self, format!("cannot lock unreadable instance {name}: {}", e.message())),
         }

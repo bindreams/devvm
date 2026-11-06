@@ -264,7 +264,7 @@ pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
 /// Deletes whatever is at `path`, a name devvm owns, and succeeds when nothing is there: a link is deleted as a link and
 /// never followed, a directory goes with everything under it, anything else is removed as a file.
 ///
-/// Callers exclude other deleters and creators of the name (see `dead.lock` in `instance/locks.rs`).
+/// Callers exclude other deleters and creators of the name.
 pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
     match symlink_metadata_if_present(path).map_err(|e| look_failed(path, e))? {
         None => Ok(()),
