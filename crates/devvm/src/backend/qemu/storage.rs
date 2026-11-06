@@ -166,6 +166,17 @@ impl Storage for QemuStorage {
                 ),
             ));
         }
+        // A layer imported before `import_base` checked its size can be over the ceiling, and no request was refused for
+        // it above.
+        if size.is_none() && layer_size > QCOW2_MAX_SIZE {
+            return Err(Error::new(
+                ErrorKind::Recipe,
+                format!(
+                    "the layer {} is {layer_size} bytes, more than the {QCOW2_MAX_SIZE} bytes a disk can have",
+                    layer.path().display()
+                ),
+            ));
+        }
         let size = size.unwrap_or(DEFAULT_DISK.max(layer_size));
         self.qemu_img(&[
             "create".as_ref(),

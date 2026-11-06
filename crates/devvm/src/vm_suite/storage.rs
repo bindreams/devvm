@@ -437,6 +437,40 @@ fn import_base_refuses_a_base_no_instance_disk_could_cover(
         .unwrap();
 }
 
+/// A layer imported before `import_base` refused such a base: with no size requested, the disk would be the layer's,
+/// which an instance disk cannot be.
+#[skuld::test]
+fn a_disk_with_no_size_is_refused_when_its_layer_is_over_the_ceiling(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let layer_size = (1u64 << 51) + 512;
+    let source = big_cluster_base(install, home, "over.qcow2", layer_size);
+    let over = world
+        .store
+        .build(&request(key(8)), None, |staging| {
+            std::fs::copy(&source, staging.dir.path().join(DISK)).unwrap();
+            std::fs::write(staging.dir.path().join(VARS), b"vars").unwrap();
+            Ok(Built::default())
+        })
+        .unwrap();
+    let instance = home.join("over").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    let error = storage
+        .create_instance_disk(over.tip().dir(), &instance, None)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
+    assert!(error.message().contains(&layer_size.to_string()), "{error}");
+    assert!(
+        matches!(host::symlink_metadata_if_present(&instance), Ok(None)),
+        "a disk was made over a layer it cannot cover"
+    );
+}
+
 #[skuld::test]
 fn import_base_takes_a_base_of_the_largest_size_an_instance_disk_covers(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,

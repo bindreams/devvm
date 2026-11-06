@@ -54,13 +54,14 @@ fn an_instance_disk_over_a_layer_without_its_variables_is_refused_naming_the_fil
     assert!(!into.exists(), "a disk was made for a machine that cannot start");
 }
 
-/// `u64::MAX` rounds to 512 past `u64`; the rest are above qcow2's largest virtual size, 2 PiB.
+/// `u64::MAX` and `u64::MAX - 510` (the smallest) round up to 512 past `u64`; the last is above qcow2's largest virtual
+/// size, 2 PiB.
 #[skuld::test]
 fn a_disk_qemu_cannot_make_is_refused_as_a_recipe_error_before_qemu_img_runs(#[fixture(unicode_home)] home: &Path) {
     let storage = storage_without_qemu(home);
     let layer = layer(home, true);
 
-    for size in [u64::MAX, u64::MAX - 511, (1 << 51) + 1] {
+    for size in [u64::MAX, u64::MAX - 510, (1 << 51) + 1] {
         refused_without_a_disk(&storage, &layer, home, size);
     }
 }
