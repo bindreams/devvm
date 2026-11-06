@@ -13,6 +13,7 @@ use crate::test_support::helper;
 use crate::{Dirs, Error, ErrorKind, Result};
 
 use super::cross_tests::start as start_builder;
+use super::gc::present;
 use super::layers_tests::{Env, build_expiring, days, env, key, names, t0};
 
 /// Helper process: leases generation `args[2]` of key `args[1]` in the store rooted at `args[0]`, prints `held`, and
@@ -442,10 +443,21 @@ fn gc_aborts_when_a_kept_layers_directory_is_a_file(#[fixture(unicode_home)] hom
     let dir = env.store.generation_dir(&child);
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::write(&dir, b"not a layer").unwrap();
-    // Reading the record below a file is `Absent` on Windows and an I/O error on Unix; both abort.
+    // The record below a file reads as missing on every host, so the abort carries the recovery message.
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
-    assert!(error.message().contains(&dir.display().to_string()), "{error}");
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert_record_recovery(&error, &child, &as_current(child.key), &dir);
+    assert!(error.message().starts_with("cannot collect: "), "{error}");
+    assert!(error.message().contains("nothing was deleted"), "{error}");
     assert!(exists(&env, &old_parent));
+}
+
+/// A file at the generation directory is present: the record read that follows reports it unreadable and aborts.
+#[skuld::test]
+fn a_file_at_the_generation_directory_is_present(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("gen");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(present(&file).unwrap());
 }
 
 #[skuld::test]

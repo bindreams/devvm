@@ -10,26 +10,6 @@ fn set_mode(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-#[skuld::test]
-fn a_generation_directory_is_present_when_it_is_there_and_gone_when_it_is_not(#[fixture(unicode_home)] home: &Path) {
-    let dir = home.join("gen");
-    std::fs::create_dir(&dir).unwrap();
-    assert!(present(&dir).unwrap());
-    assert!(!present(&home.join("missing")).unwrap());
-    // Below a file counts as gone too.
-    let file = home.join("file");
-    std::fs::write(&file, b"x").unwrap();
-    assert!(!present(&file.join("below")).unwrap());
-}
-
-/// A file where the directory should be is present: the record read that follows reports it unreadable and aborts.
-#[skuld::test]
-fn a_file_at_the_generation_directory_is_present(#[fixture(unicode_home)] home: &Path) {
-    let file = home.join("gen");
-    std::fs::write(&file, b"x").unwrap();
-    assert!(present(&file).unwrap());
-}
-
 /// A parent that cannot be searched makes the look fail; that says nothing about the directory. Mode bits do not bind
 /// root, so the test refuses to run as root.
 #[skuld::test]

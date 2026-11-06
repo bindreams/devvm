@@ -84,9 +84,9 @@ impl LayerStore {
     /// Deletes every generation that is neither a key's `current`, nor in `reachable`'s chains, nor an ancestor of
     /// one of those, and that nobody holds a lease on. Removes staging directories of keys nobody is building.
     ///
-    /// A `reachable` error, or a kept layer whose record or `current` file is unreadable (so its ancestors cannot be
-    /// known), aborts the pass before anything is deleted. An unkept generation whose own record is unreadable is
-    /// moved to quarantine, not deleted.
+    /// A `reachable` error, a failed look at a kept generation's directory, or a kept layer whose record or `current`
+    /// file is unreadable (so its ancestors cannot be known), aborts the pass before anything is deleted. An unkept
+    /// generation whose own record is unreadable is moved to quarantine, not deleted.
     pub fn gc(&self, reachable: &dyn Reachability) -> Result<GcReport> {
         let mut gc = self.gc_lock()?;
         gc.lock(
@@ -265,8 +265,7 @@ impl LayerStore {
         for other in keep {
             let dir = self.generation_dir(other);
             // A child whose own record is unreadable is reported when the walk reaches it.
-            if present(&dir)?
-                && let Ok(MetaRead::Valid(meta)) = meta::read(&dir)
+            if let Ok(MetaRead::Valid(meta)) = meta::read(&dir)
                 && meta.parent == Some(*layer)
             {
                 children.push(*other);
