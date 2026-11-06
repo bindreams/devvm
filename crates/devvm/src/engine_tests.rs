@@ -507,11 +507,9 @@ fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixtu
     );
 }
 
-#[skuld::test]
-fn from_env_reaps_before_it_fails_on_an_unreadable_config(
-    #[fixture(env)] env: &skuld::EnvGuard,
-    #[fixture(unicode_home)] home: &Path,
-) {
+/// The five XDG directories under `home`, an unreadable `config.yaml` in them, and a dead process's leftover to reap.
+/// Returns the leftover.
+fn broken_config_and_a_leftover(env: &skuld::EnvGuard, home: &Path) -> PathBuf {
     for (variable, directory) in [
         ("XDG_CONFIG_HOME", "config"),
         ("XDG_DATA_HOME", "data"),
@@ -526,6 +524,15 @@ fn from_env_reaps_before_it_fails_on_an_unreadable_config(
     std::fs::write(dirs.config.join("config.yaml"), "qemu: [not, a, mapping]").unwrap();
     let leftover = dirs.instances().join(".dead-00000000000000000000000000000000");
     std::fs::create_dir_all(&leftover).unwrap();
+    leftover
+}
+
+#[skuld::test]
+fn from_env_reaps_before_it_fails_on_an_unreadable_config(
+    #[fixture(env)] env: &skuld::EnvGuard,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let leftover = broken_config_and_a_leftover(env, home);
 
     let error = match Engine::from_env(memory(), Arc::new(RefusingTransport::default())) {
         Ok(_) => panic!("an unreadable config.yaml must fail the engine"),
@@ -536,5 +543,41 @@ fn from_env_reaps_before_it_fails_on_an_unreadable_config(
     assert!(
         host::symlink_metadata_if_present(&leftover).unwrap().is_none(),
         "the reap ran before the config failed"
+    );
+}
+
+#[skuld::test]
+fn doctor_checks_gives_every_line_and_the_config_failure_on_the_qemu_line_after_the_reap(
+    #[fixture(env)] env: &skuld::EnvGuard,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let leftover = broken_config_and_a_leftover(env, home);
+
+    let checks = Engine::doctor_checks(memory(), Arc::new(RefusingTransport::default()))
+        .expect("an unreadable config.yaml does not fail doctor");
+
+    let names: Vec<_> = checks.iter().map(|check| check.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "accelerator",
+            "free space (data)",
+            "free space (cache)",
+            "free space (state)",
+            "ssh",
+            "git",
+            "qemu"
+        ]
+    );
+    let why = checks
+        .last()
+        .unwrap()
+        .outcome
+        .as_ref()
+        .expect_err("the config is broken");
+    assert!(why.contains("config.yaml"), "{why}");
+    assert!(
+        host::symlink_metadata_if_present(&leftover).unwrap().is_none(),
+        "doctor reaps like every other command"
     );
 }

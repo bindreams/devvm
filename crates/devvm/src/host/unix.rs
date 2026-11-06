@@ -60,6 +60,12 @@ impl FileModes for UnixHost {
         lacks_hard_links(error)
     }
 
+    /// `f_bavail` blocks of `f_frsize` bytes: what is free to an unprivileged user.
+    fn free_bytes(&self, existing: &Path) -> std::io::Result<u64> {
+        let stat = rustix::fs::statvfs(existing).map_err(std::io::Error::from)?;
+        Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+    }
+
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
         Ok(std::fs::metadata(path)?.permissions().mode() & 0o111 != 0)
     }

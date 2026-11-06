@@ -274,6 +274,10 @@ impl Host for WindowsHost {
         })
     }
 
+    fn free_space(&self, dir: &Path) -> std::io::Result<u64> {
+        volume::free_bytes(super::nearest_existing_dir(dir)?)
+    }
+
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
         runtime_dir::create(dir)
     }

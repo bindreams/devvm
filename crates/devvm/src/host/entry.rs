@@ -47,6 +47,36 @@ pub(crate) fn symlink_metadata_if_present(path: &Path) -> io::Result<Option<Meta
     }
 }
 
+/// `path`, or its nearest ancestor that is there when it is not; the error of a look that fails for any other reason, or
+/// `NotFound` when no ancestor is there (a relative path with nothing of it in the working directory).
+pub(crate) fn nearest_existing(path: &Path) -> io::Result<&Path> {
+    for candidate in path.ancestors() {
+        if symlink_metadata_if_present(candidate)
+            .map_err(|e| look_failed(candidate, e))?
+            .is_some()
+        {
+            return Ok(candidate);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("no part of {} exists", path.display()),
+    ))
+}
+
+/// [`nearest_existing`], when what it finds is a directory (a link to one included): where a directory below `path`
+/// would be made. A file there, or a link to one, is `NotADirectory` naming it: nothing can be made below it.
+pub(crate) fn nearest_existing_dir(path: &Path) -> io::Result<&Path> {
+    let existing = nearest_existing(path)?;
+    if fs::metadata(existing).map_err(|e| look_failed(existing, e))?.is_dir() {
+        return Ok(existing);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotADirectory,
+        format!("{} is not a directory", existing.display()),
+    ))
+}
+
 /// The failure `e` of a look at `path`, said as "cannot look at <path>: <e>" with its kind kept: the look failed, and
 /// that says nothing about what is at `path`.
 pub(crate) fn look_failed(path: &Path, e: io::Error) -> io::Error {

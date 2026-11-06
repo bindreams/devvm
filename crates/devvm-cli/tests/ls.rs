@@ -1,17 +1,18 @@
 //! `ls`, `rm` and the commands not implemented yet, through the real binary. The instances are seeded by writing
 //! their files by hand, so the on-disk schema is pinned from outside the library.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::path::Path;
+use std::process::Output;
 
 use serde_json::Value;
 
-#[path = "support/unicode.rs"]
-mod unicode;
-use unicode::UNICODE_DIR;
+#[path = "support/home.rs"]
+mod home;
+use home::{Home, home};
 #[path = "support/isolate.rs"]
 mod isolate;
-use isolate::isolate;
+#[path = "support/unicode.rs"]
+mod unicode;
 
 fn main() {
     skuld::run_all();
@@ -19,46 +20,7 @@ fn main() {
 
 // Helpers =============================================================================================================
 
-/// A temp dir holding the Unicode test directory, where the five XDG directories and the project directories live.
-struct Home {
-    _tmp: skuld::TempDir,
-    root: PathBuf,
-}
-
-fn home() -> Home {
-    let tmp = skuld::TempDir::new().unwrap();
-    let root = tmp.join(UNICODE_DIR);
-    std::fs::create_dir(&root).unwrap();
-    Home { _tmp: tmp, root }
-}
-
 impl Home {
-    fn state(&self) -> PathBuf {
-        self.root.join("state").join("devvm")
-    }
-
-    /// devvm's runtime directory, which `reap` sweeps.
-    fn run(&self) -> PathBuf {
-        self.root.join("run").join("devvm")
-    }
-
-    fn config_file(&self) -> PathBuf {
-        self.root.join("config").join("devvm").join("config.yaml")
-    }
-
-    fn project(&self, name: &str) -> PathBuf {
-        let path = self.root.join("projects").join(name);
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    fn devvm(&self, cwd: &Path, args: &[&str]) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
-        command.current_dir(cwd).args(args).env_remove("DEVVM_STATUS_FILE");
-        isolate(&mut command, &self.root);
-        command.stdin(Stdio::null()).output().unwrap()
-    }
-
     /// Writes the files of a stopped instance the way a devvm with schema 1 does.
     fn seed(&self, name: &str, id: &str, created_from: &Path, owner: &str) {
         let dir = self.state().join("instances").join(name);
@@ -335,7 +297,7 @@ fn every_command_reaps_first() {
 fn commands_not_implemented_yet_exit_125_not_supported() {
     let home = home();
     let a = home.project("a");
-    let commands: [&[&str]; 8] = [
+    let commands: [&[&str]; 7] = [
         &["run", "ubuntu-24.04", "--", "true"],
         &["up", "ubuntu-24.04", "--name", "box"],
         &["ssh", "box"],
@@ -343,7 +305,6 @@ fn commands_not_implemented_yet_exit_125_not_supported() {
         &["start", "box"],
         &["stop", "box"],
         &["build", "ubuntu-24.04"],
-        &["doctor"],
     ];
     for args in commands {
         let output = home.devvm(&a, args);

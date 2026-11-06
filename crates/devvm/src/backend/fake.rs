@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
-    Backend, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel, SshEndpoint,
-    Storage,
+    Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
+    SshEndpoint, Storage,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
@@ -63,6 +63,10 @@ pub(crate) struct FakeBackend {
     /// How many launches have named their files.
     named: AtomicUsize,
     storage: FakeStorage,
+    /// What `checks` answers.
+    checks: Vec<Check>,
+    /// The detail of each `checks` call, in order.
+    details_asked: Mutex<Vec<Detail>>,
 }
 
 impl FakeBackend {
@@ -75,7 +79,20 @@ impl FakeBackend {
             resets: Arc::new(AtomicUsize::new(0)),
             named: AtomicUsize::new(0),
             storage: FakeStorage::default(),
+            checks: Vec::new(),
+            details_asked: Mutex::new(Vec::new()),
         }
+    }
+
+    /// A backend whose `checks` are `checks`.
+    pub(crate) fn with_checks(mut self, checks: Vec<Check>) -> FakeBackend {
+        self.checks = checks;
+        self
+    }
+
+    /// The detail of each `checks` call so far, in order.
+    pub(crate) fn details_asked(&self) -> Vec<Detail> {
+        self.details_asked.lock().unwrap().clone()
     }
 
     /// How many resets the machines of this backend have taken.
@@ -234,6 +251,11 @@ impl Backend for FakeBackend {
     /// The fake's leftovers are deleted with its machine's record (`MachineRecord::remove_leftovers`), and nothing of
     /// it is shared between setups, so there is nothing to sweep.
     fn sweep(&self, _warn: &mut dyn FnMut(String)) {}
+
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        self.details_asked.lock().unwrap().push(detail);
+        self.checks.clone()
+    }
 
     fn can_save_memory(&self) -> bool {
         false

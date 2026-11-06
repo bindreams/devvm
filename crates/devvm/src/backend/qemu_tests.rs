@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::{directory_of, qemu_parts};
+use crate::backend::{Backend, Detail};
 use crate::store::fetch::Fetcher;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
@@ -42,4 +43,19 @@ fn the_parts_read_config_yaml_on_first_use_and_a_bad_file_fails_naming_it(#[fixt
     let error = parts.install.config().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Config, "{error}");
     assert!(error.message().contains(&file.display().to_string()), "{error}");
+}
+
+#[skuld::test]
+fn the_qemu_backend_has_the_one_qemu_check_and_downloads_nothing_for_it(#[fixture(unicode_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let progress = Arc::new(MemoryProgress::default());
+    let transport = Arc::new(RefusingTransport::default());
+    let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), progress.clone()));
+    let parts = qemu_parts(&dirs, fetcher, &TestHost, progress);
+
+    let checks = parts.backend.checks(Detail::Full);
+
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].name, "qemu");
+    assert!(transport.asked().is_empty(), "{:?}", transport.asked());
 }
