@@ -38,7 +38,8 @@ struct QemuEngine {
 }
 
 impl QemuEngine {
-    /// An engine over `dirs`, whose five directories are below `home`.
+    /// An engine over `dirs`, whose config, data, cache and state directories are below `home`; its runtime directory
+    /// can be anywhere.
     fn over(home: &Path, dirs: Dirs) -> QemuEngine {
         let state = engine_fixture(home, memory());
         instance_in(&state, "foo", home);
@@ -208,9 +209,10 @@ fn building_the_engine_and_listing_create_no_runtime_directory(#[fixture(unicode
 #[skuld::test]
 fn a_launch_over_a_runtime_path_it_refuses_downloads_nothing(#[fixture(unicode_home)] home: &Path) {
     // Beside the socket directory's own scratch runtime directories, so that the path is as short as theirs: a path
-    // below `home` can be too long for a socket, which a launch refuses first.
+    // below `home` can be too long for a socket, which a launch refuses first. Named `f...`, never a scratch run's
+    // `r...` name, so it cannot take one (`scratch_run_in`).
     let file = tempfile::Builder::new()
-        .prefix("r")
+        .prefix("f")
         .tempfile_in(socket_dir())
         .expect("a file for a runtime path");
     let too_long = home.join("x".repeat(crate::host::current().socket_path_max()));
