@@ -19,7 +19,7 @@ pub(crate) struct TestStorage {
 }
 
 impl Storage for TestStorage {
-    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, _size: u64) -> Result<()> {
+    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, _size: Option<u64>) -> Result<()> {
         if self.fail {
             return Err(crate::Error::new(ErrorKind::Io, "disk creation failed"));
         }
@@ -75,7 +75,7 @@ pub(crate) fn new_instance_on<'a>(
         chain,
         guest: GuestKind::Linux,
         arch: Arch::Amd64,
-        disk_size: 1 << 30,
+        disk_size: Some(1 << 30),
         cpus: 2,
         memory: 4 << 30,
         network: Network::Nat,

@@ -38,7 +38,7 @@ impl StubBackend {
             stop_fails: Mutex::new(false),
             calls: Arc::new(Mutex::new(Vec::new())),
             on_stop: OnStop::default(),
-            storage: FakeStorage,
+            storage: FakeStorage::default(),
         })
     }
 

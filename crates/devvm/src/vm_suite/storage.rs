@@ -3,14 +3,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::backend::Storage;
 use crate::backend::qemu::sidecar::QemuInstall;
-use crate::backend::qemu::storage::{DISK, QemuStorage, VARS};
+use crate::backend::qemu::storage::{DISK, QCOW2, QemuStorage, VARS};
+use crate::backend::{DEFAULT_DISK, Storage};
 use crate::host;
 use crate::store::layers::layers_tests::{Env, env, key, request};
 use crate::store::layers::{Built, ChainLease};
 use crate::test_support::fixtures::{UNICODE_DIR, unicode_home};
-use crate::test_support::qemu::{lazy_for, qemu_img, qemu_img_info, qemu_sidecar, read_through};
+use crate::test_support::qemu::{
+    lazy_for, qemu_img, qemu_img_info, qemu_sidecar, read_through, refused_without_a_disk,
+};
 use crate::{Arch, ErrorKind};
 
 const BASE_LEN: usize = 1 << 20;
@@ -30,16 +32,20 @@ fn write_raw(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
-/// A root layer imported from a raw image of `pattern(BASE_LEN, 1)`.
-fn base_layer(world: &Env, storage: &QemuStorage, home: &Path) -> ChainLease {
-    let raw = write_raw(home, "base.raw", &pattern(BASE_LEN, 1));
+/// A root layer built under `key(seed)` by importing `source`.
+fn layer_from(world: &Env, storage: &QemuStorage, seed: u8, source: &Path) -> ChainLease {
     world
         .store
-        .build(&request(key(1)), None, |staging| {
-            storage.import_base(&raw, Arch::Amd64, staging.dir)?;
+        .build(&request(key(seed)), None, |staging| {
+            storage.import_base(source, Arch::Amd64, staging.dir)?;
             Ok(Built::default())
         })
         .unwrap()
+}
+
+/// A root layer imported from a raw image of `pattern(BASE_LEN, 1)`.
+fn base_layer(world: &Env, storage: &QemuStorage, home: &Path) -> ChainLease {
+    layer_from(world, storage, 1, &write_raw(home, "base.raw", &pattern(BASE_LEN, 1)))
 }
 
 fn disk_of(layer: &ChainLease) -> PathBuf {
@@ -59,7 +65,7 @@ fn create_instance_disk_is_a_cow_overlay_of_the_layer(
     let instance = home.join("inst").join("disk.img");
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
     storage
-        .create_instance_disk(base.tip().dir(), &instance, 8 << 20)
+        .create_instance_disk(base.tip().dir(), &instance, Some(8 << 20))
         .unwrap();
 
     let info = qemu_img_info(install, &instance, false);
@@ -86,7 +92,7 @@ fn disk_size_larger_than_the_backing_image_is_accepted(
     let instance = home.join("big.img");
 
     storage
-        .create_instance_disk(base.tip().dir(), &instance, 64 << 20)
+        .create_instance_disk(base.tip().dir(), &instance, Some(64 << 20))
         .unwrap();
 
     assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], 64 << 20);
@@ -108,7 +114,7 @@ fn a_chain_of_layers_resolves_however_deep_it_is(
         let instance = home.join(format!("instance-{depth}")).join("disk.img");
         std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
         storage
-            .create_instance_disk(tip.tip().dir(), &instance, 8 << 20)
+            .create_instance_disk(tip.tip().dir(), &instance, Some(8 << 20))
             .unwrap();
         let instance_before = std::fs::read(&instance).unwrap();
         tip = world
@@ -180,25 +186,166 @@ fn committing_an_instance_disk_with_no_backing_file_is_refused(
     assert!(error.message().contains("no backing file"), "{error}");
 }
 
-/// `qemu-img` does not refuse it (the guest sees a disk shorter than the layer), so the storage does not either; whether
-/// a resource request may be that small is for the engine to decide.
+/// `qemu-img create -b` would accept such a size and the guest would see a truncated disk. `BASE_LEN - 512` is the
+/// largest size that still rounds below the layer.
 #[skuld::test]
-fn a_disk_smaller_than_its_backing_image_is_made_with_the_requested_size(
+fn a_disk_smaller_than_its_layer_is_refused_naming_both_sizes_and_creates_nothing(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
     let world = env(home);
     let storage = storage(install);
     let base = base_layer(&world, &storage, home);
-    let instance = home.join("small").join("disk.img");
+
+    for size in [0, BASE_LEN as u64 / 2, BASE_LEN as u64 - 512] {
+        let error = refused_without_a_disk(&storage, &base, home, Some(size), ErrorKind::Recipe);
+
+        assert!(error.message().contains(&size.to_string()), "{size}: {error}");
+        assert!(error.message().contains("resources.disk"), "{size}: {error}");
+        assert!(!error.message().contains("  "), "{size}: {error}");
+        assert!(error.message().contains(&BASE_LEN.to_string()), "{size}: {error}");
+        assert!(
+            error.message().contains(base.tip().dir().path().to_str().unwrap()),
+            "{size}: {error}"
+        );
+    }
+}
+
+/// A layer's `disk.qcow2` is read as qcow2, never probed: raw bytes are an error, not a disk of their length. The size
+/// is below those bytes' length, so a raw probe would refuse it as `Recipe` instead.
+#[skuld::test]
+fn a_layer_disk_that_is_not_qcow2_has_no_virtual_size(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let raw = world
+        .store
+        .build(&request(key(5)), None, |staging| {
+            std::fs::write(staging.dir.path().join(DISK), pattern(BASE_LEN, 1)).unwrap();
+            std::fs::write(staging.dir.path().join(VARS), b"vars").unwrap();
+            Ok(Built::default())
+        })
+        .unwrap();
+    let instance = home.join("raw").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    let error = storage
+        .create_instance_disk(raw.tip().dir(), &instance, Some(512))
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("qemu-img info"), "{error}");
+    assert!(
+        matches!(host::symlink_metadata_if_present(&instance), Ok(None)),
+        "a disk was made over a layer that is not qcow2"
+    );
+}
+
+#[skuld::test]
+fn a_disk_equal_to_its_layer_is_made(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let base = base_layer(&world, &storage, home);
+    let instance = home.join("exact").join("disk.img");
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
     storage
-        .create_instance_disk(base.tip().dir(), &instance, (BASE_LEN / 2) as u64)
+        .create_instance_disk(base.tip().dir(), &instance, Some(BASE_LEN as u64))
         .unwrap();
 
-    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], BASE_LEN / 2);
-    assert!(instance.parent().unwrap().join(VARS).is_file());
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], BASE_LEN);
+    let vars = host::symlink_metadata_if_present(&instance.parent().unwrap().join(VARS)).unwrap();
+    assert!(
+        vars.is_some_and(|meta| meta.is_file()),
+        "the firmware variables were not copied beside the disk"
+    );
+}
+
+/// The ceiling itself is made: qemu's own limit (2 PiB at 64 KiB clusters) is where the refusal starts, not below it.
+#[skuld::test]
+fn a_disk_of_the_largest_qcow2_size_is_made(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let base = base_layer(&world, &storage, home);
+    let instance = home.join("largest").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    storage
+        .create_instance_disk(base.tip().dir(), &instance, Some(1 << 51))
+        .unwrap();
+
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], 1u64 << 51);
+}
+
+#[skuld::test]
+fn a_disk_that_rounds_up_to_its_layer_is_made(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let base = base_layer(&world, &storage, home);
+    let instance = home.join("rounded").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    storage
+        .create_instance_disk(base.tip().dir(), &instance, Some(BASE_LEN as u64 - 1))
+        .unwrap();
+
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], BASE_LEN);
+}
+
+#[skuld::test]
+fn a_disk_with_no_size_is_the_default_when_the_layer_is_smaller(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let base = base_layer(&world, &storage, home);
+    let instance = home.join("default").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    storage.create_instance_disk(base.tip().dir(), &instance, None).unwrap();
+
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], DEFAULT_DISK);
+}
+
+/// The default is a floor nobody chose, so it never refuses a layer bigger than itself.
+#[skuld::test]
+fn a_disk_with_no_size_is_the_layers_when_the_layer_is_over_the_default(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let layer_size = DEFAULT_DISK + (1 << 30);
+    let source = home.join("huge.qcow2");
+    qemu_img(
+        install,
+        &[
+            "create".as_ref(),
+            "-f".as_ref(),
+            QCOW2.as_ref(),
+            source.as_os_str(),
+            layer_size.to_string().as_ref(),
+        ],
+    );
+    let huge = layer_from(&world, &storage, 2, &source);
+    let instance = home.join("huge").join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    storage.create_instance_disk(huge.tip().dir(), &instance, None).unwrap();
+
+    assert_eq!(qemu_img_info(install, &instance, false)["virtual-size"], layer_size);
 }
 
 #[skuld::test]
@@ -246,6 +393,108 @@ fn import_base_copies_qcow2_and_converts_raw(
     assert_eq!(read_through(install, &disk_of(&converted), home), bytes);
 }
 
+/// A qcow2 base of `size` bytes with 2 MiB clusters, whose limit is far above the 64 KiB clusters of an instance disk.
+fn big_cluster_base(install: &QemuInstall, home: &Path, name: &str, size: u64) -> PathBuf {
+    let source = home.join(name);
+    qemu_img(
+        install,
+        &[
+            "create".as_ref(),
+            "-f".as_ref(),
+            QCOW2.as_ref(),
+            "-o".as_ref(),
+            "cluster_size=2M".as_ref(),
+            source.as_os_str(),
+            size.to_string().as_ref(),
+        ],
+    );
+    source
+}
+
+/// An instance disk is a qcow2 overlay with 64 KiB clusters, so it cannot cover a base bigger than 2 PiB.
+#[skuld::test]
+fn import_base_refuses_a_base_no_instance_disk_could_cover(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let source = big_cluster_base(install, home, "over.qcow2", (1 << 51) + 1);
+
+    world
+        .store
+        .build(&request(key(6)), None, |staging| {
+            let error = storage.import_base(&source, Arch::Amd64, staging.dir).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
+            assert!(error.message().contains(source.to_str().unwrap()), "{error}");
+            assert!(error.message().contains(&(1u64 << 51).to_string()), "{error}");
+            assert!(
+                matches!(
+                    host::symlink_metadata_if_present(&staging.dir.path().join(DISK)),
+                    Ok(None)
+                ),
+                "a base that is refused was copied"
+            );
+            Ok(Built::default())
+        })
+        .unwrap();
+}
+
+/// A layer imported before `import_base` refused such a base is refused for every request, even a size that would
+/// otherwise be refused for being smaller than the layer.
+#[skuld::test]
+fn a_disk_over_a_layer_above_the_ceiling_is_refused_for_every_size(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let layer_size = (1u64 << 51) + 512;
+    let source = big_cluster_base(install, home, "over.qcow2", layer_size);
+    let over = world
+        .store
+        .build(&request(key(8)), None, |staging| {
+            std::fs::copy(&source, staging.dir.path().join(DISK)).unwrap();
+            std::fs::write(staging.dir.path().join(VARS), b"vars").unwrap();
+            Ok(Built::default())
+        })
+        .unwrap();
+
+    for size in [None, Some(1 << 51)] {
+        let error = refused_without_a_disk(&storage, &over, home, size, ErrorKind::Store);
+
+        assert!(error.message().contains(&layer_size.to_string()), "{size:?}: {error}");
+        assert!(
+            error.message().contains(over.tip().dir().path().to_str().unwrap()),
+            "{size:?}: {error}"
+        );
+        assert!(error.message().contains(&(1u64 << 51).to_string()), "{size:?}: {error}");
+        assert!(
+            error.message().contains("from a base within that limit"),
+            "{size:?}: {error}"
+        );
+        assert!(!error.message().contains("resources.disk"), "{size:?}: {error}");
+        assert!(!error.message().contains("  "), "{size:?}: {error}");
+    }
+}
+
+#[skuld::test]
+fn import_base_takes_a_base_of_the_largest_size_an_instance_disk_covers(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let source = big_cluster_base(install, home, "exact.qcow2", 1 << 51);
+
+    let layer = layer_from(&world, &storage, 7, &source);
+
+    assert_eq!(
+        qemu_img_info(install, &disk_of(&layer), false)["virtual-size"],
+        1u64 << 51
+    );
+}
+
 #[skuld::test]
 fn import_base_adds_the_variables_template_of_the_architecture(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
@@ -284,7 +533,7 @@ fn import_base_refuses_a_qcow2_with_a_backing_file(
     let base = base_layer(&world, &storage, home);
     let overlay = home.join("overlay.qcow2");
     storage
-        .create_instance_disk(base.tip().dir(), &overlay, 2 << 20)
+        .create_instance_disk(base.tip().dir(), &overlay, Some(2 << 20))
         .unwrap();
 
     let error = world
@@ -311,7 +560,9 @@ fn vars_are_copied_per_instance_and_do_not_alias(
     let (first, second) = (home.join("one").join("disk.img"), home.join("two").join("disk.img"));
     for disk in [&first, &second] {
         std::fs::create_dir_all(disk.parent().unwrap()).unwrap();
-        storage.create_instance_disk(base.tip().dir(), disk, 4 << 20).unwrap();
+        storage
+            .create_instance_disk(base.tip().dir(), disk, Some(4 << 20))
+            .unwrap();
     }
     let vars_of = |disk: &Path| disk.parent().unwrap().join(VARS);
     assert_eq!(std::fs::read(vars_of(&first)).unwrap(), template);

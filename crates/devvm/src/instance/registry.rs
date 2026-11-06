@@ -42,7 +42,7 @@ pub(crate) struct NewInstance<'a> {
     pub chain: &'a ChainLease,
     pub guest: GuestKind,
     pub arch: Arch,
-    pub disk_size: u64,
+    pub disk_size: Option<u64>,
     pub cpus: u32,
     pub memory: u64,
     pub network: Network,
