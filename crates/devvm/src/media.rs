@@ -23,7 +23,8 @@ const SECTOR: u32 = 512;
 /// The smallest image, in bytes. Headroom for the directory and the allocation tables is added to the contents.
 const MIN_IMAGE: u64 = 1 << 20;
 /// The most bytes of file contents whose image ([`image_size`]) `fatfs` 0.3.6 still formats as FAT12: at most 4,084
-/// clusters of 32 KiB. Measured; one byte more makes FAT16.
+/// clusters of 32 KiB. Measured: one byte more fails to format ("Cannot select FAT type"), and from 66,420,737 bytes
+/// `fatfs` formats FAT16.
 const LARGEST_FAT12_CONTENTS: u64 = 66_418_688;
 const _: () = assert!(
     (MIN_IMAGE + 2 * LARGEST_FAT12_CONTENTS).div_ceil(SECTOR as u64) <= u32::MAX as u64,
@@ -45,7 +46,7 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 /// the finished image before anything is written; an image that does not hold exactly `files` is an error.
 pub(crate) fn write_cidata_image(host: &dyn Host, files: &[SeedFile], into: &Path) -> Result<Media> {
     refuse_path_names(files)?;
-    let image = fat_image(files, into)?;
+    let image = fat_image(files)?;
     let written = match std::fs::remove_file(into) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -105,15 +106,15 @@ fn is_name_rejection(error: &std::io::Error) -> bool {
     }
 }
 
-fn build_failed(error: &std::io::Error) -> Error {
+fn build_failed(error: std::io::Error) -> Error {
     Error::new(ErrorKind::Internal, format!("cannot build the seed image: {error}"))
 }
 
 /// The size in bytes of the image that holds `contents` bytes of files, `Internal` when that is more than a FAT12
 /// volume holds ([`LARGEST_FAT12_CONTENTS`]). Decided from the sum alone, so nothing is allocated for a refused seed.
 fn image_size(contents: u64) -> Result<u64> {
+    let size = (u128::from(MIN_IMAGE) + 2 * u128::from(contents)).next_multiple_of(u128::from(SECTOR));
     if contents > LARGEST_FAT12_CONTENTS {
-        let size = (u128::from(MIN_IMAGE) + 2 * u128::from(contents)).next_multiple_of(u128::from(SECTOR));
         return Err(Error::new(
             ErrorKind::Internal,
             format!(
@@ -122,17 +123,12 @@ fn image_size(contents: u64) -> Result<u64> {
             ),
         ));
     }
-    Ok((MIN_IMAGE + 2 * contents).next_multiple_of(u64::from(SECTOR)))
+    // Fits `u64`: see the assertion beside `LARGEST_FAT12_CONTENTS`.
+    Ok(size as u64)
 }
 
-fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
-    let io = |e: std::io::Error| {
-        Error::io(
-            ErrorKind::Io,
-            format!("cannot build the seed image {}", into.display()),
-            e,
-        )
-    };
+/// The seed image, built in memory: every `fatfs` failure here is `Internal`, as nothing touches the host.
+fn fat_image(files: &[SeedFile]) -> Result<Vec<u8>> {
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
     let size = image_size(contents)?;
     // Fits `u32`: see the assertion beside `LARGEST_FAT12_CONTENTS`.
@@ -148,9 +144,9 @@ fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
             .volume_id(VOLUME_ID)
             .volume_label(*b"CIDATA     "),
     )
-    .map_err(|e| build_failed(&e))?;
+    .map_err(build_failed)?;
     {
-        let fs = FileSystem::new(&mut disk, FsOptions::new()).map_err(io)?;
+        let fs = FileSystem::new(&mut disk, FsOptions::new()).map_err(build_failed)?;
         if fs.fat_type() != FatType::Fat12 {
             return Err(Error::new(
                 ErrorKind::Internal,
@@ -162,15 +158,15 @@ fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
                 if is_name_rejection(&e) {
                     unusable_name(&file.name, &e.to_string())
                 } else {
-                    build_failed(&e)
+                    build_failed(e)
                 }
             })?;
-            out.write_all(&file.bytes).map_err(io)?;
-            out.flush().map_err(io)?;
+            out.write_all(&file.bytes).map_err(build_failed)?;
+            out.flush().map_err(build_failed)?;
         }
-        fs.unmount().map_err(io)?;
+        fs.unmount().map_err(build_failed)?;
     }
-    require_files_as_asked(&mut disk, files, io)?;
+    require_files_as_asked(&mut disk, files)?;
     Ok(disk.into_inner())
 }
 
@@ -179,19 +175,15 @@ fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
 ///
 /// `fatfs` merges names whose generated 8.3 short names, trailing dots or U+FFFF padding collide, and renames some, so
 /// no list of name patterns closes the class; only the image says what it holds.
-fn require_files_as_asked(
-    disk: &mut Cursor<Vec<u8>>,
-    files: &[SeedFile],
-    io: impl Fn(std::io::Error) -> Error,
-) -> Result<()> {
+fn require_files_as_asked(disk: &mut Cursor<Vec<u8>>, files: &[SeedFile]) -> Result<()> {
     disk.set_position(0);
-    let fs = FileSystem::new(disk, FsOptions::new()).map_err(&io)?;
+    let fs = FileSystem::new(disk, FsOptions::new()).map_err(build_failed)?;
     let mut held = Vec::new();
     for entry in fs.root_dir().iter() {
-        let entry = entry.map_err(&io)?;
+        let entry = entry.map_err(build_failed)?;
         let mut bytes = Vec::new();
         if entry.is_file() {
-            entry.to_file().read_to_end(&mut bytes).map_err(&io)?;
+            entry.to_file().read_to_end(&mut bytes).map_err(build_failed)?;
         }
         held.push((entry.file_name(), bytes));
     }

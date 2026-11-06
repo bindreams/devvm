@@ -327,7 +327,7 @@ fn type_of(image: Vec<u8>) -> fatfs::FatType {
 }
 
 #[skuld::test]
-fn the_image_is_fat12_whatever_the_contents(#[fixture(unicode_home)] home: &Path) {
+fn the_image_is_fat12_whatever_the_contents() {
     let seed = [file("user-data", &all_bytes()), file("meta-data", b"instance-id: x\n")];
     let large = [file("user-data", &vec![7u8; 5_000_000]), file("meta-data", b"m")];
     let largest = [file("user-data", &vec![7u8; LARGEST_FAT12_CONTENTS as usize])];
@@ -337,37 +337,23 @@ fn the_image_is_fat12_whatever_the_contents(#[fixture(unicode_home)] home: &Path
         ("5,000,000 bytes", &large),
         ("the largest", &largest),
     ] {
-        let image = fat_image(files, &home.join("seed.img")).unwrap();
+        let image = fat_image(files).unwrap();
         assert_eq!(type_of(image), fatfs::FatType::Fat12, "{what}");
     }
 }
 
-#[skuld::test]
-fn contents_that_would_not_be_fat12_are_refused_naming_the_sum_and_the_image_size(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let contents = LARGEST_FAT12_CONTENTS as usize + 1;
-    let files = [file("user-data", &vec![7u8; contents])];
-    let image_size = (super::MIN_IMAGE + 2 * contents as u64).next_multiple_of(512);
-
-    let Err(error) = fat_image(&files, &home.join("seed.img")) else {
-        panic!("a FAT16 volume is not the measured shape");
-    };
-
-    assert_eq!(error.kind(), crate::ErrorKind::Internal, "{error}");
-    assert!(error.message().contains(&contents.to_string()), "{error}");
-    assert!(error.message().contains(&image_size.to_string()), "{error}");
-    assert!(error.message().contains("FAT12"), "{error}");
-}
-
 /// The size is decided from the sum alone, so a seed too large for FAT12 is refused before any image is allocated.
 #[skuld::test]
-fn the_image_size_is_refused_beyond_the_fat12_limit_without_any_contents() {
-    assert_eq!(
-        image_size(LARGEST_FAT12_CONTENTS).unwrap(),
-        (super::MIN_IMAGE + 2 * LARGEST_FAT12_CONTENTS).next_multiple_of(512)
-    );
-    for contents in [LARGEST_FAT12_CONTENTS + 1, 1 << 40, u64::MAX] {
+fn the_image_size_is_refused_beyond_the_fat12_limit_naming_the_sum_and_the_image_size() {
+    assert_eq!(image_size(LARGEST_FAT12_CONTENTS).unwrap(), 133_885_952);
+
+    let error = image_size(LARGEST_FAT12_CONTENTS + 1).expect_err("over the limit");
+    assert_eq!(error.kind(), crate::ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("66418689 bytes"), "{error}");
+    assert!(error.message().contains("133886464 bytes"), "{error}");
+    assert!(error.message().contains("FAT12"), "{error}");
+
+    for contents in [1 << 40, u64::MAX] {
         let error = image_size(contents).expect_err("over the limit");
         assert_eq!(error.kind(), crate::ErrorKind::Internal, "{error}");
         assert!(error.message().contains(&contents.to_string()), "{error}");
