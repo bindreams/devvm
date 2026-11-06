@@ -43,6 +43,7 @@ fn doctor_prints_every_check_then_exits_125_iff_any_line_says_fail() {
         "accelerator",
         "free space (data)",
         "free space (cache)",
+        "free space (state)",
         "ssh",
         "git",
         "qemu",
