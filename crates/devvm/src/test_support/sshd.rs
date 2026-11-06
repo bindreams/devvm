@@ -98,9 +98,11 @@ pub struct SshdOptions {
 }
 
 pub(crate) struct State {
-    good: PrivateKey,
+    /// The host key the server presents; [`TestSshd::install`] replaces it.
+    good: Mutex<PrivateKey>,
     bad: PrivateKey,
-    allowed: PublicKey,
+    /// The one client key that may log in; [`TestSshd::install`] replaces it.
+    allowed: Mutex<PublicKey>,
     pub(crate) options: SshdOptions,
     connections: AtomicUsize,
     closed: Mutex<HashSet<ChannelId>>,
@@ -166,9 +168,9 @@ impl TestSshd {
             openssh_sftp::OPT_OUT
         );
         let state = Arc::new(State {
-            good: random_key(),
+            good: Mutex::new(random_key()),
             bad: random_key(),
-            allowed,
+            allowed: Mutex::new(allowed),
             options,
             connections: AtomicUsize::new(0),
             closed: Mutex::default(),
@@ -202,13 +204,37 @@ impl TestSshd {
         TestSshd { addr, state, accept }
     }
 
+    /// A server that trusts no client key until [`TestSshd::install`] gives it the keys of an instance, as a guest
+    /// trusts none until its first boot has read the seed.
+    pub fn awaiting_keys() -> TestSshd {
+        TestSshd::start(SshdOptions {
+            client_public: InstanceKeys::generate().expect("keys can be generated").client_public,
+            ..SshdOptions::default()
+        })
+    }
+
+    /// From now on the server trusts the client key `client_public` and presents the host key `host_private`, the way a
+    /// booted guest does with the keys of its seed. Connections already made are unaffected.
+    pub fn install(&self, client_public: &str, host_private: &str) {
+        let allowed = PublicKey::from_openssh(client_public).expect("client_public is an OpenSSH public key");
+        let host = PrivateKey::from_openssh(host_private).expect("host_private is an OpenSSH private key");
+        *self.state.allowed.lock().unwrap() = allowed;
+        *self.state.good.lock().unwrap() = host;
+    }
+
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
 
     /// The host key the server presents, as OpenSSH text.
     pub fn host_public(&self) -> String {
-        self.state.good.public_key().to_openssh().expect("a public key encodes")
+        self.state
+            .good
+            .lock()
+            .unwrap()
+            .public_key()
+            .to_openssh()
+            .expect("a public key encodes")
     }
 
     /// The other host key, which the first `wrong_host_key_connections` connections present.
@@ -400,7 +426,7 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
         let host_key = if index < state.options.wrong_host_key_connections {
             state.bad.clone()
         } else {
-            state.good.clone()
+            state.good.lock().unwrap().clone()
         };
         let config = Arc::new(Config {
             keys: vec![host_key],
@@ -461,7 +487,7 @@ impl Handler for Connection {
 
     async fn auth_publickey(&mut self, _user: &str, key: VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
         let accepted = self.index >= self.state.options.rejected_key_connections
-            && key.public_key.key_data() == self.state.allowed.key_data();
+            && key.public_key.key_data() == self.state.allowed.lock().unwrap().key_data();
         Ok(if accepted { Auth::Accept } else { Auth::reject() })
     }
 

@@ -7,10 +7,11 @@ use crate::backend::MachineRecord;
 use crate::contain::VmProcess;
 use crate::engine::engine_tests::{EngineFixture, engine_fixture, image_of, leaking_fixture};
 use crate::instance::name::InstanceName;
-use crate::instance::record::{MarkerRead, Owner};
+use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
-use crate::test_support::fake_vm::{STARTED, connect_when_up};
+use crate::test_support::fake_vm::answer;
+use crate::test_support::fake_vm::{STARTED, connect_when_up, started_port};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::helper;
 use crate::{Command, ErrorKind, Guest, Instance, InstanceState, ListFilter, StartOptions};
@@ -243,7 +244,7 @@ fn an_ownerless_instance_survives_the_cli_and_only_remove_deletes_it(#[fixture(u
     let vm = VmProcess::attach(&machine.process)
         .unwrap()
         .expect("the VM outlived its CLI");
-    assert!(connect_when_up(&vm, machine.ssh[0].addr.port()).contains("kill-on-close=false"));
+    assert!(connect_when_up(&vm, started_port(machine.serial_log.parent().unwrap())).contains("kill-on-close=false"));
     let infos = fx.engine.list(ListFilter::All).unwrap();
     assert!(infos[0].ownerless);
     assert_eq!(infos[0].state, InstanceState::Running);
@@ -287,4 +288,62 @@ fn vm_guest_methods_are_not_supported_until_the_access_layer(#[fixture(unicode_h
     let error = vm.run(&Command::new(["true"])).err().unwrap();
     assert_eq!(error.kind(), ErrorKind::NotSupported);
     assert_eq!(vm.reboot().unwrap_err().kind(), ErrorKind::NotSupported);
+}
+
+// `up` and the wait for the guest =====================================================================================
+
+#[skuld::test]
+fn up_hands_over_only_after_readiness(#[fixture(unicode_home)] home: &Path) {
+    let (fx, _) = memory_fixture(home);
+    let path = fx.env.dirs.instances().join("foo");
+    let at_ready = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = at_ready.clone();
+    let dir = path.clone();
+    fx.guests.on_ready(move || {
+        let owner = match read_marker(&dir).unwrap() {
+            MarkerRead::Valid(marker) => marker.owner,
+            _ => panic!("owner.json should be valid"),
+        };
+        let contained = answer(started_port(&dir)).contains("kill-on-close=true");
+        seen.lock().unwrap().push((owner, contained));
+    });
+
+    let instance = image_of(&fx.engine).up("foo", &StartOptions::default()).unwrap();
+
+    assert_eq!(
+        *at_ready.lock().unwrap(),
+        [(Owner::Process, true)],
+        "the guest is asked while the process still owns the contained VM"
+    );
+    assert!(matches!(instance.dir().marker().unwrap(), MarkerRead::Valid(m) if m.owner == Owner::None));
+    let machine = instance
+        .dir()
+        .record()
+        .unwrap()
+        .machine
+        .expect("the record names the machine");
+    assert!(running(&machine));
+    assert!(answer(started_port(&path)).contains("kill-on-close=false"));
+    instance.remove().unwrap();
+    nothing_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_vm_that_never_gets_ready_is_killed_and_its_instance_destroyed(#[fixture(unicode_home)] home: &Path) {
+    let (fx, _) = memory_fixture(home);
+    fx.guests.ready_when("exit 3");
+
+    for error in [
+        image_of(&fx.engine).start(&StartOptions::default()).err().unwrap(),
+        image_of(&fx.engine).up("foo", &StartOptions::default()).err().unwrap(),
+    ] {
+        assert!(error.message().contains("exit 3"), "{error}");
+    }
+
+    for machine in fx.fake.launched() {
+        wait_until_dead(&machine);
+        assert!(!running(&machine), "a guest that never became ready must not run");
+    }
+    assert_eq!(fx.fake.launches(), 2);
+    nothing_is_left(&fx);
 }

@@ -131,7 +131,7 @@ pub(crate) struct SeedSpec {
 
 /// The SSH keys a first boot installs, as the text of their files. The private key is a secret: it stays out of `Debug`
 /// output.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct SeedKeys {
     /// The public key of the client allowed to log in.
     pub client_public: String,

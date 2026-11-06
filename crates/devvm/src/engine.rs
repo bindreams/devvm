@@ -21,6 +21,8 @@ use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
 
 mod checks;
+pub(crate) mod keys;
+pub(crate) mod ready;
 
 #[cfg(test)]
 #[path = "engine_tests.rs"]
@@ -31,7 +33,7 @@ pub(crate) mod engine_tests;
 mod engine_qemu_tests;
 
 /// How long a guest gets to boot and answer before a start fails: a failure bound on an event outside devvm. Read by
-/// the engine's `Instance::start_with` once it waits for readiness; `start` waits for no boot in this build.
+/// every start, which waits for the guest to answer.
 pub(crate) const DEFAULT_BOOT_BOUND: Duration = Duration::from_secs(10 * 60);
 
 /// Which instances `list` returns.
@@ -263,8 +265,7 @@ impl Engine {
         &self.hooks
     }
 
-    /// How long a started guest gets to answer before the start fails. Read by the engine's `Instance::start_with`
-    /// (not yet: `start` waits for no boot in this build), which hands it to the readiness wait as its failure bound.
+    /// How long a started guest gets to answer before the start fails: the failure bound of the readiness wait.
     pub(crate) fn boot_bound(&self) -> Duration {
         self.boot_bound
     }

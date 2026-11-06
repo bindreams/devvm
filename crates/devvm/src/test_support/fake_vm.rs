@@ -117,6 +117,16 @@ pub fn await_port(vm: &VmProcess, state_dir: &Path) -> u16 {
     }
 }
 
+/// The port the fake VM of `state_dir` reported in its `started` file, which appears once the VM listens: a missing
+/// file fails the test.
+pub fn started_port(state_dir: &Path) -> u16 {
+    let started = state_dir.join(STARTED);
+    let text = std::fs::read_to_string(&started)
+        .unwrap_or_else(|e| panic!("{} should name the port of a VM that runs: {e}", started.display()));
+    text.parse()
+        .unwrap_or_else(|e| panic!("{} holds {text:?}: {e}", started.display()))
+}
+
 /// Connects to the fake VM and returns its answer line, retrying until it accepts. The retry ends with an error when
 /// the process dies instead, so a fake VM that never comes up fails the test and does not hang it.
 pub fn connect_when_up(vm: &VmProcess, port: u16) -> String {
