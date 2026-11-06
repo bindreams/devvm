@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::backend::qemu::sidecar::QemuInstall;
-use crate::backend::qemu::storage::{DISK, QemuStorage, VARS};
+use crate::backend::qemu::storage::{DISK, QCOW2, QemuStorage, VARS};
 use crate::backend::{DEFAULT_DISK, Storage};
 use crate::host;
 use crate::store::layers::layers_tests::{Env, env, key, request};
@@ -30,16 +30,20 @@ fn write_raw(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
-/// A root layer imported from a raw image of `pattern(BASE_LEN, 1)`.
-fn base_layer(world: &Env, storage: &QemuStorage, home: &Path) -> ChainLease {
-    let raw = write_raw(home, "base.raw", &pattern(BASE_LEN, 1));
+/// A root layer built under `key(seed)` by importing `source`.
+fn layer_from(world: &Env, storage: &QemuStorage, seed: u8, source: &Path) -> ChainLease {
     world
         .store
-        .build(&request(key(1)), None, |staging| {
-            storage.import_base(&raw, Arch::Amd64, staging.dir)?;
+        .build(&request(key(seed)), None, |staging| {
+            storage.import_base(source, Arch::Amd64, staging.dir)?;
             Ok(Built::default())
         })
         .unwrap()
+}
+
+/// A root layer imported from a raw image of `pattern(BASE_LEN, 1)`.
+fn base_layer(world: &Env, storage: &QemuStorage, home: &Path) -> ChainLease {
+    layer_from(world, storage, 1, &write_raw(home, "base.raw", &pattern(BASE_LEN, 1)))
 }
 
 fn disk_of(layer: &ChainLease) -> PathBuf {
@@ -180,7 +184,8 @@ fn committing_an_instance_disk_with_no_backing_file_is_refused(
     assert!(error.message().contains("no backing file"), "{error}");
 }
 
-/// `qemu-img create -b` accepts it, and the guest then sees a disk shorter than the layer.
+/// `qemu-img create -b` accepts it, and the guest then sees a disk shorter than the layer. `BASE_LEN - 512` is the
+/// largest size that rounds to less than the layer.
 #[skuld::test]
 fn a_disk_smaller_than_its_layer_is_refused_naming_both_sizes_and_creates_nothing(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
@@ -189,30 +194,36 @@ fn a_disk_smaller_than_its_layer_is_refused_naming_both_sizes_and_creates_nothin
     let world = env(home);
     let storage = storage(install);
     let base = base_layer(&world, &storage, home);
-    let instance = home.join("small").join("disk.img");
-    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
-    let error = storage
-        .create_instance_disk(base.tip().dir(), &instance, Some((BASE_LEN / 2) as u64))
-        .unwrap_err();
+    for size in [BASE_LEN / 2, BASE_LEN - 512] {
+        let instance = home.join(format!("small-{size}")).join("disk.img");
+        std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
-    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
-    let message = error.message();
-    assert!(message.contains(&(BASE_LEN / 2).to_string()), "{error}");
-    assert!(message.contains(&BASE_LEN.to_string()), "{error}");
-    assert!(message.contains(base.tip().dir().path().to_str().unwrap()), "{error}");
-    assert!(message.contains("resources.disk"), "{error}");
-    assert!(
-        matches!(host::symlink_metadata_if_present(&instance), Ok(None)),
-        "a disk was made that the guest would see truncated"
-    );
-    assert!(
-        matches!(
-            host::symlink_metadata_if_present(&instance.parent().unwrap().join(VARS)),
-            Ok(None)
-        ),
-        "{error}"
-    );
+        let error = storage
+            .create_instance_disk(base.tip().dir(), &instance, Some(size as u64))
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{size}: {error}");
+        let message = error.message();
+        assert!(message.contains(&size.to_string()), "{size}: {error}");
+        assert!(message.contains(&BASE_LEN.to_string()), "{size}: {error}");
+        assert!(
+            message.contains(base.tip().dir().path().to_str().unwrap()),
+            "{size}: {error}"
+        );
+        assert!(message.contains("resources.disk"), "{size}: {error}");
+        assert!(
+            matches!(host::symlink_metadata_if_present(&instance), Ok(None)),
+            "{size}: a disk was made that the guest would see truncated"
+        );
+        assert!(
+            matches!(
+                host::symlink_metadata_if_present(&instance.parent().unwrap().join(VARS)),
+                Ok(None)
+            ),
+            "{size}: {error}"
+        );
+    }
 }
 
 #[skuld::test]
@@ -288,18 +299,12 @@ fn a_disk_with_no_size_is_the_layers_when_the_layer_is_over_the_default(
         &[
             "create".as_ref(),
             "-f".as_ref(),
-            "qcow2".as_ref(),
+            QCOW2.as_ref(),
             source.as_os_str(),
             layer_size.to_string().as_ref(),
         ],
     );
-    let huge = world
-        .store
-        .build(&request(key(2)), None, |staging| {
-            storage.import_base(&source, Arch::Amd64, staging.dir)?;
-            Ok(Built::default())
-        })
-        .unwrap();
+    let huge = layer_from(&world, &storage, 2, &source);
     let instance = home.join("huge").join("disk.img");
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 

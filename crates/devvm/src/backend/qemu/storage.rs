@@ -21,7 +21,7 @@ pub(crate) const DISK: &str = "disk.qcow2";
 /// A layer's UEFI variables, and the copy each instance boots from.
 pub(crate) const VARS: &str = "vars.fd";
 /// The format of every layer and instance disk.
-const QCOW2: &str = "qcow2";
+pub(crate) const QCOW2: &str = "qcow2";
 
 pub(crate) struct QemuStorage {
     install: Arc<LazyInstall>,
