@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex};
 use super::availability_on;
 use crate::backend::{Backend, Machine};
 use crate::engine::engine_tests::{EngineFixture, dead_machine, engine_fixture, image_of, image_with, stub_fixture};
-use crate::instance::record::InstanceId;
 use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::recipe::Resources;
 use crate::store::layers::layers_tests::names;
@@ -63,21 +62,6 @@ fn image_create_hands_the_storage_the_recipes_disk_size_or_none(#[fixture(unicod
     }
 
     assert_eq!(fx.fake.disk_sizes(), [None, Some(20 << 30)]);
-}
-
-#[skuld::test]
-fn image_create_reaps_a_dead_creators_leftovers_first(#[fixture(unicode_home)] home: &Path) {
-    let fx = engine_fixture(home, memory());
-    let image = image_of(&fx.engine);
-    // A creator that died: its `.new-` directory is left, and nobody holds its owner lock.
-    let id = InstanceId::random();
-    drop(fx.engine.registry().locks().acquire_owner_new(&id).unwrap());
-    let leftover = fx.env.dirs.instances().join(format!(".new-{id}"));
-    std::fs::create_dir_all(&leftover).unwrap();
-
-    image.create("foo", &StartOptions::default()).unwrap();
-
-    assert!(!leftover.exists(), "creating an instance reaps leftovers first");
 }
 
 #[skuld::test]

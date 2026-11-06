@@ -1,4 +1,4 @@
-//! `ls`, `rm` and the commands that need a VM backend, through the real binary. The instances are seeded by writing
+//! `ls`, `rm` and the commands not implemented yet, through the real binary. The instances are seeded by writing
 //! their files by hand, so the on-disk schema is pinned from outside the library.
 
 use std::path::{Path, PathBuf};
@@ -9,6 +9,9 @@ use serde_json::Value;
 #[path = "support/unicode.rs"]
 mod unicode;
 use unicode::UNICODE_DIR;
+#[path = "support/isolate.rs"]
+mod isolate;
+use isolate::isolate;
 
 fn main() {
     skuld::run_all();
@@ -16,7 +19,7 @@ fn main() {
 
 // Helpers =============================================================================================================
 
-/// A temp dir holding the Unicode test directory, where the four XDG directories and the project directories live.
+/// A temp dir holding the Unicode test directory, where the five XDG directories and the project directories live.
 struct Home {
     _tmp: skuld::TempDir,
     root: PathBuf,
@@ -34,6 +37,15 @@ impl Home {
         self.root.join("state").join("devvm")
     }
 
+    /// devvm's runtime directory, which `reap` sweeps.
+    fn run(&self) -> PathBuf {
+        self.root.join("run").join("devvm")
+    }
+
+    fn config_file(&self) -> PathBuf {
+        self.root.join("config").join("devvm").join("config.yaml")
+    }
+
     fn project(&self, name: &str) -> PathBuf {
         let path = self.root.join("projects").join(name);
         std::fs::create_dir_all(&path).unwrap();
@@ -43,14 +55,7 @@ impl Home {
     fn devvm(&self, cwd: &Path, args: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
         command.current_dir(cwd).args(args).env_remove("DEVVM_STATUS_FILE");
-        for (name, dir) in [
-            ("XDG_CONFIG_HOME", "config"),
-            ("XDG_DATA_HOME", "data"),
-            ("XDG_CACHE_HOME", "cache"),
-            ("XDG_STATE_HOME", "state"),
-        ] {
-            command.env(name, self.root.join(dir));
-        }
+        isolate(&mut command, &self.root);
         command.stdin(Stdio::null()).output().unwrap()
     }
 
@@ -238,7 +243,8 @@ fn ls_prints_a_table_and_nothing_at_all_when_there_are_no_instances() {
     assert_eq!(rows[1], ["beta", "stopped", "linux", "amd64", "process"]);
 }
 
-/// Replaces the `machine` of the seeded instance `name` with a record of a process that no backend can look for.
+/// Replaces the `machine` of the seeded instance `name` with a record that has no claim file, which no backend can look
+/// for.
 fn seed_a_machine(home: &Home, name: &str) {
     let path = home.state().join("instances").join(name).join("record.json");
     let record = std::fs::read_to_string(&path).unwrap().replace(
@@ -255,7 +261,7 @@ fn seed_a_machine(home: &Home, name: &str) {
 }
 
 #[skuld::test]
-fn ls_says_unknown_for_a_recorded_machine_this_build_has_no_backend_to_look_for() {
+fn ls_says_unknown_for_a_recorded_machine_the_backend_cannot_look_for() {
     let home = home();
     let a = home.project("a");
     home.seed("alpha", &id(1), &a, "none");
@@ -268,7 +274,7 @@ fn ls_says_unknown_for_a_recorded_machine_this_build_has_no_backend_to_look_for(
     assert_eq!(row, ["alpha", "unknown", "linux", "amd64", "none"]);
     let stderr = String::from_utf8(table.stderr).unwrap();
     assert!(
-        stderr.contains("alpha") && stderr.contains("no VM backend"),
+        stderr.contains("alpha") && stderr.contains("has no claim file"),
         "the cause is said: {stderr:?}"
     );
 
@@ -326,7 +332,7 @@ fn every_command_reaps_first() {
 }
 
 #[skuld::test]
-fn commands_that_need_a_backend_exit_125_not_supported() {
+fn commands_not_implemented_yet_exit_125_not_supported() {
     let home = home();
     let a = home.project("a");
     let commands: [&[&str]; 8] = [
@@ -342,7 +348,11 @@ fn commands_that_need_a_backend_exit_125_not_supported() {
     for args in commands {
         let output = home.devvm(&a, args);
         assert_eq!(output.status.code(), Some(125), "{args:?}");
-        one_error_line(&output, "not-supported");
+        let line = one_error_line(&output, "not-supported");
+        assert!(
+            line.contains(&format!("`devvm {}` is not implemented yet", args[0])),
+            "{line:?}"
+        );
     }
 }
 
@@ -356,4 +366,65 @@ fn a_usage_error_exits_125_with_a_status_file() {
     one_error_line(&output, "usage");
     let report: Value = serde_json::from_str(&std::fs::read_to_string(&status).unwrap()).unwrap();
     assert_eq!(report["devvm"]["kind"], "usage");
+}
+
+#[skuld::test]
+fn ls_sweeps_the_runtime_directory_the_fixture_names() {
+    let home = home();
+    // A file where the directory should be makes the sweep say so, naming the path: the variable reached `Dirs`.
+    let run = home.run();
+    std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+    std::fs::write(&run, "not a directory").unwrap();
+
+    let output = home.devvm(&home.project("p"), &["ls"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(run.to_str().unwrap()) && stderr.contains("is not a directory"),
+        "{stderr:?}"
+    );
+    assert_eq!(std::fs::read(&run).unwrap(), b"not a directory");
+}
+
+#[skuld::test]
+fn rm_sweeps_the_runtime_directory_once() {
+    let home = home();
+    let a = home.project("a");
+    home.seed("gone", &id(1), &a, "none");
+    let run = home.run();
+    std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+    std::fs::write(&run, "not a directory").unwrap();
+
+    let output = home.devvm(&a, &["rm", "gone"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.matches("is not a directory").count(), 1, "{stderr:?}");
+}
+
+#[skuld::test]
+fn a_broken_config_file_fails_ls_and_rm_naming_the_file() {
+    let home = home();
+    let config = home.config_file();
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "no-such-key: 1\n").unwrap();
+
+    for args in [&["ls"][..], &["rm", "foo"][..]] {
+        let output = home.devvm(&home.project("p"), args);
+
+        assert_eq!(output.status.code(), Some(125), "{args:?}");
+        let line = one_error_line(&output, "config");
+        assert!(line.contains(config.to_str().unwrap()), "{args:?}: {line}");
+    }
 }

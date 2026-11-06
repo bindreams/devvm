@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::host::{self, SystemDirs};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
+use crate::test_support::qemu::write_config;
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
 const VERSION: &str = "11.1.2";
@@ -126,7 +127,6 @@ fn world_with(home: &Path, served: Vec<u8>, pinned: Sha256, asked: Arc<Mutex<Vec
     };
     let source = Source::new(
         dirs.clone(),
-        Config::default(),
         fetcher.clone(),
         progress.clone(),
         Ok(entry.clone()),
@@ -146,9 +146,9 @@ fn world_with(home: &Path, served: Vec<u8>, pinned: Sha256, asked: Arc<Mutex<Vec
 impl World {
     /// A new source over the same cache, transport and manifest entry.
     fn source_with(&self, config: Config, verify: Verify) -> Source {
+        write_config(&self.dirs, &config);
         Source::new(
             self.dirs.clone(),
-            config,
             self.fetcher.clone(),
             self.progress.clone(),
             Ok(self.entry.clone()),
@@ -518,7 +518,7 @@ pub(crate) fn extract_and_wait(args: &[String]) {
         let _ = std::io::stdin().read_to_end(&mut sink);
         Ok(format!("QEMU emulator version {VERSION}"))
     });
-    Source::new(dirs, Config::default(), fetcher, progress, Ok(entry), verify)
+    Source::new(dirs, fetcher, progress, Ok(entry), verify)
         .resolve()
         .unwrap();
 }
@@ -716,7 +716,6 @@ fn an_unknown_triple_fails_at_get_naming_it_and_downloads_nothing(#[fixture(unic
     let world = world(home, zip_of(&files()));
     let source = Source::new(
         world.dirs.clone(),
-        Config::default(),
         world.fetcher.clone(),
         world.progress.clone(),
         manifest_entry("riscv64-unknown-plan9"),
@@ -802,5 +801,26 @@ fn the_version_check_runs_a_tool_with_exactly_qemus_environment_in_an_empty_dire
         Path::new(cwd),
         std::env::current_dir().unwrap(),
         "the caller's directory"
+    );
+}
+
+#[skuld::test]
+fn the_source_reads_config_yaml_from_its_dirs_on_first_use(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let tools = home.join("tools");
+    make_tools(&tools);
+    make_firmware(&tools.join("share"));
+
+    // Written after the source exists: a read at construction would have found no file.
+    write_config(
+        &world.dirs,
+        &Config {
+            qemu_path: Some(tools.clone()),
+        },
+    );
+
+    assert_eq!(
+        world.source.config().unwrap().qemu_path.as_deref(),
+        Some(tools.as_path())
     );
 }

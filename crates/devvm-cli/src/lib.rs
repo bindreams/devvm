@@ -5,12 +5,12 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use clap::{CommandFactory, Parser};
 use devvm::exit::{ExitStatus, ExitWidth, finish};
 use devvm::recipe::Recipe;
-use devvm::store::fetch::{HttpTransport, Response, Resume, Transport};
+use devvm::store::fetch::{LazyHttp, Transport};
 use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
 
 mod args;
@@ -37,21 +37,7 @@ impl Deps {
     /// Real HTTP, created on first use.
     pub fn real() -> Deps {
         Deps {
-            transport: Arc::new(LazyHttp(OnceLock::new())),
-        }
-    }
-}
-
-struct LazyHttp(OnceLock<std::result::Result<HttpTransport, String>>);
-
-impl Transport for LazyHttp {
-    fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
-        match self
-            .0
-            .get_or_init(|| HttpTransport::new().map_err(|e| e.message().to_owned()))
-        {
-            Ok(transport) => transport.get(url, resume),
-            Err(message) => Err(Error::new(ErrorKind::Internal, message.clone())),
+            transport: Arc::new(LazyHttp::new()),
         }
     }
 }
@@ -122,12 +108,8 @@ pub fn install_panic_hook() {
 
 // Entry points ========================================================================================================
 
-fn dispatch(_deps: &Deps, command: Cmd) -> Result<ExitStatus> {
-    // Every command first reaps what dead devvm processes left behind. Failing to do so never fails the command.
-    let engine = Engine::from_env_stderr();
-    if let Ok(engine) = &engine {
-        engine.reap();
-    }
+fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
+    let engine = Engine::from_env_stderr(deps.transport.clone());
     match command {
         Cmd::Ls { all, json } => list(&engine?, all, json),
         Cmd::Rm { name } => {
@@ -138,22 +120,22 @@ fn dispatch(_deps: &Deps, command: Cmd) -> Result<ExitStatus> {
             let cwd = std::env::current_dir()
                 .map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))?;
             Recipe::from_ref(&reference, &cwd)?.flatten()?;
-            Err(needs_a_backend("build"))
+            Err(not_implemented("build"))
         }
-        Cmd::Run { .. } => Err(needs_a_backend("run")),
-        Cmd::Up { .. } => Err(needs_a_backend("up")),
-        Cmd::Ssh { .. } => Err(needs_a_backend("ssh")),
-        Cmd::Cp { .. } => Err(needs_a_backend("cp")),
-        Cmd::Start { .. } => Err(needs_a_backend("start")),
-        Cmd::Stop { .. } => Err(needs_a_backend("stop")),
-        Cmd::Doctor => Err(needs_a_backend("doctor")),
+        Cmd::Run { .. } => Err(not_implemented("run")),
+        Cmd::Up { .. } => Err(not_implemented("up")),
+        Cmd::Ssh { .. } => Err(not_implemented("ssh")),
+        Cmd::Cp { .. } => Err(not_implemented("cp")),
+        Cmd::Start { .. } => Err(not_implemented("start")),
+        Cmd::Stop { .. } => Err(not_implemented("stop")),
+        Cmd::Doctor => Err(not_implemented("doctor")),
     }
 }
 
-fn needs_a_backend(command: &str) -> Error {
+fn not_implemented(command: &str) -> Error {
     Error::new(
         ErrorKind::NotSupported,
-        format!("`devvm {command}` needs the VM backend, which this build of devvm does not have yet"),
+        format!("`devvm {command}` is not implemented yet"),
     )
 }
 

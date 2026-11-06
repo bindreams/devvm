@@ -82,6 +82,33 @@ impl QmpEndpoint {
         longest_socket_path(run) <= path_max
     }
 
+    /// The refusals of a launch that do not depend on the draw: a directory whose sockets would be over the host's
+    /// limit (`Unavailable`, naming the directory, the limit and `XDG_RUNTIME_DIR`), and one that cannot be made.
+    /// Creates `run` if it is not there. Idempotent: a launch calls it before it downloads anything, and `reserve`
+    /// calls it again.
+    pub(crate) fn prepare_run_dir(host: &dyn Host, run: &Path) -> Result<()> {
+        let max = host.socket_path_max();
+        if !QmpEndpoint::fits(run, max) {
+            let bytes = longest_socket_path(run);
+            return Err(Error::new(
+                ErrorKind::Unavailable,
+                format!(
+                    "the QEMU control socket paths in {} would be {bytes} bytes, over the {max}-byte limit of an \
+                     AF_UNIX path; set XDG_RUNTIME_DIR to a shorter directory",
+                    run.display()
+                ),
+            ));
+        }
+        host.create_runtime_dir(run).map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot use {} for QEMU's control sockets", run.display()),
+                e,
+            )
+        })?;
+        Ok(())
+    }
+
     /// Reserves the names of a launch in the runtime directory `run`, which is made if it is not there: draws
     /// `<16 hex>.sock` with the OS's random numbers, and holds the claim file `<name>.sock.hold` that it creates
     /// (`create_new`), so no two launches have one name.
@@ -105,25 +132,7 @@ impl QmpEndpoint {
         progress: &dyn Progress,
         draw: &mut dyn FnMut() -> [u8; DRAW_BYTES],
     ) -> Result<Reservation> {
-        let max = host.socket_path_max();
-        if !QmpEndpoint::fits(run, max) {
-            let bytes = longest_socket_path(run);
-            return Err(Error::new(
-                ErrorKind::Unavailable,
-                format!(
-                    "the QEMU control socket paths in {} would be {bytes} bytes, over the {max}-byte limit of an \
-                     AF_UNIX path; set XDG_RUNTIME_DIR to a shorter directory",
-                    run.display()
-                ),
-            ));
-        }
-        host.create_runtime_dir(run).map_err(|e| {
-            Error::io(
-                ErrorKind::Io,
-                format!("cannot use {} for QEMU's control sockets", run.display()),
-                e,
-            )
-        })?;
+        QmpEndpoint::prepare_run_dir(host, run)?;
         // Shared while names are drawn and claimed, so no sweep runs between a claim file's creation and its hold.
         // Released on return: the hold covers the launch from then on, and a sweep finds it `Busy`.
         // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one

@@ -5,7 +5,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
 use crate::ErrorKind;
-use crate::access::runtime::{Lazy, run, run_reporting, wait};
+use crate::access::runtime::{run, run_reporting, wait};
 use crate::test_support::callers::{MORE_THAN_THE_BUDGET, in_every_caller_context};
 use crate::test_support::fixtures::MemoryProgress;
 
@@ -77,34 +77,6 @@ fn many_progress_messages_inside_one_outer_task_arrive() {
         }
     });
     assert_eq!(progress.messages().len(), MORE_THAN_THE_BUDGET);
-}
-
-#[skuld::test]
-fn racing_first_uses_from_async_contexts_do_not_panic() {
-    const CALLERS: usize = 8;
-    let lazy = Lazy::new();
-    let start = std::sync::Barrier::new(CALLERS);
-    let addresses: Vec<usize> = std::thread::scope(|scope| {
-        let callers: Vec<_> = (0..CALLERS)
-            .map(|_| {
-                scope.spawn(|| {
-                    // Each caller is inside its own runtime, where dropping a runtime panics.
-                    tokio::runtime::Builder::new_current_thread()
-                        .build()
-                        .unwrap()
-                        .block_on(async {
-                            start.wait();
-                            std::ptr::from_ref(lazy.get().unwrap()) as usize
-                        })
-                })
-            })
-            .collect();
-        callers
-            .into_iter()
-            .map(|caller| caller.join().expect("a caller panicked"))
-            .collect()
-    });
-    assert!(addresses.windows(2).all(|pair| pair[0] == pair[1]), "{addresses:?}");
 }
 
 /// Wakes by unparking the thread, like the executor below.

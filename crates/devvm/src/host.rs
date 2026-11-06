@@ -58,7 +58,6 @@ use unix::UnixHost as Current;
 use windows::WindowsHost as Current;
 
 /// How a hypervisor is reached on this host.
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Accel {
     Whpx,

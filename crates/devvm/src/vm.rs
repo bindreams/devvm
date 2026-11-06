@@ -11,6 +11,7 @@ use crate::exit::Output;
 use crate::instance::dir::InstanceDir;
 use crate::instance::name::InstanceName;
 use crate::instance::registry::Owned;
+use crate::store::fetch::LazyHttp;
 use crate::{Command, Error, ErrorKind, Result};
 
 #[allow(
@@ -79,16 +80,13 @@ impl Instance {
     /// The instance called `name` (case-insensitive). Reaps leftovers of dead devvm processes first.
     pub fn open(name: &str) -> Result<Instance> {
         let name = InstanceName::parse(name)?;
-        let engine = Engine::from_env_stderr()?;
+        let engine = Engine::from_env_stderr(Arc::new(LazyHttp::new()))?;
         Instance::open_in(&engine, name.as_str())
     }
 
-    /// `open` in a given engine. The name is validated before anything is read or created; leftovers are reaped
-    /// first, even when the name turns out to be missing, so that every library entry point cleans up after killed
-    /// processes.
+    /// `open` in a given engine.
     pub(crate) fn open_in(engine: &Arc<Engine>, name: &str) -> Result<Instance> {
         let name = InstanceName::parse(name)?;
-        engine.reap();
         let dir = engine.registry().open(&name)?;
         Ok(Instance {
             engine: engine.clone(),

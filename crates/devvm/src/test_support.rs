@@ -19,4 +19,5 @@ pub mod refusing;
 pub mod sshd;
 pub mod stub_backend;
 pub mod symlink;
+pub mod transport;
 pub mod unix_files;
