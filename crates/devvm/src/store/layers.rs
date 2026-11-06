@@ -331,7 +331,7 @@ impl LayerStore {
                 }
                 Ok(None)
             }
-            MetaRead::Valid(meta) if meta.key != layer.key || meta.generation != layer.generation => {
+            MetaRead::Valid(meta) if !meta.is_of(layer) => {
                 self.progress.message(&format!(
                     "layer record {} names another layer; treating it as missing",
                     dir.display()

@@ -13,7 +13,6 @@ use crate::test_support::helper;
 use crate::{Dirs, Error, ErrorKind, Result};
 
 use super::cross_tests::start as start_builder;
-use super::gc::present;
 use super::layers_tests::{Env, build_expiring, days, env, key, names, t0};
 
 /// Helper process: leases generation `args[2]` of key `args[1]` in the store rooted at `args[0]`, prints `held`, and
@@ -452,12 +451,51 @@ fn gc_aborts_when_a_kept_layers_directory_is_a_file(#[fixture(unicode_home)] hom
     assert!(exists(&env, &old_parent));
 }
 
-/// A file at the generation directory is present: the record read that follows reports it unreadable and aborts.
 #[skuld::test]
-fn a_file_at_the_generation_directory_is_present(#[fixture(unicode_home)] home: &Path) {
-    let file = home.join("gen");
-    std::fs::write(&file, b"x").unwrap();
-    assert!(present(&file).unwrap());
+fn gc_aborts_when_a_kept_layers_record_cannot_be_read(#[fixture(unicode_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    let record = env.store.generation_dir(&child).join("meta.json");
+    std::fs::remove_file(&record).unwrap();
+    // A directory where the record belongs fails the read on every host; it is neither absent nor corrupt.
+    std::fs::create_dir(&record).unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(error.message().starts_with("cannot collect: "), "{error}");
+    assert!(error.message().contains("nothing was deleted"), "{error}");
+    assert_record_recovery(
+        &error,
+        &child,
+        &as_current(child.key),
+        &env.store.generation_dir(&child),
+    );
+    assert!(std::error::Error::source(&error).is_some(), "{error:?}");
+    assert!(exists(&env, &old_parent));
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_kept_layers_record_names_another_layer(#[fixture(unicode_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    // The child's directory now holds the parent's record: valid, but not the child's, so it says nothing of the
+    // child's ancestors.
+    std::fs::copy(
+        env.store.generation_dir(&old_parent).join("meta.json"),
+        env.store.generation_dir(&child).join("meta.json"),
+    )
+    .unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(error.message().starts_with("cannot collect: "), "{error}");
+    assert!(error.message().contains("names another layer"), "{error}");
+    assert!(error.message().contains("nothing was deleted"), "{error}");
+    assert_record_recovery(
+        &error,
+        &child,
+        &as_current(child.key),
+        &env.store.generation_dir(&child),
+    );
+    assert!(exists(&env, &old_parent));
 }
 
 #[skuld::test]

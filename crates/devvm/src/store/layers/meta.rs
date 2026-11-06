@@ -123,6 +123,11 @@ fn time_parse(text: &str) -> std::result::Result<SystemTime, String> {
 }
 
 impl LayerMeta {
+    /// Whether this is the record of `layer`; a copied or linked record is not.
+    pub(super) fn is_of(&self, layer: &LayerRef) -> bool {
+        self.key == layer.key && self.generation == layer.generation
+    }
+
     pub(super) fn to_json(&self) -> Result<String> {
         let wire = Wire {
             schema: SCHEMA,

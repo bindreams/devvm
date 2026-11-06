@@ -125,29 +125,36 @@ impl LayerStore {
             if !present(&dir)? {
                 continue;
             }
-            match meta::read(&dir)? {
-                MetaRead::Valid(meta) => {
+            let (why, cause) = match meta::read(&dir) {
+                Ok(MetaRead::Valid(meta)) if meta.is_of(&layer) => {
                     if let Some(parent) = meta.parent
                         && keep.insert(parent)
                     {
                         pending.push(parent);
                     }
+                    continue;
                 }
-                MetaRead::Absent | MetaRead::Corrupt(_) => {
-                    let holders = self.holders(&layer, &keep, &instance_layers)?;
-                    return Err(Error::new(
-                        ErrorKind::Store,
-                        format!(
-                            "cannot collect: the record of kept layer {} generation {} ({}) is unreadable, so its \
-                             ancestors are unknown; nothing was deleted; {}",
-                            layer.key,
-                            layer.generation,
-                            dir.display(),
-                            record_recovery(&holders, &dir)
-                        ),
-                    ));
-                }
-            }
+                // A record of another layer says nothing about this one's ancestors.
+                Ok(MetaRead::Valid(_)) => ("names another layer".to_owned(), None),
+                Ok(MetaRead::Absent | MetaRead::Corrupt(_)) => ("is unreadable".to_owned(), None),
+                Err(e) => (format!("cannot be read ({})", e.message()), Some(e)),
+            };
+            let holders = self.holders(&layer, &keep, &instance_layers)?;
+            let error = Error::new(
+                cause.as_ref().map_or(ErrorKind::Store, Error::kind),
+                format!(
+                    "cannot collect: the record of kept layer {} generation {} ({}) {why}, so its ancestors are \
+                     unknown; nothing was deleted; {}",
+                    layer.key,
+                    layer.generation,
+                    dir.display(),
+                    record_recovery(&holders, &dir)
+                ),
+            );
+            return Err(match cause {
+                Some(cause) => error.with_source(cause),
+                None => error,
+            });
         }
 
         let mut report = GcReport::default();
