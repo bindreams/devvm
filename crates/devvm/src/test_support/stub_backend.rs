@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::backend::fake::FakeStorage;
-use crate::backend::{Backend, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
+use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::{Error, ErrorKind, Result};
 
 /// What `attach` answers.
@@ -92,6 +92,10 @@ impl Backend for StubBackend {
 
     /// The stub's machines leave no files.
     fn sweep(&self, _warn: &mut dyn FnMut(String)) {}
+
+    fn checks(&self, _detail: Detail) -> Vec<Check> {
+        Vec::new()
+    }
 
     fn can_save_memory(&self) -> bool {
         false

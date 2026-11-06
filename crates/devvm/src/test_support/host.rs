@@ -1,6 +1,6 @@
 //! Hosts for the tests: one whose accelerator always works, and one that has none.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -112,6 +112,10 @@ impl Host for TestHost {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         host::current().open_entry(root, rel)
+    }
+
+    fn free_space(&self, dir: &Path) -> std::io::Result<u64> {
+        host::current().free_space(dir)
     }
 
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
@@ -256,6 +260,10 @@ impl Host for NoAccelHost {
         TestHost.open_entry(root, rel)
     }
 
+    fn free_space(&self, dir: &Path) -> std::io::Result<u64> {
+        TestHost.free_space(dir)
+    }
+
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
         TestHost.create_runtime_dir(dir)
     }
@@ -318,6 +326,8 @@ pub struct RecordingHost {
     holds_made: Mutex<Vec<PathBuf>>,
     directory_calls: Mutex<Vec<DirectoryCall>>,
     fail_sync_dir_of: Mutex<Option<PathBuf>>,
+    /// What `free_space` answers for a directory; the real host answers for any other.
+    free_space: Mutex<HashMap<PathBuf, std::result::Result<u64, String>>>,
 }
 
 /// What [`RecordingHost`] saw done to directories, in order.
@@ -401,6 +411,14 @@ impl RecordingHost {
     /// The paths given to `hold_new`, in call order.
     pub fn holds_made(&self) -> Vec<PathBuf> {
         self.holds_made.lock().unwrap().clone()
+    }
+
+    /// Makes `free_space` of exactly `dir` answer `answer`: the bytes, or the text of the failure.
+    pub fn tell_free_space(&self, dir: &Path, answer: std::result::Result<u64, &str>) {
+        self.free_space
+            .lock()
+            .unwrap()
+            .insert(dir.to_owned(), answer.map_err(str::to_owned));
     }
 
     /// Makes `is_executable` say yes for `path`.
@@ -558,6 +576,14 @@ impl Host for RecordingHost {
         TestHost.open_entry(root, rel)
     }
 
+    fn free_space(&self, dir: &Path) -> std::io::Result<u64> {
+        match self.free_space.lock().unwrap().get(dir) {
+            Some(Ok(bytes)) => Ok(*bytes),
+            Some(Err(why)) => Err(std::io::Error::other(why.clone())),
+            None => TestHost.free_space(dir),
+        }
+    }
+
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {
         TestHost.create_runtime_dir(dir)?;
         if self.remove_runtime_dirs.load(Ordering::SeqCst) {
@@ -712,6 +738,10 @@ impl Host for NoGuestReset {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {
         host::current().open_entry(root, rel)
+    }
+
+    fn free_space(&self, dir: &Path) -> std::io::Result<u64> {
+        host::current().free_space(dir)
     }
 
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {

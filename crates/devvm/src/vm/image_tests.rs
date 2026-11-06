@@ -1,17 +1,16 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use super::availability_on;
 use crate::backend::{Backend, Machine};
 use crate::engine::engine_tests::{EngineFixture, dead_machine, engine_fixture, image_of, image_with, stub_fixture};
 use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::recipe::Resources;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
-use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, TestHost};
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::Handle;
 use crate::{Command, ErrorKind, Guest, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
+use skuld::env;
 
 fn memory() -> Arc<MemoryProgress> {
     Arc::new(MemoryProgress::default())
@@ -102,21 +101,28 @@ fn guest_methods_are_not_supported_until_the_access_layer(#[fixture(unicode_home
 }
 
 #[skuld::test]
-fn availability_names_the_missing_piece() {
-    let missing = availability_on(&NoAccelHost).expect_err("this host has no hypervisor");
-    assert_eq!(missing.to_string(), NO_ACCELERATOR);
-}
+fn availability_of_an_engine_that_cannot_be_built_says_why(
+    #[fixture(env)] env: &skuld::EnvGuard,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (variable, directory) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "run"),
+    ] {
+        env.set(variable, home.join(directory).to_str().unwrap());
+    }
+    std::fs::create_dir_all(home.join("config").join("devvm")).unwrap();
+    let file = home.join("config").join("devvm").join("config.yaml");
+    std::fs::write(&file, "qemu: [not, a, mapping]").unwrap();
 
-#[skuld::test]
-fn availability_is_ok_where_an_accelerator_exists() {
-    availability_on(&TestHost).expect("the test host accelerates");
-}
+    let unavailable = availability().expect_err("an unreadable config.yaml means no engine");
 
-#[skuld::test]
-fn the_public_availability_asks_the_host_this_binary_runs_on() {
-    assert_eq!(
-        availability().map_err(|e| e.to_string()),
-        availability_on(crate::host::current()).map_err(|e| e.to_string())
+    assert!(
+        unavailable.missing.contains(&file.display().to_string()),
+        "{unavailable}"
     );
 }
 

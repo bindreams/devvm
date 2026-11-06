@@ -5,13 +5,14 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256 as Sha2};
 
-use super::{LazyInstall, ManifestEntry, QemuInstall, Source, Verify, manifest_entry, run_version};
+use super::{LazyInstall, ManifestEntry, QemuInstall, Source, Verify, configured, manifest_entry, run_version};
+use crate::backend::qemu::args::ArchFiles;
 use crate::config::Config;
 use crate::host::{self, SystemDirs};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::qemu::write_config;
-use crate::{Dirs, ErrorKind, Result, Sha256};
+use crate::{Arch, Dirs, ErrorKind, Result, Sha256};
 
 const VERSION: &str = "11.1.2";
 const URL: &str = "https://example.test/qemu.zip";
@@ -523,21 +524,32 @@ pub(crate) fn extract_and_wait(args: &[String]) {
         .unwrap();
 }
 
-fn touch(path: PathBuf) {
+pub(crate) fn touch(path: PathBuf) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, b"x").unwrap();
 }
 
-fn make_tools(dir: &Path) {
-    for tool in ["qemu-img", "qemu-system-x86_64"] {
+/// The tools a configured QEMU is required to have for `arch`.
+pub(crate) fn make_tools_for(dir: &Path, arch: Arch) {
+    for tool in ["qemu-img", ArchFiles::of(arch).system.as_str()] {
         touch(dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX)));
     }
 }
 
-fn make_firmware(dir: &Path) {
-    for name in ["edk2-x86_64-code.fd", "edk2-i386-vars.fd"] {
+/// The firmware a configured QEMU is required to have for `arch`.
+pub(crate) fn make_firmware_for(dir: &Path, arch: Arch) {
+    let files = ArchFiles::of(arch);
+    for name in [files.code.as_str(), files.vars] {
         touch(dir.join(name));
     }
+}
+
+pub(crate) fn make_tools(dir: &Path) {
+    make_tools_for(dir, Arch::host());
+}
+
+pub(crate) fn make_firmware(dir: &Path) {
+    make_firmware_for(dir, Arch::host());
 }
 
 #[skuld::test]
@@ -605,6 +617,57 @@ fn a_configured_directory_without_the_tools_is_unavailable_naming_the_tool(#[fix
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains("qemu-img"), "{error}");
+}
+
+#[skuld::test]
+fn a_configured_directory_is_accepted_for_the_arch_whose_tools_and_firmware_it_holds(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for arch in [Arch::Amd64, Arch::Arm64] {
+        let bin = home.join(arch.as_str()).join("bin");
+        make_tools_for(&bin, arch);
+        make_firmware_for(&bin.join("share"), arch);
+
+        let install = configured(&bin, arch).unwrap();
+
+        assert_eq!(install.bin, bin);
+        assert_eq!(install.share, bin.join("share"));
+    }
+}
+
+#[skuld::test]
+fn a_configured_directory_with_only_the_other_arch_tools_is_unavailable_naming_the_missing_system_emulator(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (wanted, held) in [(Arch::Amd64, Arch::Arm64), (Arch::Arm64, Arch::Amd64)] {
+        let bin = home.join(wanted.as_str()).join("bin");
+        make_tools_for(&bin, held);
+        make_firmware_for(&bin.join("share"), wanted);
+
+        let error = configured(&bin, wanted).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+        let missing = format!("{}{}", ArchFiles::of(wanted).system, std::env::consts::EXE_SUFFIX);
+        assert!(error.message().contains(&missing), "{error}");
+    }
+}
+
+#[skuld::test]
+fn a_configured_directory_with_only_the_other_arch_firmware_is_unavailable_naming_the_missing_firmware(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (wanted, held) in [(Arch::Amd64, Arch::Arm64), (Arch::Arm64, Arch::Amd64)] {
+        let bin = home.join(wanted.as_str()).join("bin");
+        make_tools_for(&bin, wanted);
+        make_firmware_for(&bin.join("share"), held);
+
+        let error = configured(&bin, wanted).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+        let files = ArchFiles::of(wanted);
+        assert!(error.message().contains(&files.code), "{error}");
+        assert!(error.message().contains(files.vars), "{error}");
+    }
 }
 
 fn fake_system_dirs() -> SystemDirs {
