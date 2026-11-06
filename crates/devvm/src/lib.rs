@@ -19,6 +19,7 @@ pub(crate) mod guest;
 pub(crate) mod host;
 #[allow(dead_code, reason = "unused until the guest operations, builds and commands land")]
 pub(crate) mod instance;
+pub(crate) mod lazy;
 pub(crate) mod media;
 pub(crate) mod random;
 pub mod recipe;

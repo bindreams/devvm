@@ -1,7 +1,6 @@
 //! The real transport: blocking HTTP over rustls, bounded only by stalls.
 
 use std::io::Read;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -10,6 +9,7 @@ use reqwest::header::{
 };
 
 use super::{ContentRange, Response, Resume, Transport};
+use crate::lazy::Lazy;
 use crate::{Error, ErrorKind, Result};
 
 /// A connection attempt, or a wait for the next bytes, that gets nothing for this long fails. There is no bound on
@@ -41,35 +41,24 @@ impl HttpTransport {
     }
 }
 
-/// An [`HttpTransport`] built on the first `get`: building one can fail and starts a client, which a command that
-/// downloads nothing must not pay for. A build failure is a `Download` error naming the URL and is not cached: the next
-/// `get` builds again.
+/// Built on the first `get`; a failed build is a `Download` error naming the URL and is not kept: the next `get`
+/// builds again.
 #[derive(Default)]
-pub struct LazyHttp(Mutex<Option<Arc<HttpTransport>>>);
+pub struct LazyHttp(Lazy<HttpTransport>);
 
 impl LazyHttp {
     pub fn new() -> LazyHttp {
         LazyHttp::default()
     }
-
-    /// The transport, built once: threads calling at the same time wait for the first. The lock is not held during a
-    /// download.
-    fn transport(&self, url: &str) -> Result<Arc<HttpTransport>> {
-        let mut built = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(transport) = &*built {
-            return Ok(transport.clone());
-        }
-        let transport = Arc::new(HttpTransport::new().map_err(|e| {
-            Error::new(ErrorKind::Download, format!("cannot download {url}: {}", e.message())).with_source(e)
-        })?);
-        *built = Some(transport.clone());
-        Ok(transport)
-    }
 }
 
 impl Transport for LazyHttp {
     fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
-        self.transport(url)?.get(url, resume)
+        self.0
+            .get(|| {
+                HttpTransport::new().map_err(|e| e.with_context(ErrorKind::Download, format!("cannot fetch {url}")))
+            })?
+            .get(url, resume)
     }
 }
 

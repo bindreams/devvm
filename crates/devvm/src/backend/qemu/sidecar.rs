@@ -10,13 +10,14 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use serde::Deserialize;
 
 use crate::config::Config;
 use crate::exit::Progress;
 use crate::host::{Host, SystemDirs};
+use crate::lazy::Lazy;
 use crate::store::fetch::{Artifact, Fetcher};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Dirs, Error, ErrorKind, Result, Sha256};
@@ -452,7 +453,7 @@ fn extract(zip: &Path, dest: &Path) -> Result<()> {
 /// Resolves the install on first use, so nothing downloads until a command needs a QEMU tool or the firmware.
 pub(crate) struct LazyInstall {
     source: Source,
-    resolved: Mutex<Option<Arc<QemuInstall>>>,
+    resolved: Lazy<Arc<QemuInstall>>,
 }
 
 impl LazyInstall {
@@ -476,24 +477,18 @@ impl LazyInstall {
     pub(crate) fn from_source(source: Source) -> LazyInstall {
         LazyInstall {
             source,
-            resolved: Mutex::new(None),
+            resolved: Lazy::new(),
         }
     }
 
-    /// The install, resolved once: threads calling at the same time wait for the first. A failure is not cached.
+    /// The install, resolved once. A failure is not cached.
     pub(crate) fn get(&self) -> Result<Arc<QemuInstall>> {
-        let mut resolved = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(install) = &*resolved {
-            return Ok(install.clone());
-        }
-        let install = Arc::new(self.source.resolve()?);
-        *resolved = Some(install.clone());
-        Ok(install)
+        self.resolved.get(|| Ok(Arc::new(self.source.resolve()?))).cloned()
     }
 
-    /// The install if it is already there; never downloads.
+    /// The install if it is already there; never downloads, and does not wait for a download in progress.
     pub(crate) fn existing(&self) -> Result<Option<Arc<QemuInstall>>> {
-        if let Some(install) = &*self.resolved.lock().unwrap_or_else(PoisonError::into_inner) {
+        if let Some(install) = self.resolved.built() {
             return Ok(Some(install.clone()));
         }
         Ok(self.source.existing()?.map(Arc::new))

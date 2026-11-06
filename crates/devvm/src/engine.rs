@@ -2,7 +2,7 @@
 //! registry), created once per process.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::backend::qemu::{QemuParts, qemu_parts};
@@ -15,6 +15,7 @@ use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{MarkerRead, Owner};
 use crate::instance::registry::Registry;
+use crate::lazy::Lazy;
 use crate::store::fetch::{Fetcher, Transport};
 use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
@@ -82,7 +83,7 @@ pub struct Engine {
     hooks: Arc<dyn LaunchHooks>,
     boot_bound: Duration,
     registry: Registry,
-    store: OnceLock<LayerStore>,
+    store: Lazy<LayerStore>,
 }
 
 impl Engine {
@@ -127,7 +128,7 @@ impl Engine {
             hooks: parts.hooks,
             boot_bound: parts.boot_bound,
             registry,
-            store: OnceLock::new(),
+            store: Lazy::new(),
         })
     }
 
@@ -137,8 +138,9 @@ impl Engine {
     }
 
     /// Removes instances whose owner is gone and finishes half-done removals. Never fails: what it cannot do is
-    /// reported as a warning on the progress channel and retried by the next call. `from_env` calls it once; call it
-    /// again for a pass in a long-lived process.
+    /// reported as a warning on the progress channel and retried by the next call. Until a reap, a name that a dead
+    /// process half-created answers "already exists". `from_env` calls it once; call it again for a pass in a
+    /// long-lived process.
     pub fn reap(&self) {
         self.registry.reap();
     }
@@ -270,11 +272,8 @@ impl Engine {
 
     /// The layer store, opened on first use (opening creates its directories).
     pub(crate) fn store(&self) -> Result<&LayerStore> {
-        if let Some(store) = self.store.get() {
-            return Ok(store);
-        }
-        let opened = LayerStore::open(&self.dirs, self.clock.clone(), self.progress.clone())?;
-        Ok(self.store.get_or_init(|| opened))
+        self.store
+            .get(|| LayerStore::open(&self.dirs, self.clock.clone(), self.progress.clone()))
     }
 }
 
