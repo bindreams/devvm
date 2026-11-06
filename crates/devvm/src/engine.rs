@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::backend::{Backend, MachineRecord};
-use crate::config::Config;
 use crate::exit::{Progress, StderrProgress};
 use crate::guest::Guests;
 use crate::host::{self, Host};
@@ -93,13 +92,13 @@ impl Engine {
     /// `config.yaml` fails here, naming the file.
     pub fn from_env(progress: Arc<dyn Progress>, transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
         let dirs = Dirs::from_env()?;
-        let config = Config::load(&dirs);
         let host = host::current();
         let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport, progress.clone()));
-        // The reap reads nothing from the config: only a launch, a disk or a layer commit resolves the QEMU install. A
-        // config that did not load fails the call after the reap; the engine is not returned.
-        let reap_config = config.clone().unwrap_or_default();
-        let QemuParts { backend, guests } = qemu_parts(&dirs, reap_config, fetcher, host, progress.clone());
+        let QemuParts {
+            backend,
+            guests,
+            install,
+        } = qemu_parts(&dirs, fetcher, host, progress.clone());
         let engine = Engine::with_parts(EngineParts {
             dirs,
             host,
@@ -110,8 +109,10 @@ impl Engine {
             hooks: Arc::new(NoHooks),
             boot_bound: DEFAULT_BOOT_BOUND,
         });
+        // Nothing the reap does resolves the install (see `qemu_parts`), so it reads no config; a config that cannot be
+        // read fails the call after the reap, and the engine is not returned.
         engine.reap();
-        config.map(|_| engine)
+        install.config().map(|_| engine)
     }
 
     /// `from_env` reporting progress on stderr.

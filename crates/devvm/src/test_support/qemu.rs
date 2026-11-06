@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::backend::qemu::args::escape_option_value;
 use crate::backend::qemu::backend::QemuBackend;
 use crate::backend::qemu::qmp::{QmpEndpoint, Reservation};
-use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
+use crate::backend::qemu::sidecar::{ConfigLoad, LazyInstall, QemuInstall};
 use crate::backend::qemu::storage::QemuStorage;
 use crate::backend::{FileClaim, Storage};
 use crate::config::Config;
@@ -32,6 +32,11 @@ mod qemu_tests;
 /// pinned build.
 pub const QEMU_DIR_VAR: &str = "DEVVM_TEST_QEMU_DIR";
 
+/// A config loader that answers `config`.
+pub fn fixed_config(config: Config) -> ConfigLoad {
+    Arc::new(move || Ok(config.clone()))
+}
+
 /// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `vm_group::OPT_OUT`.
 #[skuld::fixture(scope = process)]
 pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInstall>, String> {
@@ -42,7 +47,7 @@ pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInsta
     let transport = HttpTransport::new().map_err(|e| format!("cannot build the HTTP client: {e}"))?;
     let progress = Arc::new(StderrProgress);
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
-    LazyInstall::new(dirs, config, fetcher, progress, host::current())
+    LazyInstall::new(dirs, fixed_config(config), fetcher, progress, host::current())
         .get()
         .map_err(|e| {
             format!(
@@ -305,7 +310,13 @@ pub fn lazy_at(bin: &Path) -> Arc<LazyInstall> {
     let config = Config {
         qemu_path: Some(bin.to_path_buf()),
     };
-    Arc::new(LazyInstall::new(dirs, config, fetcher, progress, host::current()))
+    Arc::new(LazyInstall::new(
+        dirs,
+        fixed_config(config),
+        fetcher,
+        progress,
+        host::current(),
+    ))
 }
 
 /// A QEMU backend that reserves and sweeps in `run` and has no QEMU to launch.

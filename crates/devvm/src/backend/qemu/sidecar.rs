@@ -165,10 +165,15 @@ fn run_version(host: &dyn Host, install: &QemuInstall, name: &str) -> Result<Str
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Where an install comes from: the configuration, or the manifest's pinned build.
+/// Reads the user's configuration.
+pub(crate) type ConfigLoad = Arc<dyn Fn() -> Result<Config> + Send + Sync>;
+
+/// Where an install comes from: the configuration, or the manifest's pinned build. The configuration is read by the
+/// first use that needs it.
 pub(crate) struct Source {
     dirs: Dirs,
-    config: Config,
+    config: Lazy<Config>,
+    load_config: ConfigLoad,
     fetcher: Arc<Fetcher>,
     progress: Arc<dyn Progress>,
     entry: Result<ManifestEntry>,
@@ -178,7 +183,7 @@ pub(crate) struct Source {
 impl Source {
     pub(crate) fn new(
         dirs: Dirs,
-        config: Config,
+        load_config: ConfigLoad,
         fetcher: Arc<Fetcher>,
         progress: Arc<dyn Progress>,
         entry: Result<ManifestEntry>,
@@ -186,12 +191,18 @@ impl Source {
     ) -> Source {
         Source {
             dirs,
-            config,
+            config: Lazy::new(),
+            load_config,
             fetcher,
             progress,
             entry,
             verify,
         }
+    }
+
+    /// The configuration, loaded by the first call that succeeds.
+    pub(crate) fn config(&self) -> Result<&Config> {
+        self.config.get(|| (self.load_config)())
     }
 
     fn entry(&self) -> Result<&ManifestEntry> {
@@ -218,7 +229,7 @@ impl Source {
 
     /// The install, downloading and extracting it first if it is not in the cache.
     pub(crate) fn resolve(&self) -> Result<QemuInstall> {
-        match &self.config.qemu_path {
+        match &self.config()?.qemu_path {
             Some(dir) => configured(dir),
             None => self.download(),
         }
@@ -226,7 +237,7 @@ impl Source {
 
     /// The install if it is already there; never downloads.
     pub(crate) fn existing(&self) -> Result<Option<QemuInstall>> {
-        if let Some(dir) = &self.config.qemu_path {
+        if let Some(dir) = &self.config()?.qemu_path {
             return configured(dir).map(Some);
         }
         let entry = self.entry()?;
@@ -459,14 +470,14 @@ pub(crate) struct LazyInstall {
 impl LazyInstall {
     pub(crate) fn new(
         dirs: Dirs,
-        config: Config,
+        load_config: ConfigLoad,
         fetcher: Arc<Fetcher>,
         progress: Arc<dyn Progress>,
         host: &'static dyn Host,
     ) -> LazyInstall {
         LazyInstall::from_source(Source::new(
             dirs,
-            config,
+            load_config,
             fetcher,
             progress,
             manifest_entry(crate::TARGET),
@@ -479,6 +490,11 @@ impl LazyInstall {
             source,
             resolved: Lazy::new(),
         }
+    }
+
+    /// The configuration the install is resolved from, loaded by the first call that succeeds.
+    pub(crate) fn config(&self) -> Result<&Config> {
+        self.source.config()
     }
 
     /// The install, resolved once. A failure is not cached.

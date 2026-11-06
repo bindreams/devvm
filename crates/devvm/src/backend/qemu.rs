@@ -31,22 +31,25 @@ mod qemu_tests;
 pub(crate) struct QemuParts {
     pub backend: Arc<QemuBackend>,
     pub guests: Arc<LinuxGuests>,
+    /// The install both of them resolve from.
+    pub install: Arc<LazyInstall>,
 }
 
 /// The QEMU backend and the Linux guest over one `LazyInstall` and one `QemuStorage`, which the guest's builder reaches
 /// through `Storage::import_base`. Nothing is resolved, downloaded or created here: only a launch, a disk, a layer
-/// commit or a base import resolve the install, so `ls`, `rm` and `stop` work offline. On a host with no manifest entry
-/// the parts still build, and the first use that needs QEMU fails naming the triple.
+/// commit or a base import resolve the install, so `ls`, `rm` and `stop` work offline. Only those uses, and the engine's check
+/// that the file is readable, read `config.yaml`, through `install.config()`. On a host with no manifest entry the parts still build, and the first
+/// use that needs QEMU fails naming the triple.
 pub(crate) fn qemu_parts(
     dirs: &Dirs,
-    config: Config,
     fetcher: Arc<Fetcher>,
     host: &'static dyn Host,
     progress: Arc<dyn Progress>,
 ) -> QemuParts {
+    let config_dirs = dirs.clone();
     let install = Arc::new(LazyInstall::new(
         dirs.clone(),
-        config,
+        Arc::new(move || Config::load(&config_dirs)),
         fetcher.clone(),
         progress.clone(),
         host,
@@ -55,13 +58,14 @@ pub(crate) fn qemu_parts(
     let builder = Arc::new(LinuxBuilder::new(fetcher, storage.clone()));
     QemuParts {
         backend: Arc::new(QemuBackend::new(
-            install,
+            install.clone(),
             storage,
             host,
             dirs.run().map(Path::to_path_buf),
             progress,
         )),
         guests: Arc::new(LinuxGuests::new(builder)),
+        install,
     }
 }
 

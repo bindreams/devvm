@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256 as Sha2};
 
-use super::{LazyInstall, ManifestEntry, QemuInstall, Source, Verify, manifest_entry, run_version};
+use super::{ConfigLoad, LazyInstall, ManifestEntry, QemuInstall, Source, Verify, manifest_entry, run_version};
 use crate::config::Config;
 use crate::host::{self, SystemDirs};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
+use crate::test_support::qemu::fixed_config;
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
 const VERSION: &str = "11.1.2";
@@ -126,7 +127,7 @@ fn world_with(home: &Path, served: Vec<u8>, pinned: Sha256, asked: Arc<Mutex<Vec
     };
     let source = Source::new(
         dirs.clone(),
-        Config::default(),
+        fixed_config(Config::default()),
         fetcher.clone(),
         progress.clone(),
         Ok(entry.clone()),
@@ -148,7 +149,7 @@ impl World {
     fn source_with(&self, config: Config, verify: Verify) -> Source {
         Source::new(
             self.dirs.clone(),
-            config,
+            fixed_config(config),
             self.fetcher.clone(),
             self.progress.clone(),
             Ok(self.entry.clone()),
@@ -518,9 +519,16 @@ pub(crate) fn extract_and_wait(args: &[String]) {
         let _ = std::io::stdin().read_to_end(&mut sink);
         Ok(format!("QEMU emulator version {VERSION}"))
     });
-    Source::new(dirs, Config::default(), fetcher, progress, Ok(entry), verify)
-        .resolve()
-        .unwrap();
+    Source::new(
+        dirs,
+        fixed_config(Config::default()),
+        fetcher,
+        progress,
+        Ok(entry),
+        verify,
+    )
+    .resolve()
+    .unwrap();
 }
 
 fn touch(path: PathBuf) {
@@ -716,7 +724,7 @@ fn an_unknown_triple_fails_at_get_naming_it_and_downloads_nothing(#[fixture(unic
     let world = world(home, zip_of(&files()));
     let source = Source::new(
         world.dirs.clone(),
-        Config::default(),
+        fixed_config(Config::default()),
         world.fetcher.clone(),
         world.progress.clone(),
         manifest_entry("riscv64-unknown-plan9"),
@@ -803,4 +811,42 @@ fn the_version_check_runs_a_tool_with_exactly_qemus_environment_in_an_empty_dire
         std::env::current_dir().unwrap(),
         "the caller's directory"
     );
+}
+
+#[skuld::test]
+fn the_config_is_loaded_once_on_first_use_and_a_failed_load_is_not_kept(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let loads = Arc::new(AtomicUsize::new(0));
+    let fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let load: ConfigLoad = {
+        let (loads, fail) = (loads.clone(), fail.clone());
+        Arc::new(move || {
+            loads.fetch_add(1, Ordering::SeqCst);
+            if fail.load(Ordering::SeqCst) {
+                Err(crate::Error::new(ErrorKind::Config, "unreadable config"))
+            } else {
+                Ok(Config::default())
+            }
+        })
+    };
+    let source = Source::new(
+        world.dirs.clone(),
+        load,
+        world.fetcher.clone(),
+        world.progress.clone(),
+        Ok(world.entry.clone()),
+        verified(&world.asked),
+    );
+    assert_eq!(loads.load(Ordering::SeqCst), 0, "nothing loads at construction");
+
+    for _ in 0..2 {
+        assert_eq!(source.existing().unwrap_err().kind(), ErrorKind::Config);
+    }
+    assert_eq!(loads.load(Ordering::SeqCst), 2, "a failed load is tried again");
+
+    fail.store(false, Ordering::SeqCst);
+    for _ in 0..2 {
+        assert!(source.existing().unwrap().is_none());
+    }
+    assert_eq!(loads.load(Ordering::SeqCst), 3, "a loaded config is kept");
 }

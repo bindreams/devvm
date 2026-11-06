@@ -9,7 +9,7 @@ use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, ListFi
 use crate::exit::Progress;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
-use crate::host::Host;
+use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, write_marker};
@@ -533,5 +533,8 @@ fn from_env_reaps_before_it_fails_on_an_unreadable_config(
     };
 
     assert_eq!(error.kind(), ErrorKind::Config);
-    assert!(!leftover.exists(), "the reap ran before the config failed");
+    assert!(
+        host::symlink_metadata_if_present(&leftover).unwrap().is_none(),
+        "the reap ran before the config failed"
+    );
 }

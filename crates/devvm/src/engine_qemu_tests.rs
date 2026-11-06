@@ -7,7 +7,6 @@ use std::sync::Arc;
 use crate::backend::fake::fake_spec;
 use crate::backend::qemu::sidecar::manifest_entry;
 use crate::backend::qemu::{QemuParts, qemu_parts};
-use crate::config::Config;
 use crate::contain::Lifetime;
 use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_with, instance_in, memory};
 use crate::engine::{Engine, ListFilter};
@@ -44,7 +43,7 @@ impl QemuEngine {
         instance_in(&state, "foo", home);
         let (transport, progress) = (Arc::new(RefusingTransport::default()), memory());
         let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), progress.clone()));
-        let QemuParts { backend, guests } = qemu_parts(&dirs, Config::default(), fetcher, &TestHost, progress.clone());
+        let QemuParts { backend, guests, .. } = qemu_parts(&dirs, fetcher, &TestHost, progress.clone());
         let engine = engine_with(dirs.clone(), &TestHost, Some(backend), guests, progress.clone());
         QemuEngine {
             engine,
