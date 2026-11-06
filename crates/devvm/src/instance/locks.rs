@@ -21,7 +21,9 @@
 //! - `dead.lock`: held by whoever deletes a tree devvm owns (the contents of a `.dead-<id>` or `.new-<id>` directory),
 //!   so that two processes never delete one tree at once. `rm` waits for it (it promises its tree is gone); the reaper
 //!   only tries it, since it runs again. Its holders only delete and wait for nothing. The one exception: a creator
-//!   deletes its own half-built `.new-<id>` under its owner lock, which the reaper must take before it deletes one.
+//!   deletes its own half-built `.new-<id>` under its owner lock, not `dead.lock`. The reaper deletes a `.new-<id>`
+//!   holding that owner lock, or with no owner lock file at all: a creator holds its lock file from before it makes
+//!   the directory until it is done with it and unlinks the file, so no file means no creator.
 //!
 //! Nothing but a holder of the owner lock (or, in `destroy`, of the op lock) unlinks a lock file. A process that
 //! opened a lock file before it was unlinked can still lock it, and then holds a lock on a file nobody else will ever

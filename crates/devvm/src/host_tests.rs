@@ -658,17 +658,18 @@ fn comparing_a_file_id_with_a_look_at_a_name_says_same_different_or_absent() {
     let other = FileId { volume: 1, file: 3 };
     assert_eq!(id.compare(Ok(id)).unwrap(), Comparison::Same);
     assert_eq!(id.compare(Ok(other)).unwrap(), Comparison::Different);
-    for kind in [
-        std::io::ErrorKind::NotFound,
-        std::io::ErrorKind::NotADirectory,
-        std::io::ErrorKind::InvalidFilename,
-    ] {
+    for kind in [std::io::ErrorKind::NotFound, std::io::ErrorKind::NotADirectory] {
         assert_eq!(id.compare(Err(kind.into())).unwrap(), Comparison::Absent, "{kind:?}");
     }
-    let error = id
-        .compare(Err(std::io::ErrorKind::PermissionDenied.into()))
-        .expect_err("a look that failed is no answer");
-    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::InvalidFilename,
+    ] {
+        let error = id
+            .compare(Err(kind.into()))
+            .expect_err("a look that failed is no answer");
+        assert_eq!(error.kind(), kind);
+    }
 }
 
 #[skuld::test]

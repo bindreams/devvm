@@ -240,6 +240,14 @@ pub(crate) trait Host: Send + Sync {
     /// cannot hold, is [`Entry::Absent`]. A link above the last name is not looked for; the caller checks the
     /// directories. Fails with `Unsupported` where a host has no such look.
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
+
+    /// Whether `error`, of kind `NotFound` or `InvalidFilename`, says the name is not there rather than that the look
+    /// failed; the host part of [`is_absent`]. The default reads `NotFound` as not there and `InvalidFilename` (a name
+    /// too long) as a failure. Windows reads the OS code: an unreachable share is `NotFound` for `std` and a name
+    /// that cannot exist and a path too long are both `InvalidFilename`.
+    fn says_not_there(&self, error: &std::io::Error) -> bool {
+        error.kind() == std::io::ErrorKind::NotFound
+    }
 }
 
 /// Creates `path` with `options` and writes `bytes`, which are on disk when it returns. A file whose write failed is
@@ -267,8 +275,9 @@ pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
 /// would stay. Any error of the delete is the answer.
 ///
 /// Another deleter or a creator of the name is not guarded against; the caller excludes them. For `.dead-` and `.new-`
-/// trees that is `dead.lock` (`rm`, the reaper) and, for a `.new-` tree, the owner lock (its creator holds it, and the
-/// reaper takes it before deleting); for `qemu-cwd` it is the op lock.
+/// trees that is `dead.lock` (`rm`, the reaper). A `.new-` tree also has a creator: it builds and deletes the tree
+/// under its owner lock, and the reaper deletes one only while it holds that lock or the lock file is gone, which a
+/// creator never lets happen before it is done. For `qemu-cwd` it is the op lock.
 pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
     match symlink_metadata_if_present(path)? {
         None => Ok(()),

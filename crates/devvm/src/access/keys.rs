@@ -6,7 +6,7 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::host::{Host, symlink_metadata_if_present};
+use crate::host::{Host, is_absent, symlink_metadata_if_present};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -65,16 +65,18 @@ fn sweep_temporaries(parent: &Path) -> Result<Vec<String>> {
     Ok(warnings)
 }
 
-/// Whether a failed `remove_dir` means the directory is not an empty dead claim, so `publish_dir` is left to refuse it.
-/// POSIX lets `rmdir` of a non-empty directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`.
-fn is_not_a_dead_claim(kind: std::io::ErrorKind) -> bool {
-    matches!(
-        kind,
-        std::io::ErrorKind::DirectoryNotEmpty
-            | std::io::ErrorKind::AlreadyExists
-            | std::io::ErrorKind::NotFound
-            | std::io::ErrorKind::NotADirectory
-    )
+/// Whether a failed `remove_dir` means the directory is not an empty dead claim, so `publish_dir` is left to refuse it:
+/// the name is gone ([`is_absent`]), is a file now (`NotADirectory`, whatever `is_absent` says of it), or has
+/// something in it. POSIX lets `rmdir` of a non-empty directory fail with `EEXIST` (`AlreadyExists`) as well as
+/// `ENOTEMPTY`.
+fn is_not_a_dead_claim(e: &std::io::Error) -> bool {
+    is_absent(e)
+        || matches!(
+            e.kind(),
+            std::io::ErrorKind::DirectoryNotEmpty
+                | std::io::ErrorKind::AlreadyExists
+                | std::io::ErrorKind::NotADirectory
+        )
 }
 
 /// Removes the empty directory at `dir`. A writer killed between the two steps of `claim_then_rename` leaves one on a
@@ -88,7 +90,7 @@ fn clear_dead_claim(dir: &Path) -> Result<()> {
         return Ok(());
     }
     match std::fs::remove_dir(dir) {
-        Err(e) if !is_not_a_dead_claim(e.kind()) => Err(Error::io(
+        Err(e) if !is_not_a_dead_claim(&e) => Err(Error::io(
             ErrorKind::Io,
             format!("cannot remove the empty directory {}", dir.display()),
             e,

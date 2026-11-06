@@ -126,7 +126,7 @@ impl Registry {
 fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &Path) -> Moved {
     match symlink_metadata_if_present(path) {
         Ok(None) => return Moved::Vanished,
-        // A file where the directory was: the directory is gone.
+        // Anything but a directory where the directory was (a file, a link): the directory is gone.
         Ok(Some(meta)) if !meta.is_dir() => return Moved::Vanished,
         Ok(Some(_)) => {}
         Err(e) => return Moved::Failed(e),

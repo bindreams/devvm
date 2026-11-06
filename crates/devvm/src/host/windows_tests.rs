@@ -410,3 +410,47 @@ fn remove_tree_deletes_a_junction_at_the_root_and_leaves_its_target(#[fixture(un
     assert!(std::fs::symlink_metadata(&link).is_err());
     assert!(target.join("kept").is_file());
 }
+
+/// The codes `std` reads as `NotFound` or `InvalidFilename`, told by whether they say the name is not there. An
+/// unreachable share and a path too long for Windows exist or may exist; the lookup failed.
+#[skuld::test]
+fn only_the_windows_codes_that_say_the_name_is_not_there_are_absent() {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_BAD_NET_NAME, ERROR_BAD_NETPATH, ERROR_BAD_PATHNAME, ERROR_DIRECTORY,
+        ERROR_FILE_NOT_FOUND, ERROR_FILENAME_EXCED_RANGE, ERROR_HOST_UNREACHABLE, ERROR_INVALID_DRIVE,
+        ERROR_INVALID_NAME, ERROR_NETWORK_UNREACHABLE, ERROR_PATH_NOT_FOUND,
+    };
+    for code in [
+        ERROR_FILE_NOT_FOUND,
+        ERROR_PATH_NOT_FOUND,
+        ERROR_INVALID_DRIVE,
+        ERROR_DIRECTORY,
+        ERROR_INVALID_NAME,
+    ] {
+        let error = std::io::Error::from_raw_os_error(code as i32);
+        assert!(crate::host::is_absent(&error), "{error}");
+    }
+    for code in [
+        ERROR_BAD_NETPATH,
+        ERROR_BAD_NET_NAME,
+        ERROR_FILENAME_EXCED_RANGE,
+        ERROR_BAD_PATHNAME,
+        ERROR_ACCESS_DENIED,
+        ERROR_HOST_UNREACHABLE,
+        ERROR_NETWORK_UNREACHABLE,
+    ] {
+        let error = std::io::Error::from_raw_os_error(code as i32);
+        assert!(!crate::host::is_absent(&error), "{error}");
+    }
+}
+
+/// A path longer than Windows allows is looked up and fails; it is not reported as not there.
+#[skuld::test]
+fn a_path_too_long_for_windows_is_an_error_not_an_absent_path(#[fixture(unicode_home)] home: &Path) {
+    let mut path = home.to_path_buf();
+    while path.as_os_str().len() < 40_000 {
+        path.push("x".repeat(200));
+    }
+    let error = crate::host::symlink_metadata_if_present(&path).expect_err("a path of 40000 units cannot be looked at");
+    assert!(!crate::host::is_absent(&error), "{error}");
+}

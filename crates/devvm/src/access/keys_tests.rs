@@ -283,12 +283,17 @@ fn debug_output_of_the_keys_does_not_hold_a_private_key() {
 /// means a dead claim, so `publish_dir` must be the one to refuse it. Nor does a name that became a file (`NotADirectory`).
 #[skuld::test]
 fn a_remove_failure_that_means_the_directory_is_not_empty_leaves_it_to_publish_dir() {
-    use std::io::ErrorKind::{AlreadyExists, DirectoryNotEmpty, NotADirectory, NotFound, PermissionDenied};
+    use std::io::ErrorKind::{
+        AlreadyExists, DirectoryNotEmpty, InvalidFilename, NotADirectory, NotFound, PermissionDenied,
+    };
     for kind in [DirectoryNotEmpty, AlreadyExists, NotFound, NotADirectory] {
-        assert!(super::is_not_a_dead_claim(kind), "{kind:?}");
+        assert!(super::is_not_a_dead_claim(&kind.into()), "{kind:?}");
     }
-    assert!(
-        !super::is_not_a_dead_claim(PermissionDenied),
-        "an empty directory that cannot be removed is an error"
-    );
+    // A name too long to look up is a failed look, not a name that is gone.
+    for kind in [PermissionDenied, InvalidFilename] {
+        assert!(
+            !super::is_not_a_dead_claim(&kind.into()),
+            "{kind:?}: an empty directory that cannot be removed is an error"
+        );
+    }
 }
