@@ -90,6 +90,24 @@ fn a_vanished_path_is_success_with_no_warning(#[fixture(unicode_home)] home: &Pa
     assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
 }
 
+#[skuld::test]
+fn a_path_that_cannot_be_looked_at_is_a_warning_not_a_vanished_path(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    // No file system can look at a name with a NUL in it: the look fails, and says nothing about the path.
+    let path = fx.env.dirs.instances().join("foo\0");
+    let mut report = ReapReport::default();
+
+    fx.registry.quarantine("foo", &path, None, "stale", &mut report);
+
+    assert!(report.quarantined.is_empty(), "{report:?}");
+    assert_eq!(report.warnings.len(), 1, "{report:?}");
+    assert!(
+        report.warnings[0].contains("cannot move unreadable instance foo")
+            && report.warnings[0].contains("the next devvm command retries"),
+        "{report:?}"
+    );
+}
+
 fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {

@@ -18,9 +18,9 @@
 //!   an instance and nothing deletes it. A reader looks at the directory or lock file it will read under it, except
 //!   for the first look when `instances.dir` is missing (see [`Locks::reading`]), and puts `instances.dir` back if
 //!   what it reads exists without it.
-//! - `dead.lock`: held by whoever deletes the contents of a `.dead-<id>` directory, so that two processes never delete
-//!   one tree at once. `rm` waits for it (it promises its tree is gone); the reaper only tries it, since it runs again.
-//!   Its holders only delete and wait for nothing.
+//! - `dead.lock`: held by whoever deletes a tree devvm owns (the contents of a `.dead-<id>` or `.new-<id>` directory),
+//!   so that two processes never delete one tree at once. `rm` waits for it (it promises its tree is gone); the reaper
+//!   only tries it, since it runs again. Its holders only delete and wait for nothing.
 //!
 //! Nothing but a holder of the owner lock (or, in `destroy`, of the op lock) unlinks a lock file. A process that
 //! opened a lock file before it was unlinked can still lock it, and then holds a lock on a file nobody else will ever
@@ -155,9 +155,9 @@ impl Locks {
         Ok(f())
     }
 
-    /// Runs `f`, which deletes the contents of a `.dead-<id>` directory, unless another process is deleting one: then
-    /// `None`, and the next devvm command's reaper covers this tree. Never waits. `f` must not take or wait for any
-    /// other lock. The reaper uses this, since it has other work and runs again.
+    /// Runs `f`, which deletes a tree devvm owns (a `.dead-<id>` or `.new-<id>` directory), unless another process is
+    /// deleting one: then `None`, and the next devvm command's reaper covers this tree. Never waits. `f` must not take
+    /// or wait for any other lock. The reaper uses this, since it has other work and runs again.
     ///
     /// Two processes deleting one tree make each other fail on Windows, and a lock on the tree's instance cannot
     /// serialize them: its lock files are unlinked at the end of `rm`, and a file that is being unlinked cannot be

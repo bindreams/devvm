@@ -164,6 +164,37 @@ fn create_on_a_taken_name_fails_and_leaves_it_untouched(#[fixture(unicode_home)]
 }
 
 #[skuld::test]
+fn create_on_a_name_held_by_an_empty_directory_or_a_file_fails_and_keeps_it(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    std::fs::create_dir_all(instances(&fx)).unwrap();
+    let empty = instances(&fx).join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let file = instances(&fx).join("file");
+    std::fs::write(&file, "mine").unwrap();
+
+    for name in ["empty", "file"] {
+        let guard = fx.env.store.begin_record().unwrap();
+        let error = fx
+            .registry
+            .create(new_instance(&fx, Some(name), &TestStorage { fail: false }), &guard)
+            .err()
+            .expect("the name is taken");
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{name}: {error}");
+    }
+    assert_eq!(
+        std::fs::read_dir(&empty).unwrap().count(),
+        0,
+        "the empty directory is not replaced"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "mine",
+        "the file is not replaced"
+    );
+    assert_eq!(names(&instances(&fx)), ["empty", "file"], "no .new-* directory is left");
+}
+
+#[skuld::test]
 fn concurrent_creates_of_one_name_have_exactly_one_winner(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let (parked, at_rename) = mpsc::channel::<()>();

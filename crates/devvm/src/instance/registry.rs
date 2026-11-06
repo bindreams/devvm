@@ -323,7 +323,7 @@ impl Registry {
             // Placed while no one reads inside any instance directory, like every other rename of one.
             let placed = self
                 .locks
-                .excluding_readers(&mut seams.before_wait, || place(temp, &target))?;
+                .excluding_readers(&mut seams.before_wait, || place(self.host, temp, &target))?;
             (seams.after_rename)();
             match placed {
                 Placement::Placed => return Ok(self.handle(id, name)),
@@ -351,12 +351,12 @@ enum Placement {
     Failed(std::io::Error),
 }
 
-/// Renames `temp` to `target` and, when that fails, tells a taken name from any other failure. Runs while no one
-/// renames an instance directory, so no `rm` can free the name between the failure and the look.
-fn place(temp: &std::path::Path, target: &std::path::Path) -> Placement {
-    match std::fs::rename(temp, target) {
+/// Publishes `temp` at `target`, which nothing may have: anything there, even an empty directory or a file, is
+/// `AlreadyExists` and the name is taken ([`Host::publish_dir`]); any other failure is not.
+fn place(host: &dyn Host, temp: &std::path::Path, target: &std::path::Path) -> Placement {
+    match host.publish_dir(temp, target) {
         Ok(()) => Placement::Placed,
-        Err(e) if target.exists() => Placement::Taken(e),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Placement::Taken(e),
         Err(e) => Placement::Failed(e),
     }
 }

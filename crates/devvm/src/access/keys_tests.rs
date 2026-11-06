@@ -244,6 +244,25 @@ fn a_directory_with_anything_in_it_at_the_final_path_is_never_replaced(#[fixture
 }
 
 #[skuld::test]
+fn a_file_at_the_final_path_is_never_replaced(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("keys");
+    std::fs::write(&dir, "mine").unwrap();
+    let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert_eq!(std::fs::read_to_string(&dir).unwrap(), "mine");
+    assert!(temporary_directories(home).is_empty());
+}
+
+#[skuld::test]
+fn a_final_path_that_cannot_be_looked_at_is_an_error_naming_the_look(#[fixture(unicode_home)] home: &Path) {
+    // No file system can look at a name with a NUL in it: the look fails, and says nothing about what is there.
+    let dir = home.join("keys\0");
+    let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
+    assert!(error.message().starts_with("cannot look at"), "{error}");
+    assert!(temporary_directories(home).is_empty());
+}
+
+#[skuld::test]
 fn debug_output_of_the_keys_does_not_hold_a_private_key() {
     let keys = InstanceKeys {
         client_private: SecretString::from("CLIENT-PRIVATE-KEY-TEXT"),

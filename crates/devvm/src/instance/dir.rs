@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::backend::MachineRecord;
 use crate::exit::Progress;
-use crate::host::Host;
+use crate::host::{Host, is_absent};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
@@ -263,11 +263,11 @@ impl InstanceDir {
     }
 }
 
-/// Deletes `path` and everything under it. A tree that is gone afterwards is success, even when the error came from
-/// a process outside devvm deleting it at the same time.
+/// Deletes `path` and everything under it; a tree that is not there ([`is_absent`]) is deleted, since the deletion
+/// that waited for `dead.lock` may have been done by the one that held it. Any other error is the answer.
 pub(super) fn remove_tree(path: &std::path::Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(path) {
-        Err(_) if !path.exists() => Ok(()),
+        Err(e) if is_absent(&e) => Ok(()),
         other => other,
     }
 }

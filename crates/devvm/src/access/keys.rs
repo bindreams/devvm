@@ -6,7 +6,7 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::host::Host;
+use crate::host::{Host, symlink_metadata_if_present};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -79,8 +79,9 @@ fn is_not_a_dead_claim(kind: std::io::ErrorKind) -> bool {
 /// every writer takes. On a host with a native no-replace rename someone else made it, and it is removed all the same.
 /// A directory with anything in it, a link and a file are left for `publish_dir` to refuse.
 fn clear_dead_claim(dir: &Path) -> Result<()> {
-    let is_directory = std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir());
-    if !is_directory {
+    let present = symlink_metadata_if_present(dir)
+        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", dir.display()), e))?;
+    if !present.is_some_and(|m| m.file_type().is_dir()) {
         return Ok(());
     }
     match std::fs::remove_dir(dir) {

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::host::symlink_metadata_if_present;
 use crate::instance::locks::Probe;
 use crate::instance::reaper::ReapReport;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
@@ -123,8 +124,10 @@ impl Registry {
 
 /// Runs inside `Locks::excluding_readers`: reads the files directly, takes no lock.
 fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &PathBuf) -> Moved {
-    if !path.exists() {
-        return Moved::Vanished;
+    match symlink_metadata_if_present(path) {
+        Ok(None) => return Moved::Vanished,
+        Ok(Some(_)) => {}
+        Err(e) => return Moved::Failed(e),
     }
     let (record, marker) = match (InstanceRecord::read(path), read_marker(path)) {
         (Ok(record), Ok(marker)) => (record, marker),
@@ -137,8 +140,6 @@ fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &P
     let parent = target.parent().expect("a quarantine target has a parent");
     match std::fs::create_dir_all(parent).and_then(|()| std::fs::rename(path, target)) {
         Ok(()) => Moved::Done,
-        // Gone since the check above: the instance was removed by a process outside devvm's locks.
-        Err(_) if !path.exists() => Moved::Vanished,
         Err(e) => Moved::Failed(e),
     }
 }

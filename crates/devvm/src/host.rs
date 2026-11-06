@@ -253,10 +253,10 @@ fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::
     Ok(())
 }
 
-/// Removes the file `path`; one that is not there is as good as removed.
+/// Removes the file `path`; one that is not there ([`is_absent`]) is as good as removed.
 pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) if is_absent(&e) => Ok(()),
         other => other,
     }
 }

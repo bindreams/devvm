@@ -863,3 +863,14 @@ fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it_on_every_
         .try_lock()
         .expect("nobody holds the victim");
 }
+
+#[skuld::test]
+fn remove_if_present_treats_every_not_there_error_as_removed(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("file");
+    std::fs::write(&file, "x").unwrap();
+    // Missing, below a file (`NotADirectory` on Unix), and a name Windows cannot hold (`InvalidFilename`).
+    for path in [home.join("missing"), file.join("below"), home.join("a|b")] {
+        super::remove_if_present(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+    assert!(file.is_file());
+}
