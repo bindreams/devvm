@@ -75,15 +75,16 @@ struct FakeGuestOs {
 impl GuestOs for FakeGuestOs {
     /// A file in `seed.dir` naming the host.
     fn instance_seed(&self, _host: &dyn Host, seed: &SeedSpec) -> Result<SeedMedia> {
-        if let Some(served) = &self.served {
-            served.read_seed(seed);
-        }
         let path = seed.dir.join("seed.fake");
         std::fs::write(
             &path,
             format!("hostname={}\ninstance-id={}", seed.hostname, seed.instance_id),
         )
         .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", path.display()), e))?;
+        // Only a seed that was written reaches the guest.
+        if let Some(served) = &self.served {
+            served.read_seed(seed);
+        }
         Ok(SeedMedia {
             media: Media {
                 path,
