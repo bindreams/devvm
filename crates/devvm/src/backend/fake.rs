@@ -74,7 +74,7 @@ impl FakeBackend {
             specs: Mutex::new(Vec::new()),
             resets: Arc::new(AtomicUsize::new(0)),
             named: AtomicUsize::new(0),
-            storage: FakeStorage,
+            storage: FakeStorage::default(),
         }
     }
 
@@ -103,6 +103,11 @@ impl FakeBackend {
     /// The record of every machine launched through this backend, in launch order.
     pub(crate) fn launched(&self) -> Vec<MachineRecord> {
         self.launched.lock().unwrap().clone()
+    }
+
+    /// The disk size every instance disk of this backend was asked for, in creation order.
+    pub(crate) fn disk_sizes(&self) -> Vec<Option<u64>> {
+        self.storage.sizes()
     }
 
     /// The spec of every machine launched through this backend, in launch order.
@@ -371,11 +376,23 @@ impl FakeMachine {
     }
 }
 
-/// Instance disks are files naming their layer; committing copies that name into the new layer.
-pub(crate) struct FakeStorage;
+/// Instance disks are files naming their layer; committing copies that name into the new layer. It ignores `size` and
+/// records it.
+#[derive(Default)]
+pub(crate) struct FakeStorage {
+    sizes: Mutex<Vec<Option<u64>>>,
+}
+
+impl FakeStorage {
+    /// The `size` of every `create_instance_disk`, in call order.
+    pub(crate) fn sizes(&self) -> Vec<Option<u64>> {
+        self.sizes.lock().unwrap().clone()
+    }
+}
 
 impl Storage for FakeStorage {
-    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, _size: u64) -> Result<()> {
+    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: Option<u64>) -> Result<()> {
+        self.sizes.lock().unwrap().push(size);
         let text = format!("backing={}", layer.path().join(LAYER_DISK).display());
         std::fs::write(into, text)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write the disk {}", into.display()), e))

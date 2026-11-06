@@ -78,7 +78,7 @@ fn prepared(target: &dyn ContractTarget, world: &World, root: &Path, n: u32) -> 
     target
         .backend()
         .storage()
-        .create_instance_disk(world.parent.tip().dir(), &spec.disk, 1 << 20)
+        .create_instance_disk(world.parent.tip().dir(), &spec.disk, Some(1 << 20))
         .unwrap();
     spec
 }
