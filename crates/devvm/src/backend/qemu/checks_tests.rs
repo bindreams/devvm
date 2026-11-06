@@ -4,10 +4,9 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::qemu_check;
-use crate::Arch;
 use crate::Dirs;
 use crate::Sha256;
-use crate::backend::qemu::args::qemu_arch;
+use crate::backend::Detail;
 use crate::backend::qemu::sidecar::sidecar_tests::{make_firmware, make_tools};
 use crate::backend::qemu::sidecar::{LazyInstall, ManifestEntry, Source, manifest_entry};
 use crate::config::Config;
@@ -50,7 +49,7 @@ fn a_manifest_build_for_the_triple_passes_the_qemu_check_without_downloading(#[f
     let dirs = Dirs::under(home);
     let (install, transport) = install_over(&dirs, Ok(pinned()));
 
-    let check = qemu_check(&install);
+    let check = qemu_check(&install, Detail::Full);
 
     assert_eq!(check.name, "qemu");
     let detail = check
@@ -66,18 +65,17 @@ fn a_manifest_build_for_the_triple_passes_the_qemu_check_without_downloading(#[f
 fn a_configured_qemu_path_that_is_accepted_passes_and_names_its_hash(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let bin = home.join("my qemu").join("bin");
+    // Only what a launch accepts a configured path for: the tools `configured` requires, on every host.
     make_tools(&bin);
     make_firmware(&bin.join("share"));
-    let system = bin.join(format!(
-        "qemu-system-{}{}",
-        qemu_arch(Arch::host()),
-        std::env::consts::EXE_SUFFIX
-    ));
+    let system = bin.join(format!("qemu-system-x86_64{}", std::env::consts::EXE_SUFFIX));
     std::fs::write(&system, b"the configured qemu").unwrap();
     configure(&dirs, &bin);
     let (install, transport) = install_over(&dirs, Ok(pinned()));
 
-    let detail = qemu_check(&install).outcome.expect("the configured path is accepted");
+    let detail = qemu_check(&install, Detail::Full)
+        .outcome
+        .expect("the configured path is accepted");
 
     assert!(detail.contains(&bin.display().to_string()), "{detail}");
     assert!(
@@ -92,6 +90,25 @@ fn a_configured_qemu_path_that_is_accepted_passes_and_names_its_hash(#[fixture(u
 }
 
 #[skuld::test]
+fn a_brief_qemu_check_passes_without_a_hash(#[fixture(unicode_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let bin = home.join("qemu").join("bin");
+    make_tools(&bin);
+    make_firmware(&bin.join("share"));
+    let system = bin.join(format!("qemu-system-x86_64{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&system, b"the configured qemu").unwrap();
+    configure(&dirs, &bin);
+    let (install, _) = install_over(&dirs, Ok(pinned()));
+
+    let detail = qemu_check(&install, Detail::Brief)
+        .outcome
+        .expect("the configured path is accepted");
+
+    assert!(detail.contains(&bin.display().to_string()), "{detail}");
+    assert!(!detail.contains("sha256"), "{detail}");
+}
+
+#[skuld::test]
 fn a_configured_path_that_is_not_accepted_fails_naming_the_path(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let empty = home.join("empty");
@@ -99,7 +116,9 @@ fn a_configured_path_that_is_not_accepted_fails_naming_the_path(#[fixture(unicod
     configure(&dirs, &empty);
     let (install, _) = install_over(&dirs, Ok(pinned()));
 
-    let why = qemu_check(&install).outcome.expect_err("the directory holds no QEMU");
+    let why = qemu_check(&install, Detail::Full)
+        .outcome
+        .expect_err("the directory holds no QEMU");
 
     assert!(why.contains(&empty.display().to_string()), "{why}");
     assert!(why.contains("qemu-img"), "{why}");
@@ -110,7 +129,9 @@ fn no_build_for_the_triple_and_no_path_fails_the_qemu_check_naming_the_triple(#[
     let dirs = Dirs::under(home);
     let (install, transport) = install_over(&dirs, manifest_entry("riscv64-unknown-plan9"));
 
-    let why = qemu_check(&install).outcome.expect_err("no build for this triple");
+    let why = qemu_check(&install, Detail::Full)
+        .outcome
+        .expect_err("no build for this triple");
 
     assert!(why.contains("riscv64-unknown-plan9"), "{why}");
     assert!(transport.asked().is_empty());
@@ -124,7 +145,7 @@ fn a_configuration_that_cannot_be_read_fails_the_qemu_check_naming_the_file(#[fi
     std::fs::write(&file, "qemu: [not, a, mapping]").unwrap();
     let (install, _) = install_over(&dirs, Ok(pinned()));
 
-    let why = qemu_check(&install)
+    let why = qemu_check(&install, Detail::Full)
         .outcome
         .expect_err("the configuration is unreadable");
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::backend::fake::FakeBackend;
-use crate::backend::{Backend, Check, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
+use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::engine_tests::{
@@ -353,8 +353,8 @@ impl Backend for LateRecords {
         self.0.sweep(warn);
     }
 
-    fn checks(&self) -> Vec<Check> {
-        self.0.checks()
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        self.0.checks(detail)
     }
 
     fn can_save_memory(&self) -> bool {
@@ -611,8 +611,8 @@ impl Backend for Spied {
         self.inner.sweep(warn);
     }
 
-    fn checks(&self) -> Vec<Check> {
-        self.inner.checks()
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        self.inner.checks(detail)
     }
 
     fn can_save_memory(&self) -> bool {
@@ -705,8 +705,8 @@ impl Backend for NotesOpLock {
         self.inner.sweep(warn);
     }
 
-    fn checks(&self) -> Vec<Check> {
-        self.inner.checks()
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        self.inner.checks(detail)
     }
 
     fn can_save_memory(&self) -> bool {

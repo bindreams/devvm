@@ -64,6 +64,19 @@ pub(crate) fn nearest_existing(path: &Path) -> io::Result<&Path> {
     ))
 }
 
+/// [`nearest_existing`], when what it finds is a directory (a link to one included): where a directory below `path`
+/// would be made. A file there, or a link to one, is `NotADirectory` naming it: nothing can be made below it.
+pub(crate) fn nearest_existing_dir(path: &Path) -> io::Result<&Path> {
+    let existing = nearest_existing(path)?;
+    if fs::metadata(existing).map_err(|e| look_failed(existing, e))?.is_dir() {
+        return Ok(existing);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotADirectory,
+        format!("{} is not a directory", existing.display()),
+    ))
+}
+
 /// The failure `e` of a look at `path`, said as "cannot look at <path>: <e>" with its kind kept: the look failed, and
 /// that says nothing about what is at `path`.
 pub(crate) fn look_failed(path: &Path, e: io::Error) -> io::Error {

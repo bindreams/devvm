@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use super::{Entry, look_failed, nearest_existing, symlink_metadata_if_present};
+use super::{Entry, look_failed, nearest_existing, nearest_existing_dir, symlink_metadata_if_present};
 use crate::host::current;
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
@@ -139,4 +139,41 @@ fn below_a_file_the_nearest_existing_path_is_the_file(#[fixture(unicode_home)] h
         nearest_existing(&home.join("file").join("x")).unwrap(),
         home.join("file")
     );
+}
+
+#[skuld::test]
+fn the_nearest_existing_directory_is_found_below_a_directory(#[fixture(unicode_home)] home: &Path) {
+    std::fs::create_dir(home.join("dir")).unwrap();
+    let missing = home.join("dir").join("a").join("b");
+    assert_eq!(nearest_existing_dir(&missing).unwrap(), home.join("dir"));
+}
+
+#[skuld::test]
+fn a_file_in_the_way_fails_the_nearest_existing_directory_naming_the_file(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("file"), b"x").unwrap();
+    for path in [home.join("file"), home.join("file").join("a").join("b")] {
+        let error = nearest_existing_dir(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotADirectory, "{}", path.display());
+        let text = error.to_string();
+        assert!(text.contains(&home.join("file").display().to_string()), "{text}");
+        assert!(text.contains("is not a directory"), "{text}");
+    }
+}
+
+#[skuld::test]
+fn a_link_to_a_directory_is_a_directory_and_a_link_to_a_file_is_not(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    std::fs::create_dir(home.join("real")).unwrap();
+    std::fs::write(home.join("file"), b"x").unwrap();
+    symlink(&home.join("real"), &home.join("to_dir"));
+    symlink(&home.join("file"), &home.join("to_file"));
+
+    assert_eq!(
+        nearest_existing_dir(&home.join("to_dir").join("new")).unwrap(),
+        home.join("to_dir")
+    );
+    let error = nearest_existing_dir(&home.join("to_file").join("new")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotADirectory);
 }

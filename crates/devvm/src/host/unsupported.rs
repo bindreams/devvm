@@ -11,7 +11,7 @@ use cosca::identity::ProcessId;
 use super::names::{posix_problem, unix_run_dir};
 use super::{
     Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
-    create_new_with, look_failed, nearest_existing,
+    create_new_with, look_failed, nearest_existing_dir,
 };
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -203,7 +203,7 @@ impl<M: FileModes> Host for M {
     }
 
     fn free_space(&self, dir: &Path) -> std::io::Result<u64> {
-        self.free_bytes(nearest_existing(dir)?)
+        self.free_bytes(nearest_existing_dir(dir)?)
     }
 
     fn create_runtime_dir(&self, dir: &Path) -> std::io::Result<()> {

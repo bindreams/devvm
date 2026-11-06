@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use super::FakeTarget;
 use crate::ErrorKind;
 use crate::backend::contract::{self, ContractTarget};
-use crate::backend::{Backend, Check, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
+use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
 use crate::store::layers::{ChainLease, LayerStore};
 use crate::test_support::fake_vm::{STARTED, answer, connect_when_up};
@@ -45,8 +45,8 @@ impl Backend for EndpointsAfterResume {
         self.0.sweep(warn);
     }
 
-    fn checks(&self) -> Vec<Check> {
-        self.0.checks()
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        self.0.checks(detail)
     }
 
     fn can_save_memory(&self) -> bool {
@@ -206,8 +206,8 @@ impl Backend for DeletesLeftoversOnResume {
         self.0.sweep(warn);
     }
 
-    fn checks(&self) -> Vec<Check> {
-        self.0.checks()
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        self.0.checks(detail)
     }
 
     fn can_save_memory(&self) -> bool {

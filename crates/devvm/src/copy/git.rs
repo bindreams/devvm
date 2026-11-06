@@ -63,7 +63,7 @@ pub(super) const UNSET_NOTE_PREFIX: &str = "The following variables have been un
 /// The `git` a snapshot runs: the same commands in every call, in an environment that holds none of this process's
 /// `GIT_*` variables but the ones that add to git's configuration. A git hook sets `GIT_DIR` and `GIT_INDEX_FILE`.
 /// Any other `GIT_*` variable can make git read another repository or write into the output the snapshot parses.
-pub(super) struct Git<'a> {
+pub(crate) struct Git<'a> {
     host: &'a dyn Host,
     /// The variables removed, sorted, as the environment names them.
     cleared: Vec<OsString>,
@@ -71,7 +71,7 @@ pub(super) struct Git<'a> {
 
 impl<'a> Git<'a> {
     /// Reads this process's environment, and says through `progress` which variables git will not see.
-    pub(super) fn from_process(host: &'a dyn Host, progress: &dyn Progress) -> Git<'a> {
+    pub(crate) fn from_process(host: &'a dyn Host, progress: &dyn Progress) -> Git<'a> {
         Git::from_names(host, std::env::vars_os().map(|(name, _)| name), progress)
     }
 
@@ -90,7 +90,7 @@ impl<'a> Git<'a> {
     }
 
     /// A `git` command in `dir` without the cleared variables, and with no console window.
-    fn command(&self, dir: &Path) -> Command {
+    pub(crate) fn command(&self, dir: &Path) -> Command {
         let mut command = Command::new("git");
         for name in &self.cleared {
             command.env_remove(name);

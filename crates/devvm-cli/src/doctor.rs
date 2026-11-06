@@ -26,10 +26,23 @@ pub(crate) fn doctor_to(out: &mut dyn Write, checks: Vec<Check>) -> Result<ExitS
     }
 }
 
-/// `pass <name>: <what was found>` or `fail <name>: <what is wrong>`.
+/// `pass <name>: <what was found>` or `fail <name>: <what is wrong>`, on one line: a line break or any other control
+/// character in the text is written as its escape (`\n`).
 pub(crate) fn line(check: &Check) -> String {
     match &check.outcome {
-        Ok(found) => format!("pass {}: {found}", check.name),
-        Err(why) => format!("fail {}: {why}", check.name),
+        Ok(found) => format!("pass {}: {}", check.name, one_line(found)),
+        Err(why) => format!("fail {}: {}", check.name, one_line(why)),
     }
+}
+
+fn one_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_debug());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }

@@ -9,7 +9,7 @@ use super::machine::{QemuMachine, qemu_log};
 use super::qmp::{QmpEndpoint, Reservation};
 use super::sidecar::{LazyInstall, QemuInstall};
 use super::storage::QemuStorage;
-use crate::backend::{Backend, Check, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
+use crate::backend::{Backend, Check, Detail, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Hold, Host, remove_tree};
@@ -198,8 +198,8 @@ impl Backend for QemuBackend {
         self.sweep_run_dir(warn);
     }
 
-    fn checks(&self) -> Vec<Check> {
-        vec![qemu_check(&self.install)]
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        vec![qemu_check(&self.install, detail)]
     }
 
     /// WHPX does not support saving a running machine's memory.

@@ -26,6 +26,17 @@ fn a_line_says_pass_or_fail_then_the_check_and_what_was_found() {
 }
 
 #[skuld::test]
+fn a_check_is_one_line_whatever_it_found() {
+    assert_eq!(
+        line(&check("config", Err("bad yaml\r\n  at line 2\x1b[0m"))),
+        r"fail config: bad yaml\r\n  at line 2\u{1b}[0m"
+    );
+    assert_eq!(line(&check("ssh", Ok("OpenSSH\nsecond"))), r"pass ssh: OpenSSH\nsecond");
+    let (out, _) = printed(vec![check("a", Err("one\ntwo")), check("b", Ok("fine"))]);
+    assert_eq!(out.lines().count(), 2, "{out}");
+}
+
+#[skuld::test]
 fn every_check_is_printed_and_all_passing_is_exit_0() {
     let (out, result) = printed(vec![
         check("accelerator", Ok("whpx")),

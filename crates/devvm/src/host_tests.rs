@@ -956,6 +956,19 @@ fn the_real_host_reports_free_space_for_a_directory_and_for_one_not_made_yet(#[f
 }
 
 #[skuld::test]
+fn the_real_host_cannot_make_room_below_a_file(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("file"), b"x").unwrap();
+
+    let error = current().free_space(&home.join("file").join("dir")).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::NotADirectory);
+    assert!(
+        error.to_string().contains(&home.join("file").display().to_string()),
+        "{error}"
+    );
+}
+
+#[skuld::test]
 fn a_host_that_cannot_tell_free_space_says_so(#[fixture(unicode_home)] home: &Path) {
     let error = OtherHost.free_space(home).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);

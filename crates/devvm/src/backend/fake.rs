@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
-    Backend, Check, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
+    Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
     SshEndpoint, Storage,
 };
 use crate::contain::{Lifetime, VmProcess};
@@ -65,6 +65,8 @@ pub(crate) struct FakeBackend {
     storage: FakeStorage,
     /// What `checks` answers.
     checks: Vec<Check>,
+    /// The detail of each `checks` call, in order.
+    details_asked: Mutex<Vec<Detail>>,
 }
 
 impl FakeBackend {
@@ -78,6 +80,7 @@ impl FakeBackend {
             named: AtomicUsize::new(0),
             storage: FakeStorage::default(),
             checks: Vec::new(),
+            details_asked: Mutex::new(Vec::new()),
         }
     }
 
@@ -85,6 +88,11 @@ impl FakeBackend {
     pub(crate) fn with_checks(mut self, checks: Vec<Check>) -> FakeBackend {
         self.checks = checks;
         self
+    }
+
+    /// The detail of each `checks` call so far, in order.
+    pub(crate) fn details_asked(&self) -> Vec<Detail> {
+        self.details_asked.lock().unwrap().clone()
     }
 
     /// How many resets the machines of this backend have taken.
@@ -244,7 +252,8 @@ impl Backend for FakeBackend {
     /// it is shared between setups, so there is nothing to sweep.
     fn sweep(&self, _warn: &mut dyn FnMut(String)) {}
 
-    fn checks(&self) -> Vec<Check> {
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        self.details_asked.lock().unwrap().push(detail);
         self.checks.clone()
     }
 

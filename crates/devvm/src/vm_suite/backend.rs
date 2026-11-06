@@ -17,7 +17,7 @@ use crate::backend::qemu::qmp::{Qmp, QmpEndpoint};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::{DISK, QemuStorage, VARS};
 use crate::backend::{
-    Backend, Check, DeviceProfile, DiskBus, Endpoint, FileClaim, Firmware, Machine, MachineRecord, MachineSpec,
+    Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Firmware, Machine, MachineRecord, MachineSpec,
     NetModel, Storage,
 };
 use crate::contain::{Lifetime, VmProcess};
@@ -82,8 +82,8 @@ impl Backend for Observing {
         self.inner.sweep(warn);
     }
 
-    fn checks(&self) -> Vec<Check> {
-        self.inner.checks()
+    fn checks(&self, detail: Detail) -> Vec<Check> {
+        self.inner.checks(detail)
     }
 
     fn can_save_memory(&self) -> bool {

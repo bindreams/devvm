@@ -28,7 +28,8 @@ pub(crate) mod sidecar_tests;
 
 const MANIFEST: &str = include_str!("../../../qemu-manifest.toml");
 
-/// Tools and firmware a downloaded build must hold. A configured QEMU needs only the amd64 ones.
+/// Tools and firmware a downloaded build must hold. A configured QEMU needs only the amd64 ones, on every host: this is
+/// the one rule for what a configured `qemu.path` is accepted for, by a launch and by `devvm doctor` alike.
 const ARCHIVE_TOOLS: &[&str] = &["qemu-img", "qemu-system-x86_64", "qemu-system-aarch64"];
 const ARCHIVE_FIRMWARE: &[&str] = &[
     "edk2-x86_64-code.fd",
@@ -36,7 +37,9 @@ const ARCHIVE_FIRMWARE: &[&str] = &[
     "edk2-i386-vars.fd",
     "edk2-arm-vars.fd",
 ];
-const CONFIGURED_TOOLS: &[&str] = &["qemu-img", "qemu-system-x86_64"];
+/// The system emulator a configured QEMU is required to have.
+pub(super) const CONFIGURED_SYSTEM: &str = "qemu-system-x86_64";
+const CONFIGURED_TOOLS: &[&str] = &["qemu-img", CONFIGURED_SYSTEM];
 const CONFIGURED_FIRMWARE: &[&str] = &["edk2-x86_64-code.fd", "edk2-i386-vars.fd"];
 /// The tools run with `--version` before an extraction is published.
 const VERSIONED_TOOLS: &[&str] = &["qemu-img", "qemu-system-x86_64"];
@@ -199,7 +202,7 @@ impl Source {
         self.config.get(|| Config::load(&self.dirs))
     }
 
-    pub(crate) fn entry(&self) -> Result<&ManifestEntry> {
+    fn entry(&self) -> Result<&ManifestEntry> {
         self.entry
             .as_ref()
             .map_err(|e| Error::new(e.kind(), e.message().to_owned()))

@@ -78,15 +78,6 @@ pub(crate) fn escape_option_value(path: &Path) -> Result<String> {
     Ok(text.replace(',', ",,"))
 }
 
-fn accel_name(accel: Accel) -> &'static str {
-    match accel {
-        Accel::Whpx => "whpx",
-        Accel::Kvm => "kvm",
-        Accel::Hvf => "hvf",
-        Accel::Tcg => "tcg",
-    }
-}
-
 /// The argument list for `spec` (without the executable).
 pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<OsString>> {
     let mut args = Args(Vec::new());
@@ -100,7 +91,7 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
         }
         Arch::Arm64 => "virt,gic-version=3",
     };
-    args.pair("-accel", accel_name(spec.accel));
+    args.pair("-accel", spec.accel.name());
     args.pair("-machine", machine);
     args.pair("-cpu", "max");
     args.pair("-smp", spec.cpus.to_string());

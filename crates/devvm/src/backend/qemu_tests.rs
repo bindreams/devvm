@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::{directory_of, qemu_parts};
-use crate::backend::Backend;
+use crate::backend::{Backend, Detail};
 use crate::store::fetch::Fetcher;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
@@ -53,7 +53,7 @@ fn the_qemu_backend_has_the_one_qemu_check_and_downloads_nothing_for_it(#[fixtur
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), progress.clone()));
     let parts = qemu_parts(&dirs, fetcher, &TestHost, progress);
 
-    let checks = parts.backend.checks();
+    let checks = parts.backend.checks(Detail::Full);
 
     assert_eq!(checks.len(), 1, "{checks:?}");
     assert_eq!(checks[0].name, "qemu");
