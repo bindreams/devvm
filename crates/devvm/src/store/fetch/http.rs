@@ -42,9 +42,9 @@ impl HttpTransport {
 }
 
 /// An [`HttpTransport`] built on the first `get`: building one can fail and starts a client, which a command that
-/// downloads nothing must not pay for. A build failure is `internal` on each `get`.
+/// downloads nothing must not pay for. A build failure is the error of `HttpTransport::new`, returned on each `get`.
 #[derive(Default)]
-pub struct LazyHttp(OnceLock<std::result::Result<HttpTransport, String>>);
+pub struct LazyHttp(OnceLock<Result<HttpTransport>>);
 
 impl LazyHttp {
     pub fn new() -> LazyHttp {
@@ -54,12 +54,9 @@ impl LazyHttp {
 
 impl Transport for LazyHttp {
     fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
-        match self
-            .0
-            .get_or_init(|| HttpTransport::new().map_err(|e| e.message().to_owned()))
-        {
+        match self.0.get_or_init(HttpTransport::new) {
             Ok(transport) => transport.get(url, resume),
-            Err(message) => Err(Error::new(ErrorKind::Internal, message.clone())),
+            Err(error) => Err(error.clone()),
         }
     }
 }

@@ -53,9 +53,8 @@ pub(crate) fn qemu_parts(
     ));
     let storage = Arc::new(QemuStorage::new(install.clone(), host));
     let builder = Arc::new(LinuxBuilder::new(fetcher, storage.clone()));
-    let run = dirs.run().map(Path::to_path_buf);
     QemuParts {
-        backend: Arc::new(QemuBackend::new(install, storage, host, run, progress)),
+        backend: Arc::new(QemuBackend::new(install, storage, host, dirs.clone(), progress)),
         guests: Arc::new(LinuxGuests::new(builder)),
     }
 }

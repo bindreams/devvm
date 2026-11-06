@@ -5,7 +5,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::backend::Backend;
 use crate::backend::fake::fake_spec;
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::config::Config;
@@ -86,7 +85,7 @@ fn the_engine_downloads_nothing_for_ls_open_remove_and_reap(#[fixture(unicode_ho
 }
 
 #[skuld::test]
-fn a_transport_that_cannot_be_built_fails_only_the_command_that_downloads(#[fixture(unicode_home)] home: &Path) {
+fn a_transport_that_refuses_fails_only_the_command_that_downloads(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     instance_in(&fx, "foo", home);
     let (transport, progress) = (Arc::new(Refusing::default()), memory());
@@ -149,7 +148,6 @@ fn an_engine_over_a_host_that_cannot_name_its_runtime_directory_lists_and_launch
     instance_in(&fx, "foo", home);
     let (transport, progress) = (Arc::new(Refusing::default()), memory());
     let dirs = dirs_without_a_runtime_directory(home);
-    let parts = parts_over(&dirs, &transport, &progress);
     let engine = qemu_engine(&dirs, &transport, &progress);
 
     assert_eq!(engine.list(ListFilter::All).unwrap().len(), 1);
@@ -162,8 +160,9 @@ fn an_engine_over_a_host_that_cannot_name_its_runtime_directory_lists_and_launch
     );
 
     let spec = fake_spec(home.join("disk.img"), home.join("serial.log"), Lifetime::OutlivesOwner);
-    let error = parts
-        .backend
+    let error = engine
+        .backend()
+        .unwrap()
         .launch(&spec)
         .err()
         .expect("a launch has no runtime directory");

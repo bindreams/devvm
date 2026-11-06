@@ -57,7 +57,7 @@ impl QemuBackend {
     /// A claim file's private names (`<claim file>.new`, `<claim file>.<16 hex>.del`) go too: only a launch that died
     /// while making the file, or a delete that died, leaves one.
     pub(super) fn sweep_run_dir(&self, warn: &mut dyn FnMut(String)) {
-        let run = match self.run_dir() {
+        let run = match self.dirs.run() {
             Ok(run) => run,
             Err(e) => {
                 warn(e.message().to_owned());

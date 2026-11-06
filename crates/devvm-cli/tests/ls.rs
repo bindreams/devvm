@@ -1,4 +1,4 @@
-//! `ls`, `rm` and the commands that need a VM backend, through the real binary. The instances are seeded by writing
+//! `ls`, `rm` and the commands not implemented yet, through the real binary. The instances are seeded by writing
 //! their files by hand, so the on-disk schema is pinned from outside the library.
 
 use std::path::{Path, PathBuf};
@@ -337,7 +337,7 @@ fn every_command_reaps_first() {
 }
 
 #[skuld::test]
-fn commands_that_need_a_backend_exit_125_not_supported() {
+fn commands_not_implemented_yet_exit_125_not_supported() {
     let home = home();
     let a = home.project("a");
     let commands: [&[&str]; 8] = [
@@ -353,7 +353,11 @@ fn commands_that_need_a_backend_exit_125_not_supported() {
     for args in commands {
         let output = home.devvm(&a, args);
         assert_eq!(output.status.code(), Some(125), "{args:?}");
-        one_error_line(&output, "not-supported");
+        let line = one_error_line(&output, "not-supported");
+        assert!(
+            line.contains(&format!("`devvm {}` is not implemented yet", args[0])),
+            "{line:?}"
+        );
     }
 }
 

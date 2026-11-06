@@ -12,16 +12,16 @@ use crate::backend::{Backend, FileClaim, Machine, MachineRecord, MachineSpec, St
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Hold, Host, remove_tree};
-use crate::{Error, ErrorKind, Result};
+use crate::{Dirs, Error, ErrorKind, Result};
 
 pub(crate) struct QemuBackend {
     install: Arc<LazyInstall>,
     storage: Arc<QemuStorage>,
     host: &'static dyn Host,
-    /// Where control sockets go (`Dirs::run`): the user's alone, and short, because a socket path is limited
-    /// (`Host::socket_path_max`). Kept as the host answered, so an engine builds on a host that cannot name it and
+    /// `Dirs::run` is where control sockets go: the user's alone, and short, because a socket path is limited
+    /// (`Host::socket_path_max`). It fails only when asked for, so an engine builds on a host that cannot name it and
     /// only a launch or a sweep says so.
-    run: Result<PathBuf>,
+    pub(super) dirs: Dirs,
     progress: Arc<dyn Progress>,
 }
 
@@ -30,24 +30,20 @@ impl QemuBackend {
         install: Arc<LazyInstall>,
         storage: Arc<QemuStorage>,
         host: &'static dyn Host,
-        run: Result<PathBuf>,
+        dirs: Dirs,
         progress: Arc<dyn Progress>,
     ) -> QemuBackend {
         QemuBackend {
             install,
             storage,
             host,
-            run,
+            dirs,
             progress,
         }
     }
 }
 
 impl QemuBackend {
-    pub(super) fn run_dir(&self) -> Result<&std::path::Path> {
-        self.run.as_deref().map_err(Error::clone)
-    }
-
     pub(super) fn host(&self) -> &'static dyn Host {
         self.host
     }
@@ -131,7 +127,7 @@ impl Backend for QemuBackend {
     /// The socket and claim file are reserved by `QmpEndpoint::reserve` and recorded in the machine's record. A host
     /// that cannot name the runtime directory fails the launch before anything is downloaded.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
-        let run = self.run_dir()?;
+        let run = self.dirs.run()?;
         let install = self.install.get()?;
         let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, run, &*self.progress)?;
         let mut vm = None;
