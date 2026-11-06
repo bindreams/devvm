@@ -7,9 +7,11 @@
 //! `try_lock`s `<key>.build` and `.gen` locks, never waiting on them. Nothing waits in a cycle.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use super::meta::{self, MetaRead};
 use super::{ChainLease, CurrentFile, Generation, LayerLease, LayerRef, LayerStore};
+use crate::host::{look_failed, symlink_metadata_if_present};
 use crate::recipe::hash::LayerKey;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
@@ -120,7 +122,7 @@ impl LayerStore {
         while let Some(layer) = pending.pop() {
             let dir = self.generation_dir(&layer);
             // A kept layer that is gone has no ancestors to protect.
-            if !dir.is_dir() {
+            if !present(&dir)? {
                 continue;
             }
             match meta::read(&dir)? {
@@ -263,7 +265,7 @@ impl LayerStore {
         for other in keep {
             let dir = self.generation_dir(other);
             // A child whose own record is unreadable is reported when the walk reaches it.
-            if dir.is_dir()
+            if present(&dir)?
                 && let Ok(MetaRead::Valid(meta)) = meta::read(&dir)
                 && meta.parent == Some(*layer)
             {
@@ -310,4 +312,17 @@ fn current_recovery(key: &LayerKey, path: &std::path::Path) -> String {
         "run `devvm build` for the recipe that produces layer {key} to replace it, or move {} aside",
         path.display()
     )
+}
+
+/// Whether the generation directory `dir` of a kept layer is there. A failed look is an error, never "gone": a kept
+/// layer that is skipped leaves its parent unkept, and collection deletes the parent. Whatever is at the name counts as
+/// there; the record read that follows rejects what is not a layer.
+pub(super) fn present(dir: &Path) -> Result<bool> {
+    match symlink_metadata_if_present(dir) {
+        Ok(found) => Ok(found.is_some()),
+        Err(e) => {
+            let look = look_failed(dir, e);
+            Err(Error::new(ErrorKind::Io, format!("cannot collect: {look}; nothing was deleted")).with_source(look))
+        }
+    }
 }

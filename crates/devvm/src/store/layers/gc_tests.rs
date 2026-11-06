@@ -436,6 +436,19 @@ fn gc_names_the_instance_that_keeps_a_non_current_generation_with_a_corrupt_reco
 }
 
 #[skuld::test]
+fn gc_aborts_when_a_kept_layers_directory_is_a_file(#[fixture(unicode_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    let dir = env.store.generation_dir(&child);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::write(&dir, b"not a layer").unwrap();
+    // Reading the record below a file is `Absent` on Windows and an I/O error on Unix; both abort.
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert!(error.message().contains(&dir.display().to_string()), "{error}");
+    assert!(exists(&env, &old_parent));
+}
+
+#[skuld::test]
 fn gc_aborts_when_a_current_file_is_unreadable(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let [oldest, _middle, newest] = three_generations(&env, 1);
