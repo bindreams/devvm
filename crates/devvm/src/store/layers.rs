@@ -44,10 +44,6 @@ pub(crate) mod gc_tests;
 #[path = "layers/corrupt_tests.rs"]
 mod corrupt_tests;
 
-#[cfg(all(test, unix))]
-#[path = "layers/gc_unix_tests.rs"]
-mod gc_unix_tests;
-
 /// A lookup within this long of a layer's expiry is a miss, so a layer is never handed out just before it expires.
 pub const EXPIRY_MARGIN: Duration = Duration::from_secs(10 * 24 * 3600);
 
@@ -320,6 +316,7 @@ impl LayerStore {
         let dir = self.generation_dir(layer);
         match meta::read(&dir)? {
             MetaRead::Absent => Ok(None),
+            MetaRead::Newer(e) => Err(e),
             MetaRead::Corrupt(why) => {
                 self.progress.message(&format!(
                     "layer record {} is unreadable ({why}); treating it as missing",

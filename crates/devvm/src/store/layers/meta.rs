@@ -61,8 +61,8 @@ impl FromStr for Generation {
     }
 }
 
-/// One generation of one layer key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// One generation of one layer key. Orders by key, then generation, which is the order of their hex spellings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LayerRef {
     pub key: LayerKey,
     pub generation: Generation,
@@ -107,6 +107,8 @@ pub enum MetaRead {
     Absent,
     /// Present but unusable; the text says why.
     Corrupt(String),
+    /// Written by a newer devvm: the error to report, which is not corruption and must not be recovered from.
+    Newer(Error),
     Valid(LayerMeta),
 }
 
@@ -164,7 +166,7 @@ fn from_wire(wire: Wire) -> std::result::Result<LayerMeta, String> {
 }
 
 /// Reads `meta.json` from a generation directory. A record that is not there ([`is_absent`]) is `Absent`. A newer
-/// schema is an error, never a "corrupt" record.
+/// schema is `Newer`, never a "corrupt" record. `Err` is a failed read.
 pub fn read(generation_dir: &Path) -> Result<MetaRead> {
     let path = generation_dir.join("meta.json");
     let text = match std::fs::read_to_string(&path) {
@@ -180,13 +182,13 @@ pub fn read(generation_dir: &Path) -> Result<MetaRead> {
         Err(e) => return Ok(MetaRead::Corrupt(e.to_string())),
     };
     if schema > SCHEMA {
-        return Err(Error::new(
+        return Ok(MetaRead::Newer(Error::new(
             ErrorKind::Store,
             format!(
                 "{} has schema {schema}, written by a newer devvm than this one (schema {SCHEMA}); upgrade devvm",
                 path.display()
             ),
-        ));
+        )));
     }
     if schema == 0 {
         return Ok(MetaRead::Corrupt("schema 0".into()));

@@ -4,7 +4,7 @@ use crate::ErrorKind;
 use crate::test_support::file_mode::set_mode;
 use crate::test_support::fixtures::unicode_home;
 
-use super::gc::present;
+use super::present;
 
 /// A parent that cannot be searched makes the look fail; that says nothing about the directory. Mode bits do not bind
 /// root, so the test refuses to run as root.

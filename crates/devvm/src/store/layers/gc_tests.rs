@@ -378,6 +378,11 @@ fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancest
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert!(error.message().contains(&child.generation.to_string()), "{error}");
+    // The abort says what is wrong with the record, not only that it is unreadable.
+    assert!(
+        error.message().contains(") is unreadable (key must be a string"),
+        "{error}"
+    );
     assert_record_recovery(
         &error,
         &child,
@@ -422,6 +427,39 @@ fn gc_names_the_child_that_keeps_a_non_current_parent_with_a_corrupt_record(#[fi
     assert_record_recovery(&error, &old_parent, &holder, &env.store.generation_dir(&old_parent));
     assert!(!error.message().contains("devvm build"), "{error}");
     assert!(!error.message().contains("instance"), "{error}");
+}
+
+#[skuld::test]
+fn gc_names_every_kept_child_of_a_parent_with_a_corrupt_record(#[fixture(unicode_home)] home: &Path) {
+    let env = env(home);
+    // Two children of one parent that is then rebuilt, so the old parent is kept only through them. The second
+    // child's key sorts after the first's, so the walk reaches the old parent before it reads the second.
+    let parent = build_expiring(&env, key(1), None, Some(t0() + days(90)));
+    let old_parent = parent.tip().layer_ref();
+    let child = build_expiring(&env, key(2), Some(&parent), Some(t0() + days(120)));
+    let second = build_expiring(&env, key(3), Some(&parent), Some(t0() + days(120)));
+    let (child, second_ref) = (child.tip().layer_ref(), second.tip().layer_ref());
+    drop((parent, second));
+    env.clock.set(t0() + days(85));
+    drop(build_expiring(&env, key(1), None, Some(t0() + days(85) + days(90))));
+    std::fs::write(env.store.generation_dir(&old_parent).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    let holders: Vec<String> = [child, second_ref]
+        .iter()
+        .map(|c| {
+            format!(
+                "the parent of layer {} generation {}, which is itself kept",
+                c.key, c.generation
+            )
+        })
+        .collect();
+    assert_record_recovery(
+        &error,
+        &old_parent,
+        &holders.join(" and "),
+        &env.store.generation_dir(&old_parent),
+    );
 }
 
 #[skuld::test]
@@ -523,28 +561,20 @@ fn gc_passes_a_newer_schema_record_through_without_recovery_advice(#[fixture(uni
 }
 
 #[skuld::test]
-fn gc_does_not_name_a_layer_whose_record_is_another_layers_as_a_child(#[fixture(unicode_home)] home: &Path) {
+fn gc_passes_a_newer_schema_record_of_an_unkept_generation_through_and_keeps_it(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
-    let (old_parent, child) = child_of_an_aged_parent(&env);
-    // A kept layer whose directory holds a copy of the child's record: it names `old_parent` as parent, but it is not
-    // the child. Its key sorts after `old_parent`'s, so the walk reaches `old_parent` first.
-    let copy = build_expiring(&env, key(3), None, Some(t0() + days(85) + days(90)));
-    let copy_ref = copy.tip().layer_ref();
-    drop(copy);
-    std::fs::copy(
-        env.store.generation_dir(&child).join("meta.json"),
-        env.store.generation_dir(&copy_ref).join("meta.json"),
-    )
-    .unwrap();
-    std::fs::write(env.store.generation_dir(&old_parent).join("meta.json"), b"{ torn").unwrap();
+    let [oldest, _middle, _newest] = three_generations(&env, 1);
+    let record = env.store.generation_dir(&oldest).join("meta.json");
+    std::fs::write(&record, br#"{ "schema": 2 }"#).unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
-    let holder = format!(
-        "the parent of layer {} generation {}, which is itself kept",
-        child.key, child.generation
+    assert!(
+        error
+            .message()
+            .starts_with(&format!("{} has schema 2, ", record.display())),
+        "{error}"
     );
-    assert_record_recovery(&error, &old_parent, &holder, &env.store.generation_dir(&old_parent));
-    assert!(!error.message().contains(&copy_ref.generation.to_string()), "{error}");
+    assert!(exists(&env, &oldest));
 }
 
 #[skuld::test]
