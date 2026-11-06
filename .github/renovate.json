@@ -42,6 +42,13 @@
       "automerge": true
     },
     {
+      "description": "fatfs is pinned to an exact version: media.rs and its tests rely on its behaviour, so a human re-checks it before a bump.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["fatfs"],
+      "groupName": null,
+      "automerge": false
+    },
+    {
       "description": "Group non-major prek hook and CI tool updates; neither the github-actions nor the cargo rule matches them.",
       "matchManagers": ["custom.regex"],
       "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
