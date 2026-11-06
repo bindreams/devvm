@@ -1,9 +1,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::ErrorKind;
 use crate::dirs::Dirs;
 use crate::test_support::fixtures::unicode_home;
+use crate::{Error, ErrorKind};
 use skuld::env;
 
 /// The host's runtime directory when `XDG_RUNTIME_DIR` is not usable.
@@ -94,6 +94,23 @@ fn under_places_all_four_below_the_root_and_names_subdirectories(#[fixture(unico
         .cloned()
         .collect();
     assert_eq!(distinct.len(), 4);
+}
+
+#[skuld::test]
+fn under_with_run_is_under_with_the_given_runtime_directory(#[fixture(unicode_home)] home: &Path) {
+    let plain = Dirs::under(home);
+    let named = Dirs::under_with_run(home, Ok(home.join("elsewhere")));
+    let unnamed = Dirs::under_with_run(home, Err(Error::new(ErrorKind::Config, "no runtime directory here")));
+
+    for dirs in [&named, &unnamed] {
+        assert_eq!(
+            [&dirs.config, &dirs.data, &dirs.cache, &dirs.state],
+            [&plain.config, &plain.data, &plain.cache, &plain.state]
+        );
+    }
+    assert_eq!(named.run().unwrap(), home.join("elsewhere"));
+    assert_eq!(unnamed.run().unwrap_err().message(), "no runtime directory here");
+    assert_eq!(plain.run().unwrap(), home.join("run").join("devvm"));
 }
 
 #[skuld::test]

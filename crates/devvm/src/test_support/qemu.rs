@@ -308,11 +308,6 @@ pub fn lazy_at(bin: &Path) -> Arc<LazyInstall> {
     Arc::new(LazyInstall::new(dirs, config, fetcher, progress, host::current()))
 }
 
-/// Directories whose runtime directory is exactly `run`; the other four are of no use to a backend and point below it.
-pub fn dirs_running_in(run: &Path) -> Dirs {
-    Dirs::from_lookup(Some(run.to_path_buf()), &|_| None, &|| Ok(run.to_path_buf())).expect("directories")
-}
-
 /// A QEMU backend that reserves and sweeps in `run` and has no QEMU to launch.
 pub fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend> {
     let install = lazy_at(Path::new("no-qemu-here"));
@@ -321,7 +316,7 @@ pub fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend>
         install,
         storage,
         host::current(),
-        dirs_running_in(run),
+        Dirs::under_with_run(run, Ok(run.to_path_buf())),
         progress,
     ))
 }

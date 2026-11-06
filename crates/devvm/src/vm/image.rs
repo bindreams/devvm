@@ -123,11 +123,11 @@ impl Image {
 }
 
 impl Recipe {
-    /// Builds the image this recipe describes. `not-supported` without the QEMU backend.
+    /// Builds the image this recipe describes. `not-supported`: building is not implemented yet.
     pub fn build(&self, _opts: &BuildOptions) -> Result<Image> {
         Err(Error::new(
             ErrorKind::NotSupported,
-            "building images needs the QEMU backend",
+            "building images is not implemented yet",
         ))
     }
 }

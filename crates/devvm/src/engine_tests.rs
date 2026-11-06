@@ -7,6 +7,7 @@ use crate::backend::{Backend, MachineRecord};
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, ListFilter, NoHooks};
 use crate::exit::Progress;
+use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
 use crate::host::Host;
 use crate::instance::dir::InstanceDir;
@@ -20,7 +21,7 @@ use crate::test_support::claimed::claimed;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
-use crate::{Arch, ErrorKind, GuestKind, Image, Instance};
+use crate::{Arch, Dirs, ErrorKind, GuestKind, Image, Instance};
 
 /// A test engine over the fake host, backend and guests, with its own state under the test's home.
 pub(crate) struct EngineFixture {
@@ -92,11 +93,22 @@ pub(crate) fn engine_over(
     backend: Option<Arc<dyn Backend>>,
     progress: Arc<dyn Progress>,
 ) -> Arc<Engine> {
+    engine_with(fx.env.dirs.clone(), host, backend, Arc::new(FakeGuests), progress)
+}
+
+/// An engine over `dirs` with its own `host`, `backend` and `guests`.
+pub(crate) fn engine_with(
+    dirs: Dirs,
+    host: &'static dyn Host,
+    backend: Option<Arc<dyn Backend>>,
+    guests: Arc<dyn Guests>,
+    progress: Arc<dyn Progress>,
+) -> Arc<Engine> {
     Engine::with_parts(EngineParts {
-        dirs: fx.env.dirs.clone(),
+        dirs,
         host,
         backend,
-        guests: Arc::new(FakeGuests),
+        guests,
         clock: Arc::new(SystemClock),
         progress,
         hooks: Arc::new(NoHooks),

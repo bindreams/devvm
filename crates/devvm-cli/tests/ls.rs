@@ -398,20 +398,17 @@ fn ls_sweeps_the_runtime_directory_the_fixture_names() {
 }
 
 #[skuld::test]
-fn a_broken_config_file_fails_every_command_naming_the_file() {
+fn a_broken_config_file_fails_ls_and_rm_naming_the_file() {
     let home = home();
     let config = home.config_file();
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(
-        &config,
-        "no-such-key: 1
-",
-    )
-    .unwrap();
+    std::fs::write(&config, "no-such-key: 1\n").unwrap();
 
-    let output = home.devvm(&home.project("p"), &["ls"]);
+    for args in [&["ls"][..], &["rm", "foo"][..]] {
+        let output = home.devvm(&home.project("p"), args);
 
-    assert_eq!(output.status.code(), Some(125));
-    let line = one_error_line(&output, "config");
-    assert!(line.contains(config.to_str().unwrap()), "{line}");
+        assert_eq!(output.status.code(), Some(125), "{args:?}");
+        let line = one_error_line(&output, "config");
+        assert!(line.contains(config.to_str().unwrap()), "{args:?}: {line}");
+    }
 }

@@ -77,12 +77,17 @@ impl Dirs {
 
     /// All five directories below `root`, for tests and fixtures.
     pub fn under(root: &Path) -> Dirs {
+        Dirs::under_with_run(root, Ok(root.join("run").join("devvm")))
+    }
+
+    /// [`Dirs::under`] with `run` as the runtime directory, or the reason the host cannot name it.
+    pub(crate) fn under_with_run(root: &Path, run: Result<PathBuf>) -> Dirs {
         Dirs {
             config: root.join("config").join("devvm"),
             data: root.join("data").join("devvm"),
             cache: root.join("cache").join("devvm"),
             state: root.join("state").join("devvm"),
-            run: Ok(root.join("run").join("devvm")),
+            run,
         }
     }
 

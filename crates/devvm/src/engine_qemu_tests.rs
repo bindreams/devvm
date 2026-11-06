@@ -1,185 +1,174 @@
 //! The engine over the QEMU backend and the Linux guest (`qemu_parts`), built without touching the user's directories,
-//! environment or network.
+//! environment or network. Every test drives the engine; the one fixture is an engine over those parts whose transport
+//! refuses every download, on state that holds one stopped instance, `foo`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::backend::fake::fake_spec;
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::config::Config;
 use crate::contain::Lifetime;
-use crate::engine::engine_tests::{engine_fixture, instance_in, memory};
-use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, ListFilter, NoHooks};
+use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_with, instance_in, memory};
+use crate::engine::{Engine, ListFilter};
 use crate::error::ErrorKind;
 use crate::exit::NullProgress;
-use crate::guest::{BuildCtx, Guests};
+use crate::guest::BuildCtx;
 use crate::host::symlink_metadata_if_present;
-use crate::recipe::Source;
-use crate::store::fetch::{Fetcher, Response, Resume, Transport};
+use crate::store::fetch::Fetcher;
+use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{key, request};
-use crate::store::layers::{Built, SystemClock};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
-use crate::{Arch, Dirs, Error, GuestKind, Result};
+use crate::test_support::transport::RefusingTransport;
+use crate::{Arch, Dirs, Error, GuestKind};
 
-/// Counts its requests and refuses each with a download error.
-#[derive(Default)]
-struct Refusing(AtomicUsize);
+const RUN_DIR_ERROR: &str = "no runtime directory on this test host";
 
-impl Refusing {
-    fn gets(&self) -> usize {
-        self.0.load(Ordering::SeqCst)
+struct QemuEngine {
+    engine: Arc<Engine>,
+    home: PathBuf,
+    dirs: Dirs,
+    transport: Arc<RefusingTransport>,
+    progress: Arc<MemoryProgress>,
+    /// Keeps the state the engine reads: the store, and the instance `foo` in it.
+    _state: EngineFixture,
+}
+
+impl QemuEngine {
+    /// An engine over `dirs`, which must differ from `Dirs::under(home)` in `run` alone: the state is `home`'s.
+    fn over(home: &Path, dirs: Dirs) -> QemuEngine {
+        let state = engine_fixture(home, memory());
+        instance_in(&state, "foo", home);
+        let (transport, progress) = (Arc::new(RefusingTransport::default()), memory());
+        let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), progress.clone()));
+        let QemuParts { backend, guests } = qemu_parts(&dirs, Config::default(), fetcher, &TestHost, progress.clone());
+        let engine = engine_with(dirs.clone(), &TestHost, Some(backend), guests, progress.clone());
+        QemuEngine {
+            engine,
+            home: home.to_path_buf(),
+            dirs,
+            transport,
+            progress,
+            _state: state,
+        }
     }
-}
 
-impl Transport for Refusing {
-    fn get(&self, url: &str, _resume: Option<Resume>) -> Result<Response> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Err(Error::new(
-            ErrorKind::Download,
-            format!("no network in this test: {url}"),
-        ))
+    fn new(home: &Path) -> QemuEngine {
+        QemuEngine::over(home, Dirs::under(home))
     }
-}
 
-fn parts_over(dirs: &Dirs, transport: &Arc<Refusing>, progress: &Arc<MemoryProgress>) -> QemuParts {
-    let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), progress.clone()));
-    qemu_parts(dirs, Config::default(), fetcher, &TestHost, progress.clone())
-}
+    /// The URLs the engine has asked its transport for.
+    fn downloads(&self) -> Vec<String> {
+        self.transport.asked()
+    }
 
-/// An engine over `dirs` whose backend and guests are `qemu_parts`.
-fn qemu_engine(dirs: &Dirs, transport: &Arc<Refusing>, progress: &Arc<MemoryProgress>) -> Arc<Engine> {
-    let QemuParts { backend, guests } = parts_over(dirs, transport, progress);
-    Engine::with_parts(EngineParts {
-        dirs: dirs.clone(),
-        host: &TestHost,
-        backend: Some(backend),
-        guests,
-        clock: Arc::new(SystemClock),
-        progress: progress.clone(),
-        hooks: Arc::new(NoHooks),
-        boot_bound: DEFAULT_BOOT_BOUND,
-    })
-}
+    /// The error of the engine's Linux guest building a base layer, which downloads the base image.
+    fn base_build(&self) -> Error {
+        let recipe = crate::recipe::embedded::get("ubuntu-24.04").expect("the embedded Ubuntu recipe");
+        let builder = self.engine.guests().builder(GuestKind::Linux).unwrap();
+        let context = BuildCtx {
+            dirs: self.dirs.clone(),
+            arch: Arch::Amd64,
+            disk_size: 1 << 30,
+            progress: Arc::new(NullProgress),
+        };
+        self.engine
+            .store()
+            .unwrap()
+            .build(&request(key(2)), None, |staging| {
+                Ok(Built::from_meta(&builder.build_base(
+                    &recipe.source,
+                    &context,
+                    staging.dir,
+                )?))
+            })
+            .expect_err("the transport refuses")
+    }
 
-/// Lists, opens, reaps and removes the instance `name` through `engine`.
-fn list_open_reap_and_remove(engine: &Arc<Engine>, name: &str) {
-    assert_eq!(engine.list(ListFilter::All).unwrap().len(), 1);
-    engine.instance(name).unwrap();
-    engine.reap();
-    engine.instance(name).unwrap().remove().unwrap();
-    assert!(engine.list(ListFilter::All).unwrap().is_empty());
-}
-
-#[skuld::test]
-fn the_engine_downloads_nothing_for_ls_open_remove_and_reap(#[fixture(unicode_home)] home: &Path) {
-    let fx = engine_fixture(home, memory());
-    instance_in(&fx, "foo", home);
-    let (transport, progress) = (Arc::new(Refusing::default()), memory());
-    let engine = qemu_engine(&fx.env.dirs, &transport, &progress);
-
-    list_open_reap_and_remove(&engine, "foo");
-
-    assert_eq!(transport.gets(), 0);
+    /// The error of the engine's backend launching a machine. (`Instance::start` stops at the seed's placeholder
+    /// keys before it reaches the backend.)
+    fn launch(&self) -> Error {
+        let spec = fake_spec(
+            self.home.join("disk.img"),
+            self.home.join("serial.log"),
+            Lifetime::OutlivesOwner,
+        );
+        self.engine
+            .backend()
+            .unwrap()
+            .launch(&spec)
+            .err()
+            .expect("a launch needs QEMU, which the transport refuses, or a runtime directory")
+    }
 }
 
 #[skuld::test]
 fn a_transport_that_refuses_fails_only_the_command_that_downloads(#[fixture(unicode_home)] home: &Path) {
-    let fx = engine_fixture(home, memory());
-    instance_in(&fx, "foo", home);
-    let (transport, progress) = (Arc::new(Refusing::default()), memory());
-    let engine = qemu_engine(&fx.env.dirs, &transport, &progress);
-    list_open_reap_and_remove(&engine, "foo");
+    let qemu = QemuEngine::new(home);
+    let engine = &qemu.engine;
 
-    let recipe = crate::recipe::embedded::get("ubuntu-24.04").expect("the embedded Ubuntu recipe");
-    let builder = engine.guests().builder(GuestKind::Linux).unwrap();
-    let context = BuildCtx {
-        dirs: fx.env.dirs.clone(),
-        arch: Arch::Amd64,
-        disk_size: 1 << 30,
-        progress: Arc::new(NullProgress),
-    };
-    let error = fx
-        .env
-        .store
-        .build(&request(key(2)), None, |staging| {
-            let source: &Source = &recipe.source;
-            Ok(Built::from_meta(&builder.build_base(source, &context, staging.dir)?))
-        })
-        .expect_err("the transport refuses");
+    assert_eq!(engine.list(ListFilter::All).unwrap().len(), 1);
+    engine.instance("foo").unwrap();
+    engine.reap();
+    assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
 
-    assert_eq!(error.kind(), ErrorKind::Download);
+    let error = qemu.base_build();
+    assert_eq!(error.kind(), ErrorKind::Download, "{error}");
     assert!(error.message().contains("no network in this test"), "{error}");
-    assert_eq!(transport.gets(), 1);
+    assert_eq!(qemu.downloads().len(), 1, "{:?}", qemu.downloads());
+
+    engine.instance("foo").unwrap().remove().unwrap();
+    assert!(engine.list(ListFilter::All).unwrap().is_empty());
 }
 
 #[skuld::test]
-fn qemu_parts_serve_a_linux_guest(#[fixture(unicode_home)] home: &Path) {
-    let parts = parts_over(&Dirs::under(home), &Arc::new(Refusing::default()), &memory());
-    parts.guests.os(GuestKind::Linux).expect("a Linux guest");
-    parts.guests.builder(GuestKind::Linux).expect("a Linux builder");
+fn a_launch_resolves_qemu_through_the_transport_it_was_given(#[fixture(unicode_home)] home: &Path) {
+    let qemu = QemuEngine::new(home);
+
+    let error = qemu.launch();
+
+    assert_eq!(error.kind(), ErrorKind::Download, "{error}");
+    assert_eq!(qemu.downloads().len(), 1, "{:?}", qemu.downloads());
 }
 
-/// Dirs for a host that cannot name its runtime directory; the other four are as `Dirs::under(home)` has them.
-fn dirs_without_a_runtime_directory(home: &Path) -> Dirs {
-    Dirs::from_lookup(
-        Some(home.to_path_buf()),
-        &|name| {
-            let dir = match name {
-                "XDG_CONFIG_HOME" => "config",
-                "XDG_DATA_HOME" => "data",
-                "XDG_CACHE_HOME" => "cache",
-                "XDG_STATE_HOME" => "state",
-                _ => return None,
-            };
-            Some(home.join(dir).into())
-        },
-        &|| Err(Error::new(ErrorKind::Config, "no runtime directory on this test host")),
-    )
-    .unwrap()
+#[skuld::test]
+fn the_engine_serves_a_linux_guest(#[fixture(unicode_home)] home: &Path) {
+    let qemu = QemuEngine::new(home);
+
+    qemu.engine.guests().os(GuestKind::Linux).expect("a Linux guest");
+    qemu.engine.guests().builder(GuestKind::Linux).expect("a Linux builder");
 }
 
 #[skuld::test]
 fn an_engine_over_a_host_that_cannot_name_its_runtime_directory_lists_and_launches_with_that_error(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let fx = engine_fixture(home, memory());
-    instance_in(&fx, "foo", home);
-    let (transport, progress) = (Arc::new(Refusing::default()), memory());
-    let dirs = dirs_without_a_runtime_directory(home);
-    let engine = qemu_engine(&dirs, &transport, &progress);
+    let dirs = Dirs::under_with_run(home, Err(Error::new(ErrorKind::Config, RUN_DIR_ERROR)));
+    let qemu = QemuEngine::over(home, dirs);
 
-    assert_eq!(engine.list(ListFilter::All).unwrap().len(), 1);
-    engine.reap();
-    let told = progress.messages();
+    assert_eq!(qemu.engine.list(ListFilter::All).unwrap().len(), 1);
+    qemu.engine.reap();
+    let told = qemu.progress.messages();
     assert!(
-        told.iter()
-            .any(|m| m.contains("no runtime directory on this test host")),
+        told.iter().any(|m| m.contains(RUN_DIR_ERROR)),
         "the reap does not name the cause: {told:?}"
     );
 
-    let spec = fake_spec(home.join("disk.img"), home.join("serial.log"), Lifetime::OutlivesOwner);
-    let error = engine
-        .backend()
-        .unwrap()
-        .launch(&spec)
-        .err()
-        .expect("a launch has no runtime directory");
+    let error = qemu.launch();
+    assert!(error.message().contains(RUN_DIR_ERROR), "{error}");
     assert!(
-        error.message().contains("no runtime directory on this test host"),
-        "{error}"
+        qemu.downloads().is_empty(),
+        "a launch that cannot work downloads nothing first: {:?}",
+        qemu.downloads()
     );
-    assert_eq!(transport.gets(), 0, "a launch that cannot work downloads nothing first");
 }
 
 #[skuld::test]
 fn building_the_engine_and_listing_create_no_runtime_directory(#[fixture(unicode_home)] home: &Path) {
-    let dirs = Dirs::under(home);
-    let (transport, progress) = (Arc::new(Refusing::default()), memory());
-    let engine = qemu_engine(&dirs, &transport, &progress);
+    let qemu = QemuEngine::new(home);
     let absent = |when: &str| {
-        let run = dirs.run().unwrap();
+        let run = qemu.dirs.run().unwrap();
         assert!(
             symlink_metadata_if_present(run).unwrap().is_none(),
             "{when}: {} exists",
@@ -188,8 +177,8 @@ fn building_the_engine_and_listing_create_no_runtime_directory(#[fixture(unicode
     };
 
     absent("after construction");
-    engine.list(ListFilter::All).unwrap();
+    qemu.engine.list(ListFilter::All).unwrap();
     absent("after list");
-    engine.reap();
+    qemu.engine.reap();
     absent("after reap");
 }
