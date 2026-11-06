@@ -349,6 +349,7 @@ fn assert_current_recovery(error: &Error, key: LayerKey, moved_aside: &Path) {
 /// The abort message names the layer, each thing that keeps it, and the ways out.
 fn assert_record_recovery(error: &Error, layer: &LayerRef, holders: &str, moved_aside: &Path) {
     let message = error.message();
+    assert!(!message.contains('\n'), "{error}");
     assert!(
         message.contains(&format!("layer {} generation {}", layer.key, layer.generation)),
         "{error}"
@@ -396,6 +397,8 @@ fn gc_aborts_when_a_kept_layers_record_is_missing(#[fixture(unicode_home)] home:
     std::fs::remove_file(env.store.generation_dir(&child).join("meta.json")).unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(error.message().contains("record of kept layer"), "{error}");
+    assert!(error.message().contains(") is missing, so"), "{error}");
     assert_record_recovery(
         &error,
         &child,
@@ -447,6 +450,7 @@ fn gc_aborts_when_a_kept_layers_directory_is_a_file(#[fixture(unicode_home)] hom
     assert_eq!(error.kind(), ErrorKind::Store);
     assert_record_recovery(&error, &child, &as_current(child.key), &dir);
     assert!(error.message().starts_with("cannot collect: "), "{error}");
+    assert!(error.message().contains(") is missing, so"), "{error}");
     assert!(error.message().contains("nothing was deleted"), "{error}");
     assert!(exists(&env, &old_parent));
 }
@@ -496,6 +500,51 @@ fn gc_aborts_when_a_kept_layers_record_names_another_layer(#[fixture(unicode_hom
         &env.store.generation_dir(&child),
     );
     assert!(exists(&env, &old_parent));
+}
+
+#[skuld::test]
+fn gc_passes_a_newer_schema_record_through_without_recovery_advice(#[fixture(unicode_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    let record = env.store.generation_dir(&child).join("meta.json");
+    std::fs::write(&record, br#"{ "schema": 2 }"#).unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(
+        error
+            .message()
+            .starts_with(&format!("{} has schema 2, ", record.display())),
+        "{error}"
+    );
+    assert!(error.message().ends_with("; upgrade devvm"), "{error}");
+    assert!(!error.message().contains("aside"), "{error}");
+    assert!(!error.message().contains("cannot collect"), "{error}");
+    assert!(exists(&env, &old_parent));
+}
+
+#[skuld::test]
+fn gc_does_not_name_a_layer_whose_record_is_another_layers_as_a_child(#[fixture(unicode_home)] home: &Path) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    // A kept layer whose directory holds a copy of the child's record: it names `old_parent` as parent, but it is not
+    // the child. Its key sorts after `old_parent`'s, so the walk reaches `old_parent` first.
+    let copy = build_expiring(&env, key(3), None, Some(t0() + days(85) + days(90)));
+    let copy_ref = copy.tip().layer_ref();
+    drop(copy);
+    std::fs::copy(
+        env.store.generation_dir(&child).join("meta.json"),
+        env.store.generation_dir(&copy_ref).join("meta.json"),
+    )
+    .unwrap();
+    std::fs::write(env.store.generation_dir(&old_parent).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    let holder = format!(
+        "the parent of layer {} generation {}, which is itself kept",
+        child.key, child.generation
+    );
+    assert_record_recovery(&error, &old_parent, &holder, &env.store.generation_dir(&old_parent));
+    assert!(!error.message().contains(&copy_ref.generation.to_string()), "{error}");
 }
 
 #[skuld::test]
