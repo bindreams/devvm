@@ -429,10 +429,16 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
             silent_streams.push(stream);
             continue;
         }
+        // One snapshot of the trusted pair per connection, so an `install` between accept and auth cannot pair the old
+        // host key with the new client key.
+        let (trusted_host, client) = {
+            let trusted = state.trusted.lock().unwrap();
+            (trusted.host.clone(), trusted.client.clone())
+        };
         let host_key = if index < state.options.wrong_host_key_connections {
             state.bad.clone()
         } else {
-            state.trusted.lock().unwrap().host.clone()
+            trusted_host
         };
         let config = Arc::new(Config {
             keys: vec![host_key],
@@ -443,6 +449,7 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
         let connection = Connection {
             state: state.clone(),
             index,
+            client,
             channels: HashMap::new(),
             drop_now: Arc::new(Notify::new()),
             reading_stdin: HashSet::new(),
@@ -479,6 +486,8 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
 struct Connection {
     state: Arc<State>,
     index: usize,
+    /// The client key trusted when this connection was accepted.
+    client: PublicKey,
     channels: HashMap<ChannelId, Channel<Msg>>,
     /// Fired by the `drop-connection` script: the TCP connection is dropped without a word.
     drop_now: Arc<Notify>,
@@ -493,7 +502,7 @@ impl Handler for Connection {
 
     async fn auth_publickey(&mut self, _user: &str, key: VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
         let accepted = self.index >= self.state.options.rejected_key_connections
-            && key.public_key.key_data() == self.state.trusted.lock().unwrap().client.key_data();
+            && key.public_key.key_data() == self.client.key_data();
         Ok(if accepted { Auth::Accept } else { Auth::reject() })
     }
 
