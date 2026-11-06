@@ -76,7 +76,8 @@ enum Scope {
 struct Take<'a> {
     scope: Scope,
     mode: Mode,
-    /// Makes the file and `instances.dir` if missing. Else no file at the name is [`Current::Gone`].
+    /// Makes the file and `instances.dir` if missing. Else no file at the name is [`Current::Gone`]. A waiting
+    /// [`Scope::InDir`] take makes `instances.dir` for the look whatever `create` is.
     create: bool,
     /// `None` tries the lock: [`Current::Held`] if another holds it, and the shared hold of `instances.dir` lasts from
     /// the open to the end of the look. Else waits for the lock without that hold, so as not to block an unlinker,
@@ -270,22 +271,24 @@ impl Locks {
 
     /// Takes the op lock exclusive, waiting for it. `NotFound` if the instance is gone before or after the wait.
     pub(crate) fn op_exclusive(&self, id: &InstanceId, what: &str, progress: &dyn Progress) -> Result<FileLock> {
-        self.op_with(id, Mode::Exclusive, what, progress, &mut || {})
+        self.op_with(id, Mode::Exclusive, what, progress, &mut || {}, &mut || {})
     }
 
     /// Takes the op lock shared, waiting for it. `NotFound` if the instance is gone before or after the wait.
     pub(crate) fn op_shared(&self, id: &InstanceId, what: &str, progress: &dyn Progress) -> Result<FileLock> {
-        self.op_with(id, Mode::Shared, what, progress, &mut || {})
+        self.op_with(id, Mode::Shared, what, progress, &mut || {}, &mut || {})
     }
 
-    /// The op lock in `mode`, with `before_look` run under the shared hold of `instances.dir`, just before the file at
-    /// the name is checked. The holder waited for may have removed the instance or put another file at the name.
+    /// The op lock in `mode`, with `before_wait` run just before the take first waits, and `before_look` run under the
+    /// shared hold of `instances.dir`, just before the file at the name is checked. The holder waited for may have
+    /// removed the instance or put another file at the name.
     fn op_with(
         &self,
         id: &InstanceId,
         mode: Mode,
         what: &str,
         progress: &dyn Progress,
+        before_wait: &mut dyn FnMut(),
         before_look: &mut dyn FnMut(),
     ) -> Result<FileLock> {
         let take = Take {
@@ -294,7 +297,7 @@ impl Locks {
             create: false,
             wait: Some((what, progress)),
         };
-        let taken = self.take_current(&self.op_path(id), &take, &mut || {}, &mut || {}, before_look)?;
+        let taken = self.take_current(&self.op_path(id), &take, before_wait, &mut || {}, before_look)?;
         taken.waited().map(|(lock, _dir)| lock).ok_or_else(|| gone(id))
     }
 
@@ -472,6 +475,8 @@ impl Locks {
         between: &mut dyn FnMut(),
         before_look: &mut dyn FnMut(),
     ) -> Result<Current> {
+        // Whether this take's own lock has been waited for: a wait for `instances.dir` is not that.
+        let said = Cell::new(false);
         let waited = Cell::new(false);
         let mut before_wait = || {
             if !waited.replace(true) {
@@ -499,8 +504,11 @@ impl Locks {
                     }
                 }
                 Some((what, progress)) => {
-                    let progress: &dyn Progress = if waited.get() { &NullProgress } else { progress };
-                    take_waiting(&mut lock, take.mode, what, progress, &mut before_wait)?;
+                    let progress: &dyn Progress = if said.get() { &NullProgress } else { progress };
+                    take_waiting(&mut lock, take.mode, what, progress, &mut || {
+                        said.set(true);
+                        before_wait();
+                    })?;
                 }
             }
             let dir = match (take.scope, hold) {

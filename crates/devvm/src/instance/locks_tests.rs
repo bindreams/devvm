@@ -346,6 +346,50 @@ fn op_exclusive_waits_for_the_holder_and_says_so_first(#[fixture(unicode_home)] 
 }
 
 #[skuld::test]
+fn an_op_wait_after_a_wait_for_instances_dir_still_says_what_it_waits_for(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let locks = &locks;
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let holder = locks.op_exclusive(&id, "holder", &NullProgress).unwrap();
+    let (progress, messages) = ChannelProgress::new();
+    let (held, dir_held) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (waiting, dir_waits) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let excluder = scope.spawn(move || {
+            locks
+                .excluding_readers(&mut || {}, || {
+                    held.send(()).unwrap();
+                    released.recv().unwrap();
+                })
+                .unwrap();
+        });
+        dir_held.recv().unwrap();
+        let waiter = scope.spawn(|| {
+            locks
+                .op_with(
+                    &id,
+                    Mode::Exclusive,
+                    "the instance",
+                    &*progress,
+                    &mut || waiting.send(()).unwrap(),
+                    &mut || {},
+                )
+                .unwrap()
+        });
+        // The waiter found `instances.dir` taken; the op lock is held too, so it waits for that next.
+        dir_waits.recv().unwrap();
+        release.send(()).unwrap();
+        assert_eq!(messages.recv().unwrap(), "waiting for the instance");
+        excluder.join().unwrap();
+        drop(holder);
+        drop(waiter.join().unwrap());
+    });
+}
+
+#[skuld::test]
 fn op_wait_that_wakes_on_an_unlinked_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
     for shared in [false, true] {
         let locks = locks(home);
@@ -856,7 +900,7 @@ fn an_op_take_compares_the_file_at_the_name_under_a_shared_hold_of_instances_dir
     for mode in [Mode::Shared, Mode::Exclusive] {
         let mut held = None;
         let lock = locks
-            .op_with(&id, mode, "x", &NullProgress, &mut || {
+            .op_with(&id, mode, "x", &NullProgress, &mut || {}, &mut || {
                 held = Some(instances_dir_is_held_shared(&home.join("locks")));
             })
             .unwrap();
