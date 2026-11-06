@@ -110,7 +110,7 @@ fn a_file_at_the_path_is_a_vanished_instance_directory(#[fixture(unicode_home)] 
 #[skuld::test]
 fn a_path_that_cannot_be_looked_at_is_a_warning_not_a_vanished_path(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
-    // No file system can look at a name with a NUL in it: the look fails, and says nothing about the path.
+    // std refuses a path with a NUL in it before any file-system call: the look fails, and says nothing about the path.
     let path = fx.env.dirs.instances().join("foo\0");
     let mut report = ReapReport::default();
 

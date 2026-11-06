@@ -83,7 +83,8 @@ impl QemuBackend {
         let paths = LaunchPaths::resolve(spec, endpoint.path().to_path_buf(), &install.share)?;
         let args = build_args(spec, &paths)?;
 
-        // An earlier run may have left files in the working directory; QEMU starts in an empty one.
+        // An earlier run may have left files in the working directory; QEMU starts in an empty one. The caller's
+        // instance lock keeps any other deleter of it away.
         let cwd = spec.dir.join("qemu-cwd");
         remove_tree(&cwd).map_err(|e| Error::io(ErrorKind::Io, format!("cannot clear {}", cwd.display()), e))?;
         std::fs::create_dir_all(&cwd)

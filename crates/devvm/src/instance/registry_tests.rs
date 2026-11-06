@@ -682,7 +682,7 @@ fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(u
 #[skuld::test]
 fn a_placement_whose_look_fails_is_an_io_failure_not_a_taken_name(#[fixture(unicode_home)] home: &Path) {
     let temp = home.join("temp");
-    // No file system can look at a name with a NUL in it: the look fails, and says nothing about the name.
+    // std refuses a path with a NUL in it before any file-system call: the look fails, and says nothing about the name.
     let target = home.join("target\0");
 
     match place(&temp, &target) {

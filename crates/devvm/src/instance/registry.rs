@@ -362,7 +362,11 @@ fn place(temp: &std::path::Path, target: &std::path::Path) -> Placement {
         )),
         Ok(None) => match std::fs::rename(temp, target) {
             Ok(()) => Placement::Placed,
-            Err(e) => Placement::Failed(Error::io(ErrorKind::Io, format!("cannot rename {}", temp.display()), e)),
+            Err(e) => Placement::Failed(Error::io(
+                ErrorKind::Io,
+                format!("cannot rename {} to {}", temp.display(), target.display()),
+                e,
+            )),
         },
         Err(e) => Placement::Failed(Error::io(
             ErrorKind::Io,
