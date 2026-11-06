@@ -878,7 +878,7 @@ fn remove_tree_deletes_a_directory_with_everything_under_it(#[fixture(unicode_ho
 #[skuld::test]
 fn remove_tree_of_a_path_that_cannot_be_looked_at_says_the_look_failed(#[fixture(unicode_home)] home: &Path) {
     // No file system can use a name with a NUL in it, and that says nothing about what is there: the look fails.
-    let path = home.join("a b");
+    let path = home.join("a\0b");
     let error = super::remove_tree(&path).unwrap_err();
     assert!(
         error

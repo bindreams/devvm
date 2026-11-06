@@ -18,7 +18,7 @@
 //!   an instance and nothing deletes it. A reader looks at the directory or lock file it will read under it, except
 //!   for the first look when `instances.dir` is missing (see [`Locks::reading`]), and puts `instances.dir` back if
 //!   what it reads exists without it.
-//! - `dead.lock`: held by whoever deletes a tree devvm owns (the contents of a `.dead-<id>` or `.new-<id>` directory),
+//! - `dead.lock`: held by whoever deletes an instance tree (a `.dead-<id>` or `.new-<id>` directory under `instances/`),
 //!   so that two processes never delete one tree at once. `rm` waits for it (it promises its tree is gone); the reaper
 //!   only tries it, since it runs again. Its holders only delete and wait for nothing. The one exception: a creator
 //!   deletes its own half-built `.new-<id>` under its owner lock, not `dead.lock`. The reaper deletes a `.new-<id>`
