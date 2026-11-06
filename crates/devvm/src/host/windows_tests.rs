@@ -410,36 +410,3 @@ fn remove_tree_deletes_a_junction_at_the_root_and_leaves_its_target(#[fixture(un
     assert!(std::fs::symlink_metadata(&link).is_err());
     assert!(target.join("kept").is_file());
 }
-
-/// An empty directory that cannot be removed is a name held by someone: `AlreadyExists`, not a failure of the publish,
-/// and the cause stays in the error.
-#[skuld::test]
-fn publish_dir_of_an_empty_directory_that_cannot_be_removed_is_the_name_being_taken(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    use crate::host::other::OtherHost;
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
-
-    let (from, held) = (home.join("from"), home.join("held"));
-    std::fs::create_dir(&from).unwrap();
-    std::fs::create_dir(&held).unwrap();
-    // Opened without FILE_SHARE_DELETE, so the directory cannot be deleted while this handle lives.
-    let handle = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(0)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(&held)
-        .unwrap();
-
-    let error = OtherHost.publish_dir(&from, &held).unwrap_err();
-
-    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
-    assert!(
-        error.to_string().contains("cannot remove the empty directory"),
-        "{error}"
-    );
-    assert!(error.get_ref().is_some(), "the removal's error is kept");
-    drop(handle);
-    assert!(from.is_dir() && held.is_dir());
-}

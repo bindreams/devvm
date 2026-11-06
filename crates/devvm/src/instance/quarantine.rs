@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::host::symlink_metadata_if_present;
+use crate::host::{look_failed, symlink_metadata_if_present};
 use crate::instance::locks::Probe;
 use crate::instance::reaper::ReapReport;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
@@ -54,7 +54,7 @@ pub(super) fn classify(name: &str, record: RecordRead, marker: MarkerRead) -> Pl
 /// What the move did, decided and done while no one reads inside any instance directory.
 enum Moved {
     Done,
-    /// The path is gone: the instance was removed since the verdict.
+    /// The path is gone or is no directory (a file, a link) any more: the instance was removed since the verdict.
     Vanished,
     /// The directory is not what the verdict was about (valid now, or another instance): left alone.
     Changed,
@@ -128,12 +128,7 @@ fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &P
         Ok(Some(meta)) if meta.is_dir() => {}
         // Nothing, or anything but a directory (a file, a link), where the directory was: the directory is gone.
         Ok(_) => return Moved::Vanished,
-        Err(e) => {
-            return Moved::Failed(std::io::Error::new(
-                e.kind(),
-                format!("cannot look at {}: {e}", path.display()),
-            ));
-        }
+        Err(e) => return Moved::Failed(look_failed(path, e)),
     }
     let (record, marker) = match (InstanceRecord::read(path), read_marker(path)) {
         (Ok(record), Ok(marker)) => (record, marker),

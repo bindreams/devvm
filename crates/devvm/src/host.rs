@@ -37,7 +37,7 @@ pub(crate) mod watch;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-pub(crate) use entry::{Entry, is_a_link, is_absent, symlink_metadata_if_present};
+pub(crate) use entry::{Entry, is_a_link, is_absent, look_failed, symlink_metadata_if_present};
 pub(crate) use file_id::{Comparison, FileId};
 #[cfg_attr(
     not(windows),
@@ -161,15 +161,11 @@ pub(crate) trait Host: Send + Sync {
     /// to rename over a read-only file). A directory at `to` is an error.
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()>;
 
-    /// Moves the directory `from` to `to`, which nobody has: an existing `to` is `AlreadyExists` and nothing changes.
-    /// Unlike a rename, it is a publish: of several that race for one name, exactly one wins. Where the file system has
-    /// a rename that refuses to replace (Windows, Linux, macOS), `to` is there in full or not at all; where it has none
-    /// (NFS, some FUSE mounts, old kernels) `to` is claimed first, and a kill between the claim and the move leaves it
-    /// empty: a dead claim.
-    ///
-    /// The caller excludes other publishers of the name (the keys lock, `excluding_readers`). A host that can leave a
-    /// dead claim, any but Windows, first removes an empty directory at `to`; one that cannot be removed is
-    /// `AlreadyExists`. Anything else there is refused untouched.
+    /// Moves the directory `from` to `to`, which nobody has: an existing `to`, even an empty directory, is
+    /// `AlreadyExists` and nothing changes. Unlike a rename, it is a publish: of several that race for one name,
+    /// exactly one wins. Where the file system has a rename that refuses to replace (Windows, Linux, macOS), `to` is
+    /// there in full or not at all; where it has none (NFS, some FUSE mounts, old kernels) `to` is claimed first, and
+    /// a kill between the claim and the move leaves it empty.
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
 
     /// Flushes the entries of `dir` to disk, so a file or directory made in it survives a crash. Does nothing on
@@ -265,41 +261,10 @@ pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Whether a failed `remove_dir` means the directory is not an empty dead claim, so `publish_dir` is left to refuse it:
-/// the name is gone or below a file ([`is_absent`]), or has something in it. POSIX lets `rmdir` of a non-empty
-/// directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`.
-fn is_not_a_dead_claim(e: &std::io::Error) -> bool {
-    is_absent(e)
-        || matches!(
-            e.kind(),
-            std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists
-        )
-}
-
-/// Removes the empty directory at `dir`, for [`Host::publish_dir`] of a host that can leave one: a writer killed between
-/// the two steps of its claim. The caller excludes other publishers of the name, so an empty directory there is a dead
-/// claim. A directory with anything in it, a link and a file are left for the publish to refuse. A directory that
-/// cannot be removed is `AlreadyExists`, the name being held. A failed look keeps its kind. The error says whether the
-/// look or the removal failed.
-fn clear_dead_claim(dir: &Path) -> std::io::Result<()> {
-    let say = |what: &str, e: std::io::Error| std::io::Error::new(e.kind(), format!("{what} {}: {e}", dir.display()));
-    let present = symlink_metadata_if_present(dir).map_err(|e| say("cannot look at", e))?;
-    if !present.is_some_and(|m| m.file_type().is_dir()) {
-        return Ok(());
-    }
-    match std::fs::remove_dir(dir) {
-        Err(e) if !is_not_a_dead_claim(&e) => Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            say("cannot remove the empty directory", e),
-        )),
-        _ => Ok(()),
-    }
-}
-
 /// Deletes whatever is at `path`, a name devvm owns, and succeeds when nothing is there: a link is deleted as a link and
 /// never followed, a directory goes with everything under it, anything else is removed as a file. The look comes
-/// first because `remove_dir_all` on a file fails `NotADirectory`, which [`is_absent`] counts as "not there": a file
-/// would stay. Any error of the delete is the answer.
+/// first because `remove_dir_all` on a file is an error, so a file at the name would fail the `rm`, the reaper and the
+/// `qemu-cwd` delete. Any error of the delete is the answer.
 ///
 /// Another deleter or a creator of the name is not guarded against; the caller excludes them. For `.dead-` and `.new-`
 /// trees that is `dead.lock` (`rm`, the reaper). A `.new-` tree also has a creator: it builds and deletes the tree

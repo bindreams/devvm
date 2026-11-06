@@ -191,6 +191,64 @@ fn create_on_a_name_held_by_a_file_fails_and_keeps_it(#[fixture(unicode_home)] h
 }
 
 #[skuld::test]
+fn create_on_a_name_held_by_an_empty_directory_fails_and_keeps_it(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let empty = instances(&fx).join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+
+    let guard = fx.env.store.begin_record().unwrap();
+    let error = fx
+        .registry
+        .create(new_instance(&fx, Some("empty"), &TestStorage { fail: false }), &guard)
+        .err()
+        .expect("the name is taken");
+
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert!(
+        error.message().starts_with("the name empty is taken: ")
+            && error
+                .message()
+                .ends_with(&format!("{} already exists", empty.display())),
+        "{error}"
+    );
+    assert!(
+        empty.read_dir().unwrap().next().is_none(),
+        "the directory is not replaced"
+    );
+    assert_eq!(names(&instances(&fx)), ["empty"], "no .new-* directory is left");
+}
+
+#[skuld::test]
+fn a_generated_name_held_by_an_empty_directory_is_replaced_and_the_create_goes_on(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    let empty = instances(&fx).join("taken");
+    std::fs::create_dir_all(&empty).unwrap();
+    let guard = fx.env.store.begin_record().unwrap();
+    let mut offered = vec!["taken", "free"].into_iter();
+
+    let owned = fx
+        .registry
+        .create_with_seams(
+            new_instance(&fx, None, &TestStorage { fail: false }),
+            &guard,
+            &mut CreateSeams {
+                generate: Box::new(|| InstanceName::parse(offered.next().expect("one retry")).unwrap()),
+                ..CreateSeams::none()
+            },
+        )
+        .expect("a taken generated name is a retry, not a failure");
+
+    assert_eq!(owned.dir().name().as_str(), "free");
+    assert_eq!(names(&instances(&fx)), ["free", "taken"]);
+    assert!(
+        empty.read_dir().unwrap().next().is_none(),
+        "the directory is not replaced"
+    );
+}
+
+#[skuld::test]
 fn concurrent_creates_of_one_name_have_exactly_one_winner(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let (parked, at_rename) = mpsc::channel::<()>();

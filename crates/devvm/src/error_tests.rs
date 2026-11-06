@@ -43,6 +43,17 @@ fn io_error_message_names_context_and_cause() {
 }
 
 #[skuld::test]
+fn an_io_error_that_already_says_its_context_becomes_the_message_as_it_is() {
+    let cause = std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "cannot look at /x/y: access denied",
+    );
+    let error = Error::from_io(ErrorKind::Io, cause);
+    assert_eq!(error.message(), "cannot look at /x/y: access denied");
+    assert!(error.source().is_some());
+}
+
+#[skuld::test]
 fn with_source_keeps_the_message_and_exposes_the_source() {
     let error = Error::new(ErrorKind::Config, "bad").with_source(std::fmt::Error);
     assert_eq!(error.message(), "bad");

@@ -47,6 +47,12 @@ pub(crate) fn symlink_metadata_if_present(path: &Path) -> io::Result<Option<Meta
     }
 }
 
+/// The failure `e` of a look at `path`, said as "cannot look at <path>: <e>" with its kind kept: the look failed, and
+/// that says nothing about what is at `path`.
+pub(crate) fn look_failed(path: &Path, e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("cannot look at {}: {e}", path.display()))
+}
+
 /// [`Host::open_entry`](super::Host::open_entry) for a host that supplies how a regular file is opened and how any
 /// other kind of file is named in a message.
 pub(super) fn open_entry(

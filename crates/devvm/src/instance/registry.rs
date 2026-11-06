@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
-use crate::host::{Host, remove_tree};
+use crate::host::{Host, look_failed, remove_tree, symlink_metadata_if_present};
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
@@ -321,41 +321,51 @@ impl Registry {
             // Placed while no one reads inside any instance directory, like every other rename of one.
             let placed = self
                 .locks
-                .excluding_readers(&mut seams.before_wait, || place(self.host, temp, &target))?;
+                .excluding_readers(&mut seams.before_wait, || place(temp, &target))?;
             (seams.after_rename)();
             match placed {
                 Placement::Placed => return Ok(self.handle(id, name)),
                 Placement::Taken(e) => {
                     if new.name.is_some() {
-                        return Err(Error::new(
-                            ErrorKind::AlreadyExists,
-                            format!("the name {name} is taken: {} already exists", target.display()),
-                        )
-                        .with_source(e));
+                        return Err(
+                            Error::new(ErrorKind::AlreadyExists, format!("the name {name} is taken: {e}"))
+                                .with_source(e),
+                        );
                     }
                     name = (seams.generate)();
                 }
-                Placement::Failed(e) => return Err(io("rename", temp, e)),
+                Placement::Failed(e) => return Err(e),
             }
         }
     }
 }
 
-/// How the rename of a new instance to its name went.
+/// How the placement of a new instance at its name went.
 enum Placement {
     Placed,
-    /// Something is at the name: an instance, or a file or a directory that holds something and is not one.
+    /// Something is at the name: an instance, or anything else that is not devvm's to replace.
     Taken(std::io::Error),
-    Failed(std::io::Error),
+    Failed(Error),
 }
 
-/// Publishes `temp` at `target`, which nothing may have. `AlreadyExists` means the name is taken ([`Host::publish_dir`],
-/// which first clears an empty directory there, a dead claim); any other failure is not.
-fn place(host: &dyn Host, temp: &std::path::Path, target: &std::path::Path) -> Placement {
-    match host.publish_dir(temp, target) {
-        Ok(()) => Placement::Placed,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Placement::Taken(e),
-        Err(e) => Placement::Failed(e),
+/// Renames `temp` to `target` if nothing is there. `Taken` is an `AlreadyExists` error naming `target`; a failed look
+/// or rename is `Failed`.
+///
+/// Called under `excluding_readers`, which every rename of an instance directory takes, so no devvm process creates,
+/// renames or removes a name in `instances/` between the look and the rename. Only an actor outside devvm could, and
+/// devvm does not guard against one. That is why the look needs no `publish_dir`, and with it no claim for a kill to
+/// leave behind.
+fn place(temp: &std::path::Path, target: &std::path::Path) -> Placement {
+    match symlink_metadata_if_present(target) {
+        Ok(Some(_)) => Placement::Taken(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", target.display()),
+        )),
+        Ok(None) => match std::fs::rename(temp, target) {
+            Ok(()) => Placement::Placed,
+            Err(e) => Placement::Failed(Error::io(ErrorKind::Io, format!("cannot rename {}", temp.display()), e)),
+        },
+        Err(e) => Placement::Failed(Error::from_io(ErrorKind::Io, look_failed(target, e))),
     }
 }
 
