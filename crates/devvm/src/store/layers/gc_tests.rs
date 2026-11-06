@@ -380,7 +380,6 @@ fn gc_aborts_when_a_kept_layers_record_is_corrupt_and_deletes_none_of_its_ancest
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert!(error.message().contains(&child.generation.to_string()), "{error}");
-    // The abort says what is wrong with the record, not only that it is unreadable.
     assert!(
         error.message().contains(") is unreadable (key must be a string"),
         "{error}"
@@ -434,8 +433,7 @@ fn gc_names_the_child_that_keeps_a_non_current_parent_with_a_corrupt_record(#[fi
 #[skuld::test]
 fn gc_names_every_kept_child_of_a_parent_with_a_corrupt_record(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
-    // Two children of one parent that is then rebuilt, so the old parent is kept only through them. The second
-    // child's key sorts after the first's, so the walk reaches the old parent before it reads the second.
+    // Two children of one parent that is then rebuilt, so the old parent is kept only through them.
     let parent = build_expiring(&env, key(1), None, Some(t0() + days(90)));
     let old_parent = parent.tip().layer_ref();
     let child = build_expiring(&env, key(2), Some(&parent), Some(t0() + days(120)));
