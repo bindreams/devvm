@@ -323,6 +323,8 @@ fn a_reparse_point_that_is_no_name_surrogate_is_let_through_as_the_file(#[fixtur
         let opened = WindowsHost.open_lock_file(&path, create);
         assert!(opened.is_ok(), "create {create}: {}", opened.unwrap_err());
     }
+    let held = WindowsHost.hold_existing(&path);
+    assert!(matches!(held, Ok(HoldOutcome::Taken(_))), "{held:?}");
 }
 
 // The runtime directory -----------------------------------------------------------------------------------------------

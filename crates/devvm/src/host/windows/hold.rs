@@ -14,13 +14,11 @@ use windows_sys::Win32::Foundation::{
     INVALID_HANDLE_VALUE, NTSTATUS, STATUS_DELETE_PENDING, STATUS_SUCCESS,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
-    FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
-    FileRenameInfo, FileRenameInfoEx, GetFileInformationByHandleEx, OPEN_ALWAYS, OPEN_EXISTING,
-    SetFileInformationByHandle,
+    CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_DISPOSITION_FLAG_DELETE,
+    FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
+    FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
+    FileDispositionInfoEx, FileRenameInfo, FileRenameInfoEx, OPEN_ALWAYS, OPEN_EXISTING, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
 
@@ -288,40 +286,14 @@ pub(super) fn new(path: &Path) -> std::io::Result<WindowsHold> {
 /// be a directory, so [`refuse_link`] follows every open.
 const LINK_OPEN: u32 = FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS;
 
-/// The bit of a reparse tag that marks a name surrogate (a symlink or a junction, whose target is another file), as
-/// `IsReparseTagNameSurrogate` tests it. Other tags (cloud files, deduplication) are the file itself.
-const REPARSE_TAG_NAME_SURROGATE: u32 = 0x2000_0000;
-
-/// The reparse tag of `file`, which must be a reparse point: the query is not made for any other file, since a volume
-/// without reparse points (FAT, exFAT) need not answer it.
-fn reparse_tag(file: &File) -> std::io::Result<u32> {
-    let mut info = FILE_ATTRIBUTE_TAG_INFO {
-        FileAttributes: 0,
-        ReparseTag: 0,
-    };
-    // SAFETY: the handle is open, and the buffer is a `FILE_ATTRIBUTE_TAG_INFO` of the size passed.
-    let read = unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileAttributeTagInfo,
-            (&raw mut info).cast(),
-            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
-        )
-    };
-    if read == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(info.ReparseTag)
-}
-
-/// `InvalidInput` "is a link" if `file` is a name-surrogate reparse point; `IsADirectory` for a directory, which
-/// [`LINK_OPEN`] lets open but a lock or hold is not on.
+/// `InvalidInput` "is a link" if `file` is a name-surrogate reparse point (std's `is_symlink`); `IsADirectory` for a
+/// directory, which [`LINK_OPEN`] lets open but a lock or hold is not on.
 fn refuse_link(file: &File, path: &Path) -> std::io::Result<()> {
-    let attributes = file.metadata()?.file_attributes();
-    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && reparse_tag(file)? & REPARSE_TAG_NAME_SURROGATE != 0 {
+    let metadata = file.metadata()?;
+    if metadata.file_type().is_symlink() {
         return Err(is_a_link(path));
     }
-    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+    if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::IsADirectory,
             format!("{} is a directory", path.display()),

@@ -30,6 +30,7 @@
 //!
 //! No lock file is opened through a link: a link at a lock name is an error at the open.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use crate::exit::{NullProgress, Progress};
@@ -62,8 +63,53 @@ struct LockInDir {
     file: FileLock,
 }
 
+/// Where the lock file of a [`Take`] is.
+#[derive(Clone, Copy)]
+enum Scope {
+    /// `instances.dir` itself: nothing holds it around the look, and its volume is checked.
+    Dir,
+    /// A file in the lock directory: `instances.dir` is held shared around the look.
+    InDir,
+}
+
+/// One take of a lock file: what it locks and how.
+struct Take<'a> {
+    scope: Scope,
+    mode: Mode,
+    /// Makes the file and `instances.dir` if missing. Else no file at the name is [`Current::Gone`].
+    create: bool,
+    /// `None` tries the lock: [`Current::Held`] if another holds it, and the shared hold of `instances.dir` lasts from
+    /// the open to the end of the look. Else waits for the lock without that hold, so as not to block an unlinker,
+    /// saying `waiting for <what>` through `progress`.
+    wait: Option<(&'a str, &'a dyn Progress)>,
+}
+
+/// How a take ended.
+enum Current {
+    /// No file at the name: before the open, or, without `create`, after the lock.
+    Gone,
+    Held,
+    /// The lock is ours, on the file at the name, and `dir` is the shared hold of `instances.dir` the look was made
+    /// under (`None` for [`Scope::Dir`]).
+    Locked {
+        lock: FileLock,
+        dir: Option<FileLock>,
+    },
+}
+
 fn gone(id: &InstanceId) -> Error {
     Error::new(ErrorKind::NotFound, format!("instance {id} is gone"))
+}
+
+impl Current {
+    /// For a take that waits, which is never [`Current::Held`]: the lock and its hold, or `None` if gone.
+    fn waited(self) -> Option<(FileLock, Option<FileLock>)> {
+        match self {
+            Current::Gone => None,
+            Current::Held => unreachable!("a take that waits is never held"),
+            Current::Locked { lock, dir } => Some((lock, dir)),
+        }
+    }
 }
 
 impl Locks {
@@ -128,7 +174,8 @@ impl Locks {
     /// uses this: it promises its tree is gone. Holders only delete a tree and wait for nothing, so this cannot
     /// deadlock, whatever lock the caller holds.
     pub(crate) fn deleting_waiting<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
-        let _lock = take(self.create(&self.dir.join("dead.lock"))?, Mode::Exclusive, before_wait)?;
+        let mut lock = self.create(&self.dir.join("dead.lock"))?;
+        take_waiting(&mut lock, Mode::Exclusive, DIR_WAIT, &NullProgress, before_wait)?;
         Ok(f())
     }
 
@@ -146,29 +193,34 @@ impl Locks {
 
     /// Creates the owner and op files for a new instance and returns the owner lock, held.
     pub(crate) fn acquire_owner_new(&self, id: &InstanceId) -> Result<FileLock> {
-        self.acquire_owner_new_with(id, &mut || {})
+        self.acquire_owner_new_with(id, &mut || {}, &mut || {})
     }
 
-    /// `acquire_owner_new` with `between` run after the lock is taken and before the file is checked, so a test can
-    /// play the sweeper that unlinks it.
+    /// `acquire_owner_new` with `between` run after the file is opened, so a test can play the sweeper that unlinks it,
+    /// and `before_look` run under the shared hold of `instances.dir`, just before the file at the name is checked.
     ///
     /// Loops until the file at the name is the one locked: each time it is not, a sweeper made progress and the next
     /// iteration creates a fresh file. The op file is created only once the owner lock is held on the file at the
     /// name, inside the hold of `instances.dir` that the check was made under, so no sweeper can remove it
     /// afterwards.
-    pub(crate) fn acquire_owner_new_with(&self, id: &InstanceId, between: &mut dyn FnMut()) -> Result<FileLock> {
-        let path = self.owner_path(id);
-        loop {
-            // The hold ends with the open: waiting for the owner lock must not block a sweeper's unlink.
-            let mut owner = self.open_in_dir(&path, true, &mut || {})?.ok_or_else(|| gone(id))?.file;
-            owner.lock(Mode::Exclusive, "a lock-file sweep to finish", &NullProgress)?;
-            between();
-            let (comparison, _dir) = self.is_current(&owner, &mut || {})?;
-            if comparison == Comparison::Same {
-                drop(self.create(&self.op_path(id))?);
-                return Ok(owner);
-            }
-        }
+    pub(crate) fn acquire_owner_new_with(
+        &self,
+        id: &InstanceId,
+        between: &mut dyn FnMut(),
+        before_look: &mut dyn FnMut(),
+    ) -> Result<FileLock> {
+        let take = Take {
+            scope: Scope::InDir,
+            mode: Mode::Exclusive,
+            create: true,
+            wait: Some(("a lock-file sweep to finish", &NullProgress)),
+        };
+        let (owner, _dir) = self
+            .take_current(&self.owner_path(id), &take, &mut || {}, between, before_look)?
+            .waited()
+            .expect("a take that creates finds its file");
+        drop(self.create(&self.op_path(id))?);
+        Ok(owner)
     }
 
     /// Tries the owner lock like [`Locks::try_owner`], but puts back a missing lock file instead of finding it gone.
@@ -178,14 +230,22 @@ impl Locks {
     /// A holder of an old, unlinked owner file is not seen. Like `acquire_owner_new_with`, it retries until the locked
     /// file is still the one at the name, and it never waits for a held lock.
     pub(crate) fn try_owner_recreating(&self, id: &InstanceId) -> Result<Probe> {
-        self.try_owner_recreating_with(id, &mut || {})
+        self.try_owner_recreating_with(id, &mut || {}, &mut || {})
     }
 
     /// `try_owner_recreating` with `between` run after the file is opened and before it is tried, so a test can play
-    /// the sweeper that unlinks it.
-    pub(crate) fn try_owner_recreating_with(&self, id: &InstanceId, between: &mut dyn FnMut()) -> Result<Probe> {
+    /// the sweeper that unlinks it, and `before_op` run just before the op file is made.
+    pub(crate) fn try_owner_recreating_with(
+        &self,
+        id: &InstanceId,
+        between: &mut dyn FnMut(),
+        before_op: &mut dyn FnMut(),
+    ) -> Result<Probe> {
         let op_path = self.op_path(id);
-        let make_op = &mut || self.create(&op_path).map(drop);
+        let make_op = &mut || {
+            before_op();
+            self.create(&op_path).map(drop)
+        };
         self.probe(&self.owner_path(id), true, &mut || {}, between, make_op)
     }
 
@@ -210,29 +270,32 @@ impl Locks {
 
     /// Takes the op lock exclusive, waiting for it. `NotFound` if the instance is gone before or after the wait.
     pub(crate) fn op_exclusive(&self, id: &InstanceId, what: &str, progress: &dyn Progress) -> Result<FileLock> {
-        self.op(id, Mode::Exclusive, what, progress)
+        self.op_with(id, Mode::Exclusive, what, progress, &mut || {})
     }
 
     /// Takes the op lock shared, waiting for it. `NotFound` if the instance is gone before or after the wait.
     pub(crate) fn op_shared(&self, id: &InstanceId, what: &str, progress: &dyn Progress) -> Result<FileLock> {
-        self.op(id, Mode::Shared, what, progress)
+        self.op_with(id, Mode::Shared, what, progress, &mut || {})
     }
 
-    fn op(&self, id: &InstanceId, mode: Mode, what: &str, progress: &dyn Progress) -> Result<FileLock> {
-        let path = self.op_path(id);
-        loop {
-            let mut lock = self
-                .open_in_dir(&path, false, &mut || {})?
-                .ok_or_else(|| gone(id))?
-                .file;
-            lock.lock(mode, what, progress)?;
-            // The holder we waited for may have removed the instance, or put another file at the name.
-            match self.is_current(&lock, &mut || {})?.0 {
-                Comparison::Same => return Ok(lock),
-                Comparison::Absent => return Err(gone(id)),
-                Comparison::Different => {}
-            }
-        }
+    /// The op lock in `mode`, with `before_look` run under the shared hold of `instances.dir`, just before the file at
+    /// the name is checked. The holder waited for may have removed the instance or put another file at the name.
+    fn op_with(
+        &self,
+        id: &InstanceId,
+        mode: Mode,
+        what: &str,
+        progress: &dyn Progress,
+        before_look: &mut dyn FnMut(),
+    ) -> Result<FileLock> {
+        let take = Take {
+            scope: Scope::InDir,
+            mode,
+            create: false,
+            wait: Some((what, progress)),
+        };
+        let taken = self.take_current(&self.op_path(id), &take, &mut || {}, &mut || {}, before_look)?;
+        taken.waited().map(|(lock, _dir)| lock).ok_or_else(|| gone(id))
     }
 
     /// Unlinks both lock files while no one opens a lock file. An unlink that fails stops it, leaves the owner file for
@@ -274,40 +337,45 @@ impl Locks {
         })?
     }
 
-    /// How the file at the path of `lock`, taken, compares with the file `lock` is on, and the shared hold of
-    /// `instances.dir` it was looked under. Looks while no lock file is unlinked, so the name is there or not there,
-    /// with no unlink half done. `during` runs under the hold, just before the look.
-    ///
-    /// `instances.dir` is made if missing, as in [`Locks::reading`].
-    fn is_current(&self, lock: &FileLock, during: &mut dyn FnMut()) -> Result<(Comparison, FileLock)> {
-        let dir = self.make_dir(Mode::Shared, &mut || {})?;
-        during();
-        Ok((lock.is_at_path()?, dir))
-    }
-
-    /// `instances.dir`, taken in `mode`, whose file is the one at its name: each time it is not, it is taken again,
-    /// like an instance lock. Made if `create`, else `None` if it is absent. `before_wait` runs just before waiting for
-    /// the lock. Its volume is the volume of every lock file in it, so every take checks it.
+    /// `instances.dir`, taken in `mode`, whose file is the one at its name. Made if `create`, else `None` if it is
+    /// absent. `before_wait` runs just before waiting for the lock. Its volume is the volume of every lock file in it,
+    /// so every take checks it.
     fn lock_dir(&self, create: bool, mode: Mode, before_wait: &mut dyn FnMut()) -> Result<Option<FileLock>> {
-        loop {
-            let Some(dir) = FileLock::open_with_host(self.host, &self.dir.join("instances.dir"), create)? else {
-                return Ok(None);
-            };
-            let dir = take(self.checked(dir)?, mode, before_wait)?;
-            if dir.is_at_path()? == Comparison::Same {
-                return Ok(Some(dir));
-            }
-        }
+        let take = Take {
+            scope: Scope::Dir,
+            mode,
+            create,
+            wait: Some((DIR_WAIT, &NullProgress)),
+        };
+        let taken = self.take_current(
+            &self.dir.join("instances.dir"),
+            &take,
+            before_wait,
+            &mut || {},
+            &mut || {},
+        )?;
+        Ok(taken.waited().map(|(lock, _)| lock))
     }
 
     /// [`Locks::lock_dir`] with `create`, whose result is never `None`.
     fn make_dir(&self, mode: Mode, before_wait: &mut dyn FnMut()) -> Result<FileLock> {
-        made(self.lock_dir(true, mode, before_wait)?)
+        Ok(self
+            .lock_dir(true, mode, before_wait)?
+            .expect("a take that creates finds its file"))
     }
 
     /// The lock file at `path`, made with its directories if missing, opened through this host.
     fn create(&self, path: &Path) -> Result<FileLock> {
-        made(FileLock::open_with_host(self.host, path, true)?)
+        FileLock::create_with_host(self.host, path)
+    }
+
+    /// [`Locks::create`] if `create`, else the existing file or `None`.
+    fn open_file(&self, path: &Path, create: bool) -> Result<Option<FileLock>> {
+        if create {
+            self.create(path).map(Some)
+        } else {
+            FileLock::open_existing_with_host(self.host, path)
+        }
     }
 
     /// `instances.dir` held shared for a look at or an open of `seen`. With no `instances.dir`, `None` if `seen` is not
@@ -356,7 +424,7 @@ impl Locks {
         let Some(dir) = dir else {
             return Ok(None);
         };
-        Ok(FileLock::open_with_host(self.host, path, create)?.map(|file| LockInDir { dir, file }))
+        Ok(self.open_file(path, create)?.map(|file| LockInDir { dir, file }))
     }
 
     /// Tries the lock file at `path` exclusive without waiting, and compares the file at its name with the one locked,
@@ -373,24 +441,77 @@ impl Locks {
         between: &mut dyn FnMut(),
         on_free: &mut dyn FnMut() -> Result<()>,
     ) -> Result<Probe> {
-        loop {
-            let Some(LockInDir {
-                dir: _dir,
-                file: mut lock,
-            }) = self.open_in_dir(path, create, before_wait)?
-            else {
-                return Ok(Probe::Gone);
-            };
-            between();
-            if !lock.try_lock(Mode::Exclusive)? {
-                return Ok(Probe::Held);
+        let take = Take {
+            scope: Scope::InDir,
+            mode: Mode::Exclusive,
+            create,
+            wait: None,
+        };
+        match self.take_current(path, &take, before_wait, between, &mut || {})? {
+            Current::Gone => Ok(Probe::Gone),
+            Current::Held => Ok(Probe::Held),
+            Current::Locked { lock, dir: _dir } => {
+                on_free()?;
+                Ok(Probe::Free(lock))
             }
-            match lock.is_at_path()? {
-                Comparison::Same => {
-                    on_free()?;
-                    return Ok(Probe::Free(lock));
+        }
+    }
+
+    /// Opens the lock file at `path` and locks it as `take` says, until the file at the name is the one locked: each
+    /// time it is not, the take starts over from the open. The look is made under the shared hold of `instances.dir`
+    /// ([`Scope::InDir`]), so no unlink or rename of a lock file runs during it. No file at the name is
+    /// [`Current::Gone`] without `create`, else a file to make again.
+    ///
+    /// `before_wait` runs at most once, just before the take first waits. `between` runs after each open, with the hold
+    /// of `instances.dir` only if the lock is tried, `before_look` just before each look, under the hold.
+    fn take_current(
+        &self,
+        path: &Path,
+        take: &Take,
+        before_wait: &mut dyn FnMut(),
+        between: &mut dyn FnMut(),
+        before_look: &mut dyn FnMut(),
+    ) -> Result<Current> {
+        let waited = Cell::new(false);
+        let mut before_wait = || {
+            if !waited.replace(true) {
+                before_wait();
+            }
+        };
+        loop {
+            let (hold, mut lock) = match take.scope {
+                Scope::Dir => match self.open_file(path, take.create)? {
+                    Some(file) => (None, self.checked(file)?),
+                    None => return Ok(Current::Gone),
+                },
+                Scope::InDir => match self.open_in_dir(path, take.create, &mut before_wait)? {
+                    Some(LockInDir { dir, file }) => (Some(dir), file),
+                    None => return Ok(Current::Gone),
+                },
+            };
+            // A wait ends the hold with the open: it must not block an unlinker.
+            let hold = hold.filter(|_| take.wait.is_none());
+            between();
+            match take.wait {
+                None => {
+                    if !lock.try_lock(take.mode)? {
+                        return Ok(Current::Held);
+                    }
                 }
-                Comparison::Absent if !create => return Ok(Probe::Gone),
+                Some((what, progress)) => {
+                    let progress: &dyn Progress = if waited.get() { &NullProgress } else { progress };
+                    take_waiting(&mut lock, take.mode, what, progress, &mut before_wait)?;
+                }
+            }
+            let dir = match (take.scope, hold) {
+                (Scope::Dir, _) => None,
+                (Scope::InDir, Some(dir)) => Some(dir),
+                (Scope::InDir, None) => Some(self.make_dir(Mode::Shared, &mut before_wait)?),
+            };
+            before_look();
+            match lock.is_at_path()? {
+                Comparison::Same => return Ok(Current::Locked { lock, dir }),
+                Comparison::Absent if !take.create => return Ok(Current::Gone),
                 Comparison::Absent | Comparison::Different => {}
             }
         }
@@ -431,11 +552,6 @@ impl Locks {
     }
 }
 
-/// The lock file an open with `create` gave, which is never `None`.
-fn made(lock: Option<FileLock>) -> Result<FileLock> {
-    lock.ok_or_else(|| Error::new(ErrorKind::Internal, "opening a lock file with create gave no file"))
-}
-
 /// Whether anything is at `path`: a link at `path` counts as there, followed or not.
 fn is_there(path: &Path) -> Result<bool> {
     symlink_metadata_if_present(path)
@@ -443,11 +559,20 @@ fn is_there(path: &Path) -> Result<bool> {
         .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", path.display()), e))
 }
 
-/// Locks `lock`, saying so through `before_wait` first when it has to wait.
-fn take(mut lock: FileLock, mode: Mode, before_wait: &mut dyn FnMut()) -> Result<FileLock> {
+/// What a wait for the locks of this directory is for.
+const DIR_WAIT: &str = "devvm commands reading instances";
+
+/// Locks `lock` in `mode`, saying so through `before_wait` and `progress` first when it has to wait.
+fn take_waiting(
+    lock: &mut FileLock,
+    mode: Mode,
+    what: &str,
+    progress: &dyn Progress,
+    before_wait: &mut dyn FnMut(),
+) -> Result<()> {
     if !lock.try_lock(mode)? {
         before_wait();
-        lock.lock(mode, "devvm commands reading instances", &NullProgress)?;
+        lock.lock(mode, what, progress)?;
     }
-    Ok(lock)
+    Ok(())
 }

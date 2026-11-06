@@ -95,12 +95,16 @@ fn acquire_retries_when_the_file_is_unlinked_before_verification(#[fixture(unico
     let path = locks.owner_path(&id);
     let mut calls = 0;
     let owner = locks
-        .acquire_owner_new_with(&id, &mut || {
-            calls += 1;
-            if calls == 1 {
-                std::fs::remove_file(&path).unwrap();
-            }
-        })
+        .acquire_owner_new_with(
+            &id,
+            &mut || {
+                calls += 1;
+                if calls == 1 {
+                    std::fs::remove_file(&path).unwrap();
+                }
+            },
+            &mut || {},
+        )
         .unwrap();
     assert_eq!(calls, 2, "the sweeper's progress makes the creator start over");
     assert!(path.is_file());
@@ -117,12 +121,16 @@ fn acquire_retries_when_another_file_is_at_the_name_before_verification(#[fixtur
         let path = locks.owner_path(&id);
         let mut calls = 0;
         let owner = locks
-            .acquire_owner_new_with(&id, &mut || {
-                calls += 1;
-                if calls == 1 {
-                    change.apply(&path);
-                }
-            })
+            .acquire_owner_new_with(
+                &id,
+                &mut || {
+                    calls += 1;
+                    if calls == 1 {
+                        change.apply(&path);
+                    }
+                },
+                &mut || {},
+            )
             .unwrap();
         assert_eq!(calls, 2, "{change:?}: a file at the name is not the locked file");
         assert!(
@@ -217,12 +225,16 @@ fn acquire_puts_back_a_deleted_instances_dir_and_keeps_the_file_it_locked(#[fixt
     let dir_path = home.join("locks").join("instances.dir");
     let mut calls = 0;
     let owner = locks
-        .acquire_owner_new_with(&id, &mut || {
-            calls += 1;
-            if calls == 1 {
-                std::fs::remove_file(&dir_path).unwrap();
-            }
-        })
+        .acquire_owner_new_with(
+            &id,
+            &mut || {
+                calls += 1;
+                if calls == 1 {
+                    std::fs::remove_file(&dir_path).unwrap();
+                }
+            },
+            &mut || {},
+        )
         .unwrap();
     assert_eq!(calls, 1, "the lock file is still the one at its name");
     assert!(dir_path.is_file(), "the lock file is put back");
@@ -767,12 +779,16 @@ fn try_owner_recreating_starts_over_when_another_file_is_at_the_name_before_the_
         let path = locks.owner_path(&id);
         let mut looks = 0;
         let probe = locks
-            .try_owner_recreating_with(&id, &mut || {
-                looks += 1;
-                if looks == 1 {
-                    change.apply(&path);
-                }
-            })
+            .try_owner_recreating_with(
+                &id,
+                &mut || {
+                    looks += 1;
+                    if looks == 1 {
+                        change.apply(&path);
+                    }
+                },
+                &mut || {},
+            )
             .unwrap();
         assert_eq!(looks, 2, "{change:?}: a file at the name is not the file opened");
         let Probe::Free(lock) = probe else {
@@ -792,12 +808,16 @@ fn try_owner_recreating_makes_the_file_again_when_it_is_unlinked_before_the_try(
     let path = locks.owner_path(&id);
     let mut looks = 0;
     let probe = locks
-        .try_owner_recreating_with(&id, &mut || {
-            looks += 1;
-            if looks == 1 {
-                std::fs::remove_file(&path).unwrap();
-            }
-        })
+        .try_owner_recreating_with(
+            &id,
+            &mut || {
+                looks += 1;
+                if looks == 1 {
+                    std::fs::remove_file(&path).unwrap();
+                }
+            },
+            &mut || {},
+        )
         .unwrap();
     assert_eq!(looks, 2);
     let Probe::Free(lock) = probe else {
@@ -807,25 +827,61 @@ fn try_owner_recreating_makes_the_file_again_when_it_is_unlinked_before_the_try(
     assert!(path.is_file());
 }
 
+/// Whether `instances.dir` is held shared right now: an exclusive take is refused and a shared one admitted.
+fn instances_dir_is_held_shared(locks_dir: &Path) -> bool {
+    let mut other = FileLock::open(&locks_dir.join("instances.dir")).unwrap();
+    let refused = !other.try_lock(Mode::Exclusive).unwrap();
+    refused && other.try_lock(Mode::Shared).unwrap()
+}
+
 #[skuld::test]
-fn the_look_at_a_lock_file_is_made_under_a_shared_hold_of_instances_dir(#[fixture(unicode_home)] home: &Path) {
+fn an_acquire_compares_the_file_at_the_name_under_a_shared_hold_of_instances_dir(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let mut held = None;
+    drop(
+        locks
+            .acquire_owner_new_with(&InstanceId::random(), &mut || {}, &mut || {
+                held = Some(instances_dir_is_held_shared(&home.join("locks")));
+            })
+            .unwrap(),
+    );
+    assert_eq!(held, Some(true));
+}
+
+#[skuld::test]
+fn an_op_take_compares_the_file_at_the_name_under_a_shared_hold_of_instances_dir(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
-    let dir_path = home.join("locks").join("instances.dir");
-    let lock = FileLock::open(&locks.op_path(&id)).unwrap();
-    let mut during = None;
-    let (comparison, _dir) = locks
-        .is_current(&lock, &mut || {
-            let mut other = FileLock::open(&dir_path).unwrap();
-            during = Some((
-                !other.try_lock(Mode::Exclusive).unwrap(),
-                other.try_lock(Mode::Shared).unwrap(),
+    for mode in [Mode::Shared, Mode::Exclusive] {
+        let mut held = None;
+        let lock = locks
+            .op_with(&id, mode, "x", &NullProgress, &mut || {
+                held = Some(instances_dir_is_held_shared(&home.join("locks")));
+            })
+            .unwrap();
+        assert_eq!(held, Some(true), "{mode:?}");
+        drop(lock);
+    }
+}
+
+/// The op file is made under the hold that the file at the owner's name was compared under.
+#[skuld::test]
+fn the_op_file_of_a_recreating_try_is_made_under_a_shared_hold_of_instances_dir(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    let mut held = None;
+    let probe = locks
+        .try_owner_recreating_with(&id, &mut || {}, &mut || {
+            held = Some((
+                instances_dir_is_held_shared(&home.join("locks")),
+                locks.op_path(&id).exists(),
             ));
         })
         .unwrap();
-    assert_eq!(comparison, Comparison::Same);
-    assert_eq!(during, Some((true, true)), "exclusive refused, shared admitted");
+    assert!(matches!(probe, Probe::Free(_)));
+    assert_eq!(held, Some((true, false)), "held, and the op file is not made yet");
+    assert!(locks.op_path(&id).is_file());
 }
 
 /// `instances.dir` is damaged from outside: a lock file that is at its name is not gone.

@@ -49,8 +49,7 @@ impl std::fmt::Debug for FileLock {
 impl FileLock {
     /// Opens the lock file, creating it and its parent directories.
     pub fn open(path: &Path) -> Result<FileLock> {
-        make_parents(path)?;
-        FileLock::create_in(host::current(), path)
+        FileLock::create_with_host(host::current(), path)
     }
 
     /// Opens the lock file, creating it but no directory: for a directory that someone else makes, with permissions of
@@ -62,17 +61,13 @@ impl FileLock {
     /// Opens an existing lock file without creating it or its directories; `None` if it is absent
     /// ([`crate::host::is_absent`]).
     pub fn open_existing(path: &Path) -> Result<Option<FileLock>> {
-        FileLock::existing_in(host::current(), path)
+        FileLock::open_existing_with_host(host::current(), path)
     }
 
-    /// [`FileLock::open`] or [`FileLock::open_existing`] by `create`, through `host`; `Some` with `create`.
-    pub(crate) fn open_with_host(host: &'static dyn Host, path: &Path, create: bool) -> Result<Option<FileLock>> {
-        if create {
-            make_parents(path)?;
-            FileLock::create_in(host, path).map(Some)
-        } else {
-            FileLock::existing_in(host, path)
-        }
+    /// [`FileLock::open`] through `host`.
+    pub(crate) fn create_with_host(host: &'static dyn Host, path: &Path) -> Result<FileLock> {
+        make_parents(path)?;
+        FileLock::create_in(host, path)
     }
 
     fn create_in(host: &'static dyn Host, path: &Path) -> Result<FileLock> {
@@ -102,7 +97,8 @@ impl FileLock {
         })
     }
 
-    fn existing_in(host: &'static dyn Host, path: &Path) -> Result<Option<FileLock>> {
+    /// [`FileLock::open_existing`] through `host`.
+    pub(crate) fn open_existing_with_host(host: &'static dyn Host, path: &Path) -> Result<Option<FileLock>> {
         match host.open_lock_file(path, false) {
             Ok(file) => Ok(Some(FileLock {
                 path: path.to_owned(),
