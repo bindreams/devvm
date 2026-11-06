@@ -30,7 +30,6 @@
 //!
 //! No lock file is opened through a link: a link at a lock name is an error at the open.
 
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use crate::exit::{NullProgress, Progress};
@@ -176,7 +175,7 @@ impl Locks {
     /// deadlock, whatever lock the caller holds.
     pub(crate) fn deleting_waiting<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
         let mut lock = self.create(&self.dir.join("dead.lock"))?;
-        take_waiting(&mut lock, Mode::Exclusive, DIR_WAIT, &NullProgress, before_wait)?;
+        lock.lock(Mode::Exclusive, DIR_WAIT, &mut |_| before_wait())?;
         Ok(f())
     }
 
@@ -475,11 +474,12 @@ impl Locks {
         between: &mut dyn FnMut(),
         before_look: &mut dyn FnMut(),
     ) -> Result<Current> {
-        // Whether this take's own lock has been waited for: a wait for `instances.dir` is not that.
-        let said = Cell::new(false);
-        let waited = Cell::new(false);
+        // Whether the take has waited, for any lock, and whether it said what it waits for: a wait for `instances.dir`
+        // is the first, not the second.
+        let mut waited = false;
+        let mut said = false;
         let mut before_wait = || {
-            if !waited.replace(true) {
+            if !std::mem::replace(&mut waited, true) {
                 before_wait();
             }
         };
@@ -504,10 +504,11 @@ impl Locks {
                     }
                 }
                 Some((what, progress)) => {
-                    let progress: &dyn Progress = if said.get() { &NullProgress } else { progress };
-                    take_waiting(&mut lock, take.mode, what, progress, &mut || {
-                        said.set(true);
+                    lock.lock(take.mode, what, &mut |message| {
                         before_wait();
+                        if !std::mem::replace(&mut said, true) {
+                            progress.message(message);
+                        }
                     })?;
                 }
             }
@@ -569,18 +570,3 @@ fn is_there(path: &Path) -> Result<bool> {
 
 /// What a wait for the locks of this directory is for.
 const DIR_WAIT: &str = "devvm commands reading instances";
-
-/// Locks `lock` in `mode`, saying so through `before_wait` and `progress` first when it has to wait.
-fn take_waiting(
-    lock: &mut FileLock,
-    mode: Mode,
-    what: &str,
-    progress: &dyn Progress,
-    before_wait: &mut dyn FnMut(),
-) -> Result<()> {
-    if !lock.try_lock(mode)? {
-        before_wait();
-        lock.lock(mode, what, progress)?;
-    }
-    Ok(())
-}

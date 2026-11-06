@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::sync::mpsc;
 
-use crate::exit::{NullProgress, Progress};
+use crate::exit::Progress;
 use crate::host::Comparison;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, symlinks};
@@ -61,7 +61,8 @@ fn contention_message_is_emitted_before_blocking(#[fixture(unicode_home)] home: 
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
             let mut lock = FileLock::open(&path).unwrap();
-            lock.lock(Mode::Exclusive, "layer K", &Capture(Mutex::new(sender)))
+            let progress = Capture(Mutex::new(sender));
+            lock.lock(Mode::Exclusive, "layer K", &mut |m| progress.message(m))
                 .unwrap();
         });
         assert_eq!(receiver.recv().unwrap(), "waiting for layer K");
@@ -77,7 +78,7 @@ fn uncontended_lock_emits_no_message(#[fixture(unicode_home)] home: &Path) {
     let progress = Capture(Mutex::new(sender));
     FileLock::open(&home.join("a.lock"))
         .unwrap()
-        .lock(Mode::Exclusive, "x", &progress)
+        .lock(Mode::Exclusive, "x", &mut |m| progress.message(m))
         .unwrap();
     drop(progress);
     assert!(receiver.recv().is_err());
@@ -97,7 +98,7 @@ fn lock_while_says_it_waits_once_and_gives_up_when_the_pause_says_to_stop(#[fixt
         .lock_while(
             Mode::Exclusive,
             "layer K",
-            &progress,
+            &mut |m| progress.message(m),
             Some(&mut || {
                 pauses += 1;
                 Ok(pauses == 3)
@@ -121,7 +122,7 @@ fn lock_while_takes_the_lock_once_it_is_free(#[fixture(unicode_home)] home: &Pat
         .lock_while(
             Mode::Exclusive,
             "layer K",
-            &NullProgress,
+            &mut |_| {},
             Some(&mut || {
                 holder.unlock()?;
                 Ok(false)
@@ -151,7 +152,7 @@ fn lock_is_released_when_holder_process_is_killed(#[fixture(unicode_home)] home:
     child.kill().unwrap();
     child.wait().unwrap();
     // Blocks until the OS releases the dead holder's lock; it has no cap because the release is the event awaited.
-    probe.lock(Mode::Exclusive, "the killed holder", &NullProgress).unwrap();
+    probe.lock(Mode::Exclusive, "the killed holder", &mut |_| {}).unwrap();
 }
 
 #[skuld::test]
@@ -165,7 +166,8 @@ fn file_lock_is_send_and_sync() {
 #[skuld::test]
 fn locking_requires_exclusive_access_to_the_value() {
     let _: fn(&mut FileLock, Mode) -> crate::Result<bool> = FileLock::try_lock;
-    let _: fn(&mut FileLock, Mode, &str, &dyn Progress) -> crate::Result<()> = FileLock::lock;
+    type Lock = fn(&mut FileLock, Mode, &str, &mut dyn FnMut(&str)) -> crate::Result<()>;
+    let _: Lock = FileLock::lock;
     let _: fn(&mut FileLock) -> crate::Result<()> = FileLock::unlock;
 }
 

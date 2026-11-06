@@ -269,7 +269,9 @@ impl LayerStore {
     /// held, so a waiter that gets the build lock never judges by a stale time.
     fn lookup_with(&self, key: &LayerKey, repair: bool, now: Option<SystemTime>) -> Result<Option<ChainLease>> {
         let mut gc = self.gc_lock()?;
-        gc.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
+        gc.lock(Mode::Shared, "layer garbage collection", &mut |m| {
+            self.progress.message(m)
+        })?;
         let now = now.unwrap_or_else(|| self.clock.now());
         self.lookup_locked(key, repair, now)
     }
@@ -308,7 +310,9 @@ impl LayerStore {
     /// `now` is given) within the expiry margin.
     fn lease(&self, layer: &LayerRef, now: Option<SystemTime>, repair: bool) -> Result<Option<LayerLease>> {
         let mut lock = self.generation_lock(layer)?;
-        lock.lock(Mode::Shared, "a layer being replaced", &*self.progress)?;
+        lock.lock(Mode::Shared, "a layer being replaced", &mut |m| {
+            self.progress.message(m)
+        })?;
         let dir = self.generation_dir(layer);
         match meta::read(&dir)? {
             MetaRead::Absent => Ok(None),
@@ -387,7 +391,7 @@ impl LayerStore {
         build_lock.lock(
             Mode::Exclusive,
             &format!("another devvm process building layer {}", req.key),
-            &*self.progress,
+            &mut |m| self.progress.message(m),
         )?;
         if let Some(hit) = self.lookup_with(&req.key, true, None)? {
             return Ok(hit);
@@ -526,7 +530,9 @@ impl LayerStore {
         cleanup: &mut RemoveOnDrop,
     ) -> Result<()> {
         let mut gc = self.gc_lock()?;
-        gc.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
+        gc.lock(Mode::Shared, "layer garbage collection", &mut |m| {
+            self.progress.message(m)
+        })?;
         let key_dir = self.key_dir(key);
         let target = key_dir.join(generation.to_string());
         std::fs::rename(staging, &target).map_err(|e| {

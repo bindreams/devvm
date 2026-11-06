@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -54,9 +55,7 @@ fn owner_held_by_another_process_reads_held_and_free_after_it_dies(#[fixture(uni
     child.wait().unwrap();
     // The OS releases a dead holder's lock asynchronously; this blocking take is the event awaited.
     let mut waiter = FileLock::open(&path).unwrap();
-    waiter
-        .lock(Mode::Exclusive, "the killed holder", &NullProgress)
-        .unwrap();
+    waiter.lock(Mode::Exclusive, "the killed holder", &mut |_| {}).unwrap();
     drop(waiter);
     assert!(matches!(locks.try_owner(&id).unwrap(), Probe::Free(_)));
 }
@@ -387,6 +386,45 @@ fn an_op_wait_after_a_wait_for_instances_dir_still_says_what_it_waits_for(#[fixt
         drop(holder);
         drop(waiter.join().unwrap());
     });
+}
+
+/// The first try of the take wins and its look restarts it; the second wait ends as it starts. The wait is still said
+/// and still runs `before_wait`, once.
+#[skuld::test]
+fn a_wait_after_a_restart_says_what_it_waits_for_and_runs_before_wait(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let path = locks.op_path(&id);
+    let (progress, messages) = ChannelProgress::new();
+    let blocker = RefCell::new(None);
+    let (mut waits, mut looks) = (0, 0);
+    let lock = locks
+        .op_with(
+            &id,
+            Mode::Exclusive,
+            "the instance",
+            &*progress,
+            // The blocker goes as the wait starts, so the lock is won on the retry.
+            &mut || {
+                waits += 1;
+                blocker.take();
+            },
+            &mut || {
+                looks += 1;
+                if looks == 1 {
+                    NameChange::UnlinkThenRecreate.apply(&path);
+                    let mut held = FileLock::open(&path).unwrap();
+                    assert!(held.try_lock(Mode::Exclusive).unwrap());
+                    *blocker.borrow_mut() = Some(held);
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(lock.is_at_path().unwrap(), Comparison::Same);
+    assert_eq!((waits, looks), (1, 2));
+    assert_eq!(messages.try_recv().unwrap(), "waiting for the instance");
+    assert!(messages.try_recv().is_err(), "said once");
 }
 
 #[skuld::test]

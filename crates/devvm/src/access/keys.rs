@@ -6,7 +6,6 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::exit::NullProgress;
 use crate::host::Host;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
@@ -135,7 +134,7 @@ impl InstanceKeys {
         })?;
         std::fs::create_dir_all(parent).map_err(|e| io("create", parent, e))?;
         let mut lock = FileLock::open(&parent.join(LOCK))?;
-        lock.lock(Mode::Exclusive, "the instance keys", &NullProgress)?;
+        lock.lock(Mode::Exclusive, "the instance keys", &mut |_| {})?;
         let mut warnings = sweep_temporaries(parent)?;
         clear_dead_claim(dir)?;
         let temp = tempfile::Builder::new()

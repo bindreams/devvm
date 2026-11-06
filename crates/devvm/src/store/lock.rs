@@ -3,7 +3,6 @@
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
-use crate::exit::Progress;
 use crate::host::{self, Comparison, Host};
 use crate::{Error, ErrorKind, Result};
 
@@ -132,9 +131,10 @@ impl FileLock {
         }
     }
 
-    /// Takes the lock, waiting for it with no time limit. On contention it first says `waiting for <what>`.
-    pub fn lock(&mut self, mode: Mode, what: &str, progress: &dyn Progress) -> Result<()> {
-        let locked = self.lock_while(mode, what, progress, None)?;
+    /// Takes the lock, waiting for it with no time limit. On contention it first calls `about_to_wait` with
+    /// `waiting for <what>`.
+    pub fn lock(&mut self, mode: Mode, what: &str, about_to_wait: &mut dyn FnMut(&str)) -> Result<()> {
+        let locked = self.lock_while(mode, what, about_to_wait, None)?;
         debug_assert!(locked, "a wait with no pause ends only with the lock");
         Ok(())
     }
@@ -146,13 +146,13 @@ impl FileLock {
         &mut self,
         mode: Mode,
         what: &str,
-        progress: &dyn Progress,
+        about_to_wait: &mut dyn FnMut(&str),
         pause: Option<&mut dyn FnMut() -> Result<bool>>,
     ) -> Result<bool> {
         if self.try_lock(mode)? {
             return Ok(true);
         }
-        progress.message(&format!("waiting for {what}"));
+        about_to_wait(&format!("waiting for {what}"));
         let Some(pause) = pause else {
             let result = retry_interrupted(|| match mode {
                 Mode::Shared => self.file.lock_shared(),
