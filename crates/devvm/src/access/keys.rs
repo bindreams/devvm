@@ -70,7 +70,10 @@ fn sweep_temporaries(parent: &Path) -> Result<Vec<String>> {
 fn is_not_a_dead_claim(kind: std::io::ErrorKind) -> bool {
     matches!(
         kind,
-        std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
+        std::io::ErrorKind::DirectoryNotEmpty
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
     )
 }
 

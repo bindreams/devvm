@@ -1,8 +1,8 @@
 //! Quarantine: moving an instance directory that cannot be read out of `instances/`, never deleting it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::host::symlink_metadata_if_present;
+use crate::host::{is_absent, symlink_metadata_if_present};
 use crate::instance::locks::Probe;
 use crate::instance::reaper::ReapReport;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
@@ -123,9 +123,11 @@ impl Registry {
 }
 
 /// Runs inside `Locks::excluding_readers`: reads the files directly, takes no lock.
-fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &PathBuf) -> Moved {
+fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &Path) -> Moved {
     match symlink_metadata_if_present(path) {
         Ok(None) => return Moved::Vanished,
+        // A file where the directory was: the directory is gone.
+        Ok(Some(meta)) if !meta.is_dir() => return Moved::Vanished,
         Ok(Some(_)) => {}
         Err(e) => return Moved::Failed(e),
     }
@@ -137,9 +139,19 @@ fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &P
         Placed::Unreadable { id: now, .. } if now == id => {}
         _ => return Moved::Changed,
     }
+    move_dir(path, target)
+}
+
+/// Renames `path` to `target`. The parent of `target` exists after its creation, so a rename that finds a path absent
+/// means `path` is gone.
+fn move_dir(path: &Path, target: &Path) -> Moved {
     let parent = target.parent().expect("a quarantine target has a parent");
-    match std::fs::create_dir_all(parent).and_then(|()| std::fs::rename(path, target)) {
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        return Moved::Failed(e);
+    }
+    match std::fs::rename(path, target) {
         Ok(()) => Moved::Done,
+        Err(e) if is_absent(&e) => Moved::Vanished,
         Err(e) => Moved::Failed(e),
     }
 }

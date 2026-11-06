@@ -596,6 +596,40 @@ fn a_named_create_whose_name_is_freed_right_after_the_failed_rename_still_says_a
 }
 
 #[skuld::test]
+fn a_failed_create_deletes_a_file_that_took_the_name_of_its_half_built_directory(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let _existing = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let guard = fx.env.store.begin_record().unwrap();
+    let root = instances(&fx);
+
+    let error = fx
+        .registry
+        .create_with_seams(
+            new_instance(&fx, Some("foo"), &TestStorage { fail: false }),
+            &guard,
+            &mut CreateSeams {
+                // The create fails on the taken name; by then the half-built directory has become a file.
+                after_rename: Box::new(|| {
+                    for entry in std::fs::read_dir(&root).unwrap() {
+                        let path = entry.unwrap().path();
+                        if path.file_name().unwrap().to_string_lossy().starts_with(".new-") {
+                            std::fs::remove_dir_all(&path).unwrap();
+                            std::fs::write(&path, "x").unwrap();
+                        }
+                    }
+                }),
+                ..CreateSeams::none()
+            },
+        )
+        .err()
+        .expect("the name was taken");
+
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert_eq!(names(&root), ["foo"], "the half-built file was left");
+    assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
+}
+
+#[skuld::test]
 fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let existing = create(&fx, Some("taken")).make_ownerless(&mut || Ok(())).unwrap();

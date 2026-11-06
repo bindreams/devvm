@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
 use crate::host::Host;
-use crate::instance::dir::InstanceDir;
+use crate::instance::dir::{InstanceDir, remove_tree};
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, RecordRead, write_marker};
@@ -262,9 +262,7 @@ impl Registry {
         match self.build_and_place(id, &new, &temp, seams) {
             Ok(dir) => Ok(Owned { dir, owner }),
             Err(e) => {
-                if let Err(left) = std::fs::remove_dir_all(&temp)
-                    && left.kind() != std::io::ErrorKind::NotFound
-                {
+                if let Err(left) = remove_tree(&temp) {
                     self.progress.message(&format!(
                         "the half-built instance {} could not be deleted ({left}); the next devvm \
                          command deletes it",

@@ -91,6 +91,32 @@ fn a_vanished_path_is_success_with_no_warning(#[fixture(unicode_home)] home: &Pa
 }
 
 #[skuld::test]
+fn a_file_at_the_path_is_a_vanished_instance_directory(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let path = fx.env.dirs.instances().join("foo");
+    std::fs::create_dir_all(fx.env.dirs.instances()).unwrap();
+    std::fs::write(&path, "x").unwrap();
+    let mut report = ReapReport::default();
+
+    fx.registry.quarantine("foo", &path, None, "stale", &mut report);
+
+    assert!(
+        report.quarantined.is_empty() && report.warnings.is_empty(),
+        "{report:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+}
+
+#[skuld::test]
+fn a_source_that_is_gone_when_the_rename_runs_is_vanished_not_failed(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("quarantine").join("foo-1");
+
+    let moved = super::move_dir(&home.join("gone"), &target);
+
+    assert!(matches!(moved, super::Moved::Vanished));
+}
+
+#[skuld::test]
 fn a_path_that_cannot_be_looked_at_is_a_warning_not_a_vanished_path(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     // No file system can look at a name with a NUL in it: the look fails, and says nothing about the path.
