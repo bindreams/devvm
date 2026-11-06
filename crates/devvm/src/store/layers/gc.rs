@@ -125,7 +125,8 @@ impl LayerStore {
             }
         }
         let mut pending: Vec<LayerRef> = keep.iter().copied().collect();
-        // Popped in ascending order, so the same store always aborts on the same layer.
+        // Roots pop in ascending order and each parent right after its child, so the same store always aborts on the
+        // same layer.
         pending.sort_by_key(|layer| Reverse(*layer));
         // The kept layers whose records name a layer as their parent, as the walk reads them.
         let mut children: HashMap<LayerRef, Vec<LayerRef>> = HashMap::new();
