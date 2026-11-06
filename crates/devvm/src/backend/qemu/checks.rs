@@ -36,7 +36,11 @@ fn qemu_outcome(install: &LazyInstall, detail: Detail) -> Result<String> {
         Detail::Brief => Ok(format!("QEMU in {}", qemu.bin.display())),
         Detail::Full => {
             let system = ArchFiles::of(Arch::host()).system;
-            let hash = Sha256::from_bytes(hash_file(&qemu.tool(&system))?);
+            // Informational: whether the line passes is `existing()`'s answer alone, as for `Detail::Brief`.
+            let hash = match hash_file(&qemu.tool(&system)) {
+                Ok(bytes) => Sha256::from_bytes(bytes).to_string(),
+                Err(e) => format!("unavailable ({})", e.message()),
+            };
             Ok(format!("QEMU in {}, {system} sha256 {hash}", qemu.bin.display()))
         }
     }
