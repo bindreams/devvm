@@ -1,6 +1,5 @@
 //! The engine over the QEMU backend and the Linux guest (`qemu_parts`), built without touching the user's directories,
-//! environment or network. Every test drives the engine; the one fixture is an engine over those parts whose transport
-//! refuses every download, on state that holds one stopped instance, `foo`.
+//! environment or network.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -208,9 +207,8 @@ fn building_the_engine_and_listing_create_no_runtime_directory(#[fixture(unicode
 
 #[skuld::test]
 fn a_launch_over_a_runtime_path_it_refuses_downloads_nothing(#[fixture(unicode_home)] home: &Path) {
-    // Beside the socket directory's own scratch runtime directories, so that the path is as short as theirs: a path
-    // below `home` can be too long for a socket, which a launch refuses first. Named `f...`, never a scratch run's
-    // `r...` name, so it cannot take one (`scratch_run_in`).
+    // In the socket directory so the path is short enough that a launch does not refuse it for length first; the `f`
+    // prefix cannot collide with a scratch run's `r` name.
     let file = tempfile::Builder::new()
         .prefix("f")
         .tempfile_in(socket_dir())

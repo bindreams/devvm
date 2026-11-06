@@ -27,7 +27,7 @@ use crate::{Dirs, Error, ErrorKind, Result};
 #[path = "qemu_tests.rs"]
 mod qemu_tests;
 
-/// The QEMU backend and the guests that go with it: what an engine for this build is made of.
+/// The QEMU backend and the guests that go with it.
 pub(crate) struct QemuParts {
     pub backend: Arc<QemuBackend>,
     pub guests: Arc<LinuxGuests>,

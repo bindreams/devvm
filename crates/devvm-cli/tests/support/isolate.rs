@@ -4,8 +4,7 @@
 use std::path::Path;
 use std::process::Command;
 
-/// Sets `XDG_{CONFIG,DATA,CACHE,STATE}_HOME` and `XDG_RUNTIME_DIR` to `config`, `data`, `cache`, `state` and `run`
-/// below `root`.
+/// Points the five XDG variables at subdirectories of `root`.
 pub fn isolate(command: &mut Command, root: &Path) {
     for (name, dir) in [
         ("XDG_CONFIG_HOME", "config"),

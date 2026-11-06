@@ -1,7 +1,7 @@
 //! The real transport: blocking HTTP over rustls, bounded only by stalls.
 
 use std::io::Read;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -42,22 +42,34 @@ impl HttpTransport {
 }
 
 /// An [`HttpTransport`] built on the first `get`: building one can fail and starts a client, which a command that
-/// downloads nothing must not pay for. A build failure is the error of `HttpTransport::new`, returned on each `get`.
+/// downloads nothing must not pay for. A build failure is a `Download` error naming the URL and is not cached: the next
+/// `get` builds again.
 #[derive(Default)]
-pub struct LazyHttp(OnceLock<Result<HttpTransport>>);
+pub struct LazyHttp(Mutex<Option<Arc<HttpTransport>>>);
 
 impl LazyHttp {
     pub fn new() -> LazyHttp {
         LazyHttp::default()
     }
+
+    /// The transport, built once: threads calling at the same time wait for the first. The lock is not held during a
+    /// download.
+    fn transport(&self, url: &str) -> Result<Arc<HttpTransport>> {
+        let mut built = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(transport) = &*built {
+            return Ok(transport.clone());
+        }
+        let transport = Arc::new(HttpTransport::new().map_err(|e| {
+            Error::new(ErrorKind::Download, format!("cannot download {url}: {}", e.message())).with_source(e)
+        })?);
+        *built = Some(transport.clone());
+        Ok(transport)
+    }
 }
 
 impl Transport for LazyHttp {
     fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
-        match self.0.get_or_init(HttpTransport::new) {
-            Ok(transport) => transport.get(url, resume),
-            Err(error) => Err(error.clone()),
-        }
+        self.transport(url)?.get(url, resume)
     }
 }
 

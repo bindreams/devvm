@@ -137,9 +137,8 @@ impl Engine {
     }
 
     /// Removes instances whose owner is gone and finishes half-done removals. Never fails: what it cannot do is
-    /// reported as a warning on the progress channel and retried by the next call. `from_env` does this once, when
-    /// the engine is made; call it for a pass in a long-lived process. Until then, what a process leaves when it dies
-    /// later stays: a name half-created by it answers "already exists".
+    /// reported as a warning on the progress channel and retried by the next call. `from_env` calls it once; call it
+    /// again for a pass in a long-lived process.
     pub fn reap(&self) {
         self.registry.reap();
     }

@@ -37,7 +37,7 @@ impl Home {
         self.root.join("state").join("devvm")
     }
 
-    /// What `XDG_RUNTIME_DIR` names below it: devvm's runtime directory, where the sweep of `reap` looks.
+    /// devvm's runtime directory, which `reap` sweeps.
     fn run(&self) -> PathBuf {
         self.root.join("run").join("devvm")
     }
