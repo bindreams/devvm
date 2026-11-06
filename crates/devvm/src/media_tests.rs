@@ -3,7 +3,7 @@ use std::path::Path;
 
 use fatfs::{FileSystem, FsOptions};
 
-use super::{SeedFile, fat_image, write_cidata_image};
+use super::{LARGEST_FAT12_CONTENTS, SeedFile, fat_image, image_size, write_cidata_image};
 use crate::backend::MediaKind;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{RecordingHost, TestHost};
@@ -320,10 +320,6 @@ fn a_refused_private_write_is_an_io_error_naming_the_image(#[fixture(unicode_hom
     assert!(!image.exists());
 }
 
-/// The most bytes of contents whose image `fat_image` still makes as FAT12 (image size `MIN_IMAGE + 2 x contents`, at
-/// most 4,084 clusters of 32 KiB). Measured with `fatfs` 0.3.6; one byte more makes FAT16.
-const LARGEST_FAT12_CONTENTS: usize = 66_418_688;
-
 fn type_of(image: Vec<u8>) -> fatfs::FatType {
     FileSystem::new(Cursor::new(image), FsOptions::new())
         .unwrap()
@@ -334,7 +330,7 @@ fn type_of(image: Vec<u8>) -> fatfs::FatType {
 fn the_image_is_fat12_whatever_the_contents(#[fixture(unicode_home)] home: &Path) {
     let seed = [file("user-data", &all_bytes()), file("meta-data", b"instance-id: x\n")];
     let large = [file("user-data", &vec![7u8; 5_000_000]), file("meta-data", b"m")];
-    let largest = [file("user-data", &vec![7u8; LARGEST_FAT12_CONTENTS])];
+    let largest = [file("user-data", &vec![7u8; LARGEST_FAT12_CONTENTS as usize])];
     for (what, files) in [
         ("none", &[][..]),
         ("a seed", &seed),
@@ -347,10 +343,10 @@ fn the_image_is_fat12_whatever_the_contents(#[fixture(unicode_home)] home: &Path
 }
 
 #[skuld::test]
-fn contents_that_would_not_be_fat12_or_do_not_fit_are_refused_naming_the_sum_and_the_image_size(
+fn contents_that_would_not_be_fat12_are_refused_naming_the_sum_and_the_image_size(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let contents = LARGEST_FAT12_CONTENTS + 1;
+    let contents = LARGEST_FAT12_CONTENTS as usize + 1;
     let files = [file("user-data", &vec![7u8; contents])];
     let image_size = (super::MIN_IMAGE + 2 * contents as u64).next_multiple_of(512);
 
@@ -362,4 +358,19 @@ fn contents_that_would_not_be_fat12_or_do_not_fit_are_refused_naming_the_sum_and
     assert!(error.message().contains(&contents.to_string()), "{error}");
     assert!(error.message().contains(&image_size.to_string()), "{error}");
     assert!(error.message().contains("FAT12"), "{error}");
+}
+
+/// The size is decided from the sum alone, so a seed too large for FAT12 is refused before any image is allocated.
+#[skuld::test]
+fn the_image_size_is_refused_beyond_the_fat12_limit_without_any_contents() {
+    assert_eq!(
+        image_size(LARGEST_FAT12_CONTENTS).unwrap(),
+        (super::MIN_IMAGE + 2 * LARGEST_FAT12_CONTENTS).next_multiple_of(512)
+    );
+    for contents in [LARGEST_FAT12_CONTENTS + 1, 1 << 40, u64::MAX] {
+        let error = image_size(contents).expect_err("over the limit");
+        assert_eq!(error.kind(), crate::ErrorKind::Internal, "{error}");
+        assert!(error.message().contains(&contents.to_string()), "{error}");
+        assert!(error.message().contains("FAT12"), "{error}");
+    }
 }

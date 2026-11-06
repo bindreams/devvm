@@ -55,7 +55,7 @@ pub(crate) trait Backend: Send + Sync {
 }
 
 pub(crate) trait Storage: Send + Sync {
-    /// Makes `into` a copy-on-write disk of `size` bytes on top of `layer`. `Usage` and nothing made when `size` is
+    /// Makes `into` a copy-on-write disk of `size` bytes on top of `layer`. `Recipe` and nothing made when `size` is
     /// smaller than the layer's disk: the guest would see a truncated disk.
     fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: u64) -> Result<()>;
 

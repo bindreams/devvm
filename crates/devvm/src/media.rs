@@ -22,6 +22,13 @@ pub(crate) struct SeedFile {
 const SECTOR: u32 = 512;
 /// The smallest image, in bytes. Headroom for the directory and the allocation tables is added to the contents.
 const MIN_IMAGE: u64 = 1 << 20;
+/// The most bytes of file contents whose image ([`image_size`]) `fatfs` 0.3.6 still formats as FAT12: at most 4,084
+/// clusters of 32 KiB. Measured; one byte more makes FAT16.
+const LARGEST_FAT12_CONTENTS: u64 = 66_418_688;
+const _: () = assert!(
+    (MIN_IMAGE + 2 * LARGEST_FAT12_CONTENTS).div_ceil(SECTOR as u64) <= u32::MAX as u64,
+    "the sector count of the largest image must fit a FAT volume"
+);
 /// The volume id of every image: a fixed value keeps equal inputs byte-identical.
 const VOLUME_ID: u32 = 0x4456_4d53;
 
@@ -30,9 +37,9 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 /// The image can hold private keys, so `host` writes it as a private file ([`Host::write_private`]). An image left at
 /// `into` by an earlier launch is replaced.
 ///
-/// The volume is FAT12, labelled `CIDATA`. Measured: Ubuntu 24.04's cloud-init reads a FAT12 image of about 1 MiB attached
-/// read-only on `virtio-blk-pci`, as the QEMU backend attaches it. Files too large for a FAT12 volume are refused with
-/// `Internal`, never written in another FAT type.
+/// The volume is FAT12, labelled `CIDATA`. Measured: Ubuntu 24.04's cloud-init reads a FAT12 image of about 1 MiB
+/// attached read-only on `virtio-blk-pci`, as the QEMU backend attaches it. Files too large for a FAT12 volume are
+/// refused with `Internal` before anything is allocated, never written in another FAT type.
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
 /// the finished image before anything is written; an image that does not hold exactly `files` is an error.
@@ -102,6 +109,22 @@ fn build_failed(error: &std::io::Error) -> Error {
     Error::new(ErrorKind::Internal, format!("cannot build the seed image: {error}"))
 }
 
+/// The size in bytes of the image that holds `contents` bytes of files, `Internal` when that is more than a FAT12
+/// volume holds ([`LARGEST_FAT12_CONTENTS`]). Decided from the sum alone, so nothing is allocated for a refused seed.
+fn image_size(contents: u64) -> Result<u64> {
+    if contents > LARGEST_FAT12_CONTENTS {
+        let size = (u128::from(MIN_IMAGE) + 2 * u128::from(contents)).next_multiple_of(u128::from(SECTOR));
+        return Err(Error::new(
+            ErrorKind::Internal,
+            format!(
+                "the seed files ({contents} bytes) need an image of {size} bytes, which would not be FAT12: \
+                 at most {LARGEST_FAT12_CONTENTS} bytes of files fit"
+            ),
+        ));
+    }
+    Ok((MIN_IMAGE + 2 * contents).next_multiple_of(u64::from(SECTOR)))
+}
+
 fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
     let io = |e: std::io::Error| {
         Error::io(
@@ -111,17 +134,9 @@ fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
         )
     };
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
-    let size = (MIN_IMAGE + 2 * contents).next_multiple_of(u64::from(SECTOR));
-    let not_fat12 = |why: &dyn std::fmt::Display| {
-        Error::new(
-            ErrorKind::Internal,
-            format!(
-                "the seed files ({contents} bytes) need an image of {size} bytes, which would not be FAT12 ({why})"
-            ),
-        )
-    };
-    let total_sectors =
-        u32::try_from(size / u64::from(SECTOR)).map_err(|_| not_fat12(&"more sectors than a FAT volume has"))?;
+    let size = image_size(contents)?;
+    // Fits `u32`: see the assertion beside `LARGEST_FAT12_CONTENTS`.
+    let total_sectors = (size / u64::from(SECTOR)) as u32;
 
     let mut disk = Cursor::new(vec![0u8; size as usize]);
     fatfs::format_volume(
@@ -133,11 +148,14 @@ fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
             .volume_id(VOLUME_ID)
             .volume_label(*b"CIDATA     "),
     )
-    .map_err(|e| not_fat12(&e))?;
+    .map_err(|e| build_failed(&e))?;
     {
         let fs = FileSystem::new(&mut disk, FsOptions::new()).map_err(io)?;
         if fs.fat_type() != FatType::Fat12 {
-            return Err(not_fat12(&format!("{:?}", fs.fat_type())));
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("the seed image was formatted as {:?}, not FAT12", fs.fat_type()),
+            ));
         }
         for file in files {
             let mut out = fs.root_dir().create_file(&file.name).map_err(|e| {

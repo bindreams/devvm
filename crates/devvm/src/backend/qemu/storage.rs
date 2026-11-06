@@ -20,6 +20,8 @@ mod storage_tests;
 pub(crate) const DISK: &str = "disk.qcow2";
 /// A layer's UEFI variables, and the copy each instance boots from.
 pub(crate) const VARS: &str = "vars.fd";
+/// The format of every layer and instance disk.
+const QCOW2: &str = "qcow2";
 
 pub(crate) struct QemuStorage {
     install: Arc<LazyInstall>,
@@ -61,9 +63,14 @@ impl QemuStorage {
         Ok(output.stdout)
     }
 
-    /// `qemu-img info` of `image` as JSON.
-    fn info(&self, image: &Path) -> Result<serde_json::Value> {
-        let stdout = self.qemu_img(&["info".as_ref(), "--output=json".as_ref(), image.as_os_str()])?;
+    /// `qemu-img info` of `image` as JSON. With `format`, the file is read as that format and never probed.
+    fn info(&self, image: &Path, format: Option<&str>) -> Result<serde_json::Value> {
+        let mut args: Vec<&OsStr> = vec!["info".as_ref(), "--output=json".as_ref()];
+        if let Some(format) = format {
+            args.extend([OsStr::new("-f"), OsStr::new(format)]);
+        }
+        args.push(image.as_os_str());
+        let stdout = self.qemu_img(&args)?;
         serde_json::from_slice(&stdout).map_err(|e| {
             Error::new(
                 ErrorKind::Internal,
@@ -72,9 +79,9 @@ impl QemuStorage {
         })
     }
 
-    /// The size in bytes of the disk `image` as a guest sees it.
+    /// The size in bytes of the qcow2 disk `image` as a guest sees it.
     fn virtual_size(&self, image: &Path) -> Result<u64> {
-        self.info(image)?["virtual-size"].as_u64().ok_or_else(|| {
+        self.info(image, Some(QCOW2))?["virtual-size"].as_u64().ok_or_else(|| {
             Error::new(
                 ErrorKind::Internal,
                 format!("qemu-img info {} did not print a virtual-size", image.display()),
@@ -122,9 +129,9 @@ impl Storage for QemuStorage {
         let layer_size = self.virtual_size(&backing)?;
         if size < layer_size {
             return Err(Error::new(
-                ErrorKind::Usage,
+                ErrorKind::Recipe,
                 format!(
-                    "resources.disk is {size} bytes, smaller than the {layer_size} bytes of the layer {}",
+                    "a disk of {size} bytes is smaller than the {layer_size} bytes of the layer {}; set resources.disk to at least {layer_size}",
                     layer.path().display()
                 ),
             ));
@@ -132,11 +139,11 @@ impl Storage for QemuStorage {
         self.qemu_img(&[
             "create".as_ref(),
             "-f".as_ref(),
-            "qcow2".as_ref(),
+            QCOW2.as_ref(),
             "-b".as_ref(),
             backing.as_os_str(),
             "-F".as_ref(),
-            "qcow2".as_ref(),
+            QCOW2.as_ref(),
             into.as_os_str(),
             size.to_string().as_ref(),
         ])?;
@@ -152,7 +159,7 @@ impl Storage for QemuStorage {
             directory_of(instance_disk, "the instance disk")?,
             "the instance directory",
         )?;
-        let info = self.info(instance_disk)?;
+        let info = self.info(instance_disk, Some(QCOW2))?;
         if info.get("full-backing-filename").is_none() {
             return Err(Error::new(
                 ErrorKind::Internal,
@@ -167,9 +174,9 @@ impl Storage for QemuStorage {
     }
 
     fn import_base(&self, image: &Path, arch: Arch, staging: &LayerDir) -> Result<()> {
-        let info = self.info(image)?;
+        let info = self.info(image, None)?;
         let disk = staging.path().join(DISK);
-        if info["format"] == "qcow2" {
+        if info["format"] == QCOW2 {
             if info.get("backing-filename").is_some() {
                 return Err(Error::new(
                     ErrorKind::Unavailable,
@@ -184,7 +191,7 @@ impl Storage for QemuStorage {
             self.qemu_img(&[
                 "convert".as_ref(),
                 "-O".as_ref(),
-                "qcow2".as_ref(),
+                QCOW2.as_ref(),
                 image.as_os_str(),
                 disk.as_os_str(),
             ])?;

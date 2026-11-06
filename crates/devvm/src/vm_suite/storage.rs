@@ -196,13 +196,23 @@ fn a_disk_smaller_than_its_layer_is_refused_naming_both_sizes_and_creates_nothin
         .create_instance_disk(base.tip().dir(), &instance, (BASE_LEN / 2) as u64)
         .unwrap_err();
 
-    assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
+    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
     let message = error.message();
     assert!(message.contains(&(BASE_LEN / 2).to_string()), "{error}");
     assert!(message.contains(&BASE_LEN.to_string()), "{error}");
+    assert!(message.contains(base.tip().dir().path().to_str().unwrap()), "{error}");
     assert!(message.contains("resources.disk"), "{error}");
-    assert!(!instance.exists(), "a disk was made that the guest would see truncated");
-    assert!(!instance.parent().unwrap().join(VARS).exists(), "{error}");
+    assert!(
+        matches!(host::symlink_metadata_if_present(&instance), Ok(None)),
+        "a disk was made that the guest would see truncated"
+    );
+    assert!(
+        matches!(
+            host::symlink_metadata_if_present(&instance.parent().unwrap().join(VARS)),
+            Ok(None)
+        ),
+        "{error}"
+    );
 }
 
 #[skuld::test]
