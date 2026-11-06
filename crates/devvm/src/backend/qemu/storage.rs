@@ -22,6 +22,10 @@ pub(crate) const DISK: &str = "disk.qcow2";
 pub(crate) const VARS: &str = "vars.fd";
 /// The format of every layer and instance disk.
 pub(crate) const QCOW2: &str = "qcow2";
+/// The largest virtual size `qemu-img create -f qcow2` makes: 2 PiB. At the default 64 KiB cluster size an L2 table maps
+/// 512 MiB, and the L1 table holds at most `QCOW_MAX_L1_SIZE` / `L1E_SIZE` = 4 Mi tables (QEMU 11.1.2 `block/qcow2.h`;
+/// the check is in `qcow2_co_create`, `block/qcow2.c`: "The image size is too large").
+const QCOW2_MAX_SIZE: u64 = 1 << 51;
 
 pub(crate) struct QemuStorage {
     install: Arc<LazyInstall>,
@@ -123,13 +127,25 @@ fn require_vars(dir: &Path, what: &str) -> Result<PathBuf> {
 
 impl Storage for QemuStorage {
     fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: Option<u64>) -> Result<()> {
+        // `qemu-img create` rounds a size up to 512 bytes, so that is the size the disk would get.
+        let made = size.map(|size| (size, size.checked_next_multiple_of(512)));
+        if let Some((size, made)) = made
+            && made.is_none_or(|made| made > QCOW2_MAX_SIZE)
+        {
+            return Err(Error::new(
+                ErrorKind::Recipe,
+                format!(
+                    "a disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have; \
+                     set resources.disk to at most {QCOW2_MAX_SIZE}"
+                ),
+            ));
+        }
         let vars = require_vars(layer.path(), "the layer")?;
         let backing = layer.path().join(DISK);
         let beside = directory_of(into, "the instance disk")?.join(VARS);
         let layer_size = self.virtual_size(&backing)?;
-        // `qemu-img create` rounds a size up to 512 bytes, so that is the size the disk would get.
-        if let Some(size) = size
-            && size.checked_next_multiple_of(512).is_some_and(|made| made < layer_size)
+        if let Some((size, Some(made))) = made
+            && made < layer_size
         {
             return Err(Error::new(
                 ErrorKind::Recipe,

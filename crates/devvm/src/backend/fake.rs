@@ -371,7 +371,7 @@ impl FakeMachine {
     }
 }
 
-/// Instance disks are files naming their layer; committing copies that name into the new layer.
+/// Instance disks are files naming their layer; committing copies that name into the new layer. It ignores `size`.
 pub(crate) struct FakeStorage;
 
 impl Storage for FakeStorage {
