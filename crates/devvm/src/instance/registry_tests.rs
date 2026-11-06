@@ -13,17 +13,13 @@ use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_hom
 use crate::test_support::host::TestHost;
 use crate::{Arch, Dirs, ErrorKind, GuestKind, Network, Result};
 
-/// Writes `disk.img` holding the path of the layer it sits on; optionally fails. Records the size of each disk it is
-/// asked for.
-#[derive(Default)]
+/// Writes `disk.img` holding the path of the layer it sits on; optionally fails.
 pub(crate) struct TestStorage {
     pub fail: bool,
-    pub sizes: Mutex<Vec<Option<u64>>>,
 }
 
 impl Storage for TestStorage {
-    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: Option<u64>) -> Result<()> {
-        self.sizes.lock().unwrap().push(size);
+    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, _size: Option<u64>) -> Result<()> {
         if self.fail {
             return Err(crate::Error::new(ErrorKind::Io, "disk creation failed"));
         }
@@ -92,7 +88,7 @@ pub(crate) fn new_instance_on<'a>(
 pub(crate) fn create(fx: &Fixture, name: Option<&str>) -> Owned {
     let guard = fx.env.store.begin_record().unwrap();
     fx.registry
-        .create(new_instance(fx, name, &TestStorage::default()), &guard)
+        .create(new_instance(fx, name, &TestStorage { fail: false }), &guard)
         .unwrap()
 }
 
@@ -152,7 +148,7 @@ fn create_on_a_taken_name_fails_and_leaves_it_untouched(#[fixture(unicode_home)]
         let guard = fx.env.store.begin_record().unwrap();
         let error = fx
             .registry
-            .create(new_instance(&fx, Some(name), &TestStorage::default()), &guard)
+            .create(new_instance(&fx, Some(name), &TestStorage { fail: false }), &guard)
             .err()
             .expect("the name is taken");
         assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{name}");
@@ -177,7 +173,7 @@ fn create_on_a_name_held_by_a_file_fails_and_keeps_it(#[fixture(unicode_home)] h
     let guard = fx.env.store.begin_record().unwrap();
     let error = fx
         .registry
-        .create(new_instance(&fx, Some("file"), &TestStorage::default()), &guard)
+        .create(new_instance(&fx, Some("file"), &TestStorage { fail: false }), &guard)
         .err()
         .expect("the name is taken");
     assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
@@ -203,7 +199,7 @@ fn create_on_a_name_held_by_an_empty_directory_fails_and_keeps_it(#[fixture(unic
     let guard = fx.env.store.begin_record().unwrap();
     let error = fx
         .registry
-        .create(new_instance(&fx, Some("empty"), &TestStorage::default()), &guard)
+        .create(new_instance(&fx, Some("empty"), &TestStorage { fail: false }), &guard)
         .err()
         .expect("the name is taken");
 
@@ -233,7 +229,7 @@ fn a_generated_name_held_by_an_empty_directory_is_redrawn_and_the_create_goes_on
     let owned = fx
         .registry
         .create_with_seams(
-            new_instance(&fx, None, &TestStorage::default()),
+            new_instance(&fx, None, &TestStorage { fail: false }),
             &guard,
             &mut CreateSeams {
                 generate: Box::new(|| InstanceName::parse(offered.next().expect("one retry")).unwrap()),
@@ -260,7 +256,7 @@ fn concurrent_creates_of_one_name_have_exactly_one_winner(#[fixture(unicode_home
         let a = scope.spawn(move || {
             let guard = fx.env.store.begin_record().unwrap();
             fx.registry.create_with(
-                new_instance(fx, Some("foo"), &TestStorage::default()),
+                new_instance(fx, Some("foo"), &TestStorage { fail: false }),
                 &guard,
                 &mut || {
                     parked.send(()).unwrap();
@@ -289,41 +285,12 @@ fn create_with_a_failing_storage_leaves_nothing(#[fixture(unicode_home)] home: &
     let guard = fx.env.store.begin_record().unwrap();
     let error = fx
         .registry
-        .create(
-            new_instance(
-                &fx,
-                Some("foo"),
-                &TestStorage {
-                    fail: true,
-                    ..TestStorage::default()
-                },
-            ),
-            &guard,
-        )
+        .create(new_instance(&fx, Some("foo"), &TestStorage { fail: true }), &guard)
         .err()
         .expect("the storage fails");
     assert_eq!(error.kind(), ErrorKind::Io);
     assert!(names(&instances(&fx)).is_empty());
     assert!(lock_files(&fx).is_empty());
-}
-
-/// A recipe without `resources.disk` reaches the storage as no size, so the storage picks the default; a recipe with
-/// one reaches it as that size.
-#[skuld::test]
-fn create_hands_the_storage_the_recipes_disk_size_or_none(#[fixture(unicode_home)] home: &Path) {
-    let fx = fixture(home);
-    let storage = TestStorage::default();
-
-    for (name, size) in [("unset", None), ("set", Some(20 << 30))] {
-        let guard = fx.env.store.begin_record().unwrap();
-        let new = NewInstance {
-            disk_size: size,
-            ..new_instance(&fx, Some(name), &storage)
-        };
-        fx.registry.create(new, &guard).unwrap();
-    }
-
-    assert_eq!(*storage.sizes.lock().unwrap(), [None, Some(20 << 30)]);
 }
 
 #[skuld::test]
@@ -560,7 +527,7 @@ fn placing_a_new_instance_waits_for_readers_of_instance_files(#[fixture(unicode_
             let creator = scope.spawn(move || {
                 let guard = fx.env.store.begin_record().unwrap();
                 fx.registry.create_with_seams(
-                    new_instance(fx, Some("foo"), &TestStorage::default()),
+                    new_instance(fx, Some("foo"), &TestStorage { fail: false }),
                     &guard,
                     &mut CreateSeams {
                         before_wait: Box::new(|| contended.send(()).unwrap()),
@@ -658,7 +625,7 @@ fn a_failed_create_deletes_a_file_that_took_the_name_of_its_half_built_directory
     let error = fx
         .registry
         .create_with_seams(
-            new_instance(&fx, Some("foo"), &TestStorage::default()),
+            new_instance(&fx, Some("foo"), &TestStorage { fail: false }),
             &guard,
             &mut CreateSeams {
                 // The create fails on the taken name; by then the half-built directory has become a file.
@@ -693,7 +660,7 @@ fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(u
     let owned = fx
         .registry
         .create_with_seams(
-            new_instance(&fx, None, &TestStorage::default()),
+            new_instance(&fx, None, &TestStorage { fail: false }),
             &guard,
             &mut CreateSeams {
                 generate: Box::new(|| InstanceName::parse(offered.next().expect("one retry")).unwrap()),

@@ -36,7 +36,7 @@ fn builder(home: &Path) -> LinuxBuilder {
         Arc::new(HttpTransport::new().unwrap()),
         Arc::new(NullProgress),
     );
-    LinuxBuilder::new(Arc::new(fetcher), Arc::new(FakeStorage))
+    LinuxBuilder::new(Arc::new(fetcher), Arc::new(FakeStorage::default()))
 }
 
 fn ctx(home: &Path, arch: Arch) -> BuildCtx {
@@ -149,7 +149,7 @@ fn the_embedded_ubuntu_pin_for_the_other_arch_is_used_for_arch_arm64(#[fixture(u
     };
     let transport = Arc::new(RefusingTransport(Mutex::new(Vec::new())));
     let fetcher = Fetcher::new(Dirs::under(home).downloads(), transport.clone(), Arc::new(NullProgress));
-    let builder = LinuxBuilder::new(Arc::new(fetcher), Arc::new(FakeStorage));
+    let builder = LinuxBuilder::new(Arc::new(fetcher), Arc::new(FakeStorage::default()));
     let env = env(home);
 
     for arch in [Arch::Arm64, Arch::Amd64] {

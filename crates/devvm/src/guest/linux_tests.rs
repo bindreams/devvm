@@ -52,7 +52,10 @@ fn guests(home: &Path) -> LinuxGuests {
         Arc::new(HttpTransport::new().unwrap()),
         Arc::new(NullProgress),
     );
-    LinuxGuests::new(Arc::new(LinuxBuilder::new(Arc::new(fetcher), Arc::new(FakeStorage))))
+    LinuxGuests::new(Arc::new(LinuxBuilder::new(
+        Arc::new(fetcher),
+        Arc::new(FakeStorage::default()),
+    )))
 }
 
 fn os(home: &Path) -> Arc<dyn GuestOs> {

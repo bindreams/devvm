@@ -31,7 +31,7 @@ fn chains_lists_every_instance_chain_running_or_stopped(#[fixture(unicode_home)]
         .create(
             crate::instance::registry::NewInstance {
                 chain: &child,
-                ..new_instance(&fx, Some("on-child"), &TestStorage::default())
+                ..new_instance(&fx, Some("on-child"), &TestStorage { fail: false })
             },
             &guard,
         )
@@ -202,7 +202,7 @@ fn gc_keeps_the_generations_of_an_instance_on_a_superseded_generation(#[fixture(
         progress: _,
     } = fixture(home);
     drop(unrelated);
-    let storage = TestStorage::default();
+    let storage = TestStorage { fail: false };
     let chain = build_expiring(&env, key(5), None, Some(t0() + days(90)));
     let first = chain.tip().layer_ref();
     let guard = env.store.begin_record().unwrap();
