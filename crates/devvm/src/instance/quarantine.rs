@@ -128,7 +128,12 @@ fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &P
         Ok(Some(meta)) if meta.is_dir() => {}
         // Nothing, or anything but a directory (a file, a link), where the directory was: the directory is gone.
         Ok(_) => return Moved::Vanished,
-        Err(e) => return Moved::Failed(e),
+        Err(e) => {
+            return Moved::Failed(std::io::Error::new(
+                e.kind(),
+                format!("cannot look at {}: {e}", path.display()),
+            ));
+        }
     }
     let (record, marker) = match (InstanceRecord::read(path), read_marker(path)) {
         (Ok(record), Ok(marker)) => (record, marker),

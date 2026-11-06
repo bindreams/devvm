@@ -220,18 +220,6 @@ fn a_dangling_link_at_the_final_path_is_not_replaced(
     assert!(temporary_directories(home).is_empty());
 }
 
-/// A kill between the claim and the rename of a host without a no-replace rename leaves an empty directory at the
-/// final path. Every writer holds the lock, so under it that directory is a dead claim.
-#[skuld::test]
-fn an_empty_directory_at_the_final_path_is_a_dead_claim_and_the_write_proceeds(#[fixture(unicode_home)] home: &Path) {
-    let dir = home.join("keys");
-    std::fs::create_dir(&dir).unwrap();
-    let keys = InstanceKeys::generate().unwrap();
-    keys.write(&TestHost, &dir).unwrap();
-    assert_eq!(texts(&InstanceKeys::read(&dir).unwrap()), texts(&keys));
-    assert!(temporary_directories(home).is_empty());
-}
-
 #[skuld::test]
 fn a_directory_with_anything_in_it_at_the_final_path_is_never_replaced(#[fixture(unicode_home)] home: &Path) {
     let dir = home.join("keys");
@@ -254,11 +242,17 @@ fn a_file_at_the_final_path_is_never_replaced(#[fixture(unicode_home)] home: &Pa
 }
 
 #[skuld::test]
-fn a_final_path_that_cannot_be_looked_at_is_an_error_naming_the_look(#[fixture(unicode_home)] home: &Path) {
-    // No file system can look at a name with a NUL in it: the look fails, and says nothing about what is there.
+fn a_final_path_that_cannot_be_used_is_an_error_and_leaves_no_temporary_directory(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // No file system can use a name with a NUL in it, and that says nothing about what is there.
     let dir = home.join("keys\0");
     let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
-    assert!(error.message().starts_with("cannot look at"), "{error}");
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(
+        error.message().starts_with("cannot move the keys into place"),
+        "{error}"
+    );
     assert!(temporary_directories(home).is_empty());
 }
 

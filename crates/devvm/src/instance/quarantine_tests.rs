@@ -120,6 +120,7 @@ fn a_path_that_cannot_be_looked_at_is_a_warning_not_a_vanished_path(#[fixture(un
     assert_eq!(report.warnings.len(), 1, "{report:?}");
     assert!(
         report.warnings[0].contains("cannot move unreadable instance foo")
+            && report.warnings[0].contains(&format!("cannot look at {}", path.display()))
             && report.warnings[0].contains("the next devvm command retries"),
         "{report:?}"
     );

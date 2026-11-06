@@ -352,14 +352,13 @@ fn publish_dir_moves_a_directory_to_a_name_nobody_has(#[fixture(unicode_home)] h
 }
 
 #[skuld::test]
-fn publish_dir_never_replaces_what_is_there_not_even_an_empty_directory(#[fixture(unicode_home)] home: &Path) {
+fn publish_dir_never_replaces_what_is_there(#[fixture(unicode_home)] home: &Path) {
     on_both_hosts(|host| {
         let from = dir_with_a_file(home, "from");
-        let empty = home.join("empty");
-        std::fs::create_dir(&empty).unwrap();
+        let full = dir_with_a_file(home, "full");
         let file = home.join("file");
         std::fs::write(&file, "mine").unwrap();
-        for taken in [&empty, &file] {
+        for taken in [&full, &file] {
             let error = host.publish_dir(&from, taken).unwrap_err();
             assert_eq!(
                 error.kind(),
@@ -368,10 +367,7 @@ fn publish_dir_never_replaces_what_is_there_not_even_an_empty_directory(#[fixtur
                 taken.display()
             );
         }
-        assert!(
-            empty.read_dir().unwrap().next().is_none(),
-            "the empty directory is still empty"
-        );
+        assert_eq!(std::fs::read_to_string(full.join("held")).unwrap(), "full");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine");
         assert_eq!(
             std::fs::read_to_string(from.join("held")).unwrap(),
@@ -379,9 +375,39 @@ fn publish_dir_never_replaces_what_is_there_not_even_an_empty_directory(#[fixtur
             "the source is untouched"
         );
         std::fs::remove_dir_all(&from).unwrap();
-        std::fs::remove_dir_all(&empty).unwrap();
+        std::fs::remove_dir_all(&full).unwrap();
         std::fs::remove_file(&file).unwrap();
     });
+}
+
+/// A host that can leave a dead claim (a kill between the claim and the move) clears an empty directory at the name.
+#[skuld::test]
+fn publish_dir_clears_an_empty_directory_where_a_kill_can_leave_one(#[fixture(unicode_home)] home: &Path) {
+    let hosts: &[&dyn Host] = if cfg!(windows) {
+        &[&OtherHost]
+    } else {
+        &[current(), &OtherHost]
+    };
+    for host in hosts {
+        let (from, to) = (dir_with_a_file(home, "from"), home.join("claimed"));
+        std::fs::create_dir(&to).unwrap();
+        host.publish_dir(&from, &to).unwrap();
+        assert!(!from.exists());
+        assert_eq!(std::fs::read_to_string(to.join("held")).unwrap(), "from");
+        std::fs::remove_dir_all(&to).unwrap();
+    }
+}
+
+/// Windows has a rename that refuses to replace and nothing else, so no empty directory there is a dead claim.
+#[cfg(windows)]
+#[skuld::test]
+fn publish_dir_on_windows_refuses_an_empty_directory(#[fixture(unicode_home)] home: &Path) {
+    let (from, empty) = (dir_with_a_file(home, "from"), home.join("empty"));
+    std::fs::create_dir(&empty).unwrap();
+    let error = current().publish_dir(&from, &empty).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    assert!(empty.read_dir().unwrap().next().is_none());
+    assert_eq!(std::fs::read_to_string(from.join("held")).unwrap(), "from");
 }
 
 #[skuld::test]

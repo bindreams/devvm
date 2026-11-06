@@ -161,11 +161,15 @@ pub(crate) trait Host: Send + Sync {
     /// to rename over a read-only file). A directory at `to` is an error.
     fn replace_file(&self, from: &Path, to: &Path) -> std::io::Result<()>;
 
-    /// Moves the directory `from` to `to`, which nobody has: an existing `to`, even an empty directory, is
-    /// `AlreadyExists` and nothing changes. Unlike a rename, it is a publish: of several that race for one name,
-    /// exactly one wins. Where the file system has a rename that refuses to replace (Windows, Linux, macOS), `to` is
-    /// there in full or not at all; where it has none (NFS, some FUSE mounts, old kernels) `to` is claimed first, and
-    /// a kill between the claim and the move leaves it empty.
+    /// Moves the directory `from` to `to`, which nobody has: an existing `to` is `AlreadyExists` and nothing changes.
+    /// Unlike a rename, it is a publish: of several that race for one name, exactly one wins. Where the file system has
+    /// a rename that refuses to replace (Windows, Linux, macOS), `to` is there in full or not at all; where it has none
+    /// (NFS, some FUSE mounts, old kernels) `to` is claimed first, and a kill between the claim and the move leaves it
+    /// empty: a dead claim.
+    ///
+    /// The caller excludes other publishers of the name (the keys lock, `excluding_readers`). A host that can leave a
+    /// dead claim, any but Windows, first removes an empty directory at `to`; one that cannot be removed is
+    /// `AlreadyExists`. Anything else there is refused untouched.
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
 
     /// Flushes the entries of `dir` to disk, so a file or directory made in it survives a crash. Does nothing on
@@ -272,19 +276,22 @@ fn is_not_a_dead_claim(e: &std::io::Error) -> bool {
         )
 }
 
-/// Removes the empty directory at `dir`, to be called just before [`Host::publish_dir`] of that name. A writer killed
-/// between the two steps of its claim on a host without a rename that refuses to replace leaves one; there it can only
-/// be a dead claim, because the caller holds the lock every publisher of the name takes. On a host with a native
-/// no-replace rename someone else made it, and it is removed all the same. A directory with anything in it, a link and
-/// a file are left for `publish_dir` to refuse. The error says whether the look or the removal failed.
-pub(crate) fn clear_dead_claim(dir: &Path) -> std::io::Result<()> {
+/// Removes the empty directory at `dir`, for [`Host::publish_dir`] of a host that can leave one: a writer killed between
+/// the two steps of its claim. The caller excludes other publishers of the name, so an empty directory there is a dead
+/// claim. A directory with anything in it, a link and a file are left for the publish to refuse. A directory that
+/// cannot be removed is `AlreadyExists`, the name being held. A failed look keeps its kind. The error says whether the
+/// look or the removal failed.
+fn clear_dead_claim(dir: &Path) -> std::io::Result<()> {
     let say = |what: &str, e: std::io::Error| std::io::Error::new(e.kind(), format!("{what} {}: {e}", dir.display()));
     let present = symlink_metadata_if_present(dir).map_err(|e| say("cannot look at", e))?;
     if !present.is_some_and(|m| m.file_type().is_dir()) {
         return Ok(());
     }
     match std::fs::remove_dir(dir) {
-        Err(e) if !is_not_a_dead_claim(&e) => Err(say("cannot remove the empty directory", e)),
+        Err(e) if !is_not_a_dead_claim(&e) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            say("cannot remove the empty directory", e),
+        )),
         _ => Ok(()),
     }
 }

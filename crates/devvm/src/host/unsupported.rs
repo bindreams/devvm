@@ -11,7 +11,7 @@ use cosca::identity::ProcessId;
 use super::names::{posix_problem, unix_run_dir};
 use super::{
     Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
-    create_new_with,
+    clear_dead_claim, create_new_with,
 };
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -58,8 +58,8 @@ pub(super) trait FileModes: Send + Sync {
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
 
-    /// [`Host::publish_dir`]. A host with a rename that refuses to replace does it in one step; one without can only
-    /// call [`claim_then_rename`].
+    /// [`Host::publish_dir`] once a dead claim at `to` is cleared. A host with a rename that refuses to replace does it
+    /// in one step; one without can only call [`claim_then_rename`].
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
 }
 
@@ -177,6 +177,8 @@ impl<M: FileModes> Host for M {
     }
 
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        // Even where the rename is native: a dead claim may be left from a run on a file system or kernel without one.
+        clear_dead_claim(to)?;
         FileModes::publish_dir(self, from, to)
     }
 

@@ -6,7 +6,7 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::host::{Host, clear_dead_claim};
+use crate::host::Host;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -108,7 +108,6 @@ impl InstanceKeys {
         let mut lock = FileLock::open(&parent.join(LOCK))?;
         lock.lock(Mode::Exclusive, "the instance keys", &mut |_| {})?;
         let mut warnings = sweep_temporaries(parent)?;
-        clear_dead_claim(dir).map_err(|e| Error::new(ErrorKind::Io, e.to_string()).with_source(e))?;
         let temp = tempfile::Builder::new()
             .prefix(TEMP_PREFIX)
             .tempdir_in(parent)
