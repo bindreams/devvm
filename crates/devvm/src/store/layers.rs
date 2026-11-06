@@ -316,6 +316,7 @@ impl LayerStore {
         let dir = self.generation_dir(layer);
         match meta::read(&dir)? {
             MetaRead::Absent => Ok(None),
+            MetaRead::Newer(e) => Err(e),
             MetaRead::Corrupt(why) => {
                 self.progress.message(&format!(
                     "layer record {} is unreadable ({why}); treating it as missing",
@@ -327,7 +328,7 @@ impl LayerStore {
                 }
                 Ok(None)
             }
-            MetaRead::Valid(meta) if meta.key != layer.key || meta.generation != layer.generation => {
+            MetaRead::Valid(meta) if !meta.is_of(layer) => {
                 self.progress.message(&format!(
                     "layer record {} names another layer; treating it as missing",
                     dir.display()

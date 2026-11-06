@@ -6,10 +6,14 @@
 //! Deadlock freedom: a build takes `<key>.build` and then, shared, `gc.lock`; collection takes `gc.lock` and then only
 //! `try_lock`s `<key>.build` and `.gen` locks, never waiting on them. Nothing waits in a cycle.
 
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
+use std::fs::Metadata;
+use std::path::Path;
 
 use super::meta::{self, MetaRead};
 use super::{ChainLease, CurrentFile, Generation, LayerLease, LayerRef, LayerStore};
+use crate::host::{look_failed, symlink_metadata_if_present};
 use crate::recipe::hash::LayerKey;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
@@ -82,9 +86,11 @@ impl LayerStore {
     /// Deletes every generation that is neither a key's `current`, nor in `reachable`'s chains, nor an ancestor of
     /// one of those, and that nobody holds a lease on. Removes staging directories of keys nobody is building.
     ///
-    /// A `reachable` error, or a kept layer whose record or `current` file is unreadable (so its ancestors cannot be
-    /// known), aborts the pass before anything is deleted. An unkept generation whose own record is unreadable is
-    /// moved to quarantine, not deleted.
+    /// A `reachable` error, a failed look at a kept generation's directory, a kept layer whose record is missing,
+    /// unreadable or names another layer, or a key whose `current` file is unreadable (so ancestors cannot be known),
+    /// aborts the pass before anything is deleted. A record written by a newer devvm aborts it with that error alone,
+    /// and when that record is an unkept generation's, generations the pass deleted before it stay deleted.
+    /// An unkept generation whose own record is unreadable is moved to quarantine, not deleted.
     pub fn gc(&self, reachable: &dyn Reachability) -> Result<GcReport> {
         let mut gc = self.gc_lock()?;
         gc.lock(
@@ -97,11 +103,14 @@ impl LayerStore {
         let keys = self.key_dirs()?;
 
         let mut keep = instance_layers.clone();
+        let mut currents: HashSet<LayerRef> = HashSet::new();
         for key in &keys {
             match self.read_current_file(key)? {
                 CurrentFile::Absent => {}
                 CurrentFile::Generation(generation) => {
-                    keep.insert(LayerRef { key: *key, generation });
+                    let current = LayerRef { key: *key, generation };
+                    keep.insert(current);
+                    currents.insert(current);
                 }
                 CurrentFile::Unreadable(path) => {
                     return Err(Error::new(
@@ -117,34 +126,47 @@ impl LayerStore {
             }
         }
         let mut pending: Vec<LayerRef> = keep.iter().copied().collect();
+        // Roots pop in ascending order; a parent first reached through a child's record pops right after that child,
+        // and a parent that is itself a root pops at its own place.
+        pending.sort_by_key(|layer| Reverse(*layer));
+        // The kept layers whose records name a layer as their parent, as the walk reads them.
+        let mut children: HashMap<LayerRef, Vec<LayerRef>> = HashMap::new();
+        // Why the walk cannot be trusted. The first stop is the one reported; the walk still runs to its end so the
+        // abort names every kept child it read.
+        let mut stop: Option<Stop> = None;
         while let Some(layer) = pending.pop() {
             let dir = self.generation_dir(&layer);
-            // A kept layer that is gone has no ancestors to protect.
-            if !dir.is_dir() {
-                continue;
-            }
-            match meta::read(&dir)? {
-                MetaRead::Valid(meta) => {
-                    if let Some(parent) = meta.parent
-                        && keep.insert(parent)
-                    {
-                        pending.push(parent);
+            let failure = match present(&dir) {
+                // A kept layer that is gone has no ancestors to protect.
+                Ok(None) => continue,
+                // No record can be in what is not a directory.
+                Ok(Some(found)) if !found.is_dir() => Stop::Record(layer, Reason::Missing),
+                Ok(Some(_)) => match meta::read(&dir) {
+                    Ok(MetaRead::Valid(meta)) if meta.is_of(&layer) => {
+                        if let Some(parent) = meta.parent {
+                            children.entry(parent).or_default().push(layer);
+                            if keep.insert(parent) {
+                                pending.push(parent);
+                            }
+                        }
+                        continue;
                     }
-                }
-                MetaRead::Absent | MetaRead::Corrupt(_) => {
-                    let holders = self.holders(&layer, &keep, &instance_layers)?;
-                    return Err(Error::new(
-                        ErrorKind::Store,
-                        format!(
-                            "cannot collect: the record of kept layer {} generation {} ({}) is unreadable, so its \
-                             ancestors are unknown; nothing was deleted; {}",
-                            layer.key,
-                            layer.generation,
-                            dir.display(),
-                            record_recovery(&holders, &dir)
-                        ),
-                    ));
-                }
+                    Ok(MetaRead::Valid(_)) => Stop::Record(layer, Reason::OtherLayer),
+                    Ok(MetaRead::Absent) => Stop::Record(layer, Reason::Missing),
+                    Ok(MetaRead::Corrupt(why)) => Stop::Record(layer, Reason::Unreadable(why)),
+                    Ok(MetaRead::Newer(e)) => Stop::Error(e),
+                    Err(e) => Stop::Record(layer, Reason::ReadFailed(e)),
+                },
+                Err(e) => Stop::Error(e),
+            };
+            stop.get_or_insert(failure);
+        }
+        match stop {
+            None => {}
+            Some(Stop::Error(e)) => return Err(e),
+            Some(Stop::Record(layer, reason)) => {
+                let holders = holders(&layer, &instance_layers, &currents, &children);
+                return Err(record_abort(&layer, &self.generation_dir(&layer), reason, &holders));
             }
         }
 
@@ -195,13 +217,17 @@ impl LayerStore {
                 report.held.push(layer);
                 continue;
             }
-            if let MetaRead::Corrupt(why) = meta::read(&entry.path())? {
-                self.progress.message(&format!(
-                    "layer record {} is unreadable ({why}); moving the layer to quarantine instead of deleting it",
-                    entry.path().display()
-                ));
-                self.quarantine_record(&layer, true)?;
-                continue;
+            match meta::read(&entry.path())? {
+                MetaRead::Corrupt(why) => {
+                    self.progress.message(&format!(
+                        "layer record {} is unreadable ({why}); moving the layer to quarantine instead of deleting it",
+                        entry.path().display()
+                    ));
+                    self.quarantine_record(&layer, true)?;
+                    continue;
+                }
+                MetaRead::Newer(e) => return Err(e),
+                MetaRead::Absent | MetaRead::Valid(_) => {}
             }
             match std::fs::remove_dir_all(entry.path()) {
                 Ok(()) => {
@@ -242,38 +268,25 @@ enum Holder {
     Child(LayerRef),
 }
 
-impl LayerStore {
-    /// Why `layer` is kept, given the kept set so far. Only runs on the way to an abort.
-    fn holders(
-        &self,
-        layer: &LayerRef,
-        keep: &HashSet<LayerRef>,
-        instance_layers: &HashSet<LayerRef>,
-    ) -> Result<Vec<Holder>> {
-        let mut holders = Vec::new();
-        if let CurrentFile::Generation(generation) = self.read_current_file(&layer.key)?
-            && generation == layer.generation
-        {
-            holders.push(Holder::Current(layer.key));
-        }
-        if instance_layers.contains(layer) {
-            holders.push(Holder::Instance);
-        }
-        let mut children: Vec<LayerRef> = Vec::new();
-        for other in keep {
-            let dir = self.generation_dir(other);
-            // A child whose own record is unreadable is reported when the walk reaches it.
-            if dir.is_dir()
-                && let Ok(MetaRead::Valid(meta)) = meta::read(&dir)
-                && meta.parent == Some(*layer)
-            {
-                children.push(*other);
-            }
-        }
-        children.sort_by_key(|child| (child.key.to_string(), child.generation.to_string()));
-        holders.extend(children.into_iter().map(Holder::Child));
-        Ok(holders)
+/// Why `layer` is kept: its key's `current`, an instance chain, and the kept layers whose records name it as parent,
+/// in the order of the layers. Only runs on the way to an abort.
+fn holders(
+    layer: &LayerRef,
+    instance_layers: &HashSet<LayerRef>,
+    currents: &HashSet<LayerRef>,
+    children: &HashMap<LayerRef, Vec<LayerRef>>,
+) -> Vec<Holder> {
+    let mut holders = Vec::new();
+    if currents.contains(layer) {
+        holders.push(Holder::Current(layer.key));
     }
+    if instance_layers.contains(layer) {
+        holders.push(Holder::Instance);
+    }
+    let mut kept_children = children.get(layer).cloned().unwrap_or_default();
+    kept_children.sort();
+    holders.extend(kept_children.into_iter().map(Holder::Child));
+    holders
 }
 
 impl std::fmt::Display for Holder {
@@ -293,15 +306,53 @@ impl std::fmt::Display for Holder {
     }
 }
 
-/// How to make a store collectable again after an abort over an unreadable record at `path`: every hold on it must go,
-/// or the directory must move aside.
-fn record_recovery(holders: &[Holder], path: &std::path::Path) -> String {
+/// Where the walk could not go on.
+enum Stop {
+    /// The record of a kept layer says nothing usable about its ancestors.
+    Record(LayerRef, Reason),
+    /// An error to report as it is: a failed look at a kept layer's directory, or a record from a newer devvm.
+    Error(Error),
+}
+
+/// What the walk found at a kept layer instead of a record that says what its ancestors are.
+enum Reason {
+    Missing,
+    /// The record is there but unusable; the text says why.
+    Unreadable(String),
+    /// The record is valid but belongs to another layer.
+    OtherLayer,
+    /// Reading the record failed.
+    ReadFailed(Error),
+}
+
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Reason::Missing => f.write_str("is missing"),
+            Reason::Unreadable(why) => write!(f, "is unreadable ({why})"),
+            Reason::OtherLayer => f.write_str("names another layer"),
+            Reason::ReadFailed(cause) => write!(f, "cannot be read ({})", cause.message()),
+        }
+    }
+}
+
+/// The abort over the record of kept `layer` in `dir`. To make the store collectable again, every hold on the layer
+/// must go, or the directory must move aside.
+fn record_abort(layer: &LayerRef, dir: &Path, reason: Reason, holders: &[Holder]) -> Error {
     let holders: Vec<String> = holders.iter().map(Holder::to_string).collect();
-    format!(
-        "it is kept as {}; to recover, move {} aside or release every hold on it",
+    let message = format!(
+        "cannot collect: the record of kept layer {} generation {} ({}) {reason}, so its ancestors are unknown; \
+         nothing was deleted; it is kept as {}; to recover, move {} aside or release every hold on it",
+        layer.key,
+        layer.generation,
+        dir.display(),
         holders.join(" and "),
-        path.display()
-    )
+        dir.display()
+    );
+    match reason {
+        Reason::ReadFailed(cause) => Error::new(cause.kind(), message).with_source(cause),
+        _ => Error::new(ErrorKind::Store, message),
+    }
 }
 
 /// How to make a store collectable again after an abort over `key`'s unparseable `current` file at `path`.
@@ -311,3 +362,16 @@ fn current_recovery(key: &LayerKey, path: &std::path::Path) -> String {
         path.display()
     )
 }
+
+/// What is at the generation directory `dir` of a kept layer: `None` when nothing is. A failed look is an error, never
+/// "gone": a kept layer that is skipped leaves its parent unkept, and collection deletes the parent.
+fn present(dir: &Path) -> Result<Option<Metadata>> {
+    symlink_metadata_if_present(dir).map_err(|e| {
+        let look = look_failed(dir, e);
+        Error::new(ErrorKind::Io, format!("cannot collect: {look}; nothing was deleted")).with_source(look)
+    })
+}
+
+#[cfg(all(test, unix))]
+#[path = "gc_unix_tests.rs"]
+mod gc_unix_tests;
