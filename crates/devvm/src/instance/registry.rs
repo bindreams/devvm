@@ -353,8 +353,7 @@ enum Placement {
 ///
 /// Called under `excluding_readers`, which every rename of an instance directory takes, so no devvm process creates,
 /// renames or removes a name in `instances/` between the look and the rename. Only an actor outside devvm could, and
-/// devvm does not guard against one. That is why the look needs no `publish_dir`, and with it no claim for a kill to
-/// leave behind.
+/// devvm does not guard against one.
 fn place(temp: &std::path::Path, target: &std::path::Path) -> Placement {
     match symlink_metadata_if_present(target) {
         Ok(Some(_)) => Placement::Taken(std::io::Error::new(

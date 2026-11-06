@@ -6,7 +6,7 @@ use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Storage};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
-use crate::instance::registry::{CreateSeams, NewInstance, Owned, Registry};
+use crate::instance::registry::{CreateSeams, NewInstance, Owned, Placement, Registry, place};
 use crate::store::layers::layers_tests::{Env, build, env, key, names};
 use crate::store::layers::{ChainLease, LayerDir};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
@@ -158,7 +158,7 @@ fn create_on_a_taken_name_fails_and_leaves_it_untouched(#[fixture(unicode_home)]
         std::fs::read(instances(&fx).join("foo").join("record.json")).unwrap(),
         before
     );
-    assert_eq!(names(&instances(&fx)), ["foo"], "no .new-* directory is left");
+    assert_eq!(names(&instances(&fx)), ["foo"]);
     assert_eq!(lock_files(&fx), locks_before, "no extra lock files");
     assert_eq!(first.dir().record().unwrap().name.as_str(), "foo");
 }
@@ -187,7 +187,7 @@ fn create_on_a_name_held_by_a_file_fails_and_keeps_it(#[fixture(unicode_home)] h
         "mine",
         "the file is not replaced"
     );
-    assert_eq!(names(&instances(&fx)), ["file"], "no .new-* directory is left");
+    assert_eq!(names(&instances(&fx)), ["file"]);
 }
 
 #[skuld::test]
@@ -215,7 +215,7 @@ fn create_on_a_name_held_by_an_empty_directory_fails_and_keeps_it(#[fixture(unic
         empty.read_dir().unwrap().next().is_none(),
         "the directory is not replaced"
     );
-    assert_eq!(names(&instances(&fx)), ["empty"], "no .new-* directory is left");
+    assert_eq!(names(&instances(&fx)), ["empty"]);
 }
 
 #[skuld::test]
@@ -664,7 +664,6 @@ fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(u
             &guard,
             &mut CreateSeams {
                 generate: Box::new(|| InstanceName::parse(offered.next().expect("one retry")).unwrap()),
-                // The holder of the first name is removed right after the look found it.
                 after_placement: Box::new(|| {
                     if !std::mem::replace(&mut freed, true) {
                         let op = existing.op_exclusive().unwrap();
@@ -678,6 +677,45 @@ fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(u
 
     assert_eq!(owned.dir().name().as_str(), "free");
     assert_eq!(names(&instances(&fx)), ["free"]);
+}
+
+#[skuld::test]
+fn a_placement_whose_look_fails_is_an_io_failure_not_a_taken_name(#[fixture(unicode_home)] home: &Path) {
+    let temp = home.join("temp");
+    // No file system can look at a name with a NUL in it: the look fails, and says nothing about the name.
+    let target = home.join("target\0");
+
+    match place(&temp, &target) {
+        Placement::Failed(e) => {
+            assert_eq!(e.kind(), ErrorKind::Io, "{e}");
+            assert!(
+                e.message().contains(&format!("cannot look at {}", target.display())),
+                "{e}"
+            );
+        }
+        Placement::Placed => panic!("placed"),
+        Placement::Taken(e) => panic!("taken: {e}"),
+    }
+}
+
+#[skuld::test]
+fn a_placement_whose_rename_fails_is_an_io_failure_not_a_taken_name(#[fixture(unicode_home)] home: &Path) {
+    // Nothing is at the target, so the look passes; there is no directory to rename.
+    let temp = home.join("missing");
+    let target = home.join("target");
+
+    match place(&temp, &target) {
+        Placement::Failed(e) => {
+            assert_eq!(e.kind(), ErrorKind::Io, "{e}");
+            assert!(
+                e.message().contains(&format!("cannot rename {}", temp.display())),
+                "{e}"
+            );
+        }
+        Placement::Placed => panic!("placed"),
+        Placement::Taken(e) => panic!("taken: {e}"),
+    }
+    assert!(!target.exists());
 }
 
 #[skuld::test]

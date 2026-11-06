@@ -262,14 +262,9 @@ pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
 }
 
 /// Deletes whatever is at `path`, a name devvm owns, and succeeds when nothing is there: a link is deleted as a link and
-/// never followed, a directory goes with everything under it, anything else is removed as a file. The look comes
-/// first because `remove_dir_all` on a file is an error, so a file at the name would fail the `rm`, the reaper and the
-/// `qemu-cwd` delete. Any error of the delete is the answer.
+/// never followed, a directory goes with everything under it, anything else is removed as a file.
 ///
-/// Another deleter or a creator of the name is not guarded against; the caller excludes them. For `.dead-` and `.new-`
-/// trees that is `dead.lock` (`rm`, the reaper). A `.new-` tree also has a creator: it builds and deletes the tree
-/// under its owner lock, and the reaper deletes one only while it holds that lock or the lock file is gone, which a
-/// creator never lets happen before it is done. For `qemu-cwd` it is the op lock.
+/// Callers exclude other deleters and creators of the name; see the reaper and instance dir for which lock.
 pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
     match symlink_metadata_if_present(path).map_err(|e| look_failed(path, e))? {
         None => Ok(()),

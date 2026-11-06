@@ -48,7 +48,7 @@ pub(crate) fn symlink_metadata_if_present(path: &Path) -> io::Result<Option<Meta
 }
 
 /// The failure `e` of a look at `path`, said as "cannot look at <path>: <e>" with its kind kept: the look failed, and
-/// that says nothing about what is at `path`. `e` stays the source of the payload, with its OS code.
+/// that says nothing about what is at `path`.
 pub(crate) fn look_failed(path: &Path, e: io::Error) -> io::Error {
     io::Error::new(
         e.kind(),
