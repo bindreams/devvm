@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, FileType, Metadata};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 #[path = "entry_tests.rs"]
@@ -48,9 +48,33 @@ pub(crate) fn symlink_metadata_if_present(path: &Path) -> io::Result<Option<Meta
 }
 
 /// The failure `e` of a look at `path`, said as "cannot look at <path>: <e>" with its kind kept: the look failed, and
-/// that says nothing about what is at `path`.
+/// that says nothing about what is at `path`. `e` stays the source of the payload, with its OS code.
 pub(crate) fn look_failed(path: &Path, e: io::Error) -> io::Error {
-    io::Error::new(e.kind(), format!("cannot look at {}: {e}", path.display()))
+    io::Error::new(
+        e.kind(),
+        LookFailed {
+            path: path.to_owned(),
+            source: e,
+        },
+    )
+}
+
+#[derive(Debug)]
+struct LookFailed {
+    path: PathBuf,
+    source: io::Error,
+}
+
+impl std::fmt::Display for LookFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cannot look at {}: {}", self.path.display(), self.source)
+    }
+}
+
+impl std::error::Error for LookFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 /// [`Host::open_entry`](super::Host::open_entry) for a host that supplies how a regular file is opened and how any

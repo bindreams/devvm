@@ -6,7 +6,7 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::host::{Host, is_absent, look_failed, symlink_metadata_if_present};
+use crate::host::{Host, is_absent, symlink_metadata_if_present};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -79,17 +79,18 @@ fn is_not_a_dead_claim(e: &std::io::Error) -> bool {
 /// Removes the empty directory at `dir`. A writer killed between the two steps of `claim_then_rename` leaves one on a
 /// host without a rename that refuses to replace; there it can only be a dead claim, because the caller holds the lock
 /// every writer takes. On a host with a native no-replace rename someone else made it, and it is removed all the same.
-/// A directory with anything in it, a link and a file are left for `publish_dir` to refuse. A failed look is an error
-/// ([`look_failed`]).
-fn clear_dead_claim(dir: &Path) -> std::io::Result<()> {
-    let present = symlink_metadata_if_present(dir).map_err(|e| look_failed(dir, e))?;
+/// A directory with anything in it, a link and a file are left for `publish_dir` to refuse. A failed look is an error.
+fn clear_dead_claim(dir: &Path) -> Result<()> {
+    let present = symlink_metadata_if_present(dir)
+        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", dir.display()), e))?;
     if !present.is_some_and(|m| m.file_type().is_dir()) {
         return Ok(());
     }
     match std::fs::remove_dir(dir) {
-        Err(e) if !is_not_a_dead_claim(&e) => Err(std::io::Error::new(
-            e.kind(),
-            format!("cannot remove the empty directory {}: {e}", dir.display()),
+        Err(e) if !is_not_a_dead_claim(&e) => Err(Error::io(
+            ErrorKind::Io,
+            format!("cannot remove the empty directory {}", dir.display()),
+            e,
         )),
         _ => Ok(()),
     }
@@ -138,7 +139,7 @@ impl InstanceKeys {
         let mut lock = FileLock::open(&parent.join(LOCK))?;
         lock.lock(Mode::Exclusive, "the instance keys", &mut |_| {})?;
         let mut warnings = sweep_temporaries(parent)?;
-        clear_dead_claim(dir).map_err(|e| Error::from_io(ErrorKind::Io, e))?;
+        clear_dead_claim(dir)?;
         let temp = tempfile::Builder::new()
             .prefix(TEMP_PREFIX)
             .tempdir_in(parent)

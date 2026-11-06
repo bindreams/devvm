@@ -271,7 +271,7 @@ pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
 /// under its owner lock, and the reaper deletes one only while it holds that lock or the lock file is gone, which a
 /// creator never lets happen before it is done. For `qemu-cwd` it is the op lock.
 pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
-    match symlink_metadata_if_present(path)? {
+    match symlink_metadata_if_present(path).map_err(|e| look_failed(path, e))? {
         None => Ok(()),
         Some(meta) if meta.file_type().is_symlink() => remove_symlink(path),
         Some(meta) if meta.is_dir() => std::fs::remove_dir_all(path),

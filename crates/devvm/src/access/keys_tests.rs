@@ -267,6 +267,7 @@ fn a_final_path_that_cannot_be_looked_at_is_an_error_naming_the_look_and_leaves_
             .starts_with(&format!("cannot look at {}", dir.display())),
         "{error}"
     );
+    assert!(std::error::Error::source(&error).is_some());
     assert!(temporary_directories(home).is_empty());
 }
 

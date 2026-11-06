@@ -94,13 +94,6 @@ impl Error {
         Error::new(kind, format!("{}: {source}", context.into())).with_source(source)
     }
 
-    /// An I/O failure whose own message already says what was being done, like [`look_failed`]'s.
-    ///
-    /// [`look_failed`]: crate::host::look_failed
-    pub(crate) fn from_io(kind: ErrorKind, source: std::io::Error) -> Error {
-        Error::new(kind, source.to_string()).with_source(source)
-    }
-
     /// This error once `cleanup`, which undid a step that had half happened, has run. A cleanup that failed too is
     /// named next to it with `left`, what it left behind: the first failure stays the error.
     pub(crate) fn after_cleanup(mut self, left: &str, cleanup: std::result::Result<(), impl fmt::Display>) -> Error {

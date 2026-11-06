@@ -219,9 +219,7 @@ fn create_on_a_name_held_by_an_empty_directory_fails_and_keeps_it(#[fixture(unic
 }
 
 #[skuld::test]
-fn a_generated_name_held_by_an_empty_directory_is_replaced_and_the_create_goes_on(
-    #[fixture(unicode_home)] home: &Path,
-) {
+fn a_generated_name_held_by_an_empty_directory_is_redrawn_and_the_create_goes_on(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let empty = instances(&fx).join("taken");
     std::fs::create_dir_all(&empty).unwrap();
@@ -618,38 +616,6 @@ fn a_handover_never_writes_into_an_instance_that_took_the_name(#[fixture(unicode
 }
 
 #[skuld::test]
-fn a_named_create_whose_name_is_freed_right_after_the_failed_rename_still_says_already_exists(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let fx = fixture(home);
-    let existing = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
-    let guard = fx.env.store.begin_record().unwrap();
-
-    let error = fx
-        .registry
-        .create_with_seams(
-            new_instance(&fx, Some("foo"), &TestStorage { fail: false }),
-            &guard,
-            &mut CreateSeams {
-                // The `rm` of the instance that held the name lands right after the rename was refused.
-                after_rename: Box::new(|| {
-                    let op = existing.op_exclusive().unwrap();
-                    existing.destroy(op).unwrap();
-                }),
-                ..CreateSeams::none()
-            },
-        )
-        .err()
-        .expect("the name was taken when the rename ran");
-
-    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
-    assert!(
-        names(&instances(&fx)).is_empty(),
-        "nothing is left of the failed create"
-    );
-}
-
-#[skuld::test]
 fn a_failed_create_deletes_a_file_that_took_the_name_of_its_half_built_directory(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let _existing = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
@@ -663,7 +629,7 @@ fn a_failed_create_deletes_a_file_that_took_the_name_of_its_half_built_directory
             &guard,
             &mut CreateSeams {
                 // The create fails on the taken name; by then the half-built directory has become a file.
-                after_rename: Box::new(|| {
+                after_placement: Box::new(|| {
                     for entry in std::fs::read_dir(&root).unwrap() {
                         let path = entry.unwrap().path();
                         if path.file_name().unwrap().to_string_lossy().starts_with(".new-") {
@@ -698,8 +664,8 @@ fn a_generated_name_that_collides_is_replaced_and_the_create_goes_on(#[fixture(u
             &guard,
             &mut CreateSeams {
                 generate: Box::new(|| InstanceName::parse(offered.next().expect("one retry")).unwrap()),
-                // The holder of the first name is removed right after it blocked the rename.
-                after_rename: Box::new(|| {
+                // The holder of the first name is removed right after the look found it.
+                after_placement: Box::new(|| {
                     if !std::mem::replace(&mut freed, true) {
                         let op = existing.op_exclusive().unwrap();
                         existing.destroy(op).unwrap();

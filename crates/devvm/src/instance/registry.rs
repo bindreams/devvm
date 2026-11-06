@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
-use crate::host::{Host, look_failed, remove_tree, symlink_metadata_if_present};
+use crate::host::{Host, remove_tree, symlink_metadata_if_present};
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
@@ -59,7 +59,7 @@ pub(crate) struct CreateSeams<'a> {
     /// Just before the placement waits for the readers of instance files.
     pub before_wait: Box<dyn FnMut() + 'a>,
     /// After the placement was tried, whatever came of it.
-    pub after_rename: Box<dyn FnMut() + 'a>,
+    pub after_placement: Box<dyn FnMut() + 'a>,
     /// The next name to try, when the caller gave none or the name was taken.
     pub generate: Box<dyn FnMut() -> InstanceName + 'a>,
 }
@@ -69,7 +69,7 @@ impl CreateSeams<'_> {
         CreateSeams {
             before_rename: Box::new(|| {}),
             before_wait: Box::new(|| {}),
-            after_rename: Box::new(|| {}),
+            after_placement: Box::new(|| {}),
             generate: Box::new(InstanceName::generate),
         }
     }
@@ -322,7 +322,7 @@ impl Registry {
             let placed = self
                 .locks
                 .excluding_readers(&mut seams.before_wait, || place(temp, &target))?;
-            (seams.after_rename)();
+            (seams.after_placement)();
             match placed {
                 Placement::Placed => return Ok(self.handle(id, name)),
                 Placement::Taken(e) => {
@@ -365,7 +365,11 @@ fn place(temp: &std::path::Path, target: &std::path::Path) -> Placement {
             Ok(()) => Placement::Placed,
             Err(e) => Placement::Failed(Error::io(ErrorKind::Io, format!("cannot rename {}", temp.display()), e)),
         },
-        Err(e) => Placement::Failed(Error::from_io(ErrorKind::Io, look_failed(target, e))),
+        Err(e) => Placement::Failed(Error::io(
+            ErrorKind::Io,
+            format!("cannot look at {}", target.display()),
+            e,
+        )),
     }
 }
 
