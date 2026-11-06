@@ -21,7 +21,7 @@ use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{key, request};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
-use crate::test_support::qemu::scratch_run;
+use crate::test_support::qemu::{scratch_run, socket_dir};
 use crate::test_support::transport::RefusingTransport;
 use crate::{Arch, Dirs, Error, GuestKind, Result};
 
@@ -206,26 +206,26 @@ fn building_the_engine_and_listing_create_no_runtime_directory(#[fixture(unicode
 }
 
 #[skuld::test]
-fn a_launch_over_a_runtime_directory_it_refuses_downloads_nothing(#[fixture(unicode_home)] home: &Path) {
+fn a_launch_over_a_runtime_path_it_refuses_downloads_nothing(#[fixture(unicode_home)] home: &Path) {
+    // Beside the socket directory's own scratch runtime directories, so that the path is as short as theirs: a path
+    // below `home` can be too long for a socket, which a launch refuses first.
+    let file = tempfile::Builder::new()
+        .prefix("r")
+        .tempfile_in(socket_dir())
+        .expect("a file for a runtime path");
     let too_long = home.join("x".repeat(crate::host::current().socket_path_max()));
-    let qemu = QemuEngine::with_run(home, Ok(too_long));
+    let cases = [
+        (too_long, ErrorKind::Unavailable, "XDG_RUNTIME_DIR"),
+        (file.path().to_path_buf(), ErrorKind::Io, "is not a directory"),
+    ];
 
-    let error = qemu.launch();
+    for (n, (run, kind, fragment)) in cases.into_iter().enumerate() {
+        let qemu = QemuEngine::with_run(&home.join(n.to_string()), Ok(run.clone()));
 
-    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
-    assert!(error.message().contains("XDG_RUNTIME_DIR"), "{error}");
-    assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
-}
+        let error = qemu.launch();
 
-#[skuld::test]
-fn a_launch_over_a_runtime_path_that_is_a_file_downloads_nothing(#[fixture(unicode_home)] home: &Path) {
-    let file = home.join("run");
-    std::fs::write(&file, "").unwrap();
-    let qemu = QemuEngine::with_run(home, Ok(file));
-
-    let error = qemu.launch();
-
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(error.message().contains("is not a directory"), "{error}");
-    assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
+        assert_eq!(error.kind(), kind, "{}: {error}", run.display());
+        assert!(error.message().contains(fragment), "{}: {error}", run.display());
+        assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
+    }
 }
