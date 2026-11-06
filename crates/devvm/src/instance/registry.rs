@@ -93,7 +93,7 @@ impl Registry {
         Registry {
             root: dirs.instances(),
             quarantine: dirs.instance_quarantine(),
-            locks: Arc::new(Locks::new(dirs.instance_locks())),
+            locks: Arc::new(Locks::new(dirs.instance_locks(), host)),
             progress,
             backend,
             host,

@@ -138,7 +138,7 @@ fn gc_respects_a_lease_held_by_another_process(#[fixture(unicode_home)] home: &P
     child.wait().unwrap();
     // Block until the OS has released the dead holder's lock, then collect.
     let mut probe = env.store.generation_lock(&oldest).unwrap();
-    probe.lock(Mode::Exclusive, "the killed holder", &NullProgress).unwrap();
+    probe.lock(Mode::Exclusive, "the killed holder", &mut |_| {}).unwrap();
     probe.unlock().unwrap();
     let report = env.store.gc(&Fixed(vec![])).unwrap();
     assert!(report.deleted.contains(&oldest), "{report:?}");

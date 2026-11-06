@@ -100,6 +100,12 @@ test_group!(
     env = "DEVVM_TEST_VM",
     consent = "boots QEMU under the host's hypervisor and downloads the pinned QEMU build"
 );
+// Windows only uses it: the test attaches a virtual disk with diskpart, which needs an elevated token.
+test_group!(
+    EXFAT_VOLUME => exfat_volume,
+    env = "DEVVM_TEST_EXFAT_VOLUME",
+    consent = "attaches a virtual disk to the host with diskpart and formats it exFAT"
+);
 test_group!(PYYAML => pyyaml, env = "DEVVM_TEST_PYYAML");
 test_group!(OPENSSH_SFTP => openssh_sftp, env = "DEVVM_TEST_OPENSSH_SFTP");
 test_group!(NTFS_NAMES => ntfs_names, env = "DEVVM_TEST_NTFS_NAMES");

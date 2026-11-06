@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -125,8 +126,20 @@ impl Host for TestHost {
         host::current().file_id(path)
     }
 
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        host::current().file_id_of_open(file)
+    }
+
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        host::current().volume_has_posix_unlink_rename(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         host::current().hold_new(path)
+    }
+
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        host::current().open_lock_file(path, create)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
@@ -255,8 +268,20 @@ impl Host for NoAccelHost {
         TestHost.file_id(path)
     }
 
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        TestHost.file_id_of_open(file)
+    }
+
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        TestHost.volume_has_posix_unlink_rename(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         TestHost.hold_new(path)
+    }
+
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        TestHost.open_lock_file(path, create)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
@@ -275,6 +300,7 @@ impl Host for NoAccelHost {
 pub struct RecordingHost {
     windows_names: bool,
     no_symlinks: bool,
+    no_posix_unlink: bool,
     /// What `symlinks_have_kinds` answers; the real host's answer when unset.
     link_kinds: Option<bool>,
     /// The `to_dir` of every `make_symlink` call, in call order, failed calls included.
@@ -320,6 +346,14 @@ impl RecordingHost {
     pub fn without_symlinks() -> RecordingHost {
         RecordingHost {
             no_symlinks: true,
+            ..RecordingHost::default()
+        }
+    }
+
+    /// A host whose volumes have no POSIX unlink and rename, as a Windows host with the state directory on exFAT.
+    pub fn without_posix_unlink() -> RecordingHost {
+        RecordingHost {
+            no_posix_unlink: true,
             ..RecordingHost::default()
         }
     }
@@ -543,9 +577,24 @@ impl Host for RecordingHost {
         TestHost.file_id(path)
     }
 
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        TestHost.file_id_of_open(file)
+    }
+
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        if self.no_posix_unlink {
+            return Ok(false);
+        }
+        TestHost.volume_has_posix_unlink_rename(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         self.holds_made.lock().unwrap().push(path.to_owned());
         TestHost.hold_new(path)
+    }
+
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        TestHost.open_lock_file(path, create)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
@@ -677,8 +726,20 @@ impl Host for NoGuestReset {
         host::current().file_id(path)
     }
 
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        host::current().file_id_of_open(file)
+    }
+
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        host::current().volume_has_posix_unlink_rename(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         host::current().hold_new(path)
+    }
+
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        host::current().open_lock_file(path, create)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

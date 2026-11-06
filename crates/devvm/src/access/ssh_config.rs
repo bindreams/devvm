@@ -207,7 +207,9 @@ impl SshConfigDir {
 
     fn lock(&self) -> Result<FileLock> {
         let mut lock = FileLock::open(&self.dir.join(".lock"))?;
-        lock.lock(Mode::Exclusive, "the ssh configuration", &*self.progress)?;
+        lock.lock(Mode::Exclusive, "the ssh configuration", &mut |m| {
+            self.progress.message(m)
+        })?;
         Ok(lock)
     }
 

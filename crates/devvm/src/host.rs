@@ -4,7 +4,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,8 +37,8 @@ pub(crate) mod watch;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-pub(crate) use entry::{Entry, is_absent, symlink_metadata_if_present};
-pub(crate) use file_id::FileId;
+pub(crate) use entry::{Entry, is_a_link, is_absent, symlink_metadata_if_present};
+pub(crate) use file_id::{Comparison, FileId};
 #[cfg_attr(
     not(windows),
     allow(
@@ -204,11 +204,26 @@ pub(crate) trait Host: Send + Sync {
     /// so it reads the identity of a file that is held (see [`Hold`]).
     fn file_id(&self, path: &Path) -> std::io::Result<FileId>;
 
+    /// The identity of the open file `file`, whatever its name leads to now. While `file` stays open
+    /// the id cannot be given to another file (ext4 reuses an inode only after the last close). On Windows it fails
+    /// with `InvalidInput` on a volume without file ids (exFAT, FAT32); a build without file ids fails `Unsupported`.
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId>;
+
+    /// Whether the volume of the open file `file` has POSIX unlink and rename, which devvm's lock files rely on (NTFS
+    /// and ReFS have it; exFAT, FAT32 and SMB do not). Hosts other than Windows have it everywhere.
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool>;
+
     /// Creates `path`, which must not exist (`AlreadyExists`), private to the user, and holds it. The name never
     /// exists without the hold: off Windows the file is made and locked as `<path>.new` and then linked to `path`
     /// (a launch killed in between leaves the `.new` file; a file there is `AlreadyExists` too). A file system that
     /// does not allow hard links is an error that names the directory and `XDG_RUNTIME_DIR`.
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>>;
+
+    /// Opens the lock file `path` for reading and writing with the default sharing (other opens, deletes and renames
+    /// are allowed), making it if `create`. A link at `path` is `InvalidInput`, "is a link": it is not opened through,
+    /// so a lock is never taken on what a link leads to. A host whose open cannot refuse a link (`OtherHost`) looks at
+    /// the name first, so a link made between the look and the open is followed there.
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File>;
 
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
     /// `path` is `InvalidInput`, "is a link": it is not opened through.

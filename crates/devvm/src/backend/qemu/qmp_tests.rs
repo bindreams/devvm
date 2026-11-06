@@ -575,9 +575,7 @@ fn a_process_that_exits_while_connect_waits_for_the_lock_ends_the_wait() {
     let sock = sock();
     let process = ManualExit::new();
     let mut holder = FileLock::open_in_existing_dir(&sock.endpoint.lock_path()).unwrap();
-    holder
-        .lock(Mode::Exclusive, "the test", &MemoryProgress::default())
-        .unwrap();
+    holder.lock(Mode::Exclusive, "the test", &mut |_| {}).unwrap();
     let (progress, messages) = ChannelProgress::new();
 
     let error = std::thread::scope(|scope| {

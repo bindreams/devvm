@@ -29,6 +29,7 @@ mod hold;
 mod link;
 pub(crate) mod runtime_dir;
 pub(crate) mod user;
+mod volume;
 mod watch;
 mod whpx;
 
@@ -285,8 +286,20 @@ impl Host for WindowsHost {
         file_id::of(path)
     }
 
+    fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId> {
+        file_id::of_handle(file)
+    }
+
+    fn volume_has_posix_unlink_rename(&self, file: &File) -> std::io::Result<bool> {
+        volume::has_posix_unlink_rename(file)
+    }
+
     fn hold_new(&self, path: &Path) -> std::io::Result<Box<dyn Hold>> {
         Ok(Box::new(hold::new(path)?))
+    }
+
+    fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
+        hold::open_lock_file(path, create)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
