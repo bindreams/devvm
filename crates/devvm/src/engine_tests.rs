@@ -7,8 +7,9 @@ use crate::backend::{Backend, MachineRecord};
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, ListFilter, NoHooks};
 use crate::exit::Progress;
+use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
-use crate::host::Host;
+use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, write_marker};
@@ -20,7 +21,8 @@ use crate::test_support::claimed::claimed;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
-use crate::{Arch, ErrorKind, GuestKind, Image, Instance};
+use crate::test_support::transport::RefusingTransport;
+use crate::{Arch, Dirs, ErrorKind, GuestKind, Image, Instance};
 
 /// A test engine over the fake host, backend and guests, with its own state under the test's home.
 pub(crate) struct EngineFixture {
@@ -92,11 +94,22 @@ pub(crate) fn engine_over(
     backend: Option<Arc<dyn Backend>>,
     progress: Arc<dyn Progress>,
 ) -> Arc<Engine> {
+    engine_with(fx.env.dirs.clone(), host, backend, Arc::new(FakeGuests), progress)
+}
+
+/// An engine over `dirs` with its own `host`, `backend` and `guests`.
+pub(crate) fn engine_with(
+    dirs: Dirs,
+    host: &'static dyn Host,
+    backend: Option<Arc<dyn Backend>>,
+    guests: Arc<dyn Guests>,
+    progress: Arc<dyn Progress>,
+) -> Arc<Engine> {
     Engine::with_parts(EngineParts {
-        dirs: fx.env.dirs.clone(),
+        dirs,
         host,
         backend,
-        guests: Arc::new(FakeGuests),
+        guests,
         clock: Arc::new(SystemClock),
         progress,
         hooks: Arc::new(NoHooks),
@@ -196,22 +209,6 @@ fn instance_open_of_a_missing_instance_is_not_found(#[fixture(unicode_home)] hom
     let error = Instance::open_in(&fx.engine, "nothing").err().unwrap();
     assert_eq!(error.kind(), ErrorKind::NotFound);
     assert!(error.message().contains("nothing"), "{}", error.message());
-}
-
-#[skuld::test]
-fn open_in_reaps_first_even_when_the_name_is_missing(#[fixture(unicode_home)] home: &Path) {
-    let fx = engine_fixture(home, memory());
-    // A creator that died: its `.new-` directory is left, and nobody holds its owner lock.
-    let id = crate::instance::record::InstanceId::random();
-    drop(fx.engine.registry().locks().acquire_owner_new(&id).unwrap());
-    let leftover = fx.env.dirs.instances().join(format!(".new-{id}"));
-    std::fs::create_dir_all(&leftover).unwrap();
-
-    assert_eq!(
-        Instance::open_in(&fx.engine, "nothing").err().unwrap().kind(),
-        ErrorKind::NotFound
-    );
-    assert!(!leftover.exists(), "opening an instance reaps leftovers first");
 }
 
 fn info_names(infos: &[InstanceInfo]) -> Vec<&str> {
@@ -440,12 +437,6 @@ fn list_says_nothing_about_an_instance_whose_name_was_reused_while_it_lists(#[fi
 }
 
 #[skuld::test]
-fn from_env_waits_ten_minutes_for_a_boot() {
-    let engine = Engine::from_env(Arc::new(MemoryProgress::default())).unwrap();
-    assert_eq!(engine.boot_bound(), Duration::from_secs(10 * 60));
-}
-
-#[skuld::test]
 fn with_parts_keeps_the_boot_bound_it_is_given(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let engine = Engine::with_parts(EngineParts {
@@ -513,5 +504,37 @@ fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixtu
             .iter()
             .any(|m| m.contains("foo") && m.contains("no VM backend")),
         "the cause is the missing backend: {messages:?}"
+    );
+}
+
+#[skuld::test]
+fn from_env_reaps_before_it_fails_on_an_unreadable_config(
+    #[fixture(env)] env: &skuld::EnvGuard,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (variable, directory) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "run"),
+    ] {
+        env.set(variable, home.join(directory).to_str().unwrap());
+    }
+    let dirs = Dirs::from_env().unwrap();
+    std::fs::create_dir_all(&dirs.config).unwrap();
+    std::fs::write(dirs.config.join("config.yaml"), "qemu: [not, a, mapping]").unwrap();
+    let leftover = dirs.instances().join(".dead-00000000000000000000000000000000");
+    std::fs::create_dir_all(&leftover).unwrap();
+
+    let error = match Engine::from_env(memory(), Arc::new(RefusingTransport::default())) {
+        Ok(_) => panic!("an unreadable config.yaml must fail the engine"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert!(
+        host::symlink_metadata_if_present(&leftover).unwrap().is_none(),
+        "the reap ran before the config failed"
     );
 }

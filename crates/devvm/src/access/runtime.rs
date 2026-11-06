@@ -5,54 +5,28 @@
 
 use std::future::Future;
 use std::pin::pin;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 
 use tokio::runtime::{Builder, Runtime};
 
 use crate::exit::Progress;
+use crate::lazy::Lazy;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod runtime_tests;
 
-/// A runtime started on first use. The start is serialized, so a runtime is never built to be thrown away: dropping
-/// one panics in an asynchronous context, where a library caller may be.
-pub(crate) struct Lazy {
-    runtime: OnceLock<Runtime>,
-    starting: Mutex<()>,
-}
-
-impl Lazy {
-    pub(crate) const fn new() -> Self {
-        Self {
-            runtime: OnceLock::new(),
-            starting: Mutex::new(()),
-        }
-    }
-
-    pub(crate) fn get(&self) -> Result<&Runtime> {
-        if let Some(runtime) = self.runtime.get() {
-            return Ok(runtime);
-        }
-        // Nothing under the lock can leave the guarded data (`()`) wrong, so a poisoned lock is as good as a clean one.
-        let _starting = self.starting.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(runtime) = self.runtime.get() {
-            return Ok(runtime);
-        }
-        let started = Builder::new_multi_thread()
+fn runtime() -> Result<&'static Runtime> {
+    static RUNTIME: Lazy<Runtime> = Lazy::new();
+    RUNTIME.get(|| {
+        Builder::new_multi_thread()
             .thread_name("devvm-ssh")
             .enable_all()
             .build()
-            .map_err(|e| Error::io(ErrorKind::Io, "cannot start the threads of the SSH runtime", e))?;
-        Ok(self.runtime.get_or_init(|| started))
-    }
-}
-
-fn runtime() -> Result<&'static Runtime> {
-    static RUNTIME: Lazy = Lazy::new();
-    RUNTIME.get()
+            .map_err(|e| Error::io(ErrorKind::Io, "cannot start the threads of the SSH runtime", e))
+    })
 }
 
 /// Starts `task` on the runtime.

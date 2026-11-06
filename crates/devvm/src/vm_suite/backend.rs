@@ -90,7 +90,7 @@ impl Backend for Observing {
 fn backend_over(bin: &Path, host: &'static dyn Host, run: &Path) -> QemuBackend {
     let install = lazy_at(bin);
     let storage = Arc::new(QemuStorage::new(install.clone(), host));
-    QemuBackend::new(install, storage, host, run.to_path_buf(), Arc::new(StderrProgress))
+    QemuBackend::new(install, storage, host, Ok(run.to_path_buf()), Arc::new(StderrProgress))
 }
 
 /// A spec for a firmware-only machine in `dir`, on the host's accelerator.

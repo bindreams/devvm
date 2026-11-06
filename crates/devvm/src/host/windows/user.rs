@@ -6,7 +6,6 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{FromRawHandle, OwnedHandle, RawHandle};
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -14,6 +13,8 @@ use windows_sys::Win32::Security::{GetTokenInformation, PSID, TOKEN_QUERY, TOKEN
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+
+use crate::lazy::Lazy;
 
 /// An error that says which call failed.
 fn call_failed(call: &str, source: io::Error) -> io::Error {
@@ -91,12 +92,8 @@ impl TokenUserBuffer {
 /// The SID string of the user the process token names. Read once: the token's user does not change, and a read that
 /// failed is tried again by the next call.
 pub(crate) fn current_sid() -> io::Result<String> {
-    static SID: OnceLock<String> = OnceLock::new();
-    if let Some(sid) = SID.get() {
-        return Ok(sid.clone());
-    }
-    let sid = sid_string(TokenUserBuffer::read()?.sid())?;
-    Ok(SID.get_or_init(|| sid).clone())
+    static SID: Lazy<String> = Lazy::new();
+    SID.get(|| sid_string(TokenUserBuffer::read()?.sid())).cloned()
 }
 
 /// `C:\ProgramData`, from the known folder and not from the environment.

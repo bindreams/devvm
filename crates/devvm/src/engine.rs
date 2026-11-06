@@ -2,23 +2,30 @@
 //! registry), created once per process.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::backend::{Backend, MachineRecord};
 use crate::exit::{Progress, StderrProgress};
-use crate::guest::{BuiltinGuests, Guests};
+use crate::guest::Guests;
 use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{MarkerRead, Owner};
 use crate::instance::registry::Registry;
+use crate::lazy::Lazy;
+use crate::store::fetch::{Fetcher, Transport};
 use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
 
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 pub(crate) mod engine_tests;
+
+#[cfg(test)]
+#[path = "engine_qemu_tests.rs"]
+mod engine_qemu_tests;
 
 /// How long a guest gets to boot and answer before a start fails: a failure bound on an event outside devvm. Read by
 /// the engine's `Instance::start_with` once it waits for readiness; `start` waits for no boot in this build.
@@ -75,28 +82,42 @@ pub struct Engine {
     hooks: Arc<dyn LaunchHooks>,
     boot_bound: Duration,
     registry: Registry,
-    store: OnceLock<LayerStore>,
+    store: Lazy<LayerStore>,
 }
 
 impl Engine {
-    /// The engine for this process: the real host and the directories from the environment. It has no VM backend until
-    /// one is built in; operations that need one fail with `not-supported`. Creates nothing on disk.
-    pub fn from_env(progress: Arc<dyn Progress>) -> Result<Arc<Engine>> {
-        Ok(Engine::with_parts(EngineParts {
-            dirs: Dirs::from_env()?,
-            host: host::current(),
-            backend: None,
-            guests: Arc::new(BuiltinGuests),
+    /// The engine for this process: the real host, the directories and the configuration file from the environment,
+    /// the QEMU backend and the Linux guest. Downloads go through `transport`. Downloads nothing. Reaps the leftovers
+    /// of dead devvm processes (see [`Engine::reap`]), which warns on `progress` and never fails; then an unreadable
+    /// `config.yaml` fails here, naming the file.
+    pub fn from_env(progress: Arc<dyn Progress>, transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
+        let dirs = Dirs::from_env()?;
+        let host = host::current();
+        let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport, progress.clone()));
+        let QemuParts {
+            backend,
+            guests,
+            install,
+        } = qemu_parts(&dirs, fetcher, host, progress.clone());
+        let engine = Engine::with_parts(EngineParts {
+            dirs,
+            host,
+            backend: Some(backend),
+            guests,
             clock: Arc::new(SystemClock),
             progress,
             hooks: Arc::new(NoHooks),
             boot_bound: DEFAULT_BOOT_BOUND,
-        }))
+        });
+        // Nothing the reap does resolves the install (see `qemu_parts`), so it reads no config; a config that cannot be
+        // read fails the call after the reap, and the engine is not returned.
+        engine.reap();
+        install.config().map(|_| engine)
     }
 
     /// `from_env` reporting progress on stderr.
-    pub fn from_env_stderr() -> Result<Arc<Engine>> {
-        Engine::from_env(Arc::new(StderrProgress))
+    pub fn from_env_stderr(transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
+        Engine::from_env(Arc::new(StderrProgress), transport)
     }
 
     pub(crate) fn with_parts(parts: EngineParts) -> Arc<Engine> {
@@ -111,17 +132,19 @@ impl Engine {
             hooks: parts.hooks,
             boot_bound: parts.boot_bound,
             registry,
-            store: OnceLock::new(),
+            store: Lazy::new(),
         })
     }
 
-    /// The instance called `name` (case-insensitive). Reaps leftovers of dead devvm processes first.
+    /// The instance called `name` (case-insensitive).
     pub fn instance(self: &Arc<Engine>, name: &str) -> Result<Instance> {
         Instance::open_in(self, name)
     }
 
     /// Removes instances whose owner is gone and finishes half-done removals. Never fails: what it cannot do is
-    /// reported as a warning on the progress channel and retried by the next call.
+    /// reported as a warning on the progress channel and retried by the next call. Until a reap, a name that a dead
+    /// process half-created answers "already exists". `from_env` calls it once; call it again for a pass in a
+    /// long-lived process.
     pub fn reap(&self) {
         self.registry.reap();
     }
@@ -253,11 +276,8 @@ impl Engine {
 
     /// The layer store, opened on first use (opening creates its directories).
     pub(crate) fn store(&self) -> Result<&LayerStore> {
-        if let Some(store) = self.store.get() {
-            return Ok(store);
-        }
-        let opened = LayerStore::open(&self.dirs, self.clock.clone(), self.progress.clone())?;
-        Ok(self.store.get_or_init(|| opened))
+        self.store
+            .get(|| LayerStore::open(&self.dirs, self.clock.clone(), self.progress.clone()))
     }
 }
 
