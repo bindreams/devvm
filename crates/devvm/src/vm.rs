@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::backend::{Machine, MachineRecord};
+use crate::backend::MachineRecord;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
 use crate::exit::Output;
@@ -16,12 +16,13 @@ use crate::{Command, Error, ErrorKind, Result};
 
 #[allow(
     dead_code,
-    reason = "`Recipe::build` and `up` are the first callers of `Image::from_chain` and `Vm::hand_over`"
+    reason = "`Recipe::build` is the first caller of `Image::from_chain`, and the guest operations the first readers of the session a `Vm` keeps"
 )]
 mod image;
 mod launch;
 
 pub use image::{Image, Vm, availability};
+pub(crate) use launch::Started;
 
 #[cfg(test)]
 #[path = "vm_tests.rs"]
@@ -108,12 +109,13 @@ impl Instance {
     /// Starts the VM and leaves it running after this process exits. Does nothing if it already runs. Waits for other
     /// commands working on the instance; `not-found` if one of them removed it.
     ///
-    /// Returns once the instance record names the machine and the machine has been released from this process.
+    /// Returns once the guest has finished booting and answers over SSH, the instance record names the machine and the
+    /// machine has been released from this process. A guest that does not answer fails the start and is killed.
     /// Frozen spawn needs Windows in 0.1.0, so elsewhere this is `not-supported`.
     pub fn start(&self) -> Result<()> {
         let dir = self.dir();
         let op = dir.op_exclusive()?;
-        let Some(mut machine) = launch::launch(&self.engine, dir, &op, Lifetime::OutlivesOwner)? else {
+        let Some(Started { mut machine, .. }) = launch::launch(&self.engine, dir, &op, Lifetime::OutlivesOwner)? else {
             return Ok(());
         };
         // Released under the op lock: until then the machine dies with this process, and a second `start` must not
@@ -123,9 +125,10 @@ impl Instance {
             .map_err(|e| launch::abandon(&self.engine, dir, &op, &mut *machine, e))
     }
 
-    /// Launches under the exclusive op lock; `None` when the machine already runs. The machine is resumed and still
-    /// contained: the caller keeps it (`Image::start`, `up`).
-    pub(crate) fn start_with(&self, lifetime: Lifetime) -> Result<Option<Box<dyn Machine>>> {
+    /// Launches under the exclusive op lock and waits for the guest; `None` when the machine already runs. The machine
+    /// is resumed and still contained: the caller keeps it, and the session that found the guest ready (`Image::start`,
+    /// `up`).
+    pub(crate) fn start_with(&self, lifetime: Lifetime) -> Result<Option<Started>> {
         let dir = self.dir();
         let op = dir.op_exclusive()?;
         launch::launch(&self.engine, dir, &op, lifetime)

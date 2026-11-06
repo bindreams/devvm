@@ -8,7 +8,7 @@ use crate::contain::contain_tests::Sleeper;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, ListFilter, NoHooks};
 use crate::exit::Progress;
 use crate::guest::Guests;
-use crate::guest::fake::FakeGuests;
+use crate::guest::fake::{FakeGuests, ServedGuests};
 use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
@@ -20,16 +20,20 @@ use crate::store::layers::{ChainLease, SystemClock};
 use crate::test_support::claimed::claimed;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
+use crate::test_support::sshd::TestSshd;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::test_support::transport::RefusingTransport;
 use crate::{Arch, Dirs, ErrorKind, GuestKind, Image, Instance};
 
-/// A test engine over the fake host, backend and guests, with its own state under the test's home.
+/// A test engine over the fake host, backend and guests, with its own state under the test's home. Its machines are
+/// reached at `server`, which trusts the keys of whichever instance's seed the `guests` read last.
 pub(crate) struct EngineFixture {
     pub env: Env,
     pub chain: ChainLease,
     pub engine: Arc<Engine>,
     pub fake: Arc<FakeBackend>,
+    pub server: Arc<TestSshd>,
+    pub guests: Arc<ServedGuests>,
 }
 
 pub(crate) fn engine_fixture(home: &Path, progress: Arc<dyn Progress>) -> EngineFixture {
@@ -68,12 +72,14 @@ pub(crate) fn engine_fixture_from(
 ) -> EngineFixture {
     let env = env(home);
     let chain = build(&env, key(1), None);
-    let fake = Arc::new(fake);
+    let server = Arc::new(TestSshd::awaiting_keys());
+    let fake = Arc::new(fake.with_ssh_endpoint(server.addr()));
+    let guests = Arc::new(ServedGuests::new(server.clone()));
     let engine = Engine::with_parts(EngineParts {
         dirs: env.dirs.clone(),
         host: &TestHost,
         backend: Some(wrap(fake.clone())),
-        guests: Arc::new(FakeGuests),
+        guests: guests.clone(),
         clock: Arc::new(SystemClock),
         progress,
         hooks,
@@ -84,6 +90,8 @@ pub(crate) fn engine_fixture_from(
         chain,
         engine,
         fake,
+        server,
+        guests,
     }
 }
 
@@ -105,6 +113,18 @@ pub(crate) fn engine_with(
     guests: Arc<dyn Guests>,
     progress: Arc<dyn Progress>,
 ) -> Arc<Engine> {
+    engine_with_bound(dirs, host, backend, guests, progress, DEFAULT_BOOT_BOUND)
+}
+
+/// `engine_with` whose guests get `boot_bound` to answer.
+pub(crate) fn engine_with_bound(
+    dirs: Dirs,
+    host: &'static dyn Host,
+    backend: Option<Arc<dyn Backend>>,
+    guests: Arc<dyn Guests>,
+    progress: Arc<dyn Progress>,
+    boot_bound: Duration,
+) -> Arc<Engine> {
     Engine::with_parts(EngineParts {
         dirs,
         host,
@@ -113,7 +133,7 @@ pub(crate) fn engine_with(
         clock: Arc::new(SystemClock),
         progress,
         hooks: Arc::new(NoHooks),
-        boot_bound: DEFAULT_BOOT_BOUND,
+        boot_bound,
     })
 }
 

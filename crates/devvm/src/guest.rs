@@ -46,7 +46,7 @@ pub(crate) trait GuestOs: Send + Sync {
     /// Bumped whenever `wrap`, `user:`, `cwd:` or elevation behavior changes; part of every layer key.
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;
-    /// Blocks until the guest's first boot has finished. An unfinished or failed boot is an error; a boot that finished
+    /// Blocks until the guest's boot has finished. An unfinished or failed boot is an error; a boot that finished
     /// with recoverable problems is [`Readiness::Degraded`], for the caller to report.
     fn wait_ready(&self, ssh: &SshSession) -> Result<Readiness>;
     /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
@@ -99,11 +99,11 @@ pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
     Ok(posix_root(path))
 }
 
-/// How a finished first boot went.
+/// How a finished boot went.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Readiness {
     Ready,
-    /// The guest is usable, but its first boot finished with recoverable problems; the text names them.
+    /// The guest is usable, but its boot finished with recoverable problems; the text names them.
     Degraded(String),
 }
 
@@ -131,7 +131,7 @@ pub(crate) struct SeedSpec {
 
 /// The SSH keys a first boot installs, as the text of their files. The private key is a secret: it stays out of `Debug`
 /// output.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct SeedKeys {
     /// The public key of the client allowed to log in.
     pub client_public: String,

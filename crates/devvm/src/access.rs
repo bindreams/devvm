@@ -11,7 +11,6 @@ pub(crate) mod session;
 pub(crate) mod sftp;
 pub(crate) mod ssh_config;
 
-#[allow(unused_imports, reason = "used by the engine in the next PR")]
+#[allow(unused_imports, reason = "used by the guest operations of the next PR")]
 pub(crate) use exec::ExecEnd;
-#[allow(unused_imports, reason = "used by the engine in the next PR")]
 pub(crate) use session::{BootBound, Keepalive, SshSession, SshTarget, VmExit};
