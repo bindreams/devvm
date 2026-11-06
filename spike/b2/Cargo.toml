@@ -1,0 +1,14 @@
+# Throwaway measurement of which lookup errors mean "the name is not there" (see the workflow). Not part of the workspace.
+[package]
+name = "b2-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

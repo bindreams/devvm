@@ -1,0 +1,105 @@
+# Throwaway: which std lookup errors mean "the name is not there" (see spike/b2). Never merged.
+name: Spike B2 facts
+
+on:
+  push:
+    branches: [spike-b2-facts]
+    paths: [spike/b2/**, .github/workflows/spike-b2-facts.yaml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  B2: spike/b2/target/release/b2-spike
+
+jobs:
+  windows:
+    name: B2 (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build
+        run: |
+          cargo build --release --locked --manifest-path spike/b2/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/b2"
+          rustc -V
+          cmd //c ver
+
+      - name: Special (NUL, empty path)
+        run: $B2 special ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/special.txt"
+
+      - name: Long paths (NTFS)
+        if: always()
+        run: $B2 long ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/long.txt"
+
+      - name: Missing drive letter
+        if: always()
+        run: $B2 drive ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/drive.txt"
+
+      - name: UNC paths
+        if: always()
+        timeout-minutes: 30
+        env:
+          SPIKE_NET: "1"
+        run: $B2 unc ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/unc.txt"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: b2-windows
+          path: ${{ runner.temp }}/results
+
+  unix:
+    name: B2 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build
+        run: |
+          cargo build --release --locked --manifest-path spike/b2/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/b2"
+          rustc -V
+          uname -a
+          df -T "$RUNNER_TEMP" || df "$RUNNER_TEMP"
+
+      - name: Runner temp (ext4 on ubuntu, APFS on macos)
+        run: |
+          $B2 special temp "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/special.txt"
+          $B2 long temp "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/long-temp.txt"
+          $B2 component temp "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/component-temp.txt"
+
+      - name: tmpfs (ubuntu only)
+        if: always() && runner.os == 'Linux'
+        run: |
+          d=$(mktemp -d -p /dev/shm)
+          df -T "$d"
+          $B2 long tmpfs "$d" 2>&1 | tee "$RUNNER_TEMP/results/long-tmpfs.txt"
+          $B2 component tmpfs "$d" 2>&1 | tee "$RUNNER_TEMP/results/component-tmpfs.txt"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: b2-${{ matrix.os }}
+          path: ${{ runner.temp }}/results
