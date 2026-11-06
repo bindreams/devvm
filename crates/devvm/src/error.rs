@@ -94,6 +94,16 @@ impl Error {
         Error::new(kind, format!("{}: {source}", context.into())).with_source(source)
     }
 
+    /// This error as a `kind` failure of `context`: the message is `<context>: <this message>` and the source is this
+    /// error's source, not this error.
+    pub(crate) fn with_context(self, kind: ErrorKind, context: impl fmt::Display) -> Error {
+        Error {
+            kind,
+            message: format!("{context}: {}", self.message),
+            source: self.source,
+        }
+    }
+
     /// This error once `cleanup`, which undid a step that had half happened, has run. A cleanup that failed too is
     /// named next to it with `left`, what it left behind: the first failure stays the error.
     pub(crate) fn after_cleanup(mut self, left: &str, cleanup: std::result::Result<(), impl fmt::Display>) -> Error {

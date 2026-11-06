@@ -32,17 +32,34 @@ mod qemu_tests;
 /// pinned build.
 pub const QEMU_DIR_VAR: &str = "DEVVM_TEST_QEMU_DIR";
 
+/// Writes `config` as `<config>/config.yaml` under `dirs`.
+pub fn write_config(dirs: &Dirs, config: &Config) {
+    let text = match &config.qemu_path {
+        Some(path) => {
+            let path = path.to_str().expect("a UTF-8 QEMU path");
+            format!("qemu:\n  path: {}\n", serde_json::to_string(path).unwrap())
+        }
+        None => String::new(),
+    };
+    std::fs::create_dir_all(&dirs.config).expect("the config directory");
+    std::fs::write(dirs.config.join("config.yaml"), text).expect("config.yaml");
+}
+
 /// The QEMU install the VM tests run. Fails naming what is missing; the opt-out is `vm_group::OPT_OUT`.
 #[skuld::fixture(scope = process)]
 pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInstall>, String> {
     let config = Config {
         qemu_path: std::env::var_os(QEMU_DIR_VAR).map(|dir| PathBuf::from(dir).join("bin")),
     };
-    let dirs = Dirs::from_env().map_err(|e| format!("cannot locate devvm's directories: {e}"))?;
+    // The cache is the user's, so the download is shared; the configuration is this process's own.
+    let mut dirs = Dirs::from_env().map_err(|e| format!("cannot locate devvm's directories: {e}"))?;
+    let config_home = skuld::TempDir::new().map_err(|e| format!("cannot create a temp dir: {e}"))?;
+    dirs.config = config_home.join("config");
+    write_config(&dirs, &config);
     let transport = HttpTransport::new().map_err(|e| format!("cannot build the HTTP client: {e}"))?;
     let progress = Arc::new(StderrProgress);
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
-    LazyInstall::new(dirs, config, fetcher, progress, host::current())
+    LazyInstall::new(dirs, fetcher, progress, host::current())
         .get()
         .map_err(|e| {
             format!(
@@ -296,16 +313,23 @@ pub fn lazy_for(install: &QemuInstall) -> Arc<LazyInstall> {
     lazy_at(&install.bin)
 }
 
-/// A `LazyInstall` over the QEMU whose executables are in `bin`.
+/// A `LazyInstall` over the QEMU whose executables are in `bin`. Its configuration is read here, from a `config.yaml`
+/// in a directory of its own that is gone when this returns.
 pub fn lazy_at(bin: &Path) -> Arc<LazyInstall> {
-    let dirs = Dirs::under(&std::env::temp_dir());
+    let home = skuld::TempDir::new().expect("a temp dir");
+    let dirs = Dirs::under(&home);
+    write_config(
+        &dirs,
+        &Config {
+            qemu_path: Some(bin.to_path_buf()),
+        },
+    );
     let progress = Arc::new(StderrProgress);
     let transport = HttpTransport::new().expect("an HTTP client");
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
-    let config = Config {
-        qemu_path: Some(bin.to_path_buf()),
-    };
-    Arc::new(LazyInstall::new(dirs, config, fetcher, progress, host::current()))
+    let install = Arc::new(LazyInstall::new(dirs, fetcher, progress, host::current()));
+    install.config().expect("the config just written");
+    install
 }
 
 /// A QEMU backend that reserves and sweeps in `run` and has no QEMU to launch.
@@ -316,7 +340,7 @@ pub fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend>
         install,
         storage,
         host::current(),
-        run.to_path_buf(),
+        Ok(run.to_path_buf()),
         progress,
     ))
 }

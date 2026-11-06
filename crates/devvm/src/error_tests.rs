@@ -51,6 +51,15 @@ fn with_source_keeps_the_message_and_exposes_the_source() {
 }
 
 #[skuld::test]
+fn with_context_names_what_failed_and_keeps_the_source_but_not_the_error() {
+    let inner = Error::new(ErrorKind::Internal, "cannot build it").with_source(std::io::Error::other("the cause"));
+    let error = inner.with_context(ErrorKind::Download, "cannot fetch https://h/x");
+    assert_eq!(error.kind(), ErrorKind::Download);
+    assert_eq!(error.message(), "cannot fetch https://h/x: cannot build it");
+    assert_eq!(error.source().unwrap().to_string(), "the cause");
+}
+
+#[skuld::test]
 fn error_is_send_sync_static() {
     fn assert_bounds<T: Send + Sync + 'static>() {}
     assert_bounds::<Error>();

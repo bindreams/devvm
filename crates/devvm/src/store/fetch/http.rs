@@ -9,6 +9,7 @@ use reqwest::header::{
 };
 
 use super::{ContentRange, Response, Resume, Transport};
+use crate::lazy::Lazy;
 use crate::{Error, ErrorKind, Result};
 
 /// A connection attempt, or a wait for the next bytes, that gets nothing for this long fails. There is no bound on
@@ -37,6 +38,28 @@ impl HttpTransport {
                 Error::new(ErrorKind::Internal, format!("cannot build the HTTP client: {e}")).with_source(e)
             })?;
         Ok(HttpTransport { client, stall })
+    }
+}
+
+/// The real HTTP transport, built on the first `get`. A failed build is a `Download` error naming the URL and is not
+/// kept: the next `get` builds again.
+#[derive(Default)]
+pub struct LazyHttp(Lazy<HttpTransport>);
+
+impl LazyHttp {
+    /// A transport that has not built its client yet.
+    pub fn new() -> LazyHttp {
+        LazyHttp::default()
+    }
+}
+
+impl Transport for LazyHttp {
+    fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
+        self.0
+            .get(|| {
+                HttpTransport::new().map_err(|e| e.with_context(ErrorKind::Download, format!("cannot fetch {url}")))
+            })?
+            .get(url, resume)
     }
 }
 

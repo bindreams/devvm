@@ -16,6 +16,9 @@ use serde_json::Value;
 #[path = "support/unicode.rs"]
 mod unicode;
 use unicode::UNICODE_DIR;
+#[path = "support/isolate.rs"]
+mod isolate;
+use isolate::isolate;
 
 const HELPER_VAR: &str = "DEVVM_CLI_TEST_HELPER";
 
@@ -136,6 +139,7 @@ fn temp() -> skuld::TempDir {
 fn devvm(cwd: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
     command.current_dir(cwd).args(args).env_remove("DEVVM_STATUS_FILE");
+    isolate(&mut command, &cwd.join(UNICODE_DIR));
     for (key, value) in env {
         command.env(key, value);
     }

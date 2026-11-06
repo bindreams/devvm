@@ -151,22 +151,9 @@ pub(crate) struct BuildCtx {
     pub progress: Arc<dyn Progress>,
 }
 
-/// The guests compiled into this build: none yet.
-pub(crate) struct BuiltinGuests;
-
 pub(crate) fn missing(kind: GuestKind) -> Error {
     Error::new(
         ErrorKind::NotSupported,
         format!("{} guests are not available in this build of devvm", kind.as_str()),
     )
-}
-
-impl Guests for BuiltinGuests {
-    fn os(&self, kind: GuestKind) -> Result<Arc<dyn GuestOs>> {
-        Err(missing(kind))
-    }
-
-    fn builder(&self, kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Err(missing(kind))
-    }
 }
