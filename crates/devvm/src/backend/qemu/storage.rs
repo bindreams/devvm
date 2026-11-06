@@ -158,7 +158,8 @@ impl Storage for QemuStorage {
             return Err(Error::new(
                 ErrorKind::Store,
                 format!(
-                    "the layer {} is {layer_size} bytes, more than the {QCOW2_MAX_SIZE} bytes a disk can have;                      rebuild it from a base within that limit",
+                    "the layer {} is {layer_size} bytes, more than the {QCOW2_MAX_SIZE} bytes a disk can have; \
+                     build the recipe from a base within that limit",
                     layer.path().display()
                 ),
             ));
@@ -169,7 +170,8 @@ impl Storage for QemuStorage {
             return Err(Error::new(
                 ErrorKind::Recipe,
                 format!(
-                    "a disk of {size} bytes is smaller than the {layer_size} bytes of the layer {};                      set resources.disk to at least {layer_size}",
+                    "a disk of {size} bytes is smaller than the {layer_size} bytes of the layer {}; \
+                     set resources.disk to at least {layer_size}",
                     layer.path().display()
                 ),
             ));

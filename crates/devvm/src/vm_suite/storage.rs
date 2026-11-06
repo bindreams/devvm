@@ -202,6 +202,7 @@ fn a_disk_smaller_than_its_layer_is_refused_naming_both_sizes_and_creates_nothin
 
         assert!(error.message().contains(&size.to_string()), "{size}: {error}");
         assert!(error.message().contains("resources.disk"), "{size}: {error}");
+        assert!(!error.message().contains("  "), "{size}: {error}");
         assert!(error.message().contains(&BASE_LEN.to_string()), "{size}: {error}");
         assert!(
             error.message().contains(base.tip().dir().path().to_str().unwrap()),
@@ -468,6 +469,12 @@ fn a_disk_over_a_layer_above_the_ceiling_is_refused_for_every_size(
             "{size:?}: {error}"
         );
         assert!(error.message().contains(&(1u64 << 51).to_string()), "{size:?}: {error}");
+        assert!(
+            error.message().contains("from a base within that limit"),
+            "{size:?}: {error}"
+        );
+        assert!(!error.message().contains("resources.disk"), "{size:?}: {error}");
+        assert!(!error.message().contains("  "), "{size:?}: {error}");
     }
 }
 
