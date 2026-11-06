@@ -42,7 +42,8 @@ os_str_bytes = "7"
 # Private keys: kept out of `Debug` output and zeroed on drop (`access/keys.rs`).
 secrecy = "0.10"
 tar = "0.4.46"
-# Pinned: `LARGEST_FAT12_CONTENTS` (`media.rs`) was measured against this version's private sizing rule.
+# Pinned: `LARGEST_FAT12_CONTENTS` and `FATFS_NAME_MESSAGES` (`media.rs`) were measured against this version; a human
+# re-measures both before a bump (Renovate does not automerge it).
 fatfs = { version = "=0.3.6", default-features = false, features = ["std", "alloc"] }
 
 [dev-dependencies]
