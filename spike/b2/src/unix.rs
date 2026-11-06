@@ -23,7 +23,7 @@ fn long(label: &str, dir: &Path) -> io::Result<()> {
     let lengths: Vec<usize> = (pm - 3..=pm + 2).chain([pm + 100, 2 * pm]).collect();
     let jobs: Vec<(usize, Kind)> = lengths.iter().flat_map(|&n| [(n - 2, Kind::File), (n, Kind::Dir)]).collect();
 
-    let mut ladder = Ladder::new(root.clone(), true)?;
+    let mut ladder = Ladder::new(root.clone(), true, usize::MAX)?;
     let leaves = ladder.build(&jobs);
     std::env::set_current_dir(&base)?;
 

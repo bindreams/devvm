@@ -21,6 +21,8 @@ pub enum Kind {
 
 pub struct Ladder {
     root_len: usize,
+    /// The deepest chain node to build; a leaf deeper than this hangs off it with a longer name.
+    max_node: usize,
     node: PathBuf,
     relative: bool,
 }
@@ -55,28 +57,35 @@ pub fn remove_all(root: &Path) -> io::Result<()> {
 }
 
 impl Ladder {
-    pub fn new(root: PathBuf, relative: bool) -> io::Result<Ladder> {
+    pub fn new(root: PathBuf, relative: bool, max_node: usize) -> io::Result<Ladder> {
         fs::create_dir(&root)?;
         if relative {
             std::env::set_current_dir(&root)?;
         }
-        Ok(Ladder { root_len: root.as_os_str().len(), node: root, relative })
+        Ok(Ladder { root_len: root.as_os_str().len(), max_node, node: root, relative })
     }
 
     fn at(&self, name: &str) -> PathBuf {
         if self.relative { PathBuf::from(name) } else { self.node.join(name) }
     }
 
-    fn leaf_name(&self, kind: Kind, target: usize) -> String {
-        let k = node_index(self.root_len, target);
-        let len = target - (self.root_len + STRIDE * k) - 1;
+    fn node_index(&self, target: usize) -> usize {
+        assert!(target >= self.root_len + 2, "target {target} is shorter than the root ({})", self.root_len);
+        ((target - 2 - self.root_len) / STRIDE).min(self.max_node)
+    }
+
+    fn leaf_name(&self, kind: Kind, target: usize) -> Result<String, String> {
+        let len = target - (self.root_len + STRIDE * self.node_index(target)) - 1;
+        if len > 255 {
+            return Err(format!("leaf name of {len} characters"));
+        }
         let c = if kind == Kind::Dir { "D" } else { "F" };
-        c.repeat(len)
+        Ok(c.repeat(len))
     }
 
     /// Builds one leaf directory of path length `target` (and its file `f`) below the current node.
     fn make_leaf(&self, kind: Kind, target: usize) -> Result<PathBuf, String> {
-        let name = self.leaf_name(kind, target);
+        let name = self.leaf_name(kind, target)?;
         fs::create_dir(self.at(&name)).map_err(|e| format!("mkdir leaf: {}", crate::calls::err(&e)))?;
         if kind == Kind::File {
             let rel = Path::new(&name).join("f");
@@ -100,11 +109,11 @@ impl Ladder {
     pub fn build(&mut self, jobs: &[(usize, Kind)]) -> Vec<Leaf> {
         let mut jobs: Vec<(usize, Kind)> = jobs.to_vec();
         jobs.sort_by_key(|&(t, _)| t);
-        let max_node = jobs.iter().map(|&(t, _)| node_index(self.root_len, t)).max().unwrap_or(0);
+        let max_node = jobs.iter().map(|&(t, _)| self.node_index(t)).max().unwrap_or(0);
         let mut out = Vec::new();
         let mut stuck: Option<String> = None;
         for k in 0..=max_node {
-            for &(target, kind) in jobs.iter().filter(|&&(t, _)| node_index(self.root_len, t) == k) {
+            for &(target, kind) in jobs.iter().filter(|&&(t, _)| self.node_index(t) == k) {
                 let path = match &stuck {
                     Some(why) => Err(why.clone()),
                     None => self.make_leaf(kind, target),
@@ -119,11 +128,6 @@ impl Ladder {
         }
         out
     }
-}
-
-pub fn node_index(root_len: usize, target: usize) -> usize {
-    assert!(target >= root_len + 2, "target {target} is shorter than the root ({root_len})");
-    (target - 2 - root_len) / STRIDE
 }
 
 /// Component lengths of a path of exactly `target` characters below a root of `root_len`, for a path that is never created.

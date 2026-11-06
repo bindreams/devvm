@@ -39,14 +39,14 @@ fn long(label: &str, dir: &Path, max_length: Option<usize>) -> io::Result<()> {
     let base = std::path::absolute(dir)?;
     let root = base.join("L");
     let root_len = len(&root);
-    let mut lengths: Vec<usize> = vec![250, 259, 260, 261, 262, 300, 1000, 5000, 20000, 32000, 32700];
-    lengths.extend(32760..=32770);
+    let mut lengths: Vec<usize> = vec![250, 259, 260, 261, 262, 300, 1000, 5000, 20000, 32000];
+    lengths.extend(32690..=32770);
     lengths.push(33000);
     lengths.retain(|&n| n >= root_len + 4 && max_length.is_none_or(|m| n <= m));
     row("env", label, 0, &[("root_len", root_len.to_string()), ("base", base.display().to_string())]);
     let jobs: Vec<(usize, Kind)> = lengths.iter().flat_map(|&n| [(n - 2, Kind::File), (n, Kind::Dir)]).collect();
 
-    let mut ladder = Ladder::new(root.clone(), false)?;
+    let mut ladder = Ladder::new(root.clone(), false, 640)?;
     let leaves = ladder.build(&jobs);
 
     let claim = "3-long";
