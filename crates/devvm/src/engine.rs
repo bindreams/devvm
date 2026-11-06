@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::backend::qemu::sidecar::LazyInstall;
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::backend::{Backend, MachineRecord};
 use crate::exit::{Progress, StderrProgress};
@@ -91,8 +92,19 @@ impl Engine {
     /// The engine for this process: the real host, the directories and the configuration file from the environment,
     /// the QEMU backend and the Linux guest. Downloads go through `transport`. Downloads nothing. Reaps the leftovers
     /// of dead devvm processes (see [`Engine::reap`]), which warns on `progress` and never fails; then an unreadable
-    /// `config.yaml` fails here, naming the file.
+    /// `config.yaml` fails here, naming the file, so that no command can forget the check. `devvm doctor` is the one
+    /// caller that must not fail on it, and goes through [`Engine::doctor_checks`].
     pub fn from_env(progress: Arc<dyn Progress>, transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
+        let (engine, install) = Engine::build_from_env(progress, transport)?;
+        install.config().map(|_| engine)
+    }
+
+    /// `from_env` up to the check of `config.yaml`: the engine, reaped, and the install whose configuration is still
+    /// unchecked. Only the callers in this crate see it, so no engine that skipped the check leaves the crate.
+    fn build_from_env(
+        progress: Arc<dyn Progress>,
+        transport: Arc<dyn Transport>,
+    ) -> Result<(Arc<Engine>, Arc<LazyInstall>)> {
         let dirs = Dirs::from_env()?;
         let host = host::current();
         let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport, progress.clone()));
@@ -111,10 +123,10 @@ impl Engine {
             hooks: Arc::new(NoHooks),
             boot_bound: DEFAULT_BOOT_BOUND,
         });
-        // Nothing the reap does resolves the install (see `qemu_parts`), so it reads no config; a config that cannot be
-        // read fails the call after the reap, and the engine is not returned.
+        // Nothing the reap does resolves the install (see `qemu_parts`), so it reads no config: the check of it comes
+        // after the reap.
         engine.reap();
-        install.config().map(|_| engine)
+        Ok((engine, install))
     }
 
     /// `from_env` reporting progress on stderr.

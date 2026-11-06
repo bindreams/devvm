@@ -1,9 +1,10 @@
 //! The one line of `devvm doctor` that is about QEMU.
 
-use super::sidecar::{CONFIGURED_SYSTEM, LazyInstall};
+use super::args::ArchFiles;
+use super::sidecar::LazyInstall;
 use crate::backend::{Check, Detail};
 use crate::store::fetch::hash_file;
-use crate::{Error, ErrorKind, Result, Sha256};
+use crate::{Arch, Error, ErrorKind, Result, Sha256};
 
 #[cfg(test)]
 #[path = "checks_tests.rs"]
@@ -34,11 +35,9 @@ fn qemu_outcome(install: &LazyInstall, detail: Detail) -> Result<String> {
     match detail {
         Detail::Brief => Ok(format!("QEMU in {}", qemu.bin.display())),
         Detail::Full => {
-            let hash = Sha256::from_bytes(hash_file(&qemu.tool(CONFIGURED_SYSTEM))?);
-            Ok(format!(
-                "QEMU in {}, {CONFIGURED_SYSTEM} sha256 {hash}",
-                qemu.bin.display()
-            ))
+            let system = ArchFiles::of(Arch::host()).system;
+            let hash = Sha256::from_bytes(hash_file(&qemu.tool(&system))?);
+            Ok(format!("QEMU in {}, {system} sha256 {hash}", qemu.bin.display()))
         }
     }
 }

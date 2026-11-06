@@ -110,6 +110,10 @@ pub fn install_panic_hook() {
 // Entry points ========================================================================================================
 
 fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
+    // `doctor` builds its own engine, one that does not fail on config.yaml; no engine is built twice.
+    if let Cmd::Doctor = command {
+        return doctor::doctor(deps.transport.clone());
+    }
     let engine = Engine::from_env_stderr(deps.transport.clone());
     match command {
         Cmd::Ls { all, json } => list(&engine?, all, json),
@@ -129,7 +133,7 @@ fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
         Cmd::Cp { .. } => Err(not_implemented("cp")),
         Cmd::Start { .. } => Err(not_implemented("start")),
         Cmd::Stop { .. } => Err(not_implemented("stop")),
-        Cmd::Doctor => doctor::doctor(engine?.as_ref()),
+        Cmd::Doctor => unreachable!("handled above"),
     }
 }
 

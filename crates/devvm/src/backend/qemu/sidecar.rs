@@ -14,13 +14,14 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
+use super::args::ArchFiles;
 use crate::config::Config;
 use crate::exit::Progress;
 use crate::host::{Host, SystemDirs};
 use crate::lazy::Lazy;
 use crate::store::fetch::{Artifact, Fetcher};
 use crate::store::lock::{FileLock, Mode};
-use crate::{Dirs, Error, ErrorKind, Result, Sha256};
+use crate::{Arch, Dirs, Error, ErrorKind, Result, Sha256};
 
 #[cfg(test)]
 #[path = "sidecar_tests.rs"]
@@ -28,8 +29,9 @@ pub(crate) mod sidecar_tests;
 
 const MANIFEST: &str = include_str!("../../../qemu-manifest.toml");
 
-/// Tools and firmware a downloaded build must hold. A configured QEMU needs only the amd64 ones, on every host: this is
-/// the one rule for what a configured `qemu.path` is accepted for, by a launch and by `devvm doctor` alike.
+/// Tools and firmware a downloaded build must hold, for every architecture. A configured QEMU needs the host
+/// architecture's ([`ArchFiles`]): the one rule for what a configured `qemu.path` is accepted for, by a launch and by
+/// `devvm doctor` alike.
 const ARCHIVE_TOOLS: &[&str] = &["qemu-img", "qemu-system-x86_64", "qemu-system-aarch64"];
 const ARCHIVE_FIRMWARE: &[&str] = &[
     "edk2-x86_64-code.fd",
@@ -37,10 +39,6 @@ const ARCHIVE_FIRMWARE: &[&str] = &[
     "edk2-i386-vars.fd",
     "edk2-arm-vars.fd",
 ];
-/// The system emulator a configured QEMU is required to have.
-pub(super) const CONFIGURED_SYSTEM: &str = "qemu-system-x86_64";
-const CONFIGURED_TOOLS: &[&str] = &["qemu-img", CONFIGURED_SYSTEM];
-const CONFIGURED_FIRMWARE: &[&str] = &["edk2-x86_64-code.fd", "edk2-i386-vars.fd"];
 /// The tools run with `--version` before an extraction is published.
 const VERSIONED_TOOLS: &[&str] = &["qemu-img", "qemu-system-x86_64"];
 
@@ -227,7 +225,7 @@ impl Source {
     /// The install, downloading and extracting it first if it is not in the cache.
     pub(crate) fn resolve(&self) -> Result<QemuInstall> {
         match &self.config()?.qemu_path {
-            Some(dir) => configured(dir),
+            Some(dir) => configured(dir, Arch::host()),
             None => self.download(),
         }
     }
@@ -235,7 +233,7 @@ impl Source {
     /// The install if it is already there; never downloads.
     pub(crate) fn existing(&self) -> Result<Option<QemuInstall>> {
         if let Some(dir) = &self.config()?.qemu_path {
-            return configured(dir).map(Some);
+            return configured(dir, Arch::host()).map(Some);
         }
         let entry = self.entry()?;
         let published = self.published(entry);
@@ -310,8 +308,9 @@ impl Source {
     }
 }
 
-/// A QEMU the user installed: `dir` holds the executables, the firmware is in `<dir>/share` or `<dir>/../share`.
-fn configured(dir: &Path) -> Result<QemuInstall> {
+/// A QEMU the user installed: `dir` holds the executables, the firmware is in `<dir>/share` or `<dir>/../share`. It must
+/// hold what a guest of `arch` needs, the host's in every caller: the only architecture a launch uses today.
+fn configured(dir: &Path, arch: Arch) -> Result<QemuInstall> {
     if !dir.is_absolute() {
         return Err(Error::new(
             ErrorKind::Unavailable,
@@ -329,10 +328,12 @@ fn configured(dir: &Path) -> Result<QemuInstall> {
         zip_sha256: None,
     };
     let beside = install(dir.join("share"));
-    require_tools(dir, CONFIGURED_TOOLS, ErrorKind::Unavailable)?;
+    let files = ArchFiles::of(arch);
+    require_tools(dir, &["qemu-img", &files.system], ErrorKind::Unavailable)?;
+    let firmware = [files.code.as_str(), files.vars];
     let above = dir.parent().map(|parent| parent.join("share"));
     for share in std::iter::once(beside.share.clone()).chain(above.clone()) {
-        if firmware_present(&share) {
+        if firmware_present(&share, &firmware) {
             return Ok(install(share));
         }
     }
@@ -341,7 +342,7 @@ fn configured(dir: &Path) -> Result<QemuInstall> {
         format!(
             "the configured QEMU in {} has no firmware ({}) in {} or {}",
             dir.display(),
-            CONFIGURED_FIRMWARE.join(", "),
+            firmware.join(", "),
             beside.share.display(),
             above.map_or_else(
                 || "its parent directory".to_owned(),
@@ -351,8 +352,8 @@ fn configured(dir: &Path) -> Result<QemuInstall> {
     ))
 }
 
-fn firmware_present(share: &Path) -> bool {
-    CONFIGURED_FIRMWARE.iter().all(|name| share.join(name).is_file())
+fn firmware_present(share: &Path, firmware: &[&str]) -> bool {
+    firmware.iter().all(|name| share.join(name).is_file())
 }
 
 /// Every tool in `tools` is a file in `bin`, else `kind` naming the first missing one.

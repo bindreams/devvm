@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::args::{LaunchPaths, build_args, qemu_arch};
+use super::args::{ArchFiles, LaunchPaths, build_args};
 use super::checks::qemu_check;
 use super::machine::{QemuMachine, qemu_log};
 use super::qmp::{QmpEndpoint, Reservation};
@@ -94,7 +94,7 @@ impl QemuBackend {
 
         let mut command = cosca::Command::new();
         command
-            .arg(install.tool(&format!("qemu-system-{}", qemu_arch(spec.arch))))
+            .arg(install.tool(&ArchFiles::of(spec.arch).system))
             .args(args)
             .env_clear()
             .envs(install.environment(self.host.system_dirs().as_ref())?)

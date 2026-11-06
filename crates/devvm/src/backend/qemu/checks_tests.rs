@@ -4,9 +4,9 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::qemu_check;
-use crate::Dirs;
 use crate::Sha256;
 use crate::backend::Detail;
+use crate::backend::qemu::args::ArchFiles;
 use crate::backend::qemu::sidecar::sidecar_tests::{make_firmware, make_tools};
 use crate::backend::qemu::sidecar::{LazyInstall, ManifestEntry, Source, manifest_entry};
 use crate::config::Config;
@@ -14,6 +14,7 @@ use crate::store::fetch::Fetcher;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::qemu::write_config;
 use crate::test_support::transport::RefusingTransport;
+use crate::{Arch, Dirs};
 
 const VERSION: &str = "11.1.2";
 
@@ -68,7 +69,11 @@ fn a_configured_qemu_path_that_is_accepted_passes_and_names_its_hash(#[fixture(u
     // Only what a launch accepts a configured path for: the tools `configured` requires, on every host.
     make_tools(&bin);
     make_firmware(&bin.join("share"));
-    let system = bin.join(format!("qemu-system-x86_64{}", std::env::consts::EXE_SUFFIX));
+    let system = bin.join(format!(
+        "{}{}",
+        ArchFiles::of(Arch::host()).system,
+        std::env::consts::EXE_SUFFIX
+    ));
     std::fs::write(&system, b"the configured qemu").unwrap();
     configure(&dirs, &bin);
     let (install, transport) = install_over(&dirs, Ok(pinned()));
@@ -95,7 +100,11 @@ fn a_brief_qemu_check_passes_without_a_hash(#[fixture(unicode_home)] home: &Path
     let bin = home.join("qemu").join("bin");
     make_tools(&bin);
     make_firmware(&bin.join("share"));
-    let system = bin.join(format!("qemu-system-x86_64{}", std::env::consts::EXE_SUFFIX));
+    let system = bin.join(format!(
+        "{}{}",
+        ArchFiles::of(Arch::host()).system,
+        std::env::consts::EXE_SUFFIX
+    ));
     std::fs::write(&system, b"the configured qemu").unwrap();
     configure(&dirs, &bin);
     let (install, _) = install_over(&dirs, Ok(pinned()));

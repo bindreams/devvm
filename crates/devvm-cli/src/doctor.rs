@@ -1,17 +1,21 @@
 //! `devvm doctor`: one line per check of this host.
 
 use std::io::Write;
+use std::sync::Arc;
 
-use devvm::exit::ExitStatus;
+use devvm::exit::{ExitStatus, StderrProgress};
+use devvm::store::fetch::Transport;
 use devvm::{Check, Engine, Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "doctor_tests.rs"]
 mod doctor_tests;
 
-/// Prints every check of `engine` on stdout. Exits 125, `unavailable`, once all are printed if any failed.
-pub(crate) fn doctor(engine: &Engine) -> Result<ExitStatus> {
-    doctor_to(&mut std::io::stdout().lock(), engine.checks())
+/// Prints every check of this host on stdout. Exits 125, `unavailable`, once all are printed if any failed. A broken
+/// `config.yaml` is a failed line, not an early exit.
+pub(crate) fn doctor(transport: Arc<dyn Transport>) -> Result<ExitStatus> {
+    let checks = Engine::doctor_checks(Arc::new(StderrProgress), transport)?;
+    doctor_to(&mut std::io::stdout().lock(), checks)
 }
 
 pub(crate) fn doctor_to(out: &mut dyn Write, checks: Vec<Check>) -> Result<ExitStatus> {

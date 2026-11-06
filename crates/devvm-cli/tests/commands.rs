@@ -71,3 +71,34 @@ fn doctor_prints_every_check_then_exits_125_iff_any_line_says_fail() {
         assert!(qemu.starts_with("pass "), "{qemu}");
     }
 }
+
+#[skuld::test]
+fn doctor_with_an_unreadable_config_prints_every_line_and_the_config_text_on_the_qemu_line() {
+    let home = home();
+    let cwd = home.project("a");
+    let config = home.config_file();
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "qemu: [not, a, mapping]").unwrap();
+
+    let output = home.devvm(&cwd, &["doctor"]);
+
+    let lines = stdout_lines(&output);
+    for name in [
+        "accelerator",
+        "free space (data)",
+        "free space (cache)",
+        "free space (state)",
+        "ssh",
+        "git",
+        "qemu",
+    ] {
+        assert!(
+            lines.iter().any(|line| line[5..].starts_with(&format!("{name}:"))),
+            "no line for {name}: {lines:?}"
+        );
+    }
+    let qemu = lines.iter().find(|line| line[5..].starts_with("qemu:")).unwrap();
+    assert!(qemu.starts_with("fail "), "{qemu}");
+    assert!(qemu.contains("config.yaml"), "{qemu}");
+    assert_eq!(output.status.code(), Some(125), "{:?}", output.stderr);
+}

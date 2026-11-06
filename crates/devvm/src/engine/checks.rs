@@ -5,24 +5,34 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use super::Engine;
 use crate::backend::{Check, Detail};
 use crate::copy::Git;
 use crate::exit::Progress;
 use crate::host::Host;
-use crate::{Arch, Dirs, Unavailable};
+use crate::store::fetch::Transport;
+use crate::{Arch, Dirs, Result, Unavailable};
 
 #[cfg(test)]
 #[path = "checks_tests.rs"]
 mod checks_tests;
 
 impl Engine {
-    /// Every line of `devvm doctor`, in the order to print them: the host's accelerator, the free space of the data and
-    /// the cache directory, the `ssh` and `git` that devvm runs, then the backend's own. A line that fails does not stop
-    /// the others. Used by `devvm-cli`; not a documented API.
+    /// Every line of `devvm doctor` for this process's environment, in the order to print them. Builds the engine as
+    /// [`Engine::from_env`] does, reaping included, but does not fail on an unreadable `config.yaml`: the QEMU line
+    /// says so instead. The one `Err` left is `Dirs::from_env`, before any line exists. Used by `devvm-cli`; not a
+    /// documented API.
     #[doc(hidden)]
-    pub fn checks(&self) -> Vec<Check> {
+    pub fn doctor_checks(progress: Arc<dyn Progress>, transport: Arc<dyn Transport>) -> Result<Vec<Check>> {
+        Engine::build_from_env(progress, transport).map(|(engine, _)| engine.checks())
+    }
+
+    /// Every line of `devvm doctor`, in the order to print them: the host's accelerator, the free space of the data, the
+    /// cache and the state directory, the `ssh` and `git` that devvm runs, then the backend's own. A line that fails
+    /// does not stop the others.
+    pub(crate) fn checks(&self) -> Vec<Check> {
         let mut checks = host_checks(self.host, &self.dirs);
         checks.push(ssh_check(self.host));
         checks.push(git_check(self.host, self.progress.as_ref()));

@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::args::ArchFiles;
 use super::directory_of;
 use super::sidecar::LazyInstall;
 use crate::backend::{DEFAULT_DISK, Storage};
@@ -248,10 +249,9 @@ impl Storage for QemuStorage {
                 disk.as_os_str(),
             ])?;
         }
-        let template = match arch {
-            Arch::Amd64 => "edk2-i386-vars.fd",
-            Arch::Arm64 => "edk2-arm-vars.fd",
-        };
-        copy_file(&self.share()?.join(template), &staging.path().join(VARS))
+        copy_file(
+            &self.share()?.join(ArchFiles::of(arch).vars),
+            &staging.path().join(VARS),
+        )
     }
 }
