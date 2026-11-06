@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use super::availability_on;
 use crate::backend::{Backend, Machine};
-use crate::engine::engine_tests::{EngineFixture, dead_machine, engine_fixture, image_of, stub_fixture};
+use crate::engine::engine_tests::{EngineFixture, dead_machine, engine_fixture, image_of, image_with, stub_fixture};
 use crate::instance::record::InstanceId;
 use crate::instance::record::{MarkerRead, Owner, read_marker};
+use crate::recipe::Resources;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, TestHost};
@@ -43,6 +44,25 @@ fn image_create_leaves_a_stopped_ownerless_instance(#[fixture(unicode_home)] hom
         image.create("foo", &opts).err().unwrap().kind(),
         ErrorKind::AlreadyExists
     );
+}
+
+/// A recipe without `resources.disk` reaches the storage as no size, so the storage picks the default; a recipe with
+/// one reaches it as that size.
+#[skuld::test]
+fn image_create_hands_the_storage_the_recipes_disk_size_or_none(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+
+    for (name, disk) in [("unset", None), ("set", Some(20 << 30))] {
+        let resources = Resources {
+            disk,
+            ..Resources::default()
+        };
+        image_with(&fx.engine, resources)
+            .create(name, &StartOptions::default())
+            .unwrap();
+    }
+
+    assert_eq!(fx.fake.disk_sizes(), [None, Some(20 << 30)]);
 }
 
 #[skuld::test]

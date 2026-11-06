@@ -9,20 +9,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
-use crate::Dirs;
-use crate::backend::FileClaim;
 use crate::backend::qemu::args::escape_option_value;
 use crate::backend::qemu::backend::QemuBackend;
 use crate::backend::qemu::qmp::{QmpEndpoint, Reservation};
 use crate::backend::qemu::sidecar::{LazyInstall, QemuInstall};
 use crate::backend::qemu::storage::QemuStorage;
+use crate::backend::{FileClaim, Storage};
 use crate::config::Config;
 use crate::exit::{NullProgress, StderrProgress};
 use crate::host::{self, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
+use crate::store::layers::ChainLease;
 use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR};
+use crate::{Dirs, ErrorKind};
 
 #[path = "qemu_tests.rs"]
 mod qemu_tests;
@@ -344,6 +345,38 @@ pub fn qemu_img_info(install: &QemuInstall, image: &Path, chain: bool) -> serde_
     }
     args.push(image.as_os_str());
     serde_json::from_slice(&qemu_img(install, &args)).expect("qemu-img info prints JSON")
+}
+
+/// The refusal of `storage.create_instance_disk` of `size` on `base`, as an error of `kind`, after checking that no disk
+/// and no firmware variables were made.
+pub fn refused_without_a_disk(
+    storage: &QemuStorage,
+    base: &ChainLease,
+    home: &Path,
+    size: Option<u64>,
+    kind: ErrorKind,
+) -> crate::Error {
+    let size_name = size.map_or("none".to_owned(), |size| size.to_string());
+    let instance = home.join(format!("refused-{size_name}")).join("disk.img");
+    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
+
+    let error = storage
+        .create_instance_disk(base.tip().dir(), &instance, size)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), kind, "{size_name}: {error}");
+    assert!(
+        matches!(symlink_metadata_if_present(&instance), Ok(None)),
+        "{size_name}: a disk was made"
+    );
+    assert!(
+        matches!(
+            symlink_metadata_if_present(&instance.parent().unwrap().join(crate::backend::qemu::storage::VARS)),
+            Ok(None)
+        ),
+        "{size_name}: the firmware variables were copied"
+    );
+    error
 }
 
 /// The bytes a guest would read from `disk` (through its backing chain), as a raw image.
