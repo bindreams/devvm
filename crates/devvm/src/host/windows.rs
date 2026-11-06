@@ -11,9 +11,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
-use windows_sys::Win32::Foundation::{
-    ERROR_BAD_NET_NAME, ERROR_BAD_NETPATH, ERROR_INVALID_NAME, ERROR_PRIVILEGE_NOT_HELD,
-};
+use windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD;
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal, GetACP};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
@@ -310,19 +308,6 @@ impl Host for WindowsHost {
 
     fn remove_deleting_name(&self, path: &Path) -> std::io::Result<()> {
         hold::remove_deleting_name(path)
-    }
-
-    fn says_not_there(&self, error: &std::io::Error) -> bool {
-        match (error.raw_os_error(), error.kind()) {
-            // An unreachable share is not a file that is gone.
-            (Some(code), std::io::ErrorKind::NotFound) => {
-                !matches!(code as u32, ERROR_BAD_NETPATH | ERROR_BAD_NET_NAME)
-            }
-            // A name that cannot exist, as opposed to a path that is too long (`ERROR_FILENAME_EXCED_RANGE`).
-            (Some(code), std::io::ErrorKind::InvalidFilename) => code as u32 == ERROR_INVALID_NAME,
-            (None, kind) => kind == std::io::ErrorKind::NotFound,
-            _ => false,
-        }
     }
 
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry> {

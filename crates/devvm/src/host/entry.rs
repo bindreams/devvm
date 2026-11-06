@@ -16,23 +16,20 @@ pub(crate) enum Entry {
     /// A symbolic link or, on Windows, a junction. It was not followed.
     Symlink,
     Directory,
-    /// Nothing is there ([`is_absent`]): a component is gone, is a file where a directory should be, or is a name the
-    /// host cannot hold.
+    /// Nothing is there: a component is gone, is a file where a directory should be, or is a name the host cannot hold.
     Absent,
     /// None of the above, described for a message ("a FIFO").
     Other(&'static str),
 }
 
 /// Whether `e` says the path is not there on this host: gone, below a file, or a name the host cannot hold (Windows
-/// reports `a|b` as an invalid name, not as absent). The single definition of "not there". A lookup that failed to
-/// answer has not found the path absent, so these are not absent: a name or path too long to look up (the path may
-/// exist), a share that cannot be reached (Windows), and every other error.
+/// reports `a|b` as an invalid name, not as absent). The single definition of "not there": a lookup that fails for
+/// another reason has not found the path absent.
 pub(crate) fn is_absent(e: &io::Error) -> bool {
-    match e.kind() {
-        io::ErrorKind::NotADirectory => true,
-        io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename => super::current().says_not_there(e),
-        _ => false,
-    }
+    matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory | io::ErrorKind::InvalidFilename
+    )
 }
 
 /// The error for a link met where a file is wanted.

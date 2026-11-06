@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use super::{Entry, is_absent, symlink_metadata_if_present};
+use super::{Entry, symlink_metadata_if_present};
 use crate::host::current;
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
@@ -102,26 +102,4 @@ fn a_link_is_looked_at_not_followed(#[fixture(unicode_home)] home: &Path, #[fixt
     let meta = symlink_metadata_if_present(&home.join("dangling")).unwrap().unwrap();
 
     assert!(meta.file_type().is_symlink());
-}
-
-/// An error with no OS code is told by its kind: `InvalidFilename` is a name that cannot exist only where the host's own
-/// code says so, and every other failure is a lookup that did not find the answer.
-#[skuld::test]
-fn only_an_error_that_says_the_name_is_not_there_is_absent() {
-    use std::io::ErrorKind::*;
-    for kind in [NotFound, NotADirectory] {
-        assert!(is_absent(&kind.into()), "{kind:?}");
-    }
-    for kind in [
-        InvalidFilename,
-        InvalidInput,
-        PermissionDenied,
-        TimedOut,
-        HostUnreachable,
-        NetworkUnreachable,
-        DirectoryNotEmpty,
-        AlreadyExists,
-    ] {
-        assert!(!is_absent(&kind.into()), "{kind:?}");
-    }
 }

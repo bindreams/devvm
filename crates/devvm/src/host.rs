@@ -240,14 +240,6 @@ pub(crate) trait Host: Send + Sync {
     /// cannot hold, is [`Entry::Absent`]. A link above the last name is not looked for; the caller checks the
     /// directories. Fails with `Unsupported` where a host has no such look.
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
-
-    /// Whether `error`, of kind `NotFound` or `InvalidFilename`, says the name is not there rather than that the look
-    /// failed; the host part of [`is_absent`]. The default reads `NotFound` as not there and `InvalidFilename` (a name
-    /// too long) as a failure. Windows reads the OS code: an unreachable share is `NotFound` for `std` and a name
-    /// that cannot exist and a path too long are both `InvalidFilename`.
-    fn says_not_there(&self, error: &std::io::Error) -> bool {
-        error.kind() == std::io::ErrorKind::NotFound
-    }
 }
 
 /// Creates `path` with `options` and writes `bytes`, which are on disk when it returns. A file whose write failed is
@@ -261,11 +253,39 @@ fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::
     Ok(())
 }
 
-/// Removes the file `path`; one that is not there ([`is_absent`]) is as good as removed.
+/// Removes the file `path`; one that is not there is as good as removed.
 pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
-        Err(e) if is_absent(&e) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
+    }
+}
+
+/// Whether a failed `remove_dir` means the directory is not an empty dead claim, so `publish_dir` is left to refuse it:
+/// the name is gone or below a file ([`is_absent`]), or has something in it. POSIX lets `rmdir` of a non-empty
+/// directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`.
+fn is_not_a_dead_claim(e: &std::io::Error) -> bool {
+    is_absent(e)
+        || matches!(
+            e.kind(),
+            std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists
+        )
+}
+
+/// Removes the empty directory at `dir`, to be called just before [`Host::publish_dir`] of that name. A writer killed
+/// between the two steps of its claim on a host without a rename that refuses to replace leaves one; there it can only
+/// be a dead claim, because the caller holds the lock every publisher of the name takes. On a host with a native
+/// no-replace rename someone else made it, and it is removed all the same. A directory with anything in it, a link and
+/// a file are left for `publish_dir` to refuse. The error says whether the look or the removal failed.
+pub(crate) fn clear_dead_claim(dir: &Path) -> std::io::Result<()> {
+    let say = |what: &str, e: std::io::Error| std::io::Error::new(e.kind(), format!("{what} {}: {e}", dir.display()));
+    let present = symlink_metadata_if_present(dir).map_err(|e| say("cannot look at", e))?;
+    if !present.is_some_and(|m| m.file_type().is_dir()) {
+        return Ok(());
+    }
+    match std::fs::remove_dir(dir) {
+        Err(e) if !is_not_a_dead_claim(&e) => Err(say("cannot remove the empty directory", e)),
+        _ => Ok(()),
     }
 }
 

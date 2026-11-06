@@ -222,19 +222,3 @@ fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it(#[fixture
     let file = std::fs::File::open(&victim).unwrap();
     file.try_lock().expect("nobody holds the victim");
 }
-
-/// `ENAMETOOLONG` is a name the file system refuses to look up; a file with that name may exist.
-#[skuld::test]
-fn a_name_too_long_is_an_error_not_an_absent_path(#[fixture(unicode_home)] home: &Path) {
-    for gone in [Errno::NOENT, Errno::NOTDIR] {
-        assert!(crate::host::is_absent(&std::io::Error::from(gone)), "{gone}");
-    }
-    let error = std::io::Error::from(Errno::NAMETOOLONG);
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidFilename);
-    assert!(!crate::host::is_absent(&error));
-
-    let long = home.join("x".repeat(300));
-    assert!(crate::host::symlink_metadata_if_present(&long).is_err());
-    assert!(crate::host::remove_if_present(&long).is_err());
-    assert!(crate::host::remove_tree(&long).is_err());
-}

@@ -658,18 +658,17 @@ fn comparing_a_file_id_with_a_look_at_a_name_says_same_different_or_absent() {
     let other = FileId { volume: 1, file: 3 };
     assert_eq!(id.compare(Ok(id)).unwrap(), Comparison::Same);
     assert_eq!(id.compare(Ok(other)).unwrap(), Comparison::Different);
-    for kind in [std::io::ErrorKind::NotFound, std::io::ErrorKind::NotADirectory] {
-        assert_eq!(id.compare(Err(kind.into())).unwrap(), Comparison::Absent, "{kind:?}");
-    }
     for kind in [
-        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::NotADirectory,
         std::io::ErrorKind::InvalidFilename,
     ] {
-        let error = id
-            .compare(Err(kind.into()))
-            .expect_err("a look that failed is no answer");
-        assert_eq!(error.kind(), kind);
+        assert_eq!(id.compare(Err(kind.into())).unwrap(), Comparison::Absent, "{kind:?}");
     }
+    let error = id
+        .compare(Err(std::io::ErrorKind::PermissionDenied.into()))
+        .expect_err("a look that failed is no answer");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
 }
 
 #[skuld::test]
@@ -866,17 +865,6 @@ fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it_on_every_
 }
 
 #[skuld::test]
-fn remove_if_present_treats_every_not_there_error_as_removed(#[fixture(unicode_home)] home: &Path) {
-    let file = home.join("file");
-    std::fs::write(&file, "x").unwrap();
-    // Missing, below a file (`NotADirectory` on Unix), and a name Windows cannot hold (`InvalidFilename`).
-    for path in [home.join("missing"), file.join("below"), home.join("a|b")] {
-        super::remove_if_present(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    }
-    assert!(file.is_file());
-}
-
-#[skuld::test]
 fn remove_tree_deletes_a_directory_with_everything_under_it(#[fixture(unicode_home)] home: &Path) {
     let tree = home.join("tree");
     std::fs::create_dir_all(tree.join("a").join("b")).unwrap();
@@ -941,4 +929,18 @@ fn a_link_that_could_not_be_removed_reports_the_first_failure_and_then_the_secon
     // The same failure twice is said once.
     let twice = super::link_removal_failure(std::io::Error::other("busy"), std::io::Error::other("busy"));
     assert_eq!(twice.to_string(), "busy");
+}
+
+/// POSIX lets `rmdir` of a non-empty directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`; neither
+/// means a dead claim, so `publish_dir` must be the one to refuse it. Nor does a name that is gone or became a file.
+#[skuld::test]
+fn a_remove_failure_that_means_the_directory_is_not_empty_leaves_it_to_publish_dir() {
+    use std::io::ErrorKind::{AlreadyExists, DirectoryNotEmpty, NotADirectory, NotFound, PermissionDenied};
+    for kind in [DirectoryNotEmpty, AlreadyExists, NotFound, NotADirectory] {
+        assert!(super::is_not_a_dead_claim(&kind.into()), "{kind:?}");
+    }
+    assert!(
+        !super::is_not_a_dead_claim(&PermissionDenied.into()),
+        "an empty directory that cannot be removed is an error"
+    );
 }

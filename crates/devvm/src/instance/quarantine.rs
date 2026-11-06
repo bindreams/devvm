@@ -125,10 +125,9 @@ impl Registry {
 /// Runs inside `Locks::excluding_readers`: reads the files directly, takes no lock.
 fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &Path) -> Moved {
     match symlink_metadata_if_present(path) {
-        Ok(None) => return Moved::Vanished,
-        // Anything but a directory where the directory was (a file, a link): the directory is gone.
-        Ok(Some(meta)) if !meta.is_dir() => return Moved::Vanished,
-        Ok(Some(_)) => {}
+        Ok(Some(meta)) if meta.is_dir() => {}
+        // Nothing, or anything but a directory (a file, a link), where the directory was: the directory is gone.
+        Ok(_) => return Moved::Vanished,
         Err(e) => return Moved::Failed(e),
     }
     let (record, marker) = match (InstanceRecord::read(path), read_marker(path)) {

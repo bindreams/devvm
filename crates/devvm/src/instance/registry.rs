@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
-use crate::host::{Host, remove_tree};
+use crate::host::{Host, clear_dead_claim, remove_tree};
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
@@ -329,7 +329,7 @@ impl Registry {
                     if new.name.is_some() {
                         return Err(Error::new(
                             ErrorKind::AlreadyExists,
-                            format!("an instance called {name} already exists"),
+                            format!("{} already exists", target.display()),
                         )
                         .with_source(e));
                     }
@@ -344,14 +344,18 @@ impl Registry {
 /// How the rename of a new instance to its name went.
 enum Placement {
     Placed,
-    /// The name belongs to another instance.
+    /// Something is at the name: an instance, or a file or a directory that holds something and is not one.
     Taken(std::io::Error),
     Failed(std::io::Error),
 }
 
-/// Publishes `temp` at `target`, which nothing may have: anything there, even an empty directory or a file, is
-/// `AlreadyExists` and the name is taken ([`Host::publish_dir`]); any other failure is not.
+/// Publishes `temp` at `target`, which nothing may have. An empty directory there is a dead claim, never an instance
+/// (an instance directory always holds `record.json`), and is removed first ([`clear_dead_claim`]). Anything else there
+/// is `AlreadyExists` and the name is taken ([`Host::publish_dir`]); any other failure is not.
 fn place(host: &dyn Host, temp: &std::path::Path, target: &std::path::Path) -> Placement {
+    if let Err(e) = clear_dead_claim(target) {
+        return Placement::Failed(e);
+    }
     match host.publish_dir(temp, target) {
         Ok(()) => Placement::Placed,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Placement::Taken(e),

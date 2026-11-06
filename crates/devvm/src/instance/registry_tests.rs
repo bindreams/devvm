@@ -164,34 +164,47 @@ fn create_on_a_taken_name_fails_and_leaves_it_untouched(#[fixture(unicode_home)]
 }
 
 #[skuld::test]
-fn create_on_a_name_held_by_an_empty_directory_or_a_file_fails_and_keeps_it(#[fixture(unicode_home)] home: &Path) {
+fn create_on_a_name_held_by_a_file_fails_and_keeps_it(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     std::fs::create_dir_all(instances(&fx)).unwrap();
-    let empty = instances(&fx).join("empty");
-    std::fs::create_dir(&empty).unwrap();
     let file = instances(&fx).join("file");
     std::fs::write(&file, "mine").unwrap();
 
-    for name in ["empty", "file"] {
-        let guard = fx.env.store.begin_record().unwrap();
-        let error = fx
-            .registry
-            .create(new_instance(&fx, Some(name), &TestStorage { fail: false }), &guard)
-            .err()
-            .expect("the name is taken");
-        assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{name}: {error}");
-    }
-    assert_eq!(
-        std::fs::read_dir(&empty).unwrap().count(),
-        0,
-        "the empty directory is not replaced"
+    let guard = fx.env.store.begin_record().unwrap();
+    let error = fx
+        .registry
+        .create(new_instance(&fx, Some("file"), &TestStorage { fail: false }), &guard)
+        .err()
+        .expect("the name is taken");
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert!(
+        error.message().contains(&file.display().to_string()) && !error.message().contains("an instance"),
+        "the message names what is at the path, which is no instance: {error}"
     );
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         "mine",
         "the file is not replaced"
     );
-    assert_eq!(names(&instances(&fx)), ["empty", "file"], "no .new-* directory is left");
+    assert_eq!(names(&instances(&fx)), ["file"], "no .new-* directory is left");
+}
+
+/// A host without a rename that refuses to replace claims the name with an empty directory first, and a kill before
+/// the move leaves it. An instance directory always holds `record.json`, so an empty one is never an instance.
+#[skuld::test]
+fn create_on_a_name_held_by_an_empty_directory_clears_it_and_succeeds(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    std::fs::create_dir_all(instances(&fx)).unwrap();
+    std::fs::create_dir(instances(&fx).join("empty")).unwrap();
+
+    let guard = fx.env.store.begin_record().unwrap();
+    let created = fx
+        .registry
+        .create(new_instance(&fx, Some("empty"), &TestStorage { fail: false }), &guard)
+        .expect("an empty directory is a dead claim, not an instance");
+
+    assert_eq!(created.dir().record().unwrap().name.as_str(), "empty");
+    assert_eq!(names(&instances(&fx)), ["empty"], "no .new-* directory is left");
 }
 
 #[skuld::test]
