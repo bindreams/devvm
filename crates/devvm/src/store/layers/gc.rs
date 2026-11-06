@@ -87,7 +87,8 @@ impl LayerStore {
     ///
     /// A `reachable` error, a failed look at a kept generation's directory, a kept layer whose record is missing,
     /// unreadable or names another layer, or a key whose `current` file is unreadable (so ancestors cannot be known),
-    /// aborts the pass before anything is deleted. A record written by a newer devvm aborts it with that error alone.
+    /// aborts the pass before anything is deleted. A record written by a newer devvm aborts it with that error alone,
+    /// and when that record is an unkept generation's, generations the pass deleted before it stay deleted.
     /// An unkept generation whose own record is unreadable is moved to quarantine, not deleted.
     pub fn gc(&self, reachable: &dyn Reachability) -> Result<GcReport> {
         let mut gc = self.gc_lock()?;
