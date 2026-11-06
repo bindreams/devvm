@@ -55,7 +55,7 @@ pub(crate) struct NewInstance<'a> {
 /// Where a test can step into `create`; the defaults do nothing and generate real names.
 pub(crate) struct CreateSeams<'a> {
     /// Once the temporary directory is complete and before it takes its name.
-    pub before_rename: Box<dyn FnMut() + 'a>,
+    pub before_placement: Box<dyn FnMut() + 'a>,
     /// Just before the placement waits for the readers of instance files.
     pub before_wait: Box<dyn FnMut() + 'a>,
     /// After the placement was tried, whatever came of it.
@@ -67,7 +67,7 @@ pub(crate) struct CreateSeams<'a> {
 impl CreateSeams<'_> {
     pub(crate) fn none<'a>() -> CreateSeams<'a> {
         CreateSeams {
-            before_rename: Box::new(|| {}),
+            before_placement: Box::new(|| {}),
             before_wait: Box::new(|| {}),
             after_placement: Box::new(|| {}),
             generate: Box::new(InstanceName::generate),
@@ -228,18 +228,18 @@ impl Registry {
         self.create_with(new, guard, &mut || {})
     }
 
-    /// `create` with `before_rename` run once the temporary directory is complete and before it takes its name.
+    /// `create` with `before_placement` run once the temporary directory is complete and before it takes its name.
     pub(crate) fn create_with(
         &self,
         new: NewInstance<'_>,
         guard: &RecordGuard,
-        before_rename: &mut dyn FnMut(),
+        before_placement: &mut dyn FnMut(),
     ) -> Result<Owned> {
         self.create_with_seams(
             new,
             guard,
             &mut CreateSeams {
-                before_rename: Box::new(before_rename),
+                before_placement: Box::new(before_placement),
                 ..CreateSeams::none()
             },
         )
@@ -316,7 +316,7 @@ impl Registry {
                 machine: None,
             }
             .write(temp)?;
-            (seams.before_rename)();
+            (seams.before_placement)();
             let target = self.root.join(name.as_str());
             // Placed while no one reads inside any instance directory, like every other rename of one.
             let placed = self
