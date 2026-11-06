@@ -1,6 +1,6 @@
 //! The per-instance SSH keys: the client key that logs in and the host key the guest presents.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
@@ -18,6 +18,11 @@ const CLIENT: &str = "client";
 const HOST: &str = "host";
 const LOCK: &str = ".keys.lock";
 const TEMP_PREFIX: &str = ".keys-";
+
+/// The file in the keys directory `dir` that holds the client's private key.
+pub(crate) fn client_key_path(dir: &Path) -> PathBuf {
+    dir.join(CLIENT)
+}
 
 /// An instance's key pairs as OpenSSH text. The private keys are secrets: they stay out of `Debug` output.
 #[derive(Clone, Debug)]

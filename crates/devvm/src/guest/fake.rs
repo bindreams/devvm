@@ -75,6 +75,9 @@ struct FakeGuestOs {
 impl GuestOs for FakeGuestOs {
     /// A file in `seed.dir` naming the host.
     fn instance_seed(&self, _host: &dyn Host, seed: &SeedSpec) -> Result<SeedMedia> {
+        if let Some(served) = &self.served {
+            served.read_seed(seed);
+        }
         let path = seed.dir.join("seed.fake");
         std::fs::write(
             &path,

@@ -4,9 +4,10 @@ use std::path::PathBuf;
 
 use crate::access::SshTarget;
 use crate::access::keys::InstanceKeys;
-use crate::backend::Endpoint;
+use crate::backend::{Endpoint, MachineRecord};
 use crate::host::Host;
 use crate::instance::dir::{InstanceDir, OpExclusive, OpShared};
+use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
 use crate::{Error, ErrorKind, Result};
 
@@ -53,16 +54,12 @@ fn not_running(record: &InstanceRecord) -> Error {
     )
 }
 
-/// What a process needs to connect to the machine `record` names, with `keys`. `unavailable` when the instance has no
-/// machine.
-pub(crate) fn target_for(record: &InstanceRecord, keys: &InstanceKeys) -> Result<SshTarget> {
-    let Some(machine) = &record.machine else {
-        return Err(not_running(record));
-    };
+/// What a process needs to connect to `machine`, the machine of instance `name`, with `keys`.
+pub(crate) fn target_for(name: &InstanceName, machine: &MachineRecord, keys: &InstanceKeys) -> Result<SshTarget> {
     let Some(endpoint) = machine.ssh.iter().find(|e| e.endpoint == Endpoint::Normal) else {
         return Err(Error::new(
             ErrorKind::Internal,
-            format!("the machine of instance {} reports no SSH endpoint", record.name),
+            format!("the machine of instance {name} reports no SSH endpoint"),
         ));
     };
     Ok(SshTarget {
@@ -80,8 +77,8 @@ pub(crate) fn target_for(record: &InstanceRecord, keys: &InstanceKeys) -> Result
 pub(crate) fn read_target(dir: &InstanceDir, _op: &OpShared) -> Result<SshTarget> {
     let record = dir.record()?;
     // A stopped instance may be one that never started, and has no keys.
-    if record.machine.is_none() {
+    let Some(machine) = &record.machine else {
         return Err(not_running(&record));
-    }
-    target_for(&record, &InstanceKeys::read(&keys_dir(dir))?)
+    };
+    target_for(&record.name, machine, &InstanceKeys::read(&keys_dir(dir))?)
 }

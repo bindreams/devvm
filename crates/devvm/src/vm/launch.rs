@@ -1,14 +1,16 @@
 //! Starting a machine for an instance: the spec, the frozen launch, the record, the resume.
 
-use crate::access::keys::InstanceKeys;
+use std::sync::Arc;
+
+use crate::access::keys::{InstanceKeys, client_key_path};
 use crate::access::ssh_config::{SshConfigDir, SshConfigEntry};
 use crate::access::{SshSession, SshTarget};
-use crate::backend::{Endpoint, Machine, MachineSpec};
+use crate::backend::{Endpoint, Machine, MachineRecord, MachineSpec};
 use crate::contain::Lifetime;
 use crate::engine::keys::{ensure_keys, keys_dir, target_for};
 use crate::engine::ready::connect_ready;
 use crate::engine::{Engine, LaunchStep};
-use crate::guest::{SeedKeys, SeedSpec};
+use crate::guest::{GuestOs, SeedKeys, SeedSpec};
 use crate::instance::dir::{InstanceDir, OpExclusive};
 use crate::vm::{remove_leftovers, warn_for};
 use crate::{Error, ErrorKind, Result};
@@ -33,13 +35,28 @@ pub(super) fn launch(
     op: &OpExclusive,
     lifetime: Lifetime,
 ) -> Result<Option<Started>> {
-    let Some((mut machine, keys)) = launch_machine(engine, dir, op, lifetime)? else {
+    let Some(Launched {
+        mut machine,
+        running,
+        keys,
+        guest,
+    }) = launch_machine(engine, dir, op, lifetime)?
+    else {
         return Ok(None);
     };
-    match await_ready(engine, dir, &keys, &*machine) {
+    match await_ready(engine, dir, &keys, &*guest, &running) {
         Ok(session) => Ok(Some(Started { machine, session })),
         Err(e) => Err(abandon(engine, dir, op, &mut *machine, e)),
     }
+}
+
+/// A machine `launch_machine` resumed, with what the wait for its guest needs.
+struct Launched {
+    machine: Box<dyn Machine>,
+    /// The machine's record once running, as written to the instance record.
+    running: MachineRecord,
+    keys: InstanceKeys,
+    guest: Arc<dyn GuestOs>,
 }
 
 /// `launch` up to the writing of the `ssh_config` entry.
@@ -48,7 +65,7 @@ fn launch_machine(
     dir: &InstanceDir,
     op: &OpExclusive,
     lifetime: Lifetime,
-) -> Result<Option<(Box<dyn Machine>, InstanceKeys)>> {
+) -> Result<Option<Launched>> {
     let backend = engine.backend()?;
     let record = dir.record()?;
     if let Some(machine) = &record.machine {
@@ -118,7 +135,12 @@ fn launch_machine(
     if let Err(e) = dir.update(op, &mut |record| record.machine = Some(running_record.clone())) {
         return Err(abandon(engine, dir, op, &mut *machine, e));
     }
-    Ok(Some((machine, keys)))
+    Ok(Some(Launched {
+        machine,
+        running: running_record,
+        keys,
+        guest,
+    }))
 }
 
 /// Writes the `ssh_config` entry of the instance, which plain `ssh` and editors use, now that its port is known. The
@@ -133,7 +155,7 @@ fn write_ssh_config(engine: &Engine, dir: &InstanceDir, target: &SshTarget, keys
         name: dir.name().clone(),
         id: *dir.id(),
         port: target.addr.port(),
-        identity: keys_dir(dir).join("client"),
+        identity: client_key_path(&keys_dir(dir)),
         known_hosts: dir.path().join("known_hosts"),
     };
     if let Err(e) = configs.write_entry(&entry, &keys.host_public) {
@@ -141,13 +163,17 @@ fn write_ssh_config(engine: &Engine, dir: &InstanceDir, target: &SshTarget, keys
     }
 }
 
-/// Writes the `ssh_config` entry, then connects and waits until the guest has finished its first boot.
-fn await_ready(engine: &Engine, dir: &InstanceDir, keys: &InstanceKeys, machine: &dyn Machine) -> Result<SshSession> {
-    let record = dir.record()?;
-    let target = target_for(&record, keys)?;
+/// Writes the `ssh_config` entry, then connects and waits until the guest has finished its boot.
+fn await_ready(
+    engine: &Engine,
+    dir: &InstanceDir,
+    keys: &InstanceKeys,
+    guest: &dyn GuestOs,
+    running: &MachineRecord,
+) -> Result<SshSession> {
+    let target = target_for(dir.name(), running, keys)?;
     write_ssh_config(engine, dir, &target, keys);
-    let guest = engine.guests().os(record.guest)?;
-    connect_ready(engine, &*guest, dir.name(), &target, &machine.record().process)
+    connect_ready(engine, guest, dir.name(), &target, &running.process)
 }
 
 /// A recorded machine that must not run after all: kills it and clears the record that names it. `cause` is why the
