@@ -321,17 +321,29 @@ fn generation_dirs_and_noise_are_told_apart(#[fixture(unicode_home)] home: &Path
     );
 }
 
-/// A child of `key(1)`'s first generation, whose parent has since been rebuilt: the old parent is kept only through
-/// the child's record. Returns (old parent, child).
-fn child_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
+/// `n` children (keys 2 and up) of `key(1)`'s first generation, whose parent has since been rebuilt: the old parent
+/// is kept only through the children's records. No image handle outlives the call, so no lease holds a generation.
+/// Returns (old parent, children); the walk reads the children in key order.
+fn children_of_an_aged_parent(env: &Env, n: u8) -> (LayerRef, Vec<LayerRef>) {
     let parent = build_expiring(env, key(1), None, Some(t0() + days(90)));
     let old_parent = parent.tip().layer_ref();
-    let child = build_expiring(env, key(2), Some(&parent), Some(t0() + days(120)));
-    let child_ref = child.tip().layer_ref();
-    drop((parent, child));
+    let children: Vec<LayerRef> = (2..2 + n)
+        .map(|k| {
+            build_expiring(env, key(k), Some(&parent), Some(t0() + days(120)))
+                .tip()
+                .layer_ref()
+        })
+        .collect();
+    drop(parent);
     env.clock.set(t0() + days(85));
     drop(build_expiring(env, key(1), None, Some(t0() + days(85) + days(90))));
-    (old_parent, child_ref)
+    (old_parent, children)
+}
+
+/// A child of `key(1)`'s first generation, whose parent has since been rebuilt. Returns (old parent, child).
+fn child_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
+    let (old_parent, children) = children_of_an_aged_parent(env, 1);
+    (old_parent, children[0])
 }
 
 /// The abort message names the layer and the way out of an unreadable `current` file.
@@ -433,19 +445,11 @@ fn gc_names_the_child_that_keeps_a_non_current_parent_with_a_corrupt_record(#[fi
 #[skuld::test]
 fn gc_names_every_kept_child_of_a_parent_with_a_corrupt_record(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
-    // Two children of one parent that is then rebuilt, so the old parent is kept only through them.
-    let parent = build_expiring(&env, key(1), None, Some(t0() + days(90)));
-    let old_parent = parent.tip().layer_ref();
-    let child = build_expiring(&env, key(2), Some(&parent), Some(t0() + days(120)));
-    let second = build_expiring(&env, key(3), Some(&parent), Some(t0() + days(120)));
-    let (child, second_ref) = (child.tip().layer_ref(), second.tip().layer_ref());
-    drop((parent, second));
-    env.clock.set(t0() + days(85));
-    drop(build_expiring(&env, key(1), None, Some(t0() + days(85) + days(90))));
+    let (old_parent, children) = children_of_an_aged_parent(&env, 2);
     std::fs::write(env.store.generation_dir(&old_parent).join("meta.json"), b"{ torn").unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
-    let holders: Vec<String> = [child, second_ref]
+    let holders: Vec<String> = children
         .iter()
         .map(|c| {
             format!(
@@ -560,23 +564,11 @@ fn gc_passes_a_newer_schema_record_through_without_recovery_advice(#[fixture(uni
     assert!(exists(&env, &old_parent));
 }
 
-/// Two children of `key(1)`'s first generation, whose parent has since been rebuilt. Returns (key 2's child, key 3's
-/// child); the walk reads key 2's before key 3's.
-fn two_children_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
-    let parent = build_expiring(env, key(1), None, Some(t0() + days(90)));
-    let first = build_expiring(env, key(2), Some(&parent), Some(t0() + days(120)));
-    let second = build_expiring(env, key(3), Some(&parent), Some(t0() + days(120)));
-    let (first, second) = (first.tip().layer_ref(), second.tip().layer_ref());
-    drop(parent);
-    env.clock.set(t0() + days(85));
-    drop(build_expiring(env, key(1), None, Some(t0() + days(85) + days(90))));
-    (first, second)
-}
-
 #[skuld::test]
 fn gc_reports_the_first_bad_kept_layer_in_walk_order(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
-    let (first, second) = two_children_of_an_aged_parent(&env);
+    let (_, children) = children_of_an_aged_parent(&env, 2);
+    let (first, second) = (children[0], children[1]);
     std::fs::write(env.store.generation_dir(&first).join("meta.json"), b"{ torn").unwrap();
     std::fs::write(env.store.generation_dir(&second).join("meta.json"), b"{ torn").unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
@@ -593,7 +585,8 @@ fn gc_reports_the_first_bad_kept_layer_in_walk_order(#[fixture(unicode_home)] ho
 #[skuld::test]
 fn gc_reports_whichever_of_a_newer_and_a_corrupt_record_the_walk_reads_first(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
-    let (first, second) = two_children_of_an_aged_parent(&env);
+    let (_, children) = children_of_an_aged_parent(&env, 2);
+    let (first, second) = (children[0], children[1]);
     let (first_record, second_record) = (
         env.store.generation_dir(&first).join("meta.json"),
         env.store.generation_dir(&second).join("meta.json"),
@@ -627,6 +620,25 @@ fn gc_aborts_when_a_kept_layers_directory_is_a_dangling_symlink(
     let dir = env.store.generation_dir(&child);
     std::fs::remove_dir_all(&dir).unwrap();
     symlink(&home.join("nowhere"), &dir);
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert_record_recovery(&error, &child, &as_current(child.key), &dir);
+    assert!(error.message().contains(") is missing, so"), "{error}");
+    assert!(exists(&env, &old_parent));
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_kept_layers_directory_is_a_link_to_a_real_one(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    let dir = env.store.generation_dir(&child);
+    // The generation moves away whole, valid record included; a link takes its name.
+    let real = home.join("real-generation");
+    std::fs::rename(&dir, &real).unwrap();
+    symlink(&real, &dir);
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert_record_recovery(&error, &child, &as_current(child.key), &dir);
