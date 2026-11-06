@@ -34,6 +34,15 @@ impl Home {
         self.root.join("state").join("devvm")
     }
 
+    /// What `XDG_RUNTIME_DIR` names below it: devvm's runtime directory, where the sweep of `reap` looks.
+    fn run(&self) -> PathBuf {
+        self.root.join("run").join("devvm")
+    }
+
+    fn config_file(&self) -> PathBuf {
+        self.root.join("config").join("devvm").join("config.yaml")
+    }
+
     fn project(&self, name: &str) -> PathBuf {
         let path = self.root.join("projects").join(name);
         std::fs::create_dir_all(&path).unwrap();
@@ -48,6 +57,7 @@ impl Home {
             ("XDG_DATA_HOME", "data"),
             ("XDG_CACHE_HOME", "cache"),
             ("XDG_STATE_HOME", "state"),
+            ("XDG_RUNTIME_DIR", "run"),
         ] {
             command.env(name, self.root.join(dir));
         }
@@ -238,7 +248,8 @@ fn ls_prints_a_table_and_nothing_at_all_when_there_are_no_instances() {
     assert_eq!(rows[1], ["beta", "stopped", "linux", "amd64", "process"]);
 }
 
-/// Replaces the `machine` of the seeded instance `name` with a record of a process that no backend can look for.
+/// Replaces the `machine` of the seeded instance `name` with a record that has no claim file, which no backend can look
+/// for.
 fn seed_a_machine(home: &Home, name: &str) {
     let path = home.state().join("instances").join(name).join("record.json");
     let record = std::fs::read_to_string(&path).unwrap().replace(
@@ -255,7 +266,7 @@ fn seed_a_machine(home: &Home, name: &str) {
 }
 
 #[skuld::test]
-fn ls_says_unknown_for_a_recorded_machine_this_build_has_no_backend_to_look_for() {
+fn ls_says_unknown_for_a_recorded_machine_the_backend_cannot_look_for() {
     let home = home();
     let a = home.project("a");
     home.seed("alpha", &id(1), &a, "none");
@@ -268,7 +279,7 @@ fn ls_says_unknown_for_a_recorded_machine_this_build_has_no_backend_to_look_for(
     assert_eq!(row, ["alpha", "unknown", "linux", "amd64", "none"]);
     let stderr = String::from_utf8(table.stderr).unwrap();
     assert!(
-        stderr.contains("alpha") && stderr.contains("no VM backend"),
+        stderr.contains("alpha") && stderr.contains("has no claim file"),
         "the cause is said: {stderr:?}"
     );
 
@@ -356,4 +367,47 @@ fn a_usage_error_exits_125_with_a_status_file() {
     one_error_line(&output, "usage");
     let report: Value = serde_json::from_str(&std::fs::read_to_string(&status).unwrap()).unwrap();
     assert_eq!(report["devvm"]["kind"], "usage");
+}
+
+#[skuld::test]
+fn ls_sweeps_the_runtime_directory_the_fixture_names() {
+    let home = home();
+    // A file where the directory should be makes the sweep say so, naming the path: the variable reached `Dirs`.
+    let run = home.run();
+    std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+    std::fs::write(&run, "not a directory").unwrap();
+
+    let output = home.devvm(&home.project("p"), &["ls"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(run.to_str().unwrap()) && stderr.contains("is not a directory"),
+        "{stderr:?}"
+    );
+    assert_eq!(std::fs::read(&run).unwrap(), b"not a directory");
+}
+
+#[skuld::test]
+fn a_broken_config_file_fails_every_command_naming_the_file() {
+    let home = home();
+    let config = home.config_file();
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        "no-such-key: 1
+",
+    )
+    .unwrap();
+
+    let output = home.devvm(&home.project("p"), &["ls"]);
+
+    assert_eq!(output.status.code(), Some(125));
+    let line = one_error_line(&output, "config");
+    assert!(line.contains(config.to_str().unwrap()), "{line}");
 }

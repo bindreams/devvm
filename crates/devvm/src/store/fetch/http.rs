@@ -1,6 +1,7 @@
 //! The real transport: blocking HTTP over rustls, bounded only by stalls.
 
 use std::io::Read;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -37,6 +38,29 @@ impl HttpTransport {
                 Error::new(ErrorKind::Internal, format!("cannot build the HTTP client: {e}")).with_source(e)
             })?;
         Ok(HttpTransport { client, stall })
+    }
+}
+
+/// An [`HttpTransport`] built on the first `get`: building one can fail and starts a client, which a command that
+/// downloads nothing must not pay for. A build failure is `internal` on each `get`.
+#[derive(Default)]
+pub struct LazyHttp(OnceLock<std::result::Result<HttpTransport, String>>);
+
+impl LazyHttp {
+    pub fn new() -> LazyHttp {
+        LazyHttp::default()
+    }
+}
+
+impl Transport for LazyHttp {
+    fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
+        match self
+            .0
+            .get_or_init(|| HttpTransport::new().map_err(|e| e.message().to_owned()))
+        {
+            Ok(transport) => transport.get(url, resume),
+            Err(message) => Err(Error::new(ErrorKind::Internal, message.clone())),
+        }
     }
 }
 

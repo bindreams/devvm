@@ -5,12 +5,12 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use clap::{CommandFactory, Parser};
 use devvm::exit::{ExitStatus, ExitWidth, finish};
 use devvm::recipe::Recipe;
-use devvm::store::fetch::{HttpTransport, Response, Resume, Transport};
+use devvm::store::fetch::{LazyHttp, Transport};
 use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
 
 mod args;
@@ -37,21 +37,7 @@ impl Deps {
     /// Real HTTP, created on first use.
     pub fn real() -> Deps {
         Deps {
-            transport: Arc::new(LazyHttp(OnceLock::new())),
-        }
-    }
-}
-
-struct LazyHttp(OnceLock<std::result::Result<HttpTransport, String>>);
-
-impl Transport for LazyHttp {
-    fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
-        match self
-            .0
-            .get_or_init(|| HttpTransport::new().map_err(|e| e.message().to_owned()))
-        {
-            Ok(transport) => transport.get(url, resume),
-            Err(message) => Err(Error::new(ErrorKind::Internal, message.clone())),
+            transport: Arc::new(LazyHttp::new()),
         }
     }
 }
@@ -122,9 +108,9 @@ pub fn install_panic_hook() {
 
 // Entry points ========================================================================================================
 
-fn dispatch(_deps: &Deps, command: Cmd) -> Result<ExitStatus> {
+fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
     // Every command first reaps what dead devvm processes left behind. Failing to do so never fails the command.
-    let engine = Engine::from_env_stderr();
+    let engine = Engine::from_env_stderr(deps.transport.clone());
     if let Ok(engine) = &engine {
         engine.reap();
     }

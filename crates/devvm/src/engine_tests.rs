@@ -440,12 +440,6 @@ fn list_says_nothing_about_an_instance_whose_name_was_reused_while_it_lists(#[fi
 }
 
 #[skuld::test]
-fn from_env_waits_ten_minutes_for_a_boot() {
-    let engine = Engine::from_env(Arc::new(MemoryProgress::default())).unwrap();
-    assert_eq!(engine.boot_bound(), Duration::from_secs(10 * 60));
-}
-
-#[skuld::test]
 fn with_parts_keeps_the_boot_bound_it_is_given(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
     let engine = Engine::with_parts(EngineParts {

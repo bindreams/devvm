@@ -316,7 +316,7 @@ pub fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend>
         install,
         storage,
         host::current(),
-        run.to_path_buf(),
+        Ok(run.to_path_buf()),
         progress,
     ))
 }

@@ -41,10 +41,10 @@ fn private_claim_kind(file_name: &str) -> Option<PrivateClaimKind> {
 impl QemuBackend {
     /// Deletes the files of every machine in the runtime directory that is dead.
     ///
-    /// Nothing is made and nothing is waited for. A directory that a launch would refuse
-    /// (`Host::accept_runtime_dir`: a link, a file, another account's) is warned about and left alone. The lock is
-    /// tried exclusive: a launch holds it shared while it draws and claims a name, and another sweep may be running.
-    /// Either way the pass ends and the next reap tries again.
+    /// Nothing is made and nothing is waited for. A host that cannot name the directory is warned about, and so is a
+    /// directory that a launch would refuse (`Host::accept_runtime_dir`: a link, a file, another account's), which is
+    /// left alone. The lock is tried exclusive: a launch holds it shared while it draws and claims a name, and another
+    /// sweep may be running. Either way the pass ends and the next reap tries again.
     ///
     /// For each launch (names of the shape `<16 hex>.sock`, `.sock.lock` and `.sock.hold`, files and no others):
     /// - its claim file is held: the machine is alive, nothing is done;
@@ -57,7 +57,13 @@ impl QemuBackend {
     /// A claim file's private names (`<claim file>.new`, `<claim file>.<16 hex>.del`) go too: only a launch that died
     /// while making the file, or a delete that died, leaves one.
     pub(super) fn sweep_run_dir(&self, warn: &mut dyn FnMut(String)) {
-        let run = self.run_dir();
+        let run = match self.run_dir() {
+            Ok(run) => run,
+            Err(e) => {
+                warn(e.message().to_owned());
+                return;
+            }
+        };
         match self.host().accept_runtime_dir(run) {
             Ok(()) => {}
             Err(e) if is_absent(&e) => return,

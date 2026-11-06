@@ -136,6 +136,18 @@ fn temp() -> skuld::TempDir {
 fn devvm(cwd: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
     command.current_dir(cwd).args(args).env_remove("DEVVM_STATUS_FILE");
+    // The five directories are the test's own, so the command neither reads the user's `config.yaml` nor sweeps the
+    // user's runtime directory.
+    let root = cwd.join(UNICODE_DIR);
+    for (key, dir) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "run"),
+    ] {
+        command.env(key, root.join(dir));
+    }
     for (key, value) in env {
         command.env(key, value);
     }

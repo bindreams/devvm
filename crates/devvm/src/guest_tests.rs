@@ -3,24 +3,8 @@ use secrecy::SecretString;
 use crate::ErrorKind;
 use crate::GuestKind;
 use crate::guest::fake::FakeGuests;
-use crate::guest::{BuiltinGuests, Guests, SeedKeys};
+use crate::guest::{Guests, SeedKeys};
 use crate::recipe::Shell;
-
-#[skuld::test]
-fn builtin_guests_name_the_missing_guest() {
-    for (kind, name) in [
-        (GuestKind::Linux, "linux"),
-        (GuestKind::Windows, "windows"),
-        (GuestKind::Macos, "macos"),
-    ] {
-        let os = BuiltinGuests.os(kind).err().expect("no guest is built in yet");
-        assert_eq!(os.kind(), ErrorKind::NotSupported);
-        assert!(os.message().contains(name), "{}", os.message());
-        let builder = BuiltinGuests.builder(kind).err().expect("no guest is built in yet");
-        assert_eq!(builder.kind(), ErrorKind::NotSupported);
-        assert!(builder.message().contains(name), "{}", builder.message());
-    }
-}
 
 #[skuld::test]
 fn a_linux_guest_wraps_a_script_for_its_shell_and_refuses_cmd() {

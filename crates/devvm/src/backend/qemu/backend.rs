@@ -19,8 +19,9 @@ pub(crate) struct QemuBackend {
     storage: Arc<QemuStorage>,
     host: &'static dyn Host,
     /// Where control sockets go (`Dirs::run`): the user's alone, and short, because a socket path is limited
-    /// (`Host::socket_path_max`).
-    run: PathBuf,
+    /// (`Host::socket_path_max`). Kept as the host answered, so an engine builds on a host that cannot name it and
+    /// only a launch or a sweep says so.
+    run: Result<PathBuf>,
     progress: Arc<dyn Progress>,
 }
 
@@ -29,7 +30,7 @@ impl QemuBackend {
         install: Arc<LazyInstall>,
         storage: Arc<QemuStorage>,
         host: &'static dyn Host,
-        run: PathBuf,
+        run: Result<PathBuf>,
         progress: Arc<dyn Progress>,
     ) -> QemuBackend {
         QemuBackend {
@@ -43,8 +44,8 @@ impl QemuBackend {
 }
 
 impl QemuBackend {
-    pub(super) fn run_dir(&self) -> &std::path::Path {
-        &self.run
+    pub(super) fn run_dir(&self) -> Result<&std::path::Path> {
+        self.run.as_deref().map_err(Error::clone)
     }
 
     pub(super) fn host(&self) -> &'static dyn Host {
@@ -127,10 +128,12 @@ impl Backend for QemuBackend {
     /// a `PATH` of System32 and its own `bin`. Its output goes to `<instance>/qemu.log`. Resolving the sidecar here is
     /// the only place a launch can download it.
     ///
-    /// The socket and claim file are reserved by `QmpEndpoint::reserve` and recorded in the machine's record.
+    /// The socket and claim file are reserved by `QmpEndpoint::reserve` and recorded in the machine's record. A host
+    /// that cannot name the runtime directory fails the launch before anything is downloaded.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
+        let run = self.run_dir()?;
         let install = self.install.get()?;
-        let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, &self.run, &*self.progress)?;
+        let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, run, &*self.progress)?;
         let mut vm = None;
         match self.start(spec, &install, &endpoint, hold, &mut vm) {
             Ok((parts, watch)) => {

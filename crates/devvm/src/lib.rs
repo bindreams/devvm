@@ -1,26 +1,24 @@
 //! devvm: disposable virtual machines for tests.
 
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
+#[allow(dead_code, reason = "unused until the guest operations, builds and commands land")]
 pub(crate) mod access;
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
+#[allow(dead_code, reason = "unused until the guest operations, builds and commands land")]
 pub(crate) mod backend;
 pub mod config;
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod contain;
 #[allow(dead_code, reason = "unused until the engine builds copy steps")]
 pub(crate) mod copy;
 pub mod dirs;
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
+#[allow(dead_code, reason = "unused until the guest operations, builds and commands land")]
 pub mod engine;
 pub mod error;
 pub mod exit;
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
+#[allow(dead_code, reason = "unused until the guest operations, builds and commands land")]
 pub(crate) mod guest;
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
+#[allow(dead_code, reason = "unused until the guest operations, builds and commands land")]
 pub(crate) mod host;
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
+#[allow(dead_code, reason = "unused until the guest operations, builds and commands land")]
 pub(crate) mod instance;
-#[allow(dead_code, reason = "unused until the QEMU backend lands")]
 pub(crate) mod media;
 pub(crate) mod random;
 pub mod recipe;

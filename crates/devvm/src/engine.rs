@@ -5,20 +5,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::backend::{Backend, MachineRecord};
+use crate::config::Config;
 use crate::exit::{Progress, StderrProgress};
-use crate::guest::{BuiltinGuests, Guests};
+use crate::guest::Guests;
 use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::record::{MarkerRead, Owner};
 use crate::instance::registry::Registry;
+use crate::store::fetch::{Fetcher, Transport};
 use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
 
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 pub(crate) mod engine_tests;
+
+#[cfg(test)]
+#[path = "engine_qemu_tests.rs"]
+mod engine_qemu_tests;
 
 /// How long a guest gets to boot and answer before a start fails: a failure bound on an event outside devvm. Read by
 /// the engine's `Instance::start_with` once it waits for readiness; `start` waits for no boot in this build.
@@ -79,14 +86,20 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// The engine for this process: the real host and the directories from the environment. It has no VM backend until
-    /// one is built in; operations that need one fail with `not-supported`. Creates nothing on disk.
-    pub fn from_env(progress: Arc<dyn Progress>) -> Result<Arc<Engine>> {
+    /// The engine for this process: the real host, the directories and the configuration file from the environment,
+    /// the QEMU backend and the Linux guest. Downloads go through `transport`. Creates nothing on disk and downloads
+    /// nothing; an unreadable `config.yaml` fails here, naming the file.
+    pub fn from_env(progress: Arc<dyn Progress>, transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
+        let dirs = Dirs::from_env()?;
+        let config = Config::load(&dirs)?;
+        let host = host::current();
+        let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport, progress.clone()));
+        let QemuParts { backend, guests } = qemu_parts(&dirs, config, fetcher, host, progress.clone());
         Ok(Engine::with_parts(EngineParts {
-            dirs: Dirs::from_env()?,
-            host: host::current(),
-            backend: None,
-            guests: Arc::new(BuiltinGuests),
+            dirs,
+            host,
+            backend: Some(backend),
+            guests,
             clock: Arc::new(SystemClock),
             progress,
             hooks: Arc::new(NoHooks),
@@ -95,8 +108,8 @@ impl Engine {
     }
 
     /// `from_env` reporting progress on stderr.
-    pub fn from_env_stderr() -> Result<Arc<Engine>> {
-        Engine::from_env(Arc::new(StderrProgress))
+    pub fn from_env_stderr(transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
+        Engine::from_env(Arc::new(StderrProgress), transport)
     }
 
     pub(crate) fn with_parts(parts: EngineParts) -> Arc<Engine> {

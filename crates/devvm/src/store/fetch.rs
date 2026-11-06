@@ -24,7 +24,7 @@ const FULL_DISK_HINT: &str = "free some space and run again to resume";
 mod http;
 mod name;
 
-pub use http::HttpTransport;
+pub use http::{HttpTransport, LazyHttp};
 
 #[cfg(test)]
 #[path = "fetch_tests.rs"]
