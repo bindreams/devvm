@@ -41,12 +41,13 @@ impl HttpTransport {
     }
 }
 
-/// Built on the first `get`; a failed build is a `Download` error naming the URL and is not kept: the next `get`
-/// builds again.
+/// The real HTTP transport, built on the first `get`. A failed build is a `Download` error naming the URL and is not
+/// kept: the next `get` builds again.
 #[derive(Default)]
 pub struct LazyHttp(Lazy<HttpTransport>);
 
 impl LazyHttp {
+    /// A transport that has not built its client yet.
     pub fn new() -> LazyHttp {
         LazyHttp::default()
     }

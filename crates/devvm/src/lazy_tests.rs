@@ -18,14 +18,14 @@ fn a_failed_build_is_not_kept_and_a_built_value_is_not_built_again() {
 
     let second = lazy.get(|| {
         builds.set(builds.get() + 1);
-        Ok(7)
+        Ok::<_, Error>(7)
     });
     assert_eq!(second.unwrap(), &7);
     assert_eq!(lazy.built(), Some(&7));
 
     let third = lazy.get(|| {
         builds.set(builds.get() + 1);
-        Ok(8)
+        Ok::<_, Error>(8)
     });
     assert_eq!(third.unwrap(), &7);
     assert_eq!(builds.get(), 1);
@@ -43,10 +43,22 @@ fn the_error_of_a_failed_build_is_the_builds_own() {
 }
 
 #[skuld::test]
+fn a_build_may_fail_with_any_error_type() {
+    let lazy = Lazy::<u32>::new();
+    assert_eq!(lazy.get(|| Err("no")), Err("no"));
+    assert_eq!(lazy.get(|| Ok::<_, &str>(4)), Ok(&4));
+}
+
+#[skuld::test]
 fn a_panicking_build_leaves_the_next_get_able_to_build() {
     let lazy = Lazy::<u32>::new();
-    assert!(catch_unwind(AssertUnwindSafe(|| lazy.get(|| panic!("the build panicked")))).is_err());
-    assert_eq!(lazy.get(|| Ok(3)).unwrap(), &3);
+    assert!(
+        catch_unwind(AssertUnwindSafe(
+            || lazy.get(|| -> Result<u32, Error> { panic!("the build panicked") })
+        ))
+        .is_err()
+    );
+    assert_eq!(lazy.get(|| Ok::<_, Error>(3)).unwrap(), &3);
 }
 
 #[skuld::test]
@@ -60,7 +72,7 @@ fn built_does_not_wait_for_a_build_in_progress() {
             lazy.get(|| {
                 started.send(()).unwrap();
                 wait_for_release.recv().unwrap();
-                Ok(1)
+                Ok::<_, Error>(1)
             })
             .copied()
         });
@@ -88,7 +100,7 @@ fn racing_first_gets_from_async_contexts_build_once_and_do_not_panic() {
                         start.wait();
                         let built = lazy.get(|| {
                             builds.fetch_add(1, Ordering::SeqCst);
-                            Ok(Builder::new_multi_thread().build().unwrap())
+                            Ok::<_, Error>(Builder::new_multi_thread().build().unwrap())
                         });
                         std::ptr::from_ref(built.unwrap()) as usize
                     })

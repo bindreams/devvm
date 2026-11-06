@@ -21,6 +21,7 @@ use crate::test_support::claimed::claimed;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
+use crate::test_support::transport::RefusingTransport;
 use crate::{Arch, Dirs, ErrorKind, GuestKind, Image, Instance};
 
 /// A test engine over the fake host, backend and guests, with its own state under the test's home.
@@ -504,4 +505,33 @@ fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixtu
             .any(|m| m.contains("foo") && m.contains("no VM backend")),
         "the cause is the missing backend: {messages:?}"
     );
+}
+
+#[skuld::test]
+fn from_env_reaps_before_it_fails_on_an_unreadable_config(
+    #[fixture(env)] env: &skuld::EnvGuard,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (variable, directory) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "run"),
+    ] {
+        env.set(variable, home.join(directory).to_str().unwrap());
+    }
+    let dirs = Dirs::from_env().unwrap();
+    std::fs::create_dir_all(&dirs.config).unwrap();
+    std::fs::write(dirs.config.join("config.yaml"), "qemu: [not, a, mapping]").unwrap();
+    let leftover = dirs.instances().join(".dead-00000000000000000000000000000000");
+    std::fs::create_dir_all(&leftover).unwrap();
+
+    let error = match Engine::from_env(memory(), Arc::new(RefusingTransport::default())) {
+        Ok(_) => panic!("an unreadable config.yaml must fail the engine"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert!(!leftover.exists(), "the reap ran before the config failed");
 }

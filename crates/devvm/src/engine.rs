@@ -88,15 +88,18 @@ pub struct Engine {
 
 impl Engine {
     /// The engine for this process: the real host, the directories and the configuration file from the environment,
-    /// the QEMU backend and the Linux guest. Downloads go through `transport`. Downloads nothing; an unreadable
-    /// `config.yaml` fails here, naming the file. Last, reaps the leftovers of dead devvm processes (see [`Engine::reap`]),
-    /// which warns on `progress` and never fails.
+    /// the QEMU backend and the Linux guest. Downloads go through `transport`. Downloads nothing. Reaps the leftovers
+    /// of dead devvm processes (see [`Engine::reap`]), which warns on `progress` and never fails; then an unreadable
+    /// `config.yaml` fails here, naming the file.
     pub fn from_env(progress: Arc<dyn Progress>, transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
         let dirs = Dirs::from_env()?;
-        let config = Config::load(&dirs)?;
+        let config = Config::load(&dirs);
         let host = host::current();
         let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport, progress.clone()));
-        let QemuParts { backend, guests } = qemu_parts(&dirs, config, fetcher, host, progress.clone());
+        // The reap reads nothing from the config: only a launch, a disk or a layer commit resolves the QEMU install. A
+        // config that did not load fails the call after the reap; the engine is not returned.
+        let reap_config = config.clone().unwrap_or_default();
+        let QemuParts { backend, guests } = qemu_parts(&dirs, reap_config, fetcher, host, progress.clone());
         let engine = Engine::with_parts(EngineParts {
             dirs,
             host,
@@ -108,7 +111,7 @@ impl Engine {
             boot_bound: DEFAULT_BOOT_BOUND,
         });
         engine.reap();
-        Ok(engine)
+        config.map(|_| engine)
     }
 
     /// `from_env` reporting progress on stderr.
