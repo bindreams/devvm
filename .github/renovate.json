@@ -42,7 +42,7 @@
       "automerge": true
     },
     {
-      "description": "fatfs is pinned to an exact version: media.rs constants were measured against it, so a human re-measures before a bump.",
+      "description": "fatfs is pinned to an exact version: media.rs relies on its behaviour (each place says \"fatfs 0.3.6\"), so a human re-checks those before a bump.",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["fatfs"],
       "groupName": null,

@@ -35,8 +35,7 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 /// Writes the NoCloud `cidata` image holding `files` to `into` and returns it as a read-only guest disk.
 ///
 /// The image can hold private keys, so `host` writes it as a private file ([`Host::write_private`]). An image left at
-/// `into` by an earlier launch is replaced once the new image is built; a refused build leaves it untouched. A failed
-/// write after a successful build leaves no image: the old one is removed and the new one is not written.
+/// `into` by an earlier launch is touched only after the new image is built.
 ///
 /// The volume is FAT12, labelled `CIDATA`. Measured: Ubuntu 24.04's cloud-init reads a FAT12 image of about 1 MiB
 /// attached read-only on `virtio-blk-pci`, as the QEMU backend attaches it. Files too large for a FAT12 volume are
@@ -68,8 +67,8 @@ pub(crate) fn write_cidata_image(host: &dyn Host, files: &[SeedFile], into: &Pat
     })
 }
 
-/// `fatfs` trims `/` from a name and walks the rest as a path, so `a/` is `a` and `a/b` needs a directory; `.` and `..`
-/// are no files. Names that merely collide or that FAT cannot store are caught by [`require_files_as_asked`].
+/// `fatfs` 0.3.6 trims `/` from a name and walks the rest as a path, so `a/` is `a` and `a/b` needs a directory; `.` and
+/// `..` are no files. Names that merely collide or that FAT cannot store are caught by [`require_files_as_asked`].
 fn refuse_path_names(files: &[SeedFile]) -> Result<()> {
     for file in files {
         if file.name.is_empty() || file.name == "." || file.name == ".." || file.name.contains(['/', '\\']) {
@@ -138,7 +137,7 @@ const fn unchecked_image_size(contents: u64) -> u128 {
 /// [`LARGEST_FAT12_CONTENTS`]' bound, which [`image_size`] enforces.
 fn format_options(size: u64) -> FormatVolumeOptions {
     debug_assert!(size / u64::from(SECTOR) <= u64::from(u32::MAX));
-    // Fits `u32`: checked by the debug assertion above.
+    // Fits `u32` for every size `image_size` returns (the assertion beside `LARGEST_FAT12_CONTENTS`).
     let total_sectors = (size / u64::from(SECTOR)) as u32;
     FormatVolumeOptions::new()
         .bytes_per_sector(SECTOR as u16)
