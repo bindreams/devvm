@@ -42,6 +42,10 @@ jobs:
         if: always()
         run: $B2 long ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/long.txt"
 
+      - name: Existing directories at the path limit
+        if: always()
+        run: $B2 edge ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/edge.txt"
+
       - name: Missing drive letter
         if: always()
         run: $B2 drive ntfs "$RUNNER_TEMP/b2" 2>&1 | tee "$RUNNER_TEMP/results/drive.txt"

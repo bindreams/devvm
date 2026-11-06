@@ -12,6 +12,7 @@ pub fn run(command: &str, label: &str, dir: &Path, max_length: Option<usize>) ->
         "long" => long(label, dir, max_length),
         "drive" => drive(label, dir),
         "unc" => unc(label),
+        "edge" => edge(label, dir),
         "sweep" => remove_all(&dir.join("L")),
         other => Err(io::Error::other(format!("unknown command {other}"))),
     }
@@ -138,6 +139,53 @@ fn unc(label: &str) -> io::Result<()> {
     for (path, what) in paths {
         let p = PathBuf::from(path);
         probe(claim, &format!("{label}:{what}"), len(&p), &p, RmOrder::FileFirst, true);
+    }
+    Ok(())
+}
+
+/// Existing directories near the Windows path limit: all seven calls at every length 32700-32770 that can be built, with
+/// the chain capped at several depths (a deeper chain means a shorter leaf name), then renamed one character longer
+/// until the rename fails.
+fn edge(label: &str, dir: &Path) -> io::Result<()> {
+    let base = std::path::absolute(dir)?;
+    let claim = "3-edge";
+    for cap in 636..=641usize {
+        let root = base.join(format!("E{cap}"));
+        let jobs: Vec<(usize, Kind)> = (32700..=32770).map(|t| (t, Kind::Dir)).collect();
+        let leaves = Ladder::new(root.clone(), false, cap)?.build(&jobs);
+        let mut longest: Option<PathBuf> = None;
+        for leaf in &leaves {
+            let case = |form: &str| format!("{label}:cap{cap}-{form}-dir-exists");
+            match &leaf.path {
+                Ok(d) => {
+                    for (form, p) in [("plain", d.clone()), ("verbatim", verbatim(d))] {
+                        probe(claim, &case(form), len(d), &p, RmOrder::DirFirst, false);
+                        let r = restore(Kind::Dir, d);
+                        row(claim, &case(&format!("{form}-restored")), len(d), &[("mkdir", r)]);
+                    }
+                    longest = Some(d.clone());
+                }
+                Err(why) => row(claim, &case("plain"), leaf.target, &[("build", why.clone())]),
+            }
+        }
+        let Some(mut cur) = longest else { continue };
+        let parent = cur.parent().expect("leaf has a parent").to_path_buf();
+        loop {
+            let name_len = cur.file_name().expect("leaf has a name").len() + 1;
+            let next = parent.join("R".repeat(name_len));
+            let case = |form: &str| format!("{label}:cap{cap}-renamed-{form}-dir-exists");
+            if let Err(e) = fs::rename(&cur, &next) {
+                row(claim, &case("plain"), len(&next), &[("rename", crate::calls::err(&e))]);
+                break;
+            }
+            for (form, p) in [("plain", next.clone()), ("verbatim", verbatim(&next))] {
+                probe(claim, &case(form), len(&next), &p, RmOrder::DirFirst, false);
+                let r = restore(Kind::Dir, &next);
+                row(claim, &case(&format!("{form}-restored")), len(&next), &[("mkdir", r)]);
+            }
+            cur = next;
+        }
+        row("cleanup", label, 0, &[("remove_all", show(remove_all(&root)))]);
     }
     Ok(())
 }
