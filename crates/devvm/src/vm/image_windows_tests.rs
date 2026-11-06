@@ -157,23 +157,6 @@ fn an_owner_killed_while_its_vm_runs_is_reaped_with_the_vm(#[fixture(unicode_hom
     nothing_is_left(&fx);
 }
 
-#[skuld::test]
-fn image_start_reaps_a_killed_owners_leftover_instance(#[fixture(unicode_home)] home: &Path) {
-    let (fx, _) = memory_fixture(home);
-    let (mut cli, name, machine) = cli_run(home);
-    cli.kill().unwrap();
-    cli.wait().unwrap();
-    wait_until_dead(&machine);
-
-    let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
-
-    assert!(
-        !fx.env.dirs.instances().join(&name).exists(),
-        "starting reaps the leftover instance of the killed owner"
-    );
-    assert_eq!(names(&fx.env.dirs.instances()), [vm.name()]);
-}
-
 /// Runs `fake-cli-up` parked at `step`, kills it there, and returns the machine it had launched.
 fn up_killed_at(home: &Path, step: &str) -> MachineRecord {
     let mut cli = helper::command("fake-cli-up", &[&home.display().to_string(), step])

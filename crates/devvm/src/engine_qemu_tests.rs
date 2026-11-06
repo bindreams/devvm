@@ -216,3 +216,16 @@ fn a_launch_over_a_runtime_directory_it_refuses_downloads_nothing(#[fixture(unic
     assert!(error.message().contains("XDG_RUNTIME_DIR"), "{error}");
     assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
 }
+
+#[skuld::test]
+fn a_launch_over_a_runtime_path_that_is_a_file_downloads_nothing(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("run");
+    std::fs::write(&file, "").unwrap();
+    let qemu = QemuEngine::with_run(home, Ok(file));
+
+    let error = qemu.launch();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("is not a directory"), "{error}");
+    assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
+}
