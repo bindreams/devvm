@@ -21,7 +21,7 @@ use crate::store::layers::layers_tests::{key, request};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::transport::RefusingTransport;
-use crate::{Arch, Dirs, Error, GuestKind};
+use crate::{Arch, Dirs, Error, GuestKind, Result};
 
 const RUN_DIR_ERROR: &str = "no runtime directory on this test host";
 
@@ -36,8 +36,9 @@ struct QemuEngine {
 }
 
 impl QemuEngine {
-    /// An engine over `dirs`, which must differ from `Dirs::under(home)` in `run` alone: the state is `home`'s.
-    fn over(home: &Path, dirs: Dirs) -> QemuEngine {
+    /// An engine over `Dirs::under(home)` with `run` as the runtime directory, or the reason the host cannot name it.
+    fn over(home: &Path, run: Result<PathBuf>) -> QemuEngine {
+        let dirs = Dirs::under_with_run(home, run);
         let state = engine_fixture(home, memory());
         instance_in(&state, "foo", home);
         let (transport, progress) = (Arc::new(RefusingTransport::default()), memory());
@@ -55,7 +56,7 @@ impl QemuEngine {
     }
 
     fn new(home: &Path) -> QemuEngine {
-        QemuEngine::over(home, Dirs::under(home))
+        QemuEngine::over(home, Dirs::under(home).run().map(Path::to_path_buf))
     }
 
     /// The URLs the engine has asked its transport for.
@@ -122,6 +123,8 @@ fn a_transport_that_refuses_fails_only_the_command_that_downloads(#[fixture(unic
     assert!(engine.list(ListFilter::All).unwrap().is_empty());
 }
 
+// The manifest publishes QEMU for Windows only; elsewhere a launch fails `Unavailable` before it reaches the transport.
+#[cfg(windows)]
 #[skuld::test]
 fn a_launch_resolves_qemu_through_the_transport_it_was_given(#[fixture(unicode_home)] home: &Path) {
     let qemu = QemuEngine::new(home);
@@ -141,11 +144,8 @@ fn the_engine_serves_a_linux_guest(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn an_engine_over_a_host_that_cannot_name_its_runtime_directory_lists_and_launches_with_that_error(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let dirs = Dirs::under_with_run(home, Err(Error::new(ErrorKind::Config, RUN_DIR_ERROR)));
-    let qemu = QemuEngine::over(home, dirs);
+fn without_a_runtime_directory_the_reap_warns_and_a_launch_fails_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let qemu = QemuEngine::over(home, Err(Error::new(ErrorKind::Config, RUN_DIR_ERROR)));
 
     assert_eq!(qemu.engine.list(ListFilter::All).unwrap().len(), 1);
     qemu.engine.reap();
