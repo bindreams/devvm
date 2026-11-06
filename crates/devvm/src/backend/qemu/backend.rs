@@ -11,8 +11,7 @@ use super::storage::QemuStorage;
 use crate::backend::{Backend, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
-use crate::host::{Hold, Host};
-use crate::instance::dir::remove_tree;
+use crate::host::{Hold, Host, remove_tree};
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) struct QemuBackend {

@@ -874,3 +874,70 @@ fn remove_if_present_treats_every_not_there_error_as_removed(#[fixture(unicode_h
     }
     assert!(file.is_file());
 }
+
+#[skuld::test]
+fn remove_tree_deletes_a_directory_with_everything_under_it(#[fixture(unicode_home)] home: &Path) {
+    let tree = home.join("tree");
+    std::fs::create_dir_all(tree.join("a").join("b")).unwrap();
+    std::fs::write(tree.join("a").join("b").join("f"), "x").unwrap();
+
+    super::remove_tree(&tree).unwrap();
+
+    assert!(std::fs::symlink_metadata(&tree).is_err());
+}
+
+#[skuld::test]
+fn remove_tree_deletes_a_file_and_a_path_that_is_not_there(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("file");
+    std::fs::write(&file, "x").unwrap();
+
+    super::remove_tree(&file).unwrap();
+    assert!(std::fs::symlink_metadata(&file).is_err());
+
+    // Missing, below a file (`NotADirectory` on Unix), and a name Windows cannot hold (`InvalidFilename`).
+    std::fs::write(&file, "x").unwrap();
+    for path in [home.join("missing"), file.join("below"), home.join("a|b")] {
+        super::remove_tree(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+    assert!(file.is_file());
+}
+
+/// A link at the root is deleted as a link; what it leads to stays. A directory link on Windows is deleted as a
+/// directory, which `remove_file` cannot do.
+#[skuld::test]
+fn remove_tree_deletes_a_link_at_the_root_and_leaves_what_it_leads_to(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let (dir, file) = (home.join("dir"), home.join("file"));
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("kept"), "x").unwrap();
+    std::fs::write(&file, "x").unwrap();
+    for (target, link) in [
+        (&dir, home.join("to-dir")),
+        (&file, home.join("to-file")),
+        (&home.join("nowhere"), home.join("dangling")),
+    ] {
+        symlink(target, &link);
+
+        super::remove_tree(&link).unwrap_or_else(|e| panic!("{}: {e}", link.display()));
+
+        assert!(std::fs::symlink_metadata(&link).is_err(), "{} stays", link.display());
+    }
+    assert!(dir.join("kept").is_file() && file.is_file());
+}
+
+#[skuld::test]
+fn a_link_that_could_not_be_removed_reports_the_first_failure_and_then_the_second() {
+    let as_file = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+    let as_dir = std::io::Error::other("not a directory");
+    let both = super::link_removal_failure(as_file, as_dir);
+    assert_eq!(both.kind(), std::io::ErrorKind::PermissionDenied);
+    let text = both.to_string();
+    assert!(text.starts_with("denied"), "{text}");
+    assert!(text.contains("not a directory"), "{text}");
+
+    // The same failure twice is said once.
+    let twice = super::link_removal_failure(std::io::Error::other("busy"), std::io::Error::other("busy"));
+    assert_eq!(twice.to_string(), "busy");
+}

@@ -261,6 +261,40 @@ pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Deletes whatever is at `path`, a name devvm owns, and succeeds when nothing is there: a link is deleted as a link and
+/// never followed, a directory goes with everything under it, anything else is removed as a file. The look comes
+/// first because `remove_dir_all` on a file fails `NotADirectory`, which [`is_absent`] counts as "not there": a file
+/// would stay. Any error of the delete is the answer.
+///
+/// Another deleter or a creator of the name is not guarded against; the caller excludes them. For `.dead-` and `.new-`
+/// trees that is `dead.lock` (`rm`, the reaper) and, for a `.new-` tree, the owner lock (its creator holds it, and the
+/// reaper takes it before deleting); for `qemu-cwd` it is the op lock.
+pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
+    match symlink_metadata_if_present(path)? {
+        None => Ok(()),
+        Some(meta) if meta.file_type().is_symlink() => remove_symlink(path),
+        Some(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Some(_) => std::fs::remove_file(path),
+    }
+}
+
+/// Removes the symlink `path`. A symlink to a directory is removed as a directory on Windows and as a file elsewhere;
+/// a junction is removed as a directory.
+pub(crate) fn remove_symlink(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(path)
+        .or_else(|as_file| std::fs::remove_dir(path).map_err(|as_dir| link_removal_failure(as_file, as_dir)))
+}
+
+/// The error of a symlink that could be removed neither as a file nor as a directory. The first failure is the cause on
+/// every host but Windows, where it can be the second; both are said.
+fn link_removal_failure(as_file: std::io::Error, as_dir: std::io::Error) -> std::io::Error {
+    if as_file.to_string() == as_dir.to_string() {
+        return as_file;
+    }
+    let text = format!("{as_file} (removing it as a directory link failed too: {as_dir})");
+    std::io::Error::new(as_file.kind(), text)
+}
+
 /// The error of a write to `path` that failed with `error`, after `remove` took what the write left away. A leftover
 /// that stays is named in the error: a retry would otherwise meet `AlreadyExists` with no explanation.
 fn after_failed_write(

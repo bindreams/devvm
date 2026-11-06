@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::host::{is_absent, symlink_metadata_if_present};
+use crate::host::symlink_metadata_if_present;
 use crate::instance::locks::Probe;
 use crate::instance::reaper::ReapReport;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
@@ -139,19 +139,9 @@ fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &P
         Placed::Unreadable { id: now, .. } if now == id => {}
         _ => return Moved::Changed,
     }
-    move_dir(path, target)
-}
-
-/// Renames `path` to `target`. The parent of `target` exists after its creation, so a rename that finds a path absent
-/// means `path` is gone.
-fn move_dir(path: &Path, target: &Path) -> Moved {
     let parent = target.parent().expect("a quarantine target has a parent");
-    if let Err(e) = std::fs::create_dir_all(parent) {
-        return Moved::Failed(e);
-    }
-    match std::fs::rename(path, target) {
+    match std::fs::create_dir_all(parent).and_then(|()| std::fs::rename(path, target)) {
         Ok(()) => Moved::Done,
-        Err(e) if is_absent(&e) => Moved::Vanished,
         Err(e) => Moved::Failed(e),
     }
 }

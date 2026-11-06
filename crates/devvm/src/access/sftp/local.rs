@@ -12,7 +12,7 @@ use super::guest::GuestSide;
 use super::plan::{Beyond, Item, Kind, Present};
 use super::typed::Typed;
 use super::{local_error, partial_name};
-use crate::host::{Host, remove_if_present};
+use crate::host::{Host, remove_if_present, remove_symlink};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -94,22 +94,6 @@ pub(super) fn joined(base: &Path, part: &OsStr) -> PathBuf {
 fn sftp_seconds(time: std::io::Result<SystemTime>) -> Option<u32> {
     let since = time.ok()?.duration_since(UNIX_EPOCH).ok()?;
     u32::try_from(since.as_secs()).ok()
-}
-
-/// The error of a symlink that could be removed neither as a file nor as a directory. The first failure is the cause on
-/// every host but Windows, where it can be the second; both are said.
-fn link_removal_failure(as_file: std::io::Error, as_dir: std::io::Error) -> std::io::Error {
-    if as_file.to_string() == as_dir.to_string() {
-        return as_file;
-    }
-    let text = format!("{as_file} (removing it as a directory link failed too: {as_dir})");
-    std::io::Error::new(as_file.kind(), text)
-}
-
-/// Removes the symlink `path`. A symlink to a directory is removed as a directory on Windows and as a file elsewhere.
-fn remove_symlink(path: &Path) -> std::io::Result<()> {
-    std::fs::remove_file(path)
-        .or_else(|as_file| std::fs::remove_dir(path).map_err(|as_dir| link_removal_failure(as_file, as_dir)))
 }
 
 /// Removes the temporary `temp`, a file or a symlink, if it is there.

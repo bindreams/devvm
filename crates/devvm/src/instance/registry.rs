@@ -6,8 +6,8 @@ use std::time::SystemTime;
 
 use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
-use crate::host::Host;
-use crate::instance::dir::{InstanceDir, remove_tree};
+use crate::host::{Host, remove_tree};
+use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, RecordRead, write_marker};

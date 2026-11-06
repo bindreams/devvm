@@ -19,7 +19,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::instance::dir::remove_tree;
+use crate::host::remove_tree;
 use crate::instance::locks::Probe;
 use crate::instance::quarantine::{Placed, classify};
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead};
