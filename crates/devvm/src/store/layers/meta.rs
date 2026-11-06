@@ -7,7 +7,6 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::host::is_absent;
 use crate::random;
 use crate::recipe::hash::LayerKey;
 use crate::{Error, ErrorKind, Result};
@@ -165,13 +164,12 @@ fn from_wire(wire: Wire) -> std::result::Result<LayerMeta, String> {
     })
 }
 
-/// Reads `meta.json` from a generation directory. A record that is not there ([`is_absent`]) is `Absent`. A newer
-/// schema is `Newer`, never a "corrupt" record. `Err` is a failed read.
+/// Reads `meta.json` from a generation directory. A newer schema is `Newer`, never a "corrupt" record.
 pub fn read(generation_dir: &Path) -> Result<MetaRead> {
     let path = generation_dir.join("meta.json");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(e) if is_absent(&e) => return Ok(MetaRead::Absent),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(MetaRead::Absent),
         Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
             return Ok(MetaRead::Corrupt(format!("not UTF-8: {e}")));
         }

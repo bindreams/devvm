@@ -8,8 +8,10 @@ use crate::exit::{NullProgress, Progress};
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Clock, GcReport, Generation, LayerRef, LayerStore, Reachability, SystemClock};
 use crate::store::lock::Mode;
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{FakeClock, unicode_home};
 use crate::test_support::helper;
+use crate::test_support::symlink::symlink;
 use crate::{Dirs, Error, ErrorKind, Result};
 
 use super::cross_tests::start as start_builder;
@@ -483,7 +485,7 @@ fn gc_aborts_when_a_kept_layers_directory_is_a_file(#[fixture(unicode_home)] hom
     let dir = env.store.generation_dir(&child);
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::write(&dir, b"not a layer").unwrap();
-    // The record below a file reads as missing on every host, so the abort carries the recovery message.
+    // No record can be below a file: the walk calls it missing without reading, on every host.
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Store);
     assert_record_recovery(&error, &child, &as_current(child.key), &dir);
@@ -560,10 +562,84 @@ fn gc_passes_a_newer_schema_record_through_without_recovery_advice(#[fixture(uni
     assert!(exists(&env, &old_parent));
 }
 
+/// Two children of `key(1)`'s first generation, whose parent has since been rebuilt. Returns (key 2's child, key 3's
+/// child); the walk reads key 2's before key 3's.
+fn two_children_of_an_aged_parent(env: &Env) -> (LayerRef, LayerRef) {
+    let parent = build_expiring(env, key(1), None, Some(t0() + days(90)));
+    let first = build_expiring(env, key(2), Some(&parent), Some(t0() + days(120)));
+    let second = build_expiring(env, key(3), Some(&parent), Some(t0() + days(120)));
+    let (first, second) = (first.tip().layer_ref(), second.tip().layer_ref());
+    drop(parent);
+    env.clock.set(t0() + days(85));
+    drop(build_expiring(env, key(1), None, Some(t0() + days(85) + days(90))));
+    (first, second)
+}
+
+#[skuld::test]
+fn gc_reports_the_first_bad_kept_layer_in_walk_order(#[fixture(unicode_home)] home: &Path) {
+    let env = env(home);
+    let (first, second) = two_children_of_an_aged_parent(&env);
+    std::fs::write(env.store.generation_dir(&first).join("meta.json"), b"{ torn").unwrap();
+    std::fs::write(env.store.generation_dir(&second).join("meta.json"), b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(
+        error
+            .message()
+            .contains(&format!("layer {} generation {}", first.key, first.generation)),
+        "{error}"
+    );
+    assert!(!error.message().contains(&second.key.to_string()), "{error}");
+}
+
+#[skuld::test]
+fn gc_reports_whichever_of_a_newer_and_a_corrupt_record_the_walk_reads_first(#[fixture(unicode_home)] home: &Path) {
+    let env = env(home);
+    let (first, second) = two_children_of_an_aged_parent(&env);
+    let (first_record, second_record) = (
+        env.store.generation_dir(&first).join("meta.json"),
+        env.store.generation_dir(&second).join("meta.json"),
+    );
+    std::fs::write(&first_record, b"{ torn").unwrap();
+    std::fs::write(&second_record, br#"{ "schema": 2 }"#).unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert!(error.message().starts_with("cannot collect: "), "{error}");
+    assert!(error.message().contains("is unreadable"), "{error}");
+    assert!(!error.message().contains("schema 2"), "{error}");
+
+    std::fs::write(&first_record, br#"{ "schema": 2 }"#).unwrap();
+    std::fs::write(&second_record, b"{ torn").unwrap();
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert!(
+        error
+            .message()
+            .starts_with(&format!("{} has schema 2, ", first_record.display())),
+        "{error}"
+    );
+    assert!(!error.message().contains("cannot collect"), "{error}");
+}
+
+#[skuld::test]
+fn gc_aborts_when_a_kept_layers_directory_is_a_dangling_symlink(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let env = env(home);
+    let (old_parent, child) = child_of_an_aged_parent(&env);
+    let dir = env.store.generation_dir(&child);
+    std::fs::remove_dir_all(&dir).unwrap();
+    symlink(&home.join("nowhere"), &dir);
+    let error = env.store.gc(&Fixed(vec![])).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert_record_recovery(&error, &child, &as_current(child.key), &dir);
+    assert!(error.message().contains(") is missing, so"), "{error}");
+    assert!(exists(&env, &old_parent));
+}
+
 #[skuld::test]
 fn gc_passes_a_newer_schema_record_of_an_unkept_generation_through_and_keeps_it(#[fixture(unicode_home)] home: &Path) {
     let env = env(home);
-    let [oldest, _middle, _newest] = three_generations(&env, 1);
+    let [oldest, _middle, newest] = three_generations(&env, 1);
     let record = env.store.generation_dir(&oldest).join("meta.json");
     std::fs::write(&record, br#"{ "schema": 2 }"#).unwrap();
     let error = env.store.gc(&Fixed(vec![])).unwrap_err();
@@ -574,7 +650,11 @@ fn gc_passes_a_newer_schema_record_of_an_unkept_generation_through_and_keeps_it(
             .starts_with(&format!("{} has schema 2, ", record.display())),
         "{error}"
     );
+    assert!(error.message().ends_with("; upgrade devvm"), "{error}");
+    // The middle generation is not asserted: it is deleted only if the sweep reaches it before the oldest, and the
+    // directory listing's order is the host's.
     assert!(exists(&env, &oldest));
+    assert!(exists(&env, &newest));
 }
 
 #[skuld::test]

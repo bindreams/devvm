@@ -8,6 +8,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::fs::Metadata;
 use std::path::Path;
 
 use super::meta::{self, MetaRead};
@@ -125,8 +126,8 @@ impl LayerStore {
             }
         }
         let mut pending: Vec<LayerRef> = keep.iter().copied().collect();
-        // Roots pop in ascending order and each parent right after its child, so the same store always aborts on the
-        // same layer.
+        // Roots pop in ascending order; a parent first reached through a child's record pops right after that child,
+        // and a parent that is itself a root pops at its own place.
         pending.sort_by_key(|layer| Reverse(*layer));
         // The kept layers whose records name a layer as their parent, as the walk reads them.
         let mut children: HashMap<LayerRef, Vec<LayerRef>> = HashMap::new();
@@ -137,8 +138,10 @@ impl LayerStore {
             let dir = self.generation_dir(&layer);
             let failure = match present(&dir) {
                 // A kept layer that is gone has no ancestors to protect.
-                Ok(false) => continue,
-                Ok(true) => match meta::read(&dir) {
+                Ok(None) => continue,
+                // No record can be in what is not a directory.
+                Ok(Some(found)) if !found.is_dir() => Stop::Record(layer, Reason::Missing),
+                Ok(Some(_)) => match meta::read(&dir) {
                     Ok(MetaRead::Valid(meta)) if meta.is_of(&layer) => {
                         if let Some(parent) = meta.parent {
                             children.entry(parent).or_default().push(layer);
@@ -148,11 +151,9 @@ impl LayerStore {
                         }
                         continue;
                     }
-                    // A record of another layer says nothing about this one's ancestors.
                     Ok(MetaRead::Valid(_)) => Stop::Record(layer, Reason::OtherLayer),
                     Ok(MetaRead::Absent) => Stop::Record(layer, Reason::Missing),
                     Ok(MetaRead::Corrupt(why)) => Stop::Record(layer, Reason::Unreadable(why)),
-                    // A newer schema passes through as it is.
                     Ok(MetaRead::Newer(e)) => Stop::Error(e),
                     Err(e) => Stop::Record(layer, Reason::ReadFailed(e)),
                 },
@@ -362,17 +363,13 @@ fn current_recovery(key: &LayerKey, path: &std::path::Path) -> String {
     )
 }
 
-/// Whether the generation directory `dir` of a kept layer is there. A failed look is an error, never "gone": a kept
-/// layer that is skipped leaves its parent unkept, and collection deletes the parent. Whatever is at the name counts as
-/// there; the record read that follows rejects what is not a layer.
-fn present(dir: &Path) -> Result<bool> {
-    match symlink_metadata_if_present(dir) {
-        Ok(found) => Ok(found.is_some()),
-        Err(e) => {
-            let look = look_failed(dir, e);
-            Err(Error::new(ErrorKind::Io, format!("cannot collect: {look}; nothing was deleted")).with_source(look))
-        }
-    }
+/// What is at the generation directory `dir` of a kept layer: `None` when nothing is. A failed look is an error, never
+/// "gone": a kept layer that is skipped leaves its parent unkept, and collection deletes the parent.
+fn present(dir: &Path) -> Result<Option<Metadata>> {
+    symlink_metadata_if_present(dir).map_err(|e| {
+        let look = look_failed(dir, e);
+        Error::new(ErrorKind::Io, format!("cannot collect: {look}; nothing was deleted")).with_source(look)
+    })
 }
 
 #[cfg(all(test, unix))]
