@@ -165,15 +165,11 @@ fn run_version(host: &dyn Host, install: &QemuInstall, name: &str) -> Result<Str
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Reads the user's configuration.
-pub(crate) type ConfigLoad = Arc<dyn Fn() -> Result<Config> + Send + Sync>;
-
 /// Where an install comes from: the configuration, or the manifest's pinned build. The configuration is read by the
 /// first use that needs it.
 pub(crate) struct Source {
     dirs: Dirs,
     config: Lazy<Config>,
-    load_config: ConfigLoad,
     fetcher: Arc<Fetcher>,
     progress: Arc<dyn Progress>,
     entry: Result<ManifestEntry>,
@@ -183,7 +179,6 @@ pub(crate) struct Source {
 impl Source {
     pub(crate) fn new(
         dirs: Dirs,
-        load_config: ConfigLoad,
         fetcher: Arc<Fetcher>,
         progress: Arc<dyn Progress>,
         entry: Result<ManifestEntry>,
@@ -192,7 +187,6 @@ impl Source {
         Source {
             dirs,
             config: Lazy::new(),
-            load_config,
             fetcher,
             progress,
             entry,
@@ -200,9 +194,9 @@ impl Source {
         }
     }
 
-    /// The configuration, loaded by the first call that succeeds.
+    /// The configuration, read from `config.yaml` under the source's `Dirs` by the first call that succeeds.
     pub(crate) fn config(&self) -> Result<&Config> {
-        self.config.get(|| (self.load_config)())
+        self.config.get(|| Config::load(&self.dirs))
     }
 
     fn entry(&self) -> Result<&ManifestEntry> {
@@ -470,14 +464,12 @@ pub(crate) struct LazyInstall {
 impl LazyInstall {
     pub(crate) fn new(
         dirs: Dirs,
-        load_config: ConfigLoad,
         fetcher: Arc<Fetcher>,
         progress: Arc<dyn Progress>,
         host: &'static dyn Host,
     ) -> LazyInstall {
         LazyInstall::from_source(Source::new(
             dirs,
-            load_config,
             fetcher,
             progress,
             manifest_entry(crate::TARGET),

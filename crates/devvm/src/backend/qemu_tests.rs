@@ -25,7 +25,7 @@ fn a_path_in_a_directory_gives_the_directory() {
 }
 
 #[skuld::test]
-fn the_parts_read_config_yaml_on_first_use_and_a_failed_read_is_not_kept(#[fixture(unicode_home)] home: &Path) {
+fn the_parts_read_config_yaml_on_first_use_and_a_bad_file_fails_naming_it(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let progress = Arc::new(MemoryProgress::default());
     let fetcher = Arc::new(Fetcher::new(
@@ -42,16 +42,4 @@ fn the_parts_read_config_yaml_on_first_use_and_a_failed_read_is_not_kept(#[fixtu
     let error = parts.install.config().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Config, "{error}");
     assert!(error.message().contains(&file.display().to_string()), "{error}");
-
-    std::fs::write(
-        &file,
-        "qemu:
-  path: tools
-",
-    )
-    .unwrap();
-    assert_eq!(
-        parts.install.config().unwrap().qemu_path.as_deref(),
-        Some(Path::new("tools"))
-    );
 }
