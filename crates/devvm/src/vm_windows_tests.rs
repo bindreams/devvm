@@ -4,22 +4,28 @@ use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::access::keys::InstanceKeys;
+use crate::access::{SshSession, VmExit};
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::engine_tests::{
-    EngineFixture, engine_fixture, engine_fixture_from, engine_fixture_with, instance_in, leaking_backend,
-    leaking_fixture,
+    EngineFixture, engine_fixture, engine_fixture_from, engine_fixture_with, engine_over, engine_with_bound,
+    instance_in, leaking_backend, leaking_fixture,
 };
+use crate::engine::keys::read_target;
 use crate::engine::{LaunchHooks, LaunchStep};
+use crate::exit::NullProgress;
 use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::{build_expiring, days, key, names, t0};
 use crate::test_support::claimed::claimed;
-use crate::test_support::fake_vm::{STARTED, answer, connect_when_up};
+use crate::test_support::fake_vm::{STARTED, answer, connect_when_up, started_port};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::helper;
+use crate::test_support::host::TestHost;
+use crate::test_support::sshd::FAST_KEEPALIVE;
 use crate::vm::vm_tests::{queued, step_name};
 use crate::{ErrorKind, Instance, InstanceState, ListFilter};
 
@@ -42,9 +48,10 @@ fn wait_until_dead(machine: &MachineRecord) {
     }
 }
 
-/// The endpoint `machine` records belongs to its own process: it already listens, and its process answers.
+/// The port the fake VM reported in its state directory belongs to the process `machine` records: it already listens,
+/// and its process answers. (`machine.ssh` is the SSH server of the fixture, not the VM.)
 fn assert_answers_as(machine: &MachineRecord) {
-    let report = answer(machine.ssh[0].addr.port());
+    let report = answer(started_port(machine.serial_log.parent().unwrap()));
     assert!(
         report.starts_with(&format!("up pid={} ", machine.process.pid)),
         "the endpoint of process {} is answered by another VM: {report}",
@@ -165,7 +172,7 @@ fn remove_after_start_kills_the_machine_and_deletes_everything(#[fixture(unicode
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
     instance.start().unwrap();
     let machine = recorded(&instance).unwrap();
-    let port = machine.ssh[0].addr.port();
+    let port = started_port(machine.serial_log.parent().unwrap());
     let vm = VmProcess::attach(&machine.process).unwrap().unwrap();
     assert!(connect_when_up(&vm, port).starts_with("up "));
 
@@ -809,7 +816,7 @@ fn notes_op_lock_engine(
             held_at_release: held_at_release.clone(),
             fail_release,
         })),
-        guests: Arc::new(crate::guest::fake::FakeGuests),
+        guests: fx.guests.clone(),
         clock: Arc::new(crate::store::layers::SystemClock),
         progress: Arc::new(MemoryProgress::default()),
         hooks: Arc::new(crate::engine::NoHooks),
@@ -976,6 +983,308 @@ fn an_unrecorded_machine_that_cannot_be_killed_is_named_in_the_error(#[fixture(u
     assert!(
         text.contains("refused the kill") && text.contains("never recorded"),
         "{text}"
+    );
+    instance.remove().unwrap();
+}
+
+// Keys, the ssh_config entry and the wait for the guest ===============================================================
+
+const KEY_FILES: [&str; 4] = ["client", "client.pub", "host", "host.pub"];
+
+fn key_bytes(instance_dir: &Path) -> Vec<Vec<u8>> {
+    KEY_FILES
+        .iter()
+        .map(|name| std::fs::read(instance_dir.join("keys").join(name)).unwrap())
+        .collect()
+}
+
+/// What was true when the fake guest was asked whether it was ready.
+#[derive(Debug, PartialEq, Eq)]
+struct AtReady {
+    seed_written: bool,
+    keys_written: bool,
+    conf_written: bool,
+    still_contained: bool,
+}
+
+/// From now on, records an [`AtReady`] for the instance in `instance_dir` each time the guests of `fx` are asked.
+fn observe_readiness(fx: &EngineFixture, instance_dir: &Path) -> Arc<std::sync::Mutex<Vec<AtReady>>> {
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (seen, dir) = (observed.clone(), instance_dir.to_path_buf());
+    let conf = fx.env.dirs.ssh().join("foo.conf");
+    fx.guests.on_ready(move || {
+        seen.lock().unwrap().push(AtReady {
+            seed_written: dir.join("seed").join("seed.fake").is_file(),
+            keys_written: KEY_FILES.iter().all(|name| dir.join("keys").join(name).is_file()),
+            conf_written: conf.is_file(),
+            still_contained: answer(started_port(&dir)).contains("kill-on-close=true"),
+        });
+    });
+    observed
+}
+
+#[skuld::test]
+fn instance_start_generates_keys_writes_the_ssh_config_entry_and_waits_for_readiness_before_releasing(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let observed = observe_readiness(&fx, dir.path());
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+
+    assert_eq!(
+        *observed.lock().unwrap(),
+        [AtReady {
+            seed_written: true,
+            keys_written: true,
+            conf_written: true,
+            still_contained: true,
+        }],
+        "the guest is asked once, after the keys, the seed and the conf, while the machine is still contained"
+    );
+    let machine = recorded(&instance).unwrap();
+    assert!(
+        answer(started_port(dir.path())).contains("kill-on-close=false"),
+        "the machine is released once the guest has answered"
+    );
+    assert!(running(&machine));
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn the_ssh_config_entry_is_written_with_the_second_records_endpoints(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+
+    let machine = recorded(&instance).unwrap();
+    let port = machine.ssh[0].addr.port();
+    assert_eq!(
+        port,
+        fx.server.addr().port(),
+        "the machine reports the guest's SSH server"
+    );
+    assert_ne!(port, started_port(dir.path()), "and not the port of the VM process");
+    let conf = std::fs::read_to_string(fx.env.dirs.ssh().join("foo.conf")).unwrap();
+    assert!(conf.contains(&format!("Port {port}\n")), "{conf}");
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn an_unready_guest_reports_what_it_awaited_and_the_serial_log(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    // Nothing listens at this address.
+    let nothing = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let backend = Arc::new(FakeBackend::new(&TestHost).with_ssh_endpoint(nothing));
+    let engine = engine_with_bound(
+        fx.env.dirs.clone(),
+        &TestHost,
+        Some(backend),
+        fx.guests.clone(),
+        Arc::new(MemoryProgress::default()),
+        std::time::Duration::from_millis(300),
+    );
+
+    let error = Instance::open_in(&engine, "foo")
+        .unwrap()
+        .start()
+        .expect_err("no guest answers");
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    let message = error.message();
+    assert!(
+        message.contains(&format!("waiting for SSH on {nothing} to answer")),
+        "{message}"
+    );
+    assert!(message.contains("300ms"), "the bound is named: {message}");
+    assert!(
+        message.contains(&dir.path().join("serial.log").display().to_string()),
+        "the serial log is named: {message}"
+    );
+}
+
+#[skuld::test]
+fn a_wait_ready_that_hangs_ends_at_the_boot_bound(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    instance_in(&fx, "foo", home);
+    fx.guests.ready_when("hold");
+    let engine = engine_with_bound(
+        fx.env.dirs.clone(),
+        &TestHost,
+        Some(fx.fake.clone()),
+        fx.guests.clone(),
+        Arc::new(MemoryProgress::default()),
+        std::time::Duration::from_secs(2),
+    );
+
+    let error = Instance::open_in(&engine, "foo")
+        .unwrap()
+        .start()
+        .expect_err("the readiness command never answers");
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("the command `hold`"), "{error}");
+    assert!(error.message().contains("boot bound of 2s"), "{error}");
+}
+
+#[skuld::test]
+fn a_readiness_failure_kills_the_machine_and_clears_the_record(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    fx.guests.ready_when("exit 3");
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    let error = instance.start().expect_err("the guest is not ready");
+
+    assert!(error.message().contains("exit 3"), "{error}");
+    let machine = fx.fake.launched()[0].clone();
+    wait_until_dead(&machine);
+    assert!(!running(&machine), "a guest that never became ready must not run");
+    assert!(recorded(&instance).is_none(), "the record names no machine");
+    assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
+    fx.guests.ready_when("echo ready");
+    instance.start().expect("the instance starts once the guest answers");
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn keys_are_generated_once_and_a_restart_reuses_them_and_the_seed_bytes(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+    let seed = || std::fs::read(dir.path().join("seed").join("seed.fake")).unwrap();
+
+    instance.start().unwrap();
+    let (keys, first_seed) = (key_bytes(dir.path()), seed());
+    instance.stop().unwrap();
+    instance.start().unwrap();
+
+    assert_eq!(key_bytes(dir.path()), keys, "a restart reads the keys it made");
+    assert_eq!(seed(), first_seed, "and feeds the guest the same seed");
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn the_seed_carries_the_instances_keys_and_a_restart_the_same_ones(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+    instance.stop().unwrap();
+    instance.start().unwrap();
+
+    let keys = InstanceKeys::read(&dir.path().join("keys")).unwrap();
+    let seeds = fx.guests.seeds();
+    assert_eq!(seeds.len(), 2);
+    for seed in &seeds {
+        assert_eq!(seed.keys.client_public, keys.client_public);
+        assert_eq!(seed.keys.host_public, keys.host_public);
+        assert_eq!(
+            secrecy::ExposeSecret::expose_secret(&seed.keys.host_private),
+            secrecy::ExposeSecret::expose_secret(&keys.host_private)
+        );
+        assert_eq!(seed.instance_id, *dir.id());
+    }
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn a_second_process_builds_its_target_from_the_record_and_the_keys(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    instance_in(&fx, "foo", home);
+    Instance::open_in(&fx.engine, "foo").unwrap().start().unwrap();
+
+    // An engine of its own over the same directories shares nothing in memory with the one that started the machine.
+    let other = engine_over(
+        &fx,
+        &TestHost,
+        Some(fx.fake.clone()),
+        Arc::new(MemoryProgress::default()),
+    );
+    let instance = Instance::open_in(&other, "foo").unwrap();
+    let op = instance.dir().op_shared().unwrap();
+    let target = read_target(instance.dir(), &op).unwrap();
+    let session = SshSession::connect(&target, FAST_KEEPALIVE, VmExit::never(), None, &NullProgress).unwrap();
+    let output = session.exec_collect("echo from another process").unwrap();
+
+    assert_eq!(output.stdout, b"from another process\n");
+    drop((session, op));
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn key_write_warnings_are_shown_as_progress_lines(#[fixture(unicode_home)] home: &Path) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    let dir = instance_in(&fx, "foo", home);
+    // A file where a temporary directory of an earlier write should be: it cannot be removed as one.
+    std::fs::write(dir.path().join(".keys-stuck"), "not a directory").unwrap();
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.starts_with("instance foo: ") && m.contains(".keys-stuck")),
+        "{messages:?}"
+    );
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn an_ssh_config_refusal_is_shown_and_the_instance_still_starts(#[fixture(unicode_home)] home: &Path) {
+    // `%` in the state directory: ssh cannot include a file from it, so `ensure_top_level` refuses.
+    let home = home.join("100%");
+    std::fs::create_dir(&home).unwrap();
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(&home, progress.clone());
+    instance_in(&fx, "foo", &home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance
+        .start()
+        .expect("the embedded client does not read the ssh configuration");
+
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.starts_with("instance foo: cannot write the ssh configuration:") && m.contains('%')),
+        "{messages:?}"
+    );
+    assert!(running(&recorded(&instance).unwrap()));
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn a_degraded_first_boot_is_reported_on_the_progress_channel_and_the_start_succeeds(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    instance_in(&fx, "foo", home);
+    fx.guests.degraded("degraded done: modules failed");
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.starts_with("instance foo: ") && m.contains("degraded done: modules failed")),
+        "{messages:?}"
     );
     instance.remove().unwrap();
 }

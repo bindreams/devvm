@@ -67,6 +67,8 @@ pub(crate) struct FakeBackend {
     checks: Vec<Check>,
     /// The detail of each `checks` call, in order.
     details_asked: Mutex<Vec<Detail>>,
+    /// Where the machines report their SSH endpoint instead of the fake VM's own port.
+    ssh_endpoint: Option<SocketAddr>,
 }
 
 impl FakeBackend {
@@ -81,7 +83,15 @@ impl FakeBackend {
             storage: FakeStorage::default(),
             checks: Vec::new(),
             details_asked: Mutex::new(Vec::new()),
+            ssh_endpoint: None,
         }
+    }
+
+    /// A backend whose machines report `addr` as their `Endpoint::Normal`, the address of an SSH server a test runs,
+    /// instead of the port of the fake VM process. The fake VM still listens on its own port, which `shutdown` asks.
+    pub(crate) fn with_ssh_endpoint(mut self, addr: SocketAddr) -> FakeBackend {
+        self.ssh_endpoint = Some(addr);
+        self
     }
 
     /// A backend whose `checks` are `checks`.
@@ -220,6 +230,7 @@ impl Backend for FakeBackend {
             resets: self.resets.clone(),
             attached: false,
             host: self.host,
+            ssh_endpoint: self.ssh_endpoint,
         }))
     }
 
@@ -241,6 +252,7 @@ impl Backend for FakeBackend {
             resets: self.resets.clone(),
             attached: true,
             host: self.host,
+            ssh_endpoint: self.ssh_endpoint,
         }))
     }
 
@@ -277,6 +289,8 @@ struct FakeMachine {
     /// Found with `attach`: already running, and not this process's to contain.
     attached: bool,
     host: &'static dyn Host,
+    /// See [`FakeBackend::with_ssh_endpoint`].
+    ssh_endpoint: Option<SocketAddr>,
 }
 
 impl Machine for FakeMachine {
@@ -294,7 +308,8 @@ impl Machine for FakeMachine {
 
     fn resume(&mut self) -> Result<()> {
         self.vm.resume()?;
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, fake_vm::await_port(&self.vm, &self.state_dir)));
+        let own = SocketAddr::from((Ipv4Addr::LOCALHOST, fake_vm::await_port(&self.vm, &self.state_dir)));
+        let addr = self.ssh_endpoint.unwrap_or(own);
         self.ssh = vec![(Endpoint::Normal, addr)];
         self.record.ssh = vec![SshEndpoint {
             endpoint: Endpoint::Normal,
@@ -356,10 +371,12 @@ impl Machine for FakeMachine {
 }
 
 impl FakeMachine {
-    /// Where the VM listens: the endpoint of the record, or, for a record taken before the machine ran, the port the VM
-    /// reported in its state directory.
+    /// Where the VM listens: the endpoint of the record, or, when that is an SSH server's (`with_ssh_endpoint`) or the
+    /// record was taken before the machine ran, the port the VM reported in its state directory.
     fn endpoint(&self) -> Result<SocketAddr> {
-        if let Some((_, addr)) = self.ssh.first() {
+        if self.ssh_endpoint.is_none()
+            && let Some((_, addr)) = self.ssh.first()
+        {
             return Ok(*addr);
         }
         let started = self

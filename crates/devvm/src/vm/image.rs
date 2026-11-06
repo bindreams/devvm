@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::access::SshSession;
 use crate::backend::Machine;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
@@ -13,7 +14,7 @@ use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
 use crate::store::fetch::LazyHttp;
 use crate::store::layers::ChainLease;
-use crate::vm::{Guest, Handle, Instance, no_access_layer, remove_leftovers, warn_for};
+use crate::vm::{Guest, Handle, Instance, Started, no_access_layer, remove_leftovers, warn_for};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, GuestKind, Result, StartOptions};
 
 #[cfg(test)]
@@ -57,30 +58,45 @@ impl Image {
     }
 
     /// Starts a VM that lives as long as the returned handle: it dies with this process and is destroyed when the
-    /// handle is dropped.
+    /// handle is dropped. Returns once the guest answers over SSH.
     pub fn start(&self, opts: &StartOptions) -> Result<Vm> {
-        self.start_vm(opts, Lifetime::DiesWithOwner)
+        self.start_vm(None, opts, Lifetime::DiesWithOwner)
     }
 
-    /// `start` with a given VM lifetime. `OutlivesOwner` is `up`: the VM is handed over (`Vm::hand_over`) once it is
-    /// ready, and only then outlives this process.
-    pub(crate) fn start_vm(&self, opts: &StartOptions, lifetime: Lifetime) -> Result<Vm> {
-        let owned = self.create_owned(None, opts)?;
+    /// Creates the instance `name`, starts its VM and returns once the guest answers over SSH. The VM and the instance
+    /// stay until `Instance::remove`, whether or not this process lives on. A failure removes what it made.
+    pub fn up(&self, name: &str, opts: &StartOptions) -> Result<Instance> {
+        self.up_with(name, opts, &mut || {})
+    }
+
+    /// `up`, running `after_disarm` once the machine's containment is disarmed and before the owner marker is flipped.
+    pub(crate) fn up_with(&self, name: &str, opts: &StartOptions, after_disarm: &mut dyn FnMut()) -> Result<Instance> {
+        let name = InstanceName::parse(name)?;
+        self.start_vm(Some(name), opts, Lifetime::OutlivesOwner)?
+            .hand_over(after_disarm)
+    }
+
+    /// `start` with an instance name (`None`: an unnamed one) and a given VM lifetime. `OutlivesOwner` is `up`: the VM
+    /// is handed over (`Vm::hand_over`) once it is ready, and only then outlives this process.
+    pub(crate) fn start_vm(&self, name: Option<InstanceName>, opts: &StartOptions, lifetime: Lifetime) -> Result<Vm> {
+        let owned = self.create_owned(name, opts)?;
         // From here on the handle cleans up after any failure.
-        let vm = Vm {
+        let mut vm = Vm {
             instance: Some(Instance {
                 engine: self.engine.clone(),
                 handle: Handle::Owned(owned),
             }),
             machine: Mutex::new(None),
+            session: None,
         };
-        let machine = vm.instance().start_with(lifetime)?.ok_or_else(|| {
+        let Started { machine, session } = vm.instance().start_with(lifetime)?.ok_or_else(|| {
             Error::new(
                 ErrorKind::Internal,
                 format!("the new instance {} is already running", vm.name()),
             )
         })?;
         *vm.machine.lock().unwrap_or_else(PoisonError::into_inner) = Some(machine);
+        vm.session = Some(session);
         Ok(vm)
     }
 
@@ -146,6 +162,8 @@ pub struct Vm {
     /// `None` once handed over (`hand_over`): nothing is left to clean up.
     instance: Option<Instance>,
     machine: Mutex<Option<Box<dyn Machine>>>,
+    /// The connection that found the guest ready; `None` until the start has finished.
+    session: Option<SshSession>,
 }
 
 impl Vm {

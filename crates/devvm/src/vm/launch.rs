@@ -1,25 +1,54 @@
 //! Starting a machine for an instance: the spec, the frozen launch, the record, the resume.
 
+use crate::access::keys::InstanceKeys;
+use crate::access::ssh_config::{SshConfigDir, SshConfigEntry};
+use crate::access::{SshSession, SshTarget};
 use crate::backend::{Endpoint, Machine, MachineSpec};
 use crate::contain::Lifetime;
+use crate::engine::keys::{ensure_keys, keys_dir, target_for};
+use crate::engine::ready::connect_ready;
 use crate::engine::{Engine, LaunchStep};
 use crate::guest::{SeedKeys, SeedSpec};
 use crate::instance::dir::{InstanceDir, OpExclusive};
 use crate::vm::{remove_leftovers, warn_for};
 use crate::{Error, ErrorKind, Result};
 
-/// Launches the machine of `dir` unless it already runs (`None`). The machine comes back resumed and still contained.
+/// A machine that runs and has answered: still contained, and reached through `session`.
+pub(crate) struct Started {
+    pub machine: Box<dyn Machine>,
+    pub session: SshSession,
+}
+
+/// Launches the machine of `dir` unless it already runs (`None`), and waits until the guest answers. The machine comes
+/// back resumed and still contained, with the session that found the guest ready.
 ///
-/// Order: launch frozen, record the machine in the instance record, resume. Until the caller releases the machine, it
+/// Order: the instance's keys (made at the first launch), launch frozen, record the machine in the instance record,
+/// resume, record again, write the `ssh_config` entry, wait for the guest. Until the caller releases the machine, it
 /// dies with this process. A devvm killed after the launch returns therefore leaves no VM running. One killed inside
 /// the launch, between cosca creating the frozen process and putting it into its job, leaves a frozen process nothing
-/// kills and nothing records.
+/// kills and nothing records. A failure at any step after the resume kills the machine and clears its record.
 pub(super) fn launch(
     engine: &Engine,
     dir: &InstanceDir,
     op: &OpExclusive,
     lifetime: Lifetime,
-) -> Result<Option<Box<dyn Machine>>> {
+) -> Result<Option<Started>> {
+    let Some((mut machine, keys)) = launch_machine(engine, dir, op, lifetime)? else {
+        return Ok(None);
+    };
+    match await_ready(engine, dir, &keys, &*machine) {
+        Ok(session) => Ok(Some(Started { machine, session })),
+        Err(e) => Err(abandon(engine, dir, op, &mut *machine, e)),
+    }
+}
+
+/// `launch` up to the writing of the `ssh_config` entry.
+fn launch_machine(
+    engine: &Engine,
+    dir: &InstanceDir,
+    op: &OpExclusive,
+    lifetime: Lifetime,
+) -> Result<Option<(Box<dyn Machine>, InstanceKeys)>> {
     let backend = engine.backend()?;
     let record = dir.record()?;
     if let Some(machine) = &record.machine {
@@ -35,6 +64,7 @@ pub(super) fn launch(
         .host()
         .accelerator(record.arch)
         .map_err(|unavailable| Error::new(ErrorKind::Unavailable, unavailable.to_string()))?;
+    let keys = ensure_keys(dir, op, engine.host(), &mut warn_for(engine, dir))?;
     let seed_dir = dir.path().join("seed");
     std::fs::create_dir_all(&seed_dir)
         .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", seed_dir.display()), e))?;
@@ -44,8 +74,11 @@ pub(super) fn launch(
             hostname: dir.name().as_str().to_owned(),
             dir: seed_dir,
             instance_id: *dir.id(),
-            // Placeholder until the instance's keys exist.
-            keys: SeedKeys::default(),
+            keys: SeedKeys {
+                client_public: keys.client_public.clone(),
+                host_private: keys.host_private.clone(),
+                host_public: keys.host_public.clone(),
+            },
         },
     )?;
     let spec = MachineSpec {
@@ -85,7 +118,36 @@ pub(super) fn launch(
     if let Err(e) = dir.update(op, &mut |record| record.machine = Some(running_record.clone())) {
         return Err(abandon(engine, dir, op, &mut *machine, e));
     }
-    Ok(Some(machine))
+    Ok(Some((machine, keys)))
+}
+
+/// Writes the `ssh_config` entry of the instance, which plain `ssh` and editors use, now that its port is known. The
+/// embedded client does not read it, so a refusal or a failure is reported and the start goes on.
+fn write_ssh_config(engine: &Engine, dir: &InstanceDir, target: &SshTarget, keys: &InstanceKeys) {
+    let configs = SshConfigDir::new(engine.dirs().ssh()).with_progress(engine.progress().clone());
+    let mut warn = warn_for(engine, dir);
+    if let Err(e) = configs.ensure_top_level() {
+        warn(format!("cannot write the ssh configuration: {}", e.message()));
+    }
+    let entry = SshConfigEntry {
+        name: dir.name().clone(),
+        id: *dir.id(),
+        port: target.addr.port(),
+        identity: keys_dir(dir).join("client"),
+        known_hosts: dir.path().join("known_hosts"),
+    };
+    if let Err(e) = configs.write_entry(&entry, &keys.host_public) {
+        warn(format!("cannot write the ssh configuration entry: {}", e.message()));
+    }
+}
+
+/// Writes the `ssh_config` entry, then connects and waits until the guest has finished its first boot.
+fn await_ready(engine: &Engine, dir: &InstanceDir, keys: &InstanceKeys, machine: &dyn Machine) -> Result<SshSession> {
+    let record = dir.record()?;
+    let target = target_for(&record, keys)?;
+    write_ssh_config(engine, dir, &target, keys);
+    let guest = engine.guests().os(record.guest)?;
+    connect_ready(engine, &*guest, dir.name(), &target, &machine.record().process)
 }
 
 /// A recorded machine that must not run after all: kills it and clears the record that names it. `cause` is why the

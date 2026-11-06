@@ -5,22 +5,22 @@ use std::sync::mpsc::Receiver;
 
 use crate::backend::MachineRecord;
 use crate::backend::fake::FakeBackend;
-use crate::contain::Lifetime;
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::engine_tests::{
     dead_machine, engine_fixture, engine_over, image_of, instance_in, record_machine, stub_fixture,
 };
 use crate::engine::{Engine, EngineParts, LaunchHooks, LaunchStep};
-use crate::guest::fake::FakeGuests;
+use crate::guest::fake::ServedGuests;
 use crate::instance::name::InstanceName;
-use crate::instance::record::InstanceRecord;
+use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::claimed::claimed;
-use crate::test_support::fake_vm::connect_when_up;
+use crate::test_support::fake_vm::{connect_when_up, started_port};
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, TestHost};
+use crate::test_support::sshd::TestSshd;
 use crate::test_support::stub_backend::Attach;
 use crate::{Dirs, ErrorKind, Instance, StartOptions};
 
@@ -460,13 +460,16 @@ fn step_named(name: &str) -> Option<LaunchStep> {
         .find(|step| step_name(*step) == name)
 }
 
-/// The engine of a helper process: the fake backend over the state under `home`.
+/// The engine of a helper process: the fake backend over the state under `home`, its machines served by an SSH server
+/// of the process.
 pub(crate) fn helper_engine(home: &Path, hooks: Arc<dyn LaunchHooks>) -> Arc<Engine> {
+    // The guests keep the server, which lives as long as the engine.
+    let server = Arc::new(TestSshd::awaiting_keys());
     Engine::with_parts(EngineParts {
         dirs: Dirs::under(home),
         host: &TestHost,
-        backend: Some(Arc::new(FakeBackend::new(&TestHost))),
-        guests: Arc::new(FakeGuests),
+        backend: Some(Arc::new(FakeBackend::new(&TestHost).with_ssh_endpoint(server.addr()))),
+        guests: Arc::new(ServedGuests::new(server)),
         clock: Arc::new(crate::store::layers::SystemClock),
         progress: Arc::new(crate::exit::StderrProgress),
         hooks,
@@ -514,6 +517,17 @@ pub(crate) fn fake_cli_run(args: &[String]) {
     std::io::stdin().read_to_end(&mut sink).unwrap();
 }
 
+/// The name of the instance `fake-cli-up` makes.
+const UP_NAME: &str = "fake-up";
+
+/// The machine the record in the instance directory `dir` names, read without any lock.
+fn recorded_machine(dir: &Path) -> MachineRecord {
+    match InstanceRecord::read(dir).unwrap() {
+        RecordRead::Valid(record) => record.machine.expect("a started VM names its machine"),
+        _ => panic!("the record in {} should be valid", dir.display()),
+    }
+}
+
 /// Helper `fake-cli-up <home> [step]`: `up` over the fake backend. An owned VM that outlives its owner, then the
 /// handover. With a step (`spawned`, `recorded`, `resumed`, or `disarmed`, which is after the containment is disarmed
 /// and before the owner marker is flipped) it parks there. Otherwise it reads the VM's own report of its containment
@@ -524,27 +538,20 @@ pub(crate) fn fake_cli_up(args: &[String]) {
         Some(step) => Arc::new(ParkAt(step)),
         None => Arc::new(crate::engine::NoHooks),
     };
-    let engine = helper_engine(Path::new(&args[0]), hooks);
-    let vm = image_of(&engine)
-        .start_vm(&StartOptions::default(), Lifetime::OutlivesOwner)
-        .expect("the VM should start");
-    let machine = vm
-        .instance()
-        .dir()
-        .record()
-        .unwrap()
-        .machine
-        .expect("a started VM names its machine");
-    let instance = vm
-        .hand_over(&mut || {
+    let home = Path::new(&args[0]);
+    let engine = helper_engine(home, hooks);
+    let instance_path = Dirs::under(home).instances().join(UP_NAME);
+    let instance = image_of(&engine)
+        .up_with(UP_NAME, &StartOptions::default(), &mut || {
             if step == Some("disarmed") {
-                park(&machine);
+                park(&recorded_machine(&instance_path));
             }
         })
-        .expect("the handover should succeed");
+        .expect("the VM should come up");
+    let machine = recorded_machine(instance.dir().path());
 
     let process = VmProcess::attach(&machine.process).unwrap().expect("the VM runs");
-    let report = connect_when_up(&process, machine.ssh[0].addr.port());
+    let report = connect_when_up(&process, started_port(instance.dir().path()));
     assert!(
         report.contains("kill-on-close=false"),
         "the VM is still contained: {report}"
