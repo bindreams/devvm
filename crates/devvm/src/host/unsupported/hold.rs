@@ -2,11 +2,12 @@
 //! inherited descriptor included.
 
 use std::fs::{File, TryLockError};
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use super::FileModes;
-use crate::host::{FileId, Hold, HoldOutcome, after_failed_write, is_absent, new_name, symlink_metadata_if_present};
+use crate::host::{
+    FileId, Hold, HoldOutcome, after_failed_write, is_a_link, is_absent, new_name, symlink_metadata_if_present,
+};
 
 #[derive(Debug)]
 struct FlockHold {
@@ -83,24 +84,27 @@ pub(super) fn new(host: &dyn FileModes, path: &Path) -> std::io::Result<Box<dyn 
     }
 }
 
-fn is_a_link(path: &Path) -> std::io::Error {
-    std::io::Error::new(ErrorKind::InvalidInput, format!("{} is a link", path.display()))
-}
-
-/// Holds the file at `path` if nobody else does. It is opened with `FileModes::hold_options`, which refuse a link at
-/// the name.
-pub(super) fn existing(host: &dyn FileModes, path: &Path) -> std::io::Result<HoldOutcome> {
+/// Opens the file at `path` for reading and writing with `FileModes::hold_options`, making it if `create`. A link at
+/// the name is `InvalidInput`, "is a link".
+pub(super) fn open_refusing_links(host: &dyn FileModes, path: &Path, create: bool) -> std::io::Result<File> {
     // Looked at first for a host whose options cannot refuse a link.
     if symlink_metadata_if_present(path)?.is_some_and(|meta| meta.is_symlink()) {
         return Err(is_a_link(path));
     }
-    let file = match host.hold_options().open(path) {
+    host.hold_options().create(create).open(path).map_err(|e| {
+        // The options refuse a link that appeared since the look, with an error that differs by system.
+        if !is_absent(&e) && matches!(symlink_metadata_if_present(path), Ok(Some(meta)) if meta.is_symlink()) {
+            return is_a_link(path);
+        }
+        e
+    })
+}
+
+/// Holds the file at `path` if nobody else does, through [`open_refusing_links`].
+pub(super) fn existing(host: &dyn FileModes, path: &Path) -> std::io::Result<HoldOutcome> {
+    let file = match open_refusing_links(host, path, false) {
         Ok(file) => file,
         Err(e) if is_absent(&e) => return Ok(HoldOutcome::Absent),
-        // The options refuse a link that appeared since the look, with an error that differs by system.
-        Err(_) if matches!(symlink_metadata_if_present(path), Ok(Some(meta)) if meta.is_symlink()) => {
-            return Err(is_a_link(path));
-        }
         Err(e) => return Err(e),
     };
     match file.try_lock() {

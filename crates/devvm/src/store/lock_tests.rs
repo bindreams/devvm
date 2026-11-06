@@ -4,10 +4,14 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::sync::mpsc;
 
-use crate::exit::{NullProgress, Progress};
+use crate::exit::Progress;
+use crate::host::Comparison;
 use crate::store::lock::{FileLock, Mode};
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::helper;
+use crate::test_support::name_change::NameChange;
+use crate::test_support::symlink::symlink;
 
 /// Helper process: takes an exclusive lock on `args[0]`, prints `held`, then blocks until stdin closes.
 pub fn hold_lock(args: &[String]) {
@@ -57,7 +61,8 @@ fn contention_message_is_emitted_before_blocking(#[fixture(unicode_home)] home: 
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
             let mut lock = FileLock::open(&path).unwrap();
-            lock.lock(Mode::Exclusive, "layer K", &Capture(Mutex::new(sender)))
+            let progress = Capture(Mutex::new(sender));
+            lock.lock(Mode::Exclusive, "layer K", &mut |m| progress.message(m))
                 .unwrap();
         });
         assert_eq!(receiver.recv().unwrap(), "waiting for layer K");
@@ -73,7 +78,7 @@ fn uncontended_lock_emits_no_message(#[fixture(unicode_home)] home: &Path) {
     let progress = Capture(Mutex::new(sender));
     FileLock::open(&home.join("a.lock"))
         .unwrap()
-        .lock(Mode::Exclusive, "x", &progress)
+        .lock(Mode::Exclusive, "x", &mut |m| progress.message(m))
         .unwrap();
     drop(progress);
     assert!(receiver.recv().is_err());
@@ -93,7 +98,7 @@ fn lock_while_says_it_waits_once_and_gives_up_when_the_pause_says_to_stop(#[fixt
         .lock_while(
             Mode::Exclusive,
             "layer K",
-            &progress,
+            &mut |m| progress.message(m),
             Some(&mut || {
                 pauses += 1;
                 Ok(pauses == 3)
@@ -117,7 +122,7 @@ fn lock_while_takes_the_lock_once_it_is_free(#[fixture(unicode_home)] home: &Pat
         .lock_while(
             Mode::Exclusive,
             "layer K",
-            &NullProgress,
+            &mut |_| {},
             Some(&mut || {
                 holder.unlock()?;
                 Ok(false)
@@ -147,7 +152,7 @@ fn lock_is_released_when_holder_process_is_killed(#[fixture(unicode_home)] home:
     child.kill().unwrap();
     child.wait().unwrap();
     // Blocks until the OS releases the dead holder's lock; it has no cap because the release is the event awaited.
-    probe.lock(Mode::Exclusive, "the killed holder", &NullProgress).unwrap();
+    probe.lock(Mode::Exclusive, "the killed holder", &mut |_| {}).unwrap();
 }
 
 #[skuld::test]
@@ -161,7 +166,8 @@ fn file_lock_is_send_and_sync() {
 #[skuld::test]
 fn locking_requires_exclusive_access_to_the_value() {
     let _: fn(&mut FileLock, Mode) -> crate::Result<bool> = FileLock::try_lock;
-    let _: fn(&mut FileLock, Mode, &str, &dyn Progress) -> crate::Result<()> = FileLock::lock;
+    type Lock = fn(&mut FileLock, Mode, &str, &mut dyn FnMut(&str)) -> crate::Result<()>;
+    let _: Lock = FileLock::lock;
     let _: fn(&mut FileLock) -> crate::Result<()> = FileLock::unlock;
 }
 
@@ -214,6 +220,22 @@ fn open_in_existing_dir_creates_the_file_and_not_its_directory(#[fixture(unicode
     assert!(!home.join("missing").exists());
 }
 
+/// The directory is there, as a link that leads nowhere: the open fails with "not found", and the error does not say
+/// the directory is missing.
+#[skuld::test]
+fn a_dangling_link_as_the_parent_is_not_reported_as_a_missing_directory(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let (parent, path) = (home.join("dir"), home.join("dir").join("a.lock"));
+    symlink(&home.join("nowhere"), &parent);
+
+    let error = FileLock::open_in_existing_dir(&path).unwrap_err();
+
+    assert!(error.message().contains(&path.display().to_string()), "{error}");
+    assert!(!error.message().contains("does not exist"), "{error}");
+}
+
 #[skuld::test]
 fn open_existing_locks_like_open(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");
@@ -223,4 +245,87 @@ fn open_existing_locks_like_open(#[fixture(unicode_home)] home: &Path) {
     let mut other = FileLock::open(&path).unwrap();
     assert!(!other.try_lock(Mode::Exclusive).unwrap());
     assert!(!other.try_lock(Mode::Shared).unwrap());
+}
+
+#[skuld::test]
+fn a_lock_is_the_file_at_its_path_until_the_name_leads_to_another_file(#[fixture(unicode_home)] home: &Path) {
+    for (n, change) in NameChange::ALL.into_iter().enumerate() {
+        let path = home.join(format!("a{n}.lock"));
+        let lock = FileLock::open(&path).unwrap();
+        assert_eq!(
+            lock.is_at_path().unwrap(),
+            Comparison::Same,
+            "{change:?}: before the change"
+        );
+        change.apply(&path);
+        assert!(path.exists(), "{change:?}: a file is at the name");
+        assert_eq!(
+            lock.is_at_path().unwrap(),
+            Comparison::Different,
+            "{change:?}: after the change"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_lock_is_absent_from_its_path_once_the_name_is_unlinked(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.lock");
+    let lock = FileLock::open(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(lock.is_at_path().unwrap(), Comparison::Absent);
+}
+
+#[skuld::test]
+fn a_link_at_the_lock_name_is_an_error_at_every_open(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let (target, dangling, link) = (home.join("target"), home.join("nowhere"), home.join("a.lock"));
+    std::fs::write(&target, b"").unwrap();
+    for leads_to in [&target, &dangling] {
+        let _ = std::fs::remove_file(&link);
+        symlink(leads_to, &link);
+        let errors = [
+            FileLock::open(&link).unwrap_err(),
+            FileLock::open_in_existing_dir(&link).unwrap_err(),
+            FileLock::open_existing(&link).map(drop).unwrap_err(),
+        ];
+        for error in errors {
+            assert!(error.message().contains(&link.display().to_string()), "{error}");
+            assert!(error.message().contains("link"), "{error}");
+        }
+    }
+    assert!(!dangling.exists(), "no open made the target of a dangling link");
+}
+
+#[skuld::test]
+fn a_directory_symlink_at_the_lock_name_is_an_error_at_every_open(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let (target, link) = (home.join("target"), home.join("a.lock"));
+    std::fs::create_dir(&target).unwrap();
+    symlink(&target, &link);
+    let errors = [
+        FileLock::open(&link).unwrap_err(),
+        FileLock::open_in_existing_dir(&link).unwrap_err(),
+        FileLock::open_existing(&link).map(drop).unwrap_err(),
+    ];
+    for error in errors {
+        assert!(error.message().contains(&link.display().to_string()), "{error}");
+        assert!(error.message().contains("link"), "{error}");
+    }
+}
+
+#[skuld::test]
+fn open_existing_reads_every_absent_path_as_none(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("file");
+    std::fs::write(&file, b"").unwrap();
+    for path in [
+        home.join("missing").join("a.lock"),
+        file.join("a.lock"),
+        home.join("a|b.lock"),
+    ] {
+        assert!(FileLock::open_existing(&path).unwrap().is_none(), "{}", path.display());
+    }
 }

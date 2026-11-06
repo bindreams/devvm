@@ -192,7 +192,7 @@ impl Fetcher {
         lock.lock(
             Mode::Exclusive,
             &format!("another devvm process to finish downloading {}", artifact.url),
-            &*self.progress,
+            &mut |m| self.progress.message(m),
         )?;
         let entry = self.entry_path(artifact);
         if entry.is_file() {

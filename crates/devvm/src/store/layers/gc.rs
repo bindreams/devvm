@@ -42,7 +42,9 @@ impl LayerStore {
     /// Takes the shared `gc.lock` for as long as the guard lives.
     pub fn begin_record(&self) -> Result<RecordGuard> {
         let mut lock = self.gc_lock()?;
-        lock.lock(Mode::Shared, "layer garbage collection", &*self.progress)?;
+        lock.lock(Mode::Shared, "layer garbage collection", &mut |m| {
+            self.progress.message(m)
+        })?;
         Ok(RecordGuard { _lock: lock })
     }
 
@@ -88,7 +90,7 @@ impl LayerStore {
         gc.lock(
             Mode::Exclusive,
             "other devvm processes to finish with the layer store",
-            &*self.progress,
+            &mut |m| self.progress.message(m),
         )?;
         let chains = reachable.chains()?;
         let instance_layers: HashSet<LayerRef> = chains.iter().flatten().copied().collect();

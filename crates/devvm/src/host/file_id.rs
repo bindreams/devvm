@@ -12,6 +12,31 @@ pub(crate) struct FileId {
     pub file: u128,
 }
 
+/// How a file looked at by name compares with the file an id was taken from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Comparison {
+    /// The same file.
+    Same,
+    /// Another file: the name leads somewhere else now.
+    Different,
+    /// No file is at the name.
+    Absent,
+}
+
+impl FileId {
+    /// How `found`, a look at a name (`Host::file_id`), compares with this id. Only a lookup by name can be `Absent`;
+    /// the id of an open handle never is. A failure other than a missing file is returned: it says nothing about which
+    /// file is there.
+    pub(crate) fn compare(&self, found: std::io::Result<FileId>) -> std::io::Result<Comparison> {
+        match found {
+            Ok(id) if id == *self => Ok(Comparison::Same),
+            Ok(_) => Ok(Comparison::Different),
+            Err(e) if super::is_absent(&e) => Ok(Comparison::Absent),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// Text, because JSON has no 128-bit number: `<volume>:<file>` in hex.
 impl Serialize for FileId {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

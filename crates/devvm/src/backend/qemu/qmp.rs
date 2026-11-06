@@ -16,9 +16,9 @@ use qapi::{Command, Execute};
 
 use super::ports::{Forward, parse_usernet};
 use super::uds::UnixStream;
-use crate::backend::{ClaimState, FileClaim};
+use crate::backend::FileClaim;
 use crate::exit::Progress;
-use crate::host::{Hold, Host, Link, ProcessWatch, symlink_metadata_if_present};
+use crate::host::{Comparison, Hold, Host, Link, ProcessWatch, symlink_metadata_if_present};
 use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Error, ErrorKind, Result};
@@ -129,7 +129,9 @@ impl QmpEndpoint {
         // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one
         // call.
         let mut directory = FileLock::open_in_existing_dir(&run.join("runtime.lock"))?;
-        directory.lock(Mode::Shared, "a sweep of the runtime directory", progress)?;
+        directory.lock(Mode::Shared, "a sweep of the runtime directory", &mut |m| {
+            progress.message(m)
+        })?;
         'drawing: loop {
             let endpoint = QmpEndpoint::drawn(run, draw());
             for other in [endpoint.path().to_path_buf(), endpoint.lock_path()] {
@@ -328,7 +330,12 @@ impl Qmp {
             "another devvm process to finish with the QEMU control socket {}",
             ep.path().display()
         );
-        if !lock.lock_while(Mode::Exclusive, &what, progress, Some(&mut || process.pause()))? {
+        if !lock.lock_while(
+            Mode::Exclusive,
+            &what,
+            &mut |m| progress.message(m),
+            Some(&mut || process.pause()),
+        )? {
             return Err(exited("while another devvm process held the control socket"));
         }
         let stream = loop {
@@ -349,12 +356,13 @@ impl Qmp {
             }
         };
         let state = claim
-            .state(host.file_id(&claim.path))
+            .id
+            .compare(host.file_id(&claim.path))
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", claim.path.display()), e))?;
         let is = match state {
-            ClaimState::Ours => None,
-            ClaimState::Another => Some("another launch's file"),
-            ClaimState::Gone => Some("gone"),
+            Comparison::Same => None,
+            Comparison::Different => Some("another launch's file"),
+            Comparison::Absent => Some("gone"),
         };
         if let Some(is) = is {
             // The stream and the lock go with this return, unread.

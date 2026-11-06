@@ -25,3 +25,6 @@ pub const UNICODE_SOCKET_DIR: skuld::Label;
 
 #[skuld::label]
 pub const SYMLINKS: skuld::Label;
+
+#[skuld::label]
+pub const EXFAT_VOLUME: skuld::Label;

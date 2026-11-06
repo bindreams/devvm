@@ -245,11 +245,9 @@ impl Source {
         std::fs::create_dir_all(&qemu)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", qemu.display()), e))?;
         let mut lock = FileLock::open(&qemu.join(".extract.lock"))?;
-        lock.lock(
-            Mode::Exclusive,
-            "another devvm process to extract QEMU",
-            &*self.progress,
-        )?;
+        lock.lock(Mode::Exclusive, "another devvm process to extract QEMU", &mut |m| {
+            self.progress.message(m)
+        })?;
         // No extraction runs without the lock, so every `.extract-*` directory is a killed extraction's leftover.
         remove_stale_extractions(&qemu)?;
         if published.is_dir() {

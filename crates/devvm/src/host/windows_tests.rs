@@ -220,6 +220,113 @@ fn a_hold_deeper_than_max_path_is_deleted_and_leaves_no_name(#[fixture(unicode_h
     assert!(matches!(WindowsHost.hold_existing(&path).unwrap(), HoldOutcome::Absent));
 }
 
+/// A junction needs no privilege, so this runs in every group.
+#[skuld::test]
+fn a_junction_at_a_lock_name_is_a_link_at_every_open(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = home.join("a.lock");
+    junction::create(&target, &link).unwrap();
+    for create in [true, false] {
+        let error = WindowsHost.open_lock_file(&link, create).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "create {create}: {error}"
+        );
+        assert!(error.to_string().ends_with("is a link"), "create {create}: {error}");
+    }
+    assert!(matches!(
+        WindowsHost.hold_existing(&link).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    ));
+}
+
+/// A directory opens only because a link to one must (`FILE_FLAG_BACKUP_SEMANTICS`); it is not a lock file.
+#[skuld::test]
+fn a_directory_at_a_lock_name_is_an_error_at_every_open(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("a.lock");
+    std::fs::create_dir(&dir).unwrap();
+    for create in [true, false] {
+        let error = WindowsHost.open_lock_file(&dir, create).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::IsADirectory,
+            "create {create}: {error}"
+        );
+    }
+    let error = WindowsHost.hold_existing(&dir).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::IsADirectory, "{error}");
+}
+
+#[skuld::test]
+fn a_lock_file_opens_when_made_and_when_there_and_a_missing_one_is_not_made_by_an_existing_only_open(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let path = home.join("a.lock");
+    drop(WindowsHost.open_lock_file(&path, true).unwrap());
+    assert!(path.is_file(), "made by the first open");
+    drop(WindowsHost.open_lock_file(&path, true).unwrap());
+    // The default sharing: opens, deletes and renames are allowed while one is open.
+    let open = WindowsHost.open_lock_file(&path, false).unwrap();
+    drop(WindowsHost.open_lock_file(&path, false).unwrap());
+    std::fs::rename(&path, home.join("b.lock")).unwrap();
+    drop(open);
+
+    let missing = home.join("missing.lock");
+    let error = WindowsHost.open_lock_file(&missing, false).unwrap_err();
+    assert!(crate::host::is_absent(&error), "{error}");
+    assert!(!missing.exists());
+}
+
+/// `FSCTL_SET_REPARSE_POINT`; `windows-sys` has it behind a feature this crate does not use.
+const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+
+/// Gives `path`, a file, a reparse point of a tag that is not a name surrogate (cloud files and deduplication have
+/// such tags): in the form of a third party's tag, a GUID and no data. Needs no privilege.
+fn make_reparse_point_that_is_no_link(path: &Path) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    const TAG: u32 = 0x0000_1234;
+    let mut buffer = Vec::new();
+    buffer.extend_from_slice(&TAG.to_le_bytes());
+    buffer.extend_from_slice(&0u16.to_le_bytes()); // ReparseDataLength: no data after the GUID
+    buffer.extend_from_slice(&0u16.to_le_bytes()); // Reserved
+    buffer.extend_from_slice(&[0x5d; 16]); // ReparseGuid
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    let mut returned = 0u32;
+    // SAFETY: the handle is open for writing, the input buffer is a `REPARSE_GUID_DATA_BUFFER` of the length passed, and
+    // there is no output buffer.
+    let set = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_REPARSE_POINT,
+            buffer.as_ptr().cast(),
+            buffer.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(set, 0, "{}", std::io::Error::last_os_error());
+}
+
+/// Only a name surrogate leads to another file; any other reparse point is the file the lock is on.
+#[skuld::test]
+fn a_reparse_point_that_is_no_name_surrogate_is_let_through_as_the_file(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.lock");
+    std::fs::write(&path, b"").unwrap();
+    make_reparse_point_that_is_no_link(&path);
+    for create in [true, false] {
+        let opened = WindowsHost.open_lock_file(&path, create);
+        assert!(opened.is_ok(), "create {create}: {}", opened.unwrap_err());
+    }
+    let held = WindowsHost.hold_existing(&path);
+    assert!(matches!(held, Ok(HoldOutcome::Taken(_))), "{held:?}");
+}
+
 // The runtime directory -----------------------------------------------------------------------------------------------
 
 #[skuld::test]
