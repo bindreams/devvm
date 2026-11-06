@@ -160,6 +160,37 @@ pub(crate) fn destroy_while_a_deletion_runs<T: Send>(
 }
 
 #[skuld::test]
+fn destroy_is_done_when_the_deletion_it_waited_for_took_its_tree(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let dead = fx.env.dirs.instances().join(format!(".dead-{}", dir.id()));
+
+    let (destroyed, ()) = destroy_while_a_deletion_runs(&fx, &dir, || std::fs::remove_dir_all(&dead).unwrap());
+
+    destroyed.expect("the tree is gone, as rm promises");
+    assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
+}
+
+#[skuld::test]
+fn destroy_deletes_a_file_that_took_the_name_of_its_tree(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let dead = fx.env.dirs.instances().join(format!(".dead-{}", dir.id()));
+
+    let (destroyed, ()) = destroy_while_a_deletion_runs(&fx, &dir, || {
+        std::fs::remove_dir_all(&dead).unwrap();
+        std::fs::write(&dead, "x").unwrap();
+    });
+
+    destroyed.expect("rm succeeds");
+    assert!(
+        std::fs::symlink_metadata(&dead).is_err(),
+        "rm left a file at the name of its tree"
+    );
+    assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
+}
+
+#[skuld::test]
 fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();

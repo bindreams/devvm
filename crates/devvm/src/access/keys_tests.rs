@@ -244,6 +244,34 @@ fn a_directory_with_anything_in_it_at_the_final_path_is_never_replaced(#[fixture
 }
 
 #[skuld::test]
+fn a_file_at_the_final_path_is_never_replaced(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("keys");
+    std::fs::write(&dir, "mine").unwrap();
+    let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert_eq!(std::fs::read_to_string(&dir).unwrap(), "mine");
+    assert!(temporary_directories(home).is_empty());
+}
+
+#[skuld::test]
+fn a_final_path_that_cannot_be_looked_at_is_an_error_naming_the_look_and_leaves_no_temporary_directory(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // No file system can use a name with a NUL in it, and that says nothing about what is there: the look fails.
+    let dir = home.join("keys\0");
+    let error = InstanceKeys::generate().unwrap().write(&TestHost, &dir).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(
+        error
+            .message()
+            .starts_with(&format!("cannot look at {}", dir.display())),
+        "{error}"
+    );
+    assert!(std::error::Error::source(&error).is_some());
+    assert!(temporary_directories(home).is_empty());
+}
+
+#[skuld::test]
 fn debug_output_of_the_keys_does_not_hold_a_private_key() {
     let keys = InstanceKeys {
         client_private: SecretString::from("CLIENT-PRIVATE-KEY-TEXT"),
@@ -261,15 +289,15 @@ fn debug_output_of_the_keys_does_not_hold_a_private_key() {
 }
 
 /// POSIX lets `rmdir` of a non-empty directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`; neither
-/// means a dead claim, so `publish_dir` must be the one to refuse it.
+/// means a dead claim, so `publish_dir` must be the one to refuse it. Nor does a name that is gone or became a file.
 #[skuld::test]
 fn a_remove_failure_that_means_the_directory_is_not_empty_leaves_it_to_publish_dir() {
-    use std::io::ErrorKind::{AlreadyExists, DirectoryNotEmpty, NotFound, PermissionDenied};
-    for kind in [DirectoryNotEmpty, AlreadyExists, NotFound] {
-        assert!(super::is_not_a_dead_claim(kind), "{kind:?}");
+    use std::io::ErrorKind::{AlreadyExists, DirectoryNotEmpty, NotADirectory, NotFound, PermissionDenied};
+    for kind in [DirectoryNotEmpty, AlreadyExists, NotFound, NotADirectory] {
+        assert!(super::is_not_a_dead_claim(&kind.into()), "{kind:?}");
     }
     assert!(
-        !super::is_not_a_dead_claim(PermissionDenied),
+        !super::is_not_a_dead_claim(&PermissionDenied.into()),
         "an empty directory that cannot be removed is an error"
     );
 }

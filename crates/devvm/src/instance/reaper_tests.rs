@@ -257,6 +257,31 @@ fn a_new_dir_placed_after_the_listing_keeps_its_lock_files(#[fixture(unicode_hom
 }
 
 #[skuld::test]
+fn a_new_dir_is_left_for_the_next_command_while_another_deletion_runs(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let new_dir = root(&fx).join(format!(".new-{}", InstanceId::random()));
+    std::fs::create_dir_all(&new_dir).unwrap();
+    std::fs::write(new_dir.join("disk.img"), "x").unwrap();
+
+    let report = fx
+        .registry
+        .locks()
+        .deleting(|| fx.registry.reap())
+        .unwrap()
+        .expect("no other deletion runs");
+
+    assert!(
+        new_dir.join("disk.img").is_file(),
+        "a tree under deletion is not deleted twice"
+    );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+    let report = fx.registry.reap();
+    assert!(!new_dir.exists(), "the next command deletes it");
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+#[skuld::test]
 fn a_new_dir_with_no_lock_file_is_removed(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let new_dir = root(&fx).join(format!(".new-{}", InstanceId::random()));

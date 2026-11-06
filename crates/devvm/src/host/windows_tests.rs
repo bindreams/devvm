@@ -395,3 +395,18 @@ fn the_created_directory_is_owned_by_the_user_with_a_protected_dacl_of_one_entry
     assert!(security.dacl_is_protected());
     assert_eq!(security.allowed_sids(), vec![me]);
 }
+
+/// A junction needs no privilege, so this runs in every group.
+#[skuld::test]
+fn remove_tree_deletes_a_junction_at_the_root_and_leaves_its_target(#[fixture(unicode_home)] home: &Path) {
+    let target = home.join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("kept"), "x").unwrap();
+    let link = home.join("junction");
+    junction::create(&target, &link).unwrap();
+
+    crate::host::remove_tree(&link).unwrap();
+
+    assert!(std::fs::symlink_metadata(&link).is_err());
+    assert!(target.join("kept").is_file());
+}
