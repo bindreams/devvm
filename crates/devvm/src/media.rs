@@ -3,7 +3,7 @@
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
-use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
+use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 
 use crate::backend::{Media, MediaKind};
 use crate::host::Host;
@@ -30,8 +30,9 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 /// The image can hold private keys, so `host` writes it as a private file ([`Host::write_private`]). An image left at
 /// `into` by an earlier launch is replaced.
 ///
-/// The volume is FAT, labelled `CIDATA`. Measured: Ubuntu 24.04's cloud-init reads an image of about 1 MiB attached
-/// read-only on `virtio-blk-pci`, as the QEMU backend attaches it. Other sizes are unmeasured.
+/// The volume is FAT12, labelled `CIDATA`. Measured: Ubuntu 24.04's cloud-init reads a FAT12 image of about 1 MiB attached
+/// read-only on `virtio-blk-pci`, as the QEMU backend attaches it. Files too large for a FAT12 volume are refused with
+/// `Internal`, never written in another FAT type.
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
 /// the finished image before anything is written; an image that does not hold exactly `files` is an error.
@@ -111,12 +112,16 @@ fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
     };
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
     let size = (MIN_IMAGE + 2 * contents).next_multiple_of(u64::from(SECTOR));
-    let total_sectors = u32::try_from(size / u64::from(SECTOR)).map_err(|_| {
-        io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "the seed files do not fit a FAT volume",
-        ))
-    })?;
+    let not_fat12 = |why: &dyn std::fmt::Display| {
+        Error::new(
+            ErrorKind::Internal,
+            format!(
+                "the seed files ({contents} bytes) need an image of {size} bytes, which would not be FAT12 ({why})"
+            ),
+        )
+    };
+    let total_sectors =
+        u32::try_from(size / u64::from(SECTOR)).map_err(|_| not_fat12(&"more sectors than a FAT volume has"))?;
 
     let mut disk = Cursor::new(vec![0u8; size as usize]);
     fatfs::format_volume(
@@ -124,12 +129,16 @@ fn fat_image(files: &[SeedFile], into: &Path) -> Result<Vec<u8>> {
         FormatVolumeOptions::new()
             .bytes_per_sector(SECTOR as u16)
             .total_sectors(total_sectors)
+            .fat_type(FatType::Fat12)
             .volume_id(VOLUME_ID)
             .volume_label(*b"CIDATA     "),
     )
-    .map_err(io)?;
+    .map_err(|e| not_fat12(&e))?;
     {
         let fs = FileSystem::new(&mut disk, FsOptions::new()).map_err(io)?;
+        if fs.fat_type() != FatType::Fat12 {
+            return Err(not_fat12(&format!("{:?}", fs.fat_type())));
+        }
         for file in files {
             let mut out = fs.root_dir().create_file(&file.name).map_err(|e| {
                 if is_name_rejection(&e) {
