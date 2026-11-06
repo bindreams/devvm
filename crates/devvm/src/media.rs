@@ -26,7 +26,7 @@ const MIN_IMAGE: u64 = 1 << 20;
 /// clusters of 32 KiB. Measured: one byte more fails to format ("Cannot select FAT type").
 const LARGEST_FAT12_CONTENTS: u64 = 66_418_688;
 const _: () = assert!(
-    (MIN_IMAGE + 2 * LARGEST_FAT12_CONTENTS).div_ceil(SECTOR as u64) <= u32::MAX as u64,
+    unchecked_image_size(LARGEST_FAT12_CONTENTS) / SECTOR as u128 <= u32::MAX as u128,
     "the sector count of the largest image must fit a FAT volume"
 );
 /// The volume id of every image: a fixed value keeps equal inputs byte-identical.
@@ -127,11 +127,14 @@ fn image_size(contents: u64) -> Result<u64> {
 }
 
 /// The image size for `contents` bytes of files, whether or not a FAT12 volume that size holds them.
-fn unchecked_image_size(contents: u64) -> u128 {
-    (u128::from(MIN_IMAGE) + 2 * u128::from(contents)).next_multiple_of(u128::from(SECTOR))
+const fn unchecked_image_size(contents: u64) -> u128 {
+    (MIN_IMAGE as u128 + 2 * contents as u128).next_multiple_of(SECTOR as u128)
 }
 
 /// The options that format an image of `size` bytes ([`image_size`]) as the seed volume.
+///
+/// `fat_type` only picks the cluster size in `fatfs` 0.3.6; the volume is FAT12 because `size` is within
+/// [`LARGEST_FAT12_CONTENTS`]' bound, which [`image_size`] enforces.
 fn format_options(size: u64) -> FormatVolumeOptions {
     // Fits `u32`: see the assertion beside `LARGEST_FAT12_CONTENTS`.
     let total_sectors = (size / u64::from(SECTOR)) as u32;
@@ -144,6 +147,9 @@ fn format_options(size: u64) -> FormatVolumeOptions {
 }
 
 /// The seed image, built in memory: every `fatfs` failure here is `Internal`, as nothing touches the host.
+///
+/// The volume is FAT12 because [`image_size`] bounds the image; `fatfs` chooses the type from the geometry, and the
+/// debug assertion checks it did.
 fn fat_image(files: &[SeedFile]) -> Result<Vec<u8>> {
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
     let size = image_size(contents)?;

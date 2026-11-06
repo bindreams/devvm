@@ -7,6 +7,7 @@ use super::{
     LARGEST_FAT12_CONTENTS, SeedFile, fat_image, format_options, image_size, unchecked_image_size, write_cidata_image,
 };
 use crate::backend::MediaKind;
+use crate::host::symlink_metadata_if_present;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{RecordingHost, TestHost};
 
@@ -332,7 +333,7 @@ fn a_seed_beyond_the_fat12_limit_is_refused_and_leaves_an_earlier_image_untouche
 
     let error = write_cidata_image(&host, &too_large, &image).expect_err("over the limit");
     assert_eq!(error.kind(), crate::ErrorKind::Internal, "{error}");
-    assert!(!image.exists());
+    assert!(matches!(symlink_metadata_if_present(&image), Ok(None)));
     assert!(host.private_writes().is_empty());
 
     std::fs::write(&image, b"left by an earlier launch").unwrap();
@@ -364,13 +365,14 @@ fn the_image_is_fat12_whatever_the_contents() {
 }
 
 /// The limit is tight: one byte more than [`LARGEST_FAT12_CONTENTS`], at the size the formula gives, does not format as
-/// FAT12.
+/// FAT12 (`fatfs` either fails or picks another type).
 #[skuld::test]
 fn one_byte_beyond_the_fat12_limit_does_not_format_as_fat12() {
     let size = unchecked_image_size(LARGEST_FAT12_CONTENTS + 1) as u64;
     let mut disk = Cursor::new(vec![0u8; size as usize]);
-    let error = fatfs::format_volume(&mut disk, format_options(size)).expect_err("FAT12 cannot hold this");
-    assert!(error.to_string().contains("Cannot select FAT type"), "{error}");
+    if fatfs::format_volume(&mut disk, format_options(size)).is_ok() {
+        assert_ne!(type_of(disk.into_inner()), fatfs::FatType::Fat12);
+    }
 }
 
 #[skuld::test]
