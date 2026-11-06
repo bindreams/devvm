@@ -68,7 +68,7 @@ fn a_degraded_first_boot_is_reported_by_name_and_is_not_an_error(#[fixture(unico
     assert!(
         messages
             .iter()
-            .any(|m| m == "instance foo: the first boot finished with problems: degraded done: one module failed"),
+            .any(|m| m == "instance foo: the boot finished with problems: degraded done: one module failed"),
         "{messages:?}"
     );
 }

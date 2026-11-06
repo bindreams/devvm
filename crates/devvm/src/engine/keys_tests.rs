@@ -9,6 +9,7 @@ use crate::access::keys::InstanceKeys;
 use crate::backend::{Endpoint, MachineRecord, SshEndpoint};
 use crate::engine::engine_tests::{engine_fixture, instance_in, memory, record_machine};
 use crate::engine::keys::{SSH_USER, ensure_keys, read_target};
+use crate::host::symlink_metadata_if_present;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::TestHost;
 
@@ -86,7 +87,12 @@ fn a_half_deleted_key_set_is_an_error_naming_the_directory_and_is_not_regenerate
 
     assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
     assert!(error.message().contains(&keys_dir.display().to_string()), "{error}");
-    assert!(!keys_dir.join("host.pub").exists(), "no key was made to fill the gap");
+    assert!(
+        symlink_metadata_if_present(&keys_dir.join("host.pub"))
+            .unwrap()
+            .is_none(),
+        "no key was made to fill the gap"
+    );
     let after: Vec<_> = ["client", "client.pub", "host"]
         .iter()
         .map(|name| std::fs::read(keys_dir.join(name)).unwrap())

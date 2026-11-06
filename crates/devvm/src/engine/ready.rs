@@ -13,7 +13,7 @@ use crate::{Error, ErrorKind, Result};
 #[path = "ready_tests.rs"]
 mod ready_tests;
 
-/// Connects to the guest at `target` and waits until its first boot has finished. The wait ends when the guest is
+/// Connects to the guest at `target` and waits until its boot has finished. The wait ends when the guest is
 /// ready, when the VM process `process` exits, or when the engine's boot bound passes, whichever comes first; a failure
 /// names what was awaited and the serial log. The returned session is past its boot phase.
 ///
@@ -44,9 +44,9 @@ pub(crate) fn connect_ready(
         engine.progress().as_ref(),
     )?;
     if let Readiness::Degraded(what) = guest.wait_ready(&session)? {
-        engine.progress().message(&format!(
-            "instance {name}: the first boot finished with problems: {what}"
-        ));
+        engine
+            .progress()
+            .message(&format!("instance {name}: the boot finished with problems: {what}"));
     }
     session.finish_boot();
     Ok(session)

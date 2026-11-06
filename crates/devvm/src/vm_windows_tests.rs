@@ -17,6 +17,7 @@ use crate::engine::engine_tests::{
 use crate::engine::keys::read_target;
 use crate::engine::{LaunchHooks, LaunchStep};
 use crate::exit::NullProgress;
+use crate::host::symlink_metadata_if_present;
 use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::{build_expiring, days, key, names, t0};
@@ -1012,11 +1013,16 @@ fn observe_readiness(fx: &EngineFixture, instance_dir: &Path) -> Arc<std::sync::
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (seen, dir) = (observed.clone(), instance_dir.to_path_buf());
     let conf = fx.env.dirs.ssh().join("foo.conf");
+    let is_file = |path: &Path| {
+        symlink_metadata_if_present(path)
+            .unwrap()
+            .is_some_and(|meta| meta.is_file())
+    };
     fx.guests.on_ready(move || {
         seen.lock().unwrap().push(AtReady {
-            seed_written: dir.join("seed").join("seed.fake").is_file(),
-            keys_written: KEY_FILES.iter().all(|name| dir.join("keys").join(name).is_file()),
-            conf_written: conf.is_file(),
+            seed_written: is_file(&dir.join("seed").join("seed.fake")),
+            keys_written: KEY_FILES.iter().all(|name| is_file(&dir.join("keys").join(name))),
+            conf_written: is_file(&conf),
             still_contained: answer(started_port(&dir)).contains("kill-on-close=true"),
         });
     });
@@ -1078,11 +1084,9 @@ fn the_ssh_config_entry_is_written_with_the_second_records_endpoints(#[fixture(u
 fn an_unready_guest_reports_what_it_awaited_and_the_serial_log(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     let dir = instance_in(&fx, "foo", home);
-    // Nothing listens at this address.
-    let nothing = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
+    // The listener is held for the whole test and never accepts: the port stays ours, and no SSH banner ever comes.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let nothing = silent.local_addr().unwrap();
     let backend = Arc::new(FakeBackend::new(&TestHost).with_ssh_endpoint(nothing));
     let engine = engine_with_bound(
         fx.env.dirs.clone(),

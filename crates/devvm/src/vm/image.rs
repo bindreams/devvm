@@ -64,7 +64,8 @@ impl Image {
     }
 
     /// Creates the instance `name`, starts its VM and returns once the guest answers over SSH. The VM and the instance
-    /// stay until `Instance::remove`, whether or not this process lives on. A failure removes what it made.
+    /// stay until `Instance::remove`, whether or not this process lives on. A failure removes what it made, except a
+    /// VM already released for the hand-over: the reaper takes that one.
     pub fn up(&self, name: &str, opts: &StartOptions) -> Result<Instance> {
         self.up_with(name, opts, &mut || {})
     }
