@@ -204,7 +204,7 @@ pub(crate) trait Host: Send + Sync {
     /// so it reads the identity of a file that is held (see [`Hold`]).
     fn file_id(&self, path: &Path) -> std::io::Result<FileId>;
 
-    /// The identity of the open file `file`: of the file itself, whatever its name leads to now. While `file` stays open
+    /// The identity of the open file `file`, whatever its name leads to now. While `file` stays open
     /// the id cannot be given to another file (ext4 reuses an inode only after the last close). On Windows it fails
     /// with `InvalidInput` on a volume without file ids (exFAT, FAT32); a build without file ids fails `Unsupported`.
     fn file_id_of_open(&self, file: &File) -> std::io::Result<FileId>;
@@ -221,7 +221,8 @@ pub(crate) trait Host: Send + Sync {
 
     /// Opens the lock file `path` for reading and writing with the default sharing (other opens, deletes and renames
     /// are allowed), making it if `create`. A link at `path` is `InvalidInput`, "is a link": it is not opened through,
-    /// so a lock is never taken on what a link leads to.
+    /// so a lock is never taken on what a link leads to. A host whose open cannot refuse a link (`OtherHost`) looks at
+    /// the name first, so a link made between the look and the open is followed there.
     fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File>;
 
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at

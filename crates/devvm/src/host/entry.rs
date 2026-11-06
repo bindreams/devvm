@@ -32,7 +32,7 @@ pub(crate) fn is_absent(e: &io::Error) -> bool {
     )
 }
 
-/// The error for a link met where a file is wanted: `InvalidInput`, "is a link".
+/// The error for a link met where a file is wanted.
 pub(crate) fn is_a_link(path: &Path) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, format!("{} is a link", path.display()))
 }

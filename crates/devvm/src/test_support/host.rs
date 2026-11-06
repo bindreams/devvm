@@ -300,7 +300,6 @@ impl Host for NoAccelHost {
 pub struct RecordingHost {
     windows_names: bool,
     no_symlinks: bool,
-    /// `volume_has_posix_unlink_rename` says no, as it does for exFAT or FAT32.
     no_posix_unlink: bool,
     /// What `symlinks_have_kinds` answers; the real host's answer when unset.
     link_kinds: Option<bool>,

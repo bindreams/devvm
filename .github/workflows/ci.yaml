@@ -23,6 +23,7 @@ env:
   DEVVM_TEST_OPENSSH_SFTP: "0"
   DEVVM_TEST_NTFS_NAMES: "0"
   DEVVM_TEST_ACP_1252: "0"
+  DEVVM_TEST_EXFAT_VOLUME: "0"
 
 jobs:
   lint:
@@ -90,6 +91,9 @@ jobs:
           DEVVM_TEST_PYYAML: ${{ runner.os == 'Linux' && '1' || '0' }}
           DEVVM_TEST_NTFS_NAMES: ${{ runner.os == 'Windows' && '1' || '0' }}
           DEVVM_TEST_ACP_1252: ${{ runner.os == 'Windows' && '1' || '0' }}
+          # The test attaches an exFAT virtual disk; a hosted runner is a throwaway sandbox.
+          DEVVM_TEST_EXFAT_VOLUME: ${{ runner.os == 'Windows' && '1' || '0' }}
+          DEVVM_TEST_EXFAT_VOLUME_CONSENT: "1"
 
       # The copy tests again, against OpenSSH's own sftp-server instead of the scripted one.
       - name: Install OpenSSH's SFTP server

@@ -4,7 +4,7 @@ use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
-use crate::host::{Comparison, Host};
+use crate::host::{self, Comparison, Host};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -28,34 +28,55 @@ pub enum Mode {
 /// (`LockFileEx`), so it is a debug assertion failure. Take another `FileLock::open` of the same path for a second
 /// holder. Locking and unlocking take `&mut self`, so two threads cannot share one value and both believe they hold
 /// it. Lock files hold no data.
-#[derive(Debug)]
 pub struct FileLock {
     path: PathBuf,
     file: File,
     held: bool,
+    /// The host that opened the file, which answers every look at it.
+    host: &'static dyn Host,
+}
+
+impl std::fmt::Debug for FileLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileLock")
+            .field("path", &self.path)
+            .field("file", &self.file)
+            .field("held", &self.held)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FileLock {
     /// Opens the lock file, creating it and its parent directories.
     pub fn open(path: &Path) -> Result<FileLock> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| {
-                Error::io(
-                    ErrorKind::Io,
-                    format!("cannot open lock file {}", path.display()),
-                    source,
-                )
-            })?;
-        }
-        FileLock::open_in_existing_dir(path)
+        make_parents(path)?;
+        FileLock::create_in(host::current(), path)
     }
 
     /// Opens the lock file, creating it but no directory: for a directory that someone else makes, with permissions of
     /// their own. A missing directory is an error that names it.
-    ///
-    /// No open of a lock file follows a link: a link at `path` is an error ([`Host::open_lock_file`]).
     pub fn open_in_existing_dir(path: &Path) -> Result<FileLock> {
-        let file = crate::host::current().open_lock_file(path, true).map_err(|source| {
+        FileLock::create_in(host::current(), path)
+    }
+
+    /// Opens an existing lock file without creating it or its directories; `None` if it is absent
+    /// ([`crate::host::is_absent`]).
+    pub fn open_existing(path: &Path) -> Result<Option<FileLock>> {
+        FileLock::existing_in(host::current(), path)
+    }
+
+    /// [`FileLock::open`] or [`FileLock::open_existing`] by `create`, through `host`; `Some` with `create`.
+    pub(crate) fn open_with_host(host: &'static dyn Host, path: &Path, create: bool) -> Result<Option<FileLock>> {
+        if create {
+            make_parents(path)?;
+            FileLock::create_in(host, path).map(Some)
+        } else {
+            FileLock::existing_in(host, path)
+        }
+    }
+
+    fn create_in(host: &'static dyn Host, path: &Path) -> Result<FileLock> {
+        let file = host.open_lock_file(path, true).map_err(|source| {
             // The file is made if it is missing, so only its directory can be; a link at the directory is there, and
             // leads nowhere.
             let text = match path.parent() {
@@ -77,26 +98,17 @@ impl FileLock {
             path: path.to_owned(),
             file,
             held: false,
+            host,
         })
     }
 
-    /// [`FileLock::open`] with `create`, else [`FileLock::open_existing`]; `Some` with `create`.
-    pub fn open_with(path: &Path, create: bool) -> Result<Option<FileLock>> {
-        if create {
-            FileLock::open(path).map(Some)
-        } else {
-            FileLock::open_existing(path)
-        }
-    }
-
-    /// Opens an existing lock file without creating it or its directories; `None` if it is absent
-    /// ([`crate::host::is_absent`]).
-    pub fn open_existing(path: &Path) -> Result<Option<FileLock>> {
-        match crate::host::current().open_lock_file(path, false) {
+    fn existing_in(host: &'static dyn Host, path: &Path) -> Result<Option<FileLock>> {
+        match host.open_lock_file(path, false) {
             Ok(file) => Ok(Some(FileLock {
                 path: path.to_owned(),
                 file,
                 held: false,
+                host,
             })),
             Err(source) if crate::host::is_absent(&source) => Ok(None),
             Err(source) => Err(Error::io(
@@ -175,26 +187,21 @@ impl FileLock {
         &self.path
     }
 
-    /// How the file at [`FileLock::path`] compares with the file this lock is on: `Same`; `Different`, another file
-    /// put at the name after this was opened (the file unlinked, renamed away or replaced, by a link too); or `Absent`,
-    /// no file there.
-    ///
-    /// The open handle stays open across the look, which is what makes the answer sound: a file system gives the id of
-    /// a file to another only after the last handle to it closes. The caller keeps unlinkers away for the look (see
-    /// `Locks`); a lookup that fails is an error, never `Absent`.
+    /// How the file at [`FileLock::path`] compares with the file this lock is on; see [`Comparison`]. A lookup that
+    /// fails is an error, never `Absent`; the caller keeps unlinkers away for the look (see `Locks`).
     pub(crate) fn is_at_path(&self) -> Result<Comparison> {
-        let host = crate::host::current();
-        let held = host
+        let held = self
+            .host
             .file_id_of_open(&self.file)
             .map_err(|e| self.failure("look at", e))?;
-        held.compare(host.file_id(&self.path))
+        held.compare(self.host.file_id(&self.path))
             .map_err(|e| self.failure("look at", e))
     }
 
-    /// Whether the volume of this file has POSIX unlink and rename (NTFS, ReFS), which the lock files of `Locks` rely
-    /// on, by the answer of `host`.
-    pub(crate) fn volume_has_posix_unlink_rename(&self, host: &dyn Host) -> Result<bool> {
-        host.volume_has_posix_unlink_rename(&self.file)
+    /// [`Host::volume_has_posix_unlink_rename`] for this file.
+    pub(crate) fn volume_has_posix_unlink_rename(&self) -> Result<bool> {
+        self.host
+            .volume_has_posix_unlink_rename(&self.file)
             .map_err(|e| self.failure("look at the volume of", e))
     }
 
@@ -205,6 +212,20 @@ impl FileLock {
             source,
         )
     }
+}
+
+/// Makes the directories above the lock file `path`.
+fn make_parents(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot open lock file {}", path.display()),
+                source,
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// Runs a blocking call again for as long as a signal interrupts it (`EINTR`); no cap, since the call only fails that

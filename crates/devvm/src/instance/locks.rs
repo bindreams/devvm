@@ -15,9 +15,9 @@
 //!   `instances.dir` checks its volume. Its holders only read files, open files, look at a name, rename or unlink,
 //!   never wait for another lock, so waiting for it cannot deadlock, not even in the layer store's collection, which
 //!   must not wait for any lock that a holder of the shared `gc.lock` could hold. A creator makes it before it places
-//!   an instance and nothing deletes it. A reader looks at the directory it will read under it, except for the first
-//!   look when `instances.dir` is missing (see [`Locks::reading`]), and puts the lock file back if that directory
-//!   exists without it.
+//!   an instance and nothing deletes it. A reader looks at the directory or lock file it will read under it, except
+//!   for the first look when `instances.dir` is missing (see [`Locks::reading`]), and puts `instances.dir` back if
+//!   what it reads exists without it.
 //! - `dead.lock`: held by whoever deletes the contents of a `.dead-<id>` directory, so that two processes never delete
 //!   one tree at once. `rm` waits for it (it promises its tree is gone); the reaper only tries it, since it runs again.
 //!   Its holders only delete and wait for nothing.
@@ -25,9 +25,10 @@
 //! Nothing but a holder of the owner lock (or, in `destroy`, of the op lock) unlinks a lock file. A process that
 //! opened a lock file before it was unlinked can still lock it, and then holds a lock on a file nobody else will ever
 //! see, so every take of an instance lock compares the locked file with the file at the name, under `instances.dir`
-//! shared: a file put at the name since is another file, and a lock on the old one proves nothing.
+//! shared: a file put at the name since is another file, and a lock on the old one proves nothing. `instances.dir`
+//! itself is compared the same way at every take.
 //!
-//! No lock file is opened through a link: a link at a lock name is an error at the open, whatever its target holds.
+//! No lock file is opened through a link: a link at a lock name is an error at the open.
 
 use std::path::{Path, PathBuf};
 
@@ -55,9 +56,8 @@ pub(crate) enum Probe {
     Gone,
 }
 
-/// A lock file opened while `instances.dir` is held shared.
+/// A lock file with the shared hold of `instances.dir` it was opened under.
 struct LockInDir {
-    /// `instances.dir`, held shared until this is dropped.
     dir: FileLock,
     file: FileLock,
 }
@@ -82,12 +82,8 @@ impl Locks {
     /// Runs `f` while no instance directory is renamed, if the instance directory `seen` exists; else `None`. `f` may
     /// read and write files inside the directory, but must not take or wait for any other lock.
     ///
-    /// `seen` is looked at under `instances.dir`, so no devvm rename of it can run during the look. A reader of a state
-    /// that never held an instance creates nothing: with no `instances.dir`, a `seen` that is not there ends the read,
-    /// a look that fails is the error, and a `seen` that is there is looked at again under the lock once it is made. A
-    /// creator makes `instances.dir` before it places any instance and nothing deletes it: a directory that exists
-    /// while the lock file does not was damaged from outside, and the reader puts the file back rather than report
-    /// that there is nothing to read.
+    /// `seen` is looked at under `instances.dir`, so no devvm rename of it runs during the look. With no
+    /// `instances.dir`, nothing is created unless `seen` exists; a look that fails is the error.
     pub(crate) fn reading<T>(&self, seen: &Path, f: impl FnOnce() -> T) -> Result<Option<T>> {
         self.reading_with(seen, &mut || {}, f)
     }
@@ -99,34 +95,17 @@ impl Locks {
         after_seen: &mut dyn FnMut(),
         f: impl FnOnce() -> T,
     ) -> Result<Option<T>> {
-        // A link at `seen` is there; what is absent is the same as in `FileId::compare`.
-        let look = || {
-            symlink_metadata_if_present(seen)
-                .map(|meta| meta.is_some())
-                .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", seen.display()), e))
+        let Some(_dir) = self.shared_dir_for(seen, after_seen, &mut || {})? else {
+            return Ok(None);
         };
-        let dir_lock = match self.open_dir(false)? {
-            Some(dir_lock) => dir_lock,
-            None => {
-                // A first create may be placing and renaming `seen` right now, so only "not there" is an answer; a look
-                // that fails is the error, and creates nothing.
-                if !look()? {
-                    return Ok(None);
-                }
-                after_seen();
-                self.make_dir()?
-            }
-        };
-        let _shared = take(dir_lock, Mode::Shared, &mut || {})?;
-        Ok(look()?.then(f))
+        Ok(is_there(seen)?.then(f))
     }
 
     /// Runs `f`, which renames an instance directory or unlinks lock files, while no one reads inside any instance
     /// directory or opens a lock file. `before_wait` runs just before waiting for them. `f` must not take or wait for
     /// any other lock.
     pub(crate) fn excluding_readers<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
-        let dir = self.make_dir()?;
-        let _lock = take(dir, Mode::Exclusive, before_wait)?;
+        let _dir = self.make_dir(Mode::Exclusive, before_wait)?;
         Ok(f())
     }
 
@@ -138,7 +117,7 @@ impl Locks {
     /// serialize them: its lock files are unlinked at the end of `rm`, and a file that is being unlinked cannot be
     /// opened.
     pub(crate) fn deleting<T>(&self, f: impl FnOnce() -> T) -> Result<Option<T>> {
-        let mut lock = FileLock::open(&self.dir.join("dead.lock"))?;
+        let mut lock = self.create(&self.dir.join("dead.lock"))?;
         if !lock.try_lock(Mode::Exclusive)? {
             return Ok(None);
         }
@@ -149,11 +128,7 @@ impl Locks {
     /// uses this: it promises its tree is gone. Holders only delete a tree and wait for nothing, so this cannot
     /// deadlock, whatever lock the caller holds.
     pub(crate) fn deleting_waiting<T>(&self, before_wait: &mut dyn FnMut(), f: impl FnOnce() -> T) -> Result<T> {
-        let _lock = take(
-            FileLock::open(&self.dir.join("dead.lock"))?,
-            Mode::Exclusive,
-            before_wait,
-        )?;
+        let _lock = take(self.create(&self.dir.join("dead.lock"))?, Mode::Exclusive, before_wait)?;
         Ok(f())
     }
 
@@ -188,9 +163,9 @@ impl Locks {
             let mut owner = self.open_in_dir(&path, true, &mut || {})?.ok_or_else(|| gone(id))?.file;
             owner.lock(Mode::Exclusive, "a lock-file sweep to finish", &NullProgress)?;
             between();
-            let (comparison, _dir) = self.is_current(&owner)?;
+            let (comparison, _dir) = self.is_current(&owner, &mut || {})?;
             if comparison == Comparison::Same {
-                drop(FileLock::open(&self.op_path(id))?);
+                drop(self.create(&self.op_path(id))?);
                 return Ok(owner);
             }
         }
@@ -201,12 +176,17 @@ impl Locks {
     /// deleted from outside.
     ///
     /// A holder of an old, unlinked owner file is not seen. Like `acquire_owner_new_with`, it retries until the locked
-    /// file is still the one at the name, and it never waits for a held lock. The op file is created inside the hold
-    /// of `instances.dir` that the check was made under.
+    /// file is still the one at the name, and it never waits for a held lock.
     pub(crate) fn try_owner_recreating(&self, id: &InstanceId) -> Result<Probe> {
+        self.try_owner_recreating_with(id, &mut || {})
+    }
+
+    /// `try_owner_recreating` with `between` run after the file is opened and before it is tried, so a test can play
+    /// the sweeper that unlinks it.
+    pub(crate) fn try_owner_recreating_with(&self, id: &InstanceId, between: &mut dyn FnMut()) -> Result<Probe> {
         let op_path = self.op_path(id);
-        let make_op = &mut || FileLock::open(&op_path).map(drop);
-        self.probe(&self.owner_path(id), true, &mut || {}, &mut || {}, make_op)
+        let make_op = &mut || self.create(&op_path).map(drop);
+        self.probe(&self.owner_path(id), true, &mut || {}, between, make_op)
     }
 
     /// Tries the owner lock without creating anything.
@@ -247,7 +227,7 @@ impl Locks {
                 .file;
             lock.lock(mode, what, progress)?;
             // The holder we waited for may have removed the instance, or put another file at the name.
-            match self.is_current(&lock)?.0 {
+            match self.is_current(&lock, &mut || {})?.0 {
                 Comparison::Same => return Ok(lock),
                 Comparison::Absent => return Err(gone(id)),
                 Comparison::Different => {}
@@ -296,34 +276,62 @@ impl Locks {
 
     /// How the file at the path of `lock`, taken, compares with the file `lock` is on, and the shared hold of
     /// `instances.dir` it was looked under. Looks while no lock file is unlinked, so the name is there or not there,
-    /// with no unlink half done. `lock` stays open across the look: the file system gives its identity to another
-    /// file only after the last handle closes.
+    /// with no unlink half done. `during` runs under the hold, just before the look.
     ///
-    /// `instances.dir` is made if it is missing: devvm never deletes it, so a missing one was damaged from outside,
-    /// and a lock file is not gone for that, as in [`Locks::reading`].
-    fn is_current(&self, lock: &FileLock) -> Result<(Comparison, FileLock)> {
-        let dir = self.make_dir()?;
-        let dir = take(dir, Mode::Shared, &mut || {})?;
+    /// `instances.dir` is made if missing, as in [`Locks::reading`].
+    fn is_current(&self, lock: &FileLock, during: &mut dyn FnMut()) -> Result<(Comparison, FileLock)> {
+        let dir = self.make_dir(Mode::Shared, &mut || {})?;
+        during();
         Ok((lock.is_at_path()?, dir))
     }
 
-    /// Opens `instances.dir`, making it if `create`, else `None` if it is absent; not locked. Its volume is the volume
-    /// of every lock file in it, so the places that open it check it.
-    fn open_dir(&self, create: bool) -> Result<Option<FileLock>> {
-        FileLock::open_with(&self.dir.join("instances.dir"), create)?
-            .map(|dir| self.checked(dir))
-            .transpose()
+    /// `instances.dir`, taken in `mode`, whose file is the one at its name: each time it is not, it is taken again,
+    /// like an instance lock. Made if `create`, else `None` if it is absent. `before_wait` runs just before waiting for
+    /// the lock. Its volume is the volume of every lock file in it, so every take checks it.
+    fn lock_dir(&self, create: bool, mode: Mode, before_wait: &mut dyn FnMut()) -> Result<Option<FileLock>> {
+        loop {
+            let Some(dir) = FileLock::open_with_host(self.host, &self.dir.join("instances.dir"), create)? else {
+                return Ok(None);
+            };
+            let dir = take(self.checked(dir)?, mode, before_wait)?;
+            if dir.is_at_path()? == Comparison::Same {
+                return Ok(Some(dir));
+            }
+        }
     }
 
-    /// [`Locks::open_dir`] with `create`, whose result is never `None`.
-    fn make_dir(&self) -> Result<FileLock> {
-        self.open_dir(true)?
-            .ok_or_else(|| Error::new(ErrorKind::Internal, "opening instances.dir with create gave no file"))
+    /// [`Locks::lock_dir`] with `create`, whose result is never `None`.
+    fn make_dir(&self, mode: Mode, before_wait: &mut dyn FnMut()) -> Result<FileLock> {
+        made(self.lock_dir(true, mode, before_wait)?)
+    }
+
+    /// The lock file at `path`, made with its directories if missing, opened through this host.
+    fn create(&self, path: &Path) -> Result<FileLock> {
+        made(FileLock::open_with_host(self.host, path, true)?)
+    }
+
+    /// `instances.dir` held shared for a look at or an open of `seen`. With no `instances.dir`, `None` if `seen` is not
+    /// there, and nothing is made; else it is made, after `after_seen`. A first create may be placing and renaming
+    /// `seen` right now, so only "not there" is an answer.
+    fn shared_dir_for(
+        &self,
+        seen: &Path,
+        after_seen: &mut dyn FnMut(),
+        before_wait: &mut dyn FnMut(),
+    ) -> Result<Option<FileLock>> {
+        if let Some(dir) = self.lock_dir(false, Mode::Shared, before_wait)? {
+            return Ok(Some(dir));
+        }
+        if !is_there(seen)? {
+            return Ok(None);
+        }
+        after_seen();
+        self.make_dir(Mode::Shared, before_wait).map(Some)
     }
 
     /// `dir`, the lock file of `instances.dir`, if its volume allows the lock design.
     fn checked(&self, dir: FileLock) -> Result<FileLock> {
-        if !dir.volume_has_posix_unlink_rename(self.host)? {
+        if !dir.volume_has_posix_unlink_rename()? {
             return Err(Error::new(
                 ErrorKind::NotSupported,
                 format!(
@@ -338,13 +346,17 @@ impl Locks {
 
     /// Opens the lock file at `path` under a shared hold of `instances.dir` that lasts as long as the result does, so a
     /// caller that is about to wait for the opened lock drops it first; `before_wait` runs just before waiting for the
-    /// hold. With `create`, makes the file and `instances.dir` if missing; else `None` if either is absent.
+    /// hold. With `create`, makes the file and `instances.dir` if missing; else `None` if the file is absent.
     fn open_in_dir(&self, path: &Path, create: bool, before_wait: &mut dyn FnMut()) -> Result<Option<LockInDir>> {
-        let Some(dir) = self.open_dir(create)? else {
+        let dir = if create {
+            Some(self.make_dir(Mode::Shared, before_wait)?)
+        } else {
+            self.shared_dir_for(path, &mut || {}, before_wait)?
+        };
+        let Some(dir) = dir else {
             return Ok(None);
         };
-        let dir = take(dir, Mode::Shared, before_wait)?;
-        Ok(FileLock::open_with(path, create)?.map(|file| LockInDir { dir, file }))
+        Ok(FileLock::open_with_host(self.host, path, create)?.map(|file| LockInDir { dir, file }))
     }
 
     /// Tries the lock file at `path` exclusive without waiting, and compares the file at its name with the one locked,
@@ -417,6 +429,18 @@ impl Locks {
         }
         Ok(ids)
     }
+}
+
+/// The lock file an open with `create` gave, which is never `None`.
+fn made(lock: Option<FileLock>) -> Result<FileLock> {
+    lock.ok_or_else(|| Error::new(ErrorKind::Internal, "opening a lock file with create gave no file"))
+}
+
+/// Whether anything is at `path`: a link at `path` counts as there, followed or not.
+fn is_there(path: &Path) -> Result<bool> {
+    symlink_metadata_if_present(path)
+        .map(|meta| meta.is_some())
+        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", path.display()), e))
 }
 
 /// Locks `lock`, saying so through `before_wait` first when it has to wait.

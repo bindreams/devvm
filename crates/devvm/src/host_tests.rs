@@ -473,6 +473,7 @@ fn the_lib_suite_passes_in_a_process_pinned_to_acp_1252() {
 
     let mut cmd = std::process::Command::new(&exe);
     cmd.env("DEVVM_TEST_VM", "0")
+        .env("DEVVM_TEST_EXFAT_VOLUME", "0")
         .env("DEVVM_TEST_ACP_1252", "1")
         .env(PINNED_CHILD, PINNED_LOCALE)
         .env_remove("SKULD_LABELS")

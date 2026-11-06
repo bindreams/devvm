@@ -6,12 +6,15 @@ use std::os::windows::io::AsRawHandle;
 use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
 use windows_sys::Win32::System::SystemServices::FILE_SUPPORTS_POSIX_UNLINK_RENAME;
 
-/// Whether the volume of `file` has POSIX unlink and rename, which instance lock files rely on: NTFS and ReFS have it;
-/// exFAT, FAT32 and SMB do not.
+#[cfg(test)]
+#[path = "volume_tests.rs"]
+mod volume_tests;
+
+/// [`Host::volume_has_posix_unlink_rename`](crate::host::Host::volume_has_posix_unlink_rename).
 pub(super) fn has_posix_unlink_rename(file: &File) -> std::io::Result<bool> {
     let mut flags = 0u32;
     // SAFETY: the handle is open; the out pointer is a `u32`, and the other out pointers and buffers are null with
-    // size 0, which the call allows.
+    // size 0.
     let read = unsafe {
         GetVolumeInformationByHandleW(
             file.as_raw_handle(),

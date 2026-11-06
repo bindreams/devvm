@@ -314,9 +314,8 @@ fn reparse_tag(file: &File) -> std::io::Result<u32> {
     Ok(info.ReparseTag)
 }
 
-/// `InvalidInput`, "is a link", if `file`, opened with [`LINK_OPEN`], is the link at `path` and not what it leads to: a
-/// reparse point whose tag is a name surrogate. A directory is `IsADirectory`: it opened only for [`LINK_OPEN`], and a
-/// lock or a hold is on a file.
+/// `InvalidInput` "is a link" if `file` is a name-surrogate reparse point; `IsADirectory` for a directory, which
+/// [`LINK_OPEN`] lets open but a lock or hold is not on.
 fn refuse_link(file: &File, path: &Path) -> std::io::Result<()> {
     let attributes = file.metadata()?.file_attributes();
     if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && reparse_tag(file)? & REPARSE_TAG_NAME_SURROGATE != 0 {

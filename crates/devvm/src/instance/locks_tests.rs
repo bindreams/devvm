@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::ErrorKind;
@@ -685,12 +685,25 @@ fn a_failed_unlink_of_the_op_file_leaves_the_owner_file_for_the_sweep(#[fixture(
     assert!(!locks.op_path(&id).exists() && !locks.owner_path(&id).exists());
 }
 
+fn without_posix_unlink(dir: PathBuf) -> Locks {
+    Locks::new(dir, Box::leak(Box::new(RecordingHost::without_posix_unlink())))
+}
+
+fn assert_names_the_volume_requirement(error: crate::Error, home: &Path) {
+    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+    assert!(error.message().contains("NTFS or ReFS"), "{}", error.message());
+    assert!(
+        error.message().contains(&home.join("locks").display().to_string()),
+        "{}",
+        error.message()
+    );
+}
+
 #[skuld::test]
 fn a_lock_take_on_a_volume_without_posix_unlink_is_not_supported_and_names_the_requirement(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let host: &'static RecordingHost = Box::leak(Box::new(RecordingHost::without_posix_unlink()));
-    let locks = Locks::new(home.join("locks"), host);
+    let locks = without_posix_unlink(home.join("locks"));
     let id = InstanceId::random();
 
     let errors = [
@@ -699,12 +712,205 @@ fn a_lock_take_on_a_volume_without_posix_unlink_is_not_supported_and_names_the_r
         locks.excluding_readers(&mut || {}, || ()).unwrap_err(),
     ];
     for error in errors {
-        assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
-        assert!(error.message().contains("NTFS or ReFS"), "{}", error.message());
-        assert!(
-            error.message().contains(&home.join("locks").display().to_string()),
-            "{}",
-            error.message()
+        assert_names_the_volume_requirement(error, home);
+    }
+}
+
+/// The directory is made on a good volume, so no entry point reaches the check by making it.
+#[skuld::test]
+fn every_entry_point_checks_the_volume_of_an_existing_instances_dir(#[fixture(unicode_home)] home: &Path) {
+    let id = InstanceId::random();
+    drop(locks(home).acquire_owner_new(&id).unwrap());
+    let locks = without_posix_unlink(home.join("locks"));
+
+    let errors = [
+        locks.try_owner(&id).map(drop).unwrap_err(),
+        locks.try_op_exclusive(&id).map(drop).unwrap_err(),
+        locks.op_shared(&id, "x", &NullProgress).map(drop).unwrap_err(),
+        locks.op_exclusive(&id, "x", &NullProgress).map(drop).unwrap_err(),
+        locks.reading(home, || ()).unwrap_err(),
+        locks.excluding_readers(&mut || {}, || ()).unwrap_err(),
+        locks.remove(&id).unwrap_err(),
+    ];
+    for error in errors {
+        assert_names_the_volume_requirement(error, home);
+    }
+}
+
+#[skuld::test]
+fn try_owner_recreating_makes_the_missing_files_and_holds_the_owner_lock(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    let Probe::Free(lock) = locks.try_owner_recreating(&id).unwrap() else {
+        panic!("nobody holds a file that was not there");
+    };
+    assert_eq!(lock.is_at_path().unwrap(), Comparison::Same);
+    assert!(locks.owner_path(&id).is_file());
+    assert!(locks.op_path(&id).is_file(), "the op file is made with the owner file");
+    drop(lock);
+    locks.remove(&id).unwrap();
+
+    drop(locks.acquire_owner_new(&id).unwrap());
+    std::fs::remove_file(locks.op_path(&id)).unwrap();
+    assert!(matches!(locks.try_owner_recreating(&id).unwrap(), Probe::Free(_)));
+    assert!(locks.op_path(&id).is_file(), "a missing op file is put back");
+}
+
+#[skuld::test]
+fn try_owner_recreating_starts_over_when_another_file_is_at_the_name_before_the_try(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for change in NameChange::ALL {
+        let locks = locks(home);
+        let id = InstanceId::random();
+        drop(locks.acquire_owner_new(&id).unwrap());
+        let path = locks.owner_path(&id);
+        let mut looks = 0;
+        let probe = locks
+            .try_owner_recreating_with(&id, &mut || {
+                looks += 1;
+                if looks == 1 {
+                    change.apply(&path);
+                }
+            })
+            .unwrap();
+        assert_eq!(looks, 2, "{change:?}: a file at the name is not the file opened");
+        let Probe::Free(lock) = probe else {
+            panic!("{change:?}: nobody holds the file at the name");
+        };
+        assert_eq!(lock.is_at_path().unwrap(), Comparison::Same, "{change:?}");
+        drop(lock);
+        locks.remove(&id).unwrap();
+    }
+}
+
+#[skuld::test]
+fn try_owner_recreating_makes_the_file_again_when_it_is_unlinked_before_the_try(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let path = locks.owner_path(&id);
+    let mut looks = 0;
+    let probe = locks
+        .try_owner_recreating_with(&id, &mut || {
+            looks += 1;
+            if looks == 1 {
+                std::fs::remove_file(&path).unwrap();
+            }
+        })
+        .unwrap();
+    assert_eq!(looks, 2);
+    let Probe::Free(lock) = probe else {
+        panic!("nobody holds the file made again");
+    };
+    assert_eq!(lock.is_at_path().unwrap(), Comparison::Same);
+    assert!(path.is_file());
+}
+
+#[skuld::test]
+fn the_look_at_a_lock_file_is_made_under_a_shared_hold_of_instances_dir(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let dir_path = home.join("locks").join("instances.dir");
+    let lock = FileLock::open(&locks.op_path(&id)).unwrap();
+    let mut during = None;
+    let (comparison, _dir) = locks
+        .is_current(&lock, &mut || {
+            let mut other = FileLock::open(&dir_path).unwrap();
+            during = Some((
+                !other.try_lock(Mode::Exclusive).unwrap(),
+                other.try_lock(Mode::Shared).unwrap(),
+            ));
+        })
+        .unwrap();
+    assert_eq!(comparison, Comparison::Same);
+    assert_eq!(during, Some((true, true)), "exclusive refused, shared admitted");
+}
+
+/// `instances.dir` is damaged from outside: a lock file that is at its name is not gone.
+#[skuld::test]
+fn a_lock_file_that_is_there_is_not_gone_when_instances_dir_is_missing(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let id = InstanceId::random();
+    let dir_path = home.join("locks").join("instances.dir");
+    let owner = locks.acquire_owner_new(&id).unwrap();
+
+    std::fs::remove_file(&dir_path).unwrap();
+    assert!(matches!(locks.try_owner(&id).unwrap(), Probe::Held));
+    assert!(dir_path.is_file(), "instances.dir is put back");
+
+    std::fs::remove_file(&dir_path).unwrap();
+    assert!(matches!(locks.try_op_exclusive(&id).unwrap(), Probe::Free(_)));
+    assert!(dir_path.is_file(), "instances.dir is put back");
+
+    for shared in [false, true] {
+        std::fs::remove_file(&dir_path).unwrap();
+        let lock = if shared {
+            locks.op_shared(&id, "x", &NullProgress)
+        } else {
+            locks.op_exclusive(&id, "x", &NullProgress)
+        };
+        drop(lock.expect("the op file is there: the instance is not gone"));
+        assert!(dir_path.is_file(), "instances.dir is put back");
+    }
+    drop(owner);
+}
+
+/// A take of `instances.dir` that waited while its file was replaced holds the file at the name, as an instance lock.
+#[skuld::test]
+fn an_exclusive_take_of_instances_dir_that_waited_while_its_file_was_replaced_holds_the_new_file(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for change in NameChange::ALL {
+        let locks = locks(home);
+        drop(locks.acquire_owner_new(&InstanceId::random()).unwrap());
+        let dir_path = home.join("locks").join("instances.dir");
+        let mut holder = FileLock::open(&dir_path).unwrap();
+        assert!(holder.try_lock(Mode::Shared).unwrap());
+        let mut holder = Some(holder);
+        let excludes = locks
+            .excluding_readers(
+                &mut || {
+                    change.apply(&dir_path);
+                    drop(holder.take());
+                },
+                || !FileLock::open(&dir_path).unwrap().try_lock(Mode::Shared).unwrap(),
+            )
+            .unwrap();
+        assert!(excludes, "{change:?}: the exclusive hold is on the file at the name");
+    }
+}
+
+#[skuld::test]
+fn a_shared_take_of_instances_dir_that_waited_while_its_file_was_replaced_holds_the_new_file(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for change in NameChange::ALL {
+        let locks = locks(home);
+        let id = InstanceId::random();
+        drop(locks.acquire_owner_new(&id).unwrap());
+        let dir_path = home.join("locks").join("instances.dir");
+        let mut holder = FileLock::open(&dir_path).unwrap();
+        assert!(holder.try_lock(Mode::Exclusive).unwrap());
+        let mut holder = Some(holder);
+        let mut excludes = None;
+        let probe = locks
+            .try_owner_with(
+                &id,
+                &mut || {
+                    change.apply(&dir_path);
+                    drop(holder.take());
+                },
+                &mut || excludes = Some(!FileLock::open(&dir_path).unwrap().try_lock(Mode::Exclusive).unwrap()),
+            )
+            .unwrap();
+        assert!(matches!(probe, Probe::Free(_)), "{change:?}");
+        assert_eq!(
+            excludes,
+            Some(true),
+            "{change:?}: the shared hold is on the file at the name"
         );
+        locks.remove(&id).unwrap();
     }
 }
