@@ -198,8 +198,10 @@ fn a_disk_smaller_than_its_layer_is_refused_naming_both_sizes_and_creates_nothin
     let base = base_layer(&world, &storage, home);
 
     for size in [0, BASE_LEN as u64 / 2, BASE_LEN as u64 - 512] {
-        let error = refused_without_a_disk(&storage, &base, home, size);
+        let error = refused_without_a_disk(&storage, &base, home, Some(size), ErrorKind::Recipe);
 
+        assert!(error.message().contains(&size.to_string()), "{size}: {error}");
+        assert!(error.message().contains("resources.disk"), "{size}: {error}");
         assert!(error.message().contains(&BASE_LEN.to_string()), "{size}: {error}");
         assert!(
             error.message().contains(base.tip().dir().path().to_str().unwrap()),
@@ -437,10 +439,10 @@ fn import_base_refuses_a_base_no_instance_disk_could_cover(
         .unwrap();
 }
 
-/// A layer imported before `import_base` refused such a base: with no size requested, the disk would be the layer's,
-/// which an instance disk cannot be.
+/// A layer imported before `import_base` refused such a base is refused for every request, even a size that would
+/// otherwise be refused for being smaller than the layer.
 #[skuld::test]
-fn a_disk_with_no_size_is_refused_when_its_layer_is_over_the_ceiling(
+fn a_disk_over_a_layer_above_the_ceiling_is_refused_for_every_size(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -456,19 +458,17 @@ fn a_disk_with_no_size_is_refused_when_its_layer_is_over_the_ceiling(
             Ok(Built::default())
         })
         .unwrap();
-    let instance = home.join("over").join("disk.img");
-    std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
-    let error = storage
-        .create_instance_disk(over.tip().dir(), &instance, None)
-        .unwrap_err();
+    for size in [None, Some(1 << 51)] {
+        let error = refused_without_a_disk(&storage, &over, home, size, ErrorKind::Store);
 
-    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
-    assert!(error.message().contains(&layer_size.to_string()), "{error}");
-    assert!(
-        matches!(host::symlink_metadata_if_present(&instance), Ok(None)),
-        "a disk was made over a layer it cannot cover"
-    );
+        assert!(error.message().contains(&layer_size.to_string()), "{size:?}: {error}");
+        assert!(
+            error.message().contains(over.tip().dir().path().to_str().unwrap()),
+            "{size:?}: {error}"
+        );
+        assert!(error.message().contains(&(1u64 << 51).to_string()), "{size:?}: {error}");
+    }
 }
 
 #[skuld::test]

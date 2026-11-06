@@ -154,25 +154,22 @@ impl Storage for QemuStorage {
         let backing = layer.path().join(DISK);
         let beside = directory_of(into, "the instance disk")?.join(VARS);
         let layer_size = self.virtual_size(&backing)?;
+        if layer_size > QCOW2_MAX_SIZE {
+            return Err(Error::new(
+                ErrorKind::Store,
+                format!(
+                    "the layer {} is {layer_size} bytes, more than the {QCOW2_MAX_SIZE} bytes a disk can have;                      rebuild it from a base within that limit",
+                    layer.path().display()
+                ),
+            ));
+        }
         if let (Some(size), Some(made)) = (size, made)
             && made < layer_size
         {
             return Err(Error::new(
                 ErrorKind::Recipe,
                 format!(
-                    "a disk of {size} bytes is smaller than the {layer_size} bytes of the layer {}; \
-                     set resources.disk to at least {layer_size}",
-                    layer.path().display()
-                ),
-            ));
-        }
-        // A layer imported before `import_base` checked its size can be over the ceiling, and no request was refused for
-        // it above.
-        if size.is_none() && layer_size > QCOW2_MAX_SIZE {
-            return Err(Error::new(
-                ErrorKind::Recipe,
-                format!(
-                    "the layer {} is {layer_size} bytes, more than the {QCOW2_MAX_SIZE} bytes a disk can have",
+                    "a disk of {size} bytes is smaller than the {layer_size} bytes of the layer {};                      set resources.disk to at least {layer_size}",
                     layer.path().display()
                 ),
             ));

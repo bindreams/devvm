@@ -347,29 +347,34 @@ pub fn qemu_img_info(install: &QemuInstall, image: &Path, chain: bool) -> serde_
     serde_json::from_slice(&qemu_img(install, &args)).expect("qemu-img info prints JSON")
 }
 
-/// The refusal of `storage.create_instance_disk` of `size` on `base`, as a `Recipe` error naming `size` and
-/// `resources.disk`, after checking that no disk and no firmware variables were made.
-pub fn refused_without_a_disk(storage: &QemuStorage, base: &ChainLease, home: &Path, size: u64) -> crate::Error {
-    let instance = home.join(format!("refused-{size}")).join("disk.img");
+/// The refusal of `storage.create_instance_disk` of `size` on `base`, as an error of `kind`, after checking that no disk
+/// and no firmware variables were made.
+pub fn refused_without_a_disk(
+    storage: &QemuStorage,
+    base: &ChainLease,
+    home: &Path,
+    size: Option<u64>,
+    kind: ErrorKind,
+) -> crate::Error {
+    let size_name = size.map_or("none".to_owned(), |size| size.to_string());
+    let instance = home.join(format!("refused-{size_name}")).join("disk.img");
     std::fs::create_dir_all(instance.parent().unwrap()).unwrap();
 
     let error = storage
-        .create_instance_disk(base.tip().dir(), &instance, Some(size))
+        .create_instance_disk(base.tip().dir(), &instance, size)
         .unwrap_err();
 
-    assert_eq!(error.kind(), ErrorKind::Recipe, "{size}: {error}");
-    assert!(error.message().contains(&size.to_string()), "{size}: {error}");
-    assert!(error.message().contains("resources.disk"), "{size}: {error}");
+    assert_eq!(error.kind(), kind, "{size_name}: {error}");
     assert!(
         matches!(symlink_metadata_if_present(&instance), Ok(None)),
-        "{size}: a disk was made"
+        "{size_name}: a disk was made"
     );
     assert!(
         matches!(
             symlink_metadata_if_present(&instance.parent().unwrap().join(crate::backend::qemu::storage::VARS)),
             Ok(None)
         ),
-        "{size}: the firmware variables were copied"
+        "{size_name}: the firmware variables were copied"
     );
     error
 }

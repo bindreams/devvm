@@ -60,7 +60,7 @@ pub(crate) const DEFAULT_DISK: u64 = 40 << 30;
 pub(crate) trait Storage: Send + Sync {
     /// Makes `into` a copy-on-write disk on top of `layer`. `Some(size)` smaller than the layer's disk (after the
     /// backend's size rounding), or one the backend cannot make, is `Recipe`, with nothing made. `None` is
-    /// `DEFAULT_DISK` or the layer's disk, whichever is larger.
+    /// `DEFAULT_DISK` or the layer's disk, whichever is larger. A layer the backend cannot cover is `Store`.
     fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: Option<u64>) -> Result<()>;
 
     /// Turns an instance's disk into a layer. Writes only into `staging` and never modifies a parent layer.
