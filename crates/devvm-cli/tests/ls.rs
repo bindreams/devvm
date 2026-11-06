@@ -9,6 +9,9 @@ use serde_json::Value;
 #[path = "support/unicode.rs"]
 mod unicode;
 use unicode::UNICODE_DIR;
+#[path = "support/isolate.rs"]
+mod isolate;
+use isolate::isolate;
 
 fn main() {
     skuld::run_all();
@@ -16,7 +19,7 @@ fn main() {
 
 // Helpers =============================================================================================================
 
-/// A temp dir holding the Unicode test directory, where the four XDG directories and the project directories live.
+/// A temp dir holding the Unicode test directory, where the five XDG directories and the project directories live.
 struct Home {
     _tmp: skuld::TempDir,
     root: PathBuf,
@@ -52,15 +55,7 @@ impl Home {
     fn devvm(&self, cwd: &Path, args: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
         command.current_dir(cwd).args(args).env_remove("DEVVM_STATUS_FILE");
-        for (name, dir) in [
-            ("XDG_CONFIG_HOME", "config"),
-            ("XDG_DATA_HOME", "data"),
-            ("XDG_CACHE_HOME", "cache"),
-            ("XDG_STATE_HOME", "state"),
-            ("XDG_RUNTIME_DIR", "run"),
-        ] {
-            command.env(name, self.root.join(dir));
-        }
+        isolate(&mut command, &self.root);
         command.stdin(Stdio::null()).output().unwrap()
     }
 
@@ -395,6 +390,27 @@ fn ls_sweeps_the_runtime_directory_the_fixture_names() {
         "{stderr:?}"
     );
     assert_eq!(std::fs::read(&run).unwrap(), b"not a directory");
+}
+
+#[skuld::test]
+fn rm_sweeps_the_runtime_directory_once() {
+    let home = home();
+    let a = home.project("a");
+    home.seed("gone", &id(1), &a, "none");
+    let run = home.run();
+    std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+    std::fs::write(&run, "not a directory").unwrap();
+
+    let output = home.devvm(&a, &["rm", "gone"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.matches("is not a directory").count(), 1, "{stderr:?}");
 }
 
 #[skuld::test]

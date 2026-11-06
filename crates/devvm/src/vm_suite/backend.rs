@@ -30,7 +30,7 @@ use crate::test_groups::{Group, unicode_socket_dir, vm_group};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::qemu::{ScratchRun, assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, scratch_run};
-use crate::{Arch, Dirs, ErrorKind, Network, Result};
+use crate::{Arch, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
 
@@ -90,13 +90,7 @@ impl Backend for Observing {
 fn backend_over(bin: &Path, host: &'static dyn Host, run: &Path) -> QemuBackend {
     let install = lazy_at(bin);
     let storage = Arc::new(QemuStorage::new(install.clone(), host));
-    QemuBackend::new(
-        install,
-        storage,
-        host,
-        Dirs::under_with_run(run, Ok(run.to_path_buf())),
-        Arc::new(StderrProgress),
-    )
+    QemuBackend::new(install, storage, host, Ok(run.to_path_buf()), Arc::new(StderrProgress))
 }
 
 /// A spec for a firmware-only machine in `dir`, on the host's accelerator.

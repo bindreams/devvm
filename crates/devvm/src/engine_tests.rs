@@ -210,22 +210,6 @@ fn instance_open_of_a_missing_instance_is_not_found(#[fixture(unicode_home)] hom
     assert!(error.message().contains("nothing"), "{}", error.message());
 }
 
-#[skuld::test]
-fn open_in_reaps_first_even_when_the_name_is_missing(#[fixture(unicode_home)] home: &Path) {
-    let fx = engine_fixture(home, memory());
-    // A creator that died: its `.new-` directory is left, and nobody holds its owner lock.
-    let id = crate::instance::record::InstanceId::random();
-    drop(fx.engine.registry().locks().acquire_owner_new(&id).unwrap());
-    let leftover = fx.env.dirs.instances().join(format!(".new-{id}"));
-    std::fs::create_dir_all(&leftover).unwrap();
-
-    assert_eq!(
-        Instance::open_in(&fx.engine, "nothing").err().unwrap().kind(),
-        ErrorKind::NotFound
-    );
-    assert!(!leftover.exists(), "opening an instance reaps leftovers first");
-}
-
 fn info_names(infos: &[InstanceInfo]) -> Vec<&str> {
     let mut names: Vec<&str> = infos.iter().map(|info| info.name.as_str()).collect();
     names.sort_unstable();

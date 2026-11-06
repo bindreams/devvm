@@ -10,7 +10,7 @@ pub(crate) mod storage;
 mod sweep;
 pub(crate) mod uds;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use self::backend::QemuBackend;
@@ -39,6 +39,7 @@ pub(crate) struct QemuParts {
 /// the parts still build, and the first use that needs QEMU fails naming the triple.
 pub(crate) fn qemu_parts(
     dirs: &Dirs,
+    run: Result<PathBuf>,
     config: Config,
     fetcher: Arc<Fetcher>,
     host: &'static dyn Host,
@@ -54,7 +55,7 @@ pub(crate) fn qemu_parts(
     let storage = Arc::new(QemuStorage::new(install.clone(), host));
     let builder = Arc::new(LinuxBuilder::new(fetcher, storage.clone()));
     QemuParts {
-        backend: Arc::new(QemuBackend::new(install, storage, host, dirs.clone(), progress)),
+        backend: Arc::new(QemuBackend::new(install, storage, host, run, progress)),
         guests: Arc::new(LinuxGuests::new(builder)),
     }
 }

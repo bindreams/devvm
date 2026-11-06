@@ -81,15 +81,13 @@ impl Instance {
     pub fn open(name: &str) -> Result<Instance> {
         let name = InstanceName::parse(name)?;
         let engine = Engine::from_env_stderr(Arc::new(LazyHttp::new()))?;
+        engine.reap();
         Instance::open_in(&engine, name.as_str())
     }
 
-    /// `open` in a given engine. The name is validated before anything is read or created; leftovers are reaped
-    /// first, even when the name turns out to be missing, so that every library entry point cleans up after killed
-    /// processes.
+    /// `open` in a given engine, which does not reap: whoever made the engine does, once.
     pub(crate) fn open_in(engine: &Arc<Engine>, name: &str) -> Result<Instance> {
         let name = InstanceName::parse(name)?;
-        engine.reap();
         let dir = engine.registry().open(&name)?;
         Ok(Instance {
             engine: engine.clone(),

@@ -94,7 +94,14 @@ impl Engine {
         let config = Config::load(&dirs)?;
         let host = host::current();
         let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport, progress.clone()));
-        let QemuParts { backend, guests } = qemu_parts(&dirs, config, fetcher, host, progress.clone());
+        let QemuParts { backend, guests } = qemu_parts(
+            &dirs,
+            dirs.run().map(Path::to_path_buf),
+            config,
+            fetcher,
+            host,
+            progress.clone(),
+        );
         Ok(Engine::with_parts(EngineParts {
             dirs,
             host,
@@ -128,7 +135,7 @@ impl Engine {
         })
     }
 
-    /// The instance called `name` (case-insensitive). Reaps leftovers of dead devvm processes first.
+    /// The instance called `name` (case-insensitive). Does not reap: the caller does, once per command.
     pub fn instance(self: &Arc<Engine>, name: &str) -> Result<Instance> {
         Instance::open_in(self, name)
     }

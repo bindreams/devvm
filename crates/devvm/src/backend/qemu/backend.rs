@@ -1,6 +1,6 @@
 //! The QEMU backend: launches QEMU frozen from a `MachineSpec` and finds it again from a record.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::args::{LaunchPaths, build_args, qemu_arch};
@@ -12,16 +12,16 @@ use crate::backend::{Backend, FileClaim, Machine, MachineRecord, MachineSpec, St
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Hold, Host, remove_tree};
-use crate::{Dirs, Error, ErrorKind, Result};
+use crate::{Error, ErrorKind, Result};
 
 pub(crate) struct QemuBackend {
     install: Arc<LazyInstall>,
     storage: Arc<QemuStorage>,
     host: &'static dyn Host,
-    /// `Dirs::run` is where control sockets go: the user's alone, and short, because a socket path is limited
+    /// Where control sockets go (`Dirs::run`): the user's alone, and short, because a socket path is limited
     /// (`Host::socket_path_max`). It fails only when asked for, so an engine builds on a host that cannot name it and
     /// only a launch or a sweep says so.
-    pub(super) dirs: Dirs,
+    run: Result<PathBuf>,
     progress: Arc<dyn Progress>,
 }
 
@@ -30,14 +30,14 @@ impl QemuBackend {
         install: Arc<LazyInstall>,
         storage: Arc<QemuStorage>,
         host: &'static dyn Host,
-        dirs: Dirs,
+        run: Result<PathBuf>,
         progress: Arc<dyn Progress>,
     ) -> QemuBackend {
         QemuBackend {
             install,
             storage,
             host,
-            dirs,
+            run,
             progress,
         }
     }
@@ -46,6 +46,11 @@ impl QemuBackend {
 impl QemuBackend {
     pub(super) fn host(&self) -> &'static dyn Host {
         self.host
+    }
+
+    /// The runtime directory, or why the host cannot name it.
+    pub(super) fn run(&self) -> Result<&Path> {
+        self.run.as_deref().map_err(Error::clone)
     }
 
     /// `error`, after the frozen QEMU of a launch that failed (`vm`, if it was spawned) has been killed and the files
@@ -127,7 +132,7 @@ impl Backend for QemuBackend {
     /// The socket and claim file are reserved by `QmpEndpoint::reserve` and recorded in the machine's record. A host
     /// that cannot name the runtime directory fails the launch before anything is downloaded.
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
-        let run = self.dirs.run()?;
+        let run = self.run()?;
         let install = self.install.get()?;
         let Reservation { endpoint, claim, hold } = QmpEndpoint::reserve(self.host, run, &*self.progress)?;
         let mut vm = None;

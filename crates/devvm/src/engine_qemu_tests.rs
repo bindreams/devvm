@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::backend::fake::fake_spec;
+use crate::backend::qemu::sidecar::manifest_entry;
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::config::Config;
 use crate::contain::Lifetime;
@@ -29,6 +30,7 @@ struct QemuEngine {
     engine: Arc<Engine>,
     home: PathBuf,
     dirs: Dirs,
+    run: Result<PathBuf>,
     transport: Arc<RefusingTransport>,
     progress: Arc<MemoryProgress>,
     /// Keeps the state the engine reads: the store, and the instance `foo` in it.
@@ -38,17 +40,25 @@ struct QemuEngine {
 impl QemuEngine {
     /// An engine over `Dirs::under(home)` with `run` as the runtime directory, or the reason the host cannot name it.
     fn over(home: &Path, run: Result<PathBuf>) -> QemuEngine {
-        let dirs = Dirs::under_with_run(home, run);
+        let dirs = Dirs::under(home);
         let state = engine_fixture(home, memory());
         instance_in(&state, "foo", home);
         let (transport, progress) = (Arc::new(RefusingTransport::default()), memory());
         let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), progress.clone()));
-        let QemuParts { backend, guests } = qemu_parts(&dirs, Config::default(), fetcher, &TestHost, progress.clone());
+        let QemuParts { backend, guests } = qemu_parts(
+            &dirs,
+            run.clone(),
+            Config::default(),
+            fetcher,
+            &TestHost,
+            progress.clone(),
+        );
         let engine = engine_with(dirs.clone(), &TestHost, Some(backend), guests, progress.clone());
         QemuEngine {
             engine,
             home: home.to_path_buf(),
             dirs,
+            run,
             transport,
             progress,
             _state: state,
@@ -123,16 +133,21 @@ fn a_transport_that_refuses_fails_only_the_command_that_downloads(#[fixture(unic
     assert!(engine.list(ListFilter::All).unwrap().is_empty());
 }
 
-// The manifest publishes QEMU for Windows only; elsewhere a launch fails `Unavailable` before it reaches the transport.
-#[cfg(windows)]
 #[skuld::test]
 fn a_launch_resolves_qemu_through_the_transport_it_was_given(#[fixture(unicode_home)] home: &Path) {
     let qemu = QemuEngine::new(home);
 
     let error = qemu.launch();
 
-    assert_eq!(error.kind(), ErrorKind::Download, "{error}");
-    assert_eq!(qemu.downloads().len(), 1, "{:?}", qemu.downloads());
+    // A host the manifest has a build for downloads it; any other fails naming its triple, before the transport.
+    if manifest_entry(crate::TARGET).is_ok() {
+        assert_eq!(error.kind(), ErrorKind::Download, "{error}");
+        assert_eq!(qemu.downloads().len(), 1, "{:?}", qemu.downloads());
+    } else {
+        assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+        assert!(error.message().contains(crate::TARGET), "{error}");
+        assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
+    }
 }
 
 #[skuld::test]
@@ -168,7 +183,7 @@ fn without_a_runtime_directory_the_reap_warns_and_a_launch_fails_naming_it(#[fix
 fn building_the_engine_and_listing_create_no_runtime_directory(#[fixture(unicode_home)] home: &Path) {
     let qemu = QemuEngine::new(home);
     let absent = |when: &str| {
-        let run = qemu.dirs.run().unwrap();
+        let run = qemu.run.as_ref().unwrap();
         assert!(
             symlink_metadata_if_present(run).unwrap().is_none(),
             "{when}: {} exists",
