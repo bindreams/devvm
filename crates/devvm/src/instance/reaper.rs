@@ -19,7 +19,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::instance::dir::remove_tree;
+use crate::host::remove_tree;
 use crate::instance::locks::Probe;
 use crate::instance::quarantine::{Placed, classify};
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, Owner, RecordRead};
@@ -103,7 +103,7 @@ impl Registry {
         }
         for (name, path) in entries.dirs {
             if name.starts_with(".dead-") {
-                self.reap_dead(&name, &path, report);
+                self.delete_leftover(&name, &path, report);
             } else if let Some(id) = name.strip_prefix(".new-") {
                 self.reap_new(id, &name, &path, report);
             } else if !name.starts_with('.') {
@@ -137,21 +137,22 @@ impl Registry {
 
     // Leftovers -------------------------------------------------------------------------------------------------------
 
-    /// Deletes a `.dead-<id>` directory unless a deletion is already running: two deleters of one tree make each other
-    /// fail on Windows.
-    fn reap_dead(&self, name: &str, path: &Path, report: &mut ReapReport) {
-        if let Err(e) = self.locks().deleting(|| self.remove_leftover(name, path, report)) {
-            report.warn(self, format!("cannot delete {name}: {}", e.message()));
-        }
-    }
-
-    fn remove_leftover(&self, name: &str, path: &Path, report: &mut ReapReport) {
-        match remove_tree(path) {
+    /// Deletes the leftover tree `path` unless a deletion is already running: two deleters of one tree make each other
+    /// fail on Windows. Whether it ran; a tree that was not deleted is left for the next devvm command.
+    fn delete_leftover(&self, name: &str, path: &Path, report: &mut ReapReport) -> bool {
+        match self.locks().deleting(|| match remove_tree(path) {
             Ok(()) => {}
             Err(e) => report.warn(
                 self,
                 format!("cannot delete {name} ({e}); the next devvm command retries"),
             ),
+        }) {
+            Ok(Some(())) => true,
+            Ok(None) => false,
+            Err(e) => {
+                report.warn(self, format!("cannot delete {name}: {}", e.message()));
+                false
+            }
         }
     }
 
@@ -173,7 +174,9 @@ impl Registry {
                 return;
             }
         };
-        self.remove_leftover(name, path, report);
+        if !self.delete_leftover(name, path, report) {
+            return;
+        }
         // The creator may have placed the instance after the listing and let go of its owner lock: the lock files go
         // only when, with the owner lock held, no placed, `.new` or `.dead` directory belongs to the id.
         let (present, unattributed) = self.present_ids();

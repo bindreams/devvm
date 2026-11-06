@@ -90,6 +90,64 @@ fn a_vanished_path_is_success_with_no_warning(#[fixture(unicode_home)] home: &Pa
     assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
 }
 
+#[skuld::test]
+fn a_file_at_the_path_is_a_vanished_instance_directory(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let path = fx.env.dirs.instances().join("foo");
+    std::fs::create_dir_all(fx.env.dirs.instances()).unwrap();
+    std::fs::write(&path, "x").unwrap();
+    let mut report = ReapReport::default();
+
+    fx.registry.quarantine("foo", &path, None, "stale", &mut report);
+
+    assert!(
+        report.quarantined.is_empty() && report.warnings.is_empty(),
+        "{report:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+}
+
+#[skuld::test]
+fn a_path_that_cannot_be_looked_at_is_a_warning_not_a_vanished_path(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    // std refuses a path with a NUL in it before any file-system call: the look fails, and says nothing about the path.
+    let path = fx.env.dirs.instances().join("foo\0");
+    let mut report = ReapReport::default();
+
+    fx.registry.quarantine("foo", &path, None, "stale", &mut report);
+
+    assert!(report.quarantined.is_empty(), "{report:?}");
+    assert_eq!(report.warnings.len(), 1, "{report:?}");
+    assert!(
+        report.warnings[0].contains("cannot move unreadable instance foo")
+            && report.warnings[0].contains(&format!("cannot look at {}", path.display()))
+            && report.warnings[0].contains("the next devvm command retries"),
+        "{report:?}"
+    );
+}
+
+#[skuld::test]
+fn a_quarantine_move_that_fails_is_a_warning_and_leaves_the_directory(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let path = fx.env.dirs.instances().join("foo");
+    std::fs::create_dir_all(&path).unwrap();
+    // The directory of quarantined instances cannot be made: a file is where it belongs.
+    std::fs::create_dir_all(fx.registry.quarantine_root()).unwrap();
+    std::fs::write(fx.registry.quarantine_root().join("instances"), "x").unwrap();
+    let mut report = ReapReport::default();
+
+    fx.registry.quarantine("foo", &path, None, "stale", &mut report);
+
+    assert!(report.quarantined.is_empty(), "{report:?}");
+    assert_eq!(report.warnings.len(), 1, "{report:?}");
+    assert!(
+        report.warnings[0].contains("cannot move unreadable instance foo")
+            && report.warnings[0].contains("the next devvm command retries"),
+        "{report:?}"
+    );
+    assert!(path.is_dir(), "the directory stays");
+}
+
 fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {

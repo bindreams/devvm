@@ -37,7 +37,7 @@ pub(crate) mod watch;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-pub(crate) use entry::{Entry, is_a_link, is_absent, symlink_metadata_if_present};
+pub(crate) use entry::{Entry, is_a_link, is_absent, look_failed, symlink_metadata_if_present};
 pub(crate) use file_id::{Comparison, FileId};
 #[cfg_attr(
     not(windows),
@@ -259,6 +259,36 @@ pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
     }
+}
+
+/// Deletes whatever is at `path`, a name devvm owns, and succeeds when nothing is there: a link is deleted as a link and
+/// never followed, a directory goes with everything under it, anything else is removed as a file.
+///
+/// Callers exclude other deleters and creators of the name.
+pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
+    match symlink_metadata_if_present(path).map_err(|e| look_failed(path, e))? {
+        None => Ok(()),
+        Some(meta) if meta.file_type().is_symlink() => remove_symlink(path),
+        Some(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Some(_) => std::fs::remove_file(path),
+    }
+}
+
+/// Removes the symlink `path`. A symlink to a directory is removed as a directory on Windows and as a file elsewhere;
+/// a junction is removed as a directory.
+pub(crate) fn remove_symlink(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(path)
+        .or_else(|as_file| std::fs::remove_dir(path).map_err(|as_dir| link_removal_failure(as_file, as_dir)))
+}
+
+/// The error of a symlink that could be removed neither as a file nor as a directory. The first failure is the cause on
+/// every host but Windows, where it can be the second; both are said.
+fn link_removal_failure(as_file: std::io::Error, as_dir: std::io::Error) -> std::io::Error {
+    if as_file.to_string() == as_dir.to_string() {
+        return as_file;
+    }
+    let text = format!("{as_file} (removing it as a directory link failed too: {as_dir})");
+    std::io::Error::new(as_file.kind(), text)
 }
 
 /// The error of a write to `path` that failed with `error`, after `remove` took what the write left away. A leftover

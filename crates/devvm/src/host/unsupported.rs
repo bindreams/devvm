@@ -11,7 +11,7 @@ use cosca::identity::ProcessId;
 use super::names::{posix_problem, unix_run_dir};
 use super::{
     Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
-    create_new_with,
+    create_new_with, look_failed,
 };
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -76,8 +76,7 @@ pub(super) fn claim_then_rename(from: &Path, to: &Path) -> std::io::Result<()> {
 /// `PermissionDenied` naming the owner for another account's directory. A failed look-up (a parent that cannot be
 /// searched) keeps its kind and names the directory.
 fn accept_existing(host: &dyn FileModes, dir: &Path) -> std::io::Result<()> {
-    let metadata =
-        std::fs::symlink_metadata(dir).map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
+    let metadata = std::fs::symlink_metadata(dir).map_err(|e| look_failed(dir, e))?;
     if metadata.file_type().is_symlink() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,

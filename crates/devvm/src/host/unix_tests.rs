@@ -183,7 +183,12 @@ fn a_runtime_dir_behind_an_unsearchable_parent_is_refused_naming_it(#[fixture(un
     // The temporary directory cannot be removed with the mode left as it is.
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{error}");
-    assert!(error.to_string().contains(&dir.display().to_string()), "{error}");
+    assert!(
+        error
+            .to_string()
+            .starts_with(&format!("cannot look at {}", dir.display())),
+        "{error}"
+    );
 }
 
 #[skuld::test]

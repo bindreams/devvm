@@ -1,7 +1,8 @@
 //! Quarantine: moving an instance directory that cannot be read out of `instances/`, never deleting it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use crate::host::{look_failed, symlink_metadata_if_present};
 use crate::instance::locks::Probe;
 use crate::instance::reaper::ReapReport;
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
@@ -53,7 +54,7 @@ pub(super) fn classify(name: &str, record: RecordRead, marker: MarkerRead) -> Pl
 /// What the move did, decided and done while no one reads inside any instance directory.
 enum Moved {
     Done,
-    /// The path is gone: the instance was removed since the verdict.
+    /// The path is gone or is no directory (a file, a link) any more: the instance was removed since the verdict.
     Vanished,
     /// The directory is not what the verdict was about (valid now, or another instance): left alone.
     Changed,
@@ -122,9 +123,12 @@ impl Registry {
 }
 
 /// Runs inside `Locks::excluding_readers`: reads the files directly, takes no lock.
-fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &PathBuf) -> Moved {
-    if !path.exists() {
-        return Moved::Vanished;
+fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &Path) -> Moved {
+    match symlink_metadata_if_present(path) {
+        Ok(Some(meta)) if meta.is_dir() => {}
+        // Anything but a directory at the path counts as gone.
+        Ok(_) => return Moved::Vanished,
+        Err(e) => return Moved::Failed(look_failed(path, e)),
     }
     let (record, marker) = match (InstanceRecord::read(path), read_marker(path)) {
         (Ok(record), Ok(marker)) => (record, marker),
@@ -137,8 +141,6 @@ fn move_if_unchanged(name: &str, path: &Path, id: Option<InstanceId>, target: &P
     let parent = target.parent().expect("a quarantine target has a parent");
     match std::fs::create_dir_all(parent).and_then(|()| std::fs::rename(path, target)) {
         Ok(()) => Moved::Done,
-        // Gone since the check above: the instance was removed by a process outside devvm's locks.
-        Err(_) if !path.exists() => Moved::Vanished,
         Err(e) => Moved::Failed(e),
     }
 }

@@ -11,7 +11,7 @@ use super::storage::QemuStorage;
 use crate::backend::{Backend, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
-use crate::host::{Hold, Host};
+use crate::host::{Hold, Host, remove_tree};
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) struct QemuBackend {
@@ -85,11 +85,7 @@ impl QemuBackend {
 
         // An earlier run may have left files in the working directory; QEMU starts in an empty one.
         let cwd = spec.dir.join("qemu-cwd");
-        match std::fs::remove_dir_all(&cwd) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(Error::io(ErrorKind::Io, format!("cannot clear {}", cwd.display()), e)),
-        }
+        remove_tree(&cwd).map_err(|e| Error::io(ErrorKind::Io, format!("cannot clear {}", cwd.display()), e))?;
         std::fs::create_dir_all(&cwd)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", cwd.display()), e))?;
 

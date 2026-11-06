@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use crate::backend::{Backend, Storage};
 use crate::exit::Progress;
-use crate::host::Host;
+use crate::host::{Host, remove_tree, symlink_metadata_if_present};
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
@@ -55,11 +55,11 @@ pub(crate) struct NewInstance<'a> {
 /// Where a test can step into `create`; the defaults do nothing and generate real names.
 pub(crate) struct CreateSeams<'a> {
     /// Once the temporary directory is complete and before it takes its name.
-    pub before_rename: Box<dyn FnMut() + 'a>,
+    pub before_placement: Box<dyn FnMut() + 'a>,
     /// Just before the placement waits for the readers of instance files.
     pub before_wait: Box<dyn FnMut() + 'a>,
     /// After the placement was tried, whatever came of it.
-    pub after_rename: Box<dyn FnMut() + 'a>,
+    pub after_placement: Box<dyn FnMut() + 'a>,
     /// The next name to try, when the caller gave none or the name was taken.
     pub generate: Box<dyn FnMut() -> InstanceName + 'a>,
 }
@@ -67,9 +67,9 @@ pub(crate) struct CreateSeams<'a> {
 impl CreateSeams<'_> {
     pub(crate) fn none<'a>() -> CreateSeams<'a> {
         CreateSeams {
-            before_rename: Box::new(|| {}),
+            before_placement: Box::new(|| {}),
             before_wait: Box::new(|| {}),
-            after_rename: Box::new(|| {}),
+            after_placement: Box::new(|| {}),
             generate: Box::new(InstanceName::generate),
         }
     }
@@ -228,18 +228,18 @@ impl Registry {
         self.create_with(new, guard, &mut || {})
     }
 
-    /// `create` with `before_rename` run once the temporary directory is complete and before it takes its name.
+    /// `create` with `before_placement` run once the temporary directory is complete and before it takes its name.
     pub(crate) fn create_with(
         &self,
         new: NewInstance<'_>,
         guard: &RecordGuard,
-        before_rename: &mut dyn FnMut(),
+        before_placement: &mut dyn FnMut(),
     ) -> Result<Owned> {
         self.create_with_seams(
             new,
             guard,
             &mut CreateSeams {
-                before_rename: Box::new(before_rename),
+                before_placement: Box::new(before_placement),
                 ..CreateSeams::none()
             },
         )
@@ -262,9 +262,7 @@ impl Registry {
         match self.build_and_place(id, &new, &temp, seams) {
             Ok(dir) => Ok(Owned { dir, owner }),
             Err(e) => {
-                if let Err(left) = std::fs::remove_dir_all(&temp)
-                    && left.kind() != std::io::ErrorKind::NotFound
-                {
+                if let Err(left) = remove_tree(&temp) {
                     self.progress.message(&format!(
                         "the half-built instance {} could not be deleted ({left}); the next devvm \
                          command deletes it",
@@ -318,46 +316,59 @@ impl Registry {
                 machine: None,
             }
             .write(temp)?;
-            (seams.before_rename)();
+            (seams.before_placement)();
             let target = self.root.join(name.as_str());
             // Placed while no one reads inside any instance directory, like every other rename of one.
             let placed = self
                 .locks
                 .excluding_readers(&mut seams.before_wait, || place(temp, &target))?;
-            (seams.after_rename)();
+            (seams.after_placement)();
             match placed {
                 Placement::Placed => return Ok(self.handle(id, name)),
                 Placement::Taken(e) => {
                     if new.name.is_some() {
-                        return Err(Error::new(
-                            ErrorKind::AlreadyExists,
-                            format!("an instance called {name} already exists"),
-                        )
-                        .with_source(e));
+                        return Err(
+                            Error::new(ErrorKind::AlreadyExists, format!("the name {name} is taken: {e}"))
+                                .with_source(e),
+                        );
                     }
                     name = (seams.generate)();
                 }
-                Placement::Failed(e) => return Err(io("rename", temp, e)),
+                Placement::Failed(e) => return Err(e),
             }
         }
     }
 }
 
-/// How the rename of a new instance to its name went.
+/// How the placement of a new instance at its name went.
 enum Placement {
     Placed,
-    /// The name belongs to another instance.
+    /// Something is at the name: an instance, or anything else that is not devvm's to replace.
     Taken(std::io::Error),
-    Failed(std::io::Error),
+    Failed(Error),
 }
 
-/// Renames `temp` to `target` and, when that fails, tells a taken name from any other failure. Runs while no one
-/// renames an instance directory, so no `rm` can free the name between the failure and the look.
+/// Renames `temp` to `target` if nothing is there. `Taken` is an `AlreadyExists` error naming `target`; a failed look
+/// or rename is `Failed`.
+///
+/// Called under `excluding_readers`, which every rename of an instance directory takes, so no devvm process creates,
+/// renames or removes a name in `instances/` between the look and the rename. Only an actor outside devvm could, and
+/// devvm does not guard against one.
 fn place(temp: &std::path::Path, target: &std::path::Path) -> Placement {
-    match std::fs::rename(temp, target) {
-        Ok(()) => Placement::Placed,
-        Err(e) if target.exists() => Placement::Taken(e),
-        Err(e) => Placement::Failed(e),
+    match symlink_metadata_if_present(target) {
+        Ok(Some(_)) => Placement::Taken(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", target.display()),
+        )),
+        Ok(None) => match std::fs::rename(temp, target) {
+            Ok(()) => Placement::Placed,
+            Err(e) => Placement::Failed(Error::io(ErrorKind::Io, format!("cannot rename {}", temp.display()), e)),
+        },
+        Err(e) => Placement::Failed(Error::io(
+            ErrorKind::Io,
+            format!("cannot look at {}", target.display()),
+            e,
+        )),
     }
 }
 
