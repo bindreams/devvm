@@ -3,7 +3,9 @@ use std::path::Path;
 
 use fatfs::{FileSystem, FsOptions};
 
-use super::{LARGEST_FAT12_CONTENTS, SeedFile, fat_image, image_size, write_cidata_image};
+use super::{
+    LARGEST_FAT12_CONTENTS, SeedFile, fat_image, format_options, image_size, unchecked_image_size, write_cidata_image,
+};
 use crate::backend::MediaKind;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{RecordingHost, TestHost};
@@ -320,6 +322,25 @@ fn a_refused_private_write_is_an_io_error_naming_the_image(#[fixture(unicode_hom
     assert!(!image.exists());
 }
 
+#[skuld::test]
+fn a_seed_beyond_the_fat12_limit_is_refused_and_leaves_an_earlier_image_untouched(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let image = home.join("seed.img");
+    let host = RecordingHost::new();
+    let too_large = [file("user-data", &vec![7u8; LARGEST_FAT12_CONTENTS as usize + 1])];
+
+    let error = write_cidata_image(&host, &too_large, &image).expect_err("over the limit");
+    assert_eq!(error.kind(), crate::ErrorKind::Internal, "{error}");
+    assert!(!image.exists());
+    assert!(host.private_writes().is_empty());
+
+    std::fs::write(&image, b"left by an earlier launch").unwrap();
+    write_cidata_image(&host, &too_large, &image).expect_err("over the limit");
+    assert_eq!(std::fs::read(&image).unwrap(), b"left by an earlier launch");
+    assert!(host.private_writes().is_empty());
+}
+
 fn type_of(image: Vec<u8>) -> fatfs::FatType {
     FileSystem::new(Cursor::new(image), FsOptions::new())
         .unwrap()
@@ -342,7 +363,16 @@ fn the_image_is_fat12_whatever_the_contents() {
     }
 }
 
-/// The size is decided from the sum alone, so a seed too large for FAT12 is refused before any image is allocated.
+/// The limit is tight: one byte more than [`LARGEST_FAT12_CONTENTS`], at the size the formula gives, does not format as
+/// FAT12.
+#[skuld::test]
+fn one_byte_beyond_the_fat12_limit_does_not_format_as_fat12() {
+    let size = unchecked_image_size(LARGEST_FAT12_CONTENTS + 1) as u64;
+    let mut disk = Cursor::new(vec![0u8; size as usize]);
+    let error = fatfs::format_volume(&mut disk, format_options(size)).expect_err("FAT12 cannot hold this");
+    assert!(error.to_string().contains("Cannot select FAT type"), "{error}");
+}
+
 #[skuld::test]
 fn the_image_size_is_refused_beyond_the_fat12_limit_naming_the_sum_and_the_image_size() {
     assert_eq!(image_size(LARGEST_FAT12_CONTENTS).unwrap(), 133_885_952);

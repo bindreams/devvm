@@ -23,8 +23,7 @@ const SECTOR: u32 = 512;
 /// The smallest image, in bytes. Headroom for the directory and the allocation tables is added to the contents.
 const MIN_IMAGE: u64 = 1 << 20;
 /// The most bytes of file contents whose image ([`image_size`]) `fatfs` 0.3.6 still formats as FAT12: at most 4,084
-/// clusters of 32 KiB. Measured: one byte more fails to format ("Cannot select FAT type"), and from 66,420,737 bytes
-/// `fatfs` formats FAT16.
+/// clusters of 32 KiB. Measured: one byte more fails to format ("Cannot select FAT type").
 const LARGEST_FAT12_CONTENTS: u64 = 66_418_688;
 const _: () = assert!(
     (MIN_IMAGE + 2 * LARGEST_FAT12_CONTENTS).div_ceil(SECTOR as u64) <= u32::MAX as u64,
@@ -40,7 +39,7 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 ///
 /// The volume is FAT12, labelled `CIDATA`. Measured: Ubuntu 24.04's cloud-init reads a FAT12 image of about 1 MiB
 /// attached read-only on `virtio-blk-pci`, as the QEMU backend attaches it. Files too large for a FAT12 volume are
-/// refused with `Internal` before anything is allocated, never written in another FAT type.
+/// refused with `Internal` before anything is allocated.
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
 /// the finished image before anything is written; an image that does not hold exactly `files` is an error.
@@ -111,9 +110,9 @@ fn build_failed(error: std::io::Error) -> Error {
 }
 
 /// The size in bytes of the image that holds `contents` bytes of files, `Internal` when that is more than a FAT12
-/// volume holds ([`LARGEST_FAT12_CONTENTS`]). Decided from the sum alone, so nothing is allocated for a refused seed.
+/// volume holds ([`LARGEST_FAT12_CONTENTS`]).
 fn image_size(contents: u64) -> Result<u64> {
-    let size = (u128::from(MIN_IMAGE) + 2 * u128::from(contents)).next_multiple_of(u128::from(SECTOR));
+    let size = unchecked_image_size(contents);
     if contents > LARGEST_FAT12_CONTENTS {
         return Err(Error::new(
             ErrorKind::Internal,
@@ -127,32 +126,33 @@ fn image_size(contents: u64) -> Result<u64> {
     Ok(size as u64)
 }
 
+/// The image size for `contents` bytes of files, whether or not a FAT12 volume that size holds them.
+fn unchecked_image_size(contents: u64) -> u128 {
+    (u128::from(MIN_IMAGE) + 2 * u128::from(contents)).next_multiple_of(u128::from(SECTOR))
+}
+
+/// The options that format an image of `size` bytes ([`image_size`]) as the seed volume.
+fn format_options(size: u64) -> FormatVolumeOptions {
+    // Fits `u32`: see the assertion beside `LARGEST_FAT12_CONTENTS`.
+    let total_sectors = (size / u64::from(SECTOR)) as u32;
+    FormatVolumeOptions::new()
+        .bytes_per_sector(SECTOR as u16)
+        .total_sectors(total_sectors)
+        .fat_type(FatType::Fat12)
+        .volume_id(VOLUME_ID)
+        .volume_label(*b"CIDATA     ")
+}
+
 /// The seed image, built in memory: every `fatfs` failure here is `Internal`, as nothing touches the host.
 fn fat_image(files: &[SeedFile]) -> Result<Vec<u8>> {
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
     let size = image_size(contents)?;
-    // Fits `u32`: see the assertion beside `LARGEST_FAT12_CONTENTS`.
-    let total_sectors = (size / u64::from(SECTOR)) as u32;
 
     let mut disk = Cursor::new(vec![0u8; size as usize]);
-    fatfs::format_volume(
-        &mut disk,
-        FormatVolumeOptions::new()
-            .bytes_per_sector(SECTOR as u16)
-            .total_sectors(total_sectors)
-            .fat_type(FatType::Fat12)
-            .volume_id(VOLUME_ID)
-            .volume_label(*b"CIDATA     "),
-    )
-    .map_err(build_failed)?;
+    fatfs::format_volume(&mut disk, format_options(size)).map_err(build_failed)?;
     {
         let fs = FileSystem::new(&mut disk, FsOptions::new()).map_err(build_failed)?;
-        if fs.fat_type() != FatType::Fat12 {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                format!("the seed image was formatted as {:?}, not FAT12", fs.fat_type()),
-            ));
-        }
+        debug_assert_eq!(fs.fat_type(), FatType::Fat12);
         for file in files {
             let mut out = fs.root_dir().create_file(&file.name).map_err(|e| {
                 if is_name_rejection(&e) {
