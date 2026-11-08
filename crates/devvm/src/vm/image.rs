@@ -314,7 +314,7 @@ impl Guest for Vm {
         let dir = instance.dir();
         let op = dir.op_exclusive()?;
         let session = ops::reboot(&instance.engine, dir, &op);
-        // A failed reboot may have left the old session dead.
+        // After a failed reboot the old session can still look alive while it points at the old boot: drop it.
         *self.session.lock().unwrap_or_else(PoisonError::into_inner) = session.as_ref().ok().cloned();
         session.map(drop)
     }
