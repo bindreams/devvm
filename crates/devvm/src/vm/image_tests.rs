@@ -44,6 +44,19 @@ fn image_create_leaves_a_stopped_ownerless_instance(#[fixture(unicode_home)] hom
     );
 }
 
+#[skuld::test]
+fn up_with_an_invalid_name_creates_nothing_and_launches_nothing(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+
+    for text in ["../x", "con", "a*", ""] {
+        let error = image_of(&fx.engine).up(text, &StartOptions::default()).err().unwrap();
+        assert_eq!(error.kind(), ErrorKind::InvalidName, "{text:?}");
+    }
+
+    assert_eq!(fx.fake.launches(), 0);
+    assert!(names(&fx.env.dirs.instances()).is_empty());
+}
+
 /// A recipe without `resources.disk` reaches the storage as no size, so the storage picks the default; a recipe with
 /// one reaches it as that size.
 #[skuld::test]
@@ -136,6 +149,7 @@ fn vm_with_machine(fx: &EngineFixture, machine: Option<Box<dyn Machine>>) -> Vm 
             handle: Handle::Owned(owned),
         }),
         machine: Mutex::new(machine),
+        session: None,
     }
 }
 
@@ -161,6 +175,7 @@ fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(unicode_home
     let vm = Vm {
         instance: Some(instance),
         machine: Mutex::new(Some(stub_machine(&stub))),
+        session: None,
     };
 
     let error = vm
