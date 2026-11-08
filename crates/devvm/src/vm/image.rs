@@ -167,7 +167,8 @@ pub struct Vm {
     instance: Option<Instance>,
     machine: Mutex<Option<Box<dyn Machine>>>,
     /// The connection that found the guest ready, which every operation uses; `None` until the start has finished. A
-    /// reboot replaces it with the one that found the new boot ready.
+    /// reboot replaces it with the one that found the new boot ready. A reboot that failed leaves `None`: the old
+    /// connection may be dead, and the next operation connects again.
     session: Mutex<Option<SshSession>>,
 }
 
@@ -279,18 +280,17 @@ impl Drop for Vm {
 }
 
 impl Vm {
-    /// The guest, the session and the shared op lock for one operation.
+    /// The guest, the session and the shared op lock for one operation. A Vm without a session connects.
     fn reached(&self) -> Result<(Arc<dyn GuestOs>, SshSession, OpShared)> {
         let instance = self.instance();
         let dir = instance.dir();
         let op = dir.op_shared()?;
         let guest = ops::guest_of(&instance.engine, dir)?;
-        let session = self
-            .session
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .ok_or_else(|| Error::new(ErrorKind::Internal, format!("the VM {} has no session", self.name())))?;
+        let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        let session = match &*slot {
+            Some(session) => session.clone(),
+            None => slot.insert(ops::reach(&instance.engine, dir, &op)?.1).clone(),
+        };
         Ok((guest, session, op))
     }
 
@@ -311,9 +311,10 @@ impl Guest for Vm {
         let instance = self.instance();
         let dir = instance.dir();
         let op = dir.op_exclusive()?;
-        let session = ops::reboot(&instance.engine, dir, &op)?;
-        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = Some(session);
-        Ok(())
+        let session = ops::reboot(&instance.engine, dir, &op);
+        // A failed reboot may have left the old session dead.
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = session.as_ref().ok().cloned();
+        session.map(drop)
     }
 
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()> {

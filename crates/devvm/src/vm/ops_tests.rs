@@ -25,7 +25,7 @@ use crate::{Command, ErrorKind, GuestKind, Instance};
 
 /// The instance `foo` with its keys, recorded as running as this process with its SSH endpoint at the fixture's server,
 /// which trusts the instance's keys.
-fn running_instance(fx: &EngineFixture, home: &Path) -> Instance {
+pub(crate) fn running_instance(fx: &EngineFixture, home: &Path) -> Instance {
     let dir = instance_in(fx, "foo", home);
     let keys = {
         let op = dir.op_exclusive().unwrap();
@@ -332,6 +332,41 @@ fn reboot_waits_until_the_boot_id_differs(#[fixture(unicode_home)] home: &Path) 
 }
 
 #[skuld::test]
+fn reboot_retries_the_boot_id_reads_that_fail_while_the_guest_goes_down(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = running_instance(&fx, home);
+    fx.guests.failing_boot_reads(3);
+    let before = fx.server.connections();
+
+    instance.reboot().unwrap();
+
+    assert_eq!(
+        fx.server.connections() - before,
+        1 + 3 + 1,
+        "the old id once, three reads that fail and the new id: each on a new connection"
+    );
+    assert_eq!(boot_id(&fx), ["echo", "boot-1"]);
+}
+
+#[skuld::test]
+fn a_reboot_whose_boot_id_reads_keep_failing_ends_at_the_boot_bound_naming_the_serial_log(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    fx.guests.failing_boot_reads(usize::MAX);
+    let instance = short_bound_instance(&fx, home);
+
+    let error = instance.reboot().expect_err("the boot id cannot be read");
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("boot bound of 300ms"), "{error}");
+    assert!(
+        error.message().contains(&home.join("serial.log").display().to_string()),
+        "{error}"
+    );
+}
+
+#[skuld::test]
 fn reboot_of_a_machine_that_cannot_be_reset_fails_and_waits_for_nothing(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     let instance = running_instance(&fx, home);
@@ -344,10 +379,9 @@ fn reboot_of_a_machine_that_cannot_be_reset_fails_and_waits_for_nothing(#[fixtur
     assert_eq!(fx.server.connections() - before, 1, "only the old boot id was read");
 }
 
-/// The instance `foo` and the error of a reboot whose guest never leaves its old boot, under a short boot bound.
-fn reboot_that_never_ends(fx: &EngineFixture, home: &Path) -> (Instance, crate::Error) {
+/// The running instance `foo`, opened through an engine with a short boot bound.
+pub(crate) fn short_bound_instance(fx: &EngineFixture, home: &Path) -> Instance {
     running_instance(fx, home);
-    fx.guests.stale_boot_reads(usize::MAX);
     let engine = engine_with_bound(
         fx.env.dirs.clone(),
         &TestHost,
@@ -356,7 +390,13 @@ fn reboot_that_never_ends(fx: &EngineFixture, home: &Path) -> (Instance, crate::
         memory(),
         Duration::from_millis(300),
     );
-    let instance = Instance::open_in(&engine, "foo").unwrap();
+    Instance::open_in(&engine, "foo").unwrap()
+}
+
+/// The instance `foo` and the error of a reboot whose guest never leaves its old boot, under a short boot bound.
+fn reboot_that_never_ends(fx: &EngineFixture, home: &Path) -> (Instance, crate::Error) {
+    fx.guests.stale_boot_reads(usize::MAX);
+    let instance = short_bound_instance(fx, home);
     let error = instance.reboot().expect_err("the guest never leaves its old boot");
     (instance, error)
 }

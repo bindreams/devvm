@@ -1,17 +1,18 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use secrecy::ExposeSecret;
 
-use crate::access::SshTarget;
 use crate::access::keys::InstanceKeys;
+use crate::access::{BootBound, SshTarget};
 use crate::backend::MachineRecord;
 use crate::engine::engine_tests::{EngineFixture, engine_fixture, gone_process, memory, running_machine};
-use crate::engine::ready::connect_ready;
+use crate::engine::ready::{boot_id_unchanged, connect_ready};
 use crate::guest::GuestOs;
 use crate::instance::name::InstanceName;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
-use crate::{ErrorKind, GuestKind};
+use crate::{Error, ErrorKind, GuestKind};
 
 /// A target at the fixture's server, which now trusts a fresh pair of keys.
 fn target_at(fx: &EngineFixture, home: &Path) -> SshTarget {
@@ -97,4 +98,41 @@ fn a_vm_process_that_is_already_gone_is_connection_lost_naming_the_endpoint(#[fi
             .contains(&format!("waiting for SSH on {} to answer", target.addr)),
         "{error}"
     );
+}
+
+#[skuld::test]
+fn a_boot_id_that_stayed_unreadable_names_the_last_failed_read_the_bound_and_the_serial_log(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let target = target_at(&fx, home);
+    let read = Error::new(
+        ErrorKind::Io,
+        "reading the guest's boot id with `cat` ended with exit code 1",
+    );
+    let bound = BootBound::start(Duration::from_secs(90)).unwrap();
+
+    let error = boot_id_unchanged(&target, "boot-0", bound, Some(&read));
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    for part in [
+        "boot-0",
+        "boot bound of 1m 30s",
+        "the last read failed: reading the guest's boot id with `cat` ended with exit code 1",
+        &target.serial_log.display().to_string(),
+    ] {
+        assert!(error.message().contains(part), "{part}: {error}");
+    }
+}
+
+#[skuld::test]
+fn a_boot_id_that_stayed_the_old_one_names_no_failed_read(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let target = target_at(&fx, home);
+    let bound = BootBound::start(Duration::from_secs(90)).unwrap();
+
+    let error = boot_id_unchanged(&target, "boot-0", bound, None);
+
+    assert!(!error.message().contains("the last read failed"), "{error}");
+    assert!(error.message().contains("boot bound of 1m 30s"), "{error}");
 }

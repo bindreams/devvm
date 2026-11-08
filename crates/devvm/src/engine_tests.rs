@@ -263,6 +263,20 @@ fn ended_exit() -> VmExit {
     exit
 }
 
+/// A watcher that ended without knowing whether its VM lives.
+fn unwatched_exit() -> VmExit {
+    let exit = VmExit::when(|| Err("the VM process cannot be waited on".to_owned())).unwrap();
+    crate::access::runtime::wait(exit.gone());
+    exit
+}
+
+/// A watcher whose thread panicked: it ended without a verdict.
+fn panicked_exit() -> VmExit {
+    let exit = VmExit::when(|| panic!("the watcher thread panics")).unwrap();
+    crate::access::runtime::wait(exit.gone());
+    exit
+}
+
 pub(crate) fn memory() -> Arc<MemoryProgress> {
     Arc::new(MemoryProgress::default())
 }
@@ -709,6 +723,41 @@ fn an_ended_watcher_of_the_asked_machine_is_returned_as_it_is(#[fixture(unicode_
 
     assert!(exit.has_ended(), "its VM is gone, and a wait on it ends at once");
     assert_eq!(watched(&fx.engine), [machine.process]);
+}
+
+#[skuld::test]
+fn an_unwatched_verdict_for_the_asked_machine_is_replaced_by_a_new_watcher(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let machine = running_machine(home, fx.server.addr());
+    watch_with(&fx.engine, machine.process.clone(), unwatched_exit());
+
+    let exit = fx.engine.vm_exit(&machine).unwrap();
+
+    assert!(exit.verdict().is_none(), "the machine lives, and a new watcher says so");
+    assert_eq!(watched(&fx.engine), [machine.process]);
+}
+
+#[skuld::test]
+fn a_watcher_whose_thread_panicked_is_replaced_by_a_new_watcher(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let machine = running_machine(home, fx.server.addr());
+    watch_with(&fx.engine, machine.process.clone(), panicked_exit());
+
+    let exit = fx.engine.vm_exit(&machine).unwrap();
+
+    assert!(exit.verdict().is_none(), "the machine lives, and a new watcher says so");
+    assert_eq!(watched(&fx.engine), [machine.process]);
+}
+
+#[skuld::test]
+fn a_watcher_whose_thread_panicked_for_another_machine_goes(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let running = running_machine(home, fx.server.addr());
+    watch_with(&fx.engine, gone_process(), panicked_exit());
+
+    fx.engine.vm_exit(&running).unwrap();
+
+    assert_eq!(watched(&fx.engine), [running.process]);
 }
 
 #[skuld::test]

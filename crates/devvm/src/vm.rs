@@ -38,7 +38,8 @@ mod vm_windows_tests;
 mod vm_other_tests;
 
 /// Running commands in a guest and moving files in and out of it. Each method waits for the commands that change the
-/// instance (`start`, `stop`, `remove`, `reboot`) and fails with `unavailable` when the VM is not running.
+/// instance (`start`, `stop`, `remove`, `reboot`) and fails with `unavailable` when the VM is not running. A VM that
+/// dies while a method works can fail it with `connection-lost` instead.
 pub trait Guest {
     fn run(&self, cmd: &Command) -> Result<Output>;
     fn reboot(&self) -> Result<()>;

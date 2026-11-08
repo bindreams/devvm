@@ -99,7 +99,7 @@ impl GuestOs for FakeGuestOs {
     /// A Linux guest's, except that a served guest's boot id is its boot number (see [`ServedGuests::boot_follows`]).
     fn boot_id_command(&self) -> Command {
         match &self.served {
-            Some(served) => Command::new(["echo".to_owned(), format!("boot-{}", served.boot_number())]),
+            Some(served) => served.boot_id_command(),
             None => LinuxGuest.boot_id_command(),
         }
     }
@@ -211,15 +211,18 @@ struct Served {
     on_ready: Mutex<Option<Box<dyn Fn() + Send>>>,
     /// The resets that start a new boot, if the guests follow any.
     resets: Mutex<Option<Arc<AtomicUsize>>>,
+    /// How many boot id reads after a reset fail, before the stale ones.
+    failing_boot_reads: Mutex<usize>,
     /// How many boot ids after a reset still say the old boot.
     stale_boot_reads: Mutex<usize>,
     boots: Mutex<Boots>,
 }
 
-/// Which reset the boot id was last read after, and how many of its reads may still answer the old boot.
+/// Which reset the boot id was last read after, and how many of its reads may still fail or answer the old boot.
 #[derive(Default)]
 struct Boots {
     seen: usize,
+    failing_left: usize,
     stale_left: usize,
 }
 
@@ -232,6 +235,7 @@ impl ServedGuests {
             degraded: Mutex::default(),
             on_ready: Mutex::default(),
             resets: Mutex::default(),
+            failing_boot_reads: Mutex::default(),
             stale_boot_reads: Mutex::default(),
             boots: Mutex::default(),
         }))
@@ -241,6 +245,12 @@ impl ServedGuests {
     /// boot number is always 0.
     pub(crate) fn boot_follows(&self, resets: Arc<AtomicUsize>) {
         *self.0.resets.lock().unwrap() = Some(resets);
+    }
+
+    /// After each reset, the first `reads` reads of the boot id fail, as they do while the guest goes down or its `sshd`
+    /// restarts; the stale reads come after them.
+    pub(crate) fn failing_boot_reads(&self, reads: usize) {
+        *self.0.failing_boot_reads.lock().unwrap() = reads;
     }
 
     /// After each reset, the first `reads` reads of the boot id still answer the old boot, as a guest does until it has
@@ -271,23 +281,31 @@ impl ServedGuests {
 }
 
 impl Served {
-    /// The boot the guest is in now: the number of resets so far, or the one before while the stale reads last.
-    fn boot_number(&self) -> usize {
+    /// What a read of the boot id runs: `exit 1` while the failing reads last, else the boot the guest is in now (the
+    /// number of resets so far, or the one before while the stale reads last).
+    fn boot_id_command(&self) -> Command {
         let Some(resets) = self.resets.lock().unwrap().clone() else {
-            return 0;
+            return Command::new(["echo", "boot-0"]);
         };
         let now = resets.load(Ordering::SeqCst);
         let mut boots = self.boots.lock().unwrap();
         if now != boots.seen {
             boots.seen = now;
+            boots.failing_left = *self.failing_boot_reads.lock().unwrap();
             boots.stale_left = *self.stale_boot_reads.lock().unwrap();
         }
-        if boots.stale_left > 0 {
+        if boots.failing_left > 0 {
+            boots.failing_left -= 1;
+            return Command::new(["exit", "1"]);
+        }
+        let boot = if boots.stale_left > 0 {
             boots.stale_left -= 1;
             // A stale read follows a reset, so `now` is at least 1.
-            return now - 1;
-        }
-        now
+            now - 1
+        } else {
+            now
+        };
+        Command::new(["echo".to_owned(), format!("boot-{boot}")])
     }
 
     fn read_seed(&self, seed: &SeedSpec) {

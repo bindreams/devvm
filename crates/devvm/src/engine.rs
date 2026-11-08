@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use cosca::identity::ProcessIdRecord;
 
-use crate::access::VmExit;
 use crate::access::ssh_config::SshConfigDir;
+use crate::access::{VmExit, WatchEnd};
 use crate::backend::qemu::sidecar::LazyInstall;
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::backend::{Backend, MachineRecord};
@@ -196,10 +196,17 @@ impl Engine {
 
     /// The watcher of the VM process `machine` names, shared by every call for it through this engine. It first drops the
     /// watchers of other machines whose VM has ended, so a restart (a new process, a new record) does not keep the old
-    /// one. A process that is already gone is `connection-lost`.
+    /// one. The machine's own watcher is kept while it watches and once it saw the process exit; one that could not
+    /// watch is replaced. A process that is already gone is `connection-lost`.
     pub(crate) fn vm_exit(&self, machine: &MachineRecord) -> Result<VmExit> {
         let mut exits = self.exits.lock().unwrap_or_else(PoisonError::into_inner);
-        exits.retain(|(process, exit)| *process == machine.process || !exit.has_ended());
+        exits.retain(|(process, exit)| {
+            if *process == machine.process {
+                !matches!(exit.verdict(), Some(WatchEnd::Unwatched(_)))
+            } else {
+                !exit.has_ended()
+            }
+        });
         if let Some((_, exit)) = exits.iter().find(|(process, _)| *process == machine.process) {
             return Ok(exit.clone());
         }

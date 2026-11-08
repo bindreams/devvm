@@ -15,7 +15,7 @@ use crate::{Command, Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "ops_tests.rs"]
-mod ops_tests;
+pub(crate) mod ops_tests;
 
 /// The guest of `dir`.
 pub(super) fn guest_of(engine: &Engine, dir: &InstanceDir) -> Result<Arc<dyn GuestOs>> {

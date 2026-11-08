@@ -12,4 +12,4 @@ pub(crate) mod sftp;
 pub(crate) mod ssh_config;
 
 pub(crate) use exec::ExecEnd;
-pub(crate) use session::{BootBound, Keepalive, SshSession, SshTarget, VmExit};
+pub(crate) use session::{BootBound, Keepalive, SshSession, SshTarget, VmExit, WatchEnd};

@@ -8,8 +8,9 @@ use crate::recipe::Resources;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::stub_backend::{Attach, StubBackend};
-use crate::vm::Handle;
-use crate::{ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
+use crate::vm::ops::ops_tests::short_bound_instance;
+use crate::vm::{Guest, Handle, ops};
+use crate::{Command, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
 use skuld::env;
 
 fn memory() -> Arc<MemoryProgress> {
@@ -215,5 +216,37 @@ fn dropping_a_vm_whose_machine_cannot_be_killed_leaves_the_instance_and_says_so(
             .iter()
             .any(|m| m.contains(&name) && m.contains("could not be killed")),
         "{messages:?}"
+    );
+}
+
+#[skuld::test]
+fn a_vm_whose_reboot_failed_connects_again_for_its_next_operation_and_keeps_that_session(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    fx.guests.stale_boot_reads(usize::MAX);
+    let instance = short_bound_instance(&fx, home);
+    let (_, session) = ops::reach(&instance.engine, instance.dir(), &instance.dir().op_shared().unwrap()).unwrap();
+    let vm = Vm {
+        instance: Some(instance),
+        machine: Mutex::new(None),
+        session: Mutex::new(Some(session)),
+    };
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    vm.reboot().expect_err("the guest never leaves its old boot");
+    let before = fx.server.connections();
+
+    let output = vm.run(&Command::new(["echo", "after"])).unwrap();
+    vm.run(&Command::new(["echo", "again"])).unwrap();
+
+    assert_eq!(
+        output.stdout,
+        b"after
+"
+    );
+    assert_eq!(
+        fx.server.connections() - before,
+        1,
+        "the failed reboot dropped the session; one connection serves the operations after it"
     );
 }

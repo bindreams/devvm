@@ -51,8 +51,10 @@ pub(crate) fn read_boot_id(guest: &dyn GuestOs, session: &SshSession) -> Result<
 
 /// After the guest of `machine` was reset: connects until the guest reports a boot id other than `old_id`, each read
 /// on a new connection (one that reached the old guest cannot see the new boot), then waits until its boot has
-/// finished. The wait ends when the new boot is ready, when the VM process exits, or when the engine's boot bound
-/// passes; a failure names what was awaited and the serial log. The returned session is past its boot phase.
+/// finished. A read that fails counts as one that still says `old_id`: the guest is going down or its `sshd` restarts.
+/// The wait ends when the new boot is ready, when the VM process exits, or when the engine's boot bound passes; a
+/// failure names what was awaited, the last failed read and the serial log. The returned session is past its boot
+/// phase.
 pub(crate) fn reconnect_after_reset(
     engine: &Engine,
     guest: &dyn GuestOs,
@@ -63,6 +65,7 @@ pub(crate) fn reconnect_after_reset(
 ) -> Result<SshSession> {
     let bound = BootBound::start(engine.boot_bound())?;
     let vm = engine.vm_exit(machine).map_err(|e| awaiting_ssh(e, target))?;
+    let mut last_failed_read: Option<Error> = None;
     loop {
         let session = SshSession::connect(
             target,
@@ -70,25 +73,47 @@ pub(crate) fn reconnect_after_reset(
             vm.clone(),
             Some(bound),
             engine.progress().as_ref(),
-        )?;
-        if read_boot_id(guest, &session)? != old_id {
-            wait_ready(engine, guest, name, &session)?;
-            session.finish_boot();
-            return Ok(session);
-        }
+        )
+        .map_err(|e| match &last_failed_read {
+            Some(read) => {
+                let kind = e.kind();
+                e.with_context(kind, format!("the last read of the boot id failed: {}", read.message()))
+            }
+            None => e,
+        })?;
+        last_failed_read = match read_boot_id(guest, &session) {
+            Ok(id) if id != old_id => {
+                wait_ready(engine, guest, name, &session)?;
+                session.finish_boot();
+                return Ok(session);
+            }
+            Ok(_) => None,
+            Err(e) => Some(e),
+        };
         if bound.has_passed() {
-            return Err(Error::new(
-                ErrorKind::ConnectionLost,
-                format!(
-                    "waiting for the boot id of {} to differ from {old_id}: it did not happen within the boot bound \
-                     of {} (serial log: {})",
-                    target.addr,
-                    crate::access::session::humanly(bound.limit()),
-                    target.serial_log.display()
-                ),
-            ));
+            return Err(boot_id_unchanged(target, old_id, bound, last_failed_read.as_ref()));
         }
     }
+}
+
+/// The failure of a boot id that stayed `old_id` (or could not be read, `last_failed_read`) until `bound` passed.
+pub(super) fn boot_id_unchanged(
+    target: &SshTarget,
+    old_id: &str,
+    bound: BootBound,
+    last_failed_read: Option<&Error>,
+) -> Error {
+    let read = last_failed_read.map_or(String::new(), |e| format!("the last read failed: {}; ", e.message()));
+    Error::new(
+        ErrorKind::ConnectionLost,
+        format!(
+            "waiting for the boot id of {} to differ from {old_id}: it did not happen within the boot bound of {} \
+             ({read}serial log: {})",
+            target.addr,
+            crate::access::session::humanly(bound.limit()),
+            target.serial_log.display()
+        ),
+    )
 }
 
 /// The guest's readiness wait on `session`, reporting a boot that finished with problems.
