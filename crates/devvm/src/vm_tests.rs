@@ -532,7 +532,6 @@ pub(crate) fn fake_cli_run(args: &[String]) {
     std::io::stdin().read_to_end(&mut sink).unwrap();
 }
 
-/// The name of the instance `fake-cli-up` makes.
 const UP_NAME: &str = "fake-up";
 
 /// The machine the record in the instance directory `dir` names, read without any lock.

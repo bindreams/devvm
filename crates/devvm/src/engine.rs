@@ -172,9 +172,8 @@ impl Engine {
     /// process half-created answers "already exists". `from_env` calls it once; call it again for a pass in a
     /// long-lived process.
     ///
-    /// Two passes: [`Registry::reap`], which sweeps `instances/` and the files machines left outside it, then the
-    /// `ssh_config` entries of instances that no longer exist. Those entries are in `<state>/ssh`, not in
-    /// `instances/`, so they are swept here, by their owner.
+    /// Also removes the `ssh_config` entries of instances that no longer exist; they live in `<state>/ssh`, outside
+    /// `instances/`, so `Registry::reap` does not see them.
     pub fn reap(&self) {
         self.registry.reap();
         self.sweep_ssh_configs();
@@ -187,7 +186,17 @@ impl Engine {
     fn sweep_ssh_configs(&self) {
         let live = |name: &InstanceName| {
             let dir = self.registry.root().join(name.as_str());
-            !matches!(self.registry.locks().read_record(&dir), Ok(RecordRead::Absent))
+            match self.registry.locks().read_record(&dir) {
+                Ok(RecordRead::Absent) => false,
+                Ok(_) => true,
+                Err(e) => {
+                    self.progress.message(&format!(
+                        "instance {name}: its record cannot be read ({}); its ssh configuration entry is kept",
+                        e.message()
+                    ));
+                    true
+                }
+            }
         };
         for warning in self.ssh_configs().sweep(&live) {
             self.progress.message(&warning);

@@ -58,6 +58,15 @@ pub(crate) fn remove_leftovers(engine: &Engine, dir: &InstanceDir, machine: &Mac
     machine.remove_leftovers(engine.host(), &mut warn_for(engine, dir));
 }
 
+/// Removes the `ssh_config` entry of `dir`'s instance; a failure is a warning naming the instance. Call it before
+/// `destroy`, while the name is still this instance's: once it is released, another command may place an instance of
+/// the same name and write its entry, which this one must not remove.
+pub(crate) fn remove_ssh_entry(engine: &Engine, dir: &InstanceDir) {
+    if let Err(e) = engine.ssh_configs().remove_entry(dir.name()) {
+        warn_for(engine, dir)(format!("cannot remove the ssh configuration entry: {}", e.message()));
+    }
+}
+
 /// Reports a problem with the files of a dead machine of `dir` on the progress channel, naming the instance.
 pub(crate) fn warn_for<'a>(engine: &'a Engine, dir: &'a InstanceDir) -> impl FnMut(String) + 'a {
     move |text| engine.progress().message(&format!("instance {}: {text}", dir.name()))
@@ -124,8 +133,7 @@ impl Instance {
     }
 
     /// Launches under the exclusive op lock and waits for the guest; `None` when the machine already runs. The machine
-    /// is resumed and still contained: the caller keeps it, and the session that found the guest ready (`Image::start`,
-    /// `up`).
+    /// is resumed and still contained: the caller keeps it, and the session that found the guest ready.
     pub(crate) fn start_with(&self, lifetime: Lifetime) -> Result<Option<Started>> {
         let dir = self.dir();
         let op = dir.op_exclusive()?;
@@ -160,11 +168,7 @@ impl Instance {
             // A destroy that fails below must not leave a record naming a dead machine.
             dir.retire_machine(&op, machine, self.engine.host(), &mut warn_for(&self.engine, dir))?;
         }
-        // Before the destroy, while the name is still this instance's: once it is released, another command may place
-        // an instance of the same name and write its entry, which this one must not remove.
-        if let Err(e) = self.engine.ssh_configs().remove_entry(dir.name()) {
-            warn_for(&self.engine, dir)(format!("cannot remove the ssh configuration entry: {}", e.message()));
-        }
+        remove_ssh_entry(&self.engine, dir);
         dir.destroy(op)?;
         self.engine
             .progress()

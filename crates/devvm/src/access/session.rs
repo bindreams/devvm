@@ -168,8 +168,7 @@ impl VmExit {
         }
     }
 
-    /// Whether the watcher already has a verdict, `Exited` or `Unwatched`. False while the VM lives and for
-    /// [`VmExit::never`].
+    /// Whether [`VmExit::verdict`] is `Some`.
     pub(crate) fn has_ended(&self) -> bool {
         self.verdict().is_some()
     }
@@ -215,7 +214,6 @@ impl BootBound {
         Ok(BootBound { limit, deadline })
     }
 
-    /// Whether the deadline has passed.
     pub(crate) fn has_passed(&self) -> bool {
         Instant::now() >= self.deadline
     }
@@ -660,8 +658,7 @@ impl SshSession {
         })?
     }
 
-    /// Whether the session can still serve an operation: its connection has not ended and its VM watcher has no
-    /// verdict, neither `Exited` nor `Unwatched`.
+    /// Whether the session can still serve an operation: its connection and its VM watcher are both live.
     pub(crate) fn is_alive(&self) -> bool {
         self.inner.transport_end().is_none() && self.inner.vm.verdict().is_none()
     }

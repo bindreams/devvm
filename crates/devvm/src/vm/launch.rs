@@ -58,7 +58,7 @@ struct Launched {
     guest: Arc<dyn GuestOs>,
 }
 
-/// `launch` up to the writing of the `ssh_config` entry.
+/// `launch` up to and including the resume; the guest is not yet awaited.
 fn launch_machine(
     engine: &Engine,
     dir: &InstanceDir,
@@ -162,7 +162,6 @@ fn write_ssh_config(engine: &Engine, dir: &InstanceDir, target: &SshTarget, keys
     }
 }
 
-/// Writes the `ssh_config` entry, then connects and waits until the guest has finished its boot.
 fn await_ready(
     engine: &Engine,
     dir: &InstanceDir,

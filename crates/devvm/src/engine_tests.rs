@@ -240,7 +240,6 @@ pub(crate) fn gone_process() -> ProcessIdRecord {
     gone
 }
 
-/// The processes `engine` has an exit watcher for.
 pub(crate) fn watched(engine: &Engine) -> Vec<ProcessIdRecord> {
     engine
         .exits
@@ -251,12 +250,10 @@ pub(crate) fn watched(engine: &Engine) -> Vec<ProcessIdRecord> {
         .collect()
 }
 
-/// Makes `exit` the watcher `engine` keeps for `process`.
 pub(crate) fn watch_with(engine: &Engine, process: ProcessIdRecord, exit: VmExit) {
     engine.exits.lock().unwrap().push((process, exit));
 }
 
-/// A watcher that has already ended.
 fn ended_exit() -> VmExit {
     let exit = VmExit::when(|| Ok(())).unwrap();
     crate::access::runtime::wait(exit.gone());
@@ -823,6 +820,47 @@ fn the_sweep_keeps_the_conf_of_an_instance_whose_record_is_corrupt(#[fixture(uni
     fx.engine.sweep_ssh_configs();
 
     assert!(is_there(&conf), "only a definite absence removes a conf");
+}
+
+#[skuld::test]
+fn the_sweep_warns_and_keeps_the_conf_of_an_instance_whose_record_cannot_be_read(#[fixture(unicode_home)] home: &Path) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    let dir = instance_in(&fx, "bad", home);
+    let conf = write_conf(&fx.engine, home, "bad");
+    // A directory where the record should be: reading it is an I/O error, not a bad record.
+    let record = dir.path().join("record.json");
+    std::fs::remove_file(&record).unwrap();
+    std::fs::create_dir(&record).unwrap();
+
+    fx.engine.sweep_ssh_configs();
+
+    assert!(
+        is_there(&conf),
+        "a record that cannot be read does not make its instance gone"
+    );
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("instance bad") && m.contains("record.json")),
+        "{messages:?}"
+    );
+}
+
+#[skuld::test]
+fn the_sweeps_warnings_reach_the_progress_channel(#[fixture(unicode_home)] home: &Path) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    // A conf that cannot be removed: a directory under its name.
+    let conf = write_conf(&fx.engine, home, "gone");
+    std::fs::remove_file(&conf).unwrap();
+    std::fs::create_dir(&conf).unwrap();
+
+    fx.engine.sweep_ssh_configs();
+
+    let messages = progress.messages();
+    assert!(messages.iter().any(|m| m.contains("gone.conf")), "{messages:?}");
 }
 
 #[skuld::test]

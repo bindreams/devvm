@@ -35,7 +35,7 @@ pub(crate) fn connect_ready(
 /// How a read of the boot id went, once the command ran.
 pub(crate) enum ReadBootIdOutcome {
     Id(String),
-    /// The command ended with a status other than 0.
+    /// The command ended with a status other than 0, or printed no id.
     CommandFailed(Error),
 }
 
@@ -64,17 +64,23 @@ pub(crate) fn read_boot_id(guest: &dyn GuestOs, session: &SshSession) -> Result<
             ),
         )));
     }
-    Ok(ReadBootIdOutcome::Id(output.stdout_lossy().trim().to_owned()))
+    let id = output.stdout_lossy().trim().to_owned();
+    if id.is_empty() {
+        return Ok(ReadBootIdOutcome::CommandFailed(Error::new(
+            ErrorKind::Io,
+            format!("reading the guest's boot id with `{command}` printed no boot id"),
+        )));
+    }
+    Ok(ReadBootIdOutcome::Id(id))
 }
 
 /// After the guest of `machine` was reset: connects until the guest reports a boot id other than `old_id`, each read
 /// on a new connection (one that reached the old guest cannot see the new boot), then waits until its boot has
-/// finished. A read that fails because the connection was lost or the command ended with a status other than 0 counts
-/// as one that still says `old_id`: the guest is going down or its `sshd` restarts. Any other failed read fails the
-/// reboot at once.
-/// The wait ends when the new boot is ready, when the VM process exits, or when the engine's boot bound passes; a
-/// failure names what was awaited, the last failed read and the serial log. The returned session is past its boot
-/// phase.
+/// finished. A read that fails because the connection was lost, or whose command ended with a status other than 0 or
+/// printed no id, counts as one that still says `old_id`: the guest is going down or its `sshd` restarts. Any other
+/// failed read fails the reboot at once.
+///
+/// The wait ends as [`connect_ready`]'s does, and a failure also names the last failed read.
 pub(crate) fn reconnect_after_reset(
     engine: &Engine,
     guest: &dyn GuestOs,

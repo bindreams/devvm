@@ -17,7 +17,7 @@ use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
 use crate::store::fetch::LazyHttp;
 use crate::store::layers::ChainLease;
-use crate::vm::{Guest, Handle, Instance, Started, ops, remove_leftovers, warn_for};
+use crate::vm::{Guest, Handle, Instance, Started, ops, remove_leftovers, remove_ssh_entry, warn_for};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, GuestKind, Result, StartOptions};
 
 #[cfg(test)]
@@ -250,6 +250,7 @@ impl Drop for Vm {
                         e.message()
                     ));
                 }
+                remove_ssh_entry(engine, dir);
                 if let Err(e) = dir.destroy(op) {
                     progress.message(&format!(
                         "instance {} could not be removed ({}); the next devvm command retries",
@@ -281,8 +282,7 @@ impl Drop for Vm {
 }
 
 impl Vm {
-    /// The guest, the session and the shared op lock for one operation. A Vm whose session is gone, its connection ended
-    /// or its VM watcher with a verdict, connects again.
+    /// The guest, the session and the shared op lock for one operation.
     fn reached(&self) -> Result<(Arc<dyn GuestOs>, SshSession, OpShared)> {
         let instance = self.instance();
         let dir = instance.dir();

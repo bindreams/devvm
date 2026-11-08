@@ -17,12 +17,10 @@ use crate::{Command, Error, ErrorKind, Result};
 #[path = "ops_tests.rs"]
 pub(crate) mod ops_tests;
 
-/// The guest of `dir`.
 pub(super) fn guest_of(engine: &Engine, dir: &InstanceDir) -> Result<Arc<dyn GuestOs>> {
     engine.guests().os(dir.record()?.guest)
 }
 
-/// Runs `cmd` and collects its output.
 pub(super) fn run(guest: &dyn GuestOs, session: &SshSession, cmd: &Command) -> Result<Output> {
     session.exec_collect(&guest.wrap(cmd)?)
 }
@@ -94,8 +92,8 @@ pub(super) fn copy_out(
         .copy_out(src, dest, engine.host(), guest, engine.progress().as_ref())
 }
 
-/// The machine of `dir` and a new connection to it, for the callers that connect afresh. A booting guest's connection
-/// is another matter (see [`reboot`]): this one makes a single attempt and a failure is final.
+/// The machine of `dir` and a new connection to it: a single attempt, so a failure is final. (A guest that is still
+/// booting is `ready::reconnect_after_reset`'s.)
 pub(super) fn reach(engine: &Engine, dir: &InstanceDir, op: &impl OpHeld) -> Result<(Running, SshSession)> {
     let running = read_target(engine, dir, op)?;
     let session = SshSession::connect(

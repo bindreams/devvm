@@ -203,11 +203,8 @@ pub(crate) struct ServedGuests(Arc<Served>);
 struct Served {
     server: Arc<TestSshd>,
     seeds: Mutex<Vec<SeedSeen>>,
-    /// The command `wait_ready` runs; it is ready when it exits 0.
     ready_command: Mutex<String>,
-    /// What `wait_ready` answers after the command succeeded.
     degraded: Mutex<Option<String>>,
-    /// Called first in every `wait_ready`.
     on_ready: Mutex<Option<Box<dyn Fn() + Send>>>,
     /// The resets that start a new boot, if the guests follow any.
     resets: Mutex<Option<Arc<AtomicUsize>>>,
@@ -217,6 +214,8 @@ struct Served {
     stale_boot_reads: Mutex<usize>,
     /// Every read of the boot id after a reset ends without an exit status.
     unreadable_boot_id: Mutex<bool>,
+    /// Every read of the boot id prints nothing.
+    empty_boot_id: Mutex<bool>,
     boots: Mutex<Boots>,
 }
 
@@ -240,6 +239,7 @@ impl ServedGuests {
             failing_boot_reads: Mutex::default(),
             stale_boot_reads: Mutex::default(),
             unreadable_boot_id: Mutex::default(),
+            empty_boot_id: Mutex::default(),
             boots: Mutex::default(),
         }))
     }
@@ -260,6 +260,11 @@ impl ServedGuests {
     /// nor a failed command.
     pub(crate) fn unreadable_boot_id(&self) {
         *self.0.unreadable_boot_id.lock().unwrap() = true;
+    }
+
+    /// Every read of the boot id exits 0 and prints nothing.
+    pub(crate) fn empty_boot_id(&self) {
+        *self.0.empty_boot_id.lock().unwrap() = true;
     }
 
     /// After each reset, the first `reads` reads of the boot id still answer the old boot, as a guest does until it has
@@ -293,6 +298,9 @@ impl Served {
     /// What a read of the boot id runs: `exit 1` while the failing reads last, else the boot the guest is in now (the
     /// number of resets so far, or the one before while the stale reads last).
     fn boot_id_command(&self) -> Command {
+        if *self.empty_boot_id.lock().unwrap() {
+            return Command::new(["echo"]);
+        }
         let Some(resets) = self.resets.lock().unwrap().clone() else {
             return Command::new(["echo", "boot-0"]);
         };

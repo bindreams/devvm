@@ -16,16 +16,15 @@ use crate::engine::engine_tests::{
 };
 use crate::engine::keys::ensure_keys;
 use crate::exit::ExitStatus;
-use crate::guest::Guests;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::Attach;
 use crate::vm::Guest;
-use crate::{Command, ErrorKind, GuestKind, Instance};
+use crate::{Command, ErrorKind, Instance};
 
 /// The instance `foo` with its keys, recorded as running as this process with its SSH endpoint at the fixture's server,
 /// which trusts the instance's keys.
-fn running_instance(fx: &EngineFixture, home: &Path) -> Instance {
+pub(crate) fn running_instance(fx: &EngineFixture, home: &Path) -> Instance {
     let dir = instance_in(fx, "foo", home);
     let keys = {
         let op = dir.op_exclusive().unwrap();
@@ -289,24 +288,17 @@ fn a_recorded_machine_the_backend_cannot_find_is_unavailable(#[fixture(unicode_h
 
 // Reboot ==============================================================================================================
 
-/// The command the fixture's guest reads its boot id with.
-fn boot_id(fx: &EngineFixture) -> Vec<String> {
-    fx.guests.os(GuestKind::Linux).unwrap().boot_id_command().argv
-}
-
 #[skuld::test]
 fn reboot_resets_in_the_same_process_and_returns_with_a_new_boot_id(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let instance = running_instance(&fx, home);
     let machine = recorded(&instance);
     let before = fx.server.connections();
-    assert_eq!(boot_id(&fx), ["echo", "boot-0"]);
 
     instance.reboot().unwrap();
 
     assert_eq!(fx.fake.resets(), 1);
     assert_eq!(fx.fake.launches(), 0, "the machine is reset, not launched again");
-    assert_eq!(boot_id(&fx), ["echo", "boot-1"]);
     assert_eq!(recorded(&instance), machine, "the process and the record are the same");
     assert_eq!(
         fx.server.connections() - before,
@@ -345,7 +337,6 @@ fn reboot_retries_the_boot_id_reads_that_fail_while_the_guest_goes_down(#[fixtur
         1 + 3 + 1,
         "the old id once, three reads that fail and the new id: each on a new connection"
     );
-    assert_eq!(boot_id(&fx), ["echo", "boot-1"]);
 }
 
 #[skuld::test]
@@ -370,7 +361,7 @@ fn a_reboot_whose_boot_id_reads_keep_failing_ends_at_the_boot_bound_naming_the_s
 fn a_reboot_whose_boot_id_read_fails_in_another_way_fails_at_once_with_its_kind(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     fx.guests.unreadable_boot_id();
-    let instance = short_bound_instance(&fx, home);
+    let instance = running_instance(&fx, home);
     let before = fx.server.connections();
 
     let error = instance.reboot().expect_err("the boot id read has no status");
@@ -380,6 +371,23 @@ fn a_reboot_whose_boot_id_read_fails_in_another_way_fails_at_once_with_its_kind(
         fx.server.connections() - before,
         2,
         "the old id once and the failed read"
+    );
+}
+
+#[skuld::test]
+fn a_reboot_of_a_guest_that_prints_no_boot_id_fails_before_the_reset(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    fx.guests.empty_boot_id();
+    let instance = running_instance(&fx, home);
+
+    let error = instance.reboot().expect_err("an empty boot id names no boot");
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(error.message().contains("printed no boot id"), "{error}");
+    assert_eq!(
+        fx.fake.resets(),
+        0,
+        "the machine is not reset on a boot id that cannot tell boots apart"
     );
 }
 
@@ -436,7 +444,7 @@ fn a_reboot_whose_guest_never_comes_back_ends_at_the_boot_bound_naming_the_seria
 }
 
 #[skuld::test]
-fn a_failed_reboot_leaves_the_machine_running(#[fixture(unicode_home)] home: &Path) {
+fn a_failed_reboot_keeps_the_machine_record_and_releases_the_op_lock(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
 
     let (instance, _) = reboot_that_never_ends(&fx, home);

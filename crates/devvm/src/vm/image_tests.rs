@@ -3,14 +3,16 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
 use crate::backend::{Backend, Machine};
-use crate::engine::engine_tests::{EngineFixture, dead_machine, engine_fixture, image_of, image_with, stub_fixture};
+use crate::engine::engine_tests::{
+    EngineFixture, dead_machine, engine_fixture, image_of, image_with, is_there, stub_fixture, write_conf,
+};
 use crate::engine::keys::read_target;
 use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::recipe::Resources;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::stub_backend::{Attach, StubBackend};
-use crate::vm::ops::ops_tests::short_bound_instance;
+use crate::vm::ops::ops_tests::{running_instance, short_bound_instance};
 use crate::vm::{Guest, Handle, ops};
 use crate::{Command, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
 use skuld::env;
@@ -222,6 +224,20 @@ fn dropping_a_vm_whose_machine_cannot_be_killed_leaves_the_instance_and_says_so(
 }
 
 #[skuld::test]
+fn dropping_a_vm_removes_its_ssh_config_entry_and_leaves_the_others(#[fixture(unicode_home)] home: &Path) {
+    let (fx, stub, _) = stub_fixture(home, Attach::Running);
+    let vm = vm_with_machine(&fx, Some(stub_machine(&stub)));
+    let own = write_conf(&fx.engine, home, vm.name());
+    let other = write_conf(&fx.engine, home, "other");
+
+    drop(vm);
+
+    assert!(names(&fx.env.dirs.instances()).is_empty());
+    assert!(!is_there(&own));
+    assert!(is_there(&other), "another instance keeps its entry");
+}
+
+#[skuld::test]
 fn a_vm_whose_reboot_failed_connects_again_for_its_next_operation_and_keeps_that_session(
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -286,26 +302,32 @@ fn a_vm_whose_session_died_connects_again_for_its_next_operation(#[fixture(unico
     assert_eq!(fx.server.connections() - before, 1);
 }
 
+/// A new connection to `instance` whose VM watcher ends with the verdict `unwatched` once `end` is sent to.
+fn session_with_a_watcher_to_end(
+    instance: &Instance,
+) -> (SshSession, mpsc::Sender<std::result::Result<(), String>>, VmExit) {
+    let (end, ended) = mpsc::channel::<std::result::Result<(), String>>();
+    let exit = VmExit::when(move || ended.recv().unwrap_or(Ok(()))).unwrap();
+    let dir = instance.dir();
+    let running = read_target(&instance.engine, dir, &dir.op_shared().unwrap()).unwrap();
+    let session = SshSession::connect(
+        &running.target,
+        Keepalive::STANDARD,
+        exit.clone(),
+        None,
+        instance.engine.progress().as_ref(),
+    )
+    .unwrap();
+    (session, end, exit)
+}
+
 #[skuld::test]
 fn a_vm_whose_sessions_watcher_went_unwatched_connects_again_for_its_next_operation(
     #[fixture(unicode_home)] home: &Path,
 ) {
     let fx = engine_fixture(home, memory());
     let instance = short_bound_instance(&fx, home);
-    let (end, ended) = mpsc::channel::<std::result::Result<(), String>>();
-    let exit = VmExit::when(move || ended.recv().unwrap_or(Ok(()))).unwrap();
-    let session = {
-        let dir = instance.dir();
-        let running = read_target(&instance.engine, dir, &dir.op_shared().unwrap()).unwrap();
-        SshSession::connect(
-            &running.target,
-            Keepalive::STANDARD,
-            exit.clone(),
-            None,
-            instance.engine.progress().as_ref(),
-        )
-        .unwrap()
-    };
+    let (session, end, exit) = session_with_a_watcher_to_end(&instance);
     let vm = vm_over(session, instance);
     vm.run(&Command::new(["echo", "before"])).unwrap();
     end.send(Err("the VM process cannot be waited on".to_owned())).unwrap();
@@ -320,4 +342,29 @@ fn a_vm_whose_sessions_watcher_went_unwatched_connects_again_for_its_next_operat
 "
     );
     assert_eq!(fx.server.connections() - before, 1);
+}
+
+#[skuld::test]
+fn after_a_reboot_a_vm_serves_its_operations_on_the_session_that_found_the_new_boot_ready(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = running_instance(&fx, home);
+    let (old, end, exit) = session_with_a_watcher_to_end(&instance);
+    let vm = vm_over(old, instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    vm.reboot().unwrap();
+    // The session to the old boot is unusable from here on; if the Vm still held it, the next operation would connect.
+    end.send(Err("the old boot is gone".to_owned())).unwrap();
+    runtime::wait(exit.gone());
+    let before = fx.server.connections();
+
+    vm.run(&Command::new(["echo", "after"])).unwrap();
+    vm.run(&Command::new(["echo", "again"])).unwrap();
+
+    assert_eq!(
+        fx.server.connections() - before,
+        0,
+        "the session the reboot returned serves the operations after it"
+    );
 }
