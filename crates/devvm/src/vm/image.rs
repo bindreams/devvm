@@ -168,7 +168,8 @@ pub struct Vm {
     machine: Mutex<Option<Box<dyn Machine>>>,
     /// The connection that found the guest ready, which every operation uses; `None` until the start has finished. A
     /// reboot replaces it with the one that found the new boot ready. A reboot that failed leaves `None`: the old
-    /// connection may be dead, and the next operation connects again.
+    /// connection may still look alive while it is to the old boot. An operation connects again for a session that is
+    /// `None` or no longer alive.
     session: Mutex<Option<SshSession>>,
 }
 
@@ -280,14 +281,15 @@ impl Drop for Vm {
 }
 
 impl Vm {
-    /// The guest, the session and the shared op lock for one operation. A Vm without a session connects.
+    /// The guest, the session and the shared op lock for one operation. A Vm whose session is gone, its connection ended
+    /// or its VM watcher with a verdict, connects again.
     fn reached(&self) -> Result<(Arc<dyn GuestOs>, SshSession, OpShared)> {
         let instance = self.instance();
         let dir = instance.dir();
         let op = dir.op_shared()?;
         let guest = ops::guest_of(&instance.engine, dir)?;
         let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
-        let session = match &*slot {
+        let session = match slot.as_ref().filter(|session| session.is_alive()) {
             Some(session) => session.clone(),
             None => slot.insert(ops::reach(&instance.engine, dir, &op)?.1).clone(),
         };

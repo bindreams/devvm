@@ -660,6 +660,12 @@ impl SshSession {
         })?
     }
 
+    /// Whether the session can still serve an operation: its connection has not ended and its VM watcher has no
+    /// verdict, neither `Exited` nor `Unwatched`.
+    pub(crate) fn is_alive(&self) -> bool {
+        self.inner.transport_end().is_none() && self.inner.vm.verdict().is_none()
+    }
+
     /// Ends the boot phase: from now on the boot bound no longer ends a wait, one already in flight included.
     pub(crate) fn finish_boot(&self) {
         self.inner.boot.finish();

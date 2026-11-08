@@ -114,7 +114,7 @@ pub(super) fn reach(engine: &Engine, dir: &InstanceDir, op: &impl OpHeld) -> Res
 pub(super) fn reboot(engine: &Engine, dir: &InstanceDir, op: &OpExclusive) -> Result<SshSession> {
     let guest = guest_of(engine, dir)?;
     let (mut running, before) = reach(engine, dir, op)?;
-    let old_id = read_boot_id(&*guest, &before)?;
+    let old_id = read_boot_id(&*guest, &before)?.into_id()?;
     running.machine.reset()?;
     // The connection to the old boot is no use to anyone now.
     drop(before);

@@ -25,7 +25,7 @@ use crate::{Command, ErrorKind, GuestKind, Instance};
 
 /// The instance `foo` with its keys, recorded as running as this process with its SSH endpoint at the fixture's server,
 /// which trusts the instance's keys.
-pub(crate) fn running_instance(fx: &EngineFixture, home: &Path) -> Instance {
+fn running_instance(fx: &EngineFixture, home: &Path) -> Instance {
     let dir = instance_in(fx, "foo", home);
     let keys = {
         let op = dir.op_exclusive().unwrap();
@@ -363,6 +363,23 @@ fn a_reboot_whose_boot_id_reads_keep_failing_ends_at_the_boot_bound_naming_the_s
     assert!(
         error.message().contains(&home.join("serial.log").display().to_string()),
         "{error}"
+    );
+}
+
+#[skuld::test]
+fn a_reboot_whose_boot_id_read_fails_in_another_way_fails_at_once_with_its_kind(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    fx.guests.unreadable_boot_id();
+    let instance = short_bound_instance(&fx, home);
+    let before = fx.server.connections();
+
+    let error = instance.reboot().expect_err("the boot id read has no status");
+
+    assert_eq!(error.kind(), ErrorKind::NoExitStatus, "{error}");
+    assert_eq!(
+        fx.server.connections() - before,
+        2,
+        "the old id once and the failed read"
     );
 }
 

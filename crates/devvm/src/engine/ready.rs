@@ -32,26 +32,46 @@ pub(crate) fn connect_ready(
     Ok(session)
 }
 
-/// The boot id of the guest `session` is connected to.
-pub(crate) fn read_boot_id(guest: &dyn GuestOs, session: &SshSession) -> Result<String> {
+/// How a read of the boot id went, once the command ran.
+pub(crate) enum ReadBootIdOutcome {
+    Id(String),
+    /// The command ended with a status other than 0.
+    CommandFailed(Error),
+}
+
+impl ReadBootIdOutcome {
+    /// The boot id; a command that failed is its error.
+    pub(crate) fn into_id(self) -> Result<String> {
+        match self {
+            ReadBootIdOutcome::Id(id) => Ok(id),
+            ReadBootIdOutcome::CommandFailed(error) => Err(error),
+        }
+    }
+}
+
+/// The boot id of the guest `session` is connected to. An error is a read that could not run (`connection-lost`,
+/// `no-exit-status`, `io`).
+pub(crate) fn read_boot_id(guest: &dyn GuestOs, session: &SshSession) -> Result<ReadBootIdOutcome> {
     let command = guest.wrap(&guest.boot_id_command())?;
     let output = session.exec_collect(&command)?;
     if output.status != ExitStatus::Code(0) {
-        return Err(Error::new(
+        return Ok(ReadBootIdOutcome::CommandFailed(Error::new(
             ErrorKind::Io,
             format!(
                 "reading the guest's boot id with `{command}` ended with {:?}: {}",
                 output.status,
                 output.stderr_lossy().trim()
             ),
-        ));
+        )));
     }
-    Ok(output.stdout_lossy().trim().to_owned())
+    Ok(ReadBootIdOutcome::Id(output.stdout_lossy().trim().to_owned()))
 }
 
 /// After the guest of `machine` was reset: connects until the guest reports a boot id other than `old_id`, each read
 /// on a new connection (one that reached the old guest cannot see the new boot), then waits until its boot has
-/// finished. A read that fails counts as one that still says `old_id`: the guest is going down or its `sshd` restarts.
+/// finished. A read that fails because the connection was lost or the command ended with a status other than 0 counts
+/// as one that still says `old_id`: the guest is going down or its `sshd` restarts. Any other failed read fails the
+/// reboot at once.
 /// The wait ends when the new boot is ready, when the VM process exits, or when the engine's boot bound passes; a
 /// failure names what was awaited, the last failed read and the serial log. The returned session is past its boot
 /// phase.
@@ -75,20 +95,19 @@ pub(crate) fn reconnect_after_reset(
             engine.progress().as_ref(),
         )
         .map_err(|e| match &last_failed_read {
-            Some(read) => {
-                let kind = e.kind();
-                e.with_context(kind, format!("the last read of the boot id failed: {}", read.message()))
-            }
+            Some(read) => e.together_with(format!("the last read of the boot id failed ({})", read.message())),
             None => e,
         })?;
         last_failed_read = match read_boot_id(guest, &session) {
-            Ok(id) if id != old_id => {
+            Ok(ReadBootIdOutcome::Id(id)) if id != old_id => {
                 wait_ready(engine, guest, name, &session)?;
                 session.finish_boot();
                 return Ok(session);
             }
-            Ok(_) => None,
-            Err(e) => Some(e),
+            Ok(ReadBootIdOutcome::Id(_)) => None,
+            Ok(ReadBootIdOutcome::CommandFailed(e)) => Some(e),
+            Err(e) if e.kind() == ErrorKind::ConnectionLost => Some(e),
+            Err(e) => return Err(e),
         };
         if bound.has_passed() {
             return Err(boot_id_unchanged(target, old_id, bound, last_failed_read.as_ref()));

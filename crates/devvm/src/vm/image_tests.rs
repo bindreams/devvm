@@ -1,8 +1,10 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
+use crate::access::{Keepalive, SshSession, VmExit, runtime};
 use crate::backend::{Backend, Machine};
 use crate::engine::engine_tests::{EngineFixture, dead_machine, engine_fixture, image_of, image_with, stub_fixture};
+use crate::engine::keys::read_target;
 use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::recipe::Resources;
 use crate::store::layers::layers_tests::names;
@@ -226,12 +228,7 @@ fn a_vm_whose_reboot_failed_connects_again_for_its_next_operation_and_keeps_that
     let fx = engine_fixture(home, memory());
     fx.guests.stale_boot_reads(usize::MAX);
     let instance = short_bound_instance(&fx, home);
-    let (_, session) = ops::reach(&instance.engine, instance.dir(), &instance.dir().op_shared().unwrap()).unwrap();
-    let vm = Vm {
-        instance: Some(instance),
-        machine: Mutex::new(None),
-        session: Mutex::new(Some(session)),
-    };
+    let vm = vm_over(reached(&instance), instance);
     vm.run(&Command::new(["echo", "before"])).unwrap();
     vm.reboot().expect_err("the guest never leaves its old boot");
     let before = fx.server.connections();
@@ -249,4 +246,78 @@ fn a_vm_whose_reboot_failed_connects_again_for_its_next_operation_and_keeps_that
         1,
         "the failed reboot dropped the session; one connection serves the operations after it"
     );
+}
+
+/// A new connection to `instance`, as a started `Vm` holds.
+fn reached(instance: &Instance) -> SshSession {
+    let dir = instance.dir();
+    ops::reach(&instance.engine, dir, &dir.op_shared().unwrap()).unwrap().1
+}
+
+/// A `Vm` over `instance` with `session` as its connection.
+fn vm_over(session: SshSession, instance: Instance) -> Vm {
+    Vm {
+        instance: Some(instance),
+        machine: Mutex::new(None),
+        session: Mutex::new(Some(session)),
+    }
+}
+
+#[skuld::test]
+fn a_vm_whose_session_died_connects_again_for_its_next_operation(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let session = reached(&instance);
+    let vm = vm_over(session.clone(), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.drop_connections();
+    while session.is_alive() {
+        std::thread::yield_now();
+    }
+    let before = fx.server.connections();
+
+    let output = vm.run(&Command::new(["echo", "after"])).unwrap();
+
+    assert_eq!(
+        output.stdout,
+        b"after
+"
+    );
+    assert_eq!(fx.server.connections() - before, 1);
+}
+
+#[skuld::test]
+fn a_vm_whose_sessions_watcher_went_unwatched_connects_again_for_its_next_operation(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let (end, ended) = mpsc::channel::<std::result::Result<(), String>>();
+    let exit = VmExit::when(move || ended.recv().unwrap_or(Ok(()))).unwrap();
+    let session = {
+        let dir = instance.dir();
+        let running = read_target(&instance.engine, dir, &dir.op_shared().unwrap()).unwrap();
+        SshSession::connect(
+            &running.target,
+            Keepalive::STANDARD,
+            exit.clone(),
+            None,
+            instance.engine.progress().as_ref(),
+        )
+        .unwrap()
+    };
+    let vm = vm_over(session, instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    end.send(Err("the VM process cannot be waited on".to_owned())).unwrap();
+    runtime::wait(exit.gone());
+    let before = fx.server.connections();
+
+    let output = vm.run(&Command::new(["echo", "after"])).unwrap();
+
+    assert_eq!(
+        output.stdout,
+        b"after
+"
+    );
+    assert_eq!(fx.server.connections() - before, 1);
 }

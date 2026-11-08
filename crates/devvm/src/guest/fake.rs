@@ -215,6 +215,8 @@ struct Served {
     failing_boot_reads: Mutex<usize>,
     /// How many boot ids after a reset still say the old boot.
     stale_boot_reads: Mutex<usize>,
+    /// Every read of the boot id after a reset ends without an exit status.
+    unreadable_boot_id: Mutex<bool>,
     boots: Mutex<Boots>,
 }
 
@@ -237,6 +239,7 @@ impl ServedGuests {
             resets: Mutex::default(),
             failing_boot_reads: Mutex::default(),
             stale_boot_reads: Mutex::default(),
+            unreadable_boot_id: Mutex::default(),
             boots: Mutex::default(),
         }))
     }
@@ -251,6 +254,12 @@ impl ServedGuests {
     /// restarts; the stale reads come after them.
     pub(crate) fn failing_boot_reads(&self, reads: usize) {
         *self.0.failing_boot_reads.lock().unwrap() = reads;
+    }
+
+    /// After a reset, every read of the boot id ends without an exit status: an error that is neither a lost connection
+    /// nor a failed command.
+    pub(crate) fn unreadable_boot_id(&self) {
+        *self.0.unreadable_boot_id.lock().unwrap() = true;
     }
 
     /// After each reset, the first `reads` reads of the boot id still answer the old boot, as a guest does until it has
@@ -293,6 +302,9 @@ impl Served {
             boots.seen = now;
             boots.failing_left = *self.failing_boot_reads.lock().unwrap();
             boots.stale_left = *self.stale_boot_reads.lock().unwrap();
+        }
+        if now > 0 && *self.unreadable_boot_id.lock().unwrap() {
+            return Command::new(["close-no-status"]);
         }
         if boots.failing_left > 0 {
             boots.failing_left -= 1;
