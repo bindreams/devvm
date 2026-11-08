@@ -1,25 +1,26 @@
 //! The public handles: [`Image`] (what instances are made from), [`Vm`] (a VM that dies with its handle) and
 //! [`Instance`] (a named VM that stays until it is removed).
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::access::SshSession;
 use crate::backend::MachineRecord;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
-use crate::exit::Output;
-use crate::instance::dir::InstanceDir;
+use crate::exit::{ExitStatus, Output};
+use crate::guest::GuestOs;
+use crate::instance::dir::{InstanceDir, OpShared};
 use crate::instance::name::InstanceName;
 use crate::instance::registry::Owned;
 use crate::store::fetch::LazyHttp;
-use crate::{Command, Error, ErrorKind, Result};
+use crate::{Command, Result};
 
-#[allow(
-    dead_code,
-    reason = "`Recipe::build` is the first caller of `Image::from_chain`, and the guest operations the first readers of the session a `Vm` keeps"
-)]
+#[allow(dead_code, reason = "`Recipe::build` is the first caller of `Image::from_chain`")]
 mod image;
 mod launch;
+mod ops;
 
 pub use image::{Image, Vm, availability};
 pub(crate) use launch::Started;
@@ -36,8 +37,8 @@ mod vm_windows_tests;
 #[path = "vm_other_tests.rs"]
 mod vm_other_tests;
 
-/// Running commands in a guest and moving files in and out of it. Needs the access layer: until it exists every
-/// method is `not-supported`.
+/// Running commands in a guest and moving files in and out of it. Each method waits for the commands that change the
+/// instance (`start`, `stop`, `remove`, `reboot`) and fails with `unavailable` when the VM is not running.
 pub trait Guest {
     fn run(&self, cmd: &Command) -> Result<Output>;
     fn reboot(&self) -> Result<()>;
@@ -59,10 +60,6 @@ pub(crate) fn remove_leftovers(engine: &Engine, dir: &InstanceDir, machine: &Mac
 /// Reports a problem with the files of a dead machine of `dir` on the progress channel, naming the instance.
 pub(crate) fn warn_for<'a>(engine: &'a Engine, dir: &'a InstanceDir) -> impl FnMut(String) + 'a {
     move |text| engine.progress().message(&format!("instance {}: {text}", dir.name()))
-}
-
-pub(crate) fn no_access_layer() -> Error {
-    Error::new(ErrorKind::NotSupported, "reaching the guest needs the access layer")
 }
 
 /// A named VM that stays until it is removed.
@@ -162,6 +159,11 @@ impl Instance {
             // A destroy that fails below must not leave a record naming a dead machine.
             dir.retire_machine(&op, machine, self.engine.host(), &mut warn_for(&self.engine, dir))?;
         }
+        // Before the destroy, while the name is still this instance's: once it is released, another command may place
+        // an instance of the same name and write its entry, which this one must not remove.
+        if let Err(e) = self.engine.ssh_configs().remove_entry(dir.name()) {
+            warn_for(&self.engine, dir)(format!("cannot remove the ssh configuration entry: {}", e.message()));
+        }
         dir.destroy(op)?;
         self.engine
             .progress()
@@ -170,20 +172,47 @@ impl Instance {
     }
 }
 
+impl Instance {
+    /// The guest of this instance and a new connection to it, with the shared op lock that keeps `stop`, `remove` and
+    /// `reboot` from ending the machine under the caller.
+    fn reached(&self) -> Result<(Arc<dyn GuestOs>, SshSession, OpShared)> {
+        let dir = self.dir();
+        let op = dir.op_shared()?;
+        let guest = ops::guest_of(&self.engine, dir)?;
+        let (_, session) = ops::reach(&self.engine, dir, &op)?;
+        Ok((guest, session, op))
+    }
+
+    /// Runs `cmd` in the guest, writing its output to `out` and `err` as it arrives, and returns how it ended.
+    ///
+    /// Output the guest sent after the command's status that devvm cannot carry is reported on the progress channel;
+    /// the status stands. A writer that fails is an `io` error, and the guest command is stopped, unless the command had
+    /// already ended: the error then names its status.
+    pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
+        let (guest, session, _op) = self.reached()?;
+        ops::run_to(&self.engine, &*guest, &session, cmd, out, err)
+    }
+}
+
 impl Guest for Instance {
-    fn run(&self, _cmd: &Command) -> Result<Output> {
-        Err(no_access_layer())
+    fn run(&self, cmd: &Command) -> Result<Output> {
+        let (guest, session, _op) = self.reached()?;
+        ops::run(&*guest, &session, cmd)
     }
 
     fn reboot(&self) -> Result<()> {
-        Err(no_access_layer())
+        let dir = self.dir();
+        let op = dir.op_exclusive()?;
+        ops::reboot(&self.engine, dir, &op).map(drop)
     }
 
-    fn copy_in(&self, _src: &Path, _dest: &str) -> Result<()> {
-        Err(no_access_layer())
+    fn copy_in(&self, src: &Path, dest: &str) -> Result<()> {
+        let (guest, session, _op) = self.reached()?;
+        ops::copy_in(&self.engine, &guest, &session, src, dest)
     }
 
-    fn copy_out(&self, _src: &str, _dest: &Path) -> Result<()> {
-        Err(no_access_layer())
+    fn copy_out(&self, src: &str, dest: &Path) -> Result<()> {
+        let (guest, session, _op) = self.reached()?;
+        ops::copy_out(&self.engine, &guest, &session, src, dest)
     }
 }

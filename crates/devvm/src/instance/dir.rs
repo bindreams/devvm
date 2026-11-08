@@ -39,6 +39,13 @@ pub(crate) struct OpShared {
     _lock: FileLock,
 }
 
+/// An op lock of one instance, shared or exclusive: what reading the instance's machine and keys needs.
+pub(crate) trait OpHeld {}
+
+impl OpHeld for OpExclusive {}
+
+impl OpHeld for OpShared {}
+
 impl InstanceDir {
     pub(super) fn new(
         id: InstanceId,

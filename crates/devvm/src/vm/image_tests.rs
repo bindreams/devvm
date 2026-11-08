@@ -9,7 +9,7 @@ use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::Handle;
-use crate::{Command, ErrorKind, Guest, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
+use crate::{ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
 use skuld::env;
 
 fn memory() -> Arc<MemoryProgress> {
@@ -97,23 +97,6 @@ fn image_vm_and_instance_are_send_and_sync() {
 }
 
 #[skuld::test]
-fn guest_methods_are_not_supported_until_the_access_layer(#[fixture(unicode_home)] home: &Path) {
-    let fx = engine_fixture(home, memory());
-    let instance = image_of(&fx.engine).create("foo", &StartOptions::default()).unwrap();
-
-    let results = [
-        instance.run(&Command::new(["true"])).map(drop),
-        instance.reboot(),
-        instance.copy_in(Path::new("a"), "/b"),
-        instance.copy_out("/b", Path::new("a")),
-    ];
-    for result in results {
-        let error = result.expect_err("the access layer is not built yet");
-        assert_eq!(error.kind(), ErrorKind::NotSupported);
-    }
-}
-
-#[skuld::test]
 fn availability_of_an_engine_that_cannot_be_built_says_why(
     #[fixture(env)] env: &skuld::EnvGuard,
     #[fixture(unicode_home)] home: &Path,
@@ -149,7 +132,7 @@ fn vm_with_machine(fx: &EngineFixture, machine: Option<Box<dyn Machine>>) -> Vm 
             handle: Handle::Owned(owned),
         }),
         machine: Mutex::new(machine),
-        session: None,
+        session: Mutex::new(None),
     }
 }
 
@@ -175,7 +158,7 @@ fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(unicode_home
     let vm = Vm {
         instance: Some(instance),
         machine: Mutex::new(Some(stub_machine(&stub))),
-        session: None,
+        session: Mutex::new(None),
     };
 
     let error = vm

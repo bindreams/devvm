@@ -1,6 +1,7 @@
 //! Guests for the tests: they need no image, no network and no SSH.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use secrecy::ExposeSecret;
@@ -95,8 +96,12 @@ impl GuestOs for FakeGuestOs {
         })
     }
 
+    /// A Linux guest's, except that a served guest's boot id is its boot number (see [`ServedGuests::boot_follows`]).
     fn boot_id_command(&self) -> Command {
-        LinuxGuest.boot_id_command()
+        match &self.served {
+            Some(served) => Command::new(["echo".to_owned(), format!("boot-{}", served.boot_number())]),
+            None => LinuxGuest.boot_id_command(),
+        }
     }
 
     fn wrap(&self, cmd: &Command) -> Result<String> {
@@ -204,6 +209,18 @@ struct Served {
     degraded: Mutex<Option<String>>,
     /// Called first in every `wait_ready`.
     on_ready: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// The resets that start a new boot, if the guests follow any.
+    resets: Mutex<Option<Arc<AtomicUsize>>>,
+    /// How many boot ids after a reset still say the old boot.
+    stale_boot_reads: Mutex<usize>,
+    boots: Mutex<Boots>,
+}
+
+/// Which reset the boot id was last read after, and how many of its reads may still answer the old boot.
+#[derive(Default)]
+struct Boots {
+    seen: usize,
+    stale_left: usize,
 }
 
 impl ServedGuests {
@@ -214,7 +231,22 @@ impl ServedGuests {
             ready_command: Mutex::new("echo ready".to_owned()),
             degraded: Mutex::default(),
             on_ready: Mutex::default(),
+            resets: Mutex::default(),
+            stale_boot_reads: Mutex::default(),
+            boots: Mutex::default(),
         }))
+    }
+
+    /// The guests' boot number is the value of `resets`: a guest whose machine is reset boots again. Without this the
+    /// boot number is always 0.
+    pub(crate) fn boot_follows(&self, resets: Arc<AtomicUsize>) {
+        *self.0.resets.lock().unwrap() = Some(resets);
+    }
+
+    /// After each reset, the first `reads` reads of the boot id still answer the old boot, as a guest does until it has
+    /// gone down.
+    pub(crate) fn stale_boot_reads(&self, reads: usize) {
+        *self.0.stale_boot_reads.lock().unwrap() = reads;
     }
 
     /// The command that `wait_ready` runs through the session (`echo ready`): it is ready when the command exits 0.
@@ -239,6 +271,25 @@ impl ServedGuests {
 }
 
 impl Served {
+    /// The boot the guest is in now: the number of resets so far, or the one before while the stale reads last.
+    fn boot_number(&self) -> usize {
+        let Some(resets) = self.resets.lock().unwrap().clone() else {
+            return 0;
+        };
+        let now = resets.load(Ordering::SeqCst);
+        let mut boots = self.boots.lock().unwrap();
+        if now != boots.seen {
+            boots.seen = now;
+            boots.stale_left = *self.stale_boot_reads.lock().unwrap();
+        }
+        if boots.stale_left > 0 {
+            boots.stale_left -= 1;
+            // A stale read follows a reset, so `now` is at least 1.
+            return now - 1;
+        }
+        now
+    }
+
     fn read_seed(&self, seed: &SeedSpec) {
         self.server
             .install(&seed.keys.client_public, seed.keys.host_private.expose_secret());

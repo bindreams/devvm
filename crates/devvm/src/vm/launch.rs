@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::access::keys::{InstanceKeys, client_key_path};
-use crate::access::ssh_config::{SshConfigDir, SshConfigEntry};
+use crate::access::ssh_config::SshConfigEntry;
 use crate::access::{SshSession, SshTarget};
 use crate::backend::{Endpoint, Machine, MachineRecord, MachineSpec};
 use crate::contain::Lifetime;
@@ -145,7 +145,7 @@ fn launch_machine(
 /// Writes the instance's `ssh_config` entry for plain `ssh` and editors. The embedded client does not read it, so a
 /// failure is reported and the start goes on.
 fn write_ssh_config(engine: &Engine, dir: &InstanceDir, target: &SshTarget, keys: &InstanceKeys) {
-    let configs = SshConfigDir::new(engine.dirs().ssh()).with_progress(engine.progress().clone());
+    let configs = engine.ssh_configs();
     let mut warn = warn_for(engine, dir);
     if let Err(e) = configs.ensure_top_level() {
         warn(format!("cannot write the ssh configuration: {}", e.message()));
@@ -172,7 +172,7 @@ fn await_ready(
 ) -> Result<SshSession> {
     let target = target_for(dir.name(), running, keys)?;
     write_ssh_config(engine, dir, &target, keys);
-    connect_ready(engine, guest, dir.name(), &target, &running.process)
+    connect_ready(engine, guest, dir.name(), &target, running)
 }
 
 /// A recorded machine that must not run after all: kills it and clears the record that names it. `cause` is why the

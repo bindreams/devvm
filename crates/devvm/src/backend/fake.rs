@@ -110,6 +110,11 @@ impl FakeBackend {
         self.resets.load(Ordering::SeqCst)
     }
 
+    /// The count `resets` reads, for a guest that changes its boot id with each reset.
+    pub(crate) fn reset_counter(&self) -> Arc<AtomicUsize> {
+        self.resets.clone()
+    }
+
     /// A backend whose machines create files outside their instance directory when they run, as QEMU's control socket
     /// and its lock file are, and name them in their record from the launch on. Under `dir`, one pair per instance.
     /// With `cleaned_by_kill` false, `kill` and `shutdown` leave the files, like a backend that does not clean up: the

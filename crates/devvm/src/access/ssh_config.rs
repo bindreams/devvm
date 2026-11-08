@@ -254,9 +254,12 @@ impl SshConfigDir {
     /// Removes the conf of every instance `live` denies, and the temporary files a killed writer left. Returns what it
     /// could not do, as warnings. Files that are not devvm's (a name that is not an instance name) are left alone.
     ///
-    /// `live` runs under this directory's lock. If it takes another lock (the instance registry's), every caller of
-    /// this type's methods must take that lock first, or a writer holding it and waiting for this directory deadlocks
-    /// with the sweep.
+    /// `live` runs under this directory's lock. If it takes another lock, every caller of this type's methods must
+    /// take that lock first, or a writer holding it and waiting for this directory deadlocks with the sweep. The
+    /// one it takes is the instance registry's `instances.dir`, a leaf: its holders read, open, look at a name, rename
+    /// or unlink, and wait for no other lock, and no caller of these methods holds it. `launch` and `remove` hold an
+    /// instance's op lock, which is not it; `up` places the instance (takes `instances.dir`, lets go of it) and only
+    /// then has `launch` write the entry. So the order cannot deadlock.
     pub(crate) fn sweep(&self, live: &dyn Fn(&InstanceName) -> bool) -> Vec<String> {
         let mut warnings = Vec::new();
         let _lock = match self.lock() {

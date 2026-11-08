@@ -58,12 +58,48 @@ fn image_start_keeps_the_session_that_found_the_guest_ready(#[fixture(unicode_ho
     let (fx, _) = memory_fixture(home);
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
 
-    let session = vm.session.as_ref().expect("a started Vm holds its session");
+    let session = vm
+        .session
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a started Vm holds its session");
 
     assert_eq!(
         session.exec_collect("echo up").unwrap().stdout,
         b"up
 "
+    );
+}
+
+#[skuld::test]
+fn a_vm_runs_commands_copies_files_and_reboots_over_its_session(#[fixture(unicode_home)] home: &Path) {
+    let (fx, _) = memory_fixture(home);
+    let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
+    let machine = vm.instance().dir().record().unwrap().machine.unwrap();
+
+    assert_eq!(
+        vm.run(&Command::new(["echo", "hi"])).unwrap().stdout,
+        b"hi
+"
+    );
+    let up = home.join("up.txt");
+    std::fs::write(&up, "going up").unwrap();
+    vm.copy_in(&up, "/up.txt").unwrap();
+    let down = home.join("down.txt");
+    vm.copy_out("/up.txt", &down).unwrap();
+    assert_eq!(std::fs::read(&down).unwrap(), b"going up");
+
+    vm.reboot().unwrap();
+
+    assert_eq!(fx.fake.resets(), 1);
+    assert_eq!(fx.fake.launches(), 1, "a reboot launches nothing");
+    assert_eq!(vm.instance().dir().record().unwrap().machine.unwrap(), machine);
+    assert_eq!(
+        vm.run(&Command::new(["echo", "again"])).unwrap().stdout,
+        b"again
+",
+        "the VM keeps the session of the new boot"
     );
 }
 

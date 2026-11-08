@@ -2,18 +2,24 @@
 //! registry), created once per process.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use cosca::identity::ProcessIdRecord;
+
+use crate::access::VmExit;
+use crate::access::ssh_config::SshConfigDir;
 use crate::backend::qemu::sidecar::LazyInstall;
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::backend::{Backend, MachineRecord};
+use crate::contain::VmProcess;
 use crate::exit::{Progress, StderrProgress};
 use crate::guest::Guests;
 use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
-use crate::instance::record::{MarkerRead, Owner};
+use crate::instance::name::InstanceName;
+use crate::instance::record::{MarkerRead, Owner, RecordRead};
 use crate::instance::registry::Registry;
 use crate::lazy::Lazy;
 use crate::store::fetch::{Fetcher, Transport};
@@ -88,6 +94,9 @@ pub struct Engine {
     boot_bound: Duration,
     registry: Registry,
     store: Lazy<LayerStore>,
+    /// One exit watcher per running machine: a thread blocked until its VM exits cannot be cancelled, so one made per
+    /// call or per handle would outlive them.
+    exits: Mutex<Vec<(ProcessIdRecord, VmExit)>>,
 }
 
 impl Engine {
@@ -149,6 +158,7 @@ impl Engine {
             boot_bound: parts.boot_bound,
             registry,
             store: Lazy::new(),
+            exits: Mutex::default(),
         })
     }
 
@@ -161,8 +171,53 @@ impl Engine {
     /// reported as a warning on the progress channel and retried by the next call. Until a reap, a name that a dead
     /// process half-created answers "already exists". `from_env` calls it once; call it again for a pass in a
     /// long-lived process.
+    ///
+    /// Two passes: [`Registry::reap`], which sweeps `instances/` and the files machines left outside it, then the
+    /// `ssh_config` entries of instances that no longer exist. Those entries are in `<state>/ssh`, not in
+    /// `instances/`, so they are swept here, by their owner.
     pub fn reap(&self) {
         self.registry.reap();
+        self.sweep_ssh_configs();
+    }
+
+    /// Removes the `ssh_config` entry of every instance whose record is definitely absent. A record that is valid,
+    /// corrupt, from a newer devvm or unreadable keeps its entry: the reaper deals with a bad record, and the next pass
+    /// looks again. `SshConfigDir::sweep` runs the predicate under the `ssh` directory's lock, so it asks the registry
+    /// when it is called, never a list read before.
+    fn sweep_ssh_configs(&self) {
+        let live = |name: &InstanceName| {
+            let dir = self.registry.root().join(name.as_str());
+            !matches!(self.registry.locks().read_record(&dir), Ok(RecordRead::Absent))
+        };
+        for warning in self.ssh_configs().sweep(&live) {
+            self.progress.message(&warning);
+        }
+    }
+
+    /// The watcher of the VM process `machine` names, shared by every call for it through this engine. It first drops the
+    /// watchers of other machines whose VM has ended, so a restart (a new process, a new record) does not keep the old
+    /// one. A process that is already gone is `connection-lost`.
+    pub(crate) fn vm_exit(&self, machine: &MachineRecord) -> Result<VmExit> {
+        let mut exits = self.exits.lock().unwrap_or_else(PoisonError::into_inner);
+        exits.retain(|(process, exit)| *process == machine.process || !exit.has_ended());
+        if let Some((_, exit)) = exits.iter().find(|(process, _)| *process == machine.process) {
+            return Ok(exit.clone());
+        }
+        let Some(process) = VmProcess::attach(&machine.process)? else {
+            return Err(Error::new(
+                ErrorKind::ConnectionLost,
+                format!("the VM process exited (serial log: {})", machine.serial_log.display()),
+            ));
+        };
+        let exit = VmExit::watch(process)?;
+        exits.push((machine.process.clone(), exit.clone()));
+        Ok(exit)
+    }
+
+    /// The `ssh_config` entries of this engine's state directory, which report what they wait for on the progress
+    /// channel.
+    pub(crate) fn ssh_configs(&self) -> SshConfigDir {
+        SshConfigDir::new(self.dirs.ssh()).with_progress(self.progress.clone())
     }
 
     /// The instances matching `filter`, by name.
@@ -276,10 +331,6 @@ impl Engine {
 
     pub(crate) fn progress(&self) -> &Arc<dyn Progress> {
         &self.progress
-    }
-
-    pub(crate) fn dirs(&self) -> &Dirs {
-        &self.dirs
     }
 
     /// The VM backend, or `not-supported` when this build has none.

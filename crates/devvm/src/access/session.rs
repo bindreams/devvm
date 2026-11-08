@@ -148,6 +148,12 @@ impl VmExit {
         VmExit { ended: None }
     }
 
+    /// Whether the watcher already has a verdict, `Exited` or `Unwatched`. False while the VM lives and for
+    /// [`VmExit::never`].
+    pub(crate) fn has_ended(&self) -> bool {
+        self.ended.as_ref().is_some_and(|receiver| receiver.borrow().is_some())
+    }
+
     /// Resolves once the VM is gone or unwatchable; never for [`VmExit::never`].
     pub(crate) async fn gone(&self) -> WatchEnd {
         let Some(receiver) = &self.ended else {
@@ -188,6 +194,15 @@ impl BootBound {
             )
         })?;
         Ok(BootBound { limit, deadline })
+    }
+
+    /// Whether the deadline has passed.
+    pub(crate) fn has_passed(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    pub(crate) fn limit(&self) -> Duration {
+        self.limit
     }
 }
 

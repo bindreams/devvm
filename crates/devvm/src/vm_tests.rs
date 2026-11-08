@@ -8,7 +8,8 @@ use crate::backend::fake::FakeBackend;
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::engine_tests::{
-    dead_machine, engine_fixture, engine_over, image_of, instance_in, record_machine, stub_fixture,
+    dead_machine, engine_fixture, engine_over, image_of, instance_in, is_there, record_machine, stub_fixture,
+    write_conf,
 };
 use crate::engine::{Engine, EngineParts, LaunchHooks, LaunchStep};
 use crate::guest::fake::ServedGuests;
@@ -226,6 +227,20 @@ fn stop_and_remove_queued_together_end_with_nothing_left(#[fixture(unicode_home)
     }
     assert!(names(&fx.env.dirs.instances()).is_empty());
     assert!(lock_files_in(&fx.env.dirs).is_empty());
+}
+
+#[skuld::test]
+fn remove_deletes_the_ssh_config_entry_and_leaves_the_others(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
+    instance_in(&fx, "foo", home);
+    instance_in(&fx, "bar", home);
+    let foo = write_conf(&fx.engine, home, "foo");
+    let bar = write_conf(&fx.engine, home, "bar");
+
+    Instance::open_in(&fx.engine, "foo").unwrap().remove().unwrap();
+
+    assert!(!is_there(&foo));
+    assert!(is_there(&bar), "another instance keeps its entry");
 }
 
 // The machine is found and ended through the backend ==================================================================

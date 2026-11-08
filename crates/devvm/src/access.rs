@@ -11,6 +11,5 @@ pub(crate) mod session;
 pub(crate) mod sftp;
 pub(crate) mod ssh_config;
 
-#[allow(unused_imports, reason = "no user until guest operations exist")]
 pub(crate) use exec::ExecEnd;
 pub(crate) use session::{BootBound, Keepalive, SshSession, SshTarget, VmExit};
