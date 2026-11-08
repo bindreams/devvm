@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256 as Sha2};
 
@@ -12,12 +12,13 @@ use crate::guest::linux::seed::seed_files;
 use crate::guest::{BaseBuilder, BuildCtx};
 use crate::media::SeedFile;
 use crate::recipe::{PerArch, Pin, Source};
-use crate::store::fetch::{Fetcher, HttpTransport, Response, Resume, Transport};
+use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{env, key, request};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::http::TestServer;
-use crate::{Arch, Dirs, Error, ErrorKind, Sha256};
+use crate::test_support::transport::RefusingTransport;
+use crate::{Arch, Dirs, ErrorKind, Sha256};
 
 fn image(seed: u8) -> Vec<u8> {
     (0..4096usize).map(|i| (i as u8).wrapping_add(seed)).collect()
@@ -128,26 +129,13 @@ fn each_arch_fetches_only_its_own_pin(#[fixture(unicode_home)] home: &Path) {
     }
 }
 
-/// Answers every request with a download error naming the URL, and remembers the URLs.
-struct RefusingTransport(Mutex<Vec<String>>);
-
-impl Transport for RefusingTransport {
-    fn get(&self, url: &str, _resume: Option<Resume>) -> crate::Result<Response> {
-        self.0.lock().unwrap().push(url.to_owned());
-        Err(Error::new(
-            ErrorKind::Download,
-            format!("no network in this test: {url}"),
-        ))
-    }
-}
-
 #[skuld::test]
 fn the_embedded_ubuntu_pin_for_the_other_arch_is_used_for_arch_arm64(#[fixture(unicode_home)] home: &Path) {
     let recipe = crate::recipe::embedded::get("ubuntu-24.04").expect("the embedded Ubuntu recipe");
     let Source::DiskImage(pins) = recipe.source else {
         panic!("the embedded Ubuntu recipe is a disk image");
     };
-    let transport = Arc::new(RefusingTransport(Mutex::new(Vec::new())));
+    let transport = Arc::new(RefusingTransport::default());
     let fetcher = Fetcher::new(Dirs::under(home).downloads(), transport.clone(), Arc::new(NullProgress));
     let builder = LinuxBuilder::new(Arc::new(fetcher), Arc::new(FakeStorage::default()));
     let env = env(home);
@@ -168,7 +156,7 @@ fn the_embedded_ubuntu_pin_for_the_other_arch_is_used_for_arch_arm64(#[fixture(u
             error.message()
         );
     }
-    let asked = transport.0.lock().unwrap().clone();
+    let asked = transport.asked();
     assert_eq!(asked, [pins.arm64.unwrap().url, pins.amd64.unwrap().url]);
 }
 
