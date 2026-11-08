@@ -485,7 +485,10 @@ fn hash_file_state(path: &Path) -> Result<Sha2> {
     let mut file = File::open(path).map_err(fail)?;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer).map_err(fail)?;
+        let read = match file.read(&mut buffer) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            read => read.map_err(fail)?,
+        };
         if read == 0 {
             return Ok(hasher);
         }
@@ -493,6 +496,7 @@ fn hash_file_state(path: &Path) -> Result<Sha2> {
     }
 }
 
-fn hash_file(path: &Path) -> Result<[u8; 32]> {
+/// The SHA-256 of the file at `path`.
+pub(crate) fn hash_file(path: &Path) -> Result<[u8; 32]> {
     Ok(hash_file_state(path)?.finalize().into())
 }

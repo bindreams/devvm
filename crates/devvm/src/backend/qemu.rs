@@ -2,6 +2,7 @@
 
 pub(crate) mod args;
 pub(crate) mod backend;
+mod checks;
 pub(crate) mod machine;
 pub(crate) mod ports;
 pub(crate) mod qmp;

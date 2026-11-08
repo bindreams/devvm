@@ -47,6 +47,13 @@ impl FileModes for OtherHost {
         None
     }
 
+    fn free_bytes(&self, _existing: &Path) -> std::io::Result<u64> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this host cannot tell free space",
+        ))
+    }
+
     fn is_executable(&self, _path: &Path) -> std::io::Result<bool> {
         Ok(false)
     }

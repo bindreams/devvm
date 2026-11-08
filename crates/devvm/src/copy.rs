@@ -11,7 +11,7 @@ use crate::{Error, ErrorKind, Result};
 mod archive;
 mod git;
 
-use git::Git;
+pub(crate) use git::Git;
 
 /// A full disk leaves nothing to resume: the copy starts over.
 const FULL_DISK_HINT: &str = "free some space and run again";

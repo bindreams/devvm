@@ -50,8 +50,30 @@ pub(crate) trait Backend: Send + Sync {
     /// such files does nothing.
     fn sweep(&self, warn: &mut dyn FnMut(String));
 
+    /// What `devvm doctor` asks about this backend: one line per piece the backend needs, in the order to show them. A
+    /// line is a [`Check`] that passes or fails; none of them fails the call. A failing line is also what
+    /// `availability` reports, so a backend states what is missing once. Nothing is downloaded or started. `detail`
+    /// says what a passing line may spend to say what it found; whether it passes does not depend on it.
+    fn checks(&self, detail: Detail) -> Vec<Check>;
+
     /// Whether this backend can save a running machine's memory.
     fn can_save_memory(&self) -> bool;
+}
+
+/// What a passing [`Check`] may spend to say what it found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Detail {
+    /// Nothing that costs more than a look: what `availability` asks.
+    Brief,
+    /// Everything the line can say, a hash of a large file included: what `devvm doctor` prints.
+    Full,
+}
+
+/// One line of `devvm doctor`: what was asked, and either what was found (`Ok`) or what is wrong (`Err`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Check {
+    pub name: String,
+    pub outcome: std::result::Result<String, String>,
 }
 
 /// The instance disk size when the recipe sets none and the layer's disk is no bigger.
