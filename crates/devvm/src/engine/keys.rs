@@ -18,7 +18,6 @@ mod keys_tests;
 /// The account every guest's seed creates; the `User` of the `ssh_config` entry names it too.
 pub(crate) const SSH_USER: &str = "user";
 
-/// Where the keys of `dir` live.
 pub(crate) fn keys_dir(dir: &InstanceDir) -> PathBuf {
     dir.path().join("keys")
 }
@@ -73,7 +72,7 @@ pub(crate) fn target_for(name: &InstanceName, machine: &MachineRecord, keys: &In
 
 /// The target of the machine `dir` has now, built from its record and its key files alone: the shared op lock keeps
 /// the starter from rewriting either.
-#[allow(dead_code, reason = "the guest operations of the next PR connect through it")]
+#[allow(dead_code, reason = "no caller until guest operations connect through it")]
 pub(crate) fn read_target(dir: &InstanceDir, _op: &OpShared) -> Result<SshTarget> {
     let record = dir.record()?;
     // A stopped instance may be one that never started, and has no keys.

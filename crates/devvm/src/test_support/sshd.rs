@@ -219,7 +219,7 @@ impl TestSshd {
         })
     }
 
-    /// From now on the server trusts the client key `client_public` and presents the host key `host_private`, the way a
+    /// The server trusts the client key `client_public` and presents the host key `host_private`, the way a
     /// booted guest does with the keys of its seed. Connections already made are unaffected.
     pub fn install(&self, client_public: &str, host_private: &str) {
         let allowed = PublicKey::from_openssh(client_public).expect("client_public is an OpenSSH public key");

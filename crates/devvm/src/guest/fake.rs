@@ -222,7 +222,7 @@ impl ServedGuests {
         *self.0.ready_command.lock().unwrap() = command.to_owned();
     }
 
-    /// From now on `wait_ready` finds the guest [`Readiness::Degraded`], for the reason `what`.
+    /// `wait_ready` finds the guest [`Readiness::Degraded`], for the reason `what`.
     pub(crate) fn degraded(&self, what: &str) {
         *self.0.degraded.lock().unwrap() = Some(what.to_owned());
     }

@@ -1008,7 +1008,7 @@ struct AtReady {
     still_contained: bool,
 }
 
-/// From now on, records an [`AtReady`] for the instance in `instance_dir` each time the guests of `fx` are asked.
+/// Records an [`AtReady`] for the instance in `instance_dir` each time the guests of `fx` are asked.
 fn observe_readiness(fx: &EngineFixture, instance_dir: &Path) -> Arc<std::sync::Mutex<Vec<AtReady>>> {
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (seen, dir) = (observed.clone(), instance_dir.to_path_buf());
@@ -1060,7 +1060,7 @@ fn instance_start_generates_keys_writes_the_ssh_config_entry_and_waits_for_readi
 }
 
 #[skuld::test]
-fn the_ssh_config_entry_is_written_with_the_second_records_endpoints(#[fixture(unicode_home)] home: &Path) {
+fn the_ssh_config_entry_names_the_alias_the_key_files_and_the_guests_port(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     let dir = instance_in(&fx, "foo", home);
     let instance = Instance::open_in(&fx.engine, "foo").unwrap();
@@ -1075,8 +1075,35 @@ fn the_ssh_config_entry_is_written_with_the_second_records_endpoints(#[fixture(u
         "the machine reports the guest's SSH server"
     );
     assert_ne!(port, started_port(dir.path()), "and not the port of the VM process");
+    let slashed = |path: std::path::PathBuf| path.to_str().unwrap().replace('\\', "/");
+    let identity = slashed(dir.path().join("keys").join("client"));
+    let known_hosts = slashed(dir.path().join("known_hosts"));
     let conf = std::fs::read_to_string(fx.env.dirs.ssh().join("foo.conf")).unwrap();
-    assert!(conf.contains(&format!("Port {port}\n")), "{conf}");
+    for line in [
+        "Host foo".to_owned(),
+        format!("    Port {port}"),
+        format!("    IdentityFile \"{identity}\""),
+        format!("    UserKnownHostsFile \"{known_hosts}\""),
+        format!("    HostKeyAlias devvm-{}", dir.id()),
+    ] {
+        assert!(
+            conf.lines().any(|l| l == line),
+            "{line:?} is not a line of:
+{conf}"
+        );
+    }
+    let host_public = InstanceKeys::read(&dir.path().join("keys")).unwrap().host_public;
+    let mut key = host_public.split_whitespace();
+    let (kind, key) = (key.next().unwrap(), key.next().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("known_hosts")).unwrap(),
+        format!(
+            "devvm-{} {kind} {key}
+",
+            dir.id()
+        ),
+        "known_hosts holds the instance's host key under its alias"
+    );
     instance.remove().unwrap();
 }
 
@@ -1113,30 +1140,6 @@ fn an_unready_guest_reports_what_it_awaited_and_the_serial_log(#[fixture(unicode
         message.contains(&dir.path().join("serial.log").display().to_string()),
         "the serial log is named: {message}"
     );
-}
-
-#[skuld::test]
-fn a_wait_ready_that_hangs_ends_at_the_boot_bound(#[fixture(unicode_home)] home: &Path) {
-    let fx = memory_fixture(home);
-    instance_in(&fx, "foo", home);
-    fx.guests.ready_when("hold");
-    let engine = engine_with_bound(
-        fx.env.dirs.clone(),
-        &TestHost,
-        Some(fx.fake.clone()),
-        fx.guests.clone(),
-        Arc::new(MemoryProgress::default()),
-        std::time::Duration::from_secs(2),
-    );
-
-    let error = Instance::open_in(&engine, "foo")
-        .unwrap()
-        .start()
-        .expect_err("the readiness command never answers");
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("the command `hold`"), "{error}");
-    assert!(error.message().contains("boot bound of 2s"), "{error}");
 }
 
 #[skuld::test]

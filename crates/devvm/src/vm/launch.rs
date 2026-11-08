@@ -24,11 +24,10 @@ pub(crate) struct Started {
 /// Launches the machine of `dir` unless it already runs (`None`), and waits until the guest answers. The machine comes
 /// back resumed and still contained, with the session that found the guest ready.
 ///
-/// Order: the instance's keys (made at the first launch), launch frozen, record the machine in the instance record,
-/// resume, record again, write the `ssh_config` entry, wait for the guest. Until the caller releases the machine, it
-/// dies with this process. A devvm killed after the launch returns therefore leaves no VM running. One killed inside
-/// the launch, between cosca creating the frozen process and putting it into its job, leaves a frozen process nothing
-/// kills and nothing records. A failure at any step after the resume kills the machine and clears its record.
+/// Until the caller releases the machine, it dies with this process. A devvm killed after the launch returns therefore
+/// leaves no VM running. One killed inside the launch, between cosca creating the frozen process and putting it into
+/// its job, leaves a frozen process nothing kills and nothing records. A failure at any step after the resume kills
+/// the machine and clears its record.
 pub(super) fn launch(
     engine: &Engine,
     dir: &InstanceDir,
@@ -143,8 +142,8 @@ fn launch_machine(
     }))
 }
 
-/// Writes the `ssh_config` entry of the instance, which plain `ssh` and editors use, now that its port is known. The
-/// embedded client does not read it, so a refusal or a failure is reported and the start goes on.
+/// Writes the instance's `ssh_config` entry for plain `ssh` and editors. The embedded client does not read it, so a
+/// failure is reported and the start goes on.
 fn write_ssh_config(engine: &Engine, dir: &InstanceDir, target: &SshTarget, keys: &InstanceKeys) {
     let configs = SshConfigDir::new(engine.dirs().ssh()).with_progress(engine.progress().clone());
     let mut warn = warn_for(engine, dir);

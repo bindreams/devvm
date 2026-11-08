@@ -54,6 +54,20 @@ fn image_start_makes_an_owned_instance_with_a_running_vm(#[fixture(unicode_home)
 }
 
 #[skuld::test]
+fn image_start_keeps_the_session_that_found_the_guest_ready(#[fixture(unicode_home)] home: &Path) {
+    let (fx, _) = memory_fixture(home);
+    let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
+
+    let session = vm.session.as_ref().expect("a started Vm holds its session");
+
+    assert_eq!(
+        session.exec_collect("echo up").unwrap().stdout,
+        b"up
+"
+    );
+}
+
+#[skuld::test]
 fn vm_drop_kills_the_machine_and_removes_the_instance(#[fixture(unicode_home)] home: &Path) {
     let (fx, _) = memory_fixture(home);
     let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();

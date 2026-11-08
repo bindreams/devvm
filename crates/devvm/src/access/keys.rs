@@ -19,7 +19,6 @@ const HOST: &str = "host";
 const LOCK: &str = ".keys.lock";
 const TEMP_PREFIX: &str = ".keys-";
 
-/// The file in the keys directory `dir` that holds the client's private key.
 pub(crate) fn client_key_path(dir: &Path) -> PathBuf {
     dir.join(CLIENT)
 }

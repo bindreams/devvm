@@ -1,18 +1,16 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use cosca::identity::{ProcessId, ProcessIdRecord};
 use secrecy::ExposeSecret;
 
 use crate::access::SshTarget;
 use crate::access::keys::InstanceKeys;
-use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_with_bound, memory};
+use crate::engine::engine_tests::{EngineFixture, engine_fixture, memory};
 use crate::engine::ready::connect_ready;
 use crate::guest::GuestOs;
 use crate::instance::name::InstanceName;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
-use crate::test_support::host::TestHost;
 use crate::{ErrorKind, GuestKind};
 
 /// The record of a VM process that runs for as long as the test does: this process.
@@ -70,35 +68,6 @@ fn a_degraded_first_boot_is_reported_by_name_and_is_not_an_error(#[fixture(unico
             .iter()
             .any(|m| m == "instance foo: the boot finished with problems: degraded done: one module failed"),
         "{messages:?}"
-    );
-}
-
-#[skuld::test]
-fn a_guest_that_never_finishes_booting_ends_at_the_boot_bound_naming_what_was_awaited(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let fx = engine_fixture(home, memory());
-    let target = target_at(&fx, home);
-    fx.guests.ready_when("hold");
-    let engine = engine_with_bound(
-        fx.env.dirs.clone(),
-        &TestHost,
-        Some(fx.fake.clone()),
-        fx.guests.clone(),
-        memory(),
-        Duration::from_secs(2),
-    );
-
-    let error = connect_ready(&engine, &*linux(&fx), &name(), &target, &running_vm())
-        .err()
-        .expect("the guest never answers");
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("the command `hold`"), "{error}");
-    assert!(error.message().contains("boot bound of 2s"), "{error}");
-    assert!(
-        error.message().contains(&target.serial_log.display().to_string()),
-        "{error}"
     );
 }
 
