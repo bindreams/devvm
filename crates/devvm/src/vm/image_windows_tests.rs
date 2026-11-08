@@ -330,16 +330,6 @@ fn a_vm_that_dies_with_its_owner_cannot_be_handed_over(#[fixture(unicode_home)] 
     nothing_is_left(&fx);
 }
 
-#[skuld::test]
-fn vm_guest_methods_are_not_supported_until_the_access_layer(#[fixture(unicode_home)] home: &Path) {
-    let (fx, _) = memory_fixture(home);
-    let vm = image_of(&fx.engine).start(&StartOptions::default()).unwrap();
-
-    let error = vm.run(&Command::new(["true"])).err().unwrap();
-    assert_eq!(error.kind(), ErrorKind::NotSupported);
-    assert_eq!(vm.reboot().unwrap_err().kind(), ErrorKind::NotSupported);
-}
-
 // `up` and the wait for the guest =====================================================================================
 
 #[skuld::test]
