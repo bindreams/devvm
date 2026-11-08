@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::directory_of;
 use super::sidecar::LazyInstall;
-use crate::backend::Storage;
+use crate::backend::{DEFAULT_DISK, Storage};
 use crate::host::Host;
 use crate::store::layers::LayerDir;
 use crate::{Arch, Error, ErrorKind, Result};
@@ -20,6 +20,13 @@ mod storage_tests;
 pub(crate) const DISK: &str = "disk.qcow2";
 /// A layer's UEFI variables, and the copy each instance boots from.
 pub(crate) const VARS: &str = "vars.fd";
+/// The format of every layer and instance disk.
+pub(crate) const QCOW2: &str = "qcow2";
+/// The largest virtual size of an instance disk: 2 PiB, the most `qemu-img create -f qcow2` makes with its default
+/// 64 KiB clusters. An L2 table maps 512 MiB and the L1 table holds at most `QCOW_MAX_L1_SIZE` / `L1E_SIZE` = 4 Mi
+/// tables (QEMU 11.1.2 `block/qcow2.h:59,104`). Past that `qcow2_co_create` (`block/qcow2.c:3918`) fails in
+/// `qcow2_co_truncate`, which calls `qcow2_grow_l1_table` (`block/qcow2.c:4563`; `-EFBIG` at `block/qcow2-cluster.c:120`).
+const QCOW2_MAX_SIZE: u64 = 1 << 51;
 
 pub(crate) struct QemuStorage {
     install: Arc<LazyInstall>,
@@ -61,9 +68,14 @@ impl QemuStorage {
         Ok(output.stdout)
     }
 
-    /// `qemu-img info` of `image` as JSON.
-    fn info(&self, image: &Path) -> Result<serde_json::Value> {
-        let stdout = self.qemu_img(&["info".as_ref(), "--output=json".as_ref(), image.as_os_str()])?;
+    /// `qemu-img info` of `image` as JSON. With `format`, the file is read as that format and never probed.
+    fn info(&self, image: &Path, format: Option<&str>) -> Result<serde_json::Value> {
+        let mut args: Vec<&OsStr> = vec!["info".as_ref(), "--output=json".as_ref()];
+        if let Some(format) = format {
+            args.extend([OsStr::new("-f"), OsStr::new(format)]);
+        }
+        args.push(image.as_os_str());
+        let stdout = self.qemu_img(&args)?;
         serde_json::from_slice(&stdout).map_err(|e| {
             Error::new(
                 ErrorKind::Internal,
@@ -72,10 +84,41 @@ impl QemuStorage {
         })
     }
 
+    /// The size in bytes of the qcow2 disk `image` as a guest sees it.
+    fn virtual_size(&self, image: &Path) -> Result<u64> {
+        virtual_size_in(&self.info(image, Some(QCOW2))?, image)
+    }
+
     /// The directory holding the firmware variables templates.
     fn share(&self) -> Result<PathBuf> {
         Ok(self.install.get()?.share.clone())
     }
+}
+
+/// The `virtual-size` in `info`, the output of `qemu-img info` of `image`.
+fn virtual_size_in(info: &serde_json::Value, image: &Path) -> Result<u64> {
+    info["virtual-size"].as_u64().ok_or_else(|| {
+        Error::new(
+            ErrorKind::Internal,
+            format!("qemu-img info {} did not print a virtual-size", image.display()),
+        )
+    })
+}
+
+/// The size of the disk `qemu-img create` makes of a request for `size` bytes: rounded up to 512 bytes. `Recipe` when
+/// that is more than a qcow2 disk can have.
+fn made_size(size: u64) -> Result<u64> {
+    size.checked_next_multiple_of(512)
+        .filter(|made| *made <= QCOW2_MAX_SIZE)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Recipe,
+                format!(
+                    "a disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have; \
+                     set resources.disk to at most {QCOW2_MAX_SIZE}"
+                ),
+            )
+        })
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<()> {
@@ -105,18 +148,43 @@ fn require_vars(dir: &Path, what: &str) -> Result<PathBuf> {
 }
 
 impl Storage for QemuStorage {
-    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: u64) -> Result<()> {
+    fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: Option<u64>) -> Result<()> {
+        let made = size.map(made_size).transpose()?;
         let vars = require_vars(layer.path(), "the layer")?;
         let backing = layer.path().join(DISK);
         let beside = directory_of(into, "the instance disk")?.join(VARS);
+        let layer_size = self.virtual_size(&backing)?;
+        if layer_size > QCOW2_MAX_SIZE {
+            return Err(Error::new(
+                ErrorKind::Store,
+                format!(
+                    "the layer {} is {layer_size} bytes, more than the {QCOW2_MAX_SIZE} bytes a disk can have; \
+                     build the recipe from a base within that limit",
+                    layer.path().display()
+                ),
+            ));
+        }
+        if let (Some(size), Some(made)) = (size, made)
+            && made < layer_size
+        {
+            return Err(Error::new(
+                ErrorKind::Recipe,
+                format!(
+                    "a disk of {size} bytes is smaller than the {layer_size} bytes of the layer {}; \
+                     set resources.disk to at least {layer_size}",
+                    layer.path().display()
+                ),
+            ));
+        }
+        let size = size.unwrap_or(DEFAULT_DISK.max(layer_size));
         self.qemu_img(&[
             "create".as_ref(),
             "-f".as_ref(),
-            "qcow2".as_ref(),
+            QCOW2.as_ref(),
             "-b".as_ref(),
             backing.as_os_str(),
             "-F".as_ref(),
-            "qcow2".as_ref(),
+            QCOW2.as_ref(),
             into.as_os_str(),
             size.to_string().as_ref(),
         ])?;
@@ -132,7 +200,7 @@ impl Storage for QemuStorage {
             directory_of(instance_disk, "the instance disk")?,
             "the instance directory",
         )?;
-        let info = self.info(instance_disk)?;
+        let info = self.info(instance_disk, Some(QCOW2))?;
         if info.get("full-backing-filename").is_none() {
             return Err(Error::new(
                 ErrorKind::Internal,
@@ -147,9 +215,20 @@ impl Storage for QemuStorage {
     }
 
     fn import_base(&self, image: &Path, arch: Arch, staging: &LayerDir) -> Result<()> {
-        let info = self.info(image)?;
+        let info = self.info(image, None)?;
+        // An instance disk covers the base, and the most it can cover is `QCOW2_MAX_SIZE`.
+        let size = virtual_size_in(&info, image)?;
+        if size > QCOW2_MAX_SIZE {
+            return Err(Error::new(
+                ErrorKind::Recipe,
+                format!(
+                    "the base image {} is {size} bytes, more than the {QCOW2_MAX_SIZE} bytes a disk can have",
+                    image.display()
+                ),
+            ));
+        }
         let disk = staging.path().join(DISK);
-        if info["format"] == "qcow2" {
+        if info["format"] == QCOW2 {
             if info.get("backing-filename").is_some() {
                 return Err(Error::new(
                     ErrorKind::Unavailable,
@@ -164,7 +243,7 @@ impl Storage for QemuStorage {
             self.qemu_img(&[
                 "convert".as_ref(),
                 "-O".as_ref(),
-                "qcow2".as_ref(),
+                QCOW2.as_ref(),
                 image.as_os_str(),
                 disk.as_os_str(),
             ])?;

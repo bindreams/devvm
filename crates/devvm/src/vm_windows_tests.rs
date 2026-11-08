@@ -284,11 +284,7 @@ fn a_stopped_instance_on_a_superseded_generation_survives_gc_and_starts(#[fixtur
     let chain = build_expiring(&fx.env, key(5), None, Some(t0() + days(90)));
     let first = chain.tip().layer_ref();
     let guard = fx.env.store.begin_record().unwrap();
-    let mut new = crate::instance::registry::registry_tests::new_instance_on(
-        &chain,
-        Some("foo"),
-        &crate::backend::fake::FakeStorage,
-    );
+    let mut new = crate::instance::registry::registry_tests::new_instance_on(&chain, Some("foo"), fx.fake.storage());
     new.created_from = home.to_path_buf();
     fx.engine
         .registry()

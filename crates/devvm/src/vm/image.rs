@@ -29,7 +29,6 @@ mod image_other_tests;
 
 const DEFAULT_CPUS: u32 = 2;
 const DEFAULT_MEMORY: u64 = 4 << 30;
-const DEFAULT_DISK: u64 = 40 << 30;
 
 /// A built image: the layers a VM starts from. While the handle lives, garbage collection keeps those layers.
 pub struct Image {
@@ -39,7 +38,7 @@ pub struct Image {
     arch: Arch,
     cpus: u32,
     memory: u64,
-    disk: u64,
+    disk: Option<u64>,
 }
 
 impl Image {
@@ -52,7 +51,7 @@ impl Image {
             arch: Arch::host(),
             cpus: flat.resources.cpus.unwrap_or(DEFAULT_CPUS),
             memory: flat.resources.memory.unwrap_or(DEFAULT_MEMORY),
-            disk: flat.resources.disk.unwrap_or(DEFAULT_DISK),
+            disk: flat.resources.disk,
         }
     }
 
