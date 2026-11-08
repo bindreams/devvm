@@ -180,9 +180,9 @@ impl Engine {
     }
 
     /// Removes the `ssh_config` entry of every instance whose record is definitely absent. A record that is valid,
-    /// corrupt, from a newer devvm or unreadable keeps its entry: the reaper deals with a bad record, and the next pass
-    /// looks again. `SshConfigDir::sweep` runs the predicate under the `ssh` directory's lock, so it asks the registry
-    /// when it is called, never a list read before.
+    /// corrupt, from a newer devvm or unreadable keeps its entry (an unreadable one is said on progress), and the next
+    /// pass looks again. `SshConfigDir::sweep` runs the predicate under the `ssh` directory's lock, so it asks the
+    /// registry when it is called, never a list read before.
     fn sweep_ssh_configs(&self) {
         let live = |name: &InstanceName| {
             let dir = self.registry.root().join(name.as_str());
@@ -190,10 +190,8 @@ impl Engine {
                 Ok(RecordRead::Absent) => false,
                 Ok(_) => true,
                 Err(e) => {
-                    self.progress.message(&format!(
-                        "instance {name}: its record cannot be read ({}); its ssh configuration entry is kept",
-                        e.message()
-                    ));
+                    self.progress
+                        .message(&format!("instance {name}: cannot read its record: {}", e.message()));
                     true
                 }
             }
