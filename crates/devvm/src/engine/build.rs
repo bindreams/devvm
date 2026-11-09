@@ -190,7 +190,9 @@ impl StepRun<'_> {
             self.flat.steps.len(),
             describe(step)
         ));
-        let vm = image.start(&StartOptions::default())?;
+        let vm = image
+            .start(&StartOptions::default())
+            .map_err(|e| self.in_step(e, "starting the step's guest"))?;
         match step {
             Step::Run {
                 command,
@@ -208,7 +210,8 @@ impl StepRun<'_> {
         engine
             .backend()?
             .storage()
-            .commit_layer(&vm.instance().dir().disk(), staging.dir)?;
+            .commit_layer(&vm.instance().dir().disk(), staging.dir)
+            .map_err(|e| self.in_step(e, "committing the step's layer"))?;
         Ok(Built::default())
     }
 

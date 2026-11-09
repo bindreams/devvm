@@ -188,20 +188,20 @@ impl QemuMachine {
     /// Sends the powerdown request and returns when QEMU closes the session. Waiting for QEMU's exit is only for a
     /// request QEMU acknowledged: a session lost after the acknowledgement is QEMU going away, which the caller
     /// confirms by waiting for the process. A session lost before it, whether the request was written or not, is
-    /// `lost_before_the_request`.
+    /// `lost_before_the_ack`.
     fn power_down(&self) -> Result<()> {
         if !self.vm.is_alive()? {
             return Ok(());
         }
         let mut qmp = match self.open() {
             Ok(qmp) => qmp,
-            Err(e) => return self.lost_before_the_request(e),
+            Err(e) => return self.lost_before_the_ack(e),
         };
         if let Err(e) = qmp.require_state(POWERDOWN_STATES, "shut the VM down", &self.record.serial_log) {
-            return self.lost_before_the_request(e);
+            return self.lost_before_the_ack(e);
         }
         if let Err(e) = qmp.system_powerdown() {
-            return self.lost_before_the_request(e);
+            return self.lost_before_the_ack(e);
         }
         match qmp.wait_for_end() {
             Ok(VmEnd::Exited) => Ok(()),
@@ -219,7 +219,7 @@ impl QemuMachine {
 
     /// What a failure before QEMU acknowledged the powerdown request means. A QEMU that is gone has done what was
     /// asked. One that runs never confirmed it was asked, and waiting for the process would wait for ever: an error.
-    fn lost_before_the_request(&self, error: Error) -> Result<()> {
+    fn lost_before_the_ack(&self, error: Error) -> Result<()> {
         if error.kind() != ErrorKind::ConnectionLost {
             return Err(error);
         }

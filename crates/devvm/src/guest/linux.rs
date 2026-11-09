@@ -9,7 +9,7 @@ use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedMedia, SeedSpec,
 use crate::host::{Host, names};
 use crate::media::write_cidata_image;
 use crate::recipe::Shell;
-use crate::{Command, Error, ErrorKind, GuestKind, Result};
+use crate::{Command, Error, ErrorKind, GuestKind, Result, RunAs};
 
 pub(crate) mod builder;
 mod ready;
@@ -59,8 +59,8 @@ pub(crate) struct LinuxGuest;
 /// Written next to the instance's other scratch files; its name is not part of any contract.
 const SEED_IMAGE: &str = "cidata.img";
 
-/// `sync`, then `sync -f` on the mount point of every `/dev/` line of the mounts file, `$1` or `/proc/mounts`; exit 1 if
-/// any failed.
+/// `sync`, then `sync -f` on the mount point of every `/dev/` line of the mounts file (`$1`, else `/proc/mounts`);
+/// exits 1 if any failed.
 /// `/proc/mounts` writes a space, tab, newline or backslash in a mount point as `\NNN` octal: `sed` turns each into
 /// the `\0NNN` that `printf %b` reads, and the `.` keeps `$(...)` from dropping a trailing newline.
 const FLUSH_SCRIPT: &str = r#"status=0
@@ -86,10 +86,14 @@ impl GuestOs for LinuxGuest {
 
     /// `sync`, which flushes every filesystem and raw device, then `syncfs` on every mounted filesystem whose source is
     /// a `/dev/` device. Unlike `sync(2)`, `syncfs` reports a write-back error, so a failed write exits non-zero; that
-    /// is detected on the `/dev/`-sourced mounts only. It runs as the user, so a mount point the user cannot open fails
-    /// the flush.
+    /// is detected on the `/dev/`-sourced mounts only. It runs elevated, so it needs the guest's passwordless `sudo`,
+    /// as every elevated command does: as the user, `sync -f` cannot open a root-only mount point (`/boot/efi` on an
+    /// Ubuntu cloud image) and fails every flush.
     fn flush_command(&self) -> Command {
-        Command::new(["sh", "-c", FLUSH_SCRIPT])
+        Command {
+            run_as: RunAs::Elevated,
+            ..Command::new(["sh", "-c", FLUSH_SCRIPT])
+        }
     }
 
     /// The string sshd hands to the account's shell for `cmd`; `usage` for an empty argv or working directory, a NUL

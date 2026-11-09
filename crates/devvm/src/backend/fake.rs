@@ -71,6 +71,8 @@ pub(crate) struct FakeBackend {
     ssh_endpoint: Option<SocketAddr>,
     /// Whether the guest of every machine refuses to power down.
     shutdown_fails: bool,
+    /// Whether `launch` fails.
+    launch_fails: bool,
 }
 
 impl FakeBackend {
@@ -87,12 +89,25 @@ impl FakeBackend {
             details_asked: Mutex::new(Vec::new()),
             ssh_endpoint: None,
             shutdown_fails: false,
+            launch_fails: false,
         }
     }
 
     /// A backend whose machines refuse every graceful `shutdown`; `kill` still works.
     pub(crate) fn with_failing_shutdown(mut self) -> FakeBackend {
         self.shutdown_fails = true;
+        self
+    }
+
+    /// A backend whose `launch` always fails.
+    pub(crate) fn with_failing_launch(mut self) -> FakeBackend {
+        self.launch_fails = true;
+        self
+    }
+
+    /// A backend whose storage cannot commit a layer.
+    pub(crate) fn with_failing_commit(mut self) -> FakeBackend {
+        self.storage.commit_fails = true;
         self
     }
 
@@ -195,6 +210,9 @@ impl FakeBackend {
 
 impl Backend for FakeBackend {
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
+        if self.launch_fails {
+            return Err(Error::new(ErrorKind::Io, "the fake backend cannot launch"));
+        }
         FakeBackend::backing_layer(&spec.disk)?;
         let state_dir = spec.serial_log.parent().expect("a serial log has a directory");
         fake_vm::forget_earlier_runs(state_dir).map_err(|e| {
@@ -444,6 +462,8 @@ impl FakeMachine {
 #[derive(Default)]
 pub(crate) struct FakeStorage {
     sizes: Mutex<Vec<Option<u64>>>,
+    /// Whether `commit_layer` fails.
+    commit_fails: bool,
 }
 
 impl FakeStorage {
@@ -473,6 +493,9 @@ impl Storage for FakeStorage {
     }
 
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()> {
+        if self.commit_fails {
+            return Err(Error::new(ErrorKind::Io, "the fake storage cannot commit"));
+        }
         let disk = std::fs::read_to_string(instance_disk).map_err(|e| {
             Error::io(
                 ErrorKind::Io,

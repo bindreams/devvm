@@ -10,7 +10,7 @@ use crate::recipe::Shell;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::sshd::Rig;
-use crate::{Command, Dirs, ErrorKind, GuestKind};
+use crate::{Command, Dirs, ErrorKind, GuestKind, RunAs};
 
 #[skuld::test]
 fn shell_argv_cases() {
@@ -87,6 +87,12 @@ fn the_trait_object_wraps_and_describes_like_the_linux_guest(#[fixture(unicode_h
     assert_eq!(os.semantics_version(), 1);
     assert_eq!(os.device_profile().disk, DiskBus::Virtio);
     assert_eq!(os.shell_argv(Some(Shell::Sh), "true").unwrap(), ["sh", "-c", "true"]);
+}
+
+/// Ubuntu's cloud image mounts `/boot/efi` readable by root only, so a flush run as the user fails on every build.
+#[skuld::test]
+fn the_flush_runs_as_root_so_a_mount_point_the_user_cannot_open_still_flushes() {
+    assert_eq!(LinuxGuest.flush_command().run_as, RunAs::Elevated);
 }
 
 #[skuld::test]

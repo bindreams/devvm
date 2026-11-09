@@ -4,7 +4,6 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use crate::RunAs;
 use crate::guest::GuestOs;
 use crate::guest::linux::LinuxGuest;
 use crate::test_support::fixtures::unicode_home;
@@ -61,11 +60,6 @@ fn flush(home: &Path, mounts: &str, sync_status: i32) -> (i32, Vec<Vec<String>>)
         }
     }
     (status.code().unwrap(), calls)
-}
-
-#[skuld::test]
-fn the_flush_runs_as_the_user_so_a_recipe_that_removed_sudo_does_not_break_it() {
-    assert_eq!(LinuxGuest.flush_command().run_as, RunAs::User);
 }
 
 #[skuld::test]

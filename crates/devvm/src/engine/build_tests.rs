@@ -327,6 +327,38 @@ fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] ho
 }
 
 #[skuld::test]
+fn a_guest_that_cannot_start_names_the_step_and_commits_nothing(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture_over(home, FakeBackend::new(&TestHost).with_failing_launch());
+    let recipe = recipe(home, &["run: echo one"]);
+    let keys = keys_of(&recipe);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    let message = error.message();
+    assert!(message.contains("step 1 of 1"), "{message}");
+    assert!(message.contains("(starting the step's guest)"), "{message}");
+    assert!(message.contains("the fake backend cannot launch"), "{message}");
+    assert!(fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none());
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_layer_that_cannot_be_committed_names_the_step_and_publishes_nothing(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture_over(home, FakeBackend::new(&TestHost).with_failing_commit());
+    let recipe = recipe(home, &["run: echo one"]);
+    let keys = keys_of(&recipe);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    let message = error.message();
+    assert!(message.contains("step 1 of 1"), "{message}");
+    assert!(message.contains("(committing the step's layer)"), "{message}");
+    assert!(message.contains("the fake storage cannot commit"), "{message}");
+    assert!(fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none());
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
 fn a_transient_build_instance_is_removed_after_success_and_after_failure(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
 
