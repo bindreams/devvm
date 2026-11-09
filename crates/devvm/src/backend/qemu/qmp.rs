@@ -531,7 +531,9 @@ impl Qmp {
     // Commands --------------------------------------------------------------------------------------------------------
 
     /// Asks the guest to power down (ACPI). `Ok` means QEMU acknowledged the request; the guest may or may not act on
-    /// it. An error, a lost session included, means no acknowledgement: the request may or may not have been seen.
+    /// it. Of the errors, `ConnectionLost` (the session was lost before the acknowledgement) means QEMU may or may
+    /// not have seen the request; `Internal` means QEMU answered, with a refusal or a reply off the schema, so it
+    /// saw the request and did not acknowledge it. Neither is an acknowledgement.
     pub(crate) fn system_powerdown(&mut self) -> Result<()> {
         self.execute(&qmp::system_powerdown {}).map(drop)
     }

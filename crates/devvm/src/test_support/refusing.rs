@@ -105,7 +105,9 @@ struct FailingLink {
 
 impl Read for FailingLink {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match *self.read_error.lock().unwrap() {
+        // The kind is copied out first: the read below blocks, and must not hold the lock `fail_reads_with` takes.
+        let failure = *self.read_error.lock().unwrap();
+        match failure {
             Some(kind) => Err(kind.into()),
             None => self.link.read(buf),
         }
@@ -114,7 +116,8 @@ impl Read for FailingLink {
 
 impl Write for FailingLink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match *self.write_error.lock().unwrap() {
+        let failure = *self.write_error.lock().unwrap();
+        match failure {
             Some(kind) => Err(kind.into()),
             None => self.link.write(buf),
         }

@@ -174,7 +174,7 @@ fn a_failed_request_with_qemu_gone_is_a_shutdown(#[fixture(unicode_home)] home: 
     // The request arrives, QEMU exits without a reply: the lost session finds QEMU gone.
     shutdown_against(&world(home), |session| {
         answer_running(session);
-        session.command().expect("system_powerdown");
+        session.expect_command("system_powerdown");
     });
 }
 
@@ -261,7 +261,7 @@ fn shutdown_fails_while_qemu_lives(
 
 /// The client's reads fail as a reset connection does, after the server has seen the command `after`.
 fn lost_after(session: &mut Session, watch: &Refusing, after: &str) {
-    session.command().expect(after);
+    session.expect_command(after);
     watch.fail_reads_with(std::io::ErrorKind::ConnectionReset);
     session.event("RESUME", None);
 }
@@ -289,7 +289,7 @@ fn a_request_that_is_never_acknowledged_while_qemu_lives_is_an_error_not_a_wait(
 fn a_request_that_cannot_be_written_while_qemu_lives_is_an_error_not_a_wait(#[fixture(unicode_home)] home: &Path) {
     shutdown_fails_while_qemu_lives(home, ErrorKind::ConnectionLost, |session, watch| {
         // The client's `query-status` is in; its next write, the request, fails.
-        session.command().expect("query-status");
+        session.expect_command("query-status");
         watch.fail_writes_with(std::io::ErrorKind::BrokenPipe);
         session.reply(json!({ "status": "running", "running": true }));
     });
@@ -299,7 +299,7 @@ fn a_request_that_cannot_be_written_while_qemu_lives_is_an_error_not_a_wait(#[fi
 fn a_connection_error_that_is_not_a_close_is_reported_while_qemu_lives(#[fixture(unicode_home)] home: &Path) {
     shutdown_fails_while_qemu_lives(home, ErrorKind::Io, |session, _| {
         answer_running(session);
-        session.command().expect("system_powerdown");
+        session.expect_command("system_powerdown");
         session.send_raw(b"\xff\xfe\n");
         // QEMU is alive: the connection stays up until the test releases the server.
         while session.command().is_some() {}
@@ -318,7 +318,7 @@ fn reset_of_a_machine_that_exits_during_the_state_check_quotes_the_log(#[fixture
             session.answer(json!({ "arch": "aarch64" }));
         } else {
             // QEMU dies on the state check.
-            session.command().expect("query-status");
+            session.expect_command("query-status");
             qemu.lock().unwrap().kill().unwrap();
         }
     });

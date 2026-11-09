@@ -306,9 +306,10 @@ fn a_shell_the_guest_does_not_have_names_the_step_and_its_command(#[fixture(unic
     no_instance_or_build_is_left(&fx);
 }
 
-#[skuld::test]
-fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] home: &Path) {
-    let fx = fixture_over(home, FakeBackend::new(&TestHost).with_failing_shutdown());
+/// A one-step build over `backend` fails with an error that names the step, `context` (the phase it was in) and
+/// `cause`; the step's layer is not in the store and no instance or build directory is left.
+fn assert_a_failed_phase_commits_nothing(home: &Path, backend: FakeBackend, context: &str, cause: &str) -> Fixture {
+    let fx = fixture_over(home, backend);
     let recipe = recipe(home, &["run: echo one"]);
     let keys = keys_of(&recipe);
 
@@ -316,46 +317,45 @@ fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] ho
 
     let message = error.message();
     assert!(message.contains("step 1 of 1"), "{message}");
-    assert!(message.contains("(shutting the guest down)"), "{message}");
-    assert!(message.contains("does not power down"), "{message}");
+    assert!(message.contains(&format!("({context})")), "{message}");
+    assert!(message.contains(cause), "{message}");
     assert!(
         fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),
-        "a disk that was never shut down is not a layer"
+        "the step's layer was published"
+    );
+    no_instance_or_build_is_left(&fx);
+    fx
+}
+
+#[skuld::test]
+fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] home: &Path) {
+    let fx = assert_a_failed_phase_commits_nothing(
+        home,
+        FakeBackend::new(&TestHost).with_failing_shutdown(),
+        "shutting the guest down",
+        "does not power down",
     );
     assert_eq!(fx.fake.launches(), 1);
-    no_instance_or_build_is_left(&fx);
 }
 
 #[skuld::test]
 fn a_guest_that_cannot_start_names_the_step_and_commits_nothing(#[fixture(unicode_home)] home: &Path) {
-    let fx = fixture_over(home, FakeBackend::new(&TestHost).with_failing_launch());
-    let recipe = recipe(home, &["run: echo one"]);
-    let keys = keys_of(&recipe);
-
-    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
-
-    let message = error.message();
-    assert!(message.contains("step 1 of 1"), "{message}");
-    assert!(message.contains("(starting the step's guest)"), "{message}");
-    assert!(message.contains("the fake backend cannot launch"), "{message}");
-    assert!(fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none());
-    no_instance_or_build_is_left(&fx);
+    assert_a_failed_phase_commits_nothing(
+        home,
+        FakeBackend::new(&TestHost).with_failing_launch(),
+        "starting the step's guest",
+        "the fake backend cannot launch",
+    );
 }
 
 #[skuld::test]
 fn a_layer_that_cannot_be_committed_names_the_step_and_publishes_nothing(#[fixture(unicode_home)] home: &Path) {
-    let fx = fixture_over(home, FakeBackend::new(&TestHost).with_failing_commit());
-    let recipe = recipe(home, &["run: echo one"]);
-    let keys = keys_of(&recipe);
-
-    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
-
-    let message = error.message();
-    assert!(message.contains("step 1 of 1"), "{message}");
-    assert!(message.contains("(committing the step's layer)"), "{message}");
-    assert!(message.contains("the fake storage cannot commit"), "{message}");
-    assert!(fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none());
-    no_instance_or_build_is_left(&fx);
+    assert_a_failed_phase_commits_nothing(
+        home,
+        FakeBackend::new(&TestHost).with_failing_commit(),
+        "committing the step's layer",
+        "the fake storage cannot commit",
+    );
 }
 
 #[skuld::test]

@@ -30,7 +30,8 @@ impl Engine {
     /// A step runs in a transient instance of the layer before it, which `Image::start` gives a lifetime of this
     /// process: when the step succeeds the guest flushes its disk (`GuestOs::flush_command`, a command of its own) and
     /// shuts down gracefully, the disk is committed as the step's layer, and the instance is destroyed. Nothing is
-    /// committed or published for a step that fails, whose flush fails, or whose guest does not shut down.
+    /// committed or published for a step that fails, whose flush fails, or whose guest does not shut down. The flush
+    /// runs elevated, so every step's commit needs the guest's passwordless `sudo`.
     /// The disk of every instance is the recipe's `resources.disk`, as the keys of the layers say.
     ///
     /// Two builds of one recipe at once run each step once: the second waits for the layer store's build lock, then
@@ -173,14 +174,20 @@ struct StepRun<'a> {
 }
 
 impl StepRun<'_> {
-    /// Runs the step in a transient instance of `parent` and commits the disk it leaves into `staging`.
+    /// Runs the step in a transient instance of `parent` and commits the disk it leaves into `staging`. Every error
+    /// names the step and the phase it was in: the work below returns [`StepFailure`], which no bare `?` converts to.
     fn run(&self, parent: &ChainLease, staging: &Staging<'_>) -> Result<Built> {
+        self.work(parent, staging).map_err(|failure| failure.into_error(self))
+    }
+
+    fn work(&self, parent: &ChainLease, staging: &Staging<'_>) -> StepResult<Built> {
         let engine = self.engine;
         // The image holds a lease of its own on the parent's layers, so that the instance's record names layers that
         // stay.
-        let store = engine.store()?;
-        let guard = store.begin_record()?;
-        let chain = store.lease_chain(&parent.tip().layer_ref(), &guard)?;
+        let lease = "leasing the layers the step starts from";
+        let store = engine.store().during(lease)?;
+        let guard = store.begin_record().during(lease)?;
+        let chain = store.lease_chain(&parent.tip().layer_ref(), &guard).during(lease)?;
         drop(guard);
         let image = Image::from_chain(engine.clone(), chain, self.flat, self.arch);
         let step = &self.flat.steps[self.index].step;
@@ -192,7 +199,7 @@ impl StepRun<'_> {
         ));
         let vm = image
             .start(&StartOptions::default())
-            .map_err(|e| self.in_step(e, "starting the step's guest"))?;
+            .during("starting the step's guest")?;
         match step {
             Step::Run {
                 command,
@@ -202,16 +209,17 @@ impl StepRun<'_> {
             } => self.run_command(&vm, command, *shell, *run_as, cwd.clone())?,
             Step::Copy { to, .. } => self.copy(&vm, to)?,
             Step::Set(_) => {
-                return Err(Error::new(ErrorKind::Internal, "a set step reached a build"));
+                return Err(Error::new(ErrorKind::Internal, "a set step reached a build")).during("running the step");
             }
         }
         self.flush(&vm)?;
-        vm.shutdown().map_err(|e| self.in_step(e, "shutting the guest down"))?;
+        vm.shutdown().during("shutting the guest down")?;
         engine
-            .backend()?
+            .backend()
+            .during("committing the step's layer")?
             .storage()
             .commit_layer(&vm.instance().dir().disk(), staging.dir)
-            .map_err(|e| self.in_step(e, "committing the step's layer"))?;
+            .during("committing the step's layer")?;
         Ok(Built::default())
     }
 
@@ -222,20 +230,18 @@ impl StepRun<'_> {
         shell: Option<Shell>,
         run_as: RunAs,
         cwd: Option<String>,
-    ) -> Result<()> {
+    ) -> StepResult<()> {
         let what = format!("`{script}`");
-        let argv = self
-            .guest
-            .shell_argv(shell, script)
-            .map_err(|e| self.in_step(e, &what))?;
+        let argv = self.guest.shell_argv(shell, script).during(&what)?;
         self.execute(vm, &Command { argv, run_as, cwd }, &what, ErrorKind::Recipe)
     }
 
     /// Uploads the step's snapshot and extracts it into `to`.
-    fn copy(&self, vm: &Vm, to: &str) -> Result<()> {
+    fn copy(&self, vm: &Vm, to: &str) -> StepResult<()> {
         let snapshot = self
             .snapshot
-            .ok_or_else(|| Error::new(ErrorKind::Internal, "a copy step has no snapshot"))?;
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "a copy step has no snapshot"))
+            .during("finding the files of copy")?;
         let archive = format!("/tmp/devvm-copy-{}.tar", hex::encode(random::bytes::<16>()));
         // The op lock is held for the whole upload; the extraction below takes its own.
         let destination = vm
@@ -253,44 +259,82 @@ impl StepRun<'_> {
                 )?;
                 Ok(destination)
             })
-            .map_err(|e| self.in_step(e, &format!("uploading the files of copy to {to}")))?;
+            .during(format!("uploading the files of copy to {to}"))?;
         let what = format!("extracting the files of copy to {to}");
-        let command = extract_command(&**self.guest, &destination, &archive).map_err(|e| self.in_step(e, &what))?;
+        let command = extract_command(&**self.guest, &destination, &archive).during(&what)?;
         self.execute(vm, &command, &what, ErrorKind::Recipe)
     }
 
     /// Runs the guest's flush command, which returns once the guest's writes are on its disk. Anything but exit 0 fails
     /// the build: the disk is not committed.
-    fn flush(&self, vm: &Vm) -> Result<()> {
+    fn flush(&self, vm: &Vm) -> StepResult<()> {
         self.execute(vm, &self.guest.flush_command(), "the guest's flush", ErrorKind::Io)
     }
 
     /// Runs `command`, reporting its output on the progress channel line by line. A status other than 0 fails the
     /// build with an error of `kind`, as does a command that cannot be run; both name the step and `what` ran.
-    fn execute(&self, vm: &Vm, command: &Command, what: &str, kind: ErrorKind) -> Result<()> {
+    fn execute(&self, vm: &Vm, command: &Command, what: &str, kind: ErrorKind) -> StepResult<()> {
         let progress = self.engine.progress.as_ref();
         let (mut out, mut err) = (Lines::new(progress), Lines::new(progress));
-        let status = vm
-            .run_to(command, &mut out, &mut err)
-            .map_err(|e| self.in_step(e, what))?;
+        let status = vm.run_to(command, &mut out, &mut err).during(what)?;
         if status == ExitStatus::Code(0) {
             return Ok(());
         }
-        Err(Error::new(
+        Err(StepFailure::Ended {
+            what: what.to_owned(),
             kind,
-            format!("{} ended with {}", self.step_of(what), status.describe()),
-        ))
-    }
-
-    /// `error` with the step and what it was doing as context.
-    fn in_step(&self, error: Error, what: &str) -> Error {
-        let kind = error.kind();
-        error.with_context(kind, self.step_of(what))
+            status,
+        })
     }
 
     /// `step N of M (what)`.
     fn step_of(&self, what: &str) -> String {
         format!("step {} of {} ({what})", self.index + 1, self.flat.steps.len())
+    }
+}
+
+type StepResult<T> = std::result::Result<T, StepFailure>;
+
+/// Why a step failed, with what it was doing. It is the only error the work of a step returns, and nothing converts an
+/// [`Error`] into it but [`During::during`], so a step's error cannot leave it without the step and the phase.
+enum StepFailure {
+    /// `what` failed with `error`.
+    Failed { what: String, error: Error },
+    /// The command `what` ran ended with `status`, which is not 0.
+    Ended {
+        what: String,
+        kind: ErrorKind,
+        status: ExitStatus,
+    },
+}
+
+impl StepFailure {
+    /// The error in the words of `step`: `step N of M (what): <error>`, or `step N of M (what) ended with <status>`.
+    fn into_error(self, step: &StepRun<'_>) -> Error {
+        match self {
+            StepFailure::Failed { what, error } => {
+                let kind = error.kind();
+                error.with_context(kind, step.step_of(&what))
+            }
+            StepFailure::Ended { what, kind, status } => Error::new(
+                kind,
+                format!("{} ended with {}", step.step_of(&what), status.describe()),
+            ),
+        }
+    }
+}
+
+/// Names the phase of a step that a failed call belongs to.
+trait During<T> {
+    fn during(self, what: impl Into<String>) -> StepResult<T>;
+}
+
+impl<T> During<T> for Result<T> {
+    fn during(self, what: impl Into<String>) -> StepResult<T> {
+        self.map_err(|error| StepFailure::Failed {
+            what: what.into(),
+            error,
+        })
     }
 }
 

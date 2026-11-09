@@ -29,7 +29,7 @@ pub(crate) trait GuestOs: Send + Sync {
     /// A command whose output is the guest's boot id.
     fn boot_id_command(&self) -> Command;
     /// A command that returns once every write the guest has accepted is on its disk. A build commits a step's disk
-    /// only after this exits 0.
+    /// only after this exits 0. It runs elevated, so every step's commit needs the guest's passwordless `sudo`.
     fn flush_command(&self) -> Command;
     /// The final string the guest's shell executes for `cmd`. A command no shell string can carry is a `usage` error
     /// naming the cause: an empty argv or working directory, a NUL byte, or a string over the guest's single-argument
