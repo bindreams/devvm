@@ -144,7 +144,9 @@ fn fixed_result(args: &[String]) -> i32 {
         )),
         other => panic!("unknown result {other:?}"),
     };
-    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, Deps::real(), &|_, _| result.clone())
+    // Full32, so a guest's 125 reaches the exit code as it is: that is what the status file exists to tell apart.
+    // Under LowByte `ExitWidth::exit_code` maps it to 1.
+    devvm_cli::main_entry_with(ExitWidth::Full32, cli_args, Deps::real(), &|_, _| result.clone())
 }
 
 fn request() -> BuildRequest {

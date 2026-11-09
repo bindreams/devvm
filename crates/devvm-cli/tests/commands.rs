@@ -152,14 +152,14 @@ fn devvm_with_stub_ssh(home: &Home, cwd: &Path, args: &[&str], code: i32, record
 }
 
 /// Gives the seeded instance `name` a machine that the backend finds: the process of this test, which is alive for as
-/// long as the test runs.
+/// long as the test runs. It has an SSH endpoint and the four key files, which is what `Instance::ssh_config` reads.
 fn seed_a_running_machine(home: &Home, name: &str) {
     let dir = home.state().join("instances").join(name);
     let process = cosca::identity::ProcessId::current().to_record().unwrap();
     let machine = serde_json::json!({
         "process": process,
         "qmp": "",
-        "ssh": [],
+        "ssh": [{ "endpoint": "normal", "addr": "127.0.0.1:2222" }],
         "serial_log": dir.join("serial.log"),
         "leftovers": [],
         "claim": { "path": dir.join("claim"), "id": "0:0" },
@@ -168,6 +168,11 @@ fn seed_a_running_machine(home: &Home, name: &str) {
     let mut record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     record["machine"] = machine;
     std::fs::write(path, record.to_string()).unwrap();
+    let keys = dir.join("keys");
+    std::fs::create_dir_all(&keys).unwrap();
+    for file in ["client", "client.pub", "host", "host.pub"] {
+        std::fs::write(keys.join(file), "key").unwrap();
+    }
 }
 
 #[skuld::test]
@@ -182,7 +187,12 @@ fn interactive_ssh_of_a_stopped_instance_fails_unavailable_naming_it_and_starts_
     assert_eq!(output.status.code(), Some(125));
     let line = one_error_line(&output, "unavailable");
     assert!(line.contains("box") && line.contains("start it"), "{line}");
-    assert!(!record.exists(), "the system ssh was started");
+    let started = std::fs::symlink_metadata(&record);
+    assert_eq!(
+        started.as_ref().err().map(std::io::Error::kind),
+        Some(std::io::ErrorKind::NotFound),
+        "the system ssh was started: {started:?}"
+    );
 }
 
 #[skuld::test]

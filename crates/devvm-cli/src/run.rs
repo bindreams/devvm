@@ -1,15 +1,12 @@
 //! The commands that need a VM: `build`, `run`, `up`, `ssh`, `cp`, `start` and `stop`.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use devvm::exit::ExitStatus;
 use devvm::recipe::Recipe;
-use devvm::{
-    Arch, BuildOptions, Command, Dirs, Engine, Error, ErrorKind, Guest, InstanceState, ListFilter, Result, RunAs,
-    StartOptions,
-};
+use devvm::{Arch, BuildOptions, Command, Engine, Error, ErrorKind, Guest, Instance, Result, RunAs, StartOptions};
 
 use crate::args::{CpSide, VmFlags};
 
@@ -38,7 +35,7 @@ pub(crate) fn run(
     let status = vm.run_to(
         &guest_command(argv, elevated),
         &mut Streaming(std::io::stdout()),
-        &mut Streaming(std::io::stderr()),
+        &mut std::io::stderr(),
     );
     // The handle's drop destroys the instance, whichever way the command ended.
     drop(vm);
@@ -59,25 +56,23 @@ pub(crate) fn up(engine: &Arc<Engine>, reference: &str, name: &str, flags: &VmFl
 pub(crate) fn ssh(engine: &Arc<Engine>, name: &str, elevated: bool, argv: &[String]) -> Result<ExitStatus> {
     let instance = engine.instance(name)?;
     if argv.is_empty() {
-        return interactive_ssh(engine, instance.name());
+        return interactive_ssh(&instance);
     }
     instance.run_to(
         &guest_command(argv, elevated),
         &mut Streaming(std::io::stdout()),
-        &mut Streaming(std::io::stderr()),
+        &mut std::io::stderr(),
     )
 }
 
 /// The system `ssh` with the generated configuration, as a child that has this process's console.
-fn interactive_ssh(engine: &Engine, name: &str) -> Result<ExitStatus> {
-    // After `stop` the configuration still names the old forwarded port, which another local service may have taken:
-    // `ssh` would fail with a host key or connection error instead of saying the instance is stopped.
-    require_running(engine, name)?;
-    let config = Dirs::from_env()?.ssh().join("config");
+fn interactive_ssh(instance: &Instance) -> Result<ExitStatus> {
+    let config = instance.ssh_config()?;
+    ignore_console_interrupts()?;
     let status = std::process::Command::new("ssh")
         .arg("-F")
         .arg(&config)
-        .arg(name)
+        .arg(instance.name())
         .status()
         .map_err(|e| Error::io(ErrorKind::Io, "cannot run `ssh` (is it installed and on PATH?)", e))?;
     match status.code() {
@@ -89,25 +84,17 @@ fn interactive_ssh(engine: &Engine, name: &str) -> Result<ExitStatus> {
     }
 }
 
-/// Fails with `unavailable` unless the VM of instance `name` is found, as the embedded client does.
-fn require_running(engine: &Engine, name: &str) -> Result<()> {
-    let state = engine
-        .list(ListFilter::All)?
-        .into_iter()
-        .find(|info| info.name == name)
-        .map(|info| info.state);
-    match state {
-        Some(InstanceState::Running) => Ok(()),
-        Some(InstanceState::Stopped) => Err(Error::new(
-            ErrorKind::Unavailable,
-            format!("instance {name} is not running: start it"),
+/// Makes Ctrl-C and Ctrl-Break (SIGINT on Unix) do nothing here, so the interactive `ssh` that shares the console alone
+/// decides what an interrupt does, and this process then reports its exit code. The handler stays for the rest of the
+/// process, which ends with `ssh`.
+fn ignore_console_interrupts() -> Result<()> {
+    match ctrlc::set_handler(|| {}) {
+        // An earlier call already made them do nothing.
+        Ok(()) | Err(ctrlc::Error::MultipleHandlers) => Ok(()),
+        Err(e) => Err(Error::new(
+            ErrorKind::Internal,
+            format!("cannot make this process ignore Ctrl-C: {e}"),
         )),
-        // The reason went to the progress channel while listing.
-        Some(InstanceState::Unknown) => Err(Error::new(
-            ErrorKind::Unavailable,
-            format!("cannot tell whether instance {name} is running"),
-        )),
-        None => Err(Error::new(ErrorKind::NotFound, format!("no instance called {name}"))),
     }
 }
 
@@ -134,13 +121,8 @@ pub(crate) fn stop(engine: &Arc<Engine>, name: &str) -> Result<ExitStatus> {
 
 // Arguments ===========================================================================================================
 
-/// The working directory, which a recipe reference and `ls` are read against.
-pub(crate) fn current_dir() -> Result<PathBuf> {
-    std::env::current_dir().map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))
-}
-
 fn recipe(reference: &str) -> Result<Recipe> {
-    Recipe::from_ref(reference, &current_dir()?)
+    Recipe::from_ref(reference, &crate::current_dir()?)
 }
 
 fn build_options(flags: &VmFlags) -> BuildOptions {

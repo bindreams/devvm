@@ -141,12 +141,17 @@ fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
     }
 }
 
+/// The working directory, which a recipe reference and `ls` are read against.
+fn current_dir() -> Result<PathBuf> {
+    std::env::current_dir().map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))
+}
+
 /// `ls`: the instances created from this directory, or all of them.
 fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
     let filter = if all {
         ListFilter::All
     } else {
-        ListFilter::CreatedIn(run::current_dir()?)
+        ListFilter::CreatedIn(current_dir()?)
     };
     let infos = engine.list(filter)?;
     let mut out = std::io::stdout().lock();

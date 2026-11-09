@@ -205,6 +205,11 @@ impl SshConfigDir {
         &self.dir
     }
 
+    /// The static `config` that includes every `<name>.conf`.
+    pub(crate) fn config(&self) -> PathBuf {
+        self.dir.join(CONFIG)
+    }
+
     fn lock(&self) -> Result<FileLock> {
         let mut lock = FileLock::open(&self.dir.join(".lock"))?;
         lock.lock(Mode::Exclusive, "the ssh configuration", &mut |m| {

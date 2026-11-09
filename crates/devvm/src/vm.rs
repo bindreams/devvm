@@ -2,13 +2,14 @@
 //! [`Instance`] (a named VM that stays until it is removed).
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::access::SshSession;
 use crate::backend::MachineRecord;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
+use crate::engine::keys::read_target;
 use crate::exit::{ExitStatus, Output};
 use crate::guest::GuestOs;
 use crate::instance::dir::{InstanceDir, OpShared};
@@ -195,6 +196,20 @@ impl Instance {
     pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
         let (guest, session, _op) = self.reached()?;
         ops::run_to(&self.engine, &*guest, &session, cmd, out, err)
+    }
+}
+
+impl Instance {
+    /// The `ssh_config` file through which the system `ssh` reaches this instance by its name. Fails with
+    /// `unavailable`, as `run_to` does, when the instance's machine is not running.
+    ///
+    /// The check is made once; nothing holds the instance while `ssh` runs, so a `stop` or `rm` of the instance ends
+    /// the session.
+    pub fn ssh_config(&self) -> Result<PathBuf> {
+        let dir = self.dir();
+        let op = dir.op_shared()?;
+        read_target(&self.engine, dir, &op)?;
+        Ok(self.engine.ssh_configs().config())
     }
 }
 
