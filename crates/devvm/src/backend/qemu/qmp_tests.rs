@@ -64,6 +64,14 @@ impl Session {
         ))
     }
 
+    /// Waits for the next command and asserts that it is `name`.
+    pub(crate) fn expect_command(&mut self, name: &str) {
+        let (received, _) = self
+            .command()
+            .unwrap_or_else(|| panic!("`{name}` was expected, and no command came"));
+        assert_eq!(received, name);
+    }
+
     pub(crate) fn reply(&mut self, value: Value) {
         self.send(json!({ "return": value }));
     }

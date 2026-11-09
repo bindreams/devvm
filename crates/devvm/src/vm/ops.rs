@@ -54,17 +54,10 @@ pub(super) fn run_to(
             ErrorKind::Io,
             format!(
                 "writing the guest command's output failed after the guest command ended with {}",
-                describe(&status)
+                status.describe()
             ),
             error,
         )),
-    }
-}
-
-fn describe(status: &ExitStatus) -> String {
-    match status {
-        ExitStatus::Code(code) => format!("exit code {code}"),
-        ExitStatus::Signal { name, .. } => format!("signal {name}"),
     }
 }
 

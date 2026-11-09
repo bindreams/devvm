@@ -24,6 +24,16 @@ pub enum ExitStatus {
     Signal { name: String, core_dumped: bool },
 }
 
+impl ExitStatus {
+    /// The status in the words of a message: `exit code 3` or `signal KILL`.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            ExitStatus::Code(code) => format!("exit code {code}"),
+            ExitStatus::Signal { name, .. } => format!("signal {name}"),
+        }
+    }
+}
+
 /// A finished guest command.
 #[derive(Debug)]
 pub struct Output {

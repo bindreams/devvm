@@ -44,7 +44,6 @@ fn ctx(home: &Path, arch: Arch) -> BuildCtx {
     BuildCtx {
         dirs: Dirs::under(home),
         arch,
-        disk_size: 1 << 30,
         progress: Arc::new(NullProgress),
     }
 }

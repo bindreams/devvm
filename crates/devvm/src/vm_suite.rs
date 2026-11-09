@@ -7,6 +7,7 @@ use crate::test_harness::VM;
 skuld::default_labels!(VM);
 
 pub(crate) mod backend;
+mod build;
 mod host;
 mod qmp;
 mod storage;

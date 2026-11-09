@@ -14,6 +14,7 @@ use crate::error::ErrorKind;
 use crate::exit::NullProgress;
 use crate::guest::BuildCtx;
 use crate::host::symlink_metadata_if_present;
+use crate::recipe::{Recipe, Source};
 use crate::store::fetch::Fetcher;
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{key, request};
@@ -21,7 +22,7 @@ use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::qemu::{scratch_run, socket_dir};
 use crate::test_support::transport::RefusingTransport;
-use crate::{Arch, Dirs, Error, GuestKind, Result};
+use crate::{Arch, BuildOptions, Dirs, Error, GuestKind, Result};
 
 const RUN_DIR_ERROR: &str = "no runtime directory on this test host";
 
@@ -85,7 +86,6 @@ impl QemuEngine {
         let context = BuildCtx {
             dirs: self.dirs.clone(),
             arch: Arch::Amd64,
-            disk_size: 1 << 30,
             progress: Arc::new(NullProgress),
         };
         self.engine
@@ -135,6 +135,32 @@ fn a_transport_that_refuses_fails_only_the_command_that_downloads(#[fixture(unic
 
     engine.instance("foo").unwrap().remove().unwrap();
     assert!(engine.list(ListFilter::All).unwrap().is_empty());
+}
+
+#[skuld::test]
+fn an_engine_built_with_a_transport_fetches_the_base_through_it(#[fixture(unicode_home)] home: &Path) {
+    let qemu = QemuEngine::new(home);
+    let recipe = Recipe::parse(
+        "from: ubuntu-24.04
+steps:
+  - run: true
+",
+        &home.join("r.devvm.yaml"),
+    )
+    .unwrap();
+    let Source::DiskImage(pins) = recipe.flatten().unwrap().root else {
+        panic!("the embedded Ubuntu recipe starts from a disk image");
+    };
+    let base = pins.get(Arch::host()).expect("a pin for this host").url.clone();
+
+    let error = qemu.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Download, "{error}");
+    assert_eq!(
+        qemu.downloads(),
+        [base],
+        "the build fetched nothing else, and nothing needed QEMU"
+    );
 }
 
 #[skuld::test]

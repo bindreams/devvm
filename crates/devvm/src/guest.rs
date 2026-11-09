@@ -28,6 +28,8 @@ pub(crate) trait GuestOs: Send + Sync {
     fn instance_seed(&self, host: &dyn Host, seed: &SeedSpec) -> Result<SeedMedia>;
     /// A command whose output is the guest's boot id.
     fn boot_id_command(&self) -> Command;
+    /// A command that returns once every write the guest has accepted is on its disk.
+    fn flush_command(&self) -> Command;
     /// The final string the guest's shell executes for `cmd`. A command no shell string can carry is a `usage` error
     /// naming the cause: an empty argv or working directory, a NUL byte, or a string over the guest's single-argument
     /// size limit.
@@ -147,7 +149,6 @@ pub(crate) struct SeedMedia {
 pub(crate) struct BuildCtx {
     pub dirs: Dirs,
     pub arch: Arch,
-    pub disk_size: u64,
     pub progress: Arc<dyn Progress>,
 }
 
