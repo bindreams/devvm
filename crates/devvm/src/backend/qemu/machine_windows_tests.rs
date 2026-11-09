@@ -192,13 +192,23 @@ fn shutdown_of_a_machine_that_is_gone_removes_its_leftovers(#[fixture(unicode_ho
     );
 }
 
-/// The server closes the session after `script` with QEMU still alive; `shutdown` returns only once QEMU is gone.
-fn shutdown_waits_for_the_exit_after(home: &Path, script: impl Fn(&mut Session) + Send + 'static) {
+/// Runs `script` against a machine whose QEMU stays alive, with the link's `Refusing` to make a loss with. A lost
+/// session means QEMU is gone or going, so `shutdown` returns only once QEMU is gone: this ends the VM after the script
+/// is done and checks that `shutdown` did not return before.
+///
+/// The loss is made on the client's link, never by the server closing: Windows can lose the end of the stream, so the
+/// client would wait for it for ever. The script makes the link fail, then sends an event so that a read that is
+/// blocked already returns.
+fn shutdown_waits_for_the_exit_after(home: &Path, script: impl Fn(&mut Session, &Refusing) + Send + 'static) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let world = world(home);
-    let (server, _) = serve(world.sock.listen(), 1, move |session, _| script(session));
-    let mut machine = world.attached();
+    let watch = Refusing::new(world.watch());
+    let seen_by_script = watch.clone();
+    let (server, _) = serve(world.sock.listen(), 1, move |session, _| {
+        script(session, &seen_by_script)
+    });
+    let mut machine = world.attached_watched(watch.watch());
     let exited = AtomicBool::new(false);
 
     let (result, exited_before_it_returned) = std::thread::scope(|scope| {
@@ -220,19 +230,49 @@ fn shutdown_waits_for_the_exit_after(home: &Path, script: impl Fn(&mut Session) 
 fn shutdown_waits_for_the_exit_after_the_control_socket_closes_after_the_ack_while_qemu_lives(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    shutdown_waits_for_the_exit_after(home, |session| {
+    shutdown_waits_for_the_exit_after(home, |session, _| {
         answer_running(session);
         session.answer(json!({}));
     });
 }
 
-/// Shutdown of a machine whose QEMU stays alive, against a server that runs `script` once with the link's `Refusing`
-/// to make the loss with: an error of `kind`, with the leftovers of the live machine kept, and no wait for a process
-/// that nothing was asked to end.
-///
-/// The loss is made on the client's link, never by the server closing: Windows can lose the end of the stream, so the
-/// client would wait for it for ever. The script makes the link fail, then sends an event so that a read that is
-/// blocked already returns.
+/// The client's reads fail as a reset connection does, after the server has seen the command `after`.
+fn lost_after(session: &mut Session, watch: &Refusing, after: &str) {
+    session.expect_command(after);
+    watch.fail_reads_with(std::io::ErrorKind::ConnectionReset);
+    session.event("RESUME", None);
+}
+
+#[skuld::test]
+fn shutdown_waits_for_the_exit_after_the_control_socket_is_lost_before_the_status_reply(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    shutdown_waits_for_the_exit_after(home, |session, watch| lost_after(session, watch, "query-status"));
+}
+
+#[skuld::test]
+fn shutdown_waits_for_the_exit_after_the_control_socket_is_lost_before_the_ack(#[fixture(unicode_home)] home: &Path) {
+    shutdown_waits_for_the_exit_after(home, |session, watch| {
+        answer_running(session);
+        lost_after(session, watch, "system_powerdown");
+    });
+}
+
+#[skuld::test]
+fn shutdown_waits_for_the_exit_after_a_request_cannot_be_written_because_the_socket_closed(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    shutdown_waits_for_the_exit_after(home, |session, watch| {
+        // The client's `query-status` is in; its next write, the request, fails as a closed socket's does.
+        session.expect_command("query-status");
+        watch.fail_writes_with(std::io::ErrorKind::BrokenPipe);
+        session.reply(json!({ "status": "running", "running": true }));
+    });
+}
+
+/// Shutdown of a machine whose QEMU stays alive, against a server that runs `script` once with the link's `Refusing`:
+/// an error of `kind`, with the leftovers of the live machine kept, and no wait for a process that nothing was asked
+/// to end.
 fn shutdown_fails_while_qemu_lives(
     home: &Path,
     kind: ErrorKind,
@@ -259,38 +299,13 @@ fn shutdown_fails_while_qemu_lives(
     world.end_qemu();
 }
 
-/// The client's reads fail as a reset connection does, after the server has seen the command `after`.
-fn lost_after(session: &mut Session, watch: &Refusing, after: &str) {
-    session.expect_command(after);
-    watch.fail_reads_with(std::io::ErrorKind::ConnectionReset);
-    session.event("RESUME", None);
-}
-
 #[skuld::test]
-fn a_control_socket_lost_before_the_status_reply_while_qemu_lives_is_an_error_not_a_wait(
+fn a_request_that_cannot_be_written_for_a_reason_that_is_not_a_close_is_an_error_not_a_wait(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    shutdown_fails_while_qemu_lives(home, ErrorKind::ConnectionLost, |session, watch| {
-        lost_after(session, watch, "query-status")
-    });
-}
-
-#[skuld::test]
-fn a_request_that_is_never_acknowledged_while_qemu_lives_is_an_error_not_a_wait(#[fixture(unicode_home)] home: &Path) {
-    // The request arrived and the session was lost before the reply: QEMU never acknowledged it, so waiting for QEMU
-    // to exit would wait for ever.
-    shutdown_fails_while_qemu_lives(home, ErrorKind::ConnectionLost, |session, watch| {
-        answer_running(session);
-        lost_after(session, watch, "system_powerdown");
-    });
-}
-
-#[skuld::test]
-fn a_request_that_cannot_be_written_while_qemu_lives_is_an_error_not_a_wait(#[fixture(unicode_home)] home: &Path) {
-    shutdown_fails_while_qemu_lives(home, ErrorKind::ConnectionLost, |session, watch| {
-        // The client's `query-status` is in; its next write, the request, fails.
+    shutdown_fails_while_qemu_lives(home, ErrorKind::Io, |session, watch| {
         session.expect_command("query-status");
-        watch.fail_writes_with(std::io::ErrorKind::BrokenPipe);
+        watch.fail_writes_with(std::io::ErrorKind::PermissionDenied);
         session.reply(json!({ "status": "running", "running": true }));
     });
 }

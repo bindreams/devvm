@@ -291,7 +291,8 @@ impl Vm {
 
     /// Shuts the guest down and returns once its process has exited, under the exclusive op lock. The VM is not
     /// running afterwards, and the handle can no longer run anything. A shutdown that fails leaves the machine for
-    /// the drop to kill: it is never forced here.
+    /// the drop to kill: it is never forced here. A guest that acknowledges the request and never powers off is waited
+    /// for without end.
     pub(crate) fn shutdown(&self) -> Result<()> {
         let instance = self.instance();
         let dir = instance.dir();
