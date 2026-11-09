@@ -289,7 +289,7 @@ impl StepRun<'_> {
                 self.engine.progress.as_ref(),
             )
         })
-        .during(&format!("uploading the files of copy to {to}"))?;
+        .during(format!("uploading the files of copy to {to}"))?;
         let what = format!("extracting the files of copy to {to}");
         let command = extract_command(&**self.guest, &destination, &archive).during(&what)?;
         self.execute(vm, &command, &what, ErrorKind::Recipe)
