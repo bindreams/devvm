@@ -21,6 +21,8 @@ pub struct Refusing {
     link: AtomicBool,
     /// Reads on every link fail with this kind of error.
     read_error: Arc<Mutex<Option<std::io::ErrorKind>>>,
+    /// Writes that contain the text fail with the kind of error.
+    write_error: Arc<Mutex<Option<(String, std::io::ErrorKind)>>>,
 }
 
 impl Refusing {
@@ -31,6 +33,7 @@ impl Refusing {
             pause: AtomicBool::new(false),
             link: AtomicBool::new(false),
             read_error: Arc::default(),
+            write_error: Arc::default(),
         })
     }
 
@@ -54,6 +57,12 @@ impl Refusing {
     /// Makes every read, on links made already too, fail with an error of `kind`.
     pub fn fail_reads_with(&self, kind: std::io::ErrorKind) {
         *self.read_error.lock().unwrap() = Some(kind);
+    }
+
+    /// Makes every write that contains `needle`, on links made already too, fail with an error of `kind`: the one
+    /// request of a session that a test wants refused, whatever came before it.
+    pub fn fail_writes_containing(&self, needle: &str, kind: std::io::ErrorKind) {
+        *self.write_error.lock().unwrap() = Some((needle.to_owned(), kind));
     }
 }
 
@@ -80,30 +89,37 @@ impl ProcessWatch for Refusing {
         if self.link.load(Ordering::SeqCst) {
             return Err(std::io::Error::other(REFUSED));
         }
-        Ok(Box::new(FailingReads {
+        Ok(Box::new(FailingLink {
             link: self.inner.link(stream)?,
-            error: self.read_error.clone(),
+            read_error: self.read_error.clone(),
+            write_error: self.write_error.clone(),
         }))
     }
 }
 
-/// A link whose reads fail once `Refusing::fail_reads_with` says so.
-struct FailingReads {
+/// A link whose reads and writes fail once `Refusing::fail_reads_with` and `Refusing::fail_writes_containing` say so.
+struct FailingLink {
     link: Box<dyn Link>,
-    error: Arc<Mutex<Option<std::io::ErrorKind>>>,
+    read_error: Arc<Mutex<Option<std::io::ErrorKind>>>,
+    write_error: Arc<Mutex<Option<(String, std::io::ErrorKind)>>>,
 }
 
-impl Read for FailingReads {
+impl Read for FailingLink {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match *self.error.lock().unwrap() {
+        match *self.read_error.lock().unwrap() {
             Some(kind) => Err(kind.into()),
             None => self.link.read(buf),
         }
     }
 }
 
-impl Write for FailingReads {
+impl Write for FailingLink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some((needle, kind)) = &*self.write_error.lock().unwrap()
+            && String::from_utf8_lossy(buf).contains(needle.as_str())
+        {
+            return Err((*kind).into());
+        }
         self.link.write(buf)
     }
 

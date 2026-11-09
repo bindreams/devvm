@@ -209,7 +209,7 @@ impl StepRun<'_> {
             e.with_context(
                 kind,
                 format!(
-                    "step {} of {}: the guest did not shut down",
+                    "step {} of {}: shutting the guest down failed",
                     self.index + 1,
                     self.flat.steps.len()
                 ),
@@ -235,7 +235,7 @@ impl StepRun<'_> {
             run_as,
             cwd,
         };
-        self.execute(vm, &command, &format!("`{script}`"))
+        self.execute(vm, &command, &format!("`{script}`"), ErrorKind::Recipe)
     }
 
     /// Uploads the step's snapshot and extracts it into `to`.
@@ -245,64 +245,63 @@ impl StepRun<'_> {
             .ok_or_else(|| Error::new(ErrorKind::Internal, "a copy step has no snapshot"))?;
         let archive = format!("/tmp/devvm-copy-{}.tar", hex::encode(random::bytes::<16>()));
         // The op lock is held for the whole upload; the extraction below takes its own.
-        let destination = vm.with_sftp(|sftp| {
-            // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved here.
-            let (expanded, home) = sftp.expanded(to)?;
-            let destination = guest_destination(&**self.guest, &expanded, &home)?;
-            sftp.copy_in(
-                &snapshot.archive,
-                &archive,
-                self.engine.host,
-                self.guest,
-                self.engine.progress.as_ref(),
-            )?;
-            Ok(destination)
-        })?;
+        let destination = vm
+            .with_sftp(|sftp| {
+                // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved
+                // here.
+                let (expanded, home) = sftp.expanded(to)?;
+                let destination = guest_destination(&**self.guest, &expanded, &home)?;
+                sftp.copy_in(
+                    &snapshot.archive,
+                    &archive,
+                    self.engine.host,
+                    self.guest,
+                    self.engine.progress.as_ref(),
+                )?;
+                Ok(destination)
+            })
+            .map_err(|e| self.in_step(e, &format!("uploading the files of copy to {to}")))?;
         let command = extract_command(&**self.guest, &destination, &archive)?;
-        self.execute(vm, &command, &format!("copy to {to}"))
+        self.execute(
+            vm,
+            &command,
+            &format!("extracting the files of copy to {to}"),
+            ErrorKind::Recipe,
+        )
     }
 
     /// Runs the guest's flush command, which returns once the guest's writes are on its disk. Anything but exit 0 fails
     /// the build: the disk is not committed.
     fn flush(&self, vm: &Vm) -> Result<()> {
-        let status = self.run_reporting(vm, &self.guest.flush_command())?;
-        if status == ExitStatus::Code(0) {
-            return Ok(());
-        }
-        Err(Error::new(
-            ErrorKind::Io,
-            format!(
-                "step {} of {}: the guest's flush ended with {}",
-                self.index + 1,
-                self.flat.steps.len(),
-                status.describe()
-            ),
-        ))
-    }
-
-    /// Runs `command`, reporting its output on the progress channel line by line.
-    fn run_reporting(&self, vm: &Vm, command: &Command) -> Result<ExitStatus> {
-        let progress = self.engine.progress.as_ref();
-        let (mut out, mut err) = (Lines::new(progress), Lines::new(progress));
-        vm.run_to(command, &mut out, &mut err)
+        self.execute(vm, &self.guest.flush_command(), "the guest's flush", ErrorKind::Io)
     }
 
     /// Runs `command`, reporting its output on the progress channel line by line. A status other than 0 fails the
-    /// build, naming the step as `what`.
-    fn execute(&self, vm: &Vm, command: &Command, what: &str) -> Result<()> {
-        let status = self.run_reporting(vm, command)?;
+    /// build with an error of `kind`, as does a command that cannot be run; both name the step and `what` ran.
+    fn execute(&self, vm: &Vm, command: &Command, what: &str, kind: ErrorKind) -> Result<()> {
+        let progress = self.engine.progress.as_ref();
+        let (mut out, mut err) = (Lines::new(progress), Lines::new(progress));
+        let status = vm
+            .run_to(command, &mut out, &mut err)
+            .map_err(|e| self.in_step(e, what))?;
         if status == ExitStatus::Code(0) {
             return Ok(());
         }
         Err(Error::new(
-            ErrorKind::Recipe,
-            format!(
-                "step {} of {} ({what}) ended with {}",
-                self.index + 1,
-                self.flat.steps.len(),
-                status.describe()
-            ),
+            kind,
+            format!("{} ended with {}", self.step_of(what), status.describe()),
         ))
+    }
+
+    /// `error` with the step and what it was doing as context.
+    fn in_step(&self, error: Error, what: &str) -> Error {
+        let kind = error.kind();
+        error.with_context(kind, self.step_of(what))
+    }
+
+    /// `step N of M (what)`.
+    fn step_of(&self, what: &str) -> String {
+        format!("step {} of {} ({what})", self.index + 1, self.flat.steps.len())
     }
 }
 

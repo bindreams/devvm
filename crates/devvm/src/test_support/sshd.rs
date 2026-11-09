@@ -20,7 +20,6 @@
 //! | `extended-data-and-hold N` | writes a line to extended-data stream N, then does nothing and never answers |
 //! | `status-then-extended-data N` | writes `before the status` to stdout, sends `exit-status 7`, then a line to stream N, closes |
 //! | `echo ...` | prints the rest of the line, exits 0 |
-//! | `sync` | exits 0 |
 //! | `sh -c <script>`, `bash -c <script>` | runs `<script>` as the command if it is one of these, else exits 0 (a shell) |
 //! | `cloud-init status --wait --format json` | prints [`SshdOptions::cloud_init`]'s text, exits with its code |
 //! | `read-stdin` | waits for the client to send EOF, then prints `stdin ended` and exits 0 |
@@ -849,7 +848,6 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
                 .await;
             let _ = handle.close(channel).await;
         }
-        ["sync"] => finish(&handle, channel, 0).await,
         ["echo", rest @ ..] => {
             let _ = handle.data(channel, format!("{}\n", rest.join(" ")).into_bytes()).await;
             finish(&handle, channel, 0).await;

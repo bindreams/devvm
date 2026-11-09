@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use super::{LaunchFileKind, Qmp, QmpEndpoint, VmEnd};
+use super::{LaunchFileKind, PowerdownOutcome, Qmp, QmpEndpoint, VmEnd};
 use crate::ErrorKind;
 use crate::backend::qemu::ports::Forward;
 use crate::backend::qemu::uds::UnixListener;
@@ -1225,7 +1225,7 @@ fn wait_for_end_returns_exited_when_the_server_closes_after_shutdown() {
         &MemoryProgress::default(),
     )
     .unwrap();
-    qmp.system_powerdown().unwrap();
+    assert_eq!(qmp.system_powerdown().unwrap(), PowerdownOutcome::Acked);
     acked.send(()).unwrap();
     let end = end_process_after(server, &process, || qmp.wait_for_end());
 
@@ -1330,9 +1330,64 @@ fn a_server_that_closes_after_query_status_loses_the_next_command() {
     assert_eq!(qmp.query_status().unwrap().state, "running");
     server.join().unwrap();
     process.exit();
+    let error = qmp.stop().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+}
+
+// system_powerdown ----------------------------------------------------------------------------------------------------
+
+#[skuld::test]
+fn a_powerdown_the_server_answers_is_acked() {
+    let sock = sock();
+    let (server, _) = serve(sock.listen(), 1, |session, _| {
+        session.answer(json!({}));
+    });
+
+    let outcome = sock.connect().unwrap().system_powerdown().unwrap();
+
+    assert_eq!(outcome, PowerdownOutcome::Acked);
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn a_powerdown_whose_reply_never_comes_was_delivered() {
+    let sock = sock();
+    let (server, _) = serve(sock.listen(), 1, |session, _| {
+        // The request is read, then the session closes with no reply.
+        session.command().expect("system_powerdown");
+    });
+
+    let outcome = sock.connect().unwrap().system_powerdown().unwrap();
+
+    assert_eq!(outcome, PowerdownOutcome::ReplyLost);
+    server.join().unwrap();
+}
+
+#[skuld::test]
+fn a_powerdown_that_cannot_be_written_was_not_sent() {
+    let sock = sock();
+    let watch = Refusing::new(ManualExit::new().watch());
+    let (server, _) = serve(sock.listen(), 1, |session, _| {
+        // QEMU is alive: the connection stays up until the client lets go.
+        while session.command().is_some() {}
+    });
+    let mut qmp = Qmp::connect(
+        host::current(),
+        &sock.endpoint,
+        &sock.claim,
+        &watch.watch(),
+        &MemoryProgress::default(),
+    )
+    .unwrap();
+    watch.fail_writes_containing("system_powerdown", std::io::ErrorKind::BrokenPipe);
+
     let error = qmp.system_powerdown().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("cannot send system_powerdown"), "{error}");
+    drop(qmp);
+    server.join().unwrap();
 }
 
 /// Not a socket test: Windows' AF_UNIX sockets sometimes never deliver the end of the stream to a reader after the peer

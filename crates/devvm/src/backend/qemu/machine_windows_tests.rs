@@ -12,10 +12,11 @@ use crate::ErrorKind;
 use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
 use crate::backend::{Machine, MachineRecord};
 use crate::contain::{Lifetime, VmProcess};
-use crate::host;
+use crate::host::{self, ProcessWatch};
 use crate::test_support::fake_vm;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::qemu::Sock;
+use crate::test_support::refusing::Refusing;
 
 /// A fake VM, a control socket for it and the record that names both.
 struct World {
@@ -67,12 +68,17 @@ impl World {
 
     /// A machine found with `attach`, as another process sees one.
     fn attached(&self) -> QemuMachine {
-        let host = host::current();
         let vm = self.handle();
-        let id = vm.id();
+        let watch = host::current().watch_process(vm.id()).unwrap();
+        self.attached_through(vm, watch)
+    }
+
+    /// A machine found with `attach` whose process is watched through `watch`.
+    fn attached_through(&self, vm: VmProcess, watch: Arc<dyn ProcessWatch>) -> QemuMachine {
+        let host = host::current();
         QemuMachine::attached(
             vm,
-            host.watch_process(id).unwrap(),
+            watch,
             self.record.clone(),
             self.sock.claim.clone(),
             host,
@@ -162,7 +168,7 @@ fn qemu_that_exits_after_the_ack_is_a_shutdown(#[fixture(unicode_home)] home: &P
 
 #[skuld::test]
 fn a_failed_request_with_qemu_gone_is_a_shutdown(#[fixture(unicode_home)] home: &Path) {
-    // The request arrives, QEMU exits without a reply: the send is an `Err` that finds QEMU gone.
+    // The request arrives, QEMU exits without a reply.
     shutdown_against(&world(home), |session| {
         answer_running(session);
         session.command().expect("system_powerdown");
@@ -274,13 +280,40 @@ fn a_control_socket_lost_before_the_request_while_qemu_lives_is_an_error_not_a_w
 }
 
 #[skuld::test]
-fn a_request_that_fails_while_qemu_lives_is_an_error_not_a_wait(#[fixture(unicode_home)] home: &Path) {
-    // The server takes `system_powerdown` and closes the session without a reply: the request failed, so nothing asked
-    // QEMU to end and waiting for it would wait for ever.
-    shutdown_fails_when_the_session_is_lost_while_qemu_lives(home, |session| {
+fn a_reply_that_never_comes_after_the_request_was_written_waits_for_the_exit(#[fixture(unicode_home)] home: &Path) {
+    // The server takes `system_powerdown` and closes the session without a reply: the request was delivered, so QEMU
+    // may be going away, and the exit is what `shutdown` waits for.
+    shutdown_waits_for_the_exit_after(home, |session| {
         answer_running(session);
         session.command().expect("system_powerdown");
     });
+}
+
+#[skuld::test]
+fn a_request_that_cannot_be_written_while_qemu_lives_is_an_error_not_a_wait(#[fixture(unicode_home)] home: &Path) {
+    // Nothing was sent, so nothing asked QEMU to end and waiting for it would wait for ever.
+    let world = world(home);
+    let (server, _) = serve(world.sock.listen(), 1, |session, _| {
+        answer_running(session);
+        // QEMU is alive: the connection stays up until the client lets go.
+        while session.command().is_some() {}
+    });
+    let vm = world.handle();
+    let watch = Refusing::new(host::current().watch_process(vm.id()).unwrap());
+    watch.fail_writes_containing("system_powerdown", std::io::ErrorKind::BrokenPipe);
+    let mut machine = world.attached_through(vm, watch.watch());
+
+    let error = machine.shutdown().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(world.qemu.lock().unwrap().is_alive().unwrap(), "the VM was waited for");
+    assert!(
+        host::symlink_metadata_if_present(&world.marker).unwrap().is_some(),
+        "leftovers of a live machine were removed"
+    );
+    drop(machine);
+    server.join().unwrap();
+    world.end_qemu();
 }
 
 #[skuld::test]

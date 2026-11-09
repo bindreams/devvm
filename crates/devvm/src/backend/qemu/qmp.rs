@@ -267,6 +267,15 @@ pub(crate) enum VmEnd {
     Paused(String),
 }
 
+/// How a delivered `system_powerdown` request went.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PowerdownOutcome {
+    /// QEMU replied.
+    Acked,
+    /// The request was written and the session closed before a reply came: QEMU may be on its way out.
+    ReplyLost,
+}
+
 /// QEMU's run state, as `query-status` reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunStatus {
@@ -475,6 +484,12 @@ impl Qmp {
     }
 
     fn execute<C: Command>(&mut self, command: &C) -> Result<C::Ok> {
+        self.send(command)?;
+        self.receive::<C>()
+    }
+
+    /// Writes `command`. A failure is `ConnectionLost` when the session is closed or QEMU has exited, else `Io`.
+    fn send<C: Command>(&mut self, command: &C) -> Result<()> {
         let line = serde_json::to_string(&Execute::<&C>::from(command)).map_err(|e| {
             Error::new(
                 ErrorKind::Internal,
@@ -499,7 +514,11 @@ impl Qmp {
                     ),
                     e,
                 )
-            })?;
+            })
+    }
+
+    /// Reads the reply to `C`, past the events that come first.
+    fn receive<C: Command>(&mut self) -> Result<C::Ok> {
         let what = format!("the reply to {}", C::NAME);
         let value = loop {
             match self.read_message()? {
@@ -530,9 +549,16 @@ impl Qmp {
 
     // Commands --------------------------------------------------------------------------------------------------------
 
-    /// Asks the guest to power down (ACPI). The guest may or may not act on it; this only sends the request.
-    pub(crate) fn system_powerdown(&mut self) -> Result<()> {
-        self.execute(&qmp::system_powerdown {}).map(drop)
+    /// Asks the guest to power down (ACPI). The guest may or may not act on it; this only sends the request. An `Err`
+    /// that is `ConnectionLost` means the request was not written. A session that closes after it was written, with no
+    /// reply, is `PowerdownOutcome::ReplyLost`.
+    pub(crate) fn system_powerdown(&mut self) -> Result<PowerdownOutcome> {
+        self.send(&qmp::system_powerdown {})?;
+        match self.receive::<qmp::system_powerdown>() {
+            Ok(_) => Ok(PowerdownOutcome::Acked),
+            Err(e) if e.kind() == ErrorKind::ConnectionLost => Ok(PowerdownOutcome::ReplyLost),
+            Err(e) => Err(e),
+        }
     }
 
     /// Makes QEMU exit now. The socket closes after the reply.

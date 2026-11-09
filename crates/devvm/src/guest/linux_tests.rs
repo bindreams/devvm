@@ -83,7 +83,7 @@ fn the_trait_object_wraps_and_describes_like_the_linux_guest(#[fixture(unicode_h
     let wrapped = os.wrap(&cmd).unwrap();
     assert_eq!(wrapped, r#"bash -lc 'exec -- '\''echo'\'' '\''hi'\'''"#);
     assert_eq!(os.boot_id_command().argv, ["cat", "/proc/sys/kernel/random/boot_id"]);
-    assert_eq!(os.flush_command().argv, ["sync"]);
+    assert_eq!(os.flush_command().argv[..2], ["sh", "-c"]);
     assert_eq!(os.semantics_version(), 1);
     assert_eq!(os.device_profile().disk, DiskBus::Virtio);
     assert_eq!(os.shell_argv(Some(Shell::Sh), "true").unwrap(), ["sh", "-c", "true"]);

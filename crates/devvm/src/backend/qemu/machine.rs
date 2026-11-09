@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::args::guest_port;
 use super::directory_of;
-use super::qmp::{Qmp, QmpEndpoint, VmEnd};
+use super::qmp::{PowerdownOutcome, Qmp, QmpEndpoint, VmEnd};
 use crate::backend::{Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
@@ -186,8 +186,8 @@ impl QemuMachine {
     }
 
     /// Sends the powerdown request and returns when QEMU closes the session. A session lost before the request was
-    /// acknowledged, whether it was never sent or its reply never came, is `lost_before_the_request`. A session lost
-    /// after it is QEMU going away, which the caller confirms by waiting for the process.
+    /// written is `lost_before_the_request`. A session lost after it, with or without a reply, is QEMU going away,
+    /// which the caller confirms by waiting for the process.
     fn power_down(&self) -> Result<()> {
         if !self.vm.is_alive()? {
             return Ok(());
@@ -199,8 +199,10 @@ impl QemuMachine {
         if let Err(e) = qmp.require_state(POWERDOWN_STATES, "shut the VM down", &self.record.serial_log) {
             return self.lost_before_the_request(e);
         }
-        if let Err(e) = qmp.system_powerdown() {
-            return self.lost_before_the_request(e);
+        match qmp.system_powerdown() {
+            Ok(PowerdownOutcome::Acked) => {}
+            Ok(PowerdownOutcome::ReplyLost) => return Ok(()),
+            Err(e) => return self.lost_before_the_request(e),
         }
         match qmp.wait_for_end() {
             Ok(VmEnd::Exited) => Ok(()),
@@ -216,8 +218,7 @@ impl QemuMachine {
         }
     }
 
-    /// What a failure before QEMU acknowledged the powerdown request means. A QEMU that is gone has done what was
-    /// asked. One that runs was never asked, and waiting for the process would wait for ever: an error.
+    /// What a failure before the powerdown request was written means. A QEMU that is gone has done what was asked. One that runs was never asked, and waiting for the process would wait for ever: an error.
     fn lost_before_the_request(&self, error: Error) -> Result<()> {
         if error.kind() != ErrorKind::ConnectionLost {
             return Err(error);

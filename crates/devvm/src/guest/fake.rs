@@ -130,11 +130,11 @@ impl GuestOs for FakeGuestOs {
         }
     }
 
-    /// A Linux guest's, except that a served guest whose flush fails (`ServedGuests::failing_flush`) exits 1.
+    /// A Linux guest's, except that a served guest whose flush runs another command (`ServedGuests::flush_runs`).
     fn flush_command(&self) -> Command {
         match &self.served {
-            Some(served) if *served.failing_flush.lock().unwrap() => Command::new(["exit", "1"]),
-            _ => LinuxGuest.flush_command(),
+            Some(served) => served.flush_command(),
+            None => LinuxGuest.flush_command(),
         }
     }
 
@@ -251,7 +251,7 @@ struct Served {
     /// Every read of the boot id prints nothing.
     empty_boot_id: Mutex<bool>,
     /// Every flush exits 1.
-    failing_flush: Mutex<bool>,
+    flush_runs: Mutex<Option<String>>,
     boots: Mutex<Boots>,
 }
 
@@ -276,7 +276,7 @@ impl ServedGuests {
             stale_boot_reads: Mutex::default(),
             unreadable_boot_id: Mutex::default(),
             empty_boot_id: Mutex::default(),
-            failing_flush: Mutex::default(),
+            flush_runs: Mutex::default(),
             boots: Mutex::default(),
         }))
     }
@@ -304,9 +304,9 @@ impl ServedGuests {
         *self.0.empty_boot_id.lock().unwrap() = true;
     }
 
-    /// Every flush of a guest's disk exits 1.
-    pub(crate) fn failing_flush(&self) {
-        *self.0.failing_flush.lock().unwrap() = true;
+    /// Every flush of a guest's disk runs `command` (a script of the test SSH server) instead of the guest's own.
+    pub(crate) fn flush_runs(&self, command: &str) {
+        *self.0.flush_runs.lock().unwrap() = Some(command.to_owned());
     }
 
     /// After each reset, the first `reads` reads of the boot id still answer the old boot, as a guest does until it has
@@ -337,6 +337,14 @@ impl ServedGuests {
 }
 
 impl Served {
+    /// A Linux guest's flush, or the command `flush_runs` set.
+    fn flush_command(&self) -> Command {
+        match &*self.flush_runs.lock().unwrap() {
+            Some(command) => Command::new(command.split_whitespace()),
+            None => LinuxGuest.flush_command(),
+        }
+    }
+
     /// What a read of the boot id runs: `exit 1` while the failing reads last, else the boot the guest is in now (the
     /// number of resets so far, or the one before while the stale reads last).
     fn boot_id_command(&self) -> Command {

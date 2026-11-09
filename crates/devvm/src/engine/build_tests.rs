@@ -185,8 +185,13 @@ fn steps_and_flushes(fx: &Fixture) -> Vec<String> {
     fx.server
         .commands()
         .into_iter()
-        .filter(|command| command.starts_with("bash -c ") || command == "sync" || command.contains("tar -xf"))
+        .filter(|command| command.starts_with("bash -c ") || *command == flush_command() || command.contains("tar -xf"))
         .collect()
+}
+
+/// What the server is given for the guest's flush: the fake guest joins the argv with spaces.
+fn flush_command() -> String {
+    FakeGuests.os(GuestKind::Linux).unwrap().flush_command().argv.join(" ")
 }
 
 #[skuld::test]
@@ -211,12 +216,16 @@ fn each_step_is_followed_by_the_guests_flush_as_a_command_of_its_own(#[fixture(u
     let shape: Vec<&str> = commands
         .iter()
         .map(|command| match command.as_str() {
-            "sync" => "sync",
+            command if command == flush_command() => "flush",
             command if command.starts_with("bash -c ") => "run",
             _ => "extract",
         })
         .collect();
-    assert_eq!(shape, ["run", "sync", "extract", "sync", "run", "sync"], "{commands:?}");
+    assert_eq!(
+        shape,
+        ["run", "flush", "extract", "flush", "run", "flush"],
+        "{commands:?}"
+    );
     assert_eq!(
         commands[0], "bash -c echo one",
         "the flush is not appended to the user's script"
@@ -227,7 +236,7 @@ fn each_step_is_followed_by_the_guests_flush_as_a_command_of_its_own(#[fixture(u
 #[skuld::test]
 fn a_flush_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
-    fx.guests.failing_flush();
+    fx.guests.flush_runs("exit 1");
     let recipe = recipe(home, &["run: echo one"]);
     let keys = keys_of(&recipe);
 
@@ -245,6 +254,41 @@ fn a_flush_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] home:
 }
 
 #[skuld::test]
+fn a_flush_whose_session_is_lost_names_the_step_and_the_flush_and_commits_nothing(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    // The channel closes with no exit status: an error, not a status.
+    fx.guests.flush_runs("close-no-status");
+    let recipe = recipe(home, &["run: echo one"]);
+    let keys = keys_of(&recipe);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    let message = error.message();
+    assert!(message.contains("step 1 of 1"), "{message}");
+    assert!(message.contains("flush"), "{message}");
+    assert!(
+        fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),
+        "a disk whose flush was lost is not a layer"
+    );
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_run_step_whose_session_is_lost_names_the_step_and_its_command(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = recipe(home, &["run: echo one", "run: close-no-status"]);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    let message = error.message();
+    assert!(message.contains("step 2 of 2"), "{message}");
+    assert!(message.contains("`close-no-status`"), "{message}");
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
 fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture_over(home, FakeBackend::new(&TestHost).with_failing_shutdown());
     let recipe = recipe(home, &["run: echo one"]);
@@ -254,7 +298,7 @@ fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] ho
 
     let message = error.message();
     assert!(message.contains("step 1 of 1"), "{message}");
-    assert!(message.contains("shut down"), "{message}");
+    assert!(message.contains("shutting the guest down failed"), "{message}");
     assert!(message.contains("does not power down"), "{message}");
     assert!(
         fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),
