@@ -60,7 +60,7 @@ pub(crate) struct LinuxGuest;
 const SEED_IMAGE: &str = "cidata.img";
 
 /// `sync`, then `sync -f` on the mount point of every `/dev/` line of the mounts file (`$1`, else `/proc/mounts`);
-/// exits 1 if any failed.
+/// exits 1 if any failed or the mounts file cannot be opened.
 /// `/proc/mounts` writes a space, tab, newline or backslash in a mount point as `\NNN` octal: `sed` turns each into
 /// the `\0NNN` that `printf %b` reads, and the `.` keeps `$(...)` from dropping a trailing newline.
 const FLUSH_SCRIPT: &str = r#"status=0
@@ -70,7 +70,7 @@ while read -r source target _; do
   target=$(printf '%s' "$target" | sed 's/\\\([0-7][0-7][0-7]\)/\\0\1/g')
   target=$(printf '%b.' "$target")
   sync -f -- "${target%.}" || status=1
-done < "${1:-/proc/mounts}"
+done < "${1:-/proc/mounts}" || status=1
 exit $status
 "#;
 

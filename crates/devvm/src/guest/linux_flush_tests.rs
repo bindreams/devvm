@@ -23,6 +23,13 @@ overlay /merged overlay rw 0 0
 /// Runs the flush script over `mounts` with a `sync` that exits `sync_status`; the exit code and the arguments of each
 /// call, one call per entry.
 fn flush(home: &Path, mounts: &str, sync_status: i32) -> (i32, Vec<Vec<String>>) {
+    let mounts_file = home.join("mounts");
+    std::fs::write(&mounts_file, mounts).unwrap();
+    flush_reading(home, &mounts_file, sync_status)
+}
+
+/// `flush`, reading the mounts file `mounts_file`, which need not exist.
+fn flush_reading(home: &Path, mounts_file: &Path, sync_status: i32) -> (i32, Vec<Vec<String>>) {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let log = home.join("sync.log");
@@ -37,8 +44,6 @@ fn flush(home: &Path, mounts: &str, sync_status: i32) -> (i32, Vec<Vec<String>>)
     )
     .unwrap();
     std::fs::set_permissions(&sync, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mounts_file = home.join("mounts");
-    std::fs::write(&mounts_file, mounts).unwrap();
     let command = LinuxGuest.flush_command();
     let path = std::env::join_paths([bin.as_path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
 
@@ -102,4 +107,11 @@ fn a_guest_with_no_block_device_mount_only_syncs_plainly_and_succeeds(#[fixture(
     assert_eq!(code, 0);
     // Only the plain `sync`.
     assert_eq!(calls, [Vec::<String>::new()]);
+}
+
+#[skuld::test]
+fn a_mounts_file_that_cannot_be_opened_fails_the_flush(#[fixture(unicode_home)] home: &Path) {
+    let (code, _) = flush_reading(home, &home.join("no-such-mounts"), 0);
+
+    assert_eq!(code, 1);
 }
