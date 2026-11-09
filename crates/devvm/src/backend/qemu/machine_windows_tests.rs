@@ -110,37 +110,85 @@ impl World {
     }
 }
 
-/// Serves one client: answers `answered` commands as a running VM would, ends the VM process, and closes the connection.
-fn exits_after(world: &World, answered: usize) -> (Server, Log) {
+/// Serves one client: runs `script`, ends the VM process, and closes the connection.
+fn qemu_ends_after(world: &World, script: impl Fn(&mut Session) + Send + 'static) -> (Server, Log) {
     let qemu = world.qemu.clone();
     serve(world.sock.listen(), 1, move |session: &mut Session, _| {
-        for _ in 0..answered {
-            session.answer(json!({ "status": "running", "running": true }));
-        }
+        script(session);
         qemu.lock().unwrap().kill().unwrap();
     })
 }
 
-fn shutdown_when_qemu_exits_after(home: &Path, answered: usize) {
-    let world = world(home);
-    let (server, _) = exits_after(&world, answered);
+/// A running VM's answer to `query-status`.
+fn answer_running(session: &mut Session) {
+    session.answer(json!({ "status": "running", "running": true }));
+}
+
+/// The events of a guest that powered itself off.
+fn guest_shutdown(session: &mut Session) {
+    session.event("POWERDOWN", None);
+    session.event("SHUTDOWN", Some(json!({ "guest": true, "reason": "guest-shutdown" })));
+}
+
+/// Shuts `world`'s machine down against a server that runs `script` and then ends QEMU; the leftovers are removed.
+fn shutdown_against(world: &World, script: impl Fn(&mut Session) + Send + 'static) -> ShutdownOutcome {
+    let (server, _) = qemu_ends_after(world, script);
     let mut machine = world.attached();
 
-    assert_eq!(machine.shutdown().unwrap(), ShutdownOutcome::AlreadyDown);
+    let outcome = machine.shutdown().unwrap();
 
     server.join().unwrap();
     assert!(!world.marker.exists(), "the leftover was not removed");
     assert!(!world.lock_file().exists(), "the lock file was not removed");
+    outcome
 }
 
 #[skuld::test]
-fn shutdown_is_done_when_qemu_exits_before_the_first_command(#[fixture(unicode_home)] home: &Path) {
-    shutdown_when_qemu_exits_after(home, 0);
+fn qemu_gone_before_the_first_command_is_already_down(#[fixture(unicode_home)] home: &Path) {
+    let outcome = shutdown_against(&world(home), |_| {});
+
+    assert_eq!(outcome, ShutdownOutcome::AlreadyDown);
 }
 
 #[skuld::test]
-fn shutdown_is_done_when_qemu_exits_after_the_status_query(#[fixture(unicode_home)] home: &Path) {
-    shutdown_when_qemu_exits_after(home, 1);
+fn qemu_that_exits_after_the_status_query_never_acked_the_request(#[fixture(unicode_home)] home: &Path) {
+    let outcome = shutdown_against(&world(home), answer_running);
+
+    assert_eq!(outcome, ShutdownOutcome::Unconfirmed);
+}
+
+#[skuld::test]
+fn qemu_that_exits_after_the_ack_with_no_shutdown_event_is_not_a_powerdown(#[fixture(unicode_home)] home: &Path) {
+    let outcome = shutdown_against(&world(home), |session| {
+        answer_running(session);
+        session.answer(json!({}));
+    });
+
+    assert_eq!(outcome, ShutdownOutcome::Unconfirmed);
+}
+
+#[skuld::test]
+fn an_acked_request_the_guest_answered_with_its_own_shutdown_is_a_powerdown(#[fixture(unicode_home)] home: &Path) {
+    let outcome = shutdown_against(&world(home), |session| {
+        answer_running(session);
+        session.answer(json!({}));
+        guest_shutdown(session);
+    });
+
+    assert_eq!(outcome, ShutdownOutcome::PoweredDown);
+}
+
+#[skuld::test]
+fn a_guest_that_was_already_shut_down_when_asked_is_not_a_powerdown(#[fixture(unicode_home)] home: &Path) {
+    // The guest powered itself off (`poweroff -f`) before the request and QEMU has not exited yet; it still reports a
+    // `SHUTDOWN` for what follows.
+    let outcome = shutdown_against(&world(home), |session| {
+        session.answer(json!({ "status": "shutdown", "running": false }));
+        session.answer(json!({}));
+        guest_shutdown(session);
+    });
+
+    assert_eq!(outcome, ShutdownOutcome::Unconfirmed);
 }
 
 #[skuld::test]
@@ -176,16 +224,12 @@ fn a_connection_error_that_is_not_a_close_is_reported_while_qemu_lives(#[fixture
     world.end_qemu();
 }
 
-#[skuld::test]
-fn shutdown_waits_for_the_exit_after_the_control_socket_closes_while_qemu_lives(#[fixture(unicode_home)] home: &Path) {
+/// The server closes the session after `script` with QEMU still alive; `shutdown` returns only once QEMU is gone.
+fn shutdown_waits_for_the_exit_after(home: &Path, script: impl Fn(&mut Session) + Send + 'static) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let world = world(home);
-    let (server, _) = serve(world.sock.listen(), 1, |session, _| {
-        session.answer(json!({ "status": "running", "running": true }));
-        session.answer(json!({}));
-        // The connection closes with QEMU still alive.
-    });
+    let (server, _) = serve(world.sock.listen(), 1, move |session, _| script(session));
     let mut machine = world.attached();
     let exited = AtomicBool::new(false);
 
@@ -200,8 +244,47 @@ fn shutdown_waits_for_the_exit_after_the_control_socket_closes_while_qemu_lives(
         shutdown.join().unwrap()
     });
 
-    assert_eq!(result.unwrap(), ShutdownOutcome::PoweredDown);
+    assert_eq!(result.unwrap(), ShutdownOutcome::Unconfirmed);
     assert!(exited_before_it_returned, "shutdown returned while QEMU was alive");
+}
+
+#[skuld::test]
+fn shutdown_waits_for_the_exit_after_the_control_socket_closes_unanswered_while_qemu_lives(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    shutdown_waits_for_the_exit_after(home, |session| {
+        answer_running(session);
+        session.command().expect("system_powerdown");
+    });
+}
+
+#[skuld::test]
+fn shutdown_waits_for_the_exit_after_the_control_socket_closes_after_the_ack_while_qemu_lives(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    shutdown_waits_for_the_exit_after(home, |session| {
+        answer_running(session);
+        session.answer(json!({}));
+    });
+}
+
+#[skuld::test]
+fn a_control_socket_lost_before_the_request_while_qemu_lives_is_an_error_not_a_wait(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = world(home);
+    // The server closes the session after the handshake, before `query-status` is answered.
+    let (server, _) = serve(world.sock.listen(), 1, |_, _| {});
+    let mut machine = world.attached();
+
+    let error = machine.shutdown().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(world.qemu.lock().unwrap().is_alive().unwrap(), "the VM was waited for");
+    assert!(world.marker.exists(), "leftovers of a live machine were removed");
+    drop(machine);
+    server.join().unwrap();
+    world.end_qemu();
 }
 
 #[skuld::test]

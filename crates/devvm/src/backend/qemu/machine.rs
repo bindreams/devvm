@@ -185,26 +185,63 @@ impl QemuMachine {
         }
     }
 
-    /// Sends the powerdown request and returns when QEMU closes the session. The session ending early
-    /// (`ConnectionLost`) is QEMU going away or gone, which the caller confirms by waiting for the process.
-    /// `AlreadyDown` when QEMU is not running.
+    /// Sends the powerdown request and returns when QEMU closes the session. `PoweredDown` needs QEMU's own word for
+    /// it: the guest was `running` when asked, QEMU acknowledged the request, reported the guest's shutdown and then
+    /// closed the session. A session lost after the request was sent is QEMU going away, which the caller confirms by
+    /// waiting for the process: `Unconfirmed`. `AlreadyDown` when QEMU is not running; a session lost before the
+    /// request was sent, with QEMU running, is an error.
     fn power_down(&self) -> Result<ShutdownOutcome> {
         if !self.vm.is_alive()? {
             return Ok(ShutdownOutcome::AlreadyDown);
         }
-        let mut qmp = self.open()?;
-        qmp.require_state(POWERDOWN_STATES, "shut the VM down", &self.record.serial_log)?;
-        qmp.system_powerdown()?;
-        match qmp.wait_for_end()? {
-            VmEnd::Exited => Ok(ShutdownOutcome::PoweredDown),
-            VmEnd::Paused(state) => Err(Error::new(
+        let mut qmp = match self.open() {
+            Ok(qmp) => qmp,
+            Err(e) => return self.lost_before_the_request(e),
+        };
+        let status = match qmp.require_state(POWERDOWN_STATES, "shut the VM down", &self.record.serial_log) {
+            Ok(status) => status,
+            Err(e) => return self.lost_before_the_request(e),
+        };
+        let lost_after_the_request = |e: Error| match e.kind() {
+            ErrorKind::ConnectionLost => Ok(ShutdownOutcome::Unconfirmed),
+            _ => Err(e),
+        };
+        if let Err(e) = qmp.system_powerdown() {
+            return lost_after_the_request(e);
+        }
+        match qmp.wait_for_end() {
+            Ok(VmEnd::Exited { guest_shutdown }) if guest_shutdown && status.state == "running" => {
+                Ok(ShutdownOutcome::PoweredDown)
+            }
+            Ok(VmEnd::Exited { .. }) => Ok(ShutdownOutcome::Unconfirmed),
+            Ok(VmEnd::Paused(state)) => Err(Error::new(
                 ErrorKind::Unavailable,
                 format!(
                     "the VM stopped ({state}) while it was shutting down; its serial log is {}",
                     self.record.serial_log.display()
                 ),
             )),
+            Err(e) => lost_after_the_request(e),
         }
+    }
+
+    /// What a failure before the powerdown request was sent means. A QEMU that is gone is `AlreadyDown`; one that
+    /// runs is an error, because the request was never sent and waiting for the process would wait for ever.
+    fn lost_before_the_request(&self, error: Error) -> Result<ShutdownOutcome> {
+        if error.kind() != ErrorKind::ConnectionLost {
+            return Err(error);
+        }
+        if !self.vm.is_alive()? {
+            return Ok(ShutdownOutcome::AlreadyDown);
+        }
+        Err(Error::new(
+            ErrorKind::ConnectionLost,
+            format!(
+                "{}; QEMU still runs; its serial log is {}",
+                error.message(),
+                self.record.serial_log.display()
+            ),
+        ))
     }
 
     fn remove_leftovers(&self) {
@@ -298,16 +335,10 @@ impl Machine for QemuMachine {
 
     /// Asks the guest to power down and waits for the end of the QEMU process. It never escalates to a kill; a VM that is
     /// paused is an error naming its state, because a paused VM ignores the request. A QEMU that exits while this runs
-    /// has done what was asked, so this is `Ok`, but only a QEMU that acknowledged the request and then closed the
-    /// session is `PoweredDown`: one that was gone, or went before it answered, is `AlreadyDown`.
+    /// has done what was asked, so this is `Ok`; the outcome says how much of it QEMU vouched for (`power_down`).
     fn shutdown(&mut self) -> Result<ShutdownOutcome> {
         self.require_resumed("shut the VM down")?;
-        let outcome = match self.power_down() {
-            Ok(outcome) => outcome,
-            // A closed control socket is a QEMU quitting; the wait below is for the process to be gone.
-            Err(e) if e.kind() == ErrorKind::ConnectionLost => ShutdownOutcome::AlreadyDown,
-            Err(e) => return Err(e),
-        };
+        let outcome = self.power_down()?;
         // The session, and with it the lock, is gone before the files are deleted.
         self.vm.wait()?;
         self.remove_leftovers();

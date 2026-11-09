@@ -282,18 +282,17 @@ impl Drop for Vm {
 }
 
 impl Vm {
-    /// The shared op lock and an SFTP session to the guest, over the connection that found it ready. The lock is held
-    /// for as long as the caller holds it: bind it before the session (`let (_op, sftp) = ..`), which is then dropped
-    /// first.
-    pub(crate) fn sftp(&self) -> Result<(OpShared, Sftp)> {
-        let (_, session, op) = self.reached()?;
-        Ok((op, session.sftp()?))
+    /// Runs `f` with an SFTP session to the guest, over the connection that found it ready, under the shared op lock
+    /// that keeps `stop`, `remove` and `reboot` from ending the machine while `f` uses it.
+    pub(crate) fn with_sftp<T>(&self, f: impl FnOnce(&Sftp) -> Result<T>) -> Result<T> {
+        let (_, session, _op) = self.reached()?;
+        f(&session.sftp()?)
     }
 
     /// Shuts the guest down and returns once its process has exited, under the exclusive op lock. The VM is not
     /// running afterwards, and the handle can no longer run anything. A shutdown that fails leaves the machine for
-    /// the drop to kill: it is never forced here. `AlreadyDown` says the guest was gone before this request powered it
-    /// down, so what its disk holds is not a clean shutdown's; the machine's record is retired all the same.
+    /// the drop to kill: it is never forced here. Only `PoweredDown` says the guest shut down cleanly; for any other
+    /// outcome what its disk holds is not a clean shutdown's, and the machine's record is retired all the same.
     pub(crate) fn shutdown(&self) -> Result<ShutdownOutcome> {
         let instance = self.instance();
         let dir = instance.dir();

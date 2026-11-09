@@ -85,7 +85,7 @@ fn the_read_after_the_last_buffered_event_of_an_exited_process_ends_instead_of_b
     process.exit();
 
     // The server still holds the connection open: only the exit can end this wait.
-    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
+    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited { guest_shutdown: false });
 
     drop(qmp);
     server.join().unwrap();
@@ -144,8 +144,12 @@ fn a_read_that_starts_after_the_process_exited_ends_at_once() {
     .unwrap();
 
     process.exit();
-    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited);
-    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited, "a second read");
+    assert_eq!(qmp.wait_for_end().unwrap(), VmEnd::Exited { guest_shutdown: false });
+    assert_eq!(
+        qmp.wait_for_end().unwrap(),
+        VmEnd::Exited { guest_shutdown: false },
+        "a second read"
+    );
     let error = qmp.query_status().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");

@@ -81,6 +81,8 @@ enum ShutdownFault {
     Fails,
     /// The VM process is gone before it is asked, as one that crashed or whose guest powered itself off.
     VmGone,
+    /// The VM exits when asked, and nothing vouches that the guest powered down.
+    Unconfirmed,
 }
 
 impl FakeBackend {
@@ -109,6 +111,12 @@ impl FakeBackend {
     /// A backend whose machines are gone when `shutdown` asks them, which is then `AlreadyDown`.
     pub(crate) fn with_vm_dying_before_shutdown(mut self) -> FakeBackend {
         self.shutdown_fault = ShutdownFault::VmGone;
+        self
+    }
+
+    /// A backend whose machines exit on `shutdown` without proof that the guest powered down: `Unconfirmed`.
+    pub(crate) fn with_unconfirmed_shutdown(mut self) -> FakeBackend {
+        self.shutdown_fault = ShutdownFault::Unconfirmed;
         self
     }
 
@@ -378,7 +386,7 @@ impl Machine for FakeMachine {
     }
 
     /// Asks the VM over its endpoint to exit, like a guest asked to power off, and waits for the process to be gone. A VM
-    /// that is gone already is `AlreadyDown`.
+    /// that is gone already is `AlreadyDown`; one with `ShutdownFault::Unconfirmed` exits as asked but is `Unconfirmed`.
     fn shutdown(&mut self) -> Result<ShutdownOutcome> {
         match self.shutdown_fault {
             ShutdownFault::None => {}
@@ -389,6 +397,7 @@ impl Machine for FakeMachine {
                 ));
             }
             ShutdownFault::VmGone => self.vm.kill()?,
+            ShutdownFault::Unconfirmed => {}
         }
         if !self.vm.is_alive()? {
             self.remove_leftovers()?;
@@ -411,7 +420,10 @@ impl Machine for FakeMachine {
         let _ = std::io::copy(&mut stream, &mut std::io::sink());
         self.vm.wait()?;
         self.remove_leftovers()?;
-        Ok(ShutdownOutcome::PoweredDown)
+        Ok(match self.shutdown_fault {
+            ShutdownFault::Unconfirmed => ShutdownOutcome::Unconfirmed,
+            _ => ShutdownOutcome::PoweredDown,
+        })
     }
 
     fn kill(&mut self) -> Result<()> {

@@ -31,7 +31,8 @@ impl Engine {
     /// A step runs in a transient instance of the layer before it, which `Image::start` gives a lifetime of this
     /// process: it is shut down gracefully, its disk is committed as the step's layer, and the instance is destroyed.
     /// Nothing is committed for a step that fails or whose guest does not shut down, and nothing is published for it.
-    /// A guest that was already down when asked (it crashed, or the step powered it off) did not shut down.
+    /// Only a guest that QEMU reports it powered down on request shut down cleanly: one that crashed, or that the step
+    /// powered off, did not.
     /// The disk of every instance is the recipe's `resources.disk`, as the keys of the layers say.
     ///
     /// Two builds of one recipe at once run each step once: the second waits for the layer store's build lock, then
@@ -204,13 +205,14 @@ impl StepRun<'_> {
                 return Err(Error::new(ErrorKind::Internal, "a set step reached a build"));
             }
         }
-        if vm.shutdown()? == ShutdownOutcome::AlreadyDown {
+        if vm.shutdown()? != ShutdownOutcome::PoweredDown {
             return Err(Error::new(
                 ErrorKind::ConnectionLost,
                 format!(
-                    "the guest of step {} of {} was down before it was asked to shut down; nothing is committed",
+                    "the guest of step {} of {} did not shut down cleanly; nothing is committed (serial log: {})",
                     self.index + 1,
-                    self.flat.steps.len()
+                    self.flat.steps.len(),
+                    vm.instance().dir().serial_log().display()
                 ),
             ));
         }
@@ -243,9 +245,8 @@ impl StepRun<'_> {
             .snapshot
             .ok_or_else(|| Error::new(ErrorKind::Internal, "a copy step has no snapshot"))?;
         let archive = format!("/tmp/devvm-copy-{}.tar", hex::encode(random::bytes::<16>()));
-        let destination = {
-            // The op lock is held for the whole upload; the extraction below takes its own.
-            let (_op, sftp) = vm.sftp()?;
+        // The op lock is held for the whole upload; the extraction below takes its own.
+        let destination = vm.with_sftp(|sftp| {
             // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved here.
             let (expanded, home) = sftp.expanded(to)?;
             let destination = guest_destination(&**self.guest, &expanded, &home)?;
@@ -256,8 +257,8 @@ impl StepRun<'_> {
                 self.guest,
                 self.engine.progress.as_ref(),
             )?;
-            destination
-        };
+            Ok(destination)
+        })?;
         let command = extract_command(&**self.guest, &destination, &archive)?;
         self.execute(vm, &command, &format!("copy to {to}"))
     }

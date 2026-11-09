@@ -81,6 +81,11 @@ impl InstanceDir {
         self.path.join("disk.img")
     }
 
+    /// What the instance's machine writes to its serial port.
+    pub(crate) fn serial_log(&self) -> PathBuf {
+        self.path.join("serial.log")
+    }
+
     fn gone(&self) -> Error {
         Error::new(ErrorKind::NotFound, format!("instance {} is gone", self.name))
     }

@@ -13,6 +13,7 @@ use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
 use crate::guest::fake::{FakeBaseBuilder, FakeGuests, ServedGuests};
 use crate::guest::{BaseBuilder, GuestOs, Guests};
+use crate::host::symlink_metadata_if_present;
 use crate::recipe::Recipe;
 use crate::recipe::hash::{KeyContext, LayerKey, chain_keys};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
@@ -121,10 +122,13 @@ fn no_instance_or_build_is_left(fx: &Fixture) {
         fx.engine.registry().locks().build_locks().unwrap().is_empty(),
         "a build lock is left"
     );
-    let builds: Vec<PathBuf> = match std::fs::read_dir(fx.dirs.builds()) {
-        Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => panic!("cannot list the builds directory: {e}"),
+    let builds: Vec<PathBuf> = if symlink_metadata_if_present(&fx.dirs.builds()).unwrap().is_none() {
+        Vec::new()
+    } else {
+        std::fs::read_dir(fx.dirs.builds())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect()
     };
     assert!(builds.is_empty(), "a build directory is left: {builds:?}");
 }
@@ -190,21 +194,41 @@ fn a_forced_shutdown_never_commits(#[fixture(unicode_home)] home: &Path) {
     no_instance_or_build_is_left(&fx);
 }
 
-#[skuld::test]
-fn a_guest_that_was_down_before_the_shutdown_request_commits_nothing(#[fixture(unicode_home)] home: &Path) {
-    let fx = fixture_over(home, FakeBackend::new(&TestHost).with_vm_dying_before_shutdown());
+/// A build whose one step ends with a shutdown that `backend` makes anything but a clean powerdown commits nothing and
+/// says so, naming the step and the serial log.
+fn a_shutdown_that_is_not_a_clean_powerdown_commits_nothing(home: &Path, backend: FakeBackend) {
+    let fx = fixture_over(home, backend);
     let recipe = recipe(home, &["run: echo one"]);
     let keys = keys_of(&recipe);
 
     let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("step 1 of 1"), "{error}");
+    let message = error.message();
+    assert!(message.contains("step 1 of 1"), "{message}");
+    assert!(message.contains("did not shut down cleanly"), "{message}");
+    assert!(message.contains("serial.log"), "{message}");
     assert!(
         fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),
-        "the disk of a guest that went down by itself is not a layer"
+        "the disk of a guest that did not power down cleanly is not a layer"
     );
     no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_guest_that_was_down_before_the_shutdown_request_commits_nothing(#[fixture(unicode_home)] home: &Path) {
+    a_shutdown_that_is_not_a_clean_powerdown_commits_nothing(
+        home,
+        FakeBackend::new(&TestHost).with_vm_dying_before_shutdown(),
+    );
+}
+
+#[skuld::test]
+fn a_guest_whose_powerdown_was_not_confirmed_commits_nothing(#[fixture(unicode_home)] home: &Path) {
+    a_shutdown_that_is_not_a_clean_powerdown_commits_nothing(
+        home,
+        FakeBackend::new(&TestHost).with_unconfirmed_shutdown(),
+    );
 }
 
 #[skuld::test]

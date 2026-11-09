@@ -110,7 +110,7 @@ fn launch_machine(
         profile: guest.device_profile(),
         firmware: None,
         forwards: vec![Endpoint::Normal],
-        serial_log: dir.path().join("serial.log"),
+        serial_log: dir.serial_log(),
         lifetime,
     };
 
