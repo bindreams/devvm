@@ -412,10 +412,14 @@ fn extract_command(guest: &dyn GuestOs, destination: &str, archive: &str) -> Res
     })
 }
 
-/// A writer that reports each complete line it is given on the progress channel, and the rest when it is dropped.
+/// A writer that reports each complete line it is given on the progress channel, and the rest when it is dropped. A
+/// line ends at `\n`, at `\r` (a tool that redraws its progress on one line) or at `\r\n`, which is one end however
+/// the writes split it.
 struct Lines<'a> {
     progress: &'a dyn Progress,
     pending: Vec<u8>,
+    /// The last byte written was `\r`, so a `\n` that follows is the other half of its line end.
+    after_cr: bool,
 }
 
 impl<'a> Lines<'a> {
@@ -423,21 +427,27 @@ impl<'a> Lines<'a> {
         Lines {
             progress,
             pending: Vec::new(),
+            after_cr: false,
         }
     }
 
     fn report(&self, line: &[u8]) {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
         self.progress.message(&String::from_utf8_lossy(line));
     }
 }
 
 impl Write for Lines<'_> {
     fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
-        self.pending.extend_from_slice(chunk);
-        while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = self.pending.drain(..=end).collect();
-            self.report(&line[..end]);
+        for &byte in chunk {
+            match byte {
+                b'\n' if self.after_cr => {}
+                b'\r' | b'\n' => {
+                    self.report(&self.pending);
+                    self.pending.clear();
+                }
+                _ => self.pending.push(byte),
+            }
+            self.after_cr = byte == b'\r';
         }
         Ok(chunk.len())
     }

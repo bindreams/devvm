@@ -1,13 +1,14 @@
 //! `Engine::build` over the fake backend, whose machines are served by the test SSH server. The tests that launch a
 //! machine need a frozen spawn, which only Windows has, and run in `build_windows_tests.rs`; these never launch one.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::access::keys::InstanceKeys;
 use crate::backend::Backend;
 use crate::backend::fake::FakeBackend;
-use crate::engine::build::{extract_command, guest_destination, root_content};
+use crate::engine::build::{Lines, extract_command, guest_destination, root_content};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
 use crate::guest::fake::{FakeBaseBuilder, FakeGuests, ServedGuests};
@@ -270,4 +271,36 @@ fn an_engine_without_a_backend_cannot_build_and_makes_nothing(#[fixture(unicode_
 
     assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
     assert!(!is_there(&Dirs::under(home).state) && !is_there(&Dirs::under(home).data));
+}
+
+/// What `Lines` reports for `chunks` written in turn, then dropped.
+fn lines_reported(chunks: &[&[u8]]) -> Vec<String> {
+    let progress = MemoryProgress::default();
+    let mut lines = Lines::new(&progress);
+    for chunk in chunks {
+        lines.write_all(chunk).unwrap();
+    }
+    drop(lines);
+    progress.messages()
+}
+
+#[skuld::test]
+fn a_carriage_return_ends_a_line_of_output_like_a_line_feed() {
+    // Progress output redraws one line with `\r`: each redraw is a line.
+    assert_eq!(
+        lines_reported(&[b"10%\r20%\r30%\ndone\n"]),
+        ["10%", "20%", "30%", "done"]
+    );
+    assert_eq!(
+        lines_reported(&[b"10%\r20%"]),
+        ["10%", "20%"],
+        "the rest is reported at the end"
+    );
+}
+
+#[skuld::test]
+fn a_carriage_return_and_line_feed_are_one_line_end_wherever_the_writes_split_them() {
+    assert_eq!(lines_reported(&[b"a\r\nb\r\n"]), ["a", "b"]);
+    assert_eq!(lines_reported(&[b"a\r", b"\nb\n"]), ["a", "b"]);
+    assert_eq!(lines_reported(&[b"a\n\nb\n"]), ["a", "", "b"], "an empty line is a line");
 }
