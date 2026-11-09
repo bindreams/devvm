@@ -30,6 +30,8 @@ fn main() {
             Some("panic-on-two-workers") => panic_on_workers(&args, 2),
             Some("panic-in-builder") => panic_in_builder(&args),
             Some("panic-on-drop") => panic_on_drop(&args),
+            Some("fault-in-dispatch") => fault_in_dispatch(&args),
+            Some("fixed-result") => fixed_result(&args),
             other => panic!("unknown helper {other:?}"),
         };
         std::process::exit(code);
@@ -119,6 +121,32 @@ fn panic_on_drop(args: &[String]) -> i32 {
     devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|_, _| Ok(ExitStatus::Code(0)))
 }
 
+/// Runs the real entry point, `dispatch` included, with a transport that panics when the engine fetches through it.
+/// `args` are the CLI arguments.
+fn fault_in_dispatch(args: &[String]) -> i32 {
+    let cli_args: Vec<OsString> = args.iter().map(OsString::from).collect();
+    let deps = Deps {
+        transport: Arc::new(PanickingTransport(Arc::new(Barrier::new(1)))),
+    };
+    devvm_cli::main_entry(ExitWidth::LowByte, cli_args, deps)
+}
+
+/// Runs the real entry point with an action that ends as `args[0]` says. The rest are the CLI arguments.
+fn fixed_result(args: &[String]) -> i32 {
+    let cli_args: Vec<OsString> = args[1..].iter().map(OsString::from).collect();
+    let result = match args[0].as_str() {
+        "guest-125" => Ok(ExitStatus::Code(125)),
+        // What `Vm::run_to` returns when the host's stdout is closed while the command runs.
+        "output-closed" => Err(Error::io(
+            ErrorKind::Io,
+            "writing the guest command's output failed, so the guest command was stopped",
+            std::io::ErrorKind::BrokenPipe.into(),
+        )),
+        other => panic!("unknown result {other:?}"),
+    };
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, Deps::real(), &|_, _| result.clone())
+}
+
 fn request() -> BuildRequest {
     BuildRequest {
         key: layer_key(),
@@ -200,11 +228,59 @@ fn a_missing_recipe_file_exits_125_with_one_error_line_and_a_status_file() {
 }
 
 #[skuld::test]
-fn build_of_an_embedded_recipe_ends_in_one_devvm_error_line() {
+fn a_fault_injected_through_deps_reaches_the_engines_fetch() {
     let dir = temp();
-    let output = devvm(&dir, &["build", "ubuntu-24.04"], &[]);
+    let home = dir.join(UNICODE_DIR);
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("r.devvm.yaml"),
+        "from: ubuntu-24.04\nsteps:\n  - run: 'true'\n",
+    )
+    .unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .env(HELPER_VAR, "fault-in-dispatch")
+        .env_remove("DEVVM_STATUS_FILE")
+        .current_dir(&project)
+        .args(["build", "r.devvm.yaml"])
+        .stdin(Stdio::null());
+    isolate(&mut command, &home);
+    let output = command.output().unwrap();
     assert_eq!(output.status.code(), Some(125));
-    one_error_line(&output, "not-supported");
+    let line = one_error_line(&output, "panic");
+    assert!(line.contains("injected transport fault"), "{line}");
+}
+
+#[skuld::test]
+fn a_guest_that_exits_125_yields_a_guest_status_file() {
+    let dir = temp();
+    let file = dir.join(UNICODE_DIR).join("status.json");
+    let output = Command::new(std::env::current_exe().unwrap())
+        .env(HELPER_VAR, "fixed-result")
+        .args(["guest-125", "--status-file", file.to_str().unwrap(), "ls"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    assert_eq!(status(&file)["guest"]["code"], 125);
+    assert!(status(&file).get("devvm").is_none());
+}
+
+#[skuld::test]
+fn a_closed_output_exits_125_with_an_io_status_file_and_one_line() {
+    let dir = temp();
+    let file = dir.join(UNICODE_DIR).join("status.json");
+    let output = Command::new(std::env::current_exe().unwrap())
+        .env(HELPER_VAR, "fixed-result")
+        .args(["output-closed", "--status-file", file.to_str().unwrap(), "ls"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    let line = one_error_line(&output, "io");
+    assert!(line.contains("the guest command was stopped"), "{line}");
+    let report = status(&file);
+    assert_eq!(report["devvm"]["kind"], "io");
+    assert!(report.get("guest").is_none());
 }
 
 #[skuld::test]

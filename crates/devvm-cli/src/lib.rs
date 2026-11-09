@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use clap::{CommandFactory, Parser};
 use devvm::exit::{ExitStatus, ExitWidth, finish};
-use devvm::recipe::Recipe;
 use devvm::store::fetch::{LazyHttp, Transport};
 use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
 
@@ -18,6 +17,7 @@ mod doctor;
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod lib_tests;
+mod run;
 
 use args::Cli;
 pub use args::{Cmd, CpSide, VmFlags, parse_cp_side};
@@ -121,27 +121,24 @@ fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
             engine?.instance(&name)?.remove()?;
             Ok(ExitStatus::Code(0))
         }
-        Cmd::Build { reference, .. } => {
-            let cwd = std::env::current_dir()
-                .map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))?;
-            Recipe::from_ref(&reference, &cwd)?.flatten()?;
-            Err(not_implemented("build"))
-        }
-        Cmd::Run { .. } => Err(not_implemented("run")),
-        Cmd::Up { .. } => Err(not_implemented("up")),
-        Cmd::Ssh { .. } => Err(not_implemented("ssh")),
-        Cmd::Cp { .. } => Err(not_implemented("cp")),
-        Cmd::Start { .. } => Err(not_implemented("start")),
-        Cmd::Stop { .. } => Err(not_implemented("stop")),
+        Cmd::Build { reference, arch } => run::build(&engine?, &reference, arch),
+        Cmd::Run {
+            reference,
+            flags,
+            elevated,
+            argv,
+        } => run::run(&engine?, &reference, &flags, elevated, &argv),
+        Cmd::Up { reference, name, flags } => run::up(&engine?, &reference, &name, &flags),
+        Cmd::Ssh {
+            instance,
+            elevated,
+            argv,
+        } => run::ssh(&engine?, &instance, elevated, &argv),
+        Cmd::Cp { src, dst } => run::cp(&engine?, &src, &dst),
+        Cmd::Start { name } => run::start(&engine?, &name),
+        Cmd::Stop { name } => run::stop(&engine?, &name),
         Cmd::Doctor => unreachable!("handled above"),
     }
-}
-
-fn not_implemented(command: &str) -> Error {
-    Error::new(
-        ErrorKind::NotSupported,
-        format!("`devvm {command}` is not implemented yet"),
-    )
 }
 
 /// `ls`: the instances created from this directory, or all of them.
@@ -149,9 +146,7 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
     let filter = if all {
         ListFilter::All
     } else {
-        let cwd = std::env::current_dir()
-            .map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))?;
-        ListFilter::CreatedIn(cwd)
+        ListFilter::CreatedIn(run::current_dir()?)
     };
     let infos = engine.list(filter)?;
     let mut out = std::io::stdout().lock();

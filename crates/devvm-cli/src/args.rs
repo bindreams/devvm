@@ -38,6 +38,22 @@ pub struct VmFlags {
     pub network: Network,
 }
 
+/// `run` and `ssh -- <command>` go through the guest's login shell.
+macro_rules! login_help {
+    () => {
+        "The command runs through the guest account's login shell, so its startup files run first. They are the \
+user's: one that redefines `cd` or `exec`, or sets `cdable_vars`, changes the command. devvm does not check."
+    };
+}
+
+/// The `git-tracked` snapshot of a recipe's `copy` step.
+macro_rules! snapshot_help {
+    () => {
+        "`copy: { from: git-tracked }` copies the files git tracks as they are on disk. A project that changes during \
+the copy can give a mixed copy. The names in it follow the rule of `devvm cp --help`."
+    };
+}
+
 /// One side of a `cp`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CpSide {
@@ -49,6 +65,7 @@ pub enum CpSide {
 #[derive(Clone, Debug, PartialEq, Eq, Subcommand)]
 pub enum Cmd {
     /// Boot a VM, run a command in it, destroy the VM; exits with the command's exit code.
+    #[command(after_help = concat!(login_help!(), "\n\n", snapshot_help!()))]
     Run {
         /// A recipe file (`*.devvm.yaml`) or the name of an embedded base recipe.
         reference: String,
@@ -62,6 +79,7 @@ pub enum Cmd {
         argv: Vec<String>,
     },
     /// Start an instance that stays until `rm`.
+    #[command(after_help = snapshot_help!())]
     Up {
         /// A recipe file (`*.devvm.yaml`) or the name of an embedded base recipe.
         reference: String,
@@ -72,10 +90,11 @@ pub enum Cmd {
         flags: VmFlags,
     },
     /// Open a shell in an instance, or run one command (after `--`).
+    #[command(after_help = login_help!())]
     Ssh {
         instance: String,
-        /// Run as root (Linux, macOS) or with the administrator token (Windows).
-        #[arg(long)]
+        /// Run as root (Linux, macOS) or with the administrator token (Windows). Needs a command.
+        #[arg(long, requires = "argv")]
         elevated: bool,
         /// The command and its arguments, after `--`; none opens an interactive shell.
         #[arg(last = true)]
@@ -105,6 +124,7 @@ pub enum Cmd {
     /// Kill an instance and delete it.
     Rm { name: String },
     /// Build the image a recipe describes without starting it.
+    #[command(after_help = snapshot_help!())]
     Build {
         /// A recipe file (`*.devvm.yaml`) or the name of an embedded base recipe.
         reference: String,
@@ -118,7 +138,15 @@ pub enum Cmd {
 const CP_HELP: &str = "\
 A guest path is INSTANCE:PATH. A path of one letter, a colon and a slash (c:\\dir or c:/dir) is a local Windows drive \
 path, as in scp. An instance named with one letter is still addressable as c:path: without a slash directly after \
-the colon, `c:path` names the file `path` in the instance `c`.";
+the colon, `c:path` names the file `path` in the instance `c`.
+
+The copied trees must not hold names that differ only in case, names ending in a dot or a space, or Windows device \
+names (`nul`, `con`). devvm does not check.
+
+A file time outside 1970 to 2106 is not kept, and `cp` says so; for a file in the guest the range is 1970 to 2038, \
+because SFTP version 3 carries 32 bits.
+
+An interrupted copy can leave `.devvm-partial-*` files beside the destination.";
 
 fn parse_arch(text: &str) -> Result<Arch, String> {
     match text {

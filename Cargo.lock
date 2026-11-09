@@ -684,6 +684,7 @@ version = "0.1.0"
 dependencies = [
  "bytesize",
  "clap",
+ "cosca",
  "devvm",
  "serde_json",
  "skuld",
