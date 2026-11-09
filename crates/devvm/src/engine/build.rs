@@ -271,31 +271,23 @@ impl StepRun<'_> {
             .ok_or_else(|| Error::new(ErrorKind::Internal, "a copy step has no snapshot"))
             .during("finding the files of copy")?;
         let archive = format!("/tmp/devvm-copy-{}.tar", hex::encode(random::bytes::<16>()));
-        // The op lock is held for the whole upload; the extraction below takes its own.
+        // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved here.
         let resolving = format!("resolving the destination of copy to {to}");
-        let uploading = format!("uploading the files of copy to {to}");
         let destination = vm
-            .with_sftp(|sftp| {
-                // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved
-                // here.
-                let resolved = sftp
-                    .expanded(to)
-                    .and_then(|(expanded, home)| guest_destination(&**self.guest, &expanded, &home))
-                    .during(&resolving);
-                let destination = match resolved {
-                    Ok(destination) => destination,
-                    Err(failure) => return Ok(Err(failure)),
-                };
-                sftp.copy_in(
-                    &snapshot.archive,
-                    &archive,
-                    self.engine.host,
-                    self.guest,
-                    self.engine.progress.as_ref(),
-                )?;
-                Ok(Ok(destination))
-            })
-            .during(&uploading)??;
+            .with_sftp(|sftp| sftp.expanded(to))
+            .and_then(|(expanded, home)| guest_destination(&**self.guest, &expanded, &home))
+            .during(&resolving)?;
+        // The op lock is held for the whole upload; the extraction below takes its own.
+        vm.with_sftp(|sftp| {
+            sftp.copy_in(
+                &snapshot.archive,
+                &archive,
+                self.engine.host,
+                self.guest,
+                self.engine.progress.as_ref(),
+            )
+        })
+        .during(&format!("uploading the files of copy to {to}"))?;
         let what = format!("extracting the files of copy to {to}");
         let command = extract_command(&**self.guest, &destination, &archive).during(&what)?;
         self.execute(vm, &command, &what, ErrorKind::Recipe)
