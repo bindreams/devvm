@@ -155,8 +155,7 @@ fn list_directories(engine: &Engine, into: &mut BTreeSet<String>) {
     }
 }
 
-/// Whether `path` is a directory, not a link to one. A path that is gone is not: a build that finished since the
-/// listing took its directory with it.
+/// Whether `path` is a directory, not a link to one.
 fn is_directory(path: &Path) -> std::io::Result<bool> {
     Ok(symlink_metadata_if_present(path)?.is_some_and(|meta| meta.is_dir()))
 }

@@ -86,9 +86,9 @@ impl GuestOs for LinuxGuest {
 
     /// `sync`, which flushes every filesystem and raw device, then `syncfs` on every mounted filesystem whose source is
     /// a `/dev/` device. Unlike `sync(2)`, `syncfs` reports a write-back error, so a failed write exits non-zero; that
-    /// is detected on the `/dev/`-sourced mounts only. It runs elevated, so it needs the guest's passwordless `sudo`,
-    /// as every elevated command does: as the user, `sync -f` cannot open a root-only mount point (`/boot/efi` on an
-    /// Ubuntu cloud image) and fails every flush.
+    /// is detected on the `/dev/`-sourced mounts only. It runs elevated, so it needs the guest's passwordless `sudo`: as
+    /// the user, `sync -f` cannot open a root-only mount point (`/boot/efi` on an Ubuntu cloud image) and fails every
+    /// flush.
     fn flush_command(&self) -> Command {
         Command {
             run_as: RunAs::Elevated,

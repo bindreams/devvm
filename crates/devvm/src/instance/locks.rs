@@ -266,8 +266,7 @@ impl Locks {
         self.probe(&self.build_path(hex), false, &mut || {}, &mut || {}, &mut || Ok(()))
     }
 
-    /// Unlinks the lock file of the build `hex` while no one opens a lock file; a file that is not there is as good as
-    /// unlinked. For the holder of that lock.
+    /// Unlinks the lock file of the build `hex` while no one opens a lock file. Call it only holding that lock.
     pub(crate) fn remove_build(&self, hex: &str) -> Result<()> {
         self.remove_build_with(hex, &mut || {})
     }

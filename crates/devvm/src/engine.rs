@@ -233,8 +233,7 @@ impl Engine {
         Ok(exit)
     }
 
-    /// The `ssh_config` entries of this engine's state directory, which report what they wait for on the progress
-    /// channel.
+    /// The `ssh_config` entries of this engine's state directory.
     pub(crate) fn ssh_configs(&self) -> SshConfigDir {
         SshConfigDir::new(self.dirs.ssh()).with_progress(self.progress.clone())
     }

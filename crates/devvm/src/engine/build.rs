@@ -36,12 +36,11 @@ impl Engine {
     /// already built is reused, so a step runs only when it or an earlier step changed. A `copy` step's layer is
     /// keyed by the files it copies, so touching an untracked file reuses it too.
     ///
-    /// A step runs in a transient instance of the layer before it, which `Image::start` gives a lifetime of this
-    /// process: when the step succeeds the guest flushes its disk (`GuestOs::flush_command`, a command of its own) and
-    /// shuts down gracefully, the disk is committed as the step's layer, and the instance is destroyed. Nothing is
+    /// A step runs in a fresh guest of the layer before it. When the step succeeds the guest flushes its disk
+    /// (`GuestOs::flush_command`) and shuts down gracefully, and the disk is committed as the step's layer; nothing is
     /// committed or published for a step that fails, whose flush fails, or whose guest does not shut down. The flush
-    /// runs elevated in a Linux guest, so each step's commit there needs the guest's passwordless `sudo`.
-    /// The disk of every instance is the recipe's `resources.disk`, as the keys of the layers say.
+    /// runs elevated in a Linux guest, so each step's commit there needs the guest's passwordless `sudo`. The disk of
+    /// every guest is the recipe's `resources.disk`.
     ///
     /// Two builds of one recipe at once run each step once: the second waits for the layer store's build lock, then
     /// finds the layer. A build that is killed leaves its directory in `<state>/builds` for the next
@@ -53,7 +52,6 @@ impl Engine {
         let guest = self.guests.os(flat.guest)?;
         let builder = self.guests.builder(flat.guest)?;
         let (root, base) = root_content(&flat.root, arch)?;
-        // An engine with no VM backend fails before anything is downloaded or made.
         self.backend()?;
         let store = self.store()?;
 
@@ -130,7 +128,6 @@ impl Engine {
     }
 }
 
-/// A `set` step has no guest that takes it: no guest implements a setting yet.
 fn refuse_set_steps(flat: &Flattened) -> Result<()> {
     match flat
         .steps
@@ -184,7 +181,6 @@ struct StepRun<'a> {
     flat: &'a Flattened,
     guest: &'a Arc<dyn GuestOs>,
     arch: Arch,
-    /// Into `flat.steps`.
     index: usize,
     /// The files of a `copy` step.
     snapshot: Option<&'a Snapshot>,
@@ -321,7 +317,6 @@ impl StepRun<'_> {
         })
     }
 
-    /// `step N of M (what)`.
     fn step_of(&self, what: &str) -> String {
         step_of(self.index, self.flat.steps.len(), what)
     }
@@ -343,8 +338,10 @@ type StepResult<T> = std::result::Result<T, StepFailure>;
 /// Why a step failed, with what it was doing. It is the only error the work of a step returns, and nothing converts an
 /// [`Error`] into it but [`During::during`], so a step's error cannot leave it without the step and the phase.
 enum StepFailure {
-    /// `what` failed with `error`.
-    Failed { what: String, error: Error },
+    Failed {
+        what: String,
+        error: Error,
+    },
     /// The command `what` ran ended with `status`, which is not 0.
     Ended {
         what: String,

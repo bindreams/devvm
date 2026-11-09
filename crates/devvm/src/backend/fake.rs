@@ -69,9 +69,7 @@ pub(crate) struct FakeBackend {
     details_asked: Mutex<Vec<Detail>>,
     /// Where the machines report their SSH endpoint instead of the fake VM's own port.
     ssh_endpoint: Option<SocketAddr>,
-    /// Whether the guest of every machine refuses to power down.
     shutdown_fails: bool,
-    /// Whether `launch` fails.
     launch_fails: bool,
 }
 
@@ -462,7 +460,6 @@ impl FakeMachine {
 #[derive(Default)]
 pub(crate) struct FakeStorage {
     sizes: Mutex<Vec<Option<u64>>>,
-    /// Whether `commit_layer` fails.
     commit_fails: bool,
 }
 

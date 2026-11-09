@@ -250,7 +250,6 @@ struct Served {
     unreadable_boot_id: Mutex<bool>,
     /// Every read of the boot id prints nothing.
     empty_boot_id: Mutex<bool>,
-    /// The command every flush runs in place of the guest's own.
     flush_runs: Mutex<Option<String>>,
     boots: Mutex<Boots>,
 }
@@ -304,7 +303,7 @@ impl ServedGuests {
         *self.0.empty_boot_id.lock().unwrap() = true;
     }
 
-    /// Every flush of a guest's disk runs `command` (a script of the test SSH server) instead of the guest's own.
+    /// Every flush runs `command`, a script of the test SSH server.
     pub(crate) fn flush_runs(&self, command: &str) {
         *self.0.flush_runs.lock().unwrap() = Some(command.to_owned());
     }
@@ -370,7 +369,7 @@ impl Served {
         }
         let boot = if boots.stale_left > 0 {
             boots.stale_left -= 1;
-            // A stale read follows a reset, so `now` is at least 1.
+            // `now - 1` cannot underflow: a stale read follows a reset.
             now - 1
         } else {
             now

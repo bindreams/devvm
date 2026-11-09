@@ -143,8 +143,7 @@ impl Image {
 }
 
 impl Recipe {
-    /// Builds the image this recipe describes: one cached layer for its base and one per step. A layer already built
-    /// from the same inputs is reused. See [`Engine::build`].
+    /// Builds the image this recipe describes. See [`Engine::build`].
     pub fn build(&self, opts: &BuildOptions) -> Result<Image> {
         Engine::from_env_stderr(Arc::new(LazyHttp::new()))?.build(self, opts)
     }
