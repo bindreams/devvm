@@ -114,6 +114,10 @@ pub(crate) struct State {
     /// How many `exec` commands the server has received.
     started: AtomicUsize,
     started_notify: Notify,
+    /// How many scripts (the commands that are not `freeze`, `drop-connection`, `read-stdin` or `stall-on-data`) have
+    /// returned.
+    returned: AtomicUsize,
+    returned_notify: Notify,
     // The SFTP part.
     pub(crate) root: PathBuf,
     pub(crate) links: Mutex<HashMap<String, String>>,
@@ -183,6 +187,8 @@ impl TestSshd {
             closed_notify: Notify::new(),
             started: AtomicUsize::new(0),
             started_notify: Notify::new(),
+            returned: AtomicUsize::new(0),
+            returned_notify: Notify::new(),
             root,
             links: Mutex::default(),
             modes: Mutex::default(),
@@ -282,6 +288,22 @@ impl TestSshd {
                 tokio::pin!(notified);
                 notified.as_mut().enable();
                 if self.state.started.load(Ordering::SeqCst) >= count {
+                    return;
+                }
+                notified.await;
+            }
+        })
+    }
+
+    /// Blocks until `count` scripts have returned in total. A script such as `write-forever` returns when the channel
+    /// is closed and when the connection ends.
+    pub fn wait_for_scripts_to_return(&self, count: usize) {
+        runtime::wait(async {
+            loop {
+                let notified = self.state.returned_notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.state.returned.load(Ordering::SeqCst) >= count {
                     return;
                 }
                 notified.await;
@@ -612,7 +634,12 @@ impl Handler for Connection {
             }
             _ => {
                 let state = self.state.clone();
-                runtime::spawn(script(state, handle, channel, command)).expect("the SSH runtime is running");
+                runtime::spawn(async move {
+                    script(state.clone(), handle, channel, command).await;
+                    state.returned.fetch_add(1, Ordering::SeqCst);
+                    state.returned_notify.notify_waiters();
+                })
+                .expect("the SSH runtime is running");
             }
         }
         Ok(())
