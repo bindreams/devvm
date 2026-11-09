@@ -200,7 +200,7 @@ impl StepRun<'_> {
                 if named.get() {
                     return error;
                 }
-                in_step(error, self.index, self.flat.steps.len(), "building the step's layer")
+                self.in_step(error, "building the step's layer")
             })
     }
 
@@ -320,6 +320,10 @@ impl StepRun<'_> {
     fn step_of(&self, what: &str) -> String {
         step_of(self.index, self.flat.steps.len(), what)
     }
+
+    fn in_step(&self, error: Error, what: &str) -> Error {
+        in_step(error, self.index, self.flat.steps.len(), what)
+    }
 }
 
 /// `step N of M (what)` for the step at `index` of `total`.
@@ -354,7 +358,7 @@ impl StepFailure {
     /// The error in the words of `step`: `step N of M (what): <error>`, or `step N of M (what) ended with <status>`.
     fn into_error(self, step: &StepRun<'_>) -> Error {
         match self {
-            StepFailure::Failed { what, error } => in_step(error, step.index, step.flat.steps.len(), &what),
+            StepFailure::Failed { what, error } => step.in_step(error, &what),
             StepFailure::Ended { what, kind, status } => Error::new(
                 kind,
                 format!("{} ended with {}", step.step_of(&what), status.describe()),
