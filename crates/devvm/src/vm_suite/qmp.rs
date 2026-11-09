@@ -59,7 +59,7 @@ fn qapi_crate_handles_every_command_and_event_on_qemu_11_1(
         Err(e) => panic!("quit failed: {e}"),
     }
     // `SHUTDOWN` arrives, then QEMU closes the socket.
-    assert_eq!(session.wait_for_end().unwrap(), VmEnd::Exited { guest_shutdown: false });
+    assert_eq!(session.wait_for_end().unwrap(), VmEnd::Exited);
 }
 
 /// The commands, with the argument names, that devvm sends. The names come from the `qapi` crate's own command types.

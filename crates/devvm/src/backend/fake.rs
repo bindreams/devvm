@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
     Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
-    ShutdownOutcome, SshEndpoint, Storage,
+    SshEndpoint, Storage,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
@@ -69,20 +69,8 @@ pub(crate) struct FakeBackend {
     details_asked: Mutex<Vec<Detail>>,
     /// Where the machines report their SSH endpoint instead of the fake VM's own port.
     ssh_endpoint: Option<SocketAddr>,
-    /// How every `shutdown` of a machine goes wrong, if it does.
-    shutdown_fault: ShutdownFault,
-}
-
-/// What a fake machine's `shutdown` meets.
-#[derive(Clone, Copy)]
-enum ShutdownFault {
-    None,
-    /// The guest never powers down.
-    Fails,
-    /// The VM process is gone before it is asked, as one that crashed or whose guest powered itself off.
-    VmGone,
-    /// The VM exits when asked, and nothing vouches that the guest powered down.
-    Unconfirmed,
+    /// Whether the guest of every machine refuses to power down.
+    shutdown_fails: bool,
 }
 
 impl FakeBackend {
@@ -98,25 +86,13 @@ impl FakeBackend {
             checks: Vec::new(),
             details_asked: Mutex::new(Vec::new()),
             ssh_endpoint: None,
-            shutdown_fault: ShutdownFault::None,
+            shutdown_fails: false,
         }
     }
 
     /// A backend whose machines refuse every graceful `shutdown`; `kill` still works.
     pub(crate) fn with_failing_shutdown(mut self) -> FakeBackend {
-        self.shutdown_fault = ShutdownFault::Fails;
-        self
-    }
-
-    /// A backend whose machines are gone when `shutdown` asks them, which is then `AlreadyDown`.
-    pub(crate) fn with_vm_dying_before_shutdown(mut self) -> FakeBackend {
-        self.shutdown_fault = ShutdownFault::VmGone;
-        self
-    }
-
-    /// A backend whose machines exit on `shutdown` without proof that the guest powered down: `Unconfirmed`.
-    pub(crate) fn with_unconfirmed_shutdown(mut self) -> FakeBackend {
-        self.shutdown_fault = ShutdownFault::Unconfirmed;
+        self.shutdown_fails = true;
         self
     }
 
@@ -269,7 +245,7 @@ impl Backend for FakeBackend {
             attached: false,
             host: self.host,
             ssh_endpoint: self.ssh_endpoint,
-            shutdown_fault: self.shutdown_fault,
+            shutdown_fails: self.shutdown_fails,
         }))
     }
 
@@ -292,7 +268,7 @@ impl Backend for FakeBackend {
             attached: true,
             host: self.host,
             ssh_endpoint: self.ssh_endpoint,
-            shutdown_fault: self.shutdown_fault,
+            shutdown_fails: self.shutdown_fails,
         }))
     }
 
@@ -332,7 +308,7 @@ struct FakeMachine {
     /// See [`FakeBackend::with_ssh_endpoint`].
     ssh_endpoint: Option<SocketAddr>,
     /// See [`FakeBackend::with_failing_shutdown`].
-    shutdown_fault: ShutdownFault,
+    shutdown_fails: bool,
 }
 
 impl Machine for FakeMachine {
@@ -385,23 +361,13 @@ impl Machine for FakeMachine {
         Ok(())
     }
 
-    /// Asks the VM over its endpoint to exit, like a guest asked to power off, and waits for the process to be gone. A VM
-    /// that is gone already is `AlreadyDown`; one with `ShutdownFault::Unconfirmed` exits as asked but is `Unconfirmed`.
-    fn shutdown(&mut self) -> Result<ShutdownOutcome> {
-        match self.shutdown_fault {
-            ShutdownFault::None => {}
-            ShutdownFault::Fails => {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    "the fake machine's guest does not power down",
-                ));
-            }
-            ShutdownFault::VmGone => self.vm.kill()?,
-            ShutdownFault::Unconfirmed => {}
-        }
-        if !self.vm.is_alive()? {
-            self.remove_leftovers()?;
-            return Ok(ShutdownOutcome::AlreadyDown);
+    /// Asks the VM over its endpoint to exit, like a guest asked to power off, and waits for the process to be gone.
+    fn shutdown(&mut self) -> Result<()> {
+        if self.shutdown_fails {
+            return Err(Error::new(
+                ErrorKind::Io,
+                "the fake machine's guest does not power down",
+            ));
         }
         let addr = self.endpoint()?;
         let ask = |e| {
@@ -419,11 +385,7 @@ impl Machine for FakeMachine {
         // The VM drops the connection when it exits, as a close or as a reset; the process exit is what is awaited.
         let _ = std::io::copy(&mut stream, &mut std::io::sink());
         self.vm.wait()?;
-        self.remove_leftovers()?;
-        Ok(match self.shutdown_fault {
-            ShutdownFault::Unconfirmed => ShutdownOutcome::Unconfirmed,
-            _ => ShutdownOutcome::PoweredDown,
-        })
+        self.remove_leftovers()
     }
 
     fn kill(&mut self) -> Result<()> {

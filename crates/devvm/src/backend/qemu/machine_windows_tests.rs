@@ -10,7 +10,7 @@ use super::QemuMachine;
 use crate::Arch;
 use crate::ErrorKind;
 use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
-use crate::backend::{Machine, MachineRecord, ShutdownOutcome};
+use crate::backend::{Machine, MachineRecord};
 use crate::contain::{Lifetime, VmProcess};
 use crate::host;
 use crate::test_support::fake_vm;
@@ -124,71 +124,49 @@ fn answer_running(session: &mut Session) {
     session.answer(json!({ "status": "running", "running": true }));
 }
 
-/// The events of a guest that powered itself off.
-fn guest_shutdown(session: &mut Session) {
-    session.event("POWERDOWN", None);
-    session.event("SHUTDOWN", Some(json!({ "guest": true, "reason": "guest-shutdown" })));
-}
-
 /// Shuts `world`'s machine down against a server that runs `script` and then ends QEMU; the leftovers are removed.
-fn shutdown_against(world: &World, script: impl Fn(&mut Session) + Send + 'static) -> ShutdownOutcome {
+fn shutdown_against(world: &World, script: impl Fn(&mut Session) + Send + 'static) {
     let (server, _) = qemu_ends_after(world, script);
     let mut machine = world.attached();
 
-    let outcome = machine.shutdown().unwrap();
+    machine.shutdown().unwrap();
 
     server.join().unwrap();
-    assert!(!world.marker.exists(), "the leftover was not removed");
-    assert!(!world.lock_file().exists(), "the lock file was not removed");
-    outcome
+    assert!(
+        host::symlink_metadata_if_present(&world.marker).unwrap().is_none(),
+        "the leftover was not removed"
+    );
+    assert!(
+        host::symlink_metadata_if_present(&world.lock_file()).unwrap().is_none(),
+        "the lock file was not removed"
+    );
 }
 
 #[skuld::test]
-fn qemu_gone_before_the_first_command_is_already_down(#[fixture(unicode_home)] home: &Path) {
-    let outcome = shutdown_against(&world(home), |_| {});
-
-    assert_eq!(outcome, ShutdownOutcome::AlreadyDown);
+fn qemu_gone_before_the_first_command_is_a_shutdown(#[fixture(unicode_home)] home: &Path) {
+    shutdown_against(&world(home), |_| {});
 }
 
 #[skuld::test]
-fn qemu_that_exits_after_the_status_query_never_acked_the_request(#[fixture(unicode_home)] home: &Path) {
-    let outcome = shutdown_against(&world(home), answer_running);
-
-    assert_eq!(outcome, ShutdownOutcome::Unconfirmed);
+fn qemu_that_exits_after_the_status_query_is_a_shutdown(#[fixture(unicode_home)] home: &Path) {
+    shutdown_against(&world(home), answer_running);
 }
 
 #[skuld::test]
-fn qemu_that_exits_after_the_ack_with_no_shutdown_event_is_not_a_powerdown(#[fixture(unicode_home)] home: &Path) {
-    let outcome = shutdown_against(&world(home), |session| {
+fn qemu_that_exits_after_the_ack_is_a_shutdown(#[fixture(unicode_home)] home: &Path) {
+    shutdown_against(&world(home), |session| {
         answer_running(session);
         session.answer(json!({}));
     });
-
-    assert_eq!(outcome, ShutdownOutcome::Unconfirmed);
 }
 
 #[skuld::test]
-fn an_acked_request_the_guest_answered_with_its_own_shutdown_is_a_powerdown(#[fixture(unicode_home)] home: &Path) {
-    let outcome = shutdown_against(&world(home), |session| {
+fn a_failed_request_with_qemu_gone_is_a_shutdown(#[fixture(unicode_home)] home: &Path) {
+    // The request arrives, QEMU exits without a reply: the send is an `Err` that finds QEMU gone.
+    shutdown_against(&world(home), |session| {
         answer_running(session);
-        session.answer(json!({}));
-        guest_shutdown(session);
+        session.command().expect("system_powerdown");
     });
-
-    assert_eq!(outcome, ShutdownOutcome::PoweredDown);
-}
-
-#[skuld::test]
-fn a_guest_that_was_already_shut_down_when_asked_is_not_a_powerdown(#[fixture(unicode_home)] home: &Path) {
-    // The guest powered itself off (`poweroff -f`) before the request and QEMU has not exited yet; it still reports a
-    // `SHUTDOWN` for what follows.
-    let outcome = shutdown_against(&world(home), |session| {
-        session.answer(json!({ "status": "shutdown", "running": false }));
-        session.answer(json!({}));
-        guest_shutdown(session);
-    });
-
-    assert_eq!(outcome, ShutdownOutcome::Unconfirmed);
 }
 
 #[skuld::test]
@@ -197,9 +175,12 @@ fn shutdown_of_a_machine_that_is_gone_removes_its_leftovers(#[fixture(unicode_ho
     let mut machine = world.attached();
     world.end_qemu();
 
-    assert_eq!(machine.shutdown().unwrap(), ShutdownOutcome::AlreadyDown);
+    machine.shutdown().unwrap();
 
-    assert!(!world.marker.exists(), "the leftover was not removed");
+    assert!(
+        host::symlink_metadata_if_present(&world.marker).unwrap().is_none(),
+        "the leftover was not removed"
+    );
 }
 
 #[skuld::test]
@@ -218,7 +199,10 @@ fn a_connection_error_that_is_not_a_close_is_reported_while_qemu_lives(#[fixture
 
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(world.qemu.lock().unwrap().is_alive().unwrap(), "the VM was waited for");
-    assert!(world.marker.exists(), "leftovers of a live machine were removed");
+    assert!(
+        host::symlink_metadata_if_present(&world.marker).unwrap().is_some(),
+        "leftovers of a live machine were removed"
+    );
     drop(machine);
     server.join().unwrap();
     world.end_qemu();
@@ -244,18 +228,8 @@ fn shutdown_waits_for_the_exit_after(home: &Path, script: impl Fn(&mut Session) 
         shutdown.join().unwrap()
     });
 
-    assert_eq!(result.unwrap(), ShutdownOutcome::Unconfirmed);
+    result.unwrap();
     assert!(exited_before_it_returned, "shutdown returned while QEMU was alive");
-}
-
-#[skuld::test]
-fn shutdown_waits_for_the_exit_after_the_control_socket_closes_unanswered_while_qemu_lives(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    shutdown_waits_for_the_exit_after(home, |session| {
-        answer_running(session);
-        session.command().expect("system_powerdown");
-    });
 }
 
 #[skuld::test]
@@ -268,23 +242,45 @@ fn shutdown_waits_for_the_exit_after_the_control_socket_closes_after_the_ack_whi
     });
 }
 
-#[skuld::test]
-fn a_control_socket_lost_before_the_request_while_qemu_lives_is_an_error_not_a_wait(
-    #[fixture(unicode_home)] home: &Path,
+/// Shutdown against a server that closes the session after `script` with QEMU still alive: an error, with the leftovers
+/// of the live machine kept, and no wait for a process that nothing was asked to end.
+fn shutdown_fails_when_the_session_is_lost_while_qemu_lives(
+    home: &Path,
+    script: impl Fn(&mut Session) + Send + 'static,
 ) {
     let world = world(home);
-    // The server closes the session after the handshake, before `query-status` is answered.
-    let (server, _) = serve(world.sock.listen(), 1, |_, _| {});
+    let (server, _) = serve(world.sock.listen(), 1, move |session, _| script(session));
     let mut machine = world.attached();
 
     let error = machine.shutdown().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(world.qemu.lock().unwrap().is_alive().unwrap(), "the VM was waited for");
-    assert!(world.marker.exists(), "leftovers of a live machine were removed");
+    assert!(
+        host::symlink_metadata_if_present(&world.marker).unwrap().is_some(),
+        "leftovers of a live machine were removed"
+    );
     drop(machine);
     server.join().unwrap();
     world.end_qemu();
+}
+
+#[skuld::test]
+fn a_control_socket_lost_before_the_request_while_qemu_lives_is_an_error_not_a_wait(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The server closes the session after the handshake, before `query-status` is answered.
+    shutdown_fails_when_the_session_is_lost_while_qemu_lives(home, |_| {});
+}
+
+#[skuld::test]
+fn a_request_that_fails_while_qemu_lives_is_an_error_not_a_wait(#[fixture(unicode_home)] home: &Path) {
+    // The server takes `system_powerdown` and closes the session without a reply: the request failed, so nothing asked
+    // QEMU to end and waiting for it would wait for ever.
+    shutdown_fails_when_the_session_is_lost_while_qemu_lives(home, |session| {
+        answer_running(session);
+        session.command().expect("system_powerdown");
+    });
 }
 
 #[skuld::test]

@@ -65,6 +65,10 @@ impl GuestOs for LinuxGuest {
         Command::new(["cat", "/proc/sys/kernel/random/boot_id"])
     }
 
+    fn flush_command(&self) -> Command {
+        Command::new(["sync"])
+    }
+
     /// The string sshd hands to the account's shell for `cmd`; `usage` for an empty argv or working directory, a NUL
     /// byte or a string over the single-argument size limit.
     fn wrap(&self, cmd: &Command) -> Result<String> {

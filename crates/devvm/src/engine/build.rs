@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use super::Engine;
 use super::build_dir::BuildDir;
-use crate::backend::ShutdownOutcome;
 use crate::copy::{self, Snapshot};
 use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
@@ -29,10 +28,9 @@ impl Engine {
     /// keyed by the files it copies, so touching an untracked file reuses it too.
     ///
     /// A step runs in a transient instance of the layer before it, which `Image::start` gives a lifetime of this
-    /// process: it is shut down gracefully, its disk is committed as the step's layer, and the instance is destroyed.
-    /// Nothing is committed for a step that fails or whose guest does not shut down, and nothing is published for it.
-    /// Only a guest that QEMU reports it powered down on request shut down cleanly: one that crashed, or that the step
-    /// powered off, did not.
+    /// process: when the step succeeds the guest flushes its disk (`GuestOs::flush_command`, a command of its own) and
+    /// shuts down gracefully, the disk is committed as the step's layer, and the instance is destroyed. Nothing is
+    /// committed or published for a step that fails, whose flush fails, or whose guest does not shut down.
     /// The disk of every instance is the recipe's `resources.disk`, as the keys of the layers say.
     ///
     /// Two builds of one recipe at once run each step once: the second waits for the layer store's build lock, then
@@ -205,17 +203,18 @@ impl StepRun<'_> {
                 return Err(Error::new(ErrorKind::Internal, "a set step reached a build"));
             }
         }
-        if vm.shutdown()? != ShutdownOutcome::PoweredDown {
-            return Err(Error::new(
-                ErrorKind::ConnectionLost,
+        self.flush(&vm)?;
+        vm.shutdown().map_err(|e| {
+            let kind = e.kind();
+            e.with_context(
+                kind,
                 format!(
-                    "the guest of step {} of {} did not shut down cleanly; nothing is committed (serial log: {})",
+                    "step {} of {}: the guest did not shut down",
                     self.index + 1,
-                    self.flat.steps.len(),
-                    vm.instance().dir().serial_log().display()
+                    self.flat.steps.len()
                 ),
-            ));
-        }
+            )
+        })?;
         engine
             .backend()?
             .storage()
@@ -263,14 +262,35 @@ impl StepRun<'_> {
         self.execute(vm, &command, &format!("copy to {to}"))
     }
 
+    /// Runs the guest's flush command, which returns once the guest's writes are on its disk. Anything but exit 0 fails
+    /// the build: the disk is not committed.
+    fn flush(&self, vm: &Vm) -> Result<()> {
+        let status = self.run_reporting(vm, &self.guest.flush_command())?;
+        if status == ExitStatus::Code(0) {
+            return Ok(());
+        }
+        Err(Error::new(
+            ErrorKind::Io,
+            format!(
+                "step {} of {}: the guest's flush ended with {}",
+                self.index + 1,
+                self.flat.steps.len(),
+                status.describe()
+            ),
+        ))
+    }
+
+    /// Runs `command`, reporting its output on the progress channel line by line.
+    fn run_reporting(&self, vm: &Vm, command: &Command) -> Result<ExitStatus> {
+        let progress = self.engine.progress.as_ref();
+        let (mut out, mut err) = (Lines::new(progress), Lines::new(progress));
+        vm.run_to(command, &mut out, &mut err)
+    }
+
     /// Runs `command`, reporting its output on the progress channel line by line. A status other than 0 fails the
     /// build, naming the step as `what`.
     fn execute(&self, vm: &Vm, command: &Command, what: &str) -> Result<()> {
-        let progress = self.engine.progress.as_ref();
-        let status = {
-            let (mut out, mut err) = (Lines::new(progress), Lines::new(progress));
-            vm.run_to(command, &mut out, &mut err)?
-        };
+        let status = self.run_reporting(vm, command)?;
         if status == ExitStatus::Code(0) {
             return Ok(());
         }

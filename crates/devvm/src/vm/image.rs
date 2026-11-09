@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::access::SshSession;
 use crate::access::sftp::Sftp;
-use crate::backend::{Machine, ShutdownOutcome};
+use crate::backend::Machine;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
 use crate::exit::{ExitStatus, Output};
@@ -291,9 +291,8 @@ impl Vm {
 
     /// Shuts the guest down and returns once its process has exited, under the exclusive op lock. The VM is not
     /// running afterwards, and the handle can no longer run anything. A shutdown that fails leaves the machine for
-    /// the drop to kill: it is never forced here. Only `PoweredDown` says the guest shut down cleanly; for any other
-    /// outcome what its disk holds is not a clean shutdown's, and the machine's record is retired all the same.
-    pub(crate) fn shutdown(&self) -> Result<ShutdownOutcome> {
+    /// the drop to kill: it is never forced here.
+    pub(crate) fn shutdown(&self) -> Result<()> {
         let instance = self.instance();
         let dir = instance.dir();
         let op = dir.op_exclusive()?;
@@ -303,10 +302,9 @@ impl Vm {
         };
         // A connection to a guest that powers down is of no further use.
         *self.session.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        let outcome = machine.shutdown()?;
+        machine.shutdown()?;
         let dead = slot.take().expect("the machine was just shut down").record();
-        dir.retire_machine(&op, &dead, instance.engine.host(), &mut warn_for(&instance.engine, dir))?;
-        Ok(outcome)
+        dir.retire_machine(&op, &dead, instance.engine.host(), &mut warn_for(&instance.engine, dir))
     }
 
     /// The guest, the session and the shared op lock for one operation.

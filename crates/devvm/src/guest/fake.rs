@@ -130,6 +130,14 @@ impl GuestOs for FakeGuestOs {
         }
     }
 
+    /// A Linux guest's, except that a served guest whose flush fails (`ServedGuests::failing_flush`) exits 1.
+    fn flush_command(&self) -> Command {
+        match &self.served {
+            Some(served) if *served.failing_flush.lock().unwrap() => Command::new(["exit", "1"]),
+            _ => LinuxGuest.flush_command(),
+        }
+    }
+
     fn wrap(&self, cmd: &Command) -> Result<String> {
         Ok(cmd.argv.join(" "))
     }
@@ -242,6 +250,8 @@ struct Served {
     unreadable_boot_id: Mutex<bool>,
     /// Every read of the boot id prints nothing.
     empty_boot_id: Mutex<bool>,
+    /// Every flush exits 1.
+    failing_flush: Mutex<bool>,
     boots: Mutex<Boots>,
 }
 
@@ -266,6 +276,7 @@ impl ServedGuests {
             stale_boot_reads: Mutex::default(),
             unreadable_boot_id: Mutex::default(),
             empty_boot_id: Mutex::default(),
+            failing_flush: Mutex::default(),
             boots: Mutex::default(),
         }))
     }
@@ -291,6 +302,11 @@ impl ServedGuests {
     /// Every read of the boot id exits 0 and prints nothing.
     pub(crate) fn empty_boot_id(&self) {
         *self.0.empty_boot_id.lock().unwrap() = true;
+    }
+
+    /// Every flush of a guest's disk exits 1.
+    pub(crate) fn failing_flush(&self) {
+        *self.0.failing_flush.lock().unwrap() = true;
     }
 
     /// After each reset, the first `reads` reads of the boot id still answer the old boot, as a guest does until it has

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 
 use crate::ErrorKind;
-use crate::backend::{Backend, Machine, MachineRecord, MachineSpec, ShutdownOutcome};
+use crate::backend::{Backend, Machine, MachineRecord, MachineSpec};
 use crate::contain::VmProcess;
 use crate::store::layers::layers_tests::{Env, env, key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
@@ -214,7 +214,7 @@ pub(crate) fn a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(targe
         }
         match end {
             End::Kill => machine.kill().unwrap(),
-            End::Shutdown => assert_eq!(machine.shutdown().unwrap(), ShutdownOutcome::PoweredDown),
+            End::Shutdown => machine.shutdown().unwrap(),
         }
         assert!(
             !is_running(&before_the_run),
@@ -299,7 +299,7 @@ pub(crate) fn shutdown_stops_the_process(target: &dyn ContractTarget, root: &Pat
     accepts_eventually(&record, first_endpoint(&*machine));
     target.await_booted(&*machine).unwrap();
 
-    assert_eq!(machine.shutdown().unwrap(), ShutdownOutcome::PoweredDown);
+    machine.shutdown().unwrap();
     assert!(
         !is_running(&record),
         "shutdown returned while the process was still running"

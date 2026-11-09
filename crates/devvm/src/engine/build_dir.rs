@@ -82,7 +82,8 @@ impl Drop for BuildDir<'_> {
 /// not there. A build whose lock is held is skipped, and so is a name that is not a build's. A problem is a warning on
 /// the progress channel that the next sweep retries, and nothing the sweep could not look at is deleted. A directory
 /// with no lock file is removed under `dead.lock`, which it only tries, so another deleter's tree is left to the next
-/// sweep. It makes nothing but that `dead.lock` (and the locks directory), and only when such a directory is there.
+/// sweep. It makes nothing but that `dead.lock` (and the locks directory), whenever a build it found has no lock file:
+/// a directory with none, or a build that finished and unlinked its lock after the sweep listed it.
 pub(super) fn sweep(engine: &Engine) {
     let locks = engine.registry().locks();
     let progress = engine.progress();

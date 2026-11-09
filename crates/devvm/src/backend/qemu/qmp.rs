@@ -250,12 +250,8 @@ pub(crate) enum QmpEvent {
         requested: bool,
     },
     /// `requested`: as for `Reset`; under `-no-reboot` QEMU answers the reset with this and exits.
-    /// `guest_shutdown`: the guest shut itself down (`guest: true` and reason `guest-shutdown`, as an ACPI poweroff
-    /// after the guest flushed its disks does). QEMU also says `guest: true` for a guest reset under `-no-reboot` and
-    /// for a guest panic, which are not this.
     Shutdown {
         requested: bool,
-        guest_shutdown: bool,
     },
     Powerdown,
     /// Any other event, by name.
@@ -265,9 +261,8 @@ pub(crate) enum QmpEvent {
 /// Why `wait_for_end` returned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum VmEnd {
-    /// QEMU closed the socket: the process is exiting. `guest_shutdown`: a `SHUTDOWN` event for the guest's own
-    /// shutdown (`QmpEvent::Shutdown`) came in before the close, after the last `system_powerdown`.
-    Exited { guest_shutdown: bool },
+    /// QEMU closed the socket: the process is exiting.
+    Exited,
     /// QEMU stopped the guest and is not exiting; the QEMU run state is `.0` (`paused`, `io-error`, ...).
     Paused(String),
 }
@@ -535,10 +530,8 @@ impl Qmp {
 
     // Commands --------------------------------------------------------------------------------------------------------
 
-    /// Asks the guest to power down (ACPI). The guest may or may not act on it; this only sends the request. A
-    /// `SHUTDOWN` read before it is not the request's, so `wait_for_end` does not count it.
+    /// Asks the guest to power down (ACPI). The guest may or may not act on it; this only sends the request.
     pub(crate) fn system_powerdown(&mut self) -> Result<()> {
-        self.events.retain(|e| !matches!(e, QmpEvent::Shutdown { .. }));
         self.execute(&qmp::system_powerdown {}).map(drop)
     }
 
@@ -571,11 +564,7 @@ impl Qmp {
                 self.events.remove(index);
                 return Ok(());
             }
-            if self
-                .events
-                .iter()
-                .any(|e| matches!(e, QmpEvent::Shutdown { requested: true, .. }))
-            {
+            if self.events.contains(&QmpEvent::Shutdown { requested: true }) {
                 return Err(Error::new(
                     ErrorKind::ConnectionLost,
                     "QEMU shut down instead of resetting the guest (it runs with -no-reboot)",
@@ -625,12 +614,12 @@ impl Qmp {
         }
     }
 
-    /// The run state, if it is one of `acceptable`; otherwise `Unavailable`, naming the state and the serial log: a
+    /// Fails with `Unavailable` unless the run state is one of `acceptable`, naming the state and the serial log: a
     /// paused VM ignores a powerdown and a reset, and a caller must not wait for either.
-    pub(crate) fn require_state(&mut self, acceptable: &[&str], action: &str, serial_log: &Path) -> Result<RunStatus> {
+    pub(crate) fn require_state(&mut self, acceptable: &[&str], action: &str, serial_log: &Path) -> Result<()> {
         let status = self.query_status()?;
         if acceptable.contains(&status.state.as_str()) {
-            return Ok(status);
+            return Ok(());
         }
         Err(Error::new(
             ErrorKind::Unavailable,
@@ -656,24 +645,17 @@ impl Qmp {
     /// Blocks until the VM is over, reading the connection and nothing else (no timer, no polling): `Exited` when QEMU
     /// closes the socket, `Paused` when a `STOP` event leaves the VM in a state other than a normal one.
     pub(crate) fn wait_for_end(&mut self) -> Result<VmEnd> {
-        let mut guest_shutdown = false;
         loop {
             while let Some(event) = self.events.pop_front() {
-                match event {
-                    QmpEvent::Stop => {
-                        let status = self.query_status()?;
-                        if !status.is_settled_for_powerdown() {
-                            return Ok(VmEnd::Paused(status.state));
-                        }
+                if event == QmpEvent::Stop {
+                    let status = self.query_status()?;
+                    if !status.is_settled_for_powerdown() {
+                        return Ok(VmEnd::Paused(status.state));
                     }
-                    QmpEvent::Shutdown {
-                        guest_shutdown: true, ..
-                    } => guest_shutdown = true,
-                    _ => {}
                 }
             }
             if self.read_message()?.is_none() {
-                return Ok(VmEnd::Exited { guest_shutdown });
+                return Ok(VmEnd::Exited);
             }
         }
     }
@@ -724,7 +706,6 @@ fn classify(value: &serde_json::Value) -> Result<QmpEvent> {
         },
         qmp::Event::SHUTDOWN { data, .. } => QmpEvent::Shutdown {
             requested: requested(data.reason),
-            guest_shutdown: data.guest && data.reason == qmp::ShutdownCause::guest_shutdown,
         },
         qmp::Event::POWERDOWN { .. } => QmpEvent::Powerdown,
         _ => QmpEvent::Other(name.to_owned()),

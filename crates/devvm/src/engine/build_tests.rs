@@ -28,6 +28,7 @@ struct Fixture {
     engine: Arc<Engine>,
     fake: Arc<FakeBackend>,
     server: Arc<TestSshd>,
+    guests: Arc<ServedGuests>,
     progress: Arc<MemoryProgress>,
     dirs: Dirs,
 }
@@ -47,17 +48,19 @@ fn fixture_over(home: &Path, backend: FakeBackend) -> Fixture {
     std::fs::create_dir_all(server.root().join("tmp")).unwrap();
     let fake = Arc::new(backend.with_ssh_endpoint(server.addr()));
     let progress = memory();
+    let guests = Arc::new(ServedGuests::new(server.clone()));
     let engine = engine_with(
         dirs.clone(),
         &TestHost,
         Some(fake.clone() as Arc<dyn Backend>),
-        Arc::new(ServedGuests::new(server.clone())),
+        guests.clone(),
         progress.clone(),
     );
     Fixture {
         engine,
         fake,
         server,
+        guests,
         progress,
         dirs,
     }
@@ -177,58 +180,88 @@ fn a_failing_run_step_names_its_index_command_and_status_and_publishes_nothing(#
     no_instance_or_build_is_left(&fx);
 }
 
+/// The commands the server was given that a step ran or that flushed it, in order.
+fn steps_and_flushes(fx: &Fixture) -> Vec<String> {
+    fx.server
+        .commands()
+        .into_iter()
+        .filter(|command| command.starts_with("bash -c ") || command == "sync" || command.contains("tar -xf"))
+        .collect()
+}
+
 #[skuld::test]
-fn a_forced_shutdown_never_commits(#[fixture(unicode_home)] home: &Path) {
+fn each_step_is_followed_by_the_guests_flush_as_a_command_of_its_own(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let repo = new_repo(home, "repo");
+    put(&repo, "a.txt", b"a");
+    add_all(&repo);
+    let recipe = recipe_in(
+        &repo,
+        "",
+        &[
+            "run: echo one",
+            "copy: { from: git-tracked, to: \"~/p\" }",
+            "run: echo two",
+        ],
+    );
+
+    fx.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    let commands = steps_and_flushes(&fx);
+    let shape: Vec<&str> = commands
+        .iter()
+        .map(|command| match command.as_str() {
+            "sync" => "sync",
+            command if command.starts_with("bash -c ") => "run",
+            _ => "extract",
+        })
+        .collect();
+    assert_eq!(shape, ["run", "sync", "extract", "sync", "run", "sync"], "{commands:?}");
+    assert_eq!(
+        commands[0], "bash -c echo one",
+        "the flush is not appended to the user's script"
+    );
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_flush_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    fx.guests.failing_flush();
+    let recipe = recipe(home, &["run: echo one"]);
+    let keys = keys_of(&recipe);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    let message = error.message();
+    assert!(message.contains("step 1 of 1"), "{message}");
+    assert!(message.contains("flush"), "{message}");
+    assert!(message.contains("exit code 1"), "{message}");
+    assert!(
+        fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),
+        "a disk whose flush failed is not a layer"
+    );
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture_over(home, FakeBackend::new(&TestHost).with_failing_shutdown());
     let recipe = recipe(home, &["run: echo one"]);
     let keys = keys_of(&recipe);
 
     let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
 
-    assert!(error.message().contains("does not power down"), "{error}");
+    let message = error.message();
+    assert!(message.contains("step 1 of 1"), "{message}");
+    assert!(message.contains("shut down"), "{message}");
+    assert!(message.contains("does not power down"), "{message}");
     assert!(
         fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),
         "a disk that was never shut down is not a layer"
     );
     assert_eq!(fx.fake.launches(), 1);
     no_instance_or_build_is_left(&fx);
-}
-
-/// A build whose one step ends with a shutdown that `backend` makes anything but a clean powerdown commits nothing and
-/// says so, naming the step and the serial log.
-fn a_shutdown_that_is_not_a_clean_powerdown_commits_nothing(home: &Path, backend: FakeBackend) {
-    let fx = fixture_over(home, backend);
-    let recipe = recipe(home, &["run: echo one"]);
-    let keys = keys_of(&recipe);
-
-    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
-
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    let message = error.message();
-    assert!(message.contains("step 1 of 1"), "{message}");
-    assert!(message.contains("did not shut down cleanly"), "{message}");
-    assert!(message.contains("serial.log"), "{message}");
-    assert!(
-        fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),
-        "the disk of a guest that did not power down cleanly is not a layer"
-    );
-    no_instance_or_build_is_left(&fx);
-}
-
-#[skuld::test]
-fn a_guest_that_was_down_before_the_shutdown_request_commits_nothing(#[fixture(unicode_home)] home: &Path) {
-    a_shutdown_that_is_not_a_clean_powerdown_commits_nothing(
-        home,
-        FakeBackend::new(&TestHost).with_vm_dying_before_shutdown(),
-    );
-}
-
-#[skuld::test]
-fn a_guest_whose_powerdown_was_not_confirmed_commits_nothing(#[fixture(unicode_home)] home: &Path) {
-    a_shutdown_that_is_not_a_clean_powerdown_commits_nothing(
-        home,
-        FakeBackend::new(&TestHost).with_unconfirmed_shutdown(),
-    );
 }
 
 #[skuld::test]
