@@ -12,7 +12,7 @@
 //! | `freeze` | stops reading and writing altogether (a frozen peer) |
 //! | `pattern MiB` | writes MiB MiB of the 256-byte-value pattern to stdout, the same reversed to stderr, then exits 0 |
 //! | `stdout-mib MiB` | writes MiB MiB of the pattern to stdout, then exits 0 |
-//! | `write-forever` | writes to stdout until the client closes the channel |
+//! | `write-forever` | writes to stdout until the client closes the channel or the connection ends |
 //! | `hold` | does nothing and never answers: no output, no status |
 //! | `write-once-and-hold` | writes one line to stdout, then does nothing and never answers |
 //! | `status-then-marker` | sends `exit-status 7`, then the line `marker`, and never closes the channel |
@@ -34,7 +34,7 @@ mod fs;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -114,6 +114,11 @@ pub(crate) struct State {
     /// How many `exec` commands the server has received.
     started: AtomicUsize,
     started_notify: Notify,
+    /// How many commands dispatched to `script` have returned.
+    returned: AtomicUsize,
+    /// Whether a command dispatched to `script` panicked.
+    script_panicked: AtomicBool,
+    returned_notify: Notify,
     // The SFTP part.
     pub(crate) root: PathBuf,
     pub(crate) links: Mutex<HashMap<String, String>>,
@@ -183,6 +188,9 @@ impl TestSshd {
             closed_notify: Notify::new(),
             started: AtomicUsize::new(0),
             started_notify: Notify::new(),
+            returned: AtomicUsize::new(0),
+            script_panicked: AtomicBool::new(false),
+            returned_notify: Notify::new(),
             root,
             links: Mutex::default(),
             modes: Mutex::default(),
@@ -260,49 +268,36 @@ impl TestSshd {
 
     /// Blocks until a client has closed a channel, which is what a command that is not waited for observes.
     pub fn wait_for_channel_close(&self) {
-        runtime::wait(async {
-            loop {
-                let notified = self.state.closed_notify.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if !self.state.closed.lock().unwrap().is_empty() {
-                    return;
-                }
-                notified.await;
-            }
-        })
+        wait_until(&self.state.closed_notify, || {
+            !self.state.closed.lock().unwrap().is_empty()
+        });
     }
 
     /// Blocks until the server has received `count` `exec` commands in total: the commands are then in flight on the
     /// server, which is what a test that acts on a running command waits for.
     pub fn wait_for_commands(&self, count: usize) {
-        runtime::wait(async {
-            loop {
-                let notified = self.state.started_notify.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if self.state.started.load(Ordering::SeqCst) >= count {
-                    return;
-                }
-                notified.await;
-            }
-        })
+        wait_until(&self.state.started_notify, || {
+            self.state.started.load(Ordering::SeqCst) >= count
+        });
+    }
+
+    /// Blocks until `count` commands dispatched to `script` have returned, across all connections; fails if one
+    /// panicked. Only meaningful for scripts that return when their command ends, such as `write-forever`: the `*-hold`
+    /// scripts and `status-then-marker` return at once and leave the channel open.
+    pub fn wait_for_scripts_to_return(&self, count: usize) {
+        wait_until(&self.state.returned_notify, || {
+            self.state.returned.load(Ordering::SeqCst) >= count || self.state.script_panicked.load(Ordering::SeqCst)
+        });
+        assert!(
+            !self.state.script_panicked.load(Ordering::SeqCst),
+            "a test sshd script panicked"
+        );
     }
 
     /// Blocks until the server holds a request (see [`SshdOptions::hold_realpath`]) or has stopped on data it was sent
     /// (the `stall-on-data` script).
     pub fn wait_for_held_request(&self) {
-        runtime::wait(async {
-            loop {
-                let notified = self.state.held_notify.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if self.state.held.load(Ordering::SeqCst) > 0 {
-                    return;
-                }
-                notified.await;
-            }
-        })
+        wait_until(&self.state.held_notify, || self.state.held.load(Ordering::SeqCst) > 0);
     }
 
     /// Drops every open connection without a word.
@@ -486,7 +481,7 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
 struct Connection {
     state: Arc<State>,
     index: usize,
-    /// Snapshot at accept; see accept_loop.
+    /// The client key trusted when this connection was accepted (see `accept_loop`).
     client: PublicKey,
     channels: HashMap<ChannelId, Channel<Msg>>,
     /// Fired by the `drop-connection` script: the TCP connection is dropped without a word.
@@ -612,11 +607,45 @@ impl Handler for Connection {
             }
             _ => {
                 let state = self.state.clone();
-                runtime::spawn(script(state, handle, channel, command)).expect("the SSH runtime is running");
+                runtime::spawn(async move {
+                    let _returned = ScriptReturn(state.clone());
+                    script(state, handle, channel, command).await;
+                })
+                .expect("the SSH runtime is running");
             }
         }
         Ok(())
     }
+}
+
+/// Counts a script as returned when dropped, or records that it panicked, so a waiter fails instead of hanging.
+struct ScriptReturn(Arc<State>);
+
+impl Drop for ScriptReturn {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.script_panicked.store(true, Ordering::SeqCst);
+        } else {
+            self.0.returned.fetch_add(1, Ordering::SeqCst);
+        }
+        self.0.returned_notify.notify_waiters();
+    }
+}
+
+/// Blocks until `ready` holds, re-checking it after each wake of `notify`. The `Notified` is enabled before the check,
+/// so a notification between the check and the wait is not lost.
+fn wait_until(notify: &Notify, ready: impl Fn() -> bool) {
+    runtime::wait(async {
+        loop {
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if ready() {
+                return;
+            }
+            notified.await;
+        }
+    })
 }
 
 /// Serves SFTP on `channel` with OpenSSH's `sftp-server`, started in the served directory. The server ends when the
