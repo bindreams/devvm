@@ -289,6 +289,24 @@ fn a_run_step_whose_session_is_lost_names_the_step_and_its_command(#[fixture(uni
 }
 
 #[skuld::test]
+fn a_shell_the_guest_does_not_have_names_the_step_and_its_command(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = recipe(
+        home,
+        &["run: dir
+    shell: cmd"],
+    );
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    let message = error.message();
+    assert!(message.contains("step 1 of 1"), "{message}");
+    assert!(message.contains("`dir`"), "{message}");
+    assert!(message.contains("does not exist in a Linux guest"), "{message}");
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
 fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture_over(home, FakeBackend::new(&TestHost).with_failing_shutdown());
     let recipe = recipe(home, &["run: echo one"]);
@@ -298,7 +316,7 @@ fn a_shutdown_that_fails_commits_nothing_and_says_so(#[fixture(unicode_home)] ho
 
     let message = error.message();
     assert!(message.contains("step 1 of 1"), "{message}");
-    assert!(message.contains("shutting the guest down failed"), "{message}");
+    assert!(message.contains("(shutting the guest down)"), "{message}");
     assert!(message.contains("does not power down"), "{message}");
     assert!(
         fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),

@@ -9,7 +9,7 @@ use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedMedia, SeedSpec,
 use crate::host::{Host, names};
 use crate::media::write_cidata_image;
 use crate::recipe::Shell;
-use crate::{Command, Error, ErrorKind, GuestKind, Result, RunAs};
+use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
 pub(crate) mod builder;
 mod ready;
@@ -59,10 +59,12 @@ pub(crate) struct LinuxGuest;
 /// Written next to the instance's other scratch files; its name is not part of any contract.
 const SEED_IMAGE: &str = "cidata.img";
 
-/// `sync -f` on the mount point of every `/dev/` line of the mounts file, `$1` or `/proc/mounts`; exit 1 if any failed.
+/// `sync`, then `sync -f` on the mount point of every `/dev/` line of the mounts file, `$1` or `/proc/mounts`; exit 1 if
+/// any failed.
 /// `/proc/mounts` writes a space, tab, newline or backslash in a mount point as `\NNN` octal: `sed` turns each into
 /// the `\0NNN` that `printf %b` reads, and the `.` keeps `$(...)` from dropping a trailing newline.
 const FLUSH_SCRIPT: &str = r#"status=0
+sync || status=1
 while read -r source target _; do
   case $source in /dev/*) ;; *) continue ;; esac
   target=$(printf '%s' "$target" | sed 's/\\\([0-7][0-7][0-7]\)/\\0\1/g')
@@ -82,15 +84,12 @@ impl GuestOs for LinuxGuest {
         Command::new(["cat", "/proc/sys/kernel/random/boot_id"])
     }
 
-    /// `syncfs` on every mounted filesystem whose source is a `/dev/` device, as root (a mount point the user cannot
-    /// open still flushes). Unlike `sync(2)`, `syncfs` reports a write-back error, so a failed write exits non-zero.
-    /// Filesystems with no device (tmpfs, overlay, proc) have nothing on the disk.
+    /// `sync`, which flushes every filesystem and raw device, then `syncfs` on every mounted filesystem whose source is
+    /// a `/dev/` device. Unlike `sync(2)`, `syncfs` reports a write-back error, so a failed write exits non-zero; that
+    /// is detected on the `/dev/`-sourced mounts only. It runs as the user, so a mount point the user cannot open fails
+    /// the flush.
     fn flush_command(&self) -> Command {
-        Command {
-            argv: ["sh", "-c", FLUSH_SCRIPT].map(str::to_owned).to_vec(),
-            run_as: RunAs::Elevated,
-            cwd: None,
-        }
+        Command::new(["sh", "-c", FLUSH_SCRIPT])
     }
 
     /// The string sshd hands to the account's shell for `cmd`; `usage` for an empty argv or working directory, a NUL

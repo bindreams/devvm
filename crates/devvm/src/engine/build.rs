@@ -204,17 +204,7 @@ impl StepRun<'_> {
             }
         }
         self.flush(&vm)?;
-        vm.shutdown().map_err(|e| {
-            let kind = e.kind();
-            e.with_context(
-                kind,
-                format!(
-                    "step {} of {}: shutting the guest down failed",
-                    self.index + 1,
-                    self.flat.steps.len()
-                ),
-            )
-        })?;
+        vm.shutdown().map_err(|e| self.in_step(e, "shutting the guest down"))?;
         engine
             .backend()?
             .storage()
@@ -230,12 +220,12 @@ impl StepRun<'_> {
         run_as: RunAs,
         cwd: Option<String>,
     ) -> Result<()> {
-        let command = Command {
-            argv: self.guest.shell_argv(shell, script)?,
-            run_as,
-            cwd,
-        };
-        self.execute(vm, &command, &format!("`{script}`"), ErrorKind::Recipe)
+        let what = format!("`{script}`");
+        let argv = self
+            .guest
+            .shell_argv(shell, script)
+            .map_err(|e| self.in_step(e, &what))?;
+        self.execute(vm, &Command { argv, run_as, cwd }, &what, ErrorKind::Recipe)
     }
 
     /// Uploads the step's snapshot and extracts it into `to`.
@@ -261,13 +251,9 @@ impl StepRun<'_> {
                 Ok(destination)
             })
             .map_err(|e| self.in_step(e, &format!("uploading the files of copy to {to}")))?;
-        let command = extract_command(&**self.guest, &destination, &archive)?;
-        self.execute(
-            vm,
-            &command,
-            &format!("extracting the files of copy to {to}"),
-            ErrorKind::Recipe,
-        )
+        let what = format!("extracting the files of copy to {to}");
+        let command = extract_command(&**self.guest, &destination, &archive).map_err(|e| self.in_step(e, &what))?;
+        self.execute(vm, &command, &what, ErrorKind::Recipe)
     }
 
     /// Runs the guest's flush command, which returns once the guest's writes are on its disk. Anything but exit 0 fails

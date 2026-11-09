@@ -64,20 +64,24 @@ fn flush(home: &Path, mounts: &str, sync_status: i32) -> (i32, Vec<Vec<String>>)
 }
 
 #[skuld::test]
-fn the_flush_runs_as_root_so_a_mount_point_the_user_cannot_open_still_flushes() {
-    assert_eq!(LinuxGuest.flush_command().run_as, RunAs::Elevated);
+fn the_flush_runs_as_the_user_so_a_recipe_that_removed_sudo_does_not_break_it() {
+    assert_eq!(LinuxGuest.flush_command().run_as, RunAs::User);
 }
 
 #[skuld::test]
-fn the_flush_syncs_the_filesystem_of_every_block_device_mount_and_no_other(#[fixture(unicode_home)] home: &Path) {
+fn the_flush_syncs_everything_first_then_the_filesystem_of_every_block_device_mount(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let (code, calls) = flush(home, MOUNTS, 0);
 
     assert_eq!(code, 0);
     let targets: Vec<String> = calls.iter().map(|call| call.join("|")).collect();
+    // A plain `sync` comes first, for what `sync -f` leaves out.
     // `\040`, `\134`, `\012` and `\011` are decoded; a line break inside a name is kept, trailing or not.
     assert_eq!(
         targets,
         [
+            "",
             "-f|--|/",
             "-f|--|/mnt/with space",
             "-f|--|/a\\b",
@@ -94,13 +98,14 @@ fn a_failing_sync_fails_the_flush_after_every_mount_was_tried(#[fixture(unicode_
     let (code, calls) = flush(home, MOUNTS, 1);
 
     assert_eq!(code, 1);
-    assert_eq!(calls.len(), 7, "{calls:?}");
+    assert_eq!(calls.len(), 8, "{calls:?}");
 }
 
 #[skuld::test]
-fn a_guest_with_no_block_device_mount_flushes_nothing_and_succeeds(#[fixture(unicode_home)] home: &Path) {
+fn a_guest_with_no_block_device_mount_only_syncs_plainly_and_succeeds(#[fixture(unicode_home)] home: &Path) {
     let (code, calls) = flush(home, "tmpfs /run tmpfs rw 0 0\nproc /proc proc rw 0 0\n", 0);
 
     assert_eq!(code, 0);
-    assert!(calls.is_empty(), "{calls:?}");
+    // Only the plain `sync`.
+    assert_eq!(calls, [Vec::<String>::new()]);
 }

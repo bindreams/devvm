@@ -130,7 +130,7 @@ impl GuestOs for FakeGuestOs {
         }
     }
 
-    /// A Linux guest's, except that a served guest whose flush runs another command (`ServedGuests::flush_runs`).
+    /// A Linux guest's, except that a served guest runs the command `ServedGuests::flush_runs` set, if any.
     fn flush_command(&self) -> Command {
         match &self.served {
             Some(served) => served.flush_command(),
@@ -250,7 +250,7 @@ struct Served {
     unreadable_boot_id: Mutex<bool>,
     /// Every read of the boot id prints nothing.
     empty_boot_id: Mutex<bool>,
-    /// Every flush exits 1.
+    /// The command every flush runs in place of the guest's own.
     flush_runs: Mutex<Option<String>>,
     boots: Mutex<Boots>,
 }
