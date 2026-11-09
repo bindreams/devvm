@@ -154,8 +154,8 @@ fn run_to_turns_a_closed_writer_into_an_io_error_and_stops_the_guest_command(#[f
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("the reader went away"), "{error}");
     assert!(error.message().contains("stopped"), "{error}");
-    // The channel is closed, which is what stops a command that writes forever.
-    fx.server.wait_for_channel_close();
+    // No wait for the server to see the channel close: `run_to` drops its session on return, so the connection can end
+    // before the server reads the close, and it never does then. The session tests pin the close on a live session.
 }
 
 #[skuld::test]
