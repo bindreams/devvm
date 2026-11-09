@@ -1,10 +1,11 @@
-//! The extraction command of a `copy` step, run by a real `sh` with a real `tar`. They spawn both, so they run in the
-//! deputy's runner and CI.
+//! The extraction command of a `copy` step, wrapped as the guest wraps it and run by a real `sh` with a real `tar`. They
+//! spawn both, so they run in the deputy's runner and CI.
 
 use std::path::Path;
 use std::process::ExitStatus;
 
 use crate::engine::build::extract_command;
+use crate::guest::GuestOs;
 use crate::guest::linux::LinuxGuest;
 use crate::host::symlink_metadata_if_present;
 use crate::test_support::fixtures::unicode_home;
@@ -12,11 +13,12 @@ use crate::test_support::fixtures::unicode_home;
 /// A destination that does not exist yet and that a shell would split, expand or run if the command quoted it badly.
 const DESTINATION: &str = "sp ace;semi &amp 'quote' \"double\" $(dollar) `tick` *star";
 
-/// Runs the extraction of `archive` into `destination` as the guest would.
+/// Runs the extraction of `archive` into `destination` as the guest would: the string the guest's wrapping makes of
+/// the command, handed to `sh -c` as sshd hands it to the account's shell.
 fn extract(destination: &Path, archive: &Path) -> ExitStatus {
     let command = extract_command(&LinuxGuest, destination.to_str().unwrap(), archive.to_str().unwrap()).unwrap();
-    std::process::Command::new(&command.argv[0])
-        .args(&command.argv[1..])
+    std::process::Command::new("sh")
+        .args(["-c", &LinuxGuest.wrap(&command).unwrap()])
         .status()
         .unwrap()
 }
