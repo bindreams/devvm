@@ -319,5 +319,9 @@ fn a_carriage_return_with_nothing_pending_reports_no_line() {
     // A redraw that starts with `\r`, and a doubled `\r`, are not blank lines.
     assert_eq!(lines_reported(&[b"a\n\r10%\r100%\n"]), ["a", "10%", "100%"]);
     assert_eq!(lines_reported(&[b"x\r\r\n"]), ["x"]);
-    assert_eq!(lines_reported(&[b"x\r", b"\r", b"\n"]), ["x"], "wherever the writes split them");
+    assert_eq!(
+        lines_reported(&[b"x\r", b"\r", b"\n"]),
+        ["x"],
+        "wherever the writes split them"
+    );
 }
