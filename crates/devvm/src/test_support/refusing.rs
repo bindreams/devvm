@@ -59,7 +59,8 @@ impl Refusing {
         *self.read_error.lock().unwrap() = Some(kind);
     }
 
-    /// Makes every write, on links made already too, fail with an error of `kind`.
+    /// Makes every write, on links made already too, fail with an error of `kind`. Only the Windows machine tests use it.
+    #[cfg(windows)]
     pub fn fail_writes_with(&self, kind: std::io::ErrorKind) {
         *self.write_error.lock().unwrap() = Some(kind);
     }
