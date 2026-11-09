@@ -1,5 +1,6 @@
 //! Images, and the VMs started from them.
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -7,14 +8,16 @@ use crate::access::SshSession;
 use crate::backend::Machine;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
-use crate::exit::Output;
+use crate::exit::{ExitStatus, Output};
+use crate::guest::GuestOs;
 use crate::host::Unavailable;
+use crate::instance::dir::OpShared;
 use crate::instance::name::InstanceName;
 use crate::instance::registry::{NewInstance, Owned};
 use crate::recipe::{Flattened, Recipe};
 use crate::store::fetch::LazyHttp;
 use crate::store::layers::ChainLease;
-use crate::vm::{Guest, Handle, Instance, Started, no_access_layer, remove_leftovers, warn_for};
+use crate::vm::{Guest, Handle, Instance, Started, ops, remove_leftovers, remove_ssh_entry, warn_for};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, GuestKind, Result, StartOptions};
 
 #[cfg(test)]
@@ -88,7 +91,7 @@ impl Image {
                 handle: Handle::Owned(owned),
             }),
             machine: Mutex::new(None),
-            session: None,
+            session: Mutex::new(None),
         };
         let Started { machine, session } = vm.instance().start_with(lifetime)?.ok_or_else(|| {
             Error::new(
@@ -97,7 +100,7 @@ impl Image {
             )
         })?;
         *vm.machine.lock().unwrap_or_else(PoisonError::into_inner) = Some(machine);
-        vm.session = Some(session);
+        *vm.session.get_mut().unwrap_or_else(PoisonError::into_inner) = Some(session);
         Ok(vm)
     }
 
@@ -163,8 +166,11 @@ pub struct Vm {
     /// `None` once handed over (`hand_over`): nothing is left to clean up.
     instance: Option<Instance>,
     machine: Mutex<Option<Box<dyn Machine>>>,
-    /// The connection that found the guest ready; `None` until the start has finished.
-    session: Option<SshSession>,
+    /// The connection that found the guest ready, which every operation uses; `None` until the start has finished. A
+    /// reboot replaces it with the one that found the new boot ready. A reboot that failed leaves `None`: the old
+    /// connection may still look alive while it is to the old boot. An operation connects again for a session that is
+    /// `None` or no longer alive.
+    session: Mutex<Option<SshSession>>,
 }
 
 impl Vm {
@@ -244,6 +250,7 @@ impl Drop for Vm {
                         e.message()
                     ));
                 }
+                remove_ssh_entry(engine, dir);
                 if let Err(e) = dir.destroy(op) {
                     progress.message(&format!(
                         "instance {} could not be removed ({}); the next devvm command retries",
@@ -274,20 +281,51 @@ impl Drop for Vm {
     }
 }
 
+impl Vm {
+    /// The guest, the session and the shared op lock for one operation.
+    fn reached(&self) -> Result<(Arc<dyn GuestOs>, SshSession, OpShared)> {
+        let instance = self.instance();
+        let dir = instance.dir();
+        let op = dir.op_shared()?;
+        let guest = ops::guest_of(&instance.engine, dir)?;
+        let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        let session = match slot.as_ref().filter(|session| session.is_alive()) {
+            Some(session) => session.clone(),
+            None => slot.insert(ops::reach(&instance.engine, dir, &op)?.1).clone(),
+        };
+        Ok((guest, session, op))
+    }
+
+    /// Runs `cmd` in the guest, writing its output to `out` and `err` as it arrives. As [`Instance::run_to`].
+    pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
+        let (guest, session, _op) = self.reached()?;
+        ops::run_to(&self.instance().engine, &*guest, &session, cmd, out, err)
+    }
+}
+
 impl Guest for Vm {
-    fn run(&self, _cmd: &Command) -> Result<Output> {
-        Err(no_access_layer())
+    fn run(&self, cmd: &Command) -> Result<Output> {
+        let (guest, session, _op) = self.reached()?;
+        ops::run(&*guest, &session, cmd)
     }
 
     fn reboot(&self) -> Result<()> {
-        Err(no_access_layer())
+        let instance = self.instance();
+        let dir = instance.dir();
+        let op = dir.op_exclusive()?;
+        let session = ops::reboot(&instance.engine, dir, &op);
+        // After a failed reboot the old session can still look alive while it points at the old boot: drop it.
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = session.as_ref().ok().cloned();
+        session.map(drop)
     }
 
-    fn copy_in(&self, _src: &Path, _dest: &str) -> Result<()> {
-        Err(no_access_layer())
+    fn copy_in(&self, src: &Path, dest: &str) -> Result<()> {
+        let (guest, session, _op) = self.reached()?;
+        ops::copy_in(&self.instance().engine, &guest, &session, src, dest)
     }
 
-    fn copy_out(&self, _src: &str, _dest: &Path) -> Result<()> {
-        Err(no_access_layer())
+    fn copy_out(&self, src: &str, dest: &Path) -> Result<()> {
+        let (guest, session, _op) = self.reached()?;
+        ops::copy_out(&self.instance().engine, &guest, &session, src, dest)
     }
 }

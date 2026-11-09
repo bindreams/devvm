@@ -114,6 +114,13 @@ pub(crate) enum WatchEnd {
     Unwatched(String),
 }
 
+impl WatchEnd {
+    /// The watcher thread died without a verdict (it panicked).
+    fn lost() -> WatchEnd {
+        WatchEnd::Unwatched("the thread that watches the VM process ended without a result".to_owned())
+    }
+}
+
 /// Fires when the VM process is gone, or when it can no longer be watched.
 #[derive(Clone)]
 pub(crate) struct VmExit {
@@ -148,6 +155,24 @@ impl VmExit {
         VmExit { ended: None }
     }
 
+    /// The watcher's verdict so far; `None` while the VM lives and for [`VmExit::never`]. A watcher whose thread ended
+    /// without a verdict (it panicked) is [`WatchEnd::Unwatched`].
+    pub(crate) fn verdict(&self) -> Option<WatchEnd> {
+        let receiver = self.ended.as_ref()?;
+        // Closed first: a thread that sent its verdict did so before it dropped the sender.
+        let closed = receiver.has_changed().is_err();
+        match receiver.borrow().clone() {
+            Some(end) => Some(end),
+            None if closed => Some(WatchEnd::lost()),
+            None => None,
+        }
+    }
+
+    /// Whether [`VmExit::verdict`] is `Some`.
+    pub(crate) fn has_ended(&self) -> bool {
+        self.verdict().is_some()
+    }
+
     /// Resolves once the VM is gone or unwatchable; never for [`VmExit::never`].
     pub(crate) async fn gone(&self) -> WatchEnd {
         let Some(receiver) = &self.ended else {
@@ -159,8 +184,7 @@ impl VmExit {
                 return end;
             }
             if receiver.changed().await.is_err() {
-                // The watcher thread died without a verdict (it panicked).
-                return WatchEnd::Unwatched("the thread that watches the VM process ended without a result".to_owned());
+                return WatchEnd::lost();
             }
         }
     }
@@ -188,6 +212,14 @@ impl BootBound {
             )
         })?;
         Ok(BootBound { limit, deadline })
+    }
+
+    pub(crate) fn has_passed(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    pub(crate) fn limit(&self) -> Duration {
+        self.limit
     }
 }
 
@@ -624,6 +656,11 @@ impl SshSession {
                 None => connect.once().await,
             }
         })?
+    }
+
+    /// Whether the session can still serve an operation: its connection and its VM watcher are both live.
+    pub(crate) fn is_alive(&self) -> bool {
+        self.inner.transport_end().is_none() && self.inner.vm.verdict().is_none()
     }
 
     /// Ends the boot phase: from now on the boot bound no longer ends a wait, one already in flight included.
