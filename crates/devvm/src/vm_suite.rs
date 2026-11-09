@@ -1,7 +1,7 @@
 //! Tests that boot QEMU or run one of its tools. Every test here carries the `vm` label (`SKULD_LABELS=vm` selects them)
 //! and joins the `vm_group` test group: it fails naming what is missing unless the group is turned off
-//! (`vm_group::OPT_OUT`). The exception is the no-VM test in `fixture.rs`, which has no label and joins `unicode_base`
-//! only.
+//! (`vm_group::OPT_OUT`). The exception is the no-VM test in `fixture.rs`: it joins `unicode_base` only and carries no
+//! `vm` label (the fixture's own labels still apply to it).
 
 use crate::test_harness::VM;
 

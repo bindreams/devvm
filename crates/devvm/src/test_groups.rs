@@ -1,4 +1,4 @@
-//! The lib's test groups: those of `shared` (which a test binary can include too) and the ones that need
+//! The lib's test groups: those of `shared` (which a test binary can include by `#[path]` too) and the ones that need
 //! the lib's host and test support. A test joins any of them through `crate::test_groups`.
 
 #[macro_use]
@@ -16,20 +16,6 @@ test_group!(
     env = "DEVVM_TEST_UNICODE_SOCKET_DIR",
     precondition = socket_dir_fits_unicode
 );
-
-// The VM tests' base directory: `C:\Users` where the group is on (an elevated runner can make a directory there), the
-// temporary directory where it is off. A base that cannot be made fails the fixture with the OS error.
-test_group!(UNICODE_BASE => unicode_base, env = "DEVVM_TEST_UNICODE_BASE", precondition = host_is_windows);
-
-/// The `unicode_base` precondition: `Roots` meets it too, where it reads the group without the fixture.
-pub(crate) fn host_is_windows(opt_out: &str) -> Result<(), String> {
-    if host::current().system_dirs().is_some() {
-        return Ok(());
-    }
-    Err(format!(
-        r"the group's base is C:\Users, which only Windows has; {opt_out}"
-    ))
-}
 
 fn host_has_code_page_1252(opt_out: &str) -> Result<(), String> {
     let code_page = host::current().ansi_code_page();

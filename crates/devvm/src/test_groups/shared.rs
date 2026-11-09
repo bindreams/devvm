@@ -2,8 +2,8 @@
 //! `DEVVM_TEST_<GROUP>=0` (the test is then ignored). Declared with `test_group!`; a test joins with
 //! `#[fixture(<fixture>)] _group: &Group`.
 //!
-//! This half needs nothing from the lib, so a test binary can include it by `#[path]` (the lib does, through
-//! `test_groups.rs`), with `test_harness.rs`, which declares the labels the groups carry. The groups that call the lib
+//! This half needs nothing from the lib, so a test binary can include it by `#[path]` (the lib includes it with
+//! `#[macro_use] mod shared;` in `test_groups.rs`), with `test_harness.rs`, which declares the labels the groups carry. The groups that call the lib
 //! are in `test_groups.rs`.
 
 /// Proof that the group is enabled.
@@ -77,7 +77,7 @@ macro_rules! test_group {
     (@declare $label:ident, $fixture:ident, $env:literal, $setup:expr) => {
         pub(crate) mod $fixture {
             /// How to turn the group off; the messages that fail a test of the group name it.
-            #[allow(dead_code, reason = "only a group with a consent or a precondition names it in a failure")]
+            #[allow(dead_code, reason = "a group whose failures do not name it, or a binary with no test in it, leaves it unused")]
             pub(crate) const OPT_OUT: &str = concat!("set ", $env, "=0 to turn the group off");
 
             #[allow(dead_code, reason = "a group's tests may not use enabled()")]
@@ -111,3 +111,7 @@ test_group!(OPENSSH_SFTP => openssh_sftp, env = "DEVVM_TEST_OPENSSH_SFTP");
 test_group!(NTFS_NAMES => ntfs_names, env = "DEVVM_TEST_NTFS_NAMES");
 // Only Windows can lack the right to make a symlink (Developer Mode or an elevated token); every OS declares the group.
 test_group!(SYMLINKS => symlinks, env = "DEVVM_TEST_SYMLINKS");
+// The VM tests' base directory: `C:\Users` where the group is on, the temporary directory where it is off. Plain: the
+// code that picks the base fails where the host is not Windows, naming `OPT_OUT`, and where the base cannot be made,
+// with the OS error.
+test_group!(UNICODE_BASE => unicode_base, env = "DEVVM_TEST_UNICODE_BASE");

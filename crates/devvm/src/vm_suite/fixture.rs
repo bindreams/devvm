@@ -18,7 +18,7 @@ use crate::engine::engine_tests::engine_with;
 use crate::exit::StderrProgress;
 use crate::host;
 use crate::store::fetch::{Fetcher, HttpTransport};
-use crate::test_groups::{Group, host_is_windows, unicode_base};
+use crate::test_groups::{Group, unicode_base};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::UNICODE_DIR;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir, write_config};
@@ -33,7 +33,11 @@ const SHARED_CACHE: &str = "devvm-test-cache";
 /// Where the group is on and the host is not Windows the error says so: `C:\Users` there is a relative path.
 fn base_dir() -> Result<PathBuf, String> {
     match unicode_base::enabled() {
-        Ok(()) => host_is_windows(unicode_base::OPT_OUT).map(|()| PathBuf::from(USERS)),
+        Ok(()) if cfg!(windows) => Ok(PathBuf::from(USERS)),
+        Ok(()) => Err(format!(
+            r"the base is C:\Users, which only Windows has; {}",
+            unicode_base::OPT_OUT
+        )),
         Err(_) => Ok(std::env::temp_dir()),
     }
 }
@@ -57,8 +61,13 @@ impl Roots {
                 .map_err(|e| format!("cannot make {}: {e}; {}", dir.display(), unicode_base::OPT_OUT))
         };
         make(&user)?;
-        let top = skuld::TempDir::new_in(&user)
-            .map_err(|e| format!("cannot make a run directory in {}: {e}", user.display()))?;
+        let top = skuld::TempDir::new_in(&user).map_err(|e| {
+            format!(
+                "cannot make a run directory in {}: {e}; {}",
+                user.display(),
+                unicode_base::OPT_OUT
+            )
+        })?;
         let cache = user.join(SHARED_CACHE);
         let vars: Vec<(String, PathBuf)> = ["config", "data", "state"]
             .iter()
