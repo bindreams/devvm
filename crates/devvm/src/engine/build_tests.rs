@@ -600,9 +600,67 @@ fn a_tilde_user_destination_is_a_usage_error_before_any_upload(#[fixture(unicode
         .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
+    let message = error.message();
+    assert!(message.contains("step 1 of 1"), "{message}");
+    assert!(
+        message.contains("(resolving the destination of copy to ~root/x)"),
+        "the refusal is not an upload failure: {message}"
+    );
     assert!(extractions(&fx).is_empty());
     let uploaded: Vec<_> = std::fs::read_dir(fx.server.root().join("tmp")).unwrap().collect();
     assert!(uploaded.is_empty(), "nothing was uploaded: {uploaded:?}");
+}
+
+#[skuld::test]
+fn a_copy_step_whose_files_cannot_be_snapshotted_names_the_step_and_its_destination(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    let plain = home.join("not a repo");
+    std::fs::create_dir_all(&plain).unwrap();
+    let recipe = recipe_in(
+        &plain,
+        "",
+        &["run: echo one", "copy: { from: git-tracked, to: /srv/x }"],
+    );
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
+    let message = error.message();
+    assert!(
+        message.contains("step 2 of 2 (snapshotting the files of copy to /srv/x)"),
+        "{message}"
+    );
+    assert!(ran(&fx).is_empty(), "nothing ran: the snapshot is taken first");
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn an_error_of_the_layer_store_around_a_step_names_the_step(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = recipe(home, &["run: echo one", "run: echo two"]);
+    let keys = keys_of(&recipe);
+    // A file where the second layer's directory belongs: the store cannot read or make it.
+    std::fs::create_dir_all(fx.dirs.layers()).unwrap();
+    std::fs::write(fx.dirs.layers().join(keys[2].to_string()), b"in the way").unwrap();
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    let message = error.message();
+    assert!(
+        message.starts_with("step 2 of 2 (building the step's layer): "),
+        "{message}"
+    );
+    assert!(
+        !message.contains("step 2 of 2 (building the step's layer): step"),
+        "{message}"
+    );
+    assert!(
+        fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_some(),
+        "the step before it is kept"
+    );
+    no_instance_or_build_is_left(&fx);
 }
 
 #[skuld::test]

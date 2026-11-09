@@ -1,5 +1,6 @@
 //! Layer builds: [`Engine::build`] turns a recipe into a chain of cached layers.
 
+use std::cell::Cell;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -10,7 +11,7 @@ use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, Recipe, Shell, Source, Step};
-use crate::store::layers::{BuildRequest, Built, ChainLease, Staging};
+use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
 use crate::vm::{Image, Vm};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, RunAs, StartOptions, random};
 
@@ -31,7 +32,7 @@ impl Engine {
     /// process: when the step succeeds the guest flushes its disk (`GuestOs::flush_command`, a command of its own) and
     /// shuts down gracefully, the disk is committed as the step's layer, and the instance is destroyed. Nothing is
     /// committed or published for a step that fails, whose flush fails, or whose guest does not shut down. The flush
-    /// runs elevated, so every step's commit needs the guest's passwordless `sudo`.
+    /// runs elevated in a Linux guest, so each step's commit there needs the guest's passwordless `sudo`.
     /// The disk of every instance is the recipe's `resources.disk`, as the keys of the layers say.
     ///
     /// Two builds of one recipe at once run each step once: the second waits for the layer store's build lock, then
@@ -84,8 +85,7 @@ impl Engine {
                 index,
                 snapshot: snapshots[index].as_ref(),
             };
-            let next = store.build(&request(*key), Some(&chain), |staging| step.run(&chain, staging))?;
-            chain = next;
+            chain = step.build_layer(store, &request(*key), &chain)?;
         }
         Ok(Image::from_chain(self.clone(), chain, &flat, arch))
     }
@@ -94,11 +94,12 @@ impl Engine {
     fn snapshots(&self, flat: &Flattened, into: &std::path::Path) -> Result<Vec<Option<Snapshot>>> {
         flat.steps
             .iter()
-            .map(|flat_step| match &flat_step.step {
+            .enumerate()
+            .map(|(index, flat_step)| match &flat_step.step {
                 Step::Copy {
                     from: CopyFrom::GitTracked,
                     read_only,
-                    ..
+                    to,
                 } => copy::snapshot(
                     self.host,
                     &flat_step.origin_dir,
@@ -106,7 +107,12 @@ impl Engine {
                     into,
                     self.progress.as_ref(),
                 )
-                .map(Some),
+                .map(Some)
+                .map_err(|error| {
+                    let kind = error.kind();
+                    let what = format!("snapshotting the files of copy to {to}");
+                    error.with_context(kind, step_of(index, flat.steps.len(), &what))
+                }),
                 Step::Run { .. } | Step::Set(_) => Ok(None),
             })
             .collect()
@@ -174,6 +180,24 @@ struct StepRun<'a> {
 }
 
 impl StepRun<'_> {
+    /// The layer of the step: the one in `store` for `request`, or one `run` builds on top of `parent`. Every error of
+    /// the step's build names the step: the store's own (the build lock, the parent, the staging directory, the
+    /// layer's metadata, its publication, an expired base) here, and the step's work in `run`.
+    fn build_layer(&self, store: &LayerStore, request: &BuildRequest, parent: &ChainLease) -> Result<ChainLease> {
+        let named = Cell::new(false);
+        store
+            .build(request, Some(parent), |staging| {
+                self.run(parent, staging).inspect_err(|_| named.set(true))
+            })
+            .map_err(|error| {
+                if named.get() {
+                    return error;
+                }
+                let kind = error.kind();
+                error.with_context(kind, self.step_of("building the step's layer"))
+            })
+    }
+
     /// Runs the step in a transient instance of `parent` and commits the disk it leaves into `staging`. Every error
     /// names the step and the phase it was in: the work below returns [`StepFailure`], which no bare `?` converts to.
     fn run(&self, parent: &ChainLease, staging: &Staging<'_>) -> Result<Built> {
@@ -244,12 +268,20 @@ impl StepRun<'_> {
             .during("finding the files of copy")?;
         let archive = format!("/tmp/devvm-copy-{}.tar", hex::encode(random::bytes::<16>()));
         // The op lock is held for the whole upload; the extraction below takes its own.
+        let resolving = format!("resolving the destination of copy to {to}");
+        let uploading = format!("uploading the files of copy to {to}");
         let destination = vm
             .with_sftp(|sftp| {
                 // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved
                 // here.
-                let (expanded, home) = sftp.expanded(to)?;
-                let destination = guest_destination(&**self.guest, &expanded, &home)?;
+                let resolved = sftp
+                    .expanded(to)
+                    .and_then(|(expanded, home)| guest_destination(&**self.guest, &expanded, &home))
+                    .during(&resolving);
+                let destination = match resolved {
+                    Ok(destination) => destination,
+                    Err(failure) => return Ok(Err(failure)),
+                };
                 sftp.copy_in(
                     &snapshot.archive,
                     &archive,
@@ -257,9 +289,9 @@ impl StepRun<'_> {
                     self.guest,
                     self.engine.progress.as_ref(),
                 )?;
-                Ok(destination)
+                Ok(Ok(destination))
             })
-            .during(format!("uploading the files of copy to {to}"))?;
+            .during(&uploading)??;
         let what = format!("extracting the files of copy to {to}");
         let command = extract_command(&**self.guest, &destination, &archive).during(&what)?;
         self.execute(vm, &command, &what, ErrorKind::Recipe)
@@ -289,8 +321,13 @@ impl StepRun<'_> {
 
     /// `step N of M (what)`.
     fn step_of(&self, what: &str) -> String {
-        format!("step {} of {} ({what})", self.index + 1, self.flat.steps.len())
+        step_of(self.index, self.flat.steps.len(), what)
     }
+}
+
+/// `step N of M (what)` for the step at `index` of `total`.
+fn step_of(index: usize, total: usize, what: &str) -> String {
+    format!("step {} of {total} ({what})", index + 1)
 }
 
 type StepResult<T> = std::result::Result<T, StepFailure>;
