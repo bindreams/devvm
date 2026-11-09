@@ -19,6 +19,10 @@ use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, RunAs, StartO
 #[path = "build_tests.rs"]
 mod build_tests;
 
+#[cfg(all(test, windows))]
+#[path = "build_windows_tests.rs"]
+mod build_windows_tests;
+
 /// The shell script of a `copy` step's one guest command. `$1` is the destination directory, `$2` the uploaded archive.
 /// The archive is removed whatever the extraction did, and the command ends with the extraction's status.
 const EXTRACT: &str = r#"mkdir -p -- "$1" && tar -xf "$2" -C "$1"; status=$?; rm -f -- "$2"; exit $status"#;
