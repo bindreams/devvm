@@ -1,13 +1,11 @@
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use cosca::identity::{Platform, ProcessIdRecord};
 use secrecy::ExposeSecret;
 
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
-use crate::backend::{Endpoint, MachineRecord, SshEndpoint};
-use crate::engine::engine_tests::{engine_fixture, instance_in, memory, record_machine};
+use crate::engine::engine_tests::{engine_fixture, instance_in, memory, record_machine, running_machine};
 use crate::engine::keys::{SSH_USER, ensure_keys, read_target};
 use crate::host::symlink_metadata_if_present;
 use crate::test_support::fixtures::unicode_home;
@@ -20,29 +18,6 @@ fn bytes(dir: &Path) -> Vec<Vec<u8>> {
         .iter()
         .map(|name| std::fs::read(dir.join(name)).unwrap())
         .collect()
-}
-
-/// A record of a machine whose SSH endpoint is `addr`; nothing runs behind it.
-fn machine_at(addr: SocketAddr, serial_log: &Path) -> MachineRecord {
-    MachineRecord {
-        process: ProcessIdRecord {
-            version: 1,
-            platform: Platform::Windows,
-            pid: 4242,
-            token: 1,
-            boot_id: None,
-            pid_ns: None,
-        },
-        qmp: String::new(),
-        ssh: vec![SshEndpoint {
-            endpoint: Endpoint::Normal,
-            addr,
-        }],
-        serial_log: serial_log.to_path_buf(),
-        leftovers: Vec::new(),
-        claim: None,
-        no_reboot: false,
-    }
 }
 
 #[skuld::test]
@@ -139,10 +114,11 @@ fn the_target_of_a_running_machine_comes_from_its_record_and_the_keys(#[fixture(
     };
     let addr: SocketAddr = "127.0.0.1:2222".parse().unwrap();
     let serial_log = home.join("serial.log");
-    record_machine(&dir, &machine_at(addr, &serial_log));
+    record_machine(&dir, &running_machine(home, addr));
 
     let op = dir.op_shared().unwrap();
-    let target = read_target(&dir, &op).unwrap();
+    let running = read_target(&fx.engine, &dir, &op).unwrap();
+    let target = running.target;
 
     assert_eq!(target.addr, addr);
     assert_eq!(target.user, SSH_USER);
@@ -164,7 +140,9 @@ fn an_instance_with_no_running_machine_is_unavailable_naming_it(#[fixture(unicod
     }
 
     let op = dir.op_shared().unwrap();
-    let error = read_target(&dir, &op).expect_err("nothing runs to connect to");
+    let error = read_target(&fx.engine, &dir, &op)
+        .err()
+        .expect("nothing runs to connect to");
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains("foo"), "{error}");
@@ -179,12 +157,14 @@ fn a_machine_with_no_normal_endpoint_is_an_internal_error_naming_the_instance(#[
         let op = dir.op_exclusive().unwrap();
         ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
     }
-    let mut machine = machine_at("127.0.0.1:2222".parse().unwrap(), &PathBuf::from("serial.log"));
+    let mut machine = running_machine(home, "127.0.0.1:2222".parse().unwrap());
     machine.ssh.clear();
     record_machine(&dir, &machine);
 
     let op = dir.op_shared().unwrap();
-    let error = read_target(&dir, &op).expect_err("the machine reports no endpoint");
+    let error = read_target(&fx.engine, &dir, &op)
+        .err()
+        .expect("the machine reports no endpoint");
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert!(error.message().contains("foo"), "{error}");
