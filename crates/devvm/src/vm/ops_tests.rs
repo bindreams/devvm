@@ -154,9 +154,9 @@ fn run_to_turns_a_closed_writer_into_an_io_error_and_stops_the_guest_command(#[f
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("the reader went away"), "{error}");
     assert!(error.message().contains("stopped"), "{error}");
-    // Not a wait for the server to read the channel close: the connection ends when the background exec task drops its
-    // `Arc<Inner>` after queueing the close, and the server's write can fail before it reads the close. `write-forever`
-    // returns on the close and on the end of the connection alike.
+    // The connection ends once `run_to`'s session and the exec task's clone are gone, and the task drops its clone after
+    // queueing the close. `write-forever` returns on the close or on the end of the connection, so its return holds in
+    // either order.
     fx.server.wait_for_scripts_to_return(1);
 }
 
