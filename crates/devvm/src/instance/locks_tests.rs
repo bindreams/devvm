@@ -1052,3 +1052,155 @@ fn a_shared_take_of_instances_dir_that_waited_while_its_file_was_replaced_holds_
         locks.remove(&id).unwrap();
     }
 }
+
+// Build locks =========================================================================================================
+
+/// A build's name: the hex of 16 random bytes, as `Engine::build` draws it.
+fn build_hex() -> String {
+    hex::encode(crate::random::bytes::<16>())
+}
+
+#[skuld::test]
+fn acquire_build_new_opens_again_when_the_file_is_unlinked_between_the_open_and_the_look(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let locks = locks(home);
+    let hex = build_hex();
+    let path = locks.build_path(&hex);
+    let mut calls = 0;
+    let lock = locks
+        .acquire_build_new_with(
+            &hex,
+            &mut || {
+                calls += 1;
+                if calls == 1 {
+                    // The sweeper that found the file free and unlinked it.
+                    std::fs::remove_file(&path).unwrap();
+                }
+            },
+            &mut || {},
+        )
+        .unwrap();
+    assert_eq!(calls, 2, "the sweeper's progress makes the builder start over");
+    assert_eq!(
+        lock.is_at_path().unwrap(),
+        Comparison::Same,
+        "the lock is on the file at the name"
+    );
+    assert!(matches!(locks.try_build(&hex).unwrap(), Probe::Held));
+    drop(lock);
+    assert!(matches!(locks.try_build(&hex).unwrap(), Probe::Free(_)));
+}
+
+#[skuld::test]
+fn a_build_lock_take_on_a_volume_without_posix_unlink_is_not_supported_and_names_the_requirement(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let strict = without_posix_unlink(home.join("locks"));
+    let hex = build_hex();
+
+    let errors = [
+        strict
+            .acquire_build_new_with(&hex, &mut || {}, &mut || {})
+            .map(drop)
+            .unwrap_err(),
+        strict.remove_build(&hex).unwrap_err(),
+    ];
+    for error in errors {
+        assert_names_the_volume_requirement(error, home);
+    }
+
+    // With the directory made on a good volume, the look at an existing lock checks it too.
+    let hex = build_hex();
+    drop(
+        locks(home)
+            .acquire_build_new_with(&hex, &mut || {}, &mut || {})
+            .unwrap(),
+    );
+    assert_names_the_volume_requirement(strict.try_build(&hex).map(drop).unwrap_err(), home);
+}
+
+#[skuld::test]
+fn try_build_creates_nothing_and_reads_a_missing_file_as_gone(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let hex = build_hex();
+
+    assert!(matches!(locks.try_build(&hex).unwrap(), Probe::Gone), "no directory");
+    assert!(!home.join("locks").exists(), "a try made the lock directory");
+
+    let held = locks.acquire_build_new_with(&hex, &mut || {}, &mut || {}).unwrap();
+    assert!(matches!(locks.try_build(&hex).unwrap(), Probe::Held));
+    drop(held);
+    assert!(matches!(locks.try_build(&hex).unwrap(), Probe::Free(_)));
+
+    let other = build_hex();
+    assert!(
+        matches!(locks.try_build(&other).unwrap(), Probe::Gone),
+        "no file at the name"
+    );
+    assert!(!locks.build_path(&other).exists(), "a try made the file");
+}
+
+#[skuld::test]
+fn build_locks_lists_only_build_lock_files_and_ids_ignores_them(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    assert!(locks.build_locks().unwrap().is_empty(), "no directory means no builds");
+    assert!(!home.join("locks").exists(), "a listing made the lock directory");
+
+    let (first, second) = (build_hex(), build_hex());
+    drop(locks.acquire_build_new_with(&first, &mut || {}, &mut || {}).unwrap());
+    drop(locks.acquire_build_new_with(&second, &mut || {}, &mut || {}).unwrap());
+    let id = InstanceId::random();
+    drop(locks.acquire_owner_new(&id).unwrap());
+    let dir = home.join("locks");
+    for stray in [
+        "build-short.lock".to_owned(),
+        format!("build-{}.lock", first.to_uppercase()),
+        format!("build-{first}.tmp"),
+        format!("{first}.lock"),
+        "dead.lock".to_owned(),
+    ] {
+        std::fs::write(dir.join(stray), "x").unwrap();
+    }
+
+    let mut listed = locks.build_locks().unwrap();
+    listed.sort();
+    let mut expected = vec![first.clone(), second];
+    expected.sort();
+    assert_eq!(listed, expected);
+    assert_eq!(locks.ids().unwrap(), vec![id], "a build lock is no instance's");
+
+    locks.remove_build(&first).unwrap();
+    assert!(!locks.build_path(&first).exists());
+    assert_eq!(locks.build_locks().unwrap().len(), 1);
+    locks.remove_build(&first).unwrap();
+}
+
+#[skuld::test]
+fn unlinking_a_build_lock_waits_for_whoever_is_opening_a_lock_file(#[fixture(unicode_home)] home: &Path) {
+    let locks = locks(home);
+    let locks = &locks;
+    let hex = build_hex();
+    drop(locks.acquire_build_new_with(&hex, &mut || {}, &mut || {}).unwrap());
+    let (waiting, remover_waits) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let hex = &hex;
+        locks
+            .reading(home, || {
+                let remover = scope.spawn(move || locks.remove_build_with(hex, &mut || waiting.send(()).unwrap()));
+                assert!(
+                    remover_waits.recv().is_ok(),
+                    "the build lock was unlinked while a probe could be opening it"
+                );
+                assert!(locks.build_path(hex).is_file());
+                remover
+            })
+            .unwrap()
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+    });
+    assert!(!locks.build_path(&hex).exists());
+}

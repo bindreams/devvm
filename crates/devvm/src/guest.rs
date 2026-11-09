@@ -147,7 +147,6 @@ pub(crate) struct SeedMedia {
 pub(crate) struct BuildCtx {
     pub dirs: Dirs,
     pub arch: Arch,
-    pub disk_size: u64,
     pub progress: Arc<dyn Progress>,
 }
 

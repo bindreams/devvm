@@ -196,7 +196,7 @@ pub(crate) fn image_with(engine: &Arc<Engine>, resources: Resources) -> Image {
         resources,
         steps: Vec::new(),
     };
-    Image::from_chain(engine.clone(), chain, &flat)
+    Image::from_chain(engine.clone(), chain, &flat, Arch::host())
 }
 
 /// An ownerless, stopped instance called `name`, created from `created_from`.

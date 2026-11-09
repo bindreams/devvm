@@ -3,17 +3,23 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use secrecy::ExposeSecret;
 
 use crate::access::SshSession;
+use crate::backend::fake::LAYER_DISK;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
 use crate::exit::ExitStatus;
 use crate::guest::linux::LinuxGuest;
-use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedKeys, SeedMedia, SeedSpec, posix_root, windows_root};
+use crate::guest::{
+    BaseBuilder, BuildCtx, GuestOs, Guests, Readiness, SeedKeys, SeedMedia, SeedSpec, posix_root, windows_root,
+};
 use crate::host::{Host, names};
 use crate::instance::record::InstanceId;
-use crate::recipe::Shell;
+use crate::recipe::hash::LayerKey;
+use crate::recipe::{Shell, Source};
+use crate::store::layers::{Generation, LayerDir, LayerMeta};
 use crate::test_support::sshd::TestSshd;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
@@ -57,11 +63,31 @@ impl Guests for FakeGuests {
         }))
     }
 
-    fn builder(&self, kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Err(Error::new(
-            ErrorKind::NotSupported,
-            format!("the fake guests build no {} base", kind.as_str()),
-        ))
+    fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
+        Ok(Arc::new(FakeBaseBuilder))
+    }
+}
+
+/// Builds a root layer without an image: one file in `staging`, which the fake backend's machines sit on. Its definition
+/// hash is a constant.
+pub(crate) struct FakeBaseBuilder;
+
+impl BaseBuilder for FakeBaseBuilder {
+    fn build_base(&self, _src: &Source, _ctx: &BuildCtx, staging: &LayerDir) -> Result<LayerMeta> {
+        let disk = staging.path().join(LAYER_DISK);
+        std::fs::write(&disk, b"base disk")
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", disk.display()), e))?;
+        Ok(LayerMeta {
+            key: LayerKey::from_bytes([0; 16]),
+            generation: Generation::from_bytes([0; 16]),
+            parent: None,
+            created: SystemTime::UNIX_EPOCH,
+            expires: None,
+        })
+    }
+
+    fn definition_hash(&self) -> [u8; 32] {
+        [7; 32]
     }
 }
 

@@ -118,6 +118,7 @@ fn dirs_qemu_is_under_cache_and_ssh_under_state(#[fixture(unicode_home)] home: &
     let dirs = Dirs::under(home);
     assert_eq!(dirs.qemu(), dirs.cache.join("qemu"));
     assert_eq!(dirs.ssh(), dirs.state.join("ssh"));
+    assert_eq!(dirs.builds(), dirs.state.join("builds"));
     assert!(
         !dirs.cache.exists() && !dirs.state.exists(),
         "the accessors must not create anything"

@@ -4,6 +4,9 @@
 //!   only after taking it.
 //! - `instance-<id>.op`: taken exclusive by `start`, `stop` and `rm`, shared by `run`, `ssh` and `cp`.
 //!
+//! - `build-<32 hex>.lock`: held (exclusive) for the whole of one `Engine::build`, which names itself by the hex. The
+//!   build's lock file is unlinked by its guard and by `build_dir::sweep`, so it is taken and unlinked as an instance's
+//!   lock files are, and no instance's id is read from it.
 //! - `instances.dir`: a leaf lock around the files inside instance directories and around the lock files. Whoever reads
 //!   `record.json` or `owner.json`, opens a lock file or checks that a lock is still on the file at its name holds it
 //!   shared; whoever renames an instance directory (`rm`, placing a new instance, quarantine) or unlinks lock files
@@ -36,8 +39,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::exit::{NullProgress, Progress};
-use crate::host::{Comparison, Host, symlink_metadata_if_present};
+use crate::host::{Comparison, Host, remove_tree, symlink_metadata_if_present};
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
+use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -128,6 +132,11 @@ impl Locks {
         self.dir.join(format!("instance-{id}.op"))
     }
 
+    /// The lock file of the build `hex` (32 lowercase hex digits).
+    pub(crate) fn build_path(&self, hex: &str) -> PathBuf {
+        self.dir.join(format!("build-{hex}.lock"))
+    }
+
     /// Runs `f` while no instance directory is renamed, if the instance directory `seen` exists; else `None`. `f` may
     /// read and write files inside the directory, but must not take or wait for any other lock.
     ///
@@ -212,18 +221,91 @@ impl Locks {
         between: &mut dyn FnMut(),
         before_look: &mut dyn FnMut(),
     ) -> Result<FileLock> {
+        let (owner, _dir) = self.take_new(&self.owner_path(id), between, before_look)?;
+        drop(self.create(&self.op_path(id))?);
+        Ok(owner)
+    }
+
+    /// Makes the lock file at `path` and takes it exclusive, waiting; `between` and `before_look` are as for
+    /// [`Locks::acquire_owner_new_with`]. The second value is the shared hold of `instances.dir` the file at the name was
+    /// compared under, for a caller that makes another file under it.
+    fn take_new(
+        &self,
+        path: &Path,
+        between: &mut dyn FnMut(),
+        before_look: &mut dyn FnMut(),
+    ) -> Result<(FileLock, Option<FileLock>)> {
         let take = Take {
             scope: Scope::InDir,
             mode: Mode::Exclusive,
             create: true,
             wait: Some(("a lock-file sweep to finish", &NullProgress)),
         };
-        let (owner, _dir) = self
-            .take_current(&self.owner_path(id), &take, &mut || {}, between, before_look)?
+        Ok(self
+            .take_current(path, &take, &mut || {}, between, before_look)?
             .waited()
-            .expect("a take that creates finds its file");
-        drop(self.create(&self.op_path(id))?);
-        Ok(owner)
+            .expect("a take that creates finds its file"))
+    }
+
+    /// Makes the lock file of the build `hex` and takes it exclusive, with its directories. As
+    /// [`Locks::acquire_owner_new_with`], it loops until the file at the name is the one locked, and the first take on a
+    /// new state directory checks its volume. `between` runs after each open, so a test can play the sweeper that
+    /// unlinks the file; `before_look` runs under the shared hold of `instances.dir`, just before the look.
+    pub(crate) fn acquire_build_new_with(
+        &self,
+        hex: &str,
+        between: &mut dyn FnMut(),
+        before_look: &mut dyn FnMut(),
+    ) -> Result<FileLock> {
+        self.take_new(&self.build_path(hex), between, before_look)
+            .map(|(lock, _dir)| lock)
+    }
+
+    /// Tries the lock of the build `hex` without creating anything: [`Probe::Gone`] when no file is at the name.
+    pub(crate) fn try_build(&self, hex: &str) -> Result<Probe> {
+        self.probe(&self.build_path(hex), false, &mut || {}, &mut || {}, &mut || Ok(()))
+    }
+
+    /// Unlinks the lock file of the build `hex` while no one opens a lock file; a file that is not there is as good as
+    /// unlinked. For the holder of that lock.
+    pub(crate) fn remove_build(&self, hex: &str) -> Result<()> {
+        self.remove_build_with(hex, &mut || {})
+    }
+
+    /// `remove_build` with `before_wait` run just before it waits for whoever is opening a lock file.
+    pub(crate) fn remove_build_with(&self, hex: &str, before_wait: &mut dyn FnMut()) -> Result<()> {
+        let path = self.build_path(hex);
+        self.excluding_readers(before_wait, || {
+            remove_tree(&path).map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot delete the lock file {}", path.display()),
+                    e,
+                )
+            })
+        })?
+    }
+
+    /// The hex of every `build-<hex>.lock` in the lock directory, in no particular order; any other name is left out. No
+    /// directory means no builds.
+    pub(crate) fn build_locks(&self) -> Result<Vec<String>> {
+        let cannot = |e| Error::io(ErrorKind::Io, format!("cannot list {}", self.dir.display()), e);
+        if symlink_metadata_if_present(&self.dir).map_err(cannot)?.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut hexes = Vec::new();
+        for entry in std::fs::read_dir(&self.dir).map_err(cannot)? {
+            let name = entry.map_err(cannot)?.file_name();
+            if let Some(hex) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix("build-"))
+                .and_then(|rest| rest.strip_suffix(".lock"))
+                && random::is_hex(hex, 16)
+            {
+                hexes.push(hex.to_owned());
+            }
+        }
+        Ok(hexes)
     }
 
     /// Tries the owner lock like [`Locks::try_owner`], but puts back a missing lock file instead of finding it gone.

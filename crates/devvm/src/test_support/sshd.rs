@@ -20,6 +20,7 @@
 //! | `extended-data-and-hold N` | writes a line to extended-data stream N, then does nothing and never answers |
 //! | `status-then-extended-data N` | writes `before the status` to stdout, sends `exit-status 7`, then a line to stream N, closes |
 //! | `echo ...` | prints the rest of the line, exits 0 |
+//! | `sh -c <script>`, `bash -c <script>` | runs `<script>` as the command if it is one of these, else exits 0 (a shell) |
 //! | `cloud-init status --wait --format json` | prints [`SshdOptions::cloud_init`]'s text, exits with its code |
 //! | `read-stdin` | waits for the client to send EOF, then prints `stdin ended` and exits 0 |
 //! | `stall-on-data` | the connection stops reading and writing once the client sends data on this channel (see [`TestSshd::wait_for_held_request`]) |
@@ -113,6 +114,8 @@ pub(crate) struct State {
     closed_notify: Notify,
     /// How many `exec` commands the server has received.
     started: AtomicUsize,
+    /// Every `exec` command the server has received, in order.
+    commands: Mutex<Vec<String>>,
     started_notify: Notify,
     /// How many commands dispatched to `script` have returned.
     returned: AtomicUsize,
@@ -187,6 +190,7 @@ impl TestSshd {
             closed: Mutex::default(),
             closed_notify: Notify::new(),
             started: AtomicUsize::new(0),
+            commands: Mutex::default(),
             started_notify: Notify::new(),
             returned: AtomicUsize::new(0),
             script_panicked: AtomicBool::new(false),
@@ -271,6 +275,11 @@ impl TestSshd {
         wait_until(&self.state.closed_notify, || {
             !self.state.closed.lock().unwrap().is_empty()
         });
+    }
+
+    /// Every `exec` command the server has received, in order, as the client sent it.
+    pub fn commands(&self) -> Vec<String> {
+        self.state.commands.lock().unwrap().clone()
     }
 
     /// Blocks until the server has received `count` `exec` commands in total: the commands are then in flight on the
@@ -587,9 +596,10 @@ impl Handler for Connection {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
+        let command = String::from_utf8_lossy(data).into_owned();
+        self.state.commands.lock().unwrap().push(command.clone());
         self.state.started.fetch_add(1, Ordering::SeqCst);
         self.state.started_notify.notify_waiters();
-        let command = String::from_utf8_lossy(data).into_owned();
         let handle = session.handle();
         let words: Vec<&str> = command.split_whitespace().collect();
         match words.as_slice() {
@@ -710,6 +720,15 @@ async fn finish(handle: &russh::server::Handle, channel: ChannelId, status: u32)
 }
 
 async fn script(state: Arc<State>, handle: russh::server::Handle, channel: ChannelId, command: String) {
+    // A shell runs its script: one of the commands above if it is one, else it succeeds, as a shell whose script this
+    // server cannot run.
+    let (command, shell) = match command.split_once(char::is_whitespace) {
+        Some((program @ ("sh" | "bash"), rest)) => match rest.trim_start().strip_prefix("-c") {
+            Some(script) => (script.trim_start().to_owned(), Some(program)),
+            None => (command, None),
+        },
+        _ => (command, None),
+    };
     let words: Vec<&str> = command.split_whitespace().collect();
     if let ["cloud-init", "status", "--wait", "--format", "json"] = words.as_slice()
         && let Some((code, reply)) = &state.options.cloud_init
@@ -833,6 +852,7 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
             let _ = handle.data(channel, format!("{}\n", rest.join(" ")).into_bytes()).await;
             finish(&handle, channel, 0).await;
         }
+        _ if shell.is_some() => finish(&handle, channel, 0).await,
         _ => {
             let _ = handle
                 .extended_data(

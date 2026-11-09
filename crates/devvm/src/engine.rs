@@ -26,6 +26,8 @@ use crate::store::fetch::{Fetcher, Transport};
 use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
 
+mod build;
+mod build_dir;
 mod checks;
 pub(crate) mod keys;
 pub(crate) mod ready;
@@ -172,10 +174,13 @@ impl Engine {
     /// process half-created answers "already exists". `from_env` calls it once; call it again for a pass in a
     /// long-lived process.
     ///
-    /// Also removes the `ssh_config` entries of instances that no longer exist; they live in `<state>/ssh`, outside
-    /// `instances/`, so `Registry::reap` does not see them.
+    /// Three passes: `Registry::reap` (`instances/` and the files of dead machines), `build_dir::sweep` (the directories
+    /// and lock files of builds that are no longer running) and the sweep of `ssh_config` entries. The last two look at
+    /// what lives outside `instances/`, so `Registry::reap` does not see them: `<state>/builds` and `<state>/ssh`, where
+    /// the entries of instances that no longer exist are.
     pub fn reap(&self) {
         self.registry.reap();
+        build_dir::sweep(self);
         self.sweep_ssh_configs();
     }
 

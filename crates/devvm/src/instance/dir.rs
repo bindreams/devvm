@@ -76,6 +76,11 @@ impl InstanceDir {
         &self.path
     }
 
+    /// The instance's disk, a copy-on-write overlay of its layer.
+    pub(crate) fn disk(&self) -> PathBuf {
+        self.path.join("disk.img")
+    }
+
     fn gone(&self) -> Error {
         Error::new(ErrorKind::NotFound, format!("instance {} is gone", self.name))
     }
