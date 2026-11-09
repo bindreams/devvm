@@ -24,6 +24,9 @@ pub const ACP_1252: skuld::Label;
 pub const UNICODE_SOCKET_DIR: skuld::Label;
 
 #[skuld::label]
+pub const UNICODE_BASE: skuld::Label;
+
+#[skuld::label]
 pub const SYMLINKS: skuld::Label;
 
 #[skuld::label]

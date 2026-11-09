@@ -8,6 +8,7 @@ skuld::default_labels!(VM);
 
 pub(crate) mod backend;
 mod build;
+mod fixture;
 mod host;
 mod qmp;
 mod storage;

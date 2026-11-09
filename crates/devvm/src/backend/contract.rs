@@ -34,8 +34,9 @@ pub(crate) trait ContractTarget {
     /// Another OS process launches the spec, resumes and releases it, prints the `MachineRecord`, and exits.
     fn launch_elsewhere(&self, spec: &MachineSpec) -> crate::Result<MachineRecord>;
 
-    /// Another OS process attaches to the machine `record` names, waits until it has booted (`await_booted`), shuts
-    /// it down and exits. Returns once that process has exited, with an error if it failed.
+    /// Another OS process attaches to the machine `record` names and shuts it down, after the machine has booted far
+    /// enough to act on it (`await_booted`; the waiting may be done anywhere). Returns once that process has exited,
+    /// with an error if it failed.
     fn shutdown_elsewhere(&self, record: &MachineRecord) -> crate::Result<()>;
 
     /// Whether the machine launched from `spec` has ever run. Observes it without an endpoint: a frozen machine's
@@ -51,6 +52,12 @@ pub(crate) trait ContractTarget {
     /// record names the files it made from the launch on, before the resume, and a machine that was killed or shut down
     /// leaves none of them.
     fn leftover_files(&self) -> Vec<PathBuf>;
+
+    /// The size of the instance disk of every machine, as `Storage::create_instance_disk` takes it. The default is the
+    /// smallest a firmware-only machine needs; a target whose layer holds a guest returns `None`.
+    fn disk_size(&self) -> Option<u64> {
+        Some(1 << 20)
+    }
 
     /// Waits until a resumed machine has booted far enough to act on a graceful shutdown. A machine that needs no
     /// guest keeps this default.
@@ -78,7 +85,7 @@ fn prepared(target: &dyn ContractTarget, world: &World, root: &Path, n: u32) -> 
     target
         .backend()
         .storage()
-        .create_instance_disk(world.parent.tip().dir(), &spec.disk, Some(1 << 20))
+        .create_instance_disk(world.parent.tip().dir(), &spec.disk, target.disk_size())
         .unwrap();
     spec
 }

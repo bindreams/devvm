@@ -3,18 +3,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::backend::qemu::qemu_parts;
+use super::fixture::{Roots, engine_in};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::DISK;
-use crate::config::Config;
-use crate::engine::engine_tests::engine_with;
-use crate::exit::StderrProgress;
-use crate::host;
 use crate::recipe::Recipe;
-use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::qemu::{qemu_img_info, qemu_sidecar, scratch_run, write_config};
-use crate::{BuildOptions, Dirs, Image};
+use crate::test_support::qemu::{qemu_img_info, qemu_sidecar, socket_dir};
+use crate::{BuildOptions, Image};
 
 const DISK_20_GIB: u64 = 20 << 30;
 
@@ -52,38 +47,8 @@ fn a_default_size_build_then_a_20_gib_build_share_no_layer_and_commit_20_gib_lay
     #[fixture(unicode_home)] home: &Path,
 ) {
     // The runtime directory is short, so that a control socket in it fits the host's limit.
-    let run = scratch_run();
-    let state = ["config", "data", "cache", "state"].map(|name| {
-        (
-            format!("XDG_{}_HOME", name.to_uppercase()),
-            home.join(name).into_os_string(),
-        )
-    });
-    let var = |name: &str| {
-        if name == "XDG_RUNTIME_DIR" {
-            return Some(run.path().as_os_str().to_owned());
-        }
-        state
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.clone())
-    };
-    let dirs = Dirs::from_lookup(Some(home.to_path_buf()), &var, &|| {
-        unreachable!("XDG_RUNTIME_DIR is set")
-    })
-    .unwrap();
-    // The QEMU of the fixture, used in place.
-    write_config(
-        &dirs,
-        &Config {
-            qemu_path: Some(install.bin.clone()),
-        },
-    );
-    let progress = Arc::new(StderrProgress);
-    let transport = HttpTransport::new().expect("an HTTP client");
-    let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
-    let parts = qemu_parts(&dirs, fetcher, host::current(), progress.clone());
-    let engine = engine_with(dirs, host::current(), Some(parts.backend), parts.guests, progress);
+    let roots = Roots::new(Some(&socket_dir())).unwrap();
+    let engine = engine_in(&roots.dirs, install);
 
     let default = engine.build(&recipe(home, None), &BuildOptions::default()).unwrap();
     let bigger = engine
