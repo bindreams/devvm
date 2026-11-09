@@ -282,10 +282,8 @@ impl TestSshd {
     }
 
     /// Blocks until `count` commands dispatched to `script` have returned, across all connections; fails if one
-    /// panicked. A script returning says nothing about its channel: `hold`, `write-once-and-hold`,
-    /// `extended-data-and-hold` and `status-then-marker` return at once and leave the channel open. It is a check that a
-    /// command stopped only for a script that returns when its command ends, such as `write-forever`, which returns on
-    /// a channel close and on the end of the connection.
+    /// panicked. Only meaningful for scripts that return when their command ends, such as `write-forever`: the `*-hold`
+    /// scripts and `status-then-marker` return at once and leave the channel open.
     pub fn wait_for_scripts_to_return(&self, count: usize) {
         wait_until(&self.state.returned_notify, || {
             self.state.returned.load(Ordering::SeqCst) >= count || self.state.script_panicked.load(Ordering::SeqCst)
@@ -483,7 +481,7 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
 struct Connection {
     state: Arc<State>,
     index: usize,
-    /// Snapshot at accept; see accept_loop.
+    /// The client key trusted when this connection was accepted (see `accept_loop`).
     client: PublicKey,
     channels: HashMap<ChannelId, Channel<Msg>>,
     /// Fired by the `drop-connection` script: the TCP connection is dropped without a word.

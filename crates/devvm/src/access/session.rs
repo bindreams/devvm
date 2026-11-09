@@ -155,8 +155,7 @@ impl VmExit {
         VmExit { ended: None }
     }
 
-    /// The watcher's verdict so far; `None` while the VM lives and for [`VmExit::never`]. A watcher whose thread ended
-    /// without a verdict (it panicked) is [`WatchEnd::Unwatched`].
+    /// The watcher's verdict so far; `None` while the VM lives and for [`VmExit::never`].
     pub(crate) fn verdict(&self) -> Option<WatchEnd> {
         let receiver = self.ended.as_ref()?;
         // Closed first: a thread that sent its verdict did so before it dropped the sender.
@@ -168,7 +167,6 @@ impl VmExit {
         }
     }
 
-    /// Whether [`VmExit::verdict`] is `Some`.
     pub(crate) fn has_ended(&self) -> bool {
         self.verdict().is_some()
     }
