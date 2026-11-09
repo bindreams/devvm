@@ -117,9 +117,12 @@ impl Engine {
                 )
                 .map(Some)
                 .map_err(|error| {
-                    let kind = error.kind();
-                    let what = format!("snapshotting the files of copy to {to}");
-                    error.with_context(kind, step_of(index, flat.steps.len(), &what))
+                    in_step(
+                        error,
+                        index,
+                        flat.steps.len(),
+                        &format!("snapshotting the files of copy to {to}"),
+                    )
                 }),
                 Step::Run { .. } | Step::Set(_) => Ok(None),
             })
@@ -201,8 +204,7 @@ impl StepRun<'_> {
                 if named.get() {
                     return error;
                 }
-                let kind = error.kind();
-                error.with_context(kind, self.step_of("building the step's layer"))
+                in_step(error, self.index, self.flat.steps.len(), "building the step's layer")
             })
     }
 
@@ -330,6 +332,12 @@ fn step_of(index: usize, total: usize, what: &str) -> String {
     format!("step {} of {total} ({what})", index + 1)
 }
 
+/// `error` with `step N of M (what)` in front of its message, for the step at `index` of `total`.
+fn in_step(error: Error, index: usize, total: usize, what: &str) -> Error {
+    let kind = error.kind();
+    error.with_context(kind, step_of(index, total, what))
+}
+
 type StepResult<T> = std::result::Result<T, StepFailure>;
 
 /// Why a step failed, with what it was doing. It is the only error the work of a step returns, and nothing converts an
@@ -349,10 +357,7 @@ impl StepFailure {
     /// The error in the words of `step`: `step N of M (what): <error>`, or `step N of M (what) ended with <status>`.
     fn into_error(self, step: &StepRun<'_>) -> Error {
         match self {
-            StepFailure::Failed { what, error } => {
-                let kind = error.kind();
-                error.with_context(kind, step.step_of(&what))
-            }
+            StepFailure::Failed { what, error } => in_step(error, step.index, step.flat.steps.len(), &what),
             StepFailure::Ended { what, kind, status } => Error::new(
                 kind,
                 format!("{} ended with {}", step.step_of(&what), status.describe()),

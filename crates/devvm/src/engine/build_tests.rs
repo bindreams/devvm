@@ -127,7 +127,12 @@ pub(super) fn no_instance_or_build_is_left(fx: &Fixture) {
 
 /// A one-step build over `backend` fails with an error that names the step, `context` (the phase it was in) and
 /// `cause`; the step's layer is not in the store and no instance or build directory is left.
-pub(super) fn assert_a_failed_phase_commits_nothing(home: &Path, backend: FakeBackend, context: &str, cause: &str) -> Fixture {
+pub(super) fn assert_a_failed_phase_commits_nothing(
+    home: &Path,
+    backend: FakeBackend,
+    context: &str,
+    cause: &str,
+) -> Fixture {
     let fx = fixture_over(home, backend);
     let recipe = recipe(home, &["run: echo one"]);
     let keys = keys_of(&recipe);
@@ -302,5 +307,9 @@ fn a_carriage_return_ends_a_line_of_output_like_a_line_feed() {
 fn a_carriage_return_and_line_feed_are_one_line_end_wherever_the_writes_split_them() {
     assert_eq!(lines_reported(&[b"a\r\nb\r\n"]), ["a", "b"]);
     assert_eq!(lines_reported(&[b"a\r", b"\nb\n"]), ["a", "b"]);
-    assert_eq!(lines_reported(&[b"a\n\nb\n"]), ["a", "", "b"], "an empty line is a line");
+    assert_eq!(
+        lines_reported(&[b"a\n\nb\n"]),
+        ["a", "", "b"],
+        "an empty line is a line"
+    );
 }

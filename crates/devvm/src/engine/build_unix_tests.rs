@@ -14,12 +14,7 @@ const DESTINATION: &str = "sp ace;semi &amp 'quote' \"double\" $(dollar) `tick` 
 
 /// Runs the extraction of `archive` into `destination` as the guest would.
 fn extract(destination: &Path, archive: &Path) -> ExitStatus {
-    let command = extract_command(
-        &LinuxGuest,
-        destination.to_str().unwrap(),
-        archive.to_str().unwrap(),
-    )
-    .unwrap();
+    let command = extract_command(&LinuxGuest, destination.to_str().unwrap(), archive.to_str().unwrap()).unwrap();
     std::process::Command::new(&command.argv[0])
         .args(&command.argv[1..])
         .status()

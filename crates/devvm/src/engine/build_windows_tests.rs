@@ -3,7 +3,11 @@
 
 use std::path::Path;
 
-use super::build_tests::{Fixture, assert_a_failed_phase_commits_nothing, fixture, no_instance_or_build_is_left, ran, recipe, recipe_in, keys_of};
+use super::build_tests::{
+    Fixture, assert_a_failed_phase_commits_nothing, fixture, keys_of, no_instance_or_build_is_left, ran, recipe,
+    recipe_in,
+};
+use crate::backend::fake::FakeBackend;
 use crate::copy::copy_tests::{add_all, new_repo, put};
 use crate::engine::ListFilter;
 use crate::guest::Guests;
@@ -11,7 +15,6 @@ use crate::guest::fake::FakeGuests;
 use crate::recipe::hash::LayerKey;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::TestHost;
-use crate::backend::fake::FakeBackend;
 use crate::{BuildOptions, ErrorKind, GuestKind, Image};
 
 fn layer_keys(image: &Image) -> Vec<LayerKey> {
@@ -26,7 +29,6 @@ fn extractions(fx: &Fixture) -> Vec<String> {
         .filter(|command| command.starts_with("sh -c ") && command.contains("tar -xf"))
         .collect()
 }
-
 
 #[skuld::test]
 fn build_runs_each_step_once_in_order_and_publishes_one_layer_per_step(#[fixture(unicode_home)] home: &Path) {
