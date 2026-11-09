@@ -175,6 +175,18 @@ impl Instance {
             .message(&format!("removed instance {}", dir.name()));
         Ok(())
     }
+
+    /// The `ssh_config` file through which the system `ssh` reaches this instance by its name. Fails with
+    /// `unavailable`, as `run_to` does, when the instance's machine is not running.
+    ///
+    /// The check is made once; nothing holds the instance while `ssh` runs, so a `stop` or `rm` of the instance ends
+    /// the session.
+    pub fn ssh_config(&self) -> Result<PathBuf> {
+        let dir = self.dir();
+        let op = dir.op_shared()?;
+        read_target(&self.engine, dir, &op)?;
+        Ok(self.engine.ssh_configs().config())
+    }
 }
 
 impl Instance {
@@ -196,20 +208,6 @@ impl Instance {
     pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
         let (guest, session, _op) = self.reached()?;
         ops::run_to(&self.engine, &*guest, &session, cmd, out, err)
-    }
-}
-
-impl Instance {
-    /// The `ssh_config` file through which the system `ssh` reaches this instance by its name. Fails with
-    /// `unavailable`, as `run_to` does, when the instance's machine is not running.
-    ///
-    /// The check is made once; nothing holds the instance while `ssh` runs, so a `stop` or `rm` of the instance ends
-    /// the session.
-    pub fn ssh_config(&self) -> Result<PathBuf> {
-        let dir = self.dir();
-        let op = dir.op_shared()?;
-        read_target(&self.engine, dir, &op)?;
-        Ok(self.engine.ssh_configs().config())
     }
 }
 

@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 
 use devvm::{Arch, ErrorKind, Network, RunAs};
 
-use super::{
-    Streaming, Transfer, build_options, copy_direction, guest_command, ignore_console_interrupts, start_options,
-};
+use super::{Streaming, Transfer, build_options, copy_direction, guest_command, start_options};
 use crate::args::{CpSide, VmFlags};
 
 fn local(path: &str) -> CpSide {
@@ -118,10 +116,4 @@ fn a_failed_write_is_the_error_and_flushes_nothing() {
     }
     let error = Streaming(Closed).write_all(b"x").unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
-}
-
-#[skuld::test]
-fn ignoring_console_interrupts_can_be_asked_for_again() {
-    ignore_console_interrupts().unwrap();
-    ignore_console_interrupts().unwrap();
 }

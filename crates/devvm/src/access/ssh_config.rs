@@ -253,7 +253,7 @@ impl SshConfigDir {
         let glob = format!("{dir}/*{CONF_SUFFIX}");
         let text = format!("Include {}\n", quoted(&glob));
         let _lock = self.lock()?;
-        write_if_different(&self.dir.join(CONFIG), &text)
+        write_if_different(&self.config(), &text)
     }
 
     /// Removes the conf of every instance `live` denies, and the temporary files a killed writer left. Returns what it

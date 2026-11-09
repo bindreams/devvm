@@ -6,6 +6,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Barrier};
 
 use devvm::exit::{ExitStatus, ExitWidth, NullProgress};
+use devvm::host_exit_width;
 use devvm::recipe::hash::LayerKey;
 use devvm::store::fetch::{Artifact, Fetcher, Response, Resume, Transport};
 use devvm::store::layers::{BuildRequest, Built, LayerStore, SystemClock};
@@ -144,9 +145,8 @@ fn fixed_result(args: &[String]) -> i32 {
         )),
         other => panic!("unknown result {other:?}"),
     };
-    // Full32, so a guest's 125 reaches the exit code as it is: that is what the status file exists to tell apart.
-    // Under LowByte `ExitWidth::exit_code` maps it to 1.
-    devvm_cli::main_entry_with(ExitWidth::Full32, cli_args, Deps::real(), &|_, _| result.clone())
+    // The width `main` uses: under `LowByte` a guest's 125 exits as 1; the status file still says 125.
+    devvm_cli::main_entry_with(host_exit_width(), cli_args, Deps::real(), &|_, _| result.clone())
 }
 
 fn request() -> BuildRequest {
@@ -263,7 +263,11 @@ fn a_guest_that_exits_125_yields_a_guest_status_file() {
         .args(["guest-125", "--status-file", file.to_str().unwrap(), "ls"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(125));
+    let expected = match host_exit_width() {
+        ExitWidth::Full32 => 125,
+        ExitWidth::LowByte => 1,
+    };
+    assert_eq!(output.status.code(), Some(expected));
     assert_eq!(status(&file)["guest"]["code"], 125);
     assert!(status(&file).get("devvm").is_none());
 }

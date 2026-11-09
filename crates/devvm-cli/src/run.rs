@@ -88,14 +88,12 @@ fn interactive_ssh(instance: &Instance) -> Result<ExitStatus> {
 /// decides what an interrupt does, and this process then reports its exit code. The handler stays for the rest of the
 /// process, which ends with `ssh`.
 fn ignore_console_interrupts() -> Result<()> {
-    match ctrlc::set_handler(|| {}) {
-        // An earlier call already made them do nothing.
-        Ok(()) | Err(ctrlc::Error::MultipleHandlers) => Ok(()),
-        Err(e) => Err(Error::new(
+    ctrlc::set_handler(|| {}).map_err(|e| {
+        Error::new(
             ErrorKind::Internal,
             format!("cannot make this process ignore Ctrl-C: {e}"),
-        )),
-    }
+        )
+    })
 }
 
 /// The `cp` command: one side is a path on this host and the other is `INSTANCE:PATH`.
