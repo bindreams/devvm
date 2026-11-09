@@ -378,6 +378,14 @@ struct QemuGuestTarget {
 }
 
 impl QemuGuestTarget {
+    /// Connects to the guest's `sshd` under the engine's boot bound and waits for cloud-init to finish: the guest then
+    /// has `systemd-logind` listening for the power key.
+    fn await_record(&self, record: &MachineRecord) -> Result<()> {
+        let name = InstanceName::parse(GUEST_NAME)?;
+        let target = target_for(&name, record, &self.keys)?;
+        connect_ready(&self.engine, &LinuxGuest, &name, &target, record).map(drop)
+    }
+
     fn new(install: &Arc<QemuInstall>, vm: &VmEngine, home: &Path) -> QemuGuestTarget {
         let keys = InstanceKeys::generate().unwrap();
         let keys_dir = home.join("keys");
@@ -425,8 +433,7 @@ impl ContractTarget for QemuGuestTarget {
 
     /// Waits here for the guest, so that the other process never sends the powerdown to one that cannot act on it.
     fn shutdown_elsewhere(&self, record: &MachineRecord) -> Result<()> {
-        let machine = self.backend().attach(record)?;
-        self.await_booted(&*machine)?;
+        self.await_record(record)?;
         self.qemu.shutdown_elsewhere(record)
     }
 
@@ -442,13 +449,8 @@ impl ContractTarget for QemuGuestTarget {
         self.qemu.leftover_files()
     }
 
-    /// Connects to the guest's `sshd` under the engine's boot bound and waits for cloud-init to finish: the guest then
-    /// has `systemd-logind` listening for the power key.
     fn await_booted(&self, machine: &dyn Machine) -> Result<()> {
-        let name = InstanceName::parse(GUEST_NAME)?;
-        let record = machine.record();
-        let target = target_for(&name, &record, &self.keys)?;
-        connect_ready(&self.engine, &LinuxGuest, &name, &target, &record).map(drop)
+        self.await_record(&machine.record())
     }
 }
 

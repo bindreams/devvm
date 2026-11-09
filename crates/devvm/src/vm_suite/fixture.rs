@@ -17,9 +17,9 @@ use crate::engine::Engine;
 use crate::engine::engine_tests::engine_with;
 use crate::exit::StderrProgress;
 use crate::host;
-use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
-use crate::test_groups::{Group, unicode_base};
+use crate::test_groups::{Group, host_is_windows, unicode_base};
+use crate::test_harness::GUEST;
 use crate::test_support::fixtures::UNICODE_DIR;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir, write_config};
 
@@ -30,10 +30,11 @@ pub(super) const USERS: &str = r"C:\Users";
 const SHARED_CACHE: &str = "devvm-test-cache";
 
 /// Where the directory named [`UNICODE_DIR`] is: `C:\Users` where `unicode_base` is on, else the temporary directory.
-fn base_dir() -> PathBuf {
+/// Where the group is on and the host is not Windows the error says so: `C:\Users` there is a relative path.
+fn base_dir() -> Result<PathBuf, String> {
     match unicode_base::enabled() {
-        Ok(()) => PathBuf::from(USERS),
-        Err(_) => std::env::temp_dir(),
+        Ok(()) => host_is_windows(unicode_base::OPT_OUT).map(|()| PathBuf::from(USERS)),
+        Err(_) => Ok(std::env::temp_dir()),
     }
 }
 
@@ -41,7 +42,7 @@ fn base_dir() -> PathBuf {
 /// when this is dropped; `cache` is `<base>\<UNICODE_DIR>\devvm-test-cache`, which every process shares and nothing
 /// removes, so the QEMU build and the Ubuntu image are fetched once per machine.
 pub(super) struct Roots {
-    top: PathBuf,
+    _top: skuld::TempDir,
     pub dirs: Dirs,
 }
 
@@ -50,39 +51,38 @@ impl Roots {
     /// ([`socket_dir`]); `None` leaves the runtime directory unnamed. A base that cannot be made is an error naming it
     /// and how to turn the group off; it never falls back to another.
     pub(super) fn new(run: Option<&Path>) -> Result<Roots, String> {
-        let user = base_dir().join(UNICODE_DIR);
-        let top = user.join(hex::encode(random::bytes::<4>()));
+        let user = base_dir()?.join(UNICODE_DIR);
+        let make = |dir: &Path| {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("cannot make {}: {e}; {}", dir.display(), unicode_base::OPT_OUT))
+        };
+        make(&user)?;
+        let top = skuld::TempDir::new_in(&user)
+            .map_err(|e| format!("cannot make a run directory in {}: {e}", user.display()))?;
         let cache = user.join(SHARED_CACHE);
         let vars: Vec<(String, PathBuf)> = ["config", "data", "state"]
             .iter()
-            .map(|name| (*name, top.join(name)))
+            .map(|name| (*name, top.path().join(name)))
             .chain([("cache", cache)])
             .map(|(name, dir)| (format!("XDG_{}_HOME", name.to_uppercase()), dir))
             .chain(run.map(|run| ("XDG_RUNTIME_DIR".to_owned(), run.to_path_buf())))
             .collect();
-        for (name, dir) in vars.iter().filter(|(name, _)| name != "XDG_RUNTIME_DIR") {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("cannot make {name} {}: {e}; {}", dir.display(), unicode_base::OPT_OUT))?;
+        for (_, dir) in vars.iter().filter(|(name, _)| name != "XDG_RUNTIME_DIR") {
+            make(dir)?;
         }
         let var = |name: &str| -> Option<OsString> {
             vars.iter()
                 .find(|(key, _)| key == name)
                 .map(|(_, dir)| dir.clone().into_os_string())
         };
-        let dirs = Dirs::from_lookup(Some(top.clone()), &var, &|| {
+        let dirs = Dirs::from_lookup(Some(top.path().to_path_buf()), &var, &|| {
             Err(crate::Error::new(
                 crate::ErrorKind::Config,
                 "these roots name no runtime directory",
             ))
         })
         .map_err(|e| format!("cannot resolve the roots: {e}"))?;
-        Ok(Roots { top, dirs })
-    }
-}
-
-impl Drop for Roots {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.top);
+        Ok(Roots { _top: top, dirs })
     }
 }
 
@@ -108,13 +108,13 @@ pub(super) fn engine_in(dirs: &Dirs, install: &QemuInstall) -> Arc<Engine> {
 }
 
 /// The engine the tests of a guest share, with the roots it reads: its layer store holds the Ubuntu base once per test
-/// process.
+/// process. A test that uses it boots a guest, so it runs alone among such tests (the `GUEST` label).
 pub(super) struct VmEngine {
     pub engine: Arc<Engine>,
     _roots: Roots,
 }
 
-#[skuld::fixture(scope = process)]
+#[skuld::fixture(scope = process, serial = GUEST, labels = [crate::test_harness::GUEST])]
 pub(super) fn vm_engine(#[fixture(qemu_sidecar)] install: &Arc<QemuInstall>) -> Result<VmEngine, String> {
     let roots = Roots::new(Some(&socket_dir()))?;
     let engine = engine_in(&roots.dirs, install);
@@ -124,8 +124,8 @@ pub(super) fn vm_engine(#[fixture(qemu_sidecar)] install: &Arc<QemuInstall>) -> 
 // No VM ===============================================================================================================
 
 /// What a user's directories are: the four XDG variables name directories below the user's, and `devvm`'s own are in
-/// them. Where `unicode_base` is on the base is the literal `C:\Users`, so a drop of the variable from a workflow fails
-/// here, not by quietly testing the temporary directory.
+/// them. With `unicode_base` on the base is the literal `C:\Users`. This runs in the Test job's Windows leg, which
+/// sets the group on, and checks the roots are there and not in the temporary directory.
 #[skuld::test(labels = [])]
 fn dirs_resolve_all_four_xdg_variables_under_the_users_unicode_root(#[fixture(unicode_base)] _group: &Group) {
     let roots = Roots::new(None).unwrap();

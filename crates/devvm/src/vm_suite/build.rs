@@ -3,12 +3,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use super::fixture::{Roots, engine_in};
+use super::fixture::{VmEngine, vm_engine};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::DISK;
 use crate::recipe::Recipe;
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::qemu::{qemu_img_info, qemu_sidecar, socket_dir};
+use crate::test_support::qemu::{qemu_img_info, qemu_sidecar};
 use crate::{BuildOptions, Image};
 
 const DISK_20_GIB: u64 = 20 << 30;
@@ -44,11 +44,10 @@ fn recipe(home: &Path, disk: Option<&str>) -> Recipe {
 #[skuld::test]
 fn a_default_size_build_then_a_20_gib_build_share_no_layer_and_commit_20_gib_layers(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(vm_engine)] vm: &VmEngine,
     #[fixture(unicode_home)] home: &Path,
 ) {
-    // The runtime directory is short, so that a control socket in it fits the host's limit.
-    let roots = Roots::new(Some(&socket_dir())).unwrap();
-    let engine = engine_in(&roots.dirs, install);
+    let engine = &vm.engine;
 
     let default = engine.build(&recipe(home, None), &BuildOptions::default()).unwrap();
     let bigger = engine

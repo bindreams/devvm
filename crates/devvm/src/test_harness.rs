@@ -4,6 +4,11 @@
 #[skuld::label]
 pub const VM: skuld::Label;
 
+/// Selects the tests that boot a Linux guest, and is what `vm_engine` is serial with: they run one at a time, because
+/// several 2 vCPU, 2 GiB guests at once on a 4 vCPU runner can pass the boot bound under load.
+#[skuld::label]
+pub const GUEST: skuld::Label;
+
 /// Selects the tests of the SFTP client (`access/sftp_tests.rs`), which also run against OpenSSH's `sftp-server`.
 #[skuld::label]
 pub const SFTP: skuld::Label;
