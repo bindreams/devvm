@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::Engine;
 use super::build_dir::BuildDir;
-use crate::access::paths::{check_guest_path, expand_guest_path};
+use crate::backend::ShutdownOutcome;
 use crate::copy::{self, Snapshot};
 use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
@@ -31,6 +31,7 @@ impl Engine {
     /// A step runs in a transient instance of the layer before it, which `Image::start` gives a lifetime of this
     /// process: it is shut down gracefully, its disk is committed as the step's layer, and the instance is destroyed.
     /// Nothing is committed for a step that fails or whose guest does not shut down, and nothing is published for it.
+    /// A guest that was already down when asked (it crashed, or the step powered it off) did not shut down.
     /// The disk of every instance is the recipe's `resources.disk`, as the keys of the layers say.
     ///
     /// Two builds of one recipe at once run each step once: the second waits for the layer store's build lock, then
@@ -203,7 +204,16 @@ impl StepRun<'_> {
                 return Err(Error::new(ErrorKind::Internal, "a set step reached a build"));
             }
         }
-        vm.shutdown()?;
+        if vm.shutdown()? == ShutdownOutcome::AlreadyDown {
+            return Err(Error::new(
+                ErrorKind::ConnectionLost,
+                format!(
+                    "the guest of step {} of {} was down before it was asked to shut down; nothing is committed",
+                    self.index + 1,
+                    self.flat.steps.len()
+                ),
+            ));
+        }
         engine
             .backend()?
             .storage()
@@ -232,18 +242,22 @@ impl StepRun<'_> {
         let snapshot = self
             .snapshot
             .ok_or_else(|| Error::new(ErrorKind::Internal, "a copy step has no snapshot"))?;
-        let sftp = vm.sftp()?;
-        let home = sftp.home()?;
-        // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved here.
-        let destination = guest_destination(&**self.guest, to, &home)?;
         let archive = format!("/tmp/devvm-copy-{}.tar", hex::encode(random::bytes::<16>()));
-        sftp.copy_in(
-            &snapshot.archive,
-            &archive,
-            self.engine.host,
-            self.guest,
-            self.engine.progress.as_ref(),
-        )?;
+        let destination = {
+            // The op lock is held for the whole upload; the extraction below takes its own.
+            let (_op, sftp) = vm.sftp()?;
+            // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved here.
+            let (expanded, home) = sftp.expanded(to)?;
+            let destination = guest_destination(&**self.guest, &expanded, &home)?;
+            sftp.copy_in(
+                &snapshot.archive,
+                &archive,
+                self.engine.host,
+                self.guest,
+                self.engine.progress.as_ref(),
+            )?;
+            destination
+        };
         let command = extract_command(&**self.guest, &destination, &archive)?;
         self.execute(vm, &command, &format!("copy to {to}"))
     }
@@ -280,16 +294,14 @@ fn describe(step: &Step) -> String {
     }
 }
 
-/// The guest path `to` names, as an absolute path: a `~` is `home`, and a path with no root of the guest's is below
-/// `home` (the directory a login shell starts in). `~user` is a `usage` error.
-fn guest_destination(guest: &dyn GuestOs, to: &str, home: &str) -> Result<String> {
-    check_guest_path(to)?;
-    let expanded = expand_guest_path(to, home);
-    let (root, _) = guest.split_root(&expanded)?;
+/// The guest path `expanded` (a destination with its `~` expanded, `Sftp::expanded`) as an absolute path: a path with
+/// no root of the guest's is below `home` (the directory a login shell starts in).
+fn guest_destination(guest: &dyn GuestOs, expanded: &str, home: &str) -> Result<String> {
+    let (root, _) = guest.split_root(expanded)?;
     if root.is_empty() {
         return Ok(format!("{}/{expanded}", home.trim_end_matches('/')));
     }
-    Ok(expanded)
+    Ok(expanded.to_owned())
 }
 
 /// The one guest command of a `copy` step: makes `destination`, extracts `archive` into it, removes `archive`

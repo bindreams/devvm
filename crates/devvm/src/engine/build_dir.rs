@@ -80,8 +80,9 @@ impl Drop for BuildDir<'_> {
 
 /// Removes the directory and the lock file of every build that is no longer running: the lock is free, or its file is
 /// not there. A build whose lock is held is skipped, and so is a name that is not a build's. A problem is a warning on
-/// the progress channel that the next sweep retries, and nothing the sweep could not look at is deleted. Creates
-/// nothing.
+/// the progress channel that the next sweep retries, and nothing the sweep could not look at is deleted. A directory
+/// with no lock file is removed under `dead.lock`, which it only tries, so another deleter's tree is left to the next
+/// sweep. Creates nothing.
 pub(super) fn sweep(engine: &Engine) {
     let locks = engine.registry().locks();
     let progress = engine.progress();
@@ -101,9 +102,12 @@ pub(super) fn sweep(engine: &Engine) {
                     progress.message(e.message());
                 }
             }
-            Ok(Probe::Gone) => {
-                remove_directory(engine, &hex);
-            }
+            // No lock file to serialize on: two sweeps removing one tree make each other fail on Windows, so the one that
+            // does not hold `dead.lock` leaves it to the next sweep.
+            Ok(Probe::Gone) => match locks.deleting(|| remove_directory(engine, &hex)) {
+                Ok(_) => {}
+                Err(e) => progress.message(&format!("cannot delete build {hex}: {}", e.message())),
+            },
             Err(e) => progress.message(&format!("cannot look at the lock of build {hex}: {}", e.message())),
         }
     }
@@ -140,14 +144,20 @@ fn list_directories(engine: &Engine, into: &mut BTreeSet<String>) {
         let Some(name) = name.to_str().filter(|name| random::is_hex(name, 16)) else {
             continue;
         };
-        match entry.file_type() {
-            Ok(kind) if kind.is_dir() => {
+        match is_directory(&entry.path()) {
+            Ok(true) => {
                 into.insert(name.to_owned());
             }
-            Ok(_) => {}
+            Ok(false) => {}
             Err(e) => progress.message(&format!("cannot tell what {} is: {e}", entry.path().display())),
         }
     }
+}
+
+/// Whether `path` is a directory, not a link to one. A path that is gone is not: a build that finished since the
+/// listing took its directory with it.
+fn is_directory(path: &Path) -> std::io::Result<bool> {
+    Ok(symlink_metadata_if_present(path)?.is_some_and(|meta| meta.is_dir()))
 }
 
 /// Removes `<state>/builds/<hex>`; whether nothing is left of it. A failure is a warning.

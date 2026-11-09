@@ -10,7 +10,7 @@ use super::QemuMachine;
 use crate::Arch;
 use crate::ErrorKind;
 use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
-use crate::backend::{Machine, MachineRecord};
+use crate::backend::{Machine, MachineRecord, ShutdownOutcome};
 use crate::contain::{Lifetime, VmProcess};
 use crate::host;
 use crate::test_support::fake_vm;
@@ -126,7 +126,7 @@ fn shutdown_when_qemu_exits_after(home: &Path, answered: usize) {
     let (server, _) = exits_after(&world, answered);
     let mut machine = world.attached();
 
-    machine.shutdown().unwrap();
+    assert_eq!(machine.shutdown().unwrap(), ShutdownOutcome::AlreadyDown);
 
     server.join().unwrap();
     assert!(!world.marker.exists(), "the leftover was not removed");
@@ -149,7 +149,7 @@ fn shutdown_of_a_machine_that_is_gone_removes_its_leftovers(#[fixture(unicode_ho
     let mut machine = world.attached();
     world.end_qemu();
 
-    machine.shutdown().unwrap();
+    assert_eq!(machine.shutdown().unwrap(), ShutdownOutcome::AlreadyDown);
 
     assert!(!world.marker.exists(), "the leftover was not removed");
 }
@@ -183,7 +183,7 @@ fn shutdown_waits_for_the_exit_after_the_control_socket_closes_while_qemu_lives(
     let world = world(home);
     let (server, _) = serve(world.sock.listen(), 1, |session, _| {
         session.answer(json!({ "status": "running", "running": true }));
-        session.command().expect("system_powerdown");
+        session.answer(json!({}));
         // The connection closes with QEMU still alive.
     });
     let mut machine = world.attached();
@@ -200,7 +200,7 @@ fn shutdown_waits_for_the_exit_after_the_control_socket_closes_while_qemu_lives(
         shutdown.join().unwrap()
     });
 
-    result.unwrap();
+    assert_eq!(result.unwrap(), ShutdownOutcome::PoweredDown);
     assert!(exited_before_it_returned, "shutdown returned while QEMU was alive");
 }
 

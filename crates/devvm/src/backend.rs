@@ -118,12 +118,23 @@ pub(crate) trait Machine: Send {
         ))
     }
 
-    /// Graceful shutdown; returns after the process has exited and its `leftovers` are deleted.
-    fn shutdown(&mut self) -> Result<()>;
+    /// Graceful shutdown; returns after the process has exited and its `leftovers` are deleted. The outcome says
+    /// whether this request is what powered the guest down.
+    fn shutdown(&mut self) -> Result<ShutdownOutcome>;
 
     /// Kills the machine; returns after the process has exited and its `leftovers` are deleted. A frozen machine never
     /// runs.
     fn kill(&mut self) -> Result<()>;
+}
+
+/// How a `Machine::shutdown` that returned `Ok` went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShutdownOutcome {
+    /// The machine's process was gone, or went before it acknowledged the request: nothing says the guest was
+    /// powered down, and a disk it left may be torn.
+    AlreadyDown,
+    /// A running guest was asked to power down, and its process then exited.
+    PoweredDown,
 }
 
 /// Which guest port a forward reaches.

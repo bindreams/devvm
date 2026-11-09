@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::Dirs;
-use crate::engine::build_dir::{BuildDir, sweep};
-use crate::engine::engine_tests::{engine_with, memory};
+use crate::engine::build_dir::{BuildDir, is_directory, sweep};
+use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, NoHooks};
 use crate::guest::fake::FakeGuests;
 use crate::host;
@@ -64,7 +64,7 @@ fn a_build_directory_follows_its_lock_and_goes_with_it(#[fixture(unicode_home)] 
     std::fs::write(path.join("devvm-copy-x.tar"), b"tar").unwrap();
 
     drop(build);
-    assert!(!path.exists(), "the directory goes with the guard");
+    assert!(!is_there(&path), "the directory goes with the guard");
     assert!(!lock_is_there(&engine, &hex), "the lock file goes with the guard");
 }
 
@@ -81,7 +81,7 @@ fn a_build_directory_is_removed_when_the_build_unwinds(#[fixture(unicode_home)] 
 
     assert!(unwound.is_err());
     let path = seen.lock().unwrap().clone().unwrap();
-    assert!(!path.exists());
+    assert!(!is_there(&path));
     assert!(engine.registry().locks().build_locks().unwrap().is_empty());
 }
 
@@ -124,7 +124,7 @@ fn a_build_directory_whose_lock_is_free_is_deleted_by_the_next_reap_with_its_tar
 
     engine.reap();
 
-    assert!(!dir.exists(), "the dead build's directory and its snapshot go");
+    assert!(!is_there(&dir), "the dead build's directory and its snapshot go");
     assert!(!lock_is_there(&engine, &hex), "and its lock file");
 }
 
@@ -165,7 +165,7 @@ fn a_directory_with_no_lock_file_is_deleted(#[fixture(unicode_home)] home: &Path
 
     engine.reap();
 
-    assert!(!dir.exists());
+    assert!(!is_there(&dir));
 }
 
 #[skuld::test]
@@ -175,8 +175,8 @@ fn the_sweep_leaves_other_names_alone_and_creates_nothing(#[fixture(unicode_home
     let dirs = Dirs::under(home);
 
     engine.reap();
-    assert!(!dirs.builds().exists(), "a sweep made the builds directory");
-    assert!(!dirs.instance_locks().exists(), "a sweep made the lock directory");
+    assert!(!is_there(&dirs.builds()), "a sweep made the builds directory");
+    assert!(!is_there(&dirs.instance_locks()), "a sweep made the lock directory");
 
     let strays = [
         dirs.builds().join("not-a-build"),
@@ -227,6 +227,40 @@ fn a_failed_look_at_a_lock_file_warns_and_deletes_nothing(#[fixture(unicode_home
     );
     // The next pass, on a host that can look, finishes the job.
     healthy.reap();
-    assert!(!dir.exists());
+    assert!(!is_there(&dir));
     assert!(!lock_is_there(&healthy, &hex));
+}
+
+#[skuld::test]
+fn a_directory_with_no_lock_file_is_left_while_another_process_is_deleting(#[fixture(unicode_home)] home: &Path) {
+    let engine = engine_at(home, memory());
+    let dir = Dirs::under(home).builds().join(hex());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("devvm-copy-x.tar"), b"tar").unwrap();
+
+    let held = engine
+        .registry()
+        .locks()
+        .deleting(|| {
+            sweep(&engine);
+            is_there(&dir)
+        })
+        .unwrap();
+    assert_eq!(
+        held,
+        Some(true),
+        "a sweep deleted a tree while another deleter held dead.lock"
+    );
+
+    sweep(&engine);
+    assert!(!is_there(&dir), "the next sweep deletes it");
+}
+
+#[skuld::test]
+fn a_path_that_is_gone_is_not_a_directory_and_not_a_failure(#[fixture(unicode_home)] home: &Path) {
+    assert!(!is_directory(&home.join("gone")).unwrap());
+    assert!(is_directory(home).unwrap());
+    let file = home.join("file");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(!is_directory(&file).unwrap());
 }

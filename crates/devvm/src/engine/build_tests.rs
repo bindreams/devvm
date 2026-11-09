@@ -9,7 +9,7 @@ use crate::backend::Backend;
 use crate::backend::fake::FakeBackend;
 use crate::copy::copy_tests::{add_all, new_repo, put};
 use crate::engine::build::{extract_command, guest_destination, root_content};
-use crate::engine::engine_tests::{engine_with, memory};
+use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
 use crate::guest::fake::{FakeBaseBuilder, FakeGuests, ServedGuests};
 use crate::guest::{BaseBuilder, GuestOs, Guests};
@@ -123,7 +123,8 @@ fn no_instance_or_build_is_left(fx: &Fixture) {
     );
     let builds: Vec<PathBuf> = match std::fs::read_dir(fx.dirs.builds()) {
         Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
-        Err(_) => Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => panic!("cannot list the builds directory: {e}"),
     };
     assert!(builds.is_empty(), "a build directory is left: {builds:?}");
 }
@@ -186,6 +187,23 @@ fn a_forced_shutdown_never_commits(#[fixture(unicode_home)] home: &Path) {
         "a disk that was never shut down is not a layer"
     );
     assert_eq!(fx.fake.launches(), 1);
+    no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_guest_that_was_down_before_the_shutdown_request_commits_nothing(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture_over(home, FakeBackend::new(&TestHost).with_vm_dying_before_shutdown());
+    let recipe = recipe(home, &["run: echo one"]);
+    let keys = keys_of(&recipe);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("step 1 of 1"), "{error}");
+    assert!(
+        fx.engine.store().unwrap().lookup(&keys[1]).unwrap().is_none(),
+        "the disk of a guest that went down by itself is not a layer"
+    );
     no_instance_or_build_is_left(&fx);
 }
 
@@ -392,25 +410,26 @@ fn linux() -> Arc<dyn GuestOs> {
 }
 
 #[skuld::test]
-fn copy_to_a_tilde_destination_is_resolved_against_the_guest_home_before_quoting() {
+fn a_destination_with_no_root_is_made_absolute_below_the_guest_home() {
     let guest = linux();
-    for (to, resolved) in [
-        ("~/cosca", "/home/user/cosca"),
-        ("~", "/home/user"),
-        ("~/a b", "/home/user/a b"),
+    for (expanded, resolved) in [
+        ("/home/user/cosca", "/home/user/cosca"),
+        ("/home/user", "/home/user"),
         ("rel/x", "/home/user/rel/x"),
+        ("a b", "/home/user/a b"),
         ("/abs", "/abs"),
     ] {
-        assert_eq!(guest_destination(&*guest, to, "/home/user").unwrap(), resolved, "{to}");
+        assert_eq!(
+            guest_destination(&*guest, expanded, "/home/user").unwrap(),
+            resolved,
+            "{expanded}"
+        );
     }
     assert_eq!(guest_destination(&*guest, "rel", "/").unwrap(), "/rel", "a home of `/`");
     assert_eq!(
-        guest_destination(&*guest, "~/x", "/home/user/").unwrap(),
-        "/home/user/x"
+        guest_destination(&*guest, "rel", "/home/user/").unwrap(),
+        "/home/user/rel"
     );
-
-    let error = guest_destination(&*guest, "~root/x", "/home/user").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
 }
 
 #[skuld::test]
@@ -495,5 +514,5 @@ fn an_engine_without_a_backend_cannot_build_and_makes_nothing(#[fixture(unicode_
         .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
-    assert!(!Dirs::under(home).state.exists() && !Dirs::under(home).data.exists());
+    assert!(!is_there(&Dirs::under(home).state) && !is_there(&Dirs::under(home).data));
 }

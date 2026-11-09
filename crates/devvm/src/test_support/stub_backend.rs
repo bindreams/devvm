@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::backend::fake::FakeStorage;
-use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
+use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, ShutdownOutcome, Storage};
 use crate::{Error, ErrorKind, Result};
 
 /// What `attach` answers.
@@ -147,8 +147,9 @@ impl Machine for StubMachine {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> Result<()> {
-        self.stop("shutdown")
+    fn shutdown(&mut self) -> Result<ShutdownOutcome> {
+        self.stop("shutdown")?;
+        Ok(ShutdownOutcome::PoweredDown)
     }
 
     fn kill(&mut self) -> Result<()> {

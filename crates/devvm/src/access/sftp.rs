@@ -164,8 +164,8 @@ impl Sftp {
         self.call("asking the guest for its home directory", Remote::home)
     }
 
-    /// The guest path `path` with `~` expanded, and the guest's home.
-    fn expanded(&self, path: &str) -> Result<(String, String)> {
+    /// The guest path `path` with `~` expanded, and the guest's home. A `~user` path is a `usage` error.
+    pub(crate) fn expanded(&self, path: &str) -> Result<(String, String)> {
         check_guest_path(path)?;
         let home = self.home()?;
         Ok((expand_guest_path(path, &home), home))

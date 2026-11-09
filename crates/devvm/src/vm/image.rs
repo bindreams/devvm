@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::access::SshSession;
 use crate::access::sftp::Sftp;
-use crate::backend::Machine;
+use crate::backend::{Machine, ShutdownOutcome};
 use crate::contain::Lifetime;
 use crate::engine::Engine;
 use crate::exit::{ExitStatus, Output};
@@ -282,16 +282,19 @@ impl Drop for Vm {
 }
 
 impl Vm {
-    /// An SFTP session to the guest, over the connection that found it ready.
-    pub(crate) fn sftp(&self) -> Result<Sftp> {
-        let (_, session, _op) = self.reached()?;
-        session.sftp()
+    /// The shared op lock and an SFTP session to the guest, over the connection that found it ready. The lock is held
+    /// for as long as the caller holds it: bind it before the session (`let (_op, sftp) = ..`), which is then dropped
+    /// first.
+    pub(crate) fn sftp(&self) -> Result<(OpShared, Sftp)> {
+        let (_, session, op) = self.reached()?;
+        Ok((op, session.sftp()?))
     }
 
     /// Shuts the guest down and returns once its process has exited, under the exclusive op lock. The VM is not
     /// running afterwards, and the handle can no longer run anything. A shutdown that fails leaves the machine for
-    /// the drop to kill: it is never forced here.
-    pub(crate) fn shutdown(&self) -> Result<()> {
+    /// the drop to kill: it is never forced here. `AlreadyDown` says the guest was gone before this request powered it
+    /// down, so what its disk holds is not a clean shutdown's; the machine's record is retired all the same.
+    pub(crate) fn shutdown(&self) -> Result<ShutdownOutcome> {
         let instance = self.instance();
         let dir = instance.dir();
         let op = dir.op_exclusive()?;
@@ -301,9 +304,10 @@ impl Vm {
         };
         // A connection to a guest that powers down is of no further use.
         *self.session.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        machine.shutdown()?;
+        let outcome = machine.shutdown()?;
         let dead = slot.take().expect("the machine was just shut down").record();
-        dir.retire_machine(&op, &dead, instance.engine.host(), &mut warn_for(&instance.engine, dir))
+        dir.retire_machine(&op, &dead, instance.engine.host(), &mut warn_for(&instance.engine, dir))?;
+        Ok(outcome)
     }
 
     /// The guest, the session and the shared op lock for one operation.

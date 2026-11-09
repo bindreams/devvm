@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::ErrorKind;
+use crate::engine::engine_tests::is_there;
 use crate::exit::NullProgress;
 use crate::host::{self, Comparison};
 use crate::instance::locks::{Locks, Probe};
@@ -1126,7 +1127,7 @@ fn try_build_creates_nothing_and_reads_a_missing_file_as_gone(#[fixture(unicode_
     let hex = build_hex();
 
     assert!(matches!(locks.try_build(&hex).unwrap(), Probe::Gone), "no directory");
-    assert!(!home.join("locks").exists(), "a try made the lock directory");
+    assert!(!is_there(&home.join("locks")), "a try made the lock directory");
 
     let held = locks.acquire_build_new_with(&hex, &mut || {}, &mut || {}).unwrap();
     assert!(matches!(locks.try_build(&hex).unwrap(), Probe::Held));
@@ -1138,14 +1139,14 @@ fn try_build_creates_nothing_and_reads_a_missing_file_as_gone(#[fixture(unicode_
         matches!(locks.try_build(&other).unwrap(), Probe::Gone),
         "no file at the name"
     );
-    assert!(!locks.build_path(&other).exists(), "a try made the file");
+    assert!(!is_there(&locks.build_path(&other)), "a try made the file");
 }
 
 #[skuld::test]
 fn build_locks_lists_only_build_lock_files_and_ids_ignores_them(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     assert!(locks.build_locks().unwrap().is_empty(), "no directory means no builds");
-    assert!(!home.join("locks").exists(), "a listing made the lock directory");
+    assert!(!is_there(&home.join("locks")), "a listing made the lock directory");
 
     let (first, second) = (build_hex(), build_hex());
     drop(locks.acquire_build_new_with(&first, &mut || {}, &mut || {}).unwrap());
@@ -1171,7 +1172,7 @@ fn build_locks_lists_only_build_lock_files_and_ids_ignores_them(#[fixture(unicod
     assert_eq!(locks.ids().unwrap(), vec![id], "a build lock is no instance's");
 
     locks.remove_build(&first).unwrap();
-    assert!(!locks.build_path(&first).exists());
+    assert!(!is_there(&locks.build_path(&first)));
     assert_eq!(locks.build_locks().unwrap().len(), 1);
     locks.remove_build(&first).unwrap();
 }
@@ -1202,5 +1203,5 @@ fn unlinking_a_build_lock_waits_for_whoever_is_opening_a_lock_file(#[fixture(uni
             .unwrap()
             .unwrap();
     });
-    assert!(!locks.build_path(&hex).exists());
+    assert!(!is_there(&locks.build_path(&hex)));
 }

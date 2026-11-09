@@ -472,7 +472,7 @@ impl Machine for LateMachine {
         self.inner.release()
     }
 
-    fn shutdown(&mut self) -> crate::Result<()> {
+    fn shutdown(&mut self) -> crate::Result<crate::backend::ShutdownOutcome> {
         self.inner.shutdown()
     }
 
@@ -742,7 +742,7 @@ impl Machine for SpiedMachine {
         self.inner.release()
     }
 
-    fn shutdown(&mut self) -> crate::Result<()> {
+    fn shutdown(&mut self) -> crate::Result<crate::backend::ShutdownOutcome> {
         self.inner.shutdown()
     }
 
@@ -827,7 +827,7 @@ impl Machine for NotesOpLockMachine {
         self.inner.release()
     }
 
-    fn shutdown(&mut self) -> crate::Result<()> {
+    fn shutdown(&mut self) -> crate::Result<crate::backend::ShutdownOutcome> {
         self.inner.shutdown()
     }
 

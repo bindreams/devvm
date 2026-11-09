@@ -91,7 +91,7 @@ impl Machine for Strict {
         self.inner.reset()
     }
 
-    fn shutdown(&mut self) -> crate::Result<()> {
+    fn shutdown(&mut self) -> crate::Result<crate::backend::ShutdownOutcome> {
         assert!(
             self.awaited.lock().unwrap().contains(&self.record().process.pid),
             "shutdown before the boot was awaited"
@@ -244,7 +244,7 @@ impl Machine for Deleting {
         self.0.reset()
     }
 
-    fn shutdown(&mut self) -> crate::Result<()> {
+    fn shutdown(&mut self) -> crate::Result<crate::backend::ShutdownOutcome> {
         self.0.shutdown()
     }
 

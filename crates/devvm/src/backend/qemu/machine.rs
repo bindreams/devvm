@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::args::guest_port;
 use super::directory_of;
 use super::qmp::{Qmp, QmpEndpoint, VmEnd};
-use crate::backend::{Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint};
+use crate::backend::{Endpoint, FileClaim, Machine, MachineRecord, ShutdownOutcome, SshEndpoint};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Host, ProcessWatch};
@@ -187,15 +187,16 @@ impl QemuMachine {
 
     /// Sends the powerdown request and returns when QEMU closes the session. The session ending early
     /// (`ConnectionLost`) is QEMU going away or gone, which the caller confirms by waiting for the process.
-    fn power_down(&self) -> Result<()> {
+    /// `AlreadyDown` when QEMU is not running.
+    fn power_down(&self) -> Result<ShutdownOutcome> {
         if !self.vm.is_alive()? {
-            return Ok(());
+            return Ok(ShutdownOutcome::AlreadyDown);
         }
         let mut qmp = self.open()?;
         qmp.require_state(POWERDOWN_STATES, "shut the VM down", &self.record.serial_log)?;
         qmp.system_powerdown()?;
         match qmp.wait_for_end()? {
-            VmEnd::Exited => Ok(()),
+            VmEnd::Exited => Ok(ShutdownOutcome::PoweredDown),
             VmEnd::Paused(state) => Err(Error::new(
                 ErrorKind::Unavailable,
                 format!(
@@ -297,19 +298,20 @@ impl Machine for QemuMachine {
 
     /// Asks the guest to power down and waits for the end of the QEMU process. It never escalates to a kill; a VM that is
     /// paused is an error naming its state, because a paused VM ignores the request. A QEMU that exits while this runs
-    /// has done what was asked.
-    fn shutdown(&mut self) -> Result<()> {
+    /// has done what was asked, so this is `Ok`, but only a QEMU that acknowledged the request and then closed the
+    /// session is `PoweredDown`: one that was gone, or went before it answered, is `AlreadyDown`.
+    fn shutdown(&mut self) -> Result<ShutdownOutcome> {
         self.require_resumed("shut the VM down")?;
-        match self.power_down() {
-            Ok(()) => {}
+        let outcome = match self.power_down() {
+            Ok(outcome) => outcome,
             // A closed control socket is a QEMU quitting; the wait below is for the process to be gone.
-            Err(e) if e.kind() == ErrorKind::ConnectionLost => {}
+            Err(e) if e.kind() == ErrorKind::ConnectionLost => ShutdownOutcome::AlreadyDown,
             Err(e) => return Err(e),
-        }
+        };
         // The session, and with it the lock, is gone before the files are deleted.
         self.vm.wait()?;
         self.remove_leftovers();
-        Ok(())
+        Ok(outcome)
     }
 
     fn kill(&mut self) -> Result<()> {
