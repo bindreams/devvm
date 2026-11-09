@@ -3,17 +3,23 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use secrecy::ExposeSecret;
 
 use crate::access::SshSession;
+use crate::backend::fake::LAYER_DISK;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
 use crate::exit::ExitStatus;
 use crate::guest::linux::LinuxGuest;
-use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedKeys, SeedMedia, SeedSpec, posix_root, windows_root};
+use crate::guest::{
+    BaseBuilder, BuildCtx, GuestOs, Guests, Readiness, SeedKeys, SeedMedia, SeedSpec, posix_root, windows_root,
+};
 use crate::host::{Host, names};
 use crate::instance::record::InstanceId;
-use crate::recipe::Shell;
+use crate::recipe::hash::LayerKey;
+use crate::recipe::{Shell, Source};
+use crate::store::layers::{Generation, LayerDir, LayerMeta};
 use crate::test_support::sshd::TestSshd;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
 
@@ -57,11 +63,31 @@ impl Guests for FakeGuests {
         }))
     }
 
-    fn builder(&self, kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Err(Error::new(
-            ErrorKind::NotSupported,
-            format!("the fake guests build no {} base", kind.as_str()),
-        ))
+    fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
+        Ok(Arc::new(FakeBaseBuilder))
+    }
+}
+
+/// Builds a root layer without an image: one file in `staging`, which the fake backend's machines sit on. Its definition
+/// hash is a constant.
+pub(crate) struct FakeBaseBuilder;
+
+impl BaseBuilder for FakeBaseBuilder {
+    fn build_base(&self, _src: &Source, _ctx: &BuildCtx, staging: &LayerDir) -> Result<LayerMeta> {
+        let disk = staging.path().join(LAYER_DISK);
+        std::fs::write(&disk, b"base disk")
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", disk.display()), e))?;
+        Ok(LayerMeta {
+            key: LayerKey::from_bytes([0; 16]),
+            generation: Generation::from_bytes([0; 16]),
+            parent: None,
+            created: SystemTime::UNIX_EPOCH,
+            expires: None,
+        })
+    }
+
+    fn definition_hash(&self) -> [u8; 32] {
+        [7; 32]
     }
 }
 
@@ -101,6 +127,14 @@ impl GuestOs for FakeGuestOs {
         match &self.served {
             Some(served) => served.boot_id_command(),
             None => LinuxGuest.boot_id_command(),
+        }
+    }
+
+    /// A Linux guest's, except that a served guest runs the command `ServedGuests::flush_runs` set, if any.
+    fn flush_command(&self) -> Command {
+        match &self.served {
+            Some(served) => served.flush_command(),
+            None => LinuxGuest.flush_command(),
         }
     }
 
@@ -216,6 +250,7 @@ struct Served {
     unreadable_boot_id: Mutex<bool>,
     /// Every read of the boot id prints nothing.
     empty_boot_id: Mutex<bool>,
+    flush_runs: Mutex<Option<String>>,
     boots: Mutex<Boots>,
 }
 
@@ -240,6 +275,7 @@ impl ServedGuests {
             stale_boot_reads: Mutex::default(),
             unreadable_boot_id: Mutex::default(),
             empty_boot_id: Mutex::default(),
+            flush_runs: Mutex::default(),
             boots: Mutex::default(),
         }))
     }
@@ -265,6 +301,11 @@ impl ServedGuests {
     /// Every read of the boot id exits 0 and prints nothing.
     pub(crate) fn empty_boot_id(&self) {
         *self.0.empty_boot_id.lock().unwrap() = true;
+    }
+
+    /// Every flush runs `command`, a script of the test SSH server.
+    pub(crate) fn flush_runs(&self, command: &str) {
+        *self.0.flush_runs.lock().unwrap() = Some(command.to_owned());
     }
 
     /// After each reset, the first `reads` reads of the boot id still answer the old boot, as a guest does until it has
@@ -295,6 +336,14 @@ impl ServedGuests {
 }
 
 impl Served {
+    /// A Linux guest's flush, or the command `flush_runs` set.
+    fn flush_command(&self) -> Command {
+        match &*self.flush_runs.lock().unwrap() {
+            Some(command) => Command::new(command.split_whitespace()),
+            None => LinuxGuest.flush_command(),
+        }
+    }
+
     /// What a read of the boot id runs: `exit 1` while the failing reads last, else the boot the guest is in now (the
     /// number of resets so far, or the one before while the stale reads last).
     fn boot_id_command(&self) -> Command {
@@ -320,7 +369,7 @@ impl Served {
         }
         let boot = if boots.stale_left > 0 {
             boots.stale_left -= 1;
-            // A stale read follows a reset, so `now` is at least 1.
+            // `now - 1` cannot underflow: a stale read follows a reset.
             now - 1
         } else {
             now

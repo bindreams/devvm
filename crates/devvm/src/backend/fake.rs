@@ -50,7 +50,7 @@ pub(crate) fn leftover_paths(dir: &Path, id: &InstanceId, launch: usize) -> Vec<
 }
 
 /// The file in a layer that an instance disk sits on.
-const LAYER_DISK: &str = "disk.qcow2";
+pub(crate) const LAYER_DISK: &str = "disk.qcow2";
 
 pub(crate) struct FakeBackend {
     host: &'static dyn Host,
@@ -69,6 +69,8 @@ pub(crate) struct FakeBackend {
     details_asked: Mutex<Vec<Detail>>,
     /// Where the machines report their SSH endpoint instead of the fake VM's own port.
     ssh_endpoint: Option<SocketAddr>,
+    shutdown_fails: bool,
+    launch_fails: bool,
 }
 
 impl FakeBackend {
@@ -84,7 +86,27 @@ impl FakeBackend {
             checks: Vec::new(),
             details_asked: Mutex::new(Vec::new()),
             ssh_endpoint: None,
+            shutdown_fails: false,
+            launch_fails: false,
         }
+    }
+
+    /// A backend whose machines refuse every graceful `shutdown`; `kill` still works.
+    pub(crate) fn with_failing_shutdown(mut self) -> FakeBackend {
+        self.shutdown_fails = true;
+        self
+    }
+
+    /// A backend whose `launch` always fails.
+    pub(crate) fn with_failing_launch(mut self) -> FakeBackend {
+        self.launch_fails = true;
+        self
+    }
+
+    /// A backend whose storage cannot commit a layer.
+    pub(crate) fn with_failing_commit(mut self) -> FakeBackend {
+        self.storage.commit_fails = true;
+        self
     }
 
     /// A backend whose machines report `addr` as their `Endpoint::Normal`, the address of an SSH server a test runs,
@@ -186,6 +208,9 @@ impl FakeBackend {
 
 impl Backend for FakeBackend {
     fn launch(&self, spec: &MachineSpec) -> Result<Box<dyn Machine>> {
+        if self.launch_fails {
+            return Err(Error::new(ErrorKind::Io, "the fake backend cannot launch"));
+        }
         FakeBackend::backing_layer(&spec.disk)?;
         let state_dir = spec.serial_log.parent().expect("a serial log has a directory");
         fake_vm::forget_earlier_runs(state_dir).map_err(|e| {
@@ -236,6 +261,7 @@ impl Backend for FakeBackend {
             attached: false,
             host: self.host,
             ssh_endpoint: self.ssh_endpoint,
+            shutdown_fails: self.shutdown_fails,
         }))
     }
 
@@ -258,6 +284,7 @@ impl Backend for FakeBackend {
             attached: true,
             host: self.host,
             ssh_endpoint: self.ssh_endpoint,
+            shutdown_fails: self.shutdown_fails,
         }))
     }
 
@@ -296,6 +323,8 @@ struct FakeMachine {
     host: &'static dyn Host,
     /// See [`FakeBackend::with_ssh_endpoint`].
     ssh_endpoint: Option<SocketAddr>,
+    /// See [`FakeBackend::with_failing_shutdown`].
+    shutdown_fails: bool,
 }
 
 impl Machine for FakeMachine {
@@ -350,6 +379,12 @@ impl Machine for FakeMachine {
 
     /// Asks the VM over its endpoint to exit, like a guest asked to power off, and waits for the process to be gone.
     fn shutdown(&mut self) -> Result<()> {
+        if self.shutdown_fails {
+            return Err(Error::new(
+                ErrorKind::Io,
+                "the fake machine's guest does not power down",
+            ));
+        }
         let addr = self.endpoint()?;
         let ask = |e| {
             Error::io(
@@ -425,6 +460,7 @@ impl FakeMachine {
 #[derive(Default)]
 pub(crate) struct FakeStorage {
     sizes: Mutex<Vec<Option<u64>>>,
+    commit_fails: bool,
 }
 
 impl FakeStorage {
@@ -454,6 +490,9 @@ impl Storage for FakeStorage {
     }
 
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()> {
+        if self.commit_fails {
+            return Err(Error::new(ErrorKind::Io, "the fake storage cannot commit"));
+        }
         let disk = std::fs::read_to_string(instance_disk).map_err(|e| {
             Error::io(
                 ErrorKind::Io,

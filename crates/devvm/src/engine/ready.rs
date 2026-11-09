@@ -1,5 +1,3 @@
-//! Waiting for a started or reset guest to answer.
-
 use super::Engine;
 use crate::access::{BootBound, Keepalive, SshSession, SshTarget};
 use crate::backend::MachineRecord;

@@ -530,7 +530,9 @@ impl Qmp {
 
     // Commands --------------------------------------------------------------------------------------------------------
 
-    /// Asks the guest to power down (ACPI). The guest may or may not act on it; this only sends the request.
+    /// Asks the guest to power down (ACPI). `Ok` means QEMU acknowledged the request; the guest may or may not act on
+    /// it. An error says nothing of whether QEMU saw or acknowledged it: an acknowledgement may have been sent and
+    /// not read.
     pub(crate) fn system_powerdown(&mut self) -> Result<()> {
         self.execute(&qmp::system_powerdown {}).map(drop)
     }

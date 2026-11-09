@@ -185,25 +185,28 @@ impl QemuMachine {
         }
     }
 
-    /// Sends the powerdown request and returns when QEMU closes the session. The session ending early
-    /// (`ConnectionLost`) is QEMU going away or gone, which the caller confirms by waiting for the process.
+    /// Sends the powerdown request and returns when QEMU closes the session. A session lost at any point, `open` and
+    /// `query-status` included, is QEMU gone or going, which the caller confirms by waiting for the process.
     fn power_down(&self) -> Result<()> {
-        if !self.vm.is_alive()? {
-            return Ok(());
-        }
-        let mut qmp = self.open()?;
-        qmp.require_state(POWERDOWN_STATES, "shut the VM down", &self.record.serial_log)?;
-        qmp.system_powerdown()?;
-        match qmp.wait_for_end()? {
-            VmEnd::Exited => Ok(()),
-            VmEnd::Paused(state) => Err(Error::new(
+        match self.request_power_down() {
+            Ok(VmEnd::Exited) => Ok(()),
+            Ok(VmEnd::Paused(state)) => Err(Error::new(
                 ErrorKind::Unavailable,
                 format!(
                     "the VM stopped ({state}) while it was shutting down; its serial log is {}",
                     self.record.serial_log.display()
                 ),
             )),
+            Err(e) if e.kind() == ErrorKind::ConnectionLost => Ok(()),
+            Err(e) => Err(e),
         }
+    }
+
+    fn request_power_down(&self) -> Result<VmEnd> {
+        let mut qmp = self.open()?;
+        qmp.require_state(POWERDOWN_STATES, "shut the VM down", &self.record.serial_log)?;
+        qmp.system_powerdown()?;
+        qmp.wait_for_end()
     }
 
     fn remove_leftovers(&self) {
@@ -297,15 +300,11 @@ impl Machine for QemuMachine {
 
     /// Asks the guest to power down and waits for the end of the QEMU process. It never escalates to a kill; a VM that is
     /// paused is an error naming its state, because a paused VM ignores the request. A QEMU that exits while this runs
-    /// has done what was asked.
+    /// has done what was asked, and so has one whose control session is lost: that means it is gone or going. A guest
+    /// that acknowledges the request and never powers off is waited for without end.
     fn shutdown(&mut self) -> Result<()> {
         self.require_resumed("shut the VM down")?;
-        match self.power_down() {
-            Ok(()) => {}
-            // A closed control socket is a QEMU quitting; the wait below is for the process to be gone.
-            Err(e) if e.kind() == ErrorKind::ConnectionLost => {}
-            Err(e) => return Err(e),
-        }
+        self.power_down()?;
         // The session, and with it the lock, is gone before the files are deleted.
         self.vm.wait()?;
         self.remove_leftovers();
