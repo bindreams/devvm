@@ -412,7 +412,7 @@ fn extract_command(guest: &dyn GuestOs, destination: &str, archive: &str) -> Res
 
 /// A writer that reports each complete line it is given on the progress channel, and the rest when it is dropped. A
 /// line ends at `\n`, at `\r` (a tool that redraws its progress on one line) or at `\r\n`, which is one end however
-/// the writes split it.
+/// the writes split it. A `\r` with nothing pending ends no line, so a redraw's leading `\r` reports no blank one.
 struct Lines<'a> {
     progress: &'a dyn Progress,
     pending: Vec<u8>,
@@ -440,7 +440,9 @@ impl Write for Lines<'_> {
             match byte {
                 b'\n' if self.after_cr => {}
                 b'\r' | b'\n' => {
-                    self.report(&self.pending);
+                    if byte == b'\n' || !self.pending.is_empty() {
+                        self.report(&self.pending);
+                    }
                     self.pending.clear();
                 }
                 _ => self.pending.push(byte),
