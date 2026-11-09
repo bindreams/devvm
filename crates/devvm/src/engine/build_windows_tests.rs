@@ -467,3 +467,34 @@ fn an_error_of_the_layer_store_around_a_step_names_the_step(#[fixture(unicode_ho
     );
     no_instance_or_build_is_left(&fx);
 }
+
+#[skuld::test]
+fn a_copy_step_whose_upload_fails_names_the_step_and_the_upload_and_commits_nothing(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    let repo = new_repo(home, "repo");
+    put(&repo, "a.txt", b"tracked");
+    add_all(&repo);
+    // The archive goes to the guest's `/tmp`; here it is a file, so nothing can be put below it.
+    let tmp = fx.server.root().join("tmp");
+    std::fs::remove_dir(&tmp).unwrap();
+    std::fs::write(&tmp, b"not a directory").unwrap();
+
+    let error = fx
+        .engine
+        .build(
+            &recipe_in(&repo, "", &["copy: { from: git-tracked, to: \"~/p\" }"]),
+            &BuildOptions::default(),
+        )
+        .err()
+        .unwrap();
+
+    let message = error.message();
+    assert!(
+        message.contains("step 1 of 1 (uploading the files of copy to ~/p)"),
+        "{message}"
+    );
+    assert!(extractions(&fx).is_empty(), "the extraction ran after a failed upload");
+    no_instance_or_build_is_left(&fx);
+}
