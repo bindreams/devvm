@@ -119,10 +119,18 @@ pub(crate) fn engine_with(
     guests: Arc<dyn Guests>,
     progress: Arc<dyn Progress>,
 ) -> Arc<Engine> {
-    engine_with_bound(dirs, host, backend, guests, progress, DEFAULT_BOOT_BOUND)
+    engine_with_bound(
+        dirs,
+        host,
+        backend,
+        guests,
+        progress,
+        DEFAULT_BOOT_BOUND,
+        Arc::new(NoHooks),
+    )
 }
 
-/// `engine_with` whose guests get `boot_bound` to answer.
+/// `engine_with` whose guests get `boot_bound` to answer, and whose launches `hooks` sees.
 pub(crate) fn engine_with_bound(
     dirs: Dirs,
     host: &'static dyn Host,
@@ -130,6 +138,7 @@ pub(crate) fn engine_with_bound(
     guests: Arc<dyn Guests>,
     progress: Arc<dyn Progress>,
     boot_bound: Duration,
+    hooks: Arc<dyn LaunchHooks>,
 ) -> Arc<Engine> {
     Engine::with_parts(EngineParts {
         dirs,
@@ -138,7 +147,7 @@ pub(crate) fn engine_with_bound(
         guests,
         clock: Arc::new(SystemClock),
         progress,
-        hooks: Arc::new(NoHooks),
+        hooks,
         boot_bound,
     })
 }

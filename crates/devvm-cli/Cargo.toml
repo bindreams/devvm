@@ -28,6 +28,10 @@ cosca = { version = "0.6.0", features = ["serde"] }
 serde_json = "1.0.154"
 skuld = { workspace = true }
 
+# The longest AF_UNIX path of a Unix host, for `tests/vm_cli.rs`.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 [[test]]
 name = "commands"
 path = "tests/commands.rs"
@@ -41,4 +45,9 @@ harness = false
 [[test]]
 name = "ls"
 path = "tests/ls.rs"
+harness = false
+
+[[test]]
+name = "vm_cli"
+path = "tests/vm_cli.rs"
 harness = false

@@ -111,5 +111,5 @@ test_group!(NTFS_NAMES => ntfs_names, env = "DEVVM_TEST_NTFS_NAMES");
 // Only Windows can lack the right to make a symlink (Developer Mode or an elevated token); every OS declares the group.
 test_group!(SYMLINKS => symlinks, env = "DEVVM_TEST_SYMLINKS");
 // The VM tests' base directory: `C:\Users` where on, the temporary directory where off. Picked in
-// `vm_suite/fixture.rs::base_dir`.
+// `test_support/roots.rs::base_dir`, which the lib and `devvm-cli`'s `vm_cli` both include.
 test_group!(UNICODE_BASE => unicode_base, env = "DEVVM_TEST_UNICODE_BASE");

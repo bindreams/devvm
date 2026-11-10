@@ -22,7 +22,8 @@ use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::store::layers::ChainLease;
 use crate::test_groups::{Group, vm_group};
-use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR};
+use crate::test_support::fixtures::MemoryProgress;
+use crate::test_support::roots;
 use crate::{Dirs, ErrorKind};
 
 #[path = "qemu_tests.rs"]
@@ -51,10 +52,13 @@ pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInsta
     let config = Config {
         qemu_path: std::env::var_os(QEMU_DIR_VAR).map(|dir| PathBuf::from(dir).join("bin")),
     };
-    // The cache is the user's, so the download is shared; the configuration is this process's own.
-    let mut dirs = Dirs::from_env().map_err(|e| format!("cannot locate devvm's directories: {e}"))?;
+    // The cache is the tests' shared one, which `vm_cli` uses too, so the download is shared and the user's own cache is
+    // untouched; the configuration is this process's own.
+    let cache = roots::shared_cache()?;
     let config_home = skuld::TempDir::new().map_err(|e| format!("cannot create a temp dir: {e}"))?;
-    dirs.config = config_home.join("config");
+    let mut dirs = Dirs::under(&config_home);
+    // `Dirs::from_lookup` puts devvm's cache in `devvm` below XDG_CACHE_HOME, as `vm_cli`'s `devvm` sees it.
+    dirs.cache = cache.join("devvm");
     write_config(&dirs, &config);
     let transport = HttpTransport::new().map_err(|e| format!("cannot build the HTTP client: {e}"))?;
     let progress = Arc::new(StderrProgress);
@@ -80,27 +84,10 @@ pub struct Sock {
     pub claim: FileClaim,
 }
 
-/// Shorter fallbacks for [`socket_dir`], each with a space and non-ASCII characters like [`UNICODE_DIR`]: the first
-/// also has a character outside the Basic Multilingual Plane (a UTF-16 surrogate pair).
-const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e16}"];
-
-/// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`): the first of
-/// `<temp>/<UNICODE_DIR>`, the shorter `<temp>/<SHORT_SOCKET_DIRS>` (a long Windows user name), then the temporary
-/// directory itself (a temporary directory that leaves room for none of them). Nothing is created outside the temporary
-/// directory.
+/// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`); see
+/// [`roots::socket_dir`].
 fn socket_dir_that_fits() -> Option<PathBuf> {
-    // Room for a [`scratch_run`] below the directory and a socket in it.
-    let fits = |dir: &Path| {
-        QmpEndpoint::fits(
-            &dir.join(scratch_name([0; SCRATCH_DRAW_BYTES])),
-            host::current().socket_path_max(),
-        )
-    };
-    let temp = std::env::temp_dir();
-    std::iter::once(temp.join(UNICODE_DIR))
-        .chain(SHORT_SOCKET_DIRS.iter().map(|short| temp.join(short)))
-        .chain(std::iter::once(temp.clone()))
-        .find(|dir| fits(dir))
+    roots::socket_dir(host::current().socket_path_max())
 }
 
 /// The shared directory control sockets go in during tests, created if need be (see [`socket_dir_that_fits`]).
@@ -199,17 +186,12 @@ pub fn scratch_run() -> ScratchRun {
     run
 }
 
-fn has_space_and_non_ascii(path: &Path) -> bool {
-    let path = path.to_string_lossy();
-    path.contains(' ') && !path.is_ascii()
-}
-
 /// `Err` when the socket directory lacks a space or a non-ASCII character, or none fits at all (the tests would check
 /// nothing).
 pub fn unicode_socket_dir_fits() -> Result<(), String> {
     let temp = std::env::temp_dir();
     match socket_dir_that_fits() {
-        Some(dir) if has_space_and_non_ascii(&dir) => Ok(()),
+        Some(dir) if roots::has_space_and_non_ascii(&dir) => Ok(()),
         found => Err(format!(
             "{} the temporary directory {} is {} bytes and a socket path is limited to {}",
             if found.is_some() {
@@ -227,7 +209,7 @@ pub fn unicode_socket_dir_fits() -> Result<(), String> {
 /// Asserts that a control socket path has a space and a non-ASCII character, as [`socket_dir`] provides where
 /// [`unicode_socket_dir_fits`].
 pub fn assert_unicode_socket_path(path: &Path) {
-    assert!(has_space_and_non_ascii(path), "{}", path.display());
+    assert!(roots::has_space_and_non_ascii(path), "{}", path.display());
 }
 
 impl Sock {
