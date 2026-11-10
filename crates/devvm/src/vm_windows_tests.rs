@@ -1348,6 +1348,35 @@ fn an_ssh_config_refusal_is_shown_and_the_instance_still_starts(#[fixture(unicod
 }
 
 #[skuld::test]
+fn an_ssh_config_refusal_and_a_failed_entry_write_are_both_shown(#[fixture(unicode_home)] home: &Path) {
+    // `%` in the state directory: `ensure_top_level` refuses. A directory where `foo.conf` goes: the entry cannot be
+    // written either.
+    let home = home.join("100%");
+    std::fs::create_dir(&home).unwrap();
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(&home, progress.clone());
+    instance_in(&fx, "foo", &home);
+    std::fs::create_dir_all(fx.env.dirs.ssh().join("foo.conf")).unwrap();
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance
+        .start()
+        .expect("the embedded client does not read the ssh configuration");
+
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.starts_with("instance foo: cannot write the ssh configuration:")
+                && m.contains('%')
+                && m.contains("foo.conf")
+                && m.ends_with(" as well")),
+        "{messages:?}"
+    );
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
 fn a_degraded_first_boot_is_reported_on_the_progress_channel_and_the_start_succeeds(
     #[fixture(unicode_home)] home: &Path,
 ) {
