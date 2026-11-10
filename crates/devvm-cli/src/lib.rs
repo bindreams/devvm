@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use clap::{CommandFactory, Parser};
 use devvm::exit::{ExitStatus, ExitWidth, finish};
-use devvm::recipe::Recipe;
 use devvm::store::fetch::{LazyHttp, Transport};
 use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
 
@@ -18,6 +17,7 @@ mod doctor;
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod lib_tests;
+mod run;
 
 use args::Cli;
 pub use args::{Cmd, CpSide, VmFlags, parse_cp_side};
@@ -121,27 +121,34 @@ fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
             engine?.instance(&name)?.remove()?;
             Ok(ExitStatus::Code(0))
         }
-        Cmd::Build { reference, .. } => {
-            let cwd = std::env::current_dir()
-                .map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))?;
-            Recipe::from_ref(&reference, &cwd)?.flatten()?;
-            Err(not_implemented("build"))
-        }
-        Cmd::Run { .. } => Err(not_implemented("run")),
-        Cmd::Up { .. } => Err(not_implemented("up")),
-        Cmd::Ssh { .. } => Err(not_implemented("ssh")),
-        Cmd::Cp { .. } => Err(not_implemented("cp")),
-        Cmd::Start { .. } => Err(not_implemented("start")),
-        Cmd::Stop { .. } => Err(not_implemented("stop")),
+        Cmd::Build { reference, arch } => run::build(&engine?, &reference, arch),
+        Cmd::Run {
+            reference,
+            flags,
+            elevated,
+            argv,
+        } => run::run(&engine?, &reference, &flags, elevated, &argv),
+        Cmd::Up { reference, name, flags } => run::up(&engine?, &reference, &name, &flags),
+        Cmd::Ssh {
+            instance,
+            elevated,
+            argv,
+        } => run::ssh(&engine?, &instance, elevated, &argv),
+        Cmd::Cp { src, dst } => run::cp(&engine?, &src, &dst),
+        Cmd::Start { name } => run::start(&engine?, &name),
+        Cmd::Stop { name } => run::stop(&engine?, &name),
         Cmd::Doctor => unreachable!("handled above"),
     }
 }
 
-fn not_implemented(command: &str) -> Error {
-    Error::new(
-        ErrorKind::NotSupported,
-        format!("`devvm {command}` is not implemented yet"),
-    )
+/// A failed write to stdout.
+pub(crate) fn stdout_error(e: std::io::Error) -> Error {
+    Error::io(ErrorKind::Io, "cannot write to stdout", e)
+}
+
+/// The working directory, which a recipe reference and `ls` are read against.
+fn current_dir() -> Result<PathBuf> {
+    std::env::current_dir().map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))
 }
 
 /// `ls`: the instances created from this directory, or all of them.
@@ -149,15 +156,11 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
     let filter = if all {
         ListFilter::All
     } else {
-        let cwd = std::env::current_dir()
-            .map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))?;
-        ListFilter::CreatedIn(cwd)
+        ListFilter::CreatedIn(current_dir()?)
     };
     let infos = engine.list(filter)?;
     let mut out = std::io::stdout().lock();
-    let write = |out: &mut std::io::StdoutLock<'_>, text: &str| {
-        writeln!(out, "{text}").map_err(|e| Error::io(ErrorKind::Io, "cannot write to stdout", e))
-    };
+    let write = |out: &mut std::io::StdoutLock<'_>, text: &str| writeln!(out, "{text}").map_err(stdout_error);
     if json {
         for info in &infos {
             write(&mut out, &info.to_json_line())?;
@@ -192,7 +195,8 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
 
 /// Runs the command line `args` (without the program name) and returns the process exit code.
 ///
-/// Installs the panic hook and points it at the status file before anything else runs.
+/// Installs the panic hook and points it at the status file before anything else runs. An interactive `ssh` leaves
+/// console interrupts ignored for the rest of the process.
 pub fn main_entry(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> i32 {
     main_entry_with(width, args, deps, &dispatch)
 }
@@ -238,12 +242,17 @@ fn run_locked(
     let cli = match Cli::try_parse_from(std::iter::once(OsString::from("devvm")).chain(args)) {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() => {
-            // `--help` and `--version`: printed on stdout, not a failure.
+            // `--help` and `--version`: printed on stdout, not a failure. A write that fails is one, and only then is
+            // the status file written.
             drop(deps);
             let guard = ending();
-            let _ = e.print();
+            let printed = e.print().map_err(stdout_error);
+            let code = match flushed(printed.map(|()| ExitStatus::Code(0)), &mut std::io::stdout()) {
+                Ok(_) => 0,
+                Err(error) => finish(status_file.as_deref(), Err(error), width, &mut std::io::stderr()),
+            };
             return Exit {
-                code: 0,
+                code,
                 _only_one_ending: guard,
             };
         }
@@ -265,12 +274,19 @@ fn run_locked(
     let outcome = action(&deps, cli.command);
     drop(deps);
     let guard = ending();
+    let outcome = flushed(outcome, &mut std::io::stdout());
     let code = finish(status_file.as_deref(), outcome, width, &mut std::io::stderr());
-    let _ = std::io::stdout().flush();
     Exit {
         code,
         _only_one_ending: guard,
     }
+}
+
+/// `outcome` once `out` is flushed. A flush that fails turns a success into an `io` error, since output was lost; a
+/// failure that is already the outcome stands.
+fn flushed(outcome: Result<ExitStatus>, out: &mut dyn Write) -> Result<ExitStatus> {
+    let flush = out.flush().map_err(stdout_error);
+    outcome.and_then(|status| flush.map(|()| status))
 }
 
 fn usage_error(e: &clap::Error) -> Error {

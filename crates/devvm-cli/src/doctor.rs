@@ -22,7 +22,7 @@ pub(crate) fn doctor_to(out: &mut dyn Write, checks: Vec<Check>) -> Result<ExitS
     let mut failed = 0;
     for check in &checks {
         failed += usize::from(check.outcome.is_err());
-        writeln!(out, "{}", line(check)).map_err(|e| Error::io(ErrorKind::Io, "cannot write to stdout", e))?;
+        writeln!(out, "{}", line(check)).map_err(crate::stdout_error)?;
     }
     match failed {
         0 => Ok(ExitStatus::Code(0)),

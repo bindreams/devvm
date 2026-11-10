@@ -1,14 +1,11 @@
-//! `ls`, `rm` and the commands not implemented yet, through the real binary. The instances are seeded by writing
+//! `ls` and `rm`, through the real binary. The instances are seeded by writing
 //! their files by hand, so the on-disk schema is pinned from outside the library.
-
-use std::path::Path;
-use std::process::Output;
 
 use serde_json::Value;
 
 #[path = "support/home.rs"]
 mod home;
-use home::{Home, home};
+use home::{Home, home, id, one_error_line, stdout_lines};
 #[path = "support/isolate.rs"]
 mod isolate;
 #[path = "support/unicode.rs"]
@@ -19,70 +16,6 @@ fn main() {
 }
 
 // Helpers =============================================================================================================
-
-impl Home {
-    /// Writes the files of a stopped instance the way a devvm with schema 1 does.
-    fn seed(&self, name: &str, id: &str, created_from: &Path, owner: &str) {
-        let dir = self.state().join("instances").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        let from = serde_json::to_string(created_from.to_str().unwrap()).unwrap();
-        let record = RECORD
-            .replace("@NAME@", name)
-            .replace("@ID@", id)
-            .replace("@FROM@", &from);
-        std::fs::write(dir.join("record.json"), record).unwrap();
-        let marker = format!(r#"{{"schema":1,"owner":"{owner}","id":"{id}"}}"#);
-        std::fs::write(dir.join("owner.json"), marker).unwrap();
-        std::fs::write(dir.join("disk.img"), "disk").unwrap();
-        // Every instance has its two lock files, created with it.
-        let locks = self.state().join("locks");
-        std::fs::create_dir_all(&locks).unwrap();
-        for kind in ["owner", "op"] {
-            std::fs::write(locks.join(format!("instance-{id}.{kind}")), "").unwrap();
-        }
-    }
-}
-
-/// `record.json` of a stopped instance, as schema 1 defines it.
-const RECORD: &str = r#"{
-  "schema": 1,
-  "id": "@ID@",
-  "name": "@NAME@",
-  "created": "2023-11-14T22:13:20Z",
-  "created_from": @FROM@,
-  "guest": "linux",
-  "arch": "amd64",
-  "chain": [
-    {
-      "key": "01010101010101010101010101010101",
-      "generation": "02020202020202020202020202020202"
-    }
-  ],
-  "expires": null,
-  "cpus": 2,
-  "memory": 4294967296,
-  "network": "nat",
-  "machine": null
-}"#;
-
-fn id(n: u8) -> String {
-    format!("{n:02x}").repeat(16)
-}
-
-fn stdout_lines(output: &Output) -> Vec<String> {
-    String::from_utf8(output.stdout.clone())
-        .unwrap()
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-fn one_error_line(output: &Output, kind: &str) -> String {
-    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
-    assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
-    assert!(stderr.starts_with(&format!("devvm-error: {kind}: ")), "{stderr:?}");
-    stderr
-}
 
 // Tests ===============================================================================================================
 
@@ -291,30 +224,6 @@ fn every_command_reaps_first() {
     let output = home.devvm(&a, &["ls"]);
     assert_eq!(output.status.code(), Some(0));
     assert!(!leftover.exists());
-}
-
-#[skuld::test]
-fn commands_not_implemented_yet_exit_125_not_supported() {
-    let home = home();
-    let a = home.project("a");
-    let commands: [&[&str]; 7] = [
-        &["run", "ubuntu-24.04", "--", "true"],
-        &["up", "ubuntu-24.04", "--name", "box"],
-        &["ssh", "box"],
-        &["cp", "a.txt", "box:~/a.txt"],
-        &["start", "box"],
-        &["stop", "box"],
-        &["build", "ubuntu-24.04"],
-    ];
-    for args in commands {
-        let output = home.devvm(&a, args);
-        assert_eq!(output.status.code(), Some(125), "{args:?}");
-        let line = one_error_line(&output, "not-supported");
-        assert!(
-            line.contains(&format!("`devvm {}` is not implemented yet", args[0])),
-            "{line:?}"
-        );
-    }
 }
 
 #[skuld::test]

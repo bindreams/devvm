@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use devvm::{Arch, Network};
 
 use crate::args::{Cli, Cmd, CpSide, VmFlags, parse_cp_side};
@@ -208,4 +208,38 @@ fn cp_help_says_a_one_letter_instance_is_addressable_as_c_colon_path() {
         .to_string();
     assert!(help.contains("c:path"), "{help}");
     assert!(help.contains(r"c:\dir"), "{help}");
+}
+
+fn long_help(command: &str) -> String {
+    Cli::command()
+        .find_subcommand_mut(command)
+        .unwrap_or_else(|| panic!("no command {command}"))
+        .render_long_help()
+        .to_string()
+}
+
+#[skuld::test]
+fn help_states_the_copy_login_profile_and_snapshot_contracts() {
+    let table = [
+        ("cp", vec!["differ only in case", "1970 to 2106", ".devvm-partial-"]),
+        ("run", vec!["startup files", "mixed"]),
+        ("ssh", vec!["startup files"]),
+        ("up", vec!["mixed"]),
+        ("build", vec!["mixed"]),
+    ];
+    for (command, phrases) in table {
+        let help = long_help(command);
+        for phrase in phrases {
+            assert!(
+                help.contains(phrase),
+                "`devvm {command} --help` lacks `{phrase}`:\n{help}"
+            );
+        }
+    }
+}
+
+#[skuld::test]
+fn an_interactive_shell_takes_no_elevated_flag() {
+    assert!(Cli::try_parse_from(["devvm", "ssh", "box", "--elevated"]).is_err());
+    assert!(Cli::try_parse_from(["devvm", "ssh", "box", "--elevated", "--", "id"]).is_ok());
 }
