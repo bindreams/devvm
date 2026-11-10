@@ -1368,8 +1368,8 @@ fn an_ssh_config_refusal_and_a_failed_entry_write_are_both_shown(#[fixture(unico
         messages
             .iter()
             .any(|m| m.starts_with("instance foo: cannot write the ssh configuration:")
-                && m.contains('%')
-                && m.contains("foo.conf")
+                && m.find("ssh cannot include portably") < m.find("foo.conf")
+                && m.contains("ssh cannot include portably")
                 && m.ends_with(" as well")),
         "{messages:?}"
     );

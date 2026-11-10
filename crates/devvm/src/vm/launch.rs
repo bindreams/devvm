@@ -144,8 +144,8 @@ fn launch_machine(
 
 /// Writes the instance's `ssh_config` entry for plain `ssh` and editors: the top-level `config` and the entry for
 /// `target`. A failed `config` does not keep the entry from being written (an editor may include `<name>.conf` on its
-/// own); the first failure is returned, with the second named after it. The embedded client does not read it, so a start reports a failure and goes on;
-/// `Instance::ssh_config` does not.
+/// own); the first failure is returned, with the second named after it. The embedded client does not read it, so a
+/// start reports a failure and goes on; `Instance::ssh_config` does not.
 pub(crate) fn write_ssh_entry(engine: &Engine, dir: &InstanceDir, target: &SshTarget) -> Result<()> {
     let configs = engine.ssh_configs();
     let top_level = configs.ensure_top_level();
