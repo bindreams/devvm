@@ -1,5 +1,5 @@
-//! Where the VM tests keep their files: the XDG roots below a directory named `UNICODE_DIR` (a space, non-ASCII
-//! characters, a surrogate pair), so each path devvm builds in these tests carries them.
+//! Where the VM tests keep their files: the XDG roots below a directory named `UNICODE_DIR`, so each path devvm builds
+//! in these tests carries it.
 //!
 //! The lib declares this file as a module of `test_support`, and `devvm-cli/tests/vm_cli.rs` includes it by `#[path]`,
 //! so there is one base picker. The including module names `UNICODE_DIR` and the crate root has `test_groups`.
@@ -21,7 +21,7 @@ pub(crate) const USERS: &str = r"C:\Users";
 const SHARED_CACHE: &str = "devvm-test-cache";
 
 /// Where the directory named `UNICODE_DIR` is: `C:\Users` where `unicode_base` is on, else the temporary directory.
-/// Where the group is on and the host is not Windows the error says so: `C:\Users` there is a relative path.
+/// Errors where the group is on on a non-Windows host: `C:\Users` there is a relative path.
 pub(crate) fn base_dir() -> Result<PathBuf, String> {
     match unicode_base::enabled() {
         Ok(()) if cfg!(windows) => Ok(PathBuf::from(USERS)),
@@ -31,6 +31,12 @@ pub(crate) fn base_dir() -> Result<PathBuf, String> {
         )),
         Err(_) => Ok(std::env::temp_dir()),
     }
+}
+
+/// The cache directory every test process shares (`XDG_CACHE_HOME` of [`XdgRoots`]), not made: the QEMU build and the
+/// Ubuntu image are fetched into it once per machine.
+pub(crate) fn shared_cache() -> Result<PathBuf, String> {
+    Ok(base_dir()?.join(UNICODE_DIR).join(SHARED_CACHE))
 }
 
 /// Shorter fallbacks for [`socket_dir`], each with a space and non-ASCII characters like `UNICODE_DIR`: the first also
@@ -58,8 +64,7 @@ pub(crate) fn socket_dir(path_max: usize) -> Option<PathBuf> {
         .find(|dir| fits(dir, path_max))
 }
 
-/// Whether `path` has a space and a character outside ASCII, as a directory named `UNICODE_DIR` or a fallback of
-/// [`socket_dir`] does.
+/// Whether `path` has a space and a character outside ASCII.
 pub(crate) fn has_space_and_non_ascii(path: &Path) -> bool {
     let path = path.to_string_lossy();
     path.contains(' ') && !path.is_ascii()
@@ -96,7 +101,7 @@ impl XdgRoots {
                 unicode_base::OPT_OUT
             )
         })?;
-        let cache = user.join(SHARED_CACHE);
+        let cache = shared_cache()?;
         let vars: Vec<(String, PathBuf)> = ["config", "data", "state"]
             .iter()
             .map(|name| (*name, top.path().join(name)))

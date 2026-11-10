@@ -52,10 +52,13 @@ pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInsta
     let config = Config {
         qemu_path: std::env::var_os(QEMU_DIR_VAR).map(|dir| PathBuf::from(dir).join("bin")),
     };
-    // The cache is the user's, so the download is shared; the configuration is this process's own.
-    let mut dirs = Dirs::from_env().map_err(|e| format!("cannot locate devvm's directories: {e}"))?;
+    // The cache is the tests' shared one, which `vm_cli` uses too, so the download is shared and the user's own cache is
+    // untouched; the configuration is this process's own.
+    let cache = roots::shared_cache()?;
+    std::fs::create_dir_all(&cache).map_err(|e| format!("cannot make {}: {e}", cache.display()))?;
     let config_home = skuld::TempDir::new().map_err(|e| format!("cannot create a temp dir: {e}"))?;
-    dirs.config = config_home.join("config");
+    let mut dirs = Dirs::under(&config_home);
+    dirs.cache = cache;
     write_config(&dirs, &config);
     let transport = HttpTransport::new().map_err(|e| format!("cannot build the HTTP client: {e}"))?;
     let progress = Arc::new(StderrProgress);
