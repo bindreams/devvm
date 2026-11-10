@@ -124,16 +124,27 @@ fn assert_no_leftovers(target: &dyn ContractTarget, before: &HashSet<PathBuf>, a
     assert!(left.is_empty(), "{after} left {left:?}");
 }
 
-/// Ends the process of a released machine, by its recorded identity, when the test fails before it has: nothing else
-/// holds a released machine, so a failed function would leave it running after the test run.
+/// Ends the process of a machine, by its recorded identity, when the test fails before the machine has ended: a failed
+/// function would otherwise leave it running after the test run. Failures to end it are reported on stderr.
 struct KillsOnDrop<'a>(&'a MachineRecord);
 
 impl Drop for KillsOnDrop<'_> {
     fn drop(&mut self) {
-        if let Ok(Some(mut vm)) = VmProcess::attach(&self.0.process) {
-            let _ = vm.kill();
+        match VmProcess::attach(&self.0.process) {
+            Ok(Some(mut vm)) => {
+                if let Err(e) = vm.kill() {
+                    eprintln!("cannot end the machine {:?}: {e}", self.0.process);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("cannot tell whether the machine {:?} runs: {e}", self.0.process),
         }
-        self.0.remove_leftovers(crate::host::current(), &mut |_| {});
+        self.0.remove_leftovers(crate::host::current(), &mut |warning| {
+            eprintln!(
+                "cannot remove a leftover of the machine {:?}: {warning}",
+                self.0.process
+            );
+        });
     }
 }
 
@@ -158,7 +169,9 @@ pub(crate) fn launch_reports_a_live_process_and_loopback_endpoints(target: &dyn 
     let world = world(target, root);
     let spec = prepared(target, &world, root, 0);
     let mut machine = target.backend().launch(&spec).unwrap();
-    assert!(is_running(&machine.record()), "a launched machine has a live process");
+    let launched = machine.record();
+    let _released = KillsOnDrop(&launched);
+    assert!(is_running(&launched), "a launched machine has a live process");
 
     // The endpoints exist once the machine runs: on some backends the ports are chosen then.
     machine.resume().unwrap();
@@ -179,6 +192,7 @@ pub(crate) fn a_frozen_machine_has_not_run_and_kill_leaves_nothing(target: &dyn 
     let before = leftovers_before(target);
     let mut machine = target.backend().launch(&spec).unwrap();
     let record = machine.record();
+    let _released = KillsOnDrop(&record);
     assert_names_the_leftovers(target, &before, &record);
 
     assert!(!target.has_run(&spec), "a frozen machine has not run");
@@ -204,6 +218,7 @@ pub(crate) fn a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(targe
         let before = leftovers_before(target);
         let mut machine = target.backend().launch(&spec).unwrap();
         let before_the_run = machine.record();
+        let _released = KillsOnDrop(&before_the_run);
         assert_names_the_leftovers(target, &before, &before_the_run);
 
         machine.resume().unwrap();
@@ -275,6 +290,7 @@ pub(crate) fn kill_returns_only_after_the_process_has_exited(target: &dyn Contra
     let spec = prepared(target, &world, root, 0);
     let mut machine = target.backend().launch(&spec).unwrap();
     let record = machine.record();
+    let _released = KillsOnDrop(&record);
     machine.resume().unwrap();
     accepts_eventually(&record, first_endpoint(&*machine));
 
@@ -291,6 +307,7 @@ pub(crate) fn attach_to_a_dead_machine_fails(target: &dyn ContractTarget, root: 
     let spec = prepared(target, &world, root, 0);
     let mut machine = target.backend().launch(&spec).unwrap();
     let record = machine.record();
+    let _released = KillsOnDrop(&record);
     machine.kill().unwrap();
 
     let error = target.backend().attach(&record).err().expect("the machine is dead");
@@ -302,6 +319,7 @@ pub(crate) fn shutdown_stops_the_process(target: &dyn ContractTarget, root: &Pat
     let spec = prepared(target, &world, root, 0);
     let mut machine = target.backend().launch(&spec).unwrap();
     let record = machine.record();
+    let _released = KillsOnDrop(&record);
     machine.resume().unwrap();
     accepts_eventually(&record, first_endpoint(&*machine));
     target.await_booted(&*machine).unwrap();
@@ -347,21 +365,24 @@ pub(crate) fn concurrent_launches_get_distinct_processes_and_endpoints(target: &
     let backend = target.backend();
     let barrier = Barrier::new(specs.len());
 
-    let mut machines: Vec<Box<dyn Machine>> = std::thread::scope(|scope| {
+    let launched: Vec<crate::Result<Box<dyn Machine>>> = std::thread::scope(|scope| {
         let launched: Vec<_> = specs
             .iter()
             .map(|spec| {
                 let (backend, barrier) = (&backend, &barrier);
                 scope.spawn(move || {
                     barrier.wait();
-                    backend.launch(spec).unwrap()
+                    backend.launch(spec)
                 })
             })
             .collect();
         launched.into_iter().map(|launched| launched.join().unwrap()).collect()
     });
 
-    let records: Vec<MachineRecord> = machines.iter().map(|machine| machine.record()).collect();
+    // Every machine that launched is guarded before any failed launch is reported.
+    let records: Vec<MachineRecord> = launched.iter().flatten().map(|machine| machine.record()).collect();
+    let _released: Vec<_> = records.iter().map(KillsOnDrop).collect();
+    let mut machines: Vec<Box<dyn Machine>> = launched.into_iter().map(|machine| machine.unwrap()).collect();
     let processes: HashSet<_> = records.iter().map(|r| (r.process.pid, r.process.token)).collect();
     // The endpoints exist once the machines run.
     for machine in &mut machines {
