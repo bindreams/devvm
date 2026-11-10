@@ -142,14 +142,12 @@ fn launch_machine(
     }))
 }
 
-/// Writes the instance's `ssh_config` entry for plain `ssh` and editors. The embedded client does not read it, so a
-/// failure is reported and the start goes on.
-fn write_ssh_config(engine: &Engine, dir: &InstanceDir, target: &SshTarget, keys: &InstanceKeys) {
+/// Writes the instance's `ssh_config` entry for plain `ssh` and editors: the top-level `config`, then the entry for
+/// `target`. The embedded client does not read it, so a start reports a failure and goes on; `Instance::ssh_config` does
+/// not.
+pub(crate) fn write_ssh_entry(engine: &Engine, dir: &InstanceDir, target: &SshTarget) -> Result<()> {
     let configs = engine.ssh_configs();
-    let mut warn = warn_for(engine, dir);
-    if let Err(e) = configs.ensure_top_level() {
-        warn(format!("cannot write the ssh configuration: {}", e.message()));
-    }
+    configs.ensure_top_level()?;
     let entry = SshConfigEntry {
         name: dir.name().clone(),
         id: *dir.id(),
@@ -157,9 +155,7 @@ fn write_ssh_config(engine: &Engine, dir: &InstanceDir, target: &SshTarget, keys
         identity: client_key_path(&keys_dir(dir)),
         known_hosts: dir.path().join("known_hosts"),
     };
-    if let Err(e) = configs.write_entry(&entry, &keys.host_public) {
-        warn(format!("cannot write the ssh configuration entry: {}", e.message()));
-    }
+    configs.write_entry(&entry, &target.host_public)
 }
 
 fn await_ready(
@@ -170,7 +166,9 @@ fn await_ready(
     running: &MachineRecord,
 ) -> Result<SshSession> {
     let target = target_for(dir.name(), running, keys)?;
-    write_ssh_config(engine, dir, &target, keys);
+    if let Err(e) = write_ssh_entry(engine, dir, &target) {
+        warn_for(engine, dir)(format!("cannot write the ssh configuration: {}", e.message()));
+    }
     connect_ready(engine, guest, dir.name(), &target, running)
 }
 

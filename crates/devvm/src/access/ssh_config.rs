@@ -4,6 +4,8 @@
 //! `<dir>/<name>.conf` is one instance's entry; `<dir>/config` is static and includes them all. Every change happens
 //! under the OS lock `<dir>/.lock`, so a sweep that found no instance for a name cannot delete the conf of an instance
 //! of that name placed a moment later. Order in `up`: the instance is placed, then its conf is written.
+//!
+//! The error messages are written for the user as well as for debugging.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -82,7 +84,9 @@ fn check_no_variable(path: &str) -> Result<()> {
     if path.contains("${") {
         return Err(Error::new(
             ErrorKind::Io,
-            format!("{path:?} contains `${{`, which ssh_config reads as an environment variable and cannot escape"),
+            format!(
+                "{path:?} contains `${{`, which ssh_config reads as an environment variable and cannot escape; set XDG_STATE_HOME to a path without one"
+            ),
         ));
     }
     Ok(())
@@ -205,7 +209,7 @@ impl SshConfigDir {
         &self.dir
     }
 
-    /// The static `config` that includes every `<name>.conf`. The file may not exist.
+    /// The static `config` that includes every `<name>.conf`.
     pub(crate) fn config(&self) -> PathBuf {
         self.dir.join(CONFIG)
     }
@@ -218,7 +222,7 @@ impl SshConfigDir {
         Ok(lock)
     }
 
-    pub(crate) fn conf_path(&self, name: &InstanceName) -> PathBuf {
+    fn conf_path(&self, name: &InstanceName) -> PathBuf {
         self.dir.join(format!("{name}{CONF_SUFFIX}"))
     }
 

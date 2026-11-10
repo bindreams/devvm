@@ -12,12 +12,11 @@ use crate::engine::Engine;
 use crate::engine::keys::read_target;
 use crate::exit::{ExitStatus, Output};
 use crate::guest::GuestOs;
-use crate::host::symlink_metadata_if_present;
 use crate::instance::dir::{InstanceDir, OpShared};
 use crate::instance::name::InstanceName;
 use crate::instance::registry::Owned;
 use crate::store::fetch::LazyHttp;
-use crate::{Command, Error, ErrorKind, Result};
+use crate::{Command, Result};
 
 mod image;
 mod launch;
@@ -25,6 +24,7 @@ mod ops;
 
 pub use image::{Image, Vm, availability};
 pub(crate) use launch::Started;
+use launch::write_ssh_entry;
 
 #[cfg(test)]
 #[path = "vm_tests.rs"]
@@ -177,32 +177,23 @@ impl Instance {
         Ok(())
     }
 
-    /// The `ssh_config` file through which the system `ssh` reaches this instance by its name. Fails with
-    /// `unavailable`, as `run_to` does, when the instance's machine is not running, or when the file or the
-    /// instance's entry in it is missing: `ssh` would then fail, or look the name up as a host.
+    /// The `ssh_config` file through which the system `ssh` reaches this instance by its name, after writing the
+    /// instance's entry in it from the machine that runs now. Fails with `unavailable`, as `run_to` does, when the
+    /// instance's machine is not running.
     ///
     /// No lock is held while `ssh` runs: a `stop` or `rm` ends the session.
     pub fn ssh_config(&self) -> Result<PathBuf> {
         let dir = self.dir();
         let op = dir.op_shared()?;
-        read_target(&self.engine, dir, &op)?;
-        let configs = self.engine.ssh_configs();
-        let config = configs.config();
-        for file in [config.clone(), configs.conf_path(dir.name())] {
-            let present = symlink_metadata_if_present(&file)
-                .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", file.display()), e))?;
-            if present.is_none() {
-                return Err(Error::new(
-                    ErrorKind::Unavailable,
-                    format!(
-                        "the ssh configuration of instance {} is missing {}: stop and start it",
-                        dir.name(),
-                        file.display()
-                    ),
-                ));
-            }
-        }
-        Ok(config)
+        let running = read_target(&self.engine, dir, &op)?;
+        write_ssh_entry(&self.engine, dir, &running.target).map_err(|e| {
+            let kind = e.kind();
+            e.with_context(
+                kind,
+                format!("cannot write the ssh configuration of instance {}", dir.name()),
+            )
+        })?;
+        Ok(self.engine.ssh_configs().config())
     }
 }
 

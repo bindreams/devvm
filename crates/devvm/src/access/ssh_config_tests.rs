@@ -511,6 +511,7 @@ fn a_path_ssh_would_read_as_an_environment_variable_is_refused(#[fixture(unicode
     let error = dir.write_entry(&entry(&base, "web", 22), &host_public()).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("${"), "{error}");
+    assert!(error.message().contains("XDG_STATE_HOME"), "says what to set: {error}");
     assert!(!conf(&dir, "web").exists(), "nothing was written");
     let error = dir.ensure_top_level().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
