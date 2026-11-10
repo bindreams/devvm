@@ -46,7 +46,6 @@ user's: one that redefines `cd` or `exec`, or sets `cdable_vars`, changes the co
     };
 }
 
-/// The `git-tracked` snapshot of a recipe's `copy` step.
 macro_rules! snapshot_help {
     () => {
         "`copy: { from: git-tracked }` copies the files git tracks as they are on disk. A project that changes during \

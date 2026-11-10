@@ -192,7 +192,8 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
 
 /// Runs the command line `args` (without the program name) and returns the process exit code.
 ///
-/// Installs the panic hook and points it at the status file before anything else runs.
+/// Installs the panic hook and points it at the status file before anything else runs. An interactive `ssh` leaves
+/// console interrupts ignored for the rest of the process.
 pub fn main_entry(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> i32 {
     main_entry_with(width, args, deps, &dispatch)
 }
@@ -241,9 +242,13 @@ fn run_locked(
             // `--help` and `--version`: printed on stdout, not a failure.
             drop(deps);
             let guard = ending();
-            let _ = e.print();
+            let printed = e
+                .print()
+                .map(|()| ExitStatus::Code(0))
+                .map_err(|source| Error::io(ErrorKind::Io, "cannot write to stdout", source));
+            let code = finish(status_file.as_deref(), printed, width, &mut std::io::stderr());
             return Exit {
-                code: 0,
+                code,
                 _only_one_ending: guard,
             };
         }
@@ -265,12 +270,21 @@ fn run_locked(
     let outcome = action(&deps, cli.command);
     drop(deps);
     let guard = ending();
+    let outcome = flushed(outcome, &mut std::io::stdout());
     let code = finish(status_file.as_deref(), outcome, width, &mut std::io::stderr());
-    let _ = std::io::stdout().flush();
     Exit {
         code,
         _only_one_ending: guard,
     }
+}
+
+/// `outcome` once `out` is flushed. A flush that fails turns a success into an `io` error, since output was lost; a
+/// failure that is already the outcome stands.
+fn flushed(outcome: Result<ExitStatus>, out: &mut dyn Write) -> Result<ExitStatus> {
+    let flush = out
+        .flush()
+        .map_err(|e| Error::io(ErrorKind::Io, "cannot write to stdout", e));
+    outcome.and_then(|status| flush.map(|()| status))
 }
 
 fn usage_error(e: &clap::Error) -> Error {

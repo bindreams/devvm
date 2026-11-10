@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use devvm::{Arch, ErrorKind, Network, RunAs};
 
-use super::{Streaming, Transfer, build_options, copy_direction, guest_command, start_options};
+use super::{SshMode, Streaming, Transfer, build_options, copy_direction, guest_command, ssh_mode, start_options};
 use crate::args::{CpSide, VmFlags};
 
 fn local(path: &str) -> CpSide {
@@ -72,6 +72,22 @@ fn elevated_runs_the_command_as_root_and_nothing_else_changes() {
     let root = guest_command(&argv, true);
     assert_eq!((user.run_as, root.run_as), (RunAs::User, RunAs::Elevated));
     assert_eq!((&user.argv, &root.argv, &user.cwd), (&argv, &argv, &None));
+}
+
+#[skuld::test]
+fn ssh_without_a_command_is_a_shell_and_with_one_is_that_command() {
+    let argv = vec!["id".to_owned()];
+    assert!(matches!(ssh_mode(false, &[]).unwrap(), SshMode::Shell));
+    assert!(matches!(
+        ssh_mode(true, &argv).unwrap(),
+        SshMode::Command(command) if command.run_as == RunAs::Elevated && command.argv == argv
+    ));
+}
+
+#[skuld::test]
+fn elevated_ssh_without_a_command_is_a_usage_error_not_a_plain_shell() {
+    let error = ssh_mode(true, &[]).err().expect("a shell has no elevated form");
+    assert_eq!(error.kind(), ErrorKind::Usage);
 }
 
 /// A writer that keeps what was written and counts the flushes after it.

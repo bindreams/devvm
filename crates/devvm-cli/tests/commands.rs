@@ -152,7 +152,8 @@ fn devvm_with_stub_ssh(home: &Home, cwd: &Path, args: &[&str], code: i32, record
 }
 
 /// Gives the seeded instance `name` a machine that the backend finds: the process of this test, which is alive for as
-/// long as the test runs. It has an SSH endpoint and the four key files, which is what `Instance::ssh_config` reads.
+/// long as the test runs. It has an SSH endpoint, the four key files and the `ssh` configuration files, which is what
+/// `Instance::ssh_config` reads.
 fn seed_a_running_machine(home: &Home, name: &str) {
     let dir = home.state().join("instances").join(name);
     let process = cosca::identity::ProcessId::current().to_record().unwrap();
@@ -172,6 +173,11 @@ fn seed_a_running_machine(home: &Home, name: &str) {
     std::fs::create_dir_all(&keys).unwrap();
     for file in ["client", "client.pub", "host", "host.pub"] {
         std::fs::write(keys.join(file), "key").unwrap();
+    }
+    let ssh = home.state().join("ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    for file in ["config".to_owned(), format!("{name}.conf")] {
+        std::fs::write(ssh.join(file), "").unwrap();
     }
 }
 
@@ -196,7 +202,7 @@ fn interactive_ssh_of_a_stopped_instance_fails_unavailable_naming_it_and_starts_
 }
 
 #[skuld::test]
-fn interactive_ssh_runs_system_ssh_with_the_generated_config_and_the_inherited_console() {
+fn interactive_ssh_runs_system_ssh_with_the_generated_config_and_passes_on_its_exit_code_and_stdout() {
     let home = home();
     let cwd = home.project("a");
     home.seed("box", &id(1), &cwd, "none");
@@ -262,4 +268,6 @@ fn stop_of_a_stopped_instance_does_nothing() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 }

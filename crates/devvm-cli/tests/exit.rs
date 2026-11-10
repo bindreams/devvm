@@ -363,6 +363,24 @@ fn help_and_version_exit_0_without_error_lines() {
 }
 
 #[skuld::test]
+fn help_whose_output_is_lost_exits_125_with_an_io_line() {
+    let dir = temp();
+    // The only reader is gone before the child starts, so its first write fails.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
+    command
+        .current_dir(&dir)
+        .arg("--help")
+        .env_remove("DEVVM_STATUS_FILE")
+        .stdout(writer);
+    isolate(&mut command, &dir.join(UNICODE_DIR));
+    let output = command.stdin(Stdio::null()).output().unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    one_error_line(&output, "io");
+}
+
+#[skuld::test]
 fn an_unwritable_status_file_still_exits_125_with_one_line() {
     let dir = temp();
     let file = dir.join("no such dir").join("status.json");

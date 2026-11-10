@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use devvm::exit::ExitStatus;
 use devvm::recipe::Recipe;
@@ -14,14 +14,14 @@ use crate::args::{CpSide, VmFlags};
 #[path = "run_tests.rs"]
 mod run_tests;
 
-/// The `build` command: the recipe's layers are built and cached, and no VM is left.
+/// Builds and caches the recipe's layers; no VM is left.
 pub(crate) fn build(engine: &Arc<Engine>, reference: &str, arch: Option<Arch>) -> Result<ExitStatus> {
     let recipe = recipe(reference)?;
     engine.build(&recipe, &BuildOptions { arch })?;
     Ok(ExitStatus::Code(0))
 }
 
-/// The `run` command: an instance that dies with this process runs `argv`, and is destroyed when the command is over.
+/// Runs `argv` in an instance that dies with this process, and destroys it when the command is over.
 pub(crate) fn run(
     engine: &Arc<Engine>,
     reference: &str,
@@ -37,12 +37,11 @@ pub(crate) fn run(
         &mut Streaming(std::io::stdout()),
         &mut std::io::stderr(),
     );
-    // The handle's drop destroys the instance, whichever way the command ended.
     drop(vm);
     status
 }
 
-/// The `up` command: the instance stays until `rm`; its name is printed.
+/// Creates an instance that stays until `rm` and prints its name.
 pub(crate) fn up(engine: &Arc<Engine>, reference: &str, name: &str, flags: &VmFlags) -> Result<ExitStatus> {
     let recipe = recipe(reference)?;
     let image = engine.build(&recipe, &build_options(flags))?;
@@ -52,17 +51,34 @@ pub(crate) fn up(engine: &Arc<Engine>, reference: &str, name: &str, flags: &VmFl
     Ok(ExitStatus::Code(0))
 }
 
-/// The `ssh` command: with a command, the embedded client runs it; without one, the system `ssh` opens a shell.
-pub(crate) fn ssh(engine: &Arc<Engine>, name: &str, elevated: bool, argv: &[String]) -> Result<ExitStatus> {
-    let instance = engine.instance(name)?;
-    if argv.is_empty() {
-        return interactive_ssh(&instance);
+/// What `ssh` was asked for.
+enum SshMode {
+    Shell,
+    Command(Command),
+}
+
+/// With a command, the embedded client runs it; without one, the system `ssh` opens a shell, which has no elevated
+/// form: `elevated` without a command is a usage error.
+fn ssh_mode(elevated: bool, argv: &[String]) -> Result<SshMode> {
+    match (argv.is_empty(), elevated) {
+        (false, _) => Ok(SshMode::Command(guest_command(argv, elevated))),
+        (true, false) => Ok(SshMode::Shell),
+        (true, true) => Err(Error::new(
+            ErrorKind::Usage,
+            "an elevated ssh needs a command: the interactive shell has no elevated form",
+        )),
     }
-    instance.run_to(
-        &guest_command(argv, elevated),
-        &mut Streaming(std::io::stdout()),
-        &mut std::io::stderr(),
-    )
+}
+
+pub(crate) fn ssh(engine: &Arc<Engine>, name: &str, elevated: bool, argv: &[String]) -> Result<ExitStatus> {
+    let mode = ssh_mode(elevated, argv)?;
+    let instance = engine.instance(name)?;
+    match mode {
+        SshMode::Shell => interactive_ssh(&instance),
+        SshMode::Command(command) => {
+            instance.run_to(&command, &mut Streaming(std::io::stdout()), &mut std::io::stderr())
+        }
+    }
 }
 
 /// The system `ssh` with the generated configuration, as a child that has this process's console.
@@ -85,15 +101,19 @@ fn interactive_ssh(instance: &Instance) -> Result<ExitStatus> {
 }
 
 /// Makes Ctrl-C and Ctrl-Break (SIGINT on Unix) do nothing here, so the interactive `ssh` that shares the console alone
-/// decides what an interrupt does, and this process then reports its exit code. The handler stays for the rest of the
-/// process, which ends with `ssh`.
+/// decides what an interrupt does, and this process then reports its exit code. The handler is installed once and
+/// stays.
 fn ignore_console_interrupts() -> Result<()> {
-    ctrlc::set_handler(|| {}).map_err(|e| {
-        Error::new(
-            ErrorKind::Internal,
-            format!("cannot make this process ignore Ctrl-C: {e}"),
-        )
-    })
+    static INSTALLED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    INSTALLED
+        .get_or_init(|| ctrlc::set_handler(|| {}).map_err(|e| e.to_string()))
+        .clone()
+        .map_err(|e| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("cannot make this process ignore Ctrl-C: {e}"),
+            )
+        })
 }
 
 /// The `cp` command: one side is a path on this host and the other is `INSTANCE:PATH`.
@@ -105,13 +125,11 @@ pub(crate) fn cp(engine: &Arc<Engine>, src: &CpSide, dst: &CpSide) -> Result<Exi
     Ok(ExitStatus::Code(0))
 }
 
-/// The `start` command.
 pub(crate) fn start(engine: &Arc<Engine>, name: &str) -> Result<ExitStatus> {
     engine.instance(name)?.start()?;
     Ok(ExitStatus::Code(0))
 }
 
-/// The `stop` command.
 pub(crate) fn stop(engine: &Arc<Engine>, name: &str) -> Result<ExitStatus> {
     engine.instance(name)?.stop()?;
     Ok(ExitStatus::Code(0))
@@ -183,8 +201,8 @@ fn copy_direction<'a>(src: &'a CpSide, dst: &'a CpSide) -> Result<Transfer<'a>> 
 
 // Output ==============================================================================================================
 
-/// Passes each write on and flushes it, so the guest's output arrives as it is written: the standard output is line
-/// buffered, and a prompt with no line break would wait for the end of the command.
+/// Flushes after each write: stdout is line buffered, so a prompt without a newline would otherwise wait for the command
+/// to end.
 struct Streaming<W: Write>(W);
 
 impl<W: Write> Write for Streaming<W> {
