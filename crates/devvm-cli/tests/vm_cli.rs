@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use devvm::{ExitStatus, host_exit_width};
@@ -26,8 +27,11 @@ mod test_harness;
 #[path = "support/unicode.rs"]
 mod unicode;
 use unicode::UNICODE_DIR;
+#[path = "support/home.rs"]
+mod home;
 #[path = "support/isolate.rs"]
 mod isolate;
+use home::{Home, stdout_lines};
 #[path = "../../devvm/src/vm_suite/roots.rs"]
 mod roots;
 use roots::XdgRoots;
@@ -42,12 +46,11 @@ fn main() {
 
 // The devvm executable ================================================================================================
 
-/// How to run the `devvm` executable against this process's roots: the environment, and a project directory to run it
-/// in. All five XDG variables are set, so that no command reads or sweeps the user's own directories.
+/// How to run the `devvm` executable against this process's roots: the environment ([`Home`], which sets all five XDG
+/// variables, so that no command reads or sweeps the user's own directories), and a project directory to run it in.
 #[derive(Clone)]
 struct Cli {
-    root: PathBuf,
-    cache: PathBuf,
+    home: Arc<Home>,
     project: PathBuf,
     scratch: PathBuf,
 }
@@ -55,23 +58,11 @@ struct Cli {
 impl Cli {
     /// The command `devvm <args>` in the project directory, with no stdin.
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
-        command
-            .current_dir(&self.project)
-            .args(args)
-            .env_remove("DEVVM_STATUS_FILE");
-        isolate::isolate(&mut command, &self.root);
-        // The cache is shared by the test processes of this machine, so the QEMU build and the Ubuntu image are
-        // fetched once.
-        command.env("XDG_CACHE_HOME", &self.cache);
-        command.stdin(Stdio::null());
-        command
+        self.home.command(&self.project, args)
     }
 
     fn devvm(&self, args: &[&str]) -> Output {
-        self.command(args)
-            .output()
-            .unwrap_or_else(|e| panic!("cannot run devvm {args:?}: {e}"))
+        self.home.devvm(&self.project, args)
     }
 
     /// `devvm <args>`, which must exit 0; its stdout.
@@ -102,6 +93,28 @@ impl Cli {
     }
 }
 
+/// The smallest limit on a control socket path of the hosts devvm runs on: `sun_path` less its NUL is 107 bytes on
+/// Linux and Windows, and 103 on macOS.
+const SOCKET_PATH_MAX: usize = 103;
+
+/// The short directory that is `XDG_RUNTIME_DIR` in these tests, made if need be: the roots' own directories are too
+/// long for a control socket path. It is the lib's, picked by the same rule ([`roots::socket_dir`]).
+fn run_dir() -> Result<PathBuf, String> {
+    // The longest path devvm makes below it: its runtime directory `devvm`, and a launch's `<16 hex>.sock` in that.
+    let fits = |dir: &Path| {
+        let longest = dir.join("devvm").join("0000000000000000.sock");
+        longest.as_os_str().as_encoded_bytes().len() <= SOCKET_PATH_MAX
+    };
+    let dir = roots::socket_dir(&fits).ok_or_else(|| {
+        format!(
+            "the temporary directory {} is too long for a control socket",
+            std::env::temp_dir().display()
+        )
+    })?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
 /// This process's roots and how to run devvm in them.
 struct CliEnv {
     _roots: XdgRoots,
@@ -110,16 +123,18 @@ struct CliEnv {
 
 #[skuld::fixture(scope = process)]
 fn cli_env(#[fixture(vm_group)] _group: &Group) -> Result<CliEnv, String> {
-    let roots = XdgRoots::new(None)?;
-    let cache = roots.var("XDG_CACHE_HOME").expect("a cache root").to_path_buf();
+    let run = run_dir()?;
+    let roots = XdgRoots::new(Some(&run))?;
+    // The cache is shared by the test processes of this machine, so the QEMU build and the Ubuntu image are fetched
+    // once.
+    let cache = roots.var("XDG_CACHE_HOME").expect("a cache root");
     let project = roots.top.join("project");
     let scratch = roots.top.join("scratch");
     for dir in [&project, &scratch] {
         std::fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     }
     let cli = Cli {
-        root: roots.top.clone(),
-        cache,
+        home: Arc::new(Home::at(&roots.top, cache, &run)),
         project,
         scratch,
     };
@@ -175,8 +190,11 @@ impl Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        // After a `devvm rm` the instance is gone and this one fails; the test has checked what it needed.
-        let _ = self.cli.devvm(&["rm", &self.name]);
+        // After a `devvm rm` the instance is gone and `rm` exits with an error, which is not reported: the test has
+        // checked what it needed. A panic here would abort a test that is already unwinding.
+        if let Err(e) = self.cli.command(&["rm", &self.name]).output() {
+            eprintln!("cannot run devvm rm {}: {e}", self.name);
+        }
     }
 }
 
@@ -421,11 +439,7 @@ fn up_ssh_true_cp_both_ways_stop_start_rm(#[fixture(cli_guests)] cli: &Cli) {
 /// The lines of `devvm doctor` in the fixture environment.
 fn doctor_lines(env: &CliEnv) -> (Output, Vec<String>) {
     let output = env.cli.devvm(&["doctor"]);
-    let lines = String::from_utf8(output.stdout.clone())
-        .expect("UTF-8 output")
-        .lines()
-        .map(str::to_owned)
-        .collect();
+    let lines = stdout_lines(&output);
     (output, lines)
 }
 
@@ -498,13 +512,11 @@ fn vm_fixture_roots_have_a_space_and_non_ascii_and_all_four_xdg_variables(#[fixt
             "{line}"
         );
     }
-    for var in ["XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"] {
-        let dir = env.cli.root_of(var);
-        assert!(
-            dir.starts_with(&user),
-            "{var} {} is not below {}",
-            dir.display(),
-            user.display()
-        );
-    }
+    let config = env.cli.root_of("XDG_CONFIG_HOME");
+    assert!(
+        config.starts_with(&user),
+        "XDG_CONFIG_HOME {} is not below {}",
+        config.display(),
+        user.display()
+    );
 }

@@ -15,20 +15,20 @@ use crate::backend::MachineRecord;
 use crate::backend::qemu::qemu_parts;
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::config::Config;
-use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, LaunchStep};
+use crate::engine::engine_tests::engine_with_bound;
+use crate::engine::{DEFAULT_BOOT_BOUND, Engine, LaunchHooks, LaunchStep};
 use crate::exit::StderrProgress;
 use crate::host;
 use crate::recipe::Recipe;
 use crate::store::fetch::{Fetcher, HttpTransport};
-use crate::store::layers::SystemClock;
 use crate::test_groups::{Group, unicode_base};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::UNICODE_DIR;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir, write_config};
-use crate::{BuildOptions, Command, Dirs, Error, ExitStatus, Guest, Image, Instance, StartOptions, Vm};
+use crate::{BuildOptions, Command, Dirs, Error, ExitStatus, Guest, Image, Instance, RunAs, StartOptions, Vm};
 
 #[path = "roots.rs"]
-mod roots;
+pub(crate) mod roots;
 use roots::{USERS, XdgRoots};
 
 /// A process's directories, resolved: the roots of [`XdgRoots`] as the engine's [`Dirs`].
@@ -41,15 +41,30 @@ impl Roots {
     /// Makes the roots; `run` is `XDG_RUNTIME_DIR` ([`XdgRoots::new`]).
     pub(super) fn new(run: Option<&Path>) -> Result<Roots, String> {
         let xdg = XdgRoots::new(run)?;
-        let var = |name: &str| -> Option<OsString> { xdg.var(name).map(|dir| dir.as_os_str().to_owned()) };
-        let dirs = Dirs::from_lookup(Some(xdg.top.clone()), &var, &|| {
+        let dirs = Roots::resolve(&xdg, None)?;
+        Ok(Roots { _xdg: xdg, dirs })
+    }
+
+    /// These roots' directories with `run` as the runtime directory instead: the same stores, a runtime directory of
+    /// their own.
+    pub(super) fn dirs_with_run(&self, run: &Path) -> Result<Dirs, String> {
+        Roots::resolve(&self._xdg, Some(run))
+    }
+
+    fn resolve(xdg: &XdgRoots, run: Option<&Path>) -> Result<Dirs, String> {
+        let var = |name: &str| -> Option<OsString> {
+            match (name, run) {
+                ("XDG_RUNTIME_DIR", Some(run)) => Some(run.as_os_str().to_owned()),
+                _ => xdg.var(name).map(|dir| dir.as_os_str().to_owned()),
+            }
+        };
+        Dirs::from_lookup(Some(xdg.top.clone()), &var, &|| {
             Err(crate::Error::new(
                 crate::ErrorKind::Config,
                 "these roots name no runtime directory",
             ))
         })
-        .map_err(|e| format!("cannot resolve the roots: {e}"))?;
-        Ok(Roots { _xdg: xdg, dirs })
+        .map_err(|e| format!("cannot resolve the roots: {e}"))
     }
 }
 
@@ -83,16 +98,15 @@ pub(super) fn engine_in(dirs: &Dirs, install: &QemuInstall, hooks: Arc<dyn Launc
     let transport = HttpTransport::new().expect("an HTTP client");
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
     let parts = qemu_parts(dirs, fetcher, host::current(), progress.clone());
-    Engine::with_parts(EngineParts {
-        dirs: dirs.clone(),
-        host: host::current(),
-        backend: Some(parts.backend),
-        guests: parts.guests,
-        clock: Arc::new(SystemClock),
+    engine_with_bound(
+        dirs.clone(),
+        host::current(),
+        Some(parts.backend),
+        parts.guests,
         progress,
+        DEFAULT_BOOT_BOUND,
         hooks,
-        boot_bound: DEFAULT_BOOT_BOUND,
-    })
+    )
 }
 
 /// The engine the tests of a guest share, with the roots it reads: its layer store holds the Ubuntu base once per test
@@ -183,8 +197,16 @@ pub(super) fn small_options() -> StartOptions {
 
 /// Runs `argv` in `guest`, which must exit 0, and returns its stdout.
 pub(super) fn run_ok(guest: &dyn Guest, argv: &[&str]) -> String {
+    run_ok_as(guest, RunAs::User, argv)
+}
+
+/// [`run_ok`] with the privilege `run_as`.
+pub(super) fn run_ok_as(guest: &dyn Guest, run_as: RunAs, argv: &[&str]) -> String {
     let output = guest
-        .run(&Command::new(argv.iter().copied()))
+        .run(&Command {
+            run_as,
+            ..Command::new(argv.iter().copied())
+        })
         .unwrap_or_else(|e| panic!("cannot run {argv:?}: {e}"));
     assert_eq!(
         output.status,

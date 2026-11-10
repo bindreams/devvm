@@ -1194,6 +1194,7 @@ fn an_unready_guest_reports_what_it_awaited_and_the_serial_log(#[fixture(unicode
         fx.guests.clone(),
         Arc::new(MemoryProgress::default()),
         std::time::Duration::from_millis(300),
+        Arc::new(crate::engine::NoHooks),
     );
 
     let error = Instance::open_in(&engine, "foo")

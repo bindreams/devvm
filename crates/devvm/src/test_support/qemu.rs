@@ -22,7 +22,8 @@ use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::store::layers::ChainLease;
 use crate::test_groups::{Group, vm_group};
-use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR};
+use crate::test_support::fixtures::MemoryProgress;
+use crate::vm_suite::fixture::roots;
 use crate::{Dirs, ErrorKind};
 
 #[path = "qemu_tests.rs"]
@@ -80,27 +81,18 @@ pub struct Sock {
     pub claim: FileClaim,
 }
 
-/// Shorter fallbacks for [`socket_dir`], each with a space and non-ASCII characters like [`UNICODE_DIR`]: the first
-/// also has a character outside the Basic Multilingual Plane (a UTF-16 surrogate pair).
-const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e16}"];
-
-/// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`): the first of
-/// `<temp>/<UNICODE_DIR>`, the shorter `<temp>/<SHORT_SOCKET_DIRS>` (a long Windows user name), then the temporary
-/// directory itself (a temporary directory that leaves room for none of them). Nothing is created outside the temporary
-/// directory.
+/// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`); see
+/// [`roots::socket_dir`].
 fn socket_dir_that_fits() -> Option<PathBuf> {
-    // Room for a [`scratch_run`] below the directory and a socket in it.
+    // Room for a [`scratch_run`] below the directory, the `devvm` directory that an engine over it makes in that
+    // (`Dirs::run`), and a socket in that.
     let fits = |dir: &Path| {
         QmpEndpoint::fits(
-            &dir.join(scratch_name([0; SCRATCH_DRAW_BYTES])),
+            &dir.join(scratch_name([0; SCRATCH_DRAW_BYTES])).join("devvm"),
             host::current().socket_path_max(),
         )
     };
-    let temp = std::env::temp_dir();
-    std::iter::once(temp.join(UNICODE_DIR))
-        .chain(SHORT_SOCKET_DIRS.iter().map(|short| temp.join(short)))
-        .chain(std::iter::once(temp.clone()))
-        .find(|dir| fits(dir))
+    roots::socket_dir(&fits)
 }
 
 /// The shared directory control sockets go in during tests, created if need be (see [`socket_dir_that_fits`]).

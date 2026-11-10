@@ -33,6 +33,22 @@ pub(crate) fn base_dir() -> Result<PathBuf, String> {
     }
 }
 
+/// Shorter fallbacks for [`socket_dir`], each with a space and non-ASCII characters like `UNICODE_DIR`: the first also
+/// has a character outside the Basic Multilingual Plane (a UTF-16 surrogate pair).
+const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e16}"];
+
+/// The directory control sockets go in during tests, if any fits (`fits` says whether a socket path in a directory is
+/// within the host's limit): the first of `<temp>/<UNICODE_DIR>`, the shorter `<temp>/<SHORT_SOCKET_DIRS>` (a long
+/// Windows user name), then the temporary directory itself (a temporary directory that leaves room for none of them).
+/// Nothing is created. The roots' own directories are too long for a socket path, so a runtime directory is this one.
+pub(crate) fn socket_dir(fits: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    let temp = std::env::temp_dir();
+    std::iter::once(temp.join(UNICODE_DIR))
+        .chain(SHORT_SOCKET_DIRS.iter().map(|short| temp.join(short)))
+        .chain(std::iter::once(temp.clone()))
+        .find(|dir| fits(dir))
+}
+
 /// A process's XDG directories: `config`, `data` and `state` are new, below `top` (`<base>\<UNICODE_DIR>\<run id>`), and
 /// removed when this is dropped; `cache` is `<base>\<UNICODE_DIR>\devvm-test-cache`, which every process shares and
 /// nothing removes, so the QEMU build and the Ubuntu image are fetched once per machine.

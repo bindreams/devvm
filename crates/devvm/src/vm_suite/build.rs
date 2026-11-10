@@ -3,15 +3,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::fixture::{VmEngine, guest_options, recipe_in, run_ok, vm_engine};
+use super::backend::files_in_run;
+use super::fixture::{Launches, VmEngine, engine_in, guest_options, recipe_in, run_ok, run_ok_as, vm_engine};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::DISK;
-use crate::copy::copy_tests::{git, new_repo, put};
-use crate::host::symlink_metadata_if_present;
+use crate::copy::copy_tests::{add_all, git, new_repo, put};
 use crate::recipe::Recipe;
+use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::unicode_home;
-use crate::test_support::qemu::{qemu_img_info, qemu_sidecar};
-use crate::{BuildOptions, Command, ExitStatus, Guest, Image};
+use crate::test_support::qemu::{qemu_img_info, qemu_sidecar, scratch_run};
+use crate::{BuildOptions, Command, ExitStatus, Guest, Image, RunAs};
 
 const DISK_20_GIB: u64 = 20 << 30;
 
@@ -77,27 +78,10 @@ fn project(home: &Path) -> PathBuf {
     let repo = new_repo(home, "proj");
     put(&repo, "tracked.txt", b"tracked one");
     put(&repo, "dir/with space \u{416}.txt", b"nested");
-    git(&repo, &["add", "-A"]);
+    add_all(&repo);
     git(&repo, &["commit", "-q", "-m", "tracked"]);
     put(&repo, "untracked.txt", b"not in git");
     repo
-}
-
-/// What the directory `dir` holds, by name, without the runtime directory's lock; nothing when it is not there.
-fn listing(dir: &Path) -> Vec<String> {
-    if symlink_metadata_if_present(dir)
-        .unwrap_or_else(|e| panic!("cannot look at {}: {e}", dir.display()))
-        .is_none()
-    {
-        return Vec::new();
-    }
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()))
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name != "runtime.lock")
-        .collect();
-    names.sort();
-    names
 }
 
 #[skuld::test]
@@ -130,10 +114,11 @@ fn a_recipe_with_run_and_copy_git_tracked_builds_and_an_untracked_file_never_app
     assert_eq!(untracked.status, ExitStatus::Code(1), "{}", untracked.stderr_lossy());
 }
 
-/// The step uploads a tar archive and extracts it: neither the archive nor anything else of the step's is left in the
-/// layer but the files themselves.
+/// The step uploads a tar archive to `/tmp` and extracts it. The guest that this test boots has booted again since, and
+/// Ubuntu clears `/tmp` at boot, so the archive is not seen here whether or not the step removed it; this checks that
+/// no other staging file is left anywhere and that the destination holds exactly the tracked files.
 #[skuld::test]
-fn a_copy_step_leaves_no_archive_and_no_other_file_in_the_layer(
+fn a_copy_step_leaves_no_staging_file_outside_tmp_and_exactly_the_tracked_files_at_its_destination(
     #[fixture(vm_engine)] vm: &VmEngine,
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -143,8 +128,10 @@ fn a_copy_step_leaves_no_archive_and_no_other_file_in_the_layer(
     let image = vm.engine.build(&recipe, &BuildOptions::default()).unwrap();
 
     let guest = image.start(&guest_options()).unwrap();
-    let left = run_ok(
+    // As root: `find` exits 1 on a directory that the user cannot read, such as `/root`.
+    let left = run_ok_as(
         &guest,
+        RunAs::Elevated,
         &[
             "find",
             "/",
@@ -242,27 +229,33 @@ fn a_second_build_of_an_unchanged_recipe_boots_no_vm(
 }
 
 /// A build step's guest leaves no socket, lock or claim file in the run directory, and no directory in `<state>/builds`.
+///
+/// The engine is this test's own, over the shared engine's stores and a runtime directory that nothing else launches in,
+/// so the listing sees only this build.
 #[skuld::test]
 fn vm_qemu_guest_a_build_step_leaves_no_runtime_files(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(vm_engine)] vm: &VmEngine,
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let dirs = &vm.roots.dirs;
-    let run = dirs.run().unwrap();
-    let before = listing(run);
+    let scratch = scratch_run();
+    let dirs = vm.roots.dirs_with_run(scratch.path()).unwrap();
+    let launches = Arc::new(Launches::default());
+    let engine = engine_in(&dirs, install, launches.clone());
     let recipe = recipe_in(home, &["run: echo runtime-files > /var/tmp/runtime-files"]);
 
-    let launched = vm.launches.count();
-    vm.engine.build(&recipe, &BuildOptions::default()).unwrap();
+    engine.build(&recipe, &BuildOptions::default()).unwrap();
 
+    assert_eq!(launches.count(), 1, "the step booted no guest, so this checks nothing");
+    let run = dirs.run().unwrap();
     assert_eq!(
-        vm.launches.count() - launched,
-        1,
-        "the step booted no guest, so this checks nothing"
+        files_in_run(run),
+        Vec::<PathBuf>::new(),
+        "the run directory {}",
+        run.display()
     );
-    assert_eq!(listing(run), before, "the run directory {}", run.display());
     assert_eq!(
-        listing(&dirs.builds()),
+        names(&dirs.builds()),
         Vec::<String>::new(),
         "{}",
         dirs.builds().display()

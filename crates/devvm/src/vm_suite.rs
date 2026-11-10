@@ -10,7 +10,7 @@ skuld::default_labels!(VM);
 pub(crate) mod backend;
 mod build;
 mod exec;
-mod fixture;
+pub(crate) mod fixture;
 mod host;
 mod lifecycle;
 mod qmp;
