@@ -15,7 +15,7 @@ use windows_sys::Win32::Security::{
     LookupAccountSidW, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
 };
 
-use super::user::sid_string;
+use super::user::{current_sid, sid_string};
 
 /// A security descriptor parsed from its SDDL text.
 pub(crate) struct Descriptor(PSECURITY_DESCRIPTOR);
@@ -42,10 +42,11 @@ impl Descriptor {
         Ok(Descriptor(descriptor))
     }
 
-    /// The descriptor of an object that only the user, whose SID string is `sid`, owns and can use: the DACL is
-    /// protected (nothing inherited) with one entry, full access for the user. `inherit` makes that entry reach the
-    /// children of a directory too.
-    pub(crate) fn owner_only(sid: &str, inherit: bool) -> io::Result<Descriptor> {
+    /// The descriptor of an object that only the current user owns and can use: the DACL is protected (nothing
+    /// inherited) with one entry, full access for the user. `inherit` makes that entry reach the children of a
+    /// directory too.
+    pub(crate) fn owner_only(inherit: bool) -> io::Result<Descriptor> {
+        let sid = current_sid()?;
         let flags = if inherit { "OICI" } else { "" };
         Descriptor::from_sddl(&format!("O:{sid}D:P(A;{flags};FA;;;{sid})"))
     }

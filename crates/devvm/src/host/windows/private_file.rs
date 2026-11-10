@@ -11,7 +11,6 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::create_file::open;
 use super::security::Descriptor;
-use super::user::current_sid;
 
 /// Creates `path`, which must not exist (`AlreadyExists` otherwise), open for writing. On a volume with ACLs the owner
 /// and the DACL are set by the call that creates the file: the owner is the user and the DACL is protected (nothing
@@ -21,7 +20,7 @@ use super::user::current_sid;
 /// owner to be the user, Administrators, SYSTEM or TrustedInstaller, and refuses a private key with an allow entry for
 /// any other trustee. A DACL inherited from a directory that grants `BUILTIN\Users` read fails that rule.
 pub(super) fn create_new(path: &Path) -> io::Result<File> {
-    let descriptor = Descriptor::owner_only(&current_sid()?, false)?;
+    let descriptor = Descriptor::owner_only(false)?;
     Ok(open(
         path,
         FILE_GENERIC_WRITE,

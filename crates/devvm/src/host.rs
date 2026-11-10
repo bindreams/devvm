@@ -146,7 +146,7 @@ pub(crate) trait Host: Send + Sync {
     fn system_dirs(&self) -> Option<SystemDirs>;
 
     /// Creates `path` with `bytes`; fails with `AlreadyExists` instead of replacing a file. On a volume that keeps
-    /// permissions only the current user can read it, from the moment it exists: Unix creates it with mode `0600`,
+    /// permissions, only the current user can read it, from the moment it exists: Unix creates it with mode `0600`,
     /// Windows with a protected DACL granting only the user, so a directory ACL that lets others read does not reach it.
     /// A volume without permissions (FAT32, exFAT) cannot restrict it.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;

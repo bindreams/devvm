@@ -22,7 +22,7 @@ use super::wide;
 pub(super) fn create(dir: &Path) -> io::Result<()> {
     let sid = current_sid()?;
     let path = wide(dir)?;
-    let descriptor = Descriptor::owner_only(&sid, true)?;
+    let descriptor = Descriptor::owner_only(true)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor.as_ptr(),
