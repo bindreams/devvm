@@ -49,9 +49,8 @@ impl Descriptor {
         Descriptor::from_sddl(&format!("O:{sid}D:P(A;OICI;FA;;;{sid})"))
     }
 
-    /// The descriptor of a file that only the current user can use: no owner, so the creator's default owner applies
-    /// (a share may refuse an owner that is named), and a protected DACL (nothing inherited) with one entry, full
-    /// access for the user.
+    /// The descriptor of a file that only the current user can use: no owner, so the creator's default owner applies,
+    /// and a protected DACL (nothing inherited) with one entry, full access for the user.
     pub(crate) fn user_only_file() -> io::Result<Descriptor> {
         let sid = current_sid()?;
         Descriptor::from_sddl(&format!("D:P(A;;FA;;;{sid})"))
