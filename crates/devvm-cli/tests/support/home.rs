@@ -48,3 +48,67 @@ impl Home {
         command.stdin(Stdio::null()).output().unwrap()
     }
 }
+
+impl Home {
+    /// Writes the files of a stopped instance the way a devvm with schema 1 does.
+    pub fn seed(&self, name: &str, id: &str, created_from: &Path, owner: &str) {
+        let dir = self.state().join("instances").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let from = serde_json::to_string(created_from.to_str().unwrap()).unwrap();
+        let record = RECORD
+            .replace("@NAME@", name)
+            .replace("@ID@", id)
+            .replace("@FROM@", &from);
+        std::fs::write(dir.join("record.json"), record).unwrap();
+        let marker = format!(r#"{{"schema":1,"owner":"{owner}","id":"{id}"}}"#);
+        std::fs::write(dir.join("owner.json"), marker).unwrap();
+        std::fs::write(dir.join("disk.img"), "disk").unwrap();
+        // Every instance has its two lock files, created with it.
+        let locks = self.state().join("locks");
+        std::fs::create_dir_all(&locks).unwrap();
+        for kind in ["owner", "op"] {
+            std::fs::write(locks.join(format!("instance-{id}.{kind}")), "").unwrap();
+        }
+    }
+}
+
+/// `record.json` of a stopped instance, as schema 1 defines it.
+pub const RECORD: &str = r#"{
+  "schema": 1,
+  "id": "@ID@",
+  "name": "@NAME@",
+  "created": "2023-11-14T22:13:20Z",
+  "created_from": @FROM@,
+  "guest": "linux",
+  "arch": "amd64",
+  "chain": [
+    {
+      "key": "01010101010101010101010101010101",
+      "generation": "02020202020202020202020202020202"
+    }
+  ],
+  "expires": null,
+  "cpus": 2,
+  "memory": 4294967296,
+  "network": "nat",
+  "machine": null
+}"#;
+
+pub fn id(n: u8) -> String {
+    format!("{n:02x}").repeat(16)
+}
+
+pub fn stdout_lines(output: &Output) -> Vec<String> {
+    String::from_utf8(output.stdout.clone())
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+pub fn one_error_line(output: &Output, kind: &str) -> String {
+    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+    assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
+    assert!(stderr.starts_with(&format!("devvm-error: {kind}: ")), "{stderr:?}");
+    stderr
+}

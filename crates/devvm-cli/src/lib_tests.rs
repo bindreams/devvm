@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use devvm::exit::{ExitStatus, ExitWidth};
 
-use crate::{Deps, PANICKING, run_locked, status_file_hint};
+use devvm::{Error, ErrorKind};
+
+use crate::{Deps, PANICKING, flushed, run_locked, status_file_hint};
 
 fn args(items: &[&str]) -> Vec<OsString> {
     items.iter().map(OsString::from).collect()
@@ -89,4 +91,40 @@ fn the_normal_finish_holds_the_panic_hooks_lock_until_the_exit() {
     assert!(PANICKING.try_lock().is_err(), "a panic now would race the exit");
     drop(exit);
     assert!(PANICKING.try_lock().is_ok());
+}
+
+/// A writer whose flush fails.
+struct FlushRefused;
+
+impl std::io::Write for FlushRefused {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+}
+
+#[skuld::test]
+fn a_success_whose_output_cannot_be_flushed_is_an_io_error() {
+    let error = flushed(Ok(ExitStatus::Code(0)), &mut FlushRefused).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Io);
+}
+
+#[skuld::test]
+fn a_failure_stands_when_the_flush_fails_too() {
+    let outcome = Err(Error::new(ErrorKind::Usage, "bad"));
+    assert_eq!(
+        flushed(outcome, &mut FlushRefused).unwrap_err().kind(),
+        ErrorKind::Usage
+    );
+}
+
+#[skuld::test]
+fn a_flushed_success_keeps_its_status() {
+    assert_eq!(
+        flushed(Ok(ExitStatus::Code(7)), &mut Vec::new()).unwrap(),
+        ExitStatus::Code(7)
+    );
 }

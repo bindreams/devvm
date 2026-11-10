@@ -6,6 +6,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Barrier};
 
 use devvm::exit::{ExitStatus, ExitWidth, NullProgress};
+use devvm::host_exit_width;
 use devvm::recipe::hash::LayerKey;
 use devvm::store::fetch::{Artifact, Fetcher, Response, Resume, Transport};
 use devvm::store::layers::{BuildRequest, Built, LayerStore, SystemClock};
@@ -30,6 +31,8 @@ fn main() {
             Some("panic-on-two-workers") => panic_on_workers(&args, 2),
             Some("panic-in-builder") => panic_in_builder(&args),
             Some("panic-on-drop") => panic_on_drop(&args),
+            Some("fault-in-dispatch") => fault_in_dispatch(&args),
+            Some("fixed-result") => fixed_result(&args),
             other => panic!("unknown helper {other:?}"),
         };
         std::process::exit(code);
@@ -119,6 +122,33 @@ fn panic_on_drop(args: &[String]) -> i32 {
     devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|_, _| Ok(ExitStatus::Code(0)))
 }
 
+/// Runs the real entry point, `dispatch` included, with a transport that panics when the engine fetches through it.
+/// `args` are the CLI arguments.
+fn fault_in_dispatch(args: &[String]) -> i32 {
+    let cli_args: Vec<OsString> = args.iter().map(OsString::from).collect();
+    let deps = Deps {
+        transport: Arc::new(PanickingTransport(Arc::new(Barrier::new(1)))),
+    };
+    devvm_cli::main_entry(ExitWidth::LowByte, cli_args, deps)
+}
+
+/// Runs the real entry point with an action that ends as `args[0]` says. The rest are the CLI arguments.
+fn fixed_result(args: &[String]) -> i32 {
+    let cli_args: Vec<OsString> = args[1..].iter().map(OsString::from).collect();
+    let result = match args[0].as_str() {
+        "guest-125" => Ok(ExitStatus::Code(125)),
+        // What `Vm::run_to` returns when the host's stdout is closed while the command runs.
+        "output-closed" => Err(Error::io(
+            ErrorKind::Io,
+            "writing the guest command's output failed, so the guest command was stopped",
+            std::io::ErrorKind::BrokenPipe.into(),
+        )),
+        other => panic!("unknown result {other:?}"),
+    };
+    // The width `main` uses: under `LowByte` a guest's 125 exits as 1; the status file still says 125.
+    devvm_cli::main_entry_with(host_exit_width(), cli_args, Deps::real(), &|_, _| result.clone())
+}
+
 fn request() -> BuildRequest {
     BuildRequest {
         key: layer_key(),
@@ -200,11 +230,63 @@ fn a_missing_recipe_file_exits_125_with_one_error_line_and_a_status_file() {
 }
 
 #[skuld::test]
-fn build_of_an_embedded_recipe_ends_in_one_devvm_error_line() {
+fn a_fault_injected_through_deps_reaches_the_engines_fetch() {
     let dir = temp();
-    let output = devvm(&dir, &["build", "ubuntu-24.04"], &[]);
+    let home = dir.join(UNICODE_DIR);
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("r.devvm.yaml"),
+        "from: ubuntu-24.04\nsteps:\n  - run: 'true'\n",
+    )
+    .unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .env(HELPER_VAR, "fault-in-dispatch")
+        .env_remove("DEVVM_STATUS_FILE")
+        .current_dir(&project)
+        .args(["build", "r.devvm.yaml"])
+        .stdin(Stdio::null());
+    isolate(&mut command, &home);
+    let output = command.output().unwrap();
     assert_eq!(output.status.code(), Some(125));
-    one_error_line(&output, "not-supported");
+    let line = one_error_line(&output, "panic");
+    assert!(line.contains("injected transport fault"), "{line}");
+}
+
+#[skuld::test]
+fn a_guest_that_exits_125_yields_a_guest_status_file() {
+    let dir = temp();
+    let file = dir.join(UNICODE_DIR).join("status.json");
+    let output = Command::new(std::env::current_exe().unwrap())
+        .env(HELPER_VAR, "fixed-result")
+        .args(["guest-125", "--status-file", file.to_str().unwrap(), "ls"])
+        .output()
+        .unwrap();
+    let expected = match host_exit_width() {
+        ExitWidth::Full32 => 125,
+        ExitWidth::LowByte => 1,
+    };
+    assert_eq!(output.status.code(), Some(expected));
+    assert_eq!(status(&file)["guest"]["code"], 125);
+    assert!(status(&file).get("devvm").is_none());
+}
+
+#[skuld::test]
+fn a_closed_output_exits_125_with_an_io_status_file_and_one_line() {
+    let dir = temp();
+    let file = dir.join(UNICODE_DIR).join("status.json");
+    let output = Command::new(std::env::current_exe().unwrap())
+        .env(HELPER_VAR, "fixed-result")
+        .args(["output-closed", "--status-file", file.to_str().unwrap(), "ls"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    let line = one_error_line(&output, "io");
+    assert!(line.contains("the guest command was stopped"), "{line}");
+    let report = status(&file);
+    assert_eq!(report["devvm"]["kind"], "io");
+    assert!(report.get("guest").is_none());
 }
 
 #[skuld::test]
@@ -278,6 +360,48 @@ fn help_and_version_exit_0_without_error_lines() {
             "{flag}"
         );
     }
+}
+
+/// A successful `--help` or `--version` is no command's outcome: it writes no status file, and a status file that
+/// could not be written does not fail it.
+#[skuld::test]
+fn help_and_version_write_no_status_file() {
+    let dir = temp();
+    let status_dir = dir.join("status");
+    std::fs::create_dir(&status_dir).unwrap();
+    let file = status_dir.join("status.json");
+    let unwritable = dir.join("no such dir").join("status.json");
+    for flag in ["--help", "--version"] {
+        let output = devvm(&dir, &["--status-file", file.to_str().unwrap(), flag], &[]);
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert_eq!(std::fs::read_dir(&status_dir).unwrap().count(), 0, "{flag}");
+
+        let output = devvm(&dir, &["--status-file", unwritable.to_str().unwrap(), flag], &[]);
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert!(
+            output.stderr.is_empty(),
+            "{flag}: {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[skuld::test]
+fn help_whose_output_is_lost_exits_125_with_an_io_line() {
+    let dir = temp();
+    // The only reader is gone before the child starts, so its first write fails.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
+    command
+        .current_dir(&dir)
+        .arg("--help")
+        .env_remove("DEVVM_STATUS_FILE")
+        .stdout(writer);
+    isolate(&mut command, &dir.join(UNICODE_DIR));
+    let output = command.stdin(Stdio::null()).output().unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    one_error_line(&output, "io");
 }
 
 #[skuld::test]

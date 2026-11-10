@@ -11,8 +11,8 @@ use secrecy::ExposeSecret;
 use crate::access::VmExit;
 use crate::backend::MachineRecord;
 use crate::engine::engine_tests::{
-    EngineFixture, engine_fixture, engine_with_bound, instance_in, memory, record_machine, running_machine,
-    stub_fixture, watch_with, watched,
+    EngineFixture, engine_fixture, engine_with_bound, instance_in, is_there, memory, record_machine, running_machine,
+    stub_fixture, watch_with, watched, write_conf,
 };
 use crate::engine::keys::ensure_keys;
 use crate::exit::ExitStatus;
@@ -283,6 +283,66 @@ fn a_recorded_machine_the_backend_cannot_find_is_unavailable(#[fixture(unicode_h
     let instance = running_instance(&fx, home);
 
     let error = instance.run(&Command::new(["echo"])).expect_err("the record is stale");
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("foo"), "{error}");
+}
+
+// The ssh_config of a running instance ================================================================================
+
+#[skuld::test]
+fn ssh_config_of_a_running_instance_is_the_config_file_and_its_entry_names_the_recorded_port(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = running_instance(&fx, home);
+    // A conf a past start left behind, for another port.
+    let conf = write_conf(&fx.engine, home, "foo");
+    let port = fx.server.addr().port();
+    assert_ne!(port, 2222, "the stale conf must differ from the recorded port");
+
+    let config = instance.ssh_config().unwrap();
+
+    assert_eq!(config, fx.engine.ssh_configs().config());
+    assert!(is_there(&config), "{}", config.display());
+    let text = std::fs::read_to_string(&conf).unwrap();
+    assert!(text.contains(&format!("Port {port}\n")), "{text}");
+}
+
+#[skuld::test]
+fn ssh_config_of_a_running_instance_without_any_ssh_files_writes_them(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = running_instance(&fx, home);
+
+    let config = instance.ssh_config().unwrap();
+
+    assert!(is_there(&config), "{}", config.display());
+    assert!(is_there(&fx.engine.ssh_configs().path().join("foo.conf")));
+}
+
+#[skuld::test]
+fn ssh_config_in_a_state_directory_with_a_percent_fails_but_still_writes_the_entry(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let home = home.join("50% done");
+    std::fs::create_dir_all(&home).unwrap();
+    let fx = engine_fixture(&home, memory());
+    let instance = running_instance(&fx, &home);
+
+    let error = instance.ssh_config().expect_err("no Include can name this directory");
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(is_there(&fx.engine.ssh_configs().path().join("foo.conf")));
+    assert!(!is_there(&fx.engine.ssh_configs().config()));
+}
+
+#[skuld::test]
+fn ssh_config_of_an_instance_that_never_started_is_unavailable_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    let error = instance.ssh_config().expect_err("nothing runs");
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains("foo"), "{error}");
