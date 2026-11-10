@@ -362,6 +362,30 @@ fn help_and_version_exit_0_without_error_lines() {
     }
 }
 
+/// A successful `--help` or `--version` is no command's outcome: it writes no status file, and a status file that
+/// could not be written does not fail it.
+#[skuld::test]
+fn help_and_version_write_no_status_file() {
+    let dir = temp();
+    let status_dir = dir.join("status");
+    std::fs::create_dir(&status_dir).unwrap();
+    let file = status_dir.join("status.json");
+    let unwritable = dir.join("no such dir").join("status.json");
+    for flag in ["--help", "--version"] {
+        let output = devvm(&dir, &["--status-file", file.to_str().unwrap(), flag], &[]);
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert_eq!(std::fs::read_dir(&status_dir).unwrap().count(), 0, "{flag}");
+
+        let output = devvm(&dir, &["--status-file", unwritable.to_str().unwrap(), flag], &[]);
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert!(
+            output.stderr.is_empty(),
+            "{flag}: {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[skuld::test]
 fn help_whose_output_is_lost_exits_125_with_an_io_line() {
     let dir = temp();

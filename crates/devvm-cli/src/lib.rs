@@ -141,6 +141,11 @@ fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
     }
 }
 
+/// A failed write to stdout.
+pub(crate) fn stdout_error(e: std::io::Error) -> Error {
+    Error::io(ErrorKind::Io, "cannot write to stdout", e)
+}
+
 /// The working directory, which a recipe reference and `ls` are read against.
 fn current_dir() -> Result<PathBuf> {
     std::env::current_dir().map_err(|e| Error::io(ErrorKind::Io, "cannot determine the working directory", e))
@@ -155,9 +160,7 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
     };
     let infos = engine.list(filter)?;
     let mut out = std::io::stdout().lock();
-    let write = |out: &mut std::io::StdoutLock<'_>, text: &str| {
-        writeln!(out, "{text}").map_err(|e| Error::io(ErrorKind::Io, "cannot write to stdout", e))
-    };
+    let write = |out: &mut std::io::StdoutLock<'_>, text: &str| writeln!(out, "{text}").map_err(stdout_error);
     if json {
         for info in &infos {
             write(&mut out, &info.to_json_line())?;
@@ -239,14 +242,15 @@ fn run_locked(
     let cli = match Cli::try_parse_from(std::iter::once(OsString::from("devvm")).chain(args)) {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() => {
-            // `--help` and `--version`: printed on stdout, not a failure.
+            // `--help` and `--version`: printed on stdout, not a failure. A write that fails is one, and only then is
+            // the status file written.
             drop(deps);
             let guard = ending();
-            let printed = e
-                .print()
-                .map(|()| ExitStatus::Code(0))
-                .map_err(|source| Error::io(ErrorKind::Io, "cannot write to stdout", source));
-            let code = finish(status_file.as_deref(), printed, width, &mut std::io::stderr());
+            let printed = e.print().map_err(stdout_error);
+            let code = match flushed(printed.map(|()| ExitStatus::Code(0)), &mut std::io::stdout()) {
+                Ok(_) => 0,
+                Err(error) => finish(status_file.as_deref(), Err(error), width, &mut std::io::stderr()),
+            };
             return Exit {
                 code,
                 _only_one_ending: guard,
@@ -281,9 +285,7 @@ fn run_locked(
 /// `outcome` once `out` is flushed. A flush that fails turns a success into an `io` error, since output was lost; a
 /// failure that is already the outcome stands.
 fn flushed(outcome: Result<ExitStatus>, out: &mut dyn Write) -> Result<ExitStatus> {
-    let flush = out
-        .flush()
-        .map_err(|e| Error::io(ErrorKind::Io, "cannot write to stdout", e));
+    let flush = out.flush().map_err(stdout_error);
     outcome.and_then(|status| flush.map(|()| status))
 }
 

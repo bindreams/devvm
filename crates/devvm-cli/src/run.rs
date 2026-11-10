@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use devvm::exit::ExitStatus;
 use devvm::recipe::Recipe;
@@ -46,8 +46,7 @@ pub(crate) fn up(engine: &Arc<Engine>, reference: &str, name: &str, flags: &VmFl
     let recipe = recipe(reference)?;
     let image = engine.build(&recipe, &build_options(flags))?;
     let instance = image.up(name, &start_options(flags))?;
-    writeln!(std::io::stdout().lock(), "{}", instance.name())
-        .map_err(|e| Error::io(ErrorKind::Io, "cannot write to stdout", e))?;
+    writeln!(std::io::stdout().lock(), "{}", instance.name()).map_err(crate::stdout_error)?;
     Ok(ExitStatus::Code(0))
 }
 
@@ -102,18 +101,20 @@ fn interactive_ssh(instance: &Instance) -> Result<ExitStatus> {
 
 /// Makes Ctrl-C and Ctrl-Break (SIGINT on Unix) do nothing here, so the interactive `ssh` that shares the console alone
 /// decides what an interrupt does, and this process then reports its exit code. The handler is installed once and
-/// stays.
+/// stays; a failed installation is tried again at the next call.
 fn ignore_console_interrupts() -> Result<()> {
-    static INSTALLED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
-    INSTALLED
-        .get_or_init(|| ctrlc::set_handler(|| {}).map_err(|e| e.to_string()))
-        .clone()
-        .map_err(|e| {
+    static INSTALLED: Mutex<bool> = Mutex::new(false);
+    let mut installed = INSTALLED.lock().unwrap_or_else(PoisonError::into_inner);
+    if !*installed {
+        ctrlc::set_handler(|| {}).map_err(|e| {
             Error::new(
                 ErrorKind::Internal,
                 format!("cannot make this process ignore Ctrl-C: {e}"),
             )
-        })
+        })?;
+        *installed = true;
+    }
+    Ok(())
 }
 
 /// The `cp` command: one side is a path on this host and the other is `INSTANCE:PATH`.
