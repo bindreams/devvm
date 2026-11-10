@@ -6,7 +6,6 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS};
-use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
@@ -16,20 +15,14 @@ use super::security::{Descriptor, Owner};
 use super::user::current_sid;
 use super::wide;
 
-/// Makes `dir` with owner and DACL set in the one call that creates it: the owner is the user and the DACL is
-/// protected (nothing inherited from `C:\ProgramData`, where Users may create entries) with one entry, full access for
-/// the user. A directory that exists is accepted if the user owns it.
+/// Makes `dir` with [`Descriptor::owner_only`] set in the call that creates it, so nothing is inherited from
+/// `C:\ProgramData`, where Users may create entries. A directory that exists is accepted if the user owns it.
 pub(super) fn create(dir: &Path) -> io::Result<()> {
     let sid = current_sid()?;
     let path = wide(dir)?;
-    let descriptor = Descriptor::owner_only(true)?;
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.as_ptr(),
-        bInheritHandle: 0,
-    };
-    // SAFETY: `path` is NUL-terminated and `attributes` points at `descriptor`, which lives past the call.
-    let made = unsafe { CreateDirectoryW(path.as_ptr(), &attributes) };
+    let descriptor = Descriptor::owner_only()?;
+    // SAFETY: `path` is NUL-terminated and `attributes` is valid for the call.
+    let made = descriptor.with_attributes(|attributes| unsafe { CreateDirectoryW(path.as_ptr(), attributes) });
     let error = io::Error::last_os_error();
     drop(descriptor);
     if made != 0 {

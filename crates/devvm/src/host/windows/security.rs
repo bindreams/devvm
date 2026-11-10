@@ -12,7 +12,7 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    LookupAccountSidW, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
+    LookupAccountSidW, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SID_NAME_USE,
 };
 
 use super::user::{current_sid, sid_string};
@@ -42,18 +42,28 @@ impl Descriptor {
         Ok(Descriptor(descriptor))
     }
 
-    /// The descriptor of an object that only the current user owns and can use: the DACL is protected (nothing
-    /// inherited) with one entry, full access for the user. `inherit` makes that entry reach the children of a
-    /// directory too.
-    pub(crate) fn owner_only(inherit: bool) -> io::Result<Descriptor> {
+    /// The descriptor of a directory that only the current user owns and can use: the owner is the user and the DACL is
+    /// protected (nothing inherited) with one entry, full access for the user, which the directory's children inherit.
+    pub(crate) fn owner_only() -> io::Result<Descriptor> {
         let sid = current_sid()?;
-        let flags = if inherit { "OICI" } else { "" };
-        Descriptor::from_sddl(&format!("O:{sid}D:P(A;{flags};FA;;;{sid})"))
+        Descriptor::from_sddl(&format!("O:{sid}D:P(A;OICI;FA;;;{sid})"))
     }
 
-    /// Valid while `self` lives.
-    pub(crate) fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
-        self.0
+    /// The descriptor of a file that only the current user can use: no owner, so the creator's default owner applies
+    /// (a share may refuse an owner that is named), and a protected DACL (nothing inherited) with one entry, full
+    /// access for the user.
+    pub(crate) fn user_only_file() -> io::Result<Descriptor> {
+        let sid = current_sid()?;
+        Descriptor::from_sddl(&format!("D:P(A;;FA;;;{sid})"))
+    }
+
+    /// Calls `with` with attributes that carry this descriptor and no inheritable handle; they live for the call only.
+    pub(crate) fn with_attributes<R>(&self, with: impl FnOnce(&SECURITY_ATTRIBUTES) -> R) -> R {
+        with(&SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: self.0,
+            bInheritHandle: 0,
+        })
     }
 }
 

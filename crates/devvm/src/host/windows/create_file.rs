@@ -62,7 +62,6 @@ impl Failure {
     }
 }
 
-/// The system's error as it is, status dropped.
 impl From<Failure> for std::io::Error {
     fn from(failure: Failure) -> std::io::Error {
         failure.error
@@ -83,24 +82,23 @@ pub(super) fn open(
         error,
         status: STATUS_SUCCESS,
     })?;
-    let attributes = descriptor.map(|descriptor| SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.as_ptr(),
-        bInheritHandle: 0,
-    });
-    let security = attributes.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
-    // SAFETY: `name` is NUL-terminated, a null template is allowed, and `security` is null or points at `attributes`,
-    // whose descriptor `descriptor` keeps alive, past the call.
-    let handle = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            access,
-            share,
-            security,
-            creation,
-            flags,
-            std::ptr::null_mut(),
-        )
+    let create = |security: *const SECURITY_ATTRIBUTES| {
+        // SAFETY: `name` is NUL-terminated, a null template is allowed, and `security` is null or valid for the call.
+        unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                access,
+                share,
+                security,
+                creation,
+                flags,
+                std::ptr::null_mut(),
+            )
+        }
+    };
+    let handle = match descriptor {
+        Some(descriptor) => descriptor.with_attributes(|attributes| create(attributes)),
+        None => create(std::ptr::null()),
     };
     if handle == INVALID_HANDLE_VALUE {
         return Err(Failure::last());

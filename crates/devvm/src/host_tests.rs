@@ -187,6 +187,7 @@ fn write_private_is_create_new_and_owner_only(#[fixture(unicode_home)] home: &Pa
 fn assert_private_file_is_the_users_alone(home: &Path) {
     use crate::host::windows::user::current_sid;
     use crate::test_support::file_security::{Security, set_protected_dacl};
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
     const USERS: &str = "S-1-5-32-545";
     let me = current_sid().unwrap();
@@ -205,9 +206,19 @@ fn assert_private_file_is_the_users_alone(home: &Path) {
     let key = shared.join("key");
     current().write_private(&key, b"secret").unwrap();
     let security = Security::of(&key);
-    assert!(security.dacl_is_protected(), "the DACL is inherited from the directory");
-    assert_eq!(security.allowed_sids(), std::slice::from_ref(&me));
-    assert_eq!(security.owner(), me);
+    assert!(security.dacl_is_protected(), "the DACL must be protected");
+    let [entry] = security.allowed().try_into().unwrap_or_else(|entries: Vec<_>| {
+        panic!("the DACL must have one entry, not {}", entries.len());
+    });
+    assert_eq!(entry.sid, me);
+    assert_eq!(entry.mask, FILE_ALL_ACCESS, "the entry must grant full access");
+    assert_eq!(entry.flags, 0, "the entry must have no inherit flags");
+    // The default owner: the user, or Administrators for an elevated token. OpenSSH accepts both.
+    let owner = security.owner();
+    assert!(
+        owner == me || owner == "S-1-5-32-544",
+        "the owner must be the user or Administrators, not {owner}"
+    );
 }
 
 #[skuld::test]

@@ -166,8 +166,7 @@ impl Host for WindowsHost {
         })
     }
 
-    /// The file is created with a protected DACL that grants only the user ([`private_file::create_new`]), which
-    /// OpenSSH for Windows accepts on a volume with ACLs. A volume without them (FAT32, exFAT) ignores the descriptor.
+    /// See [`private_file::create_new`].
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         fill_new(private_file::create_new(path)?, path, bytes)
     }
