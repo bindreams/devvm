@@ -145,8 +145,11 @@ pub(crate) trait Host: Send + Sync {
     /// The Windows and System32 directories from the OS (never from the environment); `None` off Windows.
     fn system_dirs(&self) -> Option<SystemDirs>;
 
-    /// Creates `path` with `bytes`, readable by the current user only from the moment it exists; fails with
-    /// `AlreadyExists` instead of replacing a file. Windows has no mode bits: the file keeps the ACL it inherits.
+    /// Creates `path` with `bytes`; fails with `AlreadyExists` instead of replacing a file. On a volume that keeps
+    /// permissions, only the current user can read it, from the moment it exists: Unix creates it with mode `0600`,
+    /// Windows with a protected DACL granting only the user, so a directory ACL that lets others read does not reach it.
+    /// A volume without permissions (FAT32, exFAT) cannot restrict it. On Windows the file names no owner, so a network
+    /// share that refuses a named owner still accepts it.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
 
     /// Whether any execute bit of `path` is set; always `false` on Windows.
@@ -261,7 +264,12 @@ pub(crate) trait Host: Send + Sync {
 /// Creates `path` with `options` and writes `bytes`, which are on disk when it returns. A file whose write failed is
 /// removed, so a half-written secret is never left behind.
 fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = options.write(true).create_new(true).open(path)?;
+    fill_new(options.write(true).create_new(true).open(path)?, path, bytes)
+}
+
+/// Writes `bytes` to `file`, open for writing and just created at `path`, and syncs them; the file is removed when that
+/// fails, as in [`create_new_with`].
+fn fill_new(mut file: File, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
         drop(file);
         return Err(after_failed_write(path, e, || std::fs::remove_file(path)));
