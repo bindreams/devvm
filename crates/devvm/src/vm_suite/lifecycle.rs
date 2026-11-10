@@ -1,6 +1,5 @@
 //! An instance's life through the library, in real guests: reaching it with a plain `ssh`, its host key across a stop,
-//! concurrent `up` and `rm`, and `cp` of links and trees. The same life through the `devvm` executable is
-//! `devvm-cli/tests/vm_cli.rs`'s.
+//! concurrent `up` and `rm`, and `cp` of links and trees.
 
 use std::path::Path;
 use std::process::Stdio;

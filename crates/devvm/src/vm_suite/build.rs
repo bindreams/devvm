@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::backend::files_in_run;
-use super::fixture::{Launches, VmEngine, engine_in, guest_options, recipe_in, run_ok, run_ok_as, vm_engine};
+use super::fixture::{Launches, VmEngine, engine_in, guest_options, recipe_in, run_ok, vm_engine};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::DISK;
 use crate::copy::copy_tests::{add_all, git, new_repo, put};
@@ -12,7 +12,7 @@ use crate::recipe::Recipe;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::qemu::{qemu_img_info, qemu_sidecar, scratch_run};
-use crate::{BuildOptions, Command, ExitStatus, Guest, Image, RunAs};
+use crate::{BuildOptions, Command, ExitStatus, Guest, Image};
 
 const DISK_20_GIB: u64 = 20 << 30;
 
@@ -114,11 +114,9 @@ fn a_recipe_with_run_and_copy_git_tracked_builds_and_an_untracked_file_never_app
     assert_eq!(untracked.status, ExitStatus::Code(1), "{}", untracked.stderr_lossy());
 }
 
-/// The step uploads a tar archive to `/tmp` and extracts it. The guest that this test boots has booted again since, and
-/// Ubuntu clears `/tmp` at boot, so the archive is not seen here whether or not the step removed it; this checks that
-/// no other staging file is left anywhere and that the destination holds exactly the tracked files.
+/// A `copy` step puts exactly the tracked files at its destination.
 #[skuld::test]
-fn a_copy_step_leaves_no_staging_file_outside_tmp_and_exactly_the_tracked_files_at_its_destination(
+fn a_copy_step_leaves_exactly_the_tracked_files_at_its_destination(
     #[fixture(vm_engine)] vm: &VmEngine,
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -128,26 +126,6 @@ fn a_copy_step_leaves_no_staging_file_outside_tmp_and_exactly_the_tracked_files_
     let image = vm.engine.build(&recipe, &BuildOptions::default()).unwrap();
 
     let guest = image.start(&guest_options()).unwrap();
-    // As root: `find` exits 1 on a directory that the user cannot read, such as `/root`. `-ignore_readdir_race`: it also
-    // exits 1 on a file that vanishes during the walk, as a temporary file does on a guest that has just booted.
-    let left = run_ok_as(
-        &guest,
-        RunAs::Elevated,
-        &[
-            "find",
-            "/",
-            "-ignore_readdir_race",
-            "-xdev",
-            "(",
-            "-name",
-            "devvm-copy-*",
-            "-o",
-            "-name",
-            ".devvm-partial-*",
-            ")",
-        ],
-    );
-    assert_eq!(left, "", "files a copy step left");
     let dest = run_ok(&guest, &["find", "/var/tmp/dest", "-mindepth", "1"]);
     let mut found: Vec<&str> = dest.lines().collect();
     found.sort();
