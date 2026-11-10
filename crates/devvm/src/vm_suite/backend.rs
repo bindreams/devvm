@@ -1,8 +1,8 @@
 //! The QEMU backend against the contract every backend meets, and against QEMU's own behaviour.
 //!
-//! These machines run firmware only, on an empty qcow2: no guest OS boots, so they need the sidecar and WHPX and nothing
-//! else. A firmware-only machine does not end on `system_powerdown` (the `POWERDOWN` event arrives, the process stays),
-//! so the contract functions that wait for a graceful end are not run here.
+//! Most of these machines run firmware only, on an empty qcow2: no guest OS boots, so they need the sidecar and WHPX and
+//! nothing else. A firmware-only machine does not end on `system_powerdown` (the `POWERDOWN` event arrives, the process
+//! stays), so the contract functions that wait for a graceful end run on [`QemuGuestTarget`], which boots Ubuntu.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -10,7 +10,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use super::fixture::{VmEngine, vm_engine};
 use super::os::{self, Watch};
+use crate::access::keys::InstanceKeys;
 use crate::backend::contract::{self, ContractTarget};
 use crate::backend::qemu::backend::QemuBackend;
 use crate::backend::qemu::qmp::{Qmp, QmpEndpoint};
@@ -21,16 +23,23 @@ use crate::backend::{
     NetModel, Storage,
 };
 use crate::contain::{Lifetime, VmProcess};
+use crate::engine::Engine;
+use crate::engine::keys::target_for;
+use crate::engine::ready::connect_ready;
 use crate::exit::StderrProgress;
+use crate::guest::linux::LinuxGuest;
+use crate::guest::{GuestOs, SeedKeys, SeedSpec};
 use crate::host::{self, HoldOutcome, Host, ProcessWatch};
+use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceId;
+use crate::recipe::Recipe;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
 use crate::test_groups::{Group, unicode_socket_dir, vm_group};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::qemu::{ScratchRun, assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, scratch_run};
-use crate::{Arch, ErrorKind, Network, Result};
+use crate::{Arch, BuildOptions, ErrorKind, Network, Result};
 
 // The target ==========================================================================================================
 
@@ -156,6 +165,35 @@ impl QemuTarget {
         self.watches.endpoints.lock().unwrap()[&spec.id].clone()
     }
 
+    /// [`ContractTarget::launch_elsewhere`]: the launcher is given `spec`'s directory and id, and `more` after the run
+    /// directory.
+    fn launch_with(&self, spec: &MachineSpec, more: &[&Path]) -> Result<MachineRecord> {
+        let mut args = vec![
+            self.install.bin.display().to_string(),
+            spec.dir.display().to_string(),
+            spec.id.to_string(),
+            self.run.path().display().to_string(),
+        ];
+        args.extend(more.iter().map(|path| path.display().to_string()));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = crate::test_support::helper::command("qemu-launcher", &args)
+            .output()
+            .expect("the launcher should run");
+        assert!(
+            output.status.success(),
+            "the launcher failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let record: MachineRecord = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "the launcher printed no machine record ({e}): {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+        self.watches.launched(spec.id, &record);
+        Ok(record)
+    }
+
     /// The machine `n` under `root`, its disk made by the backend's own storage over a layer.
     fn prepared(&self, root: &Path, n: u32, edit: impl FnOnce(&mut MachineSpec)) -> (MachineSpec, ChainLease) {
         let world = crate::store::layers::layers_tests::env(root);
@@ -210,30 +248,7 @@ impl ContractTarget for QemuTarget {
     }
 
     fn launch_elsewhere(&self, spec: &MachineSpec) -> Result<MachineRecord> {
-        let output = crate::test_support::helper::command(
-            "qemu-launcher",
-            &[
-                &self.install.bin.display().to_string(),
-                &spec.dir.display().to_string(),
-                &spec.id.to_string(),
-                &self.run.path().display().to_string(),
-            ],
-        )
-        .output()
-        .expect("the launcher should run");
-        assert!(
-            output.status.success(),
-            "the launcher failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let record: MachineRecord = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-            panic!(
-                "the launcher printed no machine record ({e}): {}",
-                String::from_utf8_lossy(&output.stdout)
-            )
-        });
-        self.watches.launched(spec.id, &record);
-        Ok(record)
+        self.launch_with(spec, &[])
     }
 
     fn shutdown_elsewhere(&self, record: &MachineRecord) -> Result<()> {
@@ -283,15 +298,19 @@ impl ContractTarget for QemuTarget {
     }
 }
 
-/// Helper `qemu-launcher <qemu bin> <instance dir> <instance id> <run dir>`: launches an `OutlivesOwner` machine, resumes and
-/// releases it, prints its record and exits, leaving the machine running. The disk was made by the test.
+/// Helper `qemu-launcher <qemu bin> <instance dir> <instance id> <run dir> [<keys dir>]`: launches an `OutlivesOwner`
+/// machine, resumes and releases it, prints its record and exits, leaving the machine running. The disk was made by the
+/// test. With a keys directory the machine is a [`guest_spec_in`] guest's; without, firmware only.
 pub(crate) fn qemu_launcher(args: &[String]) {
     let backend = backend_over(Path::new(&args[0]), host::current(), Path::new(&args[3]));
-    let spec = spec_in(
-        Path::new(&args[1]),
-        args[2].parse().expect("the instance id"),
-        Lifetime::OutlivesOwner,
-    );
+    let (dir, id) = (Path::new(&args[1]), args[2].parse().expect("the instance id"));
+    let spec = match args.get(4) {
+        None => spec_in(dir, id, Lifetime::OutlivesOwner),
+        Some(keys) => {
+            let keys = InstanceKeys::read(Path::new(keys)).expect("the keys the test wrote");
+            guest_spec_in(dir, id, Lifetime::OutlivesOwner, &keys)
+        }
+    };
     let mut machine = backend.launch(&spec).expect("the machine should launch");
     machine.resume().expect("the machine should resume");
     machine.release().expect("the machine should release");
@@ -307,6 +326,174 @@ pub(crate) fn qemu_shutdown(args: &[String]) {
         .expect("the machine should be attachable")
         .shutdown()
         .expect("the machine should shut down");
+}
+
+// The contract on a guest =============================================================================================
+
+/// The processors and memory of a guest the contract boots.
+const GUEST_CPUS: u32 = 2;
+const GUEST_MEMORY: u64 = 2 << 30;
+
+/// The name the contract's machines have in the guest and in the errors of the wait for it.
+const GUEST_NAME: &str = "contract";
+
+/// A spec for a machine that boots the Ubuntu layer in `dir`: a seed that lets in the holder of `keys`. The seed is
+/// written into `dir`, which must exist.
+fn guest_spec_in(dir: &Path, id: InstanceId, lifetime: Lifetime, keys: &InstanceKeys) -> MachineSpec {
+    let seed_dir = dir.join("seed");
+    std::fs::create_dir_all(&seed_dir).unwrap();
+    let seed = LinuxGuest
+        .instance_seed(
+            host::current(),
+            &SeedSpec {
+                hostname: GUEST_NAME.to_owned(),
+                dir: seed_dir,
+                instance_id: id,
+                keys: SeedKeys {
+                    client_public: keys.client_public.clone(),
+                    host_private: keys.host_private.clone(),
+                    host_public: keys.host_public.clone(),
+                },
+            },
+        )
+        .expect("the seed image");
+    MachineSpec {
+        cpus: GUEST_CPUS,
+        memory: GUEST_MEMORY,
+        media: vec![seed.media],
+        profile: LinuxGuest.device_profile(),
+        ..spec_in(dir, id, lifetime)
+    }
+}
+
+/// A [`QemuTarget`] whose machines boot Ubuntu from the engine's base layer, so that they honour a powerdown. The
+/// keys of every machine are files in the test's directory, which the launcher process reads too.
+struct QemuGuestTarget {
+    qemu: QemuTarget,
+    engine: Arc<Engine>,
+    keys: InstanceKeys,
+    keys_dir: PathBuf,
+    /// The recipe file's directory; the base recipe resolves relative paths against it.
+    home: PathBuf,
+}
+
+impl QemuGuestTarget {
+    /// Connects to the guest's `sshd` under the engine's boot bound and waits for cloud-init to finish: the guest then
+    /// has `systemd-logind` listening for the power key.
+    fn await_record(&self, record: &MachineRecord) -> Result<()> {
+        let name = InstanceName::parse(GUEST_NAME)?;
+        let target = target_for(&name, record, &self.keys)?;
+        connect_ready(&self.engine, &LinuxGuest, &name, &target, record).map(drop)
+    }
+
+    fn new(install: &Arc<QemuInstall>, vm: &VmEngine, home: &Path) -> QemuGuestTarget {
+        let keys = InstanceKeys::generate().unwrap();
+        let keys_dir = home.join("keys");
+        let warnings = keys.write(host::current(), &keys_dir).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        QemuGuestTarget {
+            qemu: QemuTarget::new(install),
+            engine: vm.engine.clone(),
+            keys,
+            keys_dir,
+            home: home.to_path_buf(),
+        }
+    }
+}
+
+impl ContractTarget for QemuGuestTarget {
+    fn backend(&self) -> Arc<dyn Backend> {
+        self.qemu.backend()
+    }
+
+    /// The Ubuntu base: built into the engine's store the first time in a test process, and found there afterwards.
+    fn parent_layer(&self, _store: &LayerStore) -> ChainLease {
+        let recipe = Recipe::parse("from: ubuntu-24.04\nsteps: []\n", &self.home.join("r.devvm.yaml")).unwrap();
+        self.engine.build(&recipe, &BuildOptions::default()).unwrap().chain
+    }
+
+    fn spec(&self, root: &Path, n: u32) -> MachineSpec {
+        guest_spec_in(
+            &root.join(format!("machine-{n}")),
+            InstanceId::random(),
+            Lifetime::OutlivesOwner,
+            &self.keys,
+        )
+    }
+
+    /// The layer holds a guest, which the 1 MiB disk of the firmware-only machines is too small for.
+    fn disk_size(&self) -> Option<u64> {
+        None
+    }
+
+    fn launch_elsewhere(&self, spec: &MachineSpec) -> Result<MachineRecord> {
+        self.qemu.launch_with(spec, &[&self.keys_dir])
+    }
+
+    /// Waits here for the guest, so that the other process never sends the powerdown to one that cannot act on it.
+    fn shutdown_elsewhere(&self, record: &MachineRecord) -> Result<()> {
+        self.await_record(record)?;
+        self.qemu.shutdown_elsewhere(record)
+    }
+
+    fn ended_gracefully(&self, spec: &MachineSpec) -> bool {
+        self.qemu.ended_gracefully(spec)
+    }
+
+    fn has_run(&self, spec: &MachineSpec) -> bool {
+        self.qemu.has_run(spec)
+    }
+
+    fn leftover_files(&self) -> Vec<PathBuf> {
+        self.qemu.leftover_files()
+    }
+
+    fn await_booted(&self, machine: &dyn Machine) -> Result<()> {
+        self.await_record(&machine.record())
+    }
+}
+
+#[skuld::test]
+fn vm_qemu_guest_shutdown_stops_the_process(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    contract::shutdown_stops_the_process(&QemuGuestTarget::new(install, vm, home), home);
+}
+
+#[skuld::test]
+fn vm_qemu_guest_shutdown_from_another_process_stops_the_machine(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    contract::shutdown_from_another_process_stops_the_machine(&QemuGuestTarget::new(install, vm, home), home);
+}
+
+#[skuld::test]
+fn vm_qemu_guest_a_released_machine_outlives_its_launcher_and_attach_finds_it(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    contract::a_released_machine_outlives_its_launcher_and_attach_finds_it(
+        &QemuGuestTarget::new(install, vm, home),
+        home,
+    );
+}
+
+/// A kill and a shutdown of a running guest each leave no `<16 hex>.sock`, `.sock.lock` or `.sock.hold`.
+#[skuld::test]
+fn vm_qemu_guest_shutdown_removes_the_socket_lock_and_claim_files(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    contract::a_running_machine_leaves_no_leftovers_after_kill_or_shutdown(
+        &QemuGuestTarget::new(install, vm, home),
+        home,
+    );
 }
 
 // Helpers =============================================================================================================
