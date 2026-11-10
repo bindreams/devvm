@@ -23,7 +23,7 @@ use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::store::layers::ChainLease;
 use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::MemoryProgress;
-use crate::vm_suite::fixture::roots;
+use crate::test_support::roots;
 use crate::{Dirs, ErrorKind};
 
 #[path = "qemu_tests.rs"]
@@ -84,11 +84,10 @@ pub struct Sock {
 /// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`); see
 /// [`roots::socket_dir`].
 fn socket_dir_that_fits() -> Option<PathBuf> {
-    // Room for a [`scratch_run`] below the directory, the `devvm` directory that an engine over it makes in that
-    // (`Dirs::run`), and a socket in that.
+    // Room for a [`scratch_run`] below the directory and a socket in it.
     let fits = |dir: &Path| {
         QmpEndpoint::fits(
-            &dir.join(scratch_name([0; SCRATCH_DRAW_BYTES])).join("devvm"),
+            &dir.join(scratch_name([0; SCRATCH_DRAW_BYTES])),
             host::current().socket_path_max(),
         )
     };
@@ -191,17 +190,12 @@ pub fn scratch_run() -> ScratchRun {
     run
 }
 
-fn has_space_and_non_ascii(path: &Path) -> bool {
-    let path = path.to_string_lossy();
-    path.contains(' ') && !path.is_ascii()
-}
-
 /// `Err` when the socket directory lacks a space or a non-ASCII character, or none fits at all (the tests would check
 /// nothing).
 pub fn unicode_socket_dir_fits() -> Result<(), String> {
     let temp = std::env::temp_dir();
     match socket_dir_that_fits() {
-        Some(dir) if has_space_and_non_ascii(&dir) => Ok(()),
+        Some(dir) if roots::has_space_and_non_ascii(&dir) => Ok(()),
         found => Err(format!(
             "{} the temporary directory {} is {} bytes and a socket path is limited to {}",
             if found.is_some() {
@@ -219,7 +213,7 @@ pub fn unicode_socket_dir_fits() -> Result<(), String> {
 /// Asserts that a control socket path has a space and a non-ASCII character, as [`socket_dir`] provides where
 /// [`unicode_socket_dir_fits`].
 pub fn assert_unicode_socket_path(path: &Path) {
-    assert!(has_space_and_non_ascii(path), "{}", path.display());
+    assert!(roots::has_space_and_non_ascii(path), "{}", path.display());
 }
 
 impl Sock {

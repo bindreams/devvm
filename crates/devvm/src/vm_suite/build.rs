@@ -128,13 +128,15 @@ fn a_copy_step_leaves_no_staging_file_outside_tmp_and_exactly_the_tracked_files_
     let image = vm.engine.build(&recipe, &BuildOptions::default()).unwrap();
 
     let guest = image.start(&guest_options()).unwrap();
-    // As root: `find` exits 1 on a directory that the user cannot read, such as `/root`.
+    // As root: `find` exits 1 on a directory that the user cannot read, such as `/root`. `-ignore_readdir_race`: it also
+    // exits 1 on a file that vanishes during the walk, as a temporary file does on a guest that has just booted.
     let left = run_ok_as(
         &guest,
         RunAs::Elevated,
         &[
             "find",
             "/",
+            "-ignore_readdir_race",
             "-xdev",
             "(",
             "-name",

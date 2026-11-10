@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::exit::Progress;
+use crate::host::symlink_metadata_if_present;
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{
     BuildRequest, Built, ChainLease, Clock, Generation, IdSource, LayerMeta, LayerRef, LayerStore,
@@ -75,14 +76,19 @@ pub fn build_expiring(
         .unwrap()
 }
 
+/// What the directory `dir` holds, by name, sorted; nothing when it is not there. Fails the test on a look or a listing
+/// that fails, or on a `dir` that is not a directory.
 pub fn names(dir: &Path) -> Vec<String> {
+    if symlink_metadata_if_present(dir)
+        .unwrap_or_else(|e| panic!("cannot look at {}: {e}", dir.display()))
+        .is_none()
+    {
+        return Vec::new();
+    }
     let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+        .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()))
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
     names.sort();
     names
 }

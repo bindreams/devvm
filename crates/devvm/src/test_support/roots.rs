@@ -1,7 +1,7 @@
 //! Where the VM tests keep their files: the XDG roots below a directory named `UNICODE_DIR` (a space, non-ASCII
 //! characters, a surrogate pair), so each path devvm builds in these tests carries them.
 //!
-//! Both test binaries include this file by `#[path]` (the lib's `vm_suite/fixture.rs` and `devvm-cli/tests/vm_cli.rs`),
+//! Both test binaries include this file by `#[path]` (the lib's `test_support.rs` and `devvm-cli/tests/vm_cli.rs`),
 //! so there is one base picker. The including module names `UNICODE_DIR` and the crate root has `test_groups`.
 //!
 //! The directory is in `C:\Users` where the `unicode_base` group is on (the literal location of a user's directories; a
@@ -47,6 +47,13 @@ pub(crate) fn socket_dir(fits: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
         .chain(SHORT_SOCKET_DIRS.iter().map(|short| temp.join(short)))
         .chain(std::iter::once(temp.clone()))
         .find(|dir| fits(dir))
+}
+
+/// Whether `path` has a space and a character outside ASCII, as a directory named `UNICODE_DIR` or a fallback of
+/// [`socket_dir`] does.
+pub(crate) fn has_space_and_non_ascii(path: &Path) -> bool {
+    let path = path.to_string_lossy();
+    path.contains(' ') && !path.is_ascii()
 }
 
 /// A process's XDG directories: `config`, `data` and `state` are new, below `top` (`<base>\<UNICODE_DIR>\<run id>`), and

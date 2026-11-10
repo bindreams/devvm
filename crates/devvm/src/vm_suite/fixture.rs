@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::backend::MachineRecord;
 use crate::backend::qemu::qemu_parts;
+use crate::backend::qemu::qmp::QmpEndpoint;
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::config::Config;
 use crate::engine::engine_tests::engine_with_bound;
@@ -27,13 +28,11 @@ use crate::test_support::fixtures::UNICODE_DIR;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir, write_config};
 use crate::{BuildOptions, Command, Dirs, Error, ExitStatus, Guest, Image, Instance, RunAs, StartOptions, Vm};
 
-#[path = "roots.rs"]
-pub(crate) mod roots;
-use roots::{USERS, XdgRoots};
+use crate::test_support::roots::{USERS, XdgRoots};
 
 /// A process's directories, resolved: the roots of [`XdgRoots`] as the engine's [`Dirs`].
 pub(super) struct Roots {
-    _xdg: XdgRoots,
+    xdg: XdgRoots,
     pub dirs: Dirs,
 }
 
@@ -42,13 +41,21 @@ impl Roots {
     pub(super) fn new(run: Option<&Path>) -> Result<Roots, String> {
         let xdg = XdgRoots::new(run)?;
         let dirs = Roots::resolve(&xdg, None)?;
-        Ok(Roots { _xdg: xdg, dirs })
+        Ok(Roots { xdg, dirs })
     }
 
     /// These roots' directories with `run` as the runtime directory instead: the same stores, a runtime directory of
-    /// their own.
+    /// their own. An engine over them makes `devvm` in `run` and its sockets in that, so this is an error unless
+    /// those fit the host's socket path limit.
     pub(super) fn dirs_with_run(&self, run: &Path) -> Result<Dirs, String> {
-        Roots::resolve(&self._xdg, Some(run))
+        let dirs = Roots::resolve(&self.xdg, Some(run))?;
+        let runtime = dirs
+            .run()
+            .map_err(|e| format!("cannot resolve the runtime directory: {e}"))?;
+        if !QmpEndpoint::fits(runtime, host::current().socket_path_max()) {
+            return Err(format!("{} is too long for a control socket", runtime.display()));
+        }
+        Ok(dirs)
     }
 
     fn resolve(xdg: &XdgRoots, run: Option<&Path>) -> Result<Dirs, String> {
