@@ -18,7 +18,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
 
-use super::failure::{Failure, open};
+use super::create_file::{Failure, open};
 use super::file_id;
 use super::wide;
 use crate::host::{DELETING_DRAW_BYTES, FileId, Hold, HoldOutcome, deleting_name, is_a_link, is_absent};

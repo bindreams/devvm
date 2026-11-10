@@ -14,7 +14,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, READ_CONTROL,
 };
 
-use crate::host::windows::runtime_dir::{Descriptor, Owner};
+use crate::host::windows::security::{Descriptor, Owner};
 use crate::host::windows::{user, wide};
 
 /// Replaces the DACL of `path` with the one `sddl` describes (`D:...`), protected: nothing is inherited.

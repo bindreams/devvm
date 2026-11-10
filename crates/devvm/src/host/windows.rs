@@ -24,12 +24,13 @@ use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, U
 use crate::exit::ExitWidth;
 use crate::{Arch, Error, ErrorKind, Result};
 
-mod failure;
+mod create_file;
 mod file_id;
 mod hold;
 mod link;
 mod private_file;
 pub(crate) mod runtime_dir;
+pub(crate) mod security;
 pub(crate) mod user;
 mod volume;
 mod watch;

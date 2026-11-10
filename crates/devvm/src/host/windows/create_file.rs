@@ -11,6 +11,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::CreateFileW;
 
+use super::security::Descriptor;
 use super::wide;
 
 // `windows-sys` has no binding for it.
@@ -69,21 +70,27 @@ impl From<Failure> for std::io::Error {
 }
 
 /// `CreateFileW` of `path` (a null template), whose failure keeps the `NTSTATUS` it ended with. A file that `creation`
-/// makes gets the descriptor in `security`, or the inherited one when it is `None`.
+/// makes gets `descriptor`, or the inherited security when it is `None`.
 pub(super) fn open(
     path: &Path,
     access: u32,
     share: u32,
     creation: u32,
     flags: u32,
-    security: Option<&SECURITY_ATTRIBUTES>,
+    descriptor: Option<&Descriptor>,
 ) -> Result<File, Failure> {
     let name = wide(path).map_err(|error| Failure {
         error,
         status: STATUS_SUCCESS,
     })?;
-    let security = security.map_or(std::ptr::null(), std::ptr::from_ref);
-    // SAFETY: `name` is NUL-terminated, a null template is allowed, and `security` is null or borrowed for the call.
+    let attributes = descriptor.map(|descriptor| SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.as_ptr(),
+        bInheritHandle: 0,
+    });
+    let security = attributes.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+    // SAFETY: `name` is NUL-terminated, a null template is allowed, and `security` is null or points at `attributes`,
+    // whose descriptor `descriptor` keeps alive, past the call.
     let handle = unsafe {
         CreateFileW(
             name.as_ptr(),
