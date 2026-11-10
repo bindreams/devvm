@@ -486,7 +486,7 @@ async fn accept_loop(listener: std::net::TcpListener, state: Arc<State>) {
 struct Connection {
     state: Arc<State>,
     index: usize,
-    /// The client key trusted when this connection was accepted.
+    /// Snapshot at accept; see accept_loop.
     client: PublicKey,
     channels: HashMap<ChannelId, Channel<Msg>>,
     /// Fired by the `drop-connection` script: the TCP connection is dropped without a word.

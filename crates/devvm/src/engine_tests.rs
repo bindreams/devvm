@@ -2,8 +2,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::access::VmExit;
+use crate::access::keys::InstanceKeys;
+use crate::access::ssh_config::SshConfigEntry;
 use crate::backend::fake::FakeBackend;
-use crate::backend::{Backend, MachineRecord};
+use crate::backend::{Backend, Endpoint, MachineRecord, SshEndpoint};
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, EngineParts, LaunchHooks, ListFilter, NoHooks};
 use crate::exit::Progress;
@@ -12,6 +15,7 @@ use crate::guest::fake::{FakeGuests, ServedGuests};
 use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
 use crate::instance::info::{InstanceInfo, InstanceState};
+use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, write_marker};
 use crate::instance::registry::registry_tests::new_instance_on;
 use crate::recipe::{Flattened, Resources, Source};
@@ -24,6 +28,7 @@ use crate::test_support::sshd::TestSshd;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::test_support::transport::RefusingTransport;
 use crate::{Arch, Dirs, ErrorKind, GuestKind, Image, Instance};
+use cosca::identity::{ProcessId, ProcessIdRecord};
 
 /// A test engine over the fake host, backend and guests, with its own state under the test's home. Its machines are
 /// reached at `server`, which trusts the keys of whichever instance's seed the `guests` read last.
@@ -75,6 +80,7 @@ pub(crate) fn engine_fixture_from(
     let server = Arc::new(TestSshd::awaiting_keys());
     let fake = Arc::new(fake.with_ssh_endpoint(server.addr()));
     let guests = Arc::new(ServedGuests::new(server.clone()));
+    guests.boot_follows(fake.reset_counter());
     let engine = Engine::with_parts(EngineParts {
         dirs: env.dirs.clone(),
         host: &TestHost,
@@ -204,6 +210,68 @@ pub(crate) fn instance_in(fx: &EngineFixture, name: &str, created_from: &Path) -
         .unwrap()
         .make_ownerless(&mut || Ok(()))
         .unwrap()
+}
+
+/// The record of a machine whose VM process is this one, which lives as long as the test does, and whose SSH endpoint is
+/// `ssh`. Its serial log is `serial.log` under `home`.
+pub(crate) fn running_machine(home: &Path, ssh: std::net::SocketAddr) -> MachineRecord {
+    MachineRecord {
+        process: ProcessId::current()
+            .to_record()
+            .expect("this process has an identity record"),
+        qmp: String::new(),
+        ssh: vec![SshEndpoint {
+            endpoint: Endpoint::Normal,
+            addr: ssh,
+        }],
+        serial_log: home.join("serial.log"),
+        leftovers: Vec::new(),
+        claim: None,
+        no_reboot: false,
+    }
+}
+
+/// A process record that names no process: the identity of this one with another start token.
+pub(crate) fn gone_process() -> ProcessIdRecord {
+    let mut gone = ProcessId::current()
+        .to_record()
+        .expect("this process has an identity record");
+    gone.token = gone.token.wrapping_add(1);
+    gone
+}
+
+pub(crate) fn watched(engine: &Engine) -> Vec<ProcessIdRecord> {
+    engine
+        .exits
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(process, _)| process.clone())
+        .collect()
+}
+
+pub(crate) fn watch_with(engine: &Engine, process: ProcessIdRecord, exit: VmExit) {
+    engine.exits.lock().unwrap().push((process, exit));
+}
+
+fn ended_exit() -> VmExit {
+    let exit = VmExit::when(|| Ok(())).unwrap();
+    crate::access::runtime::wait(exit.gone());
+    exit
+}
+
+/// A watcher that ended without knowing whether its VM lives.
+fn unwatched_exit() -> VmExit {
+    let exit = VmExit::when(|| Err("the VM process cannot be waited on".to_owned())).unwrap();
+    crate::access::runtime::wait(exit.gone());
+    exit
+}
+
+/// A watcher whose thread panicked: it ended without a verdict.
+fn panicked_exit() -> VmExit {
+    let exit = VmExit::when(|| panic!("the watcher thread panics")).unwrap();
+    crate::access::runtime::wait(exit.gone());
+    exit
 }
 
 pub(crate) fn memory() -> Arc<MemoryProgress> {
@@ -600,4 +668,211 @@ fn doctor_checks_gives_every_line_and_the_config_failure_on_the_qemu_line_after_
         host::symlink_metadata_if_present(&leftover).unwrap().is_none(),
         "doctor reaps like every other command"
     );
+}
+
+// The exit watchers ===================================================================================================
+
+#[skuld::test]
+fn every_call_for_a_machine_shares_one_exit_watcher(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let machine = running_machine(home, fx.server.addr());
+
+    let first = fx.engine.vm_exit(&machine).unwrap();
+    let second = fx.engine.vm_exit(&machine).unwrap();
+
+    assert_eq!(watched(&fx.engine), std::slice::from_ref(&machine.process));
+    assert!(!first.has_ended() && !second.has_ended(), "this process is running");
+}
+
+#[skuld::test]
+fn a_restarted_machine_gets_a_new_exit_watcher_and_the_ended_ones_entry_goes(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let restarted = running_machine(home, fx.server.addr());
+    let earlier = gone_process();
+    watch_with(&fx.engine, earlier, ended_exit());
+
+    let exit = fx.engine.vm_exit(&restarted).unwrap();
+
+    assert!(!exit.has_ended(), "the new machine's watcher is its own");
+    assert_eq!(watched(&fx.engine), std::slice::from_ref(&restarted.process));
+}
+
+#[skuld::test]
+fn the_watcher_of_a_live_machine_stays_while_another_one_is_asked_for(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let running = running_machine(home, fx.server.addr());
+    let other = gone_process();
+    // Another machine whose VM is still running: its watcher has not ended.
+    watch_with(&fx.engine, other.clone(), VmExit::never());
+
+    fx.engine.vm_exit(&running).unwrap();
+
+    assert_eq!(watched(&fx.engine), [other, running.process]);
+}
+
+#[skuld::test]
+fn an_ended_watcher_of_the_asked_machine_is_returned_as_it_is(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let machine = running_machine(home, fx.server.addr());
+    watch_with(&fx.engine, machine.process.clone(), ended_exit());
+
+    let exit = fx.engine.vm_exit(&machine).unwrap();
+
+    assert!(exit.has_ended(), "its VM is gone, and a wait on it ends at once");
+    assert_eq!(watched(&fx.engine), [machine.process]);
+}
+
+#[skuld::test]
+fn an_unwatched_verdict_for_the_asked_machine_is_replaced_by_a_new_watcher(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let machine = running_machine(home, fx.server.addr());
+    watch_with(&fx.engine, machine.process.clone(), unwatched_exit());
+
+    let exit = fx.engine.vm_exit(&machine).unwrap();
+
+    assert!(exit.verdict().is_none(), "the machine lives, and a new watcher says so");
+    assert_eq!(watched(&fx.engine), [machine.process]);
+}
+
+#[skuld::test]
+fn a_watcher_whose_thread_panicked_is_replaced_by_a_new_watcher(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let machine = running_machine(home, fx.server.addr());
+    watch_with(&fx.engine, machine.process.clone(), panicked_exit());
+
+    let exit = fx.engine.vm_exit(&machine).unwrap();
+
+    assert!(exit.verdict().is_none(), "the machine lives, and a new watcher says so");
+    assert_eq!(watched(&fx.engine), [machine.process]);
+}
+
+#[skuld::test]
+fn a_watcher_whose_thread_panicked_for_another_machine_goes(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let running = running_machine(home, fx.server.addr());
+    watch_with(&fx.engine, gone_process(), panicked_exit());
+
+    fx.engine.vm_exit(&running).unwrap();
+
+    assert_eq!(watched(&fx.engine), [running.process]);
+}
+
+#[skuld::test]
+fn a_machine_whose_process_is_gone_has_no_exit_watcher(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let mut machine = running_machine(home, fx.server.addr());
+    machine.process = gone_process();
+
+    let error = fx.engine.vm_exit(&machine).err().expect("there is no VM to watch");
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("the VM process exited"), "{error}");
+    assert!(
+        error.message().contains(&machine.serial_log.display().to_string()),
+        "{error}"
+    );
+    assert!(watched(&fx.engine).is_empty());
+}
+
+// The ssh_config sweep ================================================================================================
+
+/// Writes the `ssh_config` entry of an instance called `name` and returns the file it is in. It names no instance
+/// directory: only the file's presence matters to the sweep.
+pub(crate) fn write_conf(engine: &Engine, home: &Path, name: &str) -> PathBuf {
+    let entry = SshConfigEntry {
+        name: InstanceName::parse(name).unwrap(),
+        id: InstanceId::random(),
+        port: 2222,
+        identity: home.join("keys").join("client"),
+        known_hosts: home.join(format!("{name}.known_hosts")),
+    };
+    let configs = engine.ssh_configs();
+    configs
+        .write_entry(&entry, &InstanceKeys::generate().unwrap().host_public)
+        .unwrap();
+    configs.path().join(format!("{name}.conf"))
+}
+
+pub(crate) fn is_there(path: &Path) -> bool {
+    host::symlink_metadata_if_present(path).unwrap().is_some()
+}
+
+#[skuld::test]
+fn reap_sweeps_the_conf_of_an_instance_that_is_gone_and_keeps_the_others(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    instance_in(&fx, "live", home);
+    let kept = write_conf(&fx.engine, home, "live");
+    let swept = write_conf(&fx.engine, home, "gone");
+
+    fx.engine.reap();
+
+    assert!(is_there(&kept), "an instance that exists keeps its conf");
+    assert!(!is_there(&swept), "no instance is called gone");
+}
+
+#[skuld::test]
+fn the_sweep_keeps_the_conf_of_an_instance_whose_record_is_corrupt(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "bad", home);
+    let conf = write_conf(&fx.engine, home, "bad");
+    std::fs::write(dir.path().join("record.json"), "{ not json").unwrap();
+
+    fx.engine.sweep_ssh_configs();
+
+    assert!(is_there(&conf), "only a definite absence removes a conf");
+}
+
+#[skuld::test]
+fn the_sweep_warns_and_keeps_the_conf_of_an_instance_whose_record_cannot_be_read(#[fixture(unicode_home)] home: &Path) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    let dir = instance_in(&fx, "bad", home);
+    let conf = write_conf(&fx.engine, home, "bad");
+    // A directory where the record should be: reading it is an I/O error, not a bad record.
+    let record = dir.path().join("record.json");
+    std::fs::remove_file(&record).unwrap();
+    std::fs::create_dir(&record).unwrap();
+
+    fx.engine.sweep_ssh_configs();
+
+    assert!(
+        is_there(&conf),
+        "a record that cannot be read does not make its instance gone"
+    );
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("instance bad") && m.contains("record.json")),
+        "{messages:?}"
+    );
+}
+
+#[skuld::test]
+fn the_sweeps_warnings_reach_the_progress_channel(#[fixture(unicode_home)] home: &Path) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    // A conf that cannot be removed: a directory under its name.
+    let conf = write_conf(&fx.engine, home, "gone");
+    std::fs::remove_file(&conf).unwrap();
+    std::fs::create_dir(&conf).unwrap();
+
+    fx.engine.sweep_ssh_configs();
+
+    let messages = progress.messages();
+    assert!(messages.iter().any(|m| m.contains("gone.conf")), "{messages:?}");
+}
+
+#[skuld::test]
+fn reap_keeps_the_conf_of_an_instance_whose_record_it_cannot_read(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "newer", home);
+    let conf = write_conf(&fx.engine, home, "newer");
+    // Written by a devvm newer than this one: the reaper leaves the instance alone, and so does the sweep.
+    std::fs::write(dir.path().join("record.json"), r#"{"schema": 4000000}"#).unwrap();
+
+    fx.engine.reap();
+
+    assert!(is_there(&conf));
+    assert!(is_there(dir.path()), "the instance itself is left alone");
 }

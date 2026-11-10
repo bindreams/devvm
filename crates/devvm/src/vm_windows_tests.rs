@@ -11,7 +11,7 @@ use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, M
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
 use crate::engine::engine_tests::{
-    EngineFixture, engine_fixture, engine_fixture_from, engine_fixture_with, engine_over, engine_with_bound,
+    EngineFixture, engine_fixture, engine_fixture_from, engine_fixture_with, engine_over, engine_with_bound, image_of,
     instance_in, leaking_backend, leaking_fixture,
 };
 use crate::engine::keys::read_target;
@@ -28,7 +28,7 @@ use crate::test_support::helper;
 use crate::test_support::host::TestHost;
 use crate::test_support::sshd::FAST_KEEPALIVE;
 use crate::vm::vm_tests::{queued, step_name};
-use crate::{ErrorKind, Instance, InstanceState, ListFilter};
+use crate::{Command, ErrorKind, Guest, Instance, InstanceState, ListFilter, StartOptions};
 
 fn memory_fixture(home: &Path) -> EngineFixture {
     engine_fixture(home, Arc::new(MemoryProgress::default()))
@@ -164,6 +164,78 @@ fn stop_then_start_gives_a_new_process(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(fx.fake.launches(), 2);
     assert_answers_as(&second);
     instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn stop_then_start_keeps_the_host_key_and_the_ssh_config_valid(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+    instance.start().unwrap();
+    let keys = key_bytes(dir.path());
+
+    instance.stop().unwrap();
+    instance.start().unwrap();
+
+    assert_eq!(key_bytes(dir.path()), keys, "the guest keeps its keys across a restart");
+    let conf = std::fs::read_to_string(fx.env.dirs.ssh().join("foo.conf")).unwrap();
+    assert!(conf.contains(&format!("Port {}", fx.server.addr().port())), "{conf}");
+    let known_hosts = std::fs::read_to_string(dir.path().join("known_hosts")).unwrap();
+    let host_public = std::fs::read_to_string(dir.path().join("keys").join("host.pub")).unwrap();
+    let key = host_public.split_whitespace().nth(1).unwrap();
+    assert!(
+        known_hosts.contains(key),
+        "known_hosts names the host key: {known_hosts}"
+    );
+    assert_eq!(
+        instance.run(&Command::new(["echo", "restarted"])).unwrap().stdout,
+        b"restarted
+"
+    );
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn concurrent_up_and_rm_leave_every_live_instance_resolvable_in_ssh_config(#[fixture(unicode_home)] home: &Path) {
+    let fx = memory_fixture(home);
+    let image = image_of(&fx.engine);
+    let old = ["old0", "old1", "old2"].map(|name| image.up(name, &StartOptions::default()).unwrap());
+    let reaping = std::sync::atomic::AtomicBool::new(true);
+
+    let new = std::thread::scope(|scope| {
+        // The fixture's server trusts one instance's keys at a time, so the instances are brought up one after another.
+        let up = scope.spawn(|| ["new0", "new1", "new2"].map(|name| image.up(name, &StartOptions::default()).unwrap()));
+        let rm = scope.spawn(move || old.map(|instance| instance.remove().unwrap()));
+        let reap = scope.spawn(|| {
+            while reaping.load(Ordering::SeqCst) {
+                fx.engine.reap();
+            }
+        });
+        let new = up.join().unwrap();
+        rm.join().unwrap();
+        // Both have finished: the reaps that ran beside them are over.
+        reaping.store(false, Ordering::SeqCst);
+        reap.join().unwrap();
+        new
+    });
+
+    let confs = |name: &str| fx.env.dirs.ssh().join(format!("{name}.conf"));
+    for instance in &new {
+        assert!(
+            symlink_metadata_if_present(&confs(instance.name())).unwrap().is_some(),
+            "{} is live and must stay resolvable",
+            instance.name()
+        );
+    }
+    for name in ["old0", "old1", "old2"] {
+        assert!(
+            symlink_metadata_if_present(&confs(name)).unwrap().is_none(),
+            "{name} was removed"
+        );
+    }
+    for instance in new {
+        instance.remove().unwrap();
+    }
 }
 
 #[skuld::test]
@@ -1219,7 +1291,7 @@ fn a_second_process_builds_its_target_from_the_record_and_the_keys(#[fixture(uni
     );
     let instance = Instance::open_in(&other, "foo").unwrap();
     let op = instance.dir().op_shared().unwrap();
-    let target = read_target(instance.dir(), &op).unwrap();
+    let target = read_target(&other, instance.dir(), &op).unwrap().target;
     let session = SshSession::connect(&target, FAST_KEEPALIVE, VmExit::never(), None, &NullProgress).unwrap();
     let output = session.exec_collect("echo from another process").unwrap();
 

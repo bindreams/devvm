@@ -1,6 +1,7 @@
 //! Guests for the tests: they need no image, no network and no SSH.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use secrecy::ExposeSecret;
@@ -95,8 +96,12 @@ impl GuestOs for FakeGuestOs {
         })
     }
 
+    /// A Linux guest's, except that a served guest's boot id is its boot number (see [`ServedGuests::boot_follows`]).
     fn boot_id_command(&self) -> Command {
-        LinuxGuest.boot_id_command()
+        match &self.served {
+            Some(served) => served.boot_id_command(),
+            None => LinuxGuest.boot_id_command(),
+        }
     }
 
     fn wrap(&self, cmd: &Command) -> Result<String> {
@@ -198,12 +203,28 @@ pub(crate) struct ServedGuests(Arc<Served>);
 struct Served {
     server: Arc<TestSshd>,
     seeds: Mutex<Vec<SeedSeen>>,
-    /// The command `wait_ready` runs; it is ready when it exits 0.
     ready_command: Mutex<String>,
-    /// What `wait_ready` answers after the command succeeded.
     degraded: Mutex<Option<String>>,
-    /// Called first in every `wait_ready`.
     on_ready: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// The resets that start a new boot, if the guests follow any.
+    resets: Mutex<Option<Arc<AtomicUsize>>>,
+    /// How many boot id reads after a reset fail, before the stale ones.
+    failing_boot_reads: Mutex<usize>,
+    /// How many boot ids after a reset still say the old boot.
+    stale_boot_reads: Mutex<usize>,
+    /// Every read of the boot id after a reset ends without an exit status.
+    unreadable_boot_id: Mutex<bool>,
+    /// Every read of the boot id prints nothing.
+    empty_boot_id: Mutex<bool>,
+    boots: Mutex<Boots>,
+}
+
+/// Which reset the boot id was last read after, and how many of its reads may still fail or answer the old boot.
+#[derive(Default)]
+struct Boots {
+    seen: usize,
+    failing_left: usize,
+    stale_left: usize,
 }
 
 impl ServedGuests {
@@ -214,7 +235,42 @@ impl ServedGuests {
             ready_command: Mutex::new("echo ready".to_owned()),
             degraded: Mutex::default(),
             on_ready: Mutex::default(),
+            resets: Mutex::default(),
+            failing_boot_reads: Mutex::default(),
+            stale_boot_reads: Mutex::default(),
+            unreadable_boot_id: Mutex::default(),
+            empty_boot_id: Mutex::default(),
+            boots: Mutex::default(),
         }))
+    }
+
+    /// The guests' boot number is the value of `resets`: a guest whose machine is reset boots again. Without this the
+    /// boot number is always 0.
+    pub(crate) fn boot_follows(&self, resets: Arc<AtomicUsize>) {
+        *self.0.resets.lock().unwrap() = Some(resets);
+    }
+
+    /// After each reset, the first `reads` reads of the boot id fail, as they do while the guest goes down or its `sshd`
+    /// restarts; the stale reads come after them.
+    pub(crate) fn failing_boot_reads(&self, reads: usize) {
+        *self.0.failing_boot_reads.lock().unwrap() = reads;
+    }
+
+    /// After a reset, every read of the boot id ends without an exit status: an error that is neither a lost connection
+    /// nor a failed command.
+    pub(crate) fn unreadable_boot_id(&self) {
+        *self.0.unreadable_boot_id.lock().unwrap() = true;
+    }
+
+    /// Every read of the boot id exits 0 and prints nothing.
+    pub(crate) fn empty_boot_id(&self) {
+        *self.0.empty_boot_id.lock().unwrap() = true;
+    }
+
+    /// After each reset, the first `reads` reads of the boot id still answer the old boot, as a guest does until it has
+    /// gone down.
+    pub(crate) fn stale_boot_reads(&self, reads: usize) {
+        *self.0.stale_boot_reads.lock().unwrap() = reads;
     }
 
     /// The command that `wait_ready` runs through the session (`echo ready`): it is ready when the command exits 0.
@@ -239,6 +295,39 @@ impl ServedGuests {
 }
 
 impl Served {
+    /// What a read of the boot id runs: `exit 1` while the failing reads last, else the boot the guest is in now (the
+    /// number of resets so far, or the one before while the stale reads last).
+    fn boot_id_command(&self) -> Command {
+        if *self.empty_boot_id.lock().unwrap() {
+            return Command::new(["echo"]);
+        }
+        let Some(resets) = self.resets.lock().unwrap().clone() else {
+            return Command::new(["echo", "boot-0"]);
+        };
+        let now = resets.load(Ordering::SeqCst);
+        let mut boots = self.boots.lock().unwrap();
+        if now != boots.seen {
+            boots.seen = now;
+            boots.failing_left = *self.failing_boot_reads.lock().unwrap();
+            boots.stale_left = *self.stale_boot_reads.lock().unwrap();
+        }
+        if now > 0 && *self.unreadable_boot_id.lock().unwrap() {
+            return Command::new(["close-no-status"]);
+        }
+        if boots.failing_left > 0 {
+            boots.failing_left -= 1;
+            return Command::new(["exit", "1"]);
+        }
+        let boot = if boots.stale_left > 0 {
+            boots.stale_left -= 1;
+            // A stale read follows a reset, so `now` is at least 1.
+            now - 1
+        } else {
+            now
+        };
+        Command::new(["echo".to_owned(), format!("boot-{boot}")])
+    }
+
     fn read_seed(&self, seed: &SeedSpec) {
         self.server
             .install(&seed.keys.client_public, seed.keys.host_private.expose_secret());

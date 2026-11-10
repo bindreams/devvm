@@ -4,9 +4,10 @@ use std::path::PathBuf;
 
 use crate::access::SshTarget;
 use crate::access::keys::InstanceKeys;
-use crate::backend::{Endpoint, MachineRecord};
+use crate::backend::{Endpoint, Machine, MachineRecord};
+use crate::engine::Engine;
 use crate::host::Host;
-use crate::instance::dir::{InstanceDir, OpExclusive, OpShared};
+use crate::instance::dir::{InstanceDir, OpExclusive, OpHeld};
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
 use crate::{Error, ErrorKind, Result};
@@ -70,14 +71,29 @@ pub(crate) fn target_for(name: &InstanceName, machine: &MachineRecord, keys: &In
     })
 }
 
-/// The target of the machine `dir` has now, built from its record and its key files alone: the shared op lock keeps
-/// the starter from rewriting either.
-#[allow(dead_code, reason = "no caller until guest operations connect through it")]
-pub(crate) fn read_target(dir: &InstanceDir, _op: &OpShared) -> Result<SshTarget> {
+/// The machine `dir` has now, found through the backend, and what a process needs to connect to it.
+pub(crate) struct Running {
+    pub machine: Box<dyn Machine>,
+    /// The machine's record, as the instance record keeps it.
+    pub record: MachineRecord,
+    pub target: SshTarget,
+}
+
+/// The machine `dir` has now, built from its record, the backend and the key files: the op lock keeps the starter from
+/// rewriting any of them. A recorded machine that the backend does not find is not running: the record is stale.
+pub(crate) fn read_target(engine: &Engine, dir: &InstanceDir, _op: &impl OpHeld) -> Result<Running> {
     let record = dir.record()?;
     // A stopped instance may be one that never started, and has no keys.
     let Some(machine) = &record.machine else {
         return Err(not_running(&record));
     };
-    target_for(&record.name, machine, &InstanceKeys::read(&keys_dir(dir))?)
+    let Some(found) = engine.backend()?.find(machine)? else {
+        return Err(not_running(&record));
+    };
+    let target = target_for(&record.name, machine, &InstanceKeys::read(&keys_dir(dir))?)?;
+    Ok(Running {
+        machine: found,
+        record: machine.clone(),
+        target,
+    })
 }
