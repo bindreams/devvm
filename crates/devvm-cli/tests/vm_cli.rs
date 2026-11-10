@@ -1,9 +1,7 @@
 //! The end-to-end VM suites through the real `devvm` executable: guests that boot under QEMU, reached by `up`, `run`,
 //! `ssh`, `cp`, `stop`, `start` and `rm`, and `doctor` on a host that has them.
 //!
-//! Every test joins the `vm_group` test group of the library's test groups (the file `test_groups/shared.rs`, included
-//! here by `#[path]`): it fails naming what is missing unless the group is off (`DEVVM_TEST_VM=0`) and consented to
-//! (`DEVVM_TEST_VM_CONSENT=1`).
+//! Every test joins the `vm_group` test group (see `test_groups/shared.rs`).
 
 use std::collections::BTreeMap;
 use std::io::BufRead;
@@ -31,7 +29,14 @@ use unicode::UNICODE_DIR;
 mod home;
 #[path = "support/isolate.rs"]
 mod isolate;
+#[cfg(unix)]
+#[path = "support/socket_path_unix.rs"]
+mod socket_path;
+#[cfg(windows)]
+#[path = "support/socket_path_windows.rs"]
+mod socket_path;
 use home::{Home, stdout_lines};
+use socket_path::SOCKET_PATH_MAX;
 #[path = "../../devvm/src/test_support/roots.rs"]
 mod roots;
 use roots::XdgRoots;
@@ -93,17 +98,9 @@ impl Cli {
     }
 }
 
-/// The limit on a control socket path of this host, as `Host::socket_path_max` gives it: `sun_path` less its NUL is
-/// 107 bytes on Linux and Windows, and 103 on macOS and the BSDs.
-const SOCKET_PATH_MAX: usize = if cfg!(any(windows, target_os = "linux")) {
-    107
-} else {
-    103
-};
-
 /// The short directory that is `XDG_RUNTIME_DIR` in these tests, made if need be: the roots' own directories are too
-/// long for a control socket path. It is [`roots::socket_dir`] for this host's limit, as the lib asks for it, so both
-/// pick the same directory.
+/// long for a control socket path. It is [`roots::socket_dir`] for this host's limit ([`SOCKET_PATH_MAX`], computed as
+/// `Host::socket_path_max` computes it), as the lib asks for it, so both pick the same directory.
 fn run_dir() -> Result<PathBuf, String> {
     let dir = roots::socket_dir(SOCKET_PATH_MAX).ok_or_else(|| {
         format!(
@@ -455,7 +452,7 @@ fn doctor_lines(env: &CliEnv) -> (Output, Vec<String>) {
 fn line_of<'a>(lines: &'a [String], name: &str) -> &'a str {
     lines
         .iter()
-        .find(|line| line[5..].starts_with(&format!("{name}:")))
+        .find(|line| line.get(5..).is_some_and(|rest| rest.starts_with(&format!("{name}:"))))
         .unwrap_or_else(|| panic!("no line for {name}: {lines:?}"))
 }
 
