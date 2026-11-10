@@ -6,15 +6,11 @@
 use std::fs::File;
 use std::mem::{offset_of, size_of};
 use std::os::windows::fs::MetadataExt;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 
-use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, ERROR_SHARING_VIOLATION,
-    INVALID_HANDLE_VALUE, NTSTATUS, STATUS_DELETE_PENDING, STATUS_SUCCESS,
-};
 use windows_sys::Win32::Storage::FileSystem::{
-    CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_DISPOSITION_FLAG_DELETE,
+    CREATE_NEW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
     FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
     FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
@@ -22,91 +18,11 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
 
+use super::create_file::{Failure, open};
 use super::file_id;
 use super::wide;
 use crate::host::{DELETING_DRAW_BYTES, FileId, Hold, HoldOutcome, deleting_name, is_a_link, is_absent};
 use crate::random;
-
-// `windows-sys` has no binding for it.
-#[link(name = "ntdll")]
-unsafe extern "system" {
-    /// The `NTSTATUS` the calling thread's last system call ended with, which Win32 maps to an error code that can
-    /// stand for several statuses.
-    fn RtlGetLastNtStatus() -> NTSTATUS;
-}
-
-/// A failed system call: its Win32 error and the `NTSTATUS` it ended with (`STATUS_SUCCESS` for an error that no
-/// system call ended with, such as a path that has no wide form).
-struct Failure {
-    error: std::io::Error,
-    status: NTSTATUS,
-}
-
-impl Failure {
-    /// The failure of the calling thread's last system call, which must be the one that failed: both are read from the
-    /// thread's last call, so nothing may call the system in between.
-    fn last() -> Failure {
-        let error = std::io::Error::last_os_error();
-        // SAFETY: reads a thread-local status; no argument.
-        let status = unsafe { RtlGetLastNtStatus() };
-        Failure { error, status }
-    }
-
-    /// Whether a file's deletion is pending: `ERROR_ACCESS_DENIED` like a real refusal, and the status tells them
-    /// apart. The error is checked as well: a call that fails before the kernel (an empty path, a bad buffer length)
-    /// leaves the status of an earlier call.
-    fn is_delete_pending(&self) -> bool {
-        self.error.raw_os_error().map(|code| code as u32) == Some(ERROR_ACCESS_DENIED)
-            && self.status == STATUS_DELETE_PENDING
-    }
-
-    /// Whether the file system or Windows has no `*Ex` form of the call; gates the disposition ([`mark_deleted`]) and
-    /// rename (`rename_to`) fallbacks. Matches the three errors std's `File::delete` falls back on.
-    fn is_unsupported(&self) -> bool {
-        matches!(
-            self.error.raw_os_error().map(|code| code as u32),
-            Some(ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED | ERROR_INVALID_FUNCTION)
-        )
-    }
-
-    /// Whether another open of the file refuses this one (`ERROR_SHARING_VIOLATION`).
-    fn is_sharing_violation(&self) -> bool {
-        self.error.raw_os_error().map(|code| code as u32) == Some(ERROR_SHARING_VIOLATION)
-    }
-}
-
-/// The system's error as it is, status dropped.
-impl From<Failure> for std::io::Error {
-    fn from(failure: Failure) -> std::io::Error {
-        failure.error
-    }
-}
-
-/// The one open of a file here: `CreateFileW` of `path` (a null security descriptor and template), whose failure keeps
-/// the `NTSTATUS` it ended with.
-fn open(path: &Path, access: u32, share: u32, creation: u32, flags: u32) -> Result<File, Failure> {
-    let name = wide(path).map_err(|error| Failure {
-        error,
-        status: STATUS_SUCCESS,
-    })?;
-    // SAFETY: `name` is NUL-terminated, and a null security descriptor and template are allowed.
-    let handle = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            access,
-            share,
-            std::ptr::null(),
-            creation,
-            flags,
-            std::ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(Failure::last());
-    }
-    // SAFETY: `handle` is a valid handle that nothing else owns; dropping the file closes it.
-    Ok(File::from(unsafe { OwnedHandle::from_raw_handle(handle) }))
-}
 
 /// Marks `file`, open with `DELETE` access, for deletion: `FileDispositionInfoEx` with `FILE_DISPOSITION_FLAG_DELETE`
 /// and `flags`. POSIX semantics unlink the name when the file object closes, whoever else has the file open. Where the
@@ -245,6 +161,7 @@ pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
     )
     .and_then(|file| {
         mark_deleted(
@@ -269,6 +186,7 @@ fn open_hold(path: &Path, creation: u32) -> Result<File, Failure> {
         0,
         creation,
         LINK_OPEN,
+        None,
     )
 }
 
@@ -308,7 +226,7 @@ pub(super) fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File>
     let creation = if create { OPEN_ALWAYS } else { OPEN_EXISTING };
     let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     let access = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
-    let file = open(path, access, share, creation, LINK_OPEN)?;
+    let file = open(path, access, share, creation, LINK_OPEN, None)?;
     refuse_link(&file, path)?;
     Ok(file)
 }
