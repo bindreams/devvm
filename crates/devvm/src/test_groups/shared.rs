@@ -3,8 +3,8 @@
 //! `#[fixture(<fixture>)] _group: &Group`.
 //!
 //! This half needs nothing from the lib, so a test binary can include it by `#[path]` (the lib includes it with
-//! `#[macro_use] mod shared;` in `test_groups.rs`), with `test_harness.rs`, which declares the labels the groups carry. The groups that call the lib
-//! are in `test_groups.rs`.
+//! `#[macro_use] mod shared;` in `test_groups.rs`), with `test_harness.rs`, which declares the labels the groups
+//! carry. The groups that call the lib are in `test_groups.rs`.
 
 /// Proof that the group is enabled.
 pub(crate) struct Group;
