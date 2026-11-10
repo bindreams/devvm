@@ -20,13 +20,14 @@ use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use super::Hold;
 use super::entry;
 use super::names::{windows_colon_path, windows_problem, windows_run_dir};
-use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, create_new_with};
+use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, fill_new};
 use crate::exit::ExitWidth;
 use crate::{Arch, Error, ErrorKind, Result};
 
 mod file_id;
 mod hold;
 mod link;
+mod private_file;
 pub(crate) mod runtime_dir;
 pub(crate) mod user;
 mod volume;
@@ -163,9 +164,10 @@ impl Host for WindowsHost {
         })
     }
 
-    /// The file keeps the ACL it inherits from its directory, which OpenSSH for Windows accepts.
+    /// The file is created with a protected DACL that grants only the user ([`private_file::create_new`]), which
+    /// OpenSSH for Windows accepts wherever the file is made.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        create_new_with(OpenOptions::new(), path, bytes)
+        fill_new(private_file::create_new(path)?, path, bytes)
     }
 
     fn is_executable(&self, _path: &Path) -> std::io::Result<bool> {

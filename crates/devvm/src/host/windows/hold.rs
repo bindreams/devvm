@@ -13,6 +13,7 @@ use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, ERROR_SHARING_VIOLATION,
     INVALID_HANDLE_VALUE, NTSTATUS, STATUS_DELETE_PENDING, STATUS_SUCCESS,
 };
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
@@ -37,7 +38,7 @@ unsafe extern "system" {
 
 /// A failed system call: its Win32 error and the `NTSTATUS` it ended with (`STATUS_SUCCESS` for an error that no
 /// system call ended with, such as a path that has no wide form).
-struct Failure {
+pub(super) struct Failure {
     error: std::io::Error,
     status: NTSTATUS,
 }
@@ -82,20 +83,27 @@ impl From<Failure> for std::io::Error {
     }
 }
 
-/// The one open of a file here: `CreateFileW` of `path` (a null security descriptor and template), whose failure keeps
-/// the `NTSTATUS` it ended with.
-fn open(path: &Path, access: u32, share: u32, creation: u32, flags: u32) -> Result<File, Failure> {
+/// The one open of a file here: `CreateFileW` of `path` (a null template), whose failure keeps the `NTSTATUS` it ended
+/// with. A file that `creation` makes gets the descriptor in `security`, or the inherited one when it is null.
+pub(super) fn open(
+    path: &Path,
+    access: u32,
+    share: u32,
+    creation: u32,
+    flags: u32,
+    security: *const SECURITY_ATTRIBUTES,
+) -> Result<File, Failure> {
     let name = wide(path).map_err(|error| Failure {
         error,
         status: STATUS_SUCCESS,
     })?;
-    // SAFETY: `name` is NUL-terminated, and a null security descriptor and template are allowed.
+    // SAFETY: `name` is NUL-terminated, a null template is allowed, and `security` is null or live (the caller's).
     let handle = unsafe {
         CreateFileW(
             name.as_ptr(),
             access,
             share,
-            std::ptr::null(),
+            security,
             creation,
             flags,
             std::ptr::null_mut(),
@@ -245,6 +253,7 @@ pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT,
+        std::ptr::null(),
     )
     .and_then(|file| {
         mark_deleted(
@@ -269,6 +278,7 @@ fn open_hold(path: &Path, creation: u32) -> Result<File, Failure> {
         0,
         creation,
         LINK_OPEN,
+        std::ptr::null(),
     )
 }
 
@@ -308,7 +318,7 @@ pub(super) fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File>
     let creation = if create { OPEN_ALWAYS } else { OPEN_EXISTING };
     let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     let access = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
-    let file = open(path, access, share, creation, LINK_OPEN)?;
+    let file = open(path, access, share, creation, LINK_OPEN, std::ptr::null())?;
     refuse_link(&file, path)?;
     Ok(file)
 }

@@ -169,6 +169,8 @@ fn write_private_is_create_new_and_owner_only(#[fixture(unicode_home)] home: &Pa
     current().write_private(&path, b"secret").unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"secret");
     assert_eq!(file_mode::mode(&path), cfg!(unix).then_some(0o600));
+    #[cfg(windows)]
+    assert_private_file_is_the_users_alone(home);
 
     let error = current().write_private(&path, b"other").unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
@@ -177,6 +179,35 @@ fn write_private_is_create_new_and_owner_only(#[fixture(unicode_home)] home: &Pa
         b"secret",
         "an existing file is left alone"
     );
+}
+
+/// Writes a private file into a directory that hands `BUILTIN\Users` read to what is created in it, as a directory
+/// under `C:\Users` does. OpenSSH for Windows ignores a private key whose DACL lets anyone else read it.
+#[cfg(windows)]
+fn assert_private_file_is_the_users_alone(home: &Path) {
+    use crate::host::windows::user::current_sid;
+    use crate::test_support::file_security::{Security, set_protected_dacl};
+
+    const USERS: &str = "S-1-5-32-545";
+    let me = current_sid().unwrap();
+    let shared = home.join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    set_protected_dacl(&shared, &format!("D:P(A;OICI;FA;;;{me})(A;OICI;GR;;;BU)"));
+
+    let ordinary = shared.join("ordinary");
+    std::fs::write(&ordinary, b"x").unwrap();
+    let inherited = Security::of(&ordinary).allowed_sids();
+    assert!(
+        inherited.iter().any(|sid| sid == USERS),
+        "a new file in the directory must inherit Users read: {inherited:?}"
+    );
+
+    let key = shared.join("key");
+    current().write_private(&key, b"secret").unwrap();
+    let security = Security::of(&key);
+    assert!(security.dacl_is_protected(), "the DACL is inherited from the directory");
+    assert_eq!(security.allowed_sids(), std::slice::from_ref(&me));
+    assert_eq!(security.owner(), me);
 }
 
 #[skuld::test]
