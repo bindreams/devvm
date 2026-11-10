@@ -368,3 +368,20 @@ fn after_a_reboot_a_vm_serves_its_operations_on_the_session_that_found_the_new_b
         "the session the reboot returned serves the operations after it"
     );
 }
+
+#[skuld::test]
+fn with_sftp_holds_the_shared_op_lock_for_as_long_as_the_closure_runs(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+
+    let held = vm
+        .with_sftp(|_| Ok(vm.instance().dir().try_op_exclusive()?.is_none()))
+        .unwrap();
+
+    assert!(held, "stop, remove and reboot could end the machine under the closure");
+    assert!(
+        vm.instance().dir().try_op_exclusive().unwrap().is_some(),
+        "the op lock is released after it"
+    );
+}

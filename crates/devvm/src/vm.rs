@@ -17,7 +17,6 @@ use crate::instance::registry::Owned;
 use crate::store::fetch::LazyHttp;
 use crate::{Command, Result};
 
-#[allow(dead_code, reason = "`Recipe::build` is the first caller of `Image::from_chain`")]
 mod image;
 mod launch;
 mod ops;

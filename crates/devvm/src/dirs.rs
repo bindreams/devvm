@@ -109,7 +109,8 @@ impl Dirs {
         self.state.join("instances")
     }
 
-    /// Owner and op lock files, keyed by instance id and kept outside the instance directories.
+    /// Owner and op lock files, keyed by instance id, and the lock files of builds (`build-<hex>.lock`), kept outside
+    /// the instance directories.
     pub fn instance_locks(&self) -> PathBuf {
         self.state.join("locks")
     }
@@ -122,6 +123,12 @@ impl Dirs {
     /// The `ssh_config` and `known_hosts` files devvm writes for the system `ssh`.
     pub fn ssh(&self) -> PathBuf {
         self.state.join("ssh")
+    }
+
+    /// One directory per running or killed `devvm build`, named by the hex its lock file `build-<hex>.lock` is named by
+    /// (`Dirs::instance_locks`): the snapshots of its `copy` steps.
+    pub fn builds(&self) -> PathBuf {
+        self.state.join("builds")
     }
 
     /// Where unreadable instance directories are moved instead of being deleted.

@@ -212,16 +212,6 @@ impl VmProcess {
             .map_err(|e| cosca_error(&format!("cannot record the VM process {}", id.pid()), e))
     }
 
-    /// Whether the process is still running; an error when the OS refuses to say (never "dead").
-    pub(crate) fn is_alive(&self) -> Result<bool> {
-        let id = self.id();
-        match cosca::Process::from_id(id).is_alive() {
-            Liveness::Alive => Ok(true),
-            Liveness::Dead => Ok(false),
-            Liveness::Unknown => Err(unknown_liveness(id)),
-        }
-    }
-
     /// Blocks until the process has exited, with no time limit.
     pub(crate) fn wait(&self) -> Result<()> {
         let id = self.id();

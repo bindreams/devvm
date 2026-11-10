@@ -6,7 +6,6 @@ pub(crate) mod access;
 pub(crate) mod backend;
 pub mod config;
 pub(crate) mod contain;
-#[allow(dead_code, reason = "unused until the engine builds copy steps")]
 pub(crate) mod copy;
 pub mod dirs;
 #[allow(dead_code, reason = "unused until the guest operations, builds and commands land")]

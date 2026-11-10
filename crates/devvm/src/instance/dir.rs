@@ -76,6 +76,16 @@ impl InstanceDir {
         &self.path
     }
 
+    /// The instance's disk, a copy-on-write overlay of its layer.
+    pub(crate) fn disk(&self) -> PathBuf {
+        self.path.join("disk.img")
+    }
+
+    /// What the instance's machine writes to its serial port.
+    pub(crate) fn serial_log(&self) -> PathBuf {
+        self.path.join("serial.log")
+    }
+
     fn gone(&self) -> Error {
         Error::new(ErrorKind::NotFound, format!("instance {} is gone", self.name))
     }

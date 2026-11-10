@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::access::SshSession;
+use crate::access::sftp::Sftp;
 use crate::backend::Machine;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
@@ -38,7 +39,8 @@ const DEFAULT_MEMORY: u64 = 4 << 30;
 /// A built image: the layers a VM starts from. While the handle lives, garbage collection keeps those layers.
 pub struct Image {
     engine: Arc<Engine>,
-    chain: ChainLease,
+    /// The layers a VM starts from, root first.
+    pub(crate) chain: ChainLease,
     guest: GuestKind,
     arch: Arch,
     cpus: u32,
@@ -47,13 +49,13 @@ pub struct Image {
 }
 
 impl Image {
-    /// The image whose layers are `chain`, with the defaults `flat` declares.
-    pub(crate) fn from_chain(engine: Arc<Engine>, chain: ChainLease, flat: &Flattened) -> Image {
+    /// The image whose layers are `chain`, built for `arch`, with the defaults `flat` declares.
+    pub(crate) fn from_chain(engine: Arc<Engine>, chain: ChainLease, flat: &Flattened, arch: Arch) -> Image {
         Image {
             engine,
             chain,
             guest: flat.guest,
-            arch: Arch::host(),
+            arch,
             cpus: flat.resources.cpus.unwrap_or(DEFAULT_CPUS),
             memory: flat.resources.memory.unwrap_or(DEFAULT_MEMORY),
             disk: flat.resources.disk,
@@ -141,12 +143,9 @@ impl Image {
 }
 
 impl Recipe {
-    /// Builds the image this recipe describes. `not-supported`: building is not implemented yet.
-    pub fn build(&self, _opts: &BuildOptions) -> Result<Image> {
-        Err(Error::new(
-            ErrorKind::NotSupported,
-            "building images is not implemented yet",
-        ))
+    /// Builds the image this recipe describes. See [`Engine::build`].
+    pub fn build(&self, opts: &BuildOptions) -> Result<Image> {
+        Engine::from_env_stderr(Arc::new(LazyHttp::new()))?.build(self, opts)
     }
 }
 
@@ -282,6 +281,32 @@ impl Drop for Vm {
 }
 
 impl Vm {
+    /// Runs `f` with an SFTP session to the guest, over the connection that found it ready, under the shared op lock
+    /// that keeps `stop`, `remove` and `reboot` from ending the machine while `f` uses it.
+    pub(crate) fn with_sftp<T>(&self, f: impl FnOnce(&Sftp) -> Result<T>) -> Result<T> {
+        let (_, session, _op) = self.reached()?;
+        f(&session.sftp()?)
+    }
+
+    /// Shuts the guest down and returns once its process has exited, under the exclusive op lock. The VM is not
+    /// running afterwards, and the handle can no longer run anything. A shutdown that fails leaves the machine for
+    /// the drop to kill: it is never forced here. A guest that acknowledges the request and never powers off is waited
+    /// for without end.
+    pub(crate) fn shutdown(&self) -> Result<()> {
+        let instance = self.instance();
+        let dir = instance.dir();
+        let op = dir.op_exclusive()?;
+        let mut slot = self.machine.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(machine) = slot.as_mut() else {
+            return Err(Error::new(ErrorKind::Internal, "this VM is no longer running"));
+        };
+        // A connection to a guest that powers down is of no further use.
+        *self.session.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        machine.shutdown()?;
+        let dead = slot.take().expect("the machine was just shut down").record();
+        dir.retire_machine(&op, &dead, instance.engine.host(), &mut warn_for(&instance.engine, dir))
+    }
+
     /// The guest, the session and the shared op lock for one operation.
     fn reached(&self) -> Result<(Arc<dyn GuestOs>, SshSession, OpShared)> {
         let instance = self.instance();

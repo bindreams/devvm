@@ -2,11 +2,23 @@ use std::io::Read;
 use std::process::{Child, Stdio};
 use std::sync::mpsc;
 
-use cosca::identity::ProcessIdRecord;
+use cosca::identity::{Liveness, ProcessIdRecord};
 
-use crate::ErrorKind;
-use crate::contain::{VmProcess, frozen_spawn_error};
+use crate::contain::{VmProcess, frozen_spawn_error, unknown_liveness};
 use crate::test_support::helper;
+use crate::{ErrorKind, Result};
+
+impl VmProcess {
+    /// Whether the process is still running; an error when the OS refuses to say (never "dead").
+    pub(crate) fn is_alive(&self) -> Result<bool> {
+        let id = self.id();
+        match cosca::Process::from_id(id).is_alive() {
+            Liveness::Alive => Ok(true),
+            Liveness::Dead => Ok(false),
+            Liveness::Unknown => Err(unknown_liveness(id)),
+        }
+    }
+}
 
 /// Helper process: blocks until stdin closes.
 pub fn sleeper(_args: &[String]) {

@@ -105,12 +105,12 @@ fn launch_machine(
         cpus: record.cpus,
         memory: record.memory,
         network: record.network,
-        disk: dir.path().join("disk.img"),
+        disk: dir.disk(),
         media: vec![seed.media],
         profile: guest.device_profile(),
         firmware: None,
         forwards: vec![Endpoint::Normal],
-        serial_log: dir.path().join("serial.log"),
+        serial_log: dir.serial_log(),
         lifetime,
     };
 

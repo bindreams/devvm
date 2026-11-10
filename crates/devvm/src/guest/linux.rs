@@ -9,7 +9,7 @@ use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedMedia, SeedSpec,
 use crate::host::{Host, names};
 use crate::media::write_cidata_image;
 use crate::recipe::Shell;
-use crate::{Command, Error, ErrorKind, GuestKind, Result};
+use crate::{Command, Error, ErrorKind, GuestKind, Result, RunAs};
 
 pub(crate) mod builder;
 mod ready;
@@ -21,6 +21,10 @@ pub(crate) use builder::LinuxBuilder;
 #[cfg(test)]
 #[path = "linux_tests.rs"]
 mod linux_tests;
+
+#[cfg(all(test, unix))]
+#[path = "linux_flush_tests.rs"]
+mod flush_tests;
 
 /// The guests a build with the QEMU backend knows: Linux. Windows and macOS guests are not built yet.
 pub(crate) struct LinuxGuests {
@@ -55,6 +59,21 @@ pub(crate) struct LinuxGuest;
 /// Written next to the instance's other scratch files; its name is not part of any contract.
 const SEED_IMAGE: &str = "cidata.img";
 
+/// `sync`, then `sync -f` on the mount point of every `/dev/` line of the mounts file (`$1`, else `/proc/mounts`);
+/// exits 1 if any failed or the mounts file cannot be opened.
+/// `/proc/mounts` writes a space, tab, newline or backslash in a mount point as `\NNN` octal: `sed` turns each into
+/// the `\0NNN` that `printf %b` reads, and the `.` keeps `$(...)` from dropping a trailing newline.
+const FLUSH_SCRIPT: &str = r#"status=0
+sync || status=1
+while read -r source target _; do
+  case $source in /dev/*) ;; *) continue ;; esac
+  target=$(printf '%s' "$target" | sed 's/\\\([0-7][0-7][0-7]\)/\\0\1/g')
+  target=$(printf '%b.' "$target")
+  sync -f -- "${target%.}" || status=1
+done < "${1:-/proc/mounts}" || status=1
+exit $status
+"#;
+
 impl GuestOs for LinuxGuest {
     fn instance_seed(&self, host: &dyn Host, spec: &SeedSpec) -> Result<SeedMedia> {
         let media = write_cidata_image(host, &seed::seed_files(spec)?, &spec.dir.join(SEED_IMAGE))?;
@@ -63,6 +82,18 @@ impl GuestOs for LinuxGuest {
 
     fn boot_id_command(&self) -> Command {
         Command::new(["cat", "/proc/sys/kernel/random/boot_id"])
+    }
+
+    /// `sync`, which flushes every filesystem and raw device, then `syncfs` on every mounted filesystem whose source is
+    /// a `/dev/` device. Unlike `sync(2)`, `syncfs` reports a write-back error, so a failed write exits non-zero; that
+    /// is detected on the `/dev/`-sourced mounts only. It runs elevated, so it needs the guest's passwordless `sudo`: as
+    /// the user, `sync -f` cannot open a root-only mount point (`/boot/efi` on an Ubuntu cloud image) and fails every
+    /// flush.
+    fn flush_command(&self) -> Command {
+        Command {
+            run_as: RunAs::Elevated,
+            ..Command::new(["sh", "-c", FLUSH_SCRIPT])
+        }
     }
 
     /// The string sshd hands to the account's shell for `cmd`; `usage` for an empty argv or working directory, a NUL
