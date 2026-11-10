@@ -98,9 +98,9 @@ impl Cli {
 const SOCKET_PATH_MAX: usize = 103;
 
 /// The short directory that is `XDG_RUNTIME_DIR` in these tests, made if need be: the roots' own directories are too
-/// long for a control socket path. It is the first of the lib's candidates ([`roots::socket_dir`]) that leaves room for
-/// what devvm makes below it, and an error unless it has a space and a non-ASCII character as they do, so that no
-/// socket path here goes without them unnoticed.
+/// long for a control socket path. It is the first candidate of [`roots::socket_dir`] that leaves room for the longest path
+/// devvm makes below it. The lib reserves a little more (its predicate also counts a scratch directory), so on a host
+/// with a long temporary directory the two can pick different candidates.
 fn run_dir() -> Result<PathBuf, String> {
     // The longest path devvm makes below it: its runtime directory `devvm`, and a launch's `<16 hex>.sock` in that.
     let fits = |dir: &Path| {
@@ -113,13 +113,6 @@ fn run_dir() -> Result<PathBuf, String> {
             std::env::temp_dir().display()
         )
     })?;
-    if !roots::has_space_and_non_ascii(&dir) {
-        return Err(format!(
-            "no directory with a space and a non-ASCII character fits a control socket path: the temporary directory {}              is {} bytes and a socket path is limited to {SOCKET_PATH_MAX}",
-            std::env::temp_dir().display(),
-            std::env::temp_dir().as_os_str().len()
-        ));
-    }
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     Ok(dir)
 }
@@ -199,12 +192,14 @@ impl Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        // After a `devvm rm` the instance is gone and `rm` fails with `not-found`, which is not reported: the test has
-        // checked what it needed. Nothing here panics: that would abort a test that is already unwinding.
+        // After a `devvm rm` the instance is gone and `rm` fails with `not-found` for this instance, which is not
+        // reported: the test has checked what it needed. Nothing here panics: that would abort a test that is already
+        // unwinding.
         match self.cli.command(&["rm", &self.name]).output() {
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                if !output.status.success() && !stderr.contains("devvm-error: not-found: ") {
+                let gone = format!("devvm-error: not-found: no instance called {}", self.name);
+                if !output.status.success() && !stderr.contains(&gone) {
                     eprintln!("devvm rm {} ended with {}: {stderr}", self.name, output.status);
                 }
             }

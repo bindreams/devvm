@@ -1,7 +1,7 @@
 //! Where the VM tests keep their files: the XDG roots below a directory named `UNICODE_DIR` (a space, non-ASCII
 //! characters, a surrogate pair), so each path devvm builds in these tests carries them.
 //!
-//! Both test binaries include this file by `#[path]` (the lib's `test_support.rs` and `devvm-cli/tests/vm_cli.rs`),
+//! The lib declares this file as a module of `test_support`, and `devvm-cli/tests/vm_cli.rs` includes it by `#[path]`,
 //! so there is one base picker. The including module names `UNICODE_DIR` and the crate root has `test_groups`.
 //!
 //! The directory is in `C:\Users` where the `unicode_base` group is on (the literal location of a user's directories; a
