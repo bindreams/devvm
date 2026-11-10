@@ -302,7 +302,7 @@ impl Env {
 
 /// Every file, directory and symlink below `dir`, `/`-separated and sorted: a directory ends in `/`, a symlink is
 /// followed by ` -> ` and what it holds.
-fn tree(dir: &Path) -> Vec<String> {
+pub(crate) fn tree(dir: &Path) -> Vec<String> {
     fn visit(dir: &Path, prefix: &str, out: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();

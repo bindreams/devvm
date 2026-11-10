@@ -1,15 +1,17 @@
 //! Layer builds against QEMU and a real Linux guest.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::fixture::{VmEngine, vm_engine};
+use super::fixture::{VmEngine, guest_options, recipe_in, run_ok, vm_engine};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::DISK;
+use crate::copy::copy_tests::{git, new_repo, put};
+use crate::host::symlink_metadata_if_present;
 use crate::recipe::Recipe;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::qemu::{qemu_img_info, qemu_sidecar};
-use crate::{BuildOptions, Image};
+use crate::{BuildOptions, Command, ExitStatus, Guest, Image};
 
 const DISK_20_GIB: u64 = 20 << 30;
 
@@ -65,5 +67,204 @@ fn a_default_size_build_then_a_20_gib_build_share_no_layer_and_commit_20_gib_lay
     assert_eq!(
         sizes[1], DISK_20_GIB,
         "the step's layer is its instance's disk, unchanged: {sizes:?}"
+    );
+}
+
+// Recipes in a real guest =============================================================================================
+
+/// A git repository `home/proj` with two tracked files and one that is not tracked.
+fn project(home: &Path) -> PathBuf {
+    let repo = new_repo(home, "proj");
+    put(&repo, "tracked.txt", b"tracked one");
+    put(&repo, "dir/with space \u{416}.txt", b"nested");
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "tracked"]);
+    put(&repo, "untracked.txt", b"not in git");
+    repo
+}
+
+/// What the directory `dir` holds, by name, without the runtime directory's lock; nothing when it is not there.
+fn listing(dir: &Path) -> Vec<String> {
+    if symlink_metadata_if_present(dir)
+        .unwrap_or_else(|e| panic!("cannot look at {}: {e}", dir.display()))
+        .is_none()
+    {
+        return Vec::new();
+    }
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()))
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "runtime.lock")
+        .collect();
+    names.sort();
+    names
+}
+
+#[skuld::test]
+fn a_recipe_with_run_and_copy_git_tracked_builds_and_an_untracked_file_never_appears(
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = project(home);
+    let recipe = recipe_in(
+        &repo,
+        &[
+            "run: echo ran > /var/tmp/ran.txt",
+            "copy: { from: git-tracked, to: /var/tmp/proj }",
+        ],
+    );
+
+    let image = vm.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    let guest = image.start(&guest_options()).unwrap();
+    assert_eq!(run_ok(&guest, &["cat", "/var/tmp/ran.txt"]), "ran\n");
+    assert_eq!(run_ok(&guest, &["cat", "/var/tmp/proj/tracked.txt"]), "tracked one");
+    assert_eq!(
+        run_ok(&guest, &["cat", "/var/tmp/proj/dir/with space \u{416}.txt"]),
+        "nested"
+    );
+    // `test -e` exits 1 for a file that is not there.
+    let untracked = guest
+        .run(&Command::new(["test", "-e", "/var/tmp/proj/untracked.txt"]))
+        .unwrap();
+    assert_eq!(untracked.status, ExitStatus::Code(1), "{}", untracked.stderr_lossy());
+}
+
+/// The step uploads a tar archive and extracts it: neither the archive nor anything else of the step's is left in the
+/// layer but the files themselves.
+#[skuld::test]
+fn a_copy_step_leaves_no_archive_and_no_other_file_in_the_layer(
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = project(home);
+    let recipe = recipe_in(&repo, &["copy: { from: git-tracked, to: /var/tmp/dest }"]);
+
+    let image = vm.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    let guest = image.start(&guest_options()).unwrap();
+    let left = run_ok(
+        &guest,
+        &[
+            "find",
+            "/",
+            "-xdev",
+            "(",
+            "-name",
+            "devvm-copy-*",
+            "-o",
+            "-name",
+            ".devvm-partial-*",
+            ")",
+        ],
+    );
+    assert_eq!(left, "", "files a copy step left");
+    let dest = run_ok(&guest, &["find", "/var/tmp/dest", "-mindepth", "1"]);
+    let mut found: Vec<&str> = dest.lines().collect();
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            "/var/tmp/dest/dir",
+            "/var/tmp/dest/dir/with space \u{416}.txt",
+            "/var/tmp/dest/tracked.txt"
+        ]
+    );
+}
+
+/// The layers before a `copy` step are keyed by what they run, so a file that changes only the copy's files changes only
+/// the copy's layer, and the steps before it run in no guest again.
+#[skuld::test]
+fn vm_touching_only_a_tracked_file_reuses_every_layer_before_copy(
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = project(home);
+    let recipe = recipe_in(
+        &repo,
+        &[
+            "run: echo one > /var/tmp/one",
+            "run: echo two > /var/tmp/two",
+            "copy: { from: git-tracked, to: /var/tmp/proj }",
+        ],
+    );
+    let first = vm.engine.build(&recipe, &BuildOptions::default()).unwrap().chain.refs();
+
+    put(&repo, "tracked.txt", b"tracked two");
+    let launched = vm.launches.count();
+    let second = vm.engine.build(&recipe, &BuildOptions::default()).unwrap().chain.refs();
+
+    assert_eq!(first.len(), 4, "the base and three steps");
+    assert_eq!(second[..3], first[..3], "the layers before the copy are rebuilt");
+    assert_ne!(
+        second[3], first[3],
+        "the copy's layer is reused though its file changed"
+    );
+    assert_eq!(vm.launches.count() - launched, 1, "only the copy step boots a guest");
+}
+
+#[skuld::test]
+fn vm_a_copy_to_a_tilde_destination_lands_in_the_guest_home(
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = project(home);
+    // The second step fails the build unless `~/x` is there.
+    let recipe = recipe_in(
+        &repo,
+        &["copy: { from: git-tracked, to: ~/x }", "run: cd ~/x && ls tracked.txt"],
+    );
+
+    let image = vm.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    let guest = image.start(&guest_options()).unwrap();
+    let in_home = run_ok(&guest, &["sh", "-c", "test -f \"$HOME/x/tracked.txt\" && echo yes"]);
+    assert_eq!(in_home, "yes\n");
+}
+
+#[skuld::test]
+fn a_second_build_of_an_unchanged_recipe_boots_no_vm(
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let recipe = recipe_in(home, &["run: echo cached > /var/tmp/cached"]);
+    let first = vm.engine.build(&recipe, &BuildOptions::default()).unwrap().chain.refs();
+
+    let launched = vm.launches.count();
+    let second = vm.engine.build(&recipe, &BuildOptions::default()).unwrap().chain.refs();
+
+    assert_eq!(second, first);
+    assert_eq!(
+        vm.launches.count(),
+        launched,
+        "a guest was booted for a build that was cached"
+    );
+}
+
+/// A build step's guest leaves no socket, lock or claim file in the run directory, and no directory in `<state>/builds`.
+#[skuld::test]
+fn vm_qemu_guest_a_build_step_leaves_no_runtime_files(
+    #[fixture(vm_engine)] vm: &VmEngine,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dirs = &vm.roots.dirs;
+    let run = dirs.run().unwrap();
+    let before = listing(run);
+    let recipe = recipe_in(home, &["run: echo runtime-files > /var/tmp/runtime-files"]);
+
+    let launched = vm.launches.count();
+    vm.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    assert_eq!(
+        vm.launches.count() - launched,
+        1,
+        "the step booted no guest, so this checks nothing"
+    );
+    assert_eq!(listing(run), before, "the run directory {}", run.display());
+    assert_eq!(
+        listing(&dirs.builds()),
+        Vec::<String>::new(),
+        "{}",
+        dirs.builds().display()
     );
 }

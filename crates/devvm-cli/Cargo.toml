@@ -42,3 +42,8 @@ harness = false
 name = "ls"
 path = "tests/ls.rs"
 harness = false
+
+[[test]]
+name = "vm_cli"
+path = "tests/vm_cli.rs"
+harness = false
