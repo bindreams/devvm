@@ -12,7 +12,7 @@ use crate::access::VmExit;
 use crate::backend::MachineRecord;
 use crate::engine::engine_tests::{
     EngineFixture, engine_fixture, engine_with_bound, instance_in, memory, record_machine, running_machine,
-    stub_fixture, watch_with, watched,
+    stub_fixture, watch_with, watched, write_conf,
 };
 use crate::engine::keys::ensure_keys;
 use crate::exit::ExitStatus;
@@ -286,6 +286,65 @@ fn a_recorded_machine_the_backend_cannot_find_is_unavailable(#[fixture(unicode_h
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains("foo"), "{error}");
+}
+
+// The ssh_config of a running instance ================================================================================
+
+/// `running_instance`, with the `config` and `foo.conf` that a start writes. Returns the two paths.
+fn running_instance_with_ssh_files(
+    fx: &EngineFixture,
+    home: &Path,
+) -> (Instance, std::path::PathBuf, std::path::PathBuf) {
+    let instance = running_instance(fx, home);
+    fx.engine.ssh_configs().ensure_top_level().unwrap();
+    let conf = write_conf(&fx.engine, home, "foo");
+    (instance, fx.engine.ssh_configs().config(), conf)
+}
+
+#[skuld::test]
+fn ssh_config_of_a_running_instance_is_the_config_file(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let (instance, config, _) = running_instance_with_ssh_files(&fx, home);
+
+    assert_eq!(instance.ssh_config().unwrap(), config);
+}
+
+#[skuld::test]
+fn ssh_config_of_an_instance_that_never_started_is_unavailable_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    let error = instance.ssh_config().expect_err("nothing runs");
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("foo"), "{error}");
+}
+
+#[skuld::test]
+fn ssh_config_without_the_instances_conf_is_unavailable_naming_the_file(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let (instance, _, conf) = running_instance_with_ssh_files(&fx, home);
+    std::fs::remove_file(&conf).unwrap();
+
+    let error = instance.ssh_config().expect_err("ssh would look the name up in DNS");
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("foo"), "{error}");
+    assert!(error.message().contains(&conf.display().to_string()), "{error}");
+}
+
+#[skuld::test]
+fn ssh_config_without_the_config_file_is_unavailable_naming_the_file(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let (instance, config, _) = running_instance_with_ssh_files(&fx, home);
+    std::fs::remove_file(&config).unwrap();
+
+    let error = instance.ssh_config().expect_err("ssh cannot open its configuration");
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("foo"), "{error}");
+    assert!(error.message().contains(&config.display().to_string()), "{error}");
 }
 
 // Reboot ==============================================================================================================

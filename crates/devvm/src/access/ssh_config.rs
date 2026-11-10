@@ -205,7 +205,7 @@ impl SshConfigDir {
         &self.dir
     }
 
-    /// The static `config` that includes every `<name>.conf`.
+    /// The static `config` that includes every `<name>.conf`. The file may not exist.
     pub(crate) fn config(&self) -> PathBuf {
         self.dir.join(CONFIG)
     }
@@ -218,7 +218,7 @@ impl SshConfigDir {
         Ok(lock)
     }
 
-    fn conf_path(&self, name: &InstanceName) -> PathBuf {
+    pub(crate) fn conf_path(&self, name: &InstanceName) -> PathBuf {
         self.dir.join(format!("{name}{CONF_SUFFIX}"))
     }
 
