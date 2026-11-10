@@ -98,16 +98,11 @@ impl Cli {
 const SOCKET_PATH_MAX: usize = 103;
 
 /// The short directory that is `XDG_RUNTIME_DIR` in these tests, made if need be: the roots' own directories are too
-/// long for a control socket path. It is the first candidate of [`roots::socket_dir`] that leaves room for the longest path
-/// devvm makes below it. The lib reserves a little more (its predicate also counts a scratch directory), so on a host
-/// with a long temporary directory the two can pick different candidates.
+/// long for a control socket path. It is [`roots::socket_dir`] for the smallest limit a host has. The lib asks for its
+/// host's limit through the same predicate, so both pick the same directory unless that limit is larger and the
+/// temporary directory's length falls between the two.
 fn run_dir() -> Result<PathBuf, String> {
-    // The longest path devvm makes below it: its runtime directory `devvm`, and a launch's `<16 hex>.sock` in that.
-    let fits = |dir: &Path| {
-        let longest = dir.join("devvm").join("0000000000000000.sock");
-        longest.as_os_str().as_encoded_bytes().len() <= SOCKET_PATH_MAX
-    };
-    let dir = roots::socket_dir(&fits).ok_or_else(|| {
+    let dir = roots::socket_dir(SOCKET_PATH_MAX).ok_or_else(|| {
         format!(
             "the temporary directory {} is too long for a control socket",
             std::env::temp_dir().display()

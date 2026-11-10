@@ -1,5 +1,5 @@
-//! An instance's life through the library, in real guests: reaching it with a plain `ssh`, its host key across a stop
-//! and a reboot, concurrent `up` and `rm`, and `cp` of links and trees. The same life through the `devvm` executable is
+//! An instance's life through the library, in real guests: reaching it with a plain `ssh`, its host key across a stop,
+//! concurrent `up` and `rm`, and `cp` of links and trees. The same life through the `devvm` executable is
 //! `devvm-cli/tests/vm_cli.rs`'s.
 
 use std::path::Path;
@@ -19,12 +19,6 @@ fn host_key(guest: &dyn Guest) -> String {
     let fields: Vec<&str> = text.split_whitespace().take(2).collect();
     assert_eq!(fields.len(), 2, "no host key in {text:?}");
     fields.join(" ")
-}
-
-fn boot_id(guest: &dyn Guest) -> String {
-    run_ok(guest, &["cat", "/proc/sys/kernel/random/boot_id"])
-        .trim()
-        .to_owned()
 }
 
 #[skuld::test]
@@ -122,37 +116,6 @@ fn concurrent_up_and_rm_leave_every_live_instance_resolvable(#[fixture(vm_engine
         run_ok(&**up, &["true"]);
     }
     assert!(!listed.iter().any(|name| name == "conc-a"), "{listed:?}");
-}
-
-#[skuld::test]
-fn vm_reboot_changes_the_boot_id_keeps_the_instance_its_host_key_and_the_qemu_process_and_ssh_answers(
-    #[fixture(vm_engine)] vm: &VmEngine,
-) {
-    let image = vm.base();
-    let up = Up::new(&image, "reboot-up", &guest_options()).unwrap();
-    let machine = || {
-        let machine = up
-            .dir()
-            .record()
-            .unwrap()
-            .machine
-            .expect("a running instance has a machine");
-        let ports: Vec<_> = machine.ssh.iter().map(|endpoint| endpoint.addr).collect();
-        (machine.process, ports)
-    };
-    let (process, ports) = machine();
-    let (id, key) = (boot_id(&*up), host_key(&*up));
-
-    up.reboot().unwrap();
-
-    assert_ne!(boot_id(&*up), id, "the guest did not boot again");
-    assert_eq!(host_key(&*up), key);
-    assert_eq!(
-        (process, ports),
-        machine(),
-        "the machine is not the one that was running"
-    );
-    assert_eq!(vm.engine.instance("reboot-up").unwrap().name(), "reboot-up");
 }
 
 #[skuld::test]

@@ -84,15 +84,7 @@ pub struct Sock {
 /// The directory control sockets go in during tests, if any fits a socket path (`Host::socket_path_max`); see
 /// [`roots::socket_dir`].
 fn socket_dir_that_fits() -> Option<PathBuf> {
-    // Room for the deepest layout any test makes: a [`scratch_run`] below the directory, the `devvm` directory that an
-    // engine over it makes in that (`Dirs::run`), and a socket in that.
-    let fits = |dir: &Path| {
-        QmpEndpoint::fits(
-            &dir.join(scratch_name([0; SCRATCH_DRAW_BYTES])).join("devvm"),
-            host::current().socket_path_max(),
-        )
-    };
-    roots::socket_dir(&fits)
+    roots::socket_dir(host::current().socket_path_max())
 }
 
 /// The shared directory control sockets go in during tests, created if need be (see [`socket_dir_that_fits`]).
