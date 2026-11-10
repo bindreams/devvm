@@ -37,9 +37,10 @@ pub(crate) fn base_dir() -> Result<PathBuf, String> {
 /// has a character outside the Basic Multilingual Plane (a UTF-16 surrogate pair).
 const SHORT_SOCKET_DIRS: [&str; 2] = ["\u{e9} \u{4e16}\u{1f600}", "\u{e9} \u{4e16}"];
 
-/// Whether a socket path in the deepest layout a test makes below `dir` is within `path_max` bytes: a scratch run
-/// (`r<6 hex>`, the name `scratch_name` gives), the `devvm` directory an engine over it makes, and `<16 hex>.sock`.
-/// One predicate for the lib and `vm_cli.rs`, so both pick the same directory.
+/// Whether a socket path in the deepest layout a test makes below `dir` is within `path_max` bytes. The literals are
+/// the names a test draws: `r` and 6 hex (`scratch_name` in `test_support/qemu.rs`), the `devvm` directory an engine
+/// makes in it, and 16 hex and `.sock` (`QmpEndpoint::drawn`). One predicate for the lib and `vm_cli.rs`, so both pick
+/// the same directory when they pass the same `path_max`.
 pub(crate) fn fits(dir: &Path, path_max: usize) -> bool {
     let deepest = dir.join("r000000").join("devvm").join("0000000000000000.sock");
     deepest.as_os_str().as_encoded_bytes().len() <= path_max
@@ -64,8 +65,8 @@ pub(crate) fn has_space_and_non_ascii(path: &Path) -> bool {
     path.contains(' ') && !path.is_ascii()
 }
 
-/// A process's XDG directories: `config`, `data` and `state` are new, below `top` (`<base>\<UNICODE_DIR>\<run id>`), and
-/// removed when this is dropped; `cache` is `<base>\<UNICODE_DIR>\devvm-test-cache`, which every process shares and
+/// A process's XDG directories: `config`, `data` and `state` are new, below `top` (`<base>\<UNICODE_DIR>\<run id>`),
+/// and removed when this is dropped; `cache` is `<base>\<UNICODE_DIR>\devvm-test-cache`, which every process shares and
 /// nothing removes, so the QEMU build and the Ubuntu image are fetched once per machine.
 pub(crate) struct XdgRoots {
     _top: skuld::TempDir,

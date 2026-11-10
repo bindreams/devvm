@@ -93,14 +93,17 @@ impl Cli {
     }
 }
 
-/// The smallest limit on a control socket path of the hosts devvm runs on: `sun_path` less its NUL is 107 bytes on
-/// Linux and Windows, and 103 on macOS.
-const SOCKET_PATH_MAX: usize = 103;
+/// The limit on a control socket path of this host, as `Host::socket_path_max` gives it: `sun_path` less its NUL is
+/// 107 bytes on Linux and Windows, and 103 on macOS and the BSDs.
+const SOCKET_PATH_MAX: usize = if cfg!(any(windows, target_os = "linux")) {
+    107
+} else {
+    103
+};
 
 /// The short directory that is `XDG_RUNTIME_DIR` in these tests, made if need be: the roots' own directories are too
-/// long for a control socket path. It is [`roots::socket_dir`] for the smallest limit a host has. The lib asks for its
-/// host's limit through the same predicate, so both pick the same directory unless that limit is larger and the
-/// temporary directory's length falls between the two.
+/// long for a control socket path. It is [`roots::socket_dir`] for this host's limit, as the lib asks for it, so both
+/// pick the same directory.
 fn run_dir() -> Result<PathBuf, String> {
     let dir = roots::socket_dir(SOCKET_PATH_MAX).ok_or_else(|| {
         format!(
@@ -145,7 +148,7 @@ fn cli_guests(#[fixture(cli_env)] env: &CliEnv) -> Result<Cli, String> {
     Ok(env.cli.clone())
 }
 
-/// An instance made by `devvm up`, removed with `devvm rm` when this is dropped, so a test that fails leaves no machine.
+/// An instance made by `devvm up`, removed with `devvm rm` when this is dropped, so a failed test leaves no machine.
 struct Instance {
     cli: Cli,
     name: String,
