@@ -6,97 +6,86 @@
 //! directory where it is off.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::ops::Deref;
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::Dirs;
+use crate::backend::MachineRecord;
 use crate::backend::qemu::qemu_parts;
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::config::Config;
-use crate::engine::Engine;
-use crate::engine::engine_tests::engine_with;
+use crate::engine::engine_tests::engine_with_bound;
+use crate::engine::{DEFAULT_BOOT_BOUND, Engine, LaunchHooks, LaunchStep};
 use crate::exit::StderrProgress;
 use crate::host;
+use crate::recipe::Recipe;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_groups::{Group, unicode_base};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::UNICODE_DIR;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir, write_config};
+use crate::{BuildOptions, Command, Dirs, Error, ExitStatus, Guest, Image, Instance, RunAs, StartOptions, Vm};
 
-/// The directory the roots go below where `unicode_base` is on.
-pub(super) const USERS: &str = r"C:\Users";
+use crate::test_support::roots::{USERS, XdgRoots};
 
-/// The name of the cache directory every test process shares, in the directory named [`UNICODE_DIR`].
-const SHARED_CACHE: &str = "devvm-test-cache";
-
-/// Where the directory named [`UNICODE_DIR`] is: `C:\Users` where `unicode_base` is on, else the temporary directory.
-/// Where the group is on and the host is not Windows the error says so: `C:\Users` there is a relative path.
-fn base_dir() -> Result<PathBuf, String> {
-    match unicode_base::enabled() {
-        Ok(()) if cfg!(windows) => Ok(PathBuf::from(USERS)),
-        Ok(()) => Err(format!(
-            r"the base is C:\Users, which only Windows has; {}",
-            unicode_base::OPT_OUT
-        )),
-        Err(_) => Ok(std::env::temp_dir()),
-    }
-}
-
-/// A process's directories: `config`, `data` and `state` are new, below `<base>\<UNICODE_DIR>\<run id>`, and removed
-/// when this is dropped; `cache` is `<base>\<UNICODE_DIR>\devvm-test-cache`, which every process shares and nothing
-/// removes, so the QEMU build and the Ubuntu image are fetched once per machine.
+/// A process's directories, resolved: the roots of [`XdgRoots`] as the engine's [`Dirs`].
 pub(super) struct Roots {
-    _top: skuld::TempDir,
+    xdg: XdgRoots,
     pub dirs: Dirs,
 }
 
 impl Roots {
-    /// Makes the roots. `run` is `XDG_RUNTIME_DIR`: a short directory, because a control socket path is limited
-    /// ([`socket_dir`]); `None` leaves the runtime directory unnamed. A base that cannot be made is an error naming it
-    /// and how to turn the group off.
+    /// Makes the roots; `run` is `XDG_RUNTIME_DIR` ([`XdgRoots::new`]).
     pub(super) fn new(run: Option<&Path>) -> Result<Roots, String> {
-        let user = base_dir()?.join(UNICODE_DIR);
-        let make = |dir: &Path| {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("cannot make {}: {e}; {}", dir.display(), unicode_base::OPT_OUT))
-        };
-        make(&user)?;
-        let top = skuld::TempDir::new_in(&user).map_err(|e| {
-            format!(
-                "cannot make a run directory in {}: {e}; {}",
-                user.display(),
-                unicode_base::OPT_OUT
-            )
-        })?;
-        let cache = user.join(SHARED_CACHE);
-        let vars: Vec<(String, PathBuf)> = ["config", "data", "state"]
-            .iter()
-            .map(|name| (*name, top.path().join(name)))
-            .chain([("cache", cache)])
-            .map(|(name, dir)| (format!("XDG_{}_HOME", name.to_uppercase()), dir))
-            .chain(run.map(|run| ("XDG_RUNTIME_DIR".to_owned(), run.to_path_buf())))
-            .collect();
-        for (_, dir) in vars.iter().filter(|(name, _)| name != "XDG_RUNTIME_DIR") {
-            make(dir)?;
-        }
+        let xdg = XdgRoots::new(run)?;
+        let dirs = Roots::resolve(&xdg, None)?;
+        Ok(Roots { xdg, dirs })
+    }
+
+    /// These roots' directories with `run` as the runtime directory instead: the same stores, a runtime directory of
+    /// their own.
+    pub(super) fn dirs_with_run(&self, run: &Path) -> Result<Dirs, String> {
+        Roots::resolve(&self.xdg, Some(run))
+    }
+
+    fn resolve(xdg: &XdgRoots, run: Option<&Path>) -> Result<Dirs, String> {
         let var = |name: &str| -> Option<OsString> {
-            vars.iter()
-                .find(|(key, _)| key == name)
-                .map(|(_, dir)| dir.clone().into_os_string())
+            match (name, run) {
+                ("XDG_RUNTIME_DIR", Some(run)) => Some(run.as_os_str().to_owned()),
+                _ => xdg.var(name).map(|dir| dir.as_os_str().to_owned()),
+            }
         };
-        let dirs = Dirs::from_lookup(Some(top.path().to_path_buf()), &var, &|| {
+        Dirs::from_lookup(Some(xdg.top.clone()), &var, &|| {
             Err(crate::Error::new(
                 crate::ErrorKind::Config,
                 "these roots name no runtime directory",
             ))
         })
-        .map_err(|e| format!("cannot resolve the roots: {e}"))?;
-        Ok(Roots { _top: top, dirs })
+        .map_err(|e| format!("cannot resolve the roots: {e}"))
     }
 }
 
-/// An engine over `dirs` on the QEMU of `install`.
-pub(super) fn engine_in(dirs: &Dirs, install: &QemuInstall) -> Arc<Engine> {
+/// Counts the machines launched through an engine.
+#[derive(Default)]
+pub(super) struct Launches(AtomicUsize);
+
+impl Launches {
+    pub(super) fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+impl LaunchHooks for Launches {
+    fn reached(&self, step: LaunchStep, _machine: &MachineRecord) {
+        if step == LaunchStep::Spawned {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// An engine over `dirs` on the QEMU of `install`, whose launches `hooks` sees.
+pub(super) fn engine_in(dirs: &Dirs, install: &QemuInstall, hooks: Arc<dyn LaunchHooks>) -> Arc<Engine> {
     write_config(
         dirs,
         &Config {
@@ -107,12 +96,14 @@ pub(super) fn engine_in(dirs: &Dirs, install: &QemuInstall) -> Arc<Engine> {
     let transport = HttpTransport::new().expect("an HTTP client");
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
     let parts = qemu_parts(dirs, fetcher, host::current(), progress.clone());
-    engine_with(
+    engine_with_bound(
         dirs.clone(),
         host::current(),
         Some(parts.backend),
         parts.guests,
         progress,
+        DEFAULT_BOOT_BOUND,
+        hooks,
     )
 }
 
@@ -120,14 +111,158 @@ pub(super) fn engine_in(dirs: &Dirs, install: &QemuInstall) -> Arc<Engine> {
 /// process. A test that uses it boots a guest, so it runs alone among such tests (the `GUEST` label).
 pub(super) struct VmEngine {
     pub engine: Arc<Engine>,
-    _roots: Roots,
+    /// The machines this engine has launched.
+    pub launches: Arc<Launches>,
+    pub roots: Roots,
 }
 
 #[skuld::fixture(scope = process, serial = GUEST, labels = [crate::test_harness::GUEST])]
 pub(super) fn vm_engine(#[fixture(qemu_sidecar)] install: &Arc<QemuInstall>) -> Result<VmEngine, String> {
     let roots = Roots::new(Some(&socket_dir()))?;
-    let engine = engine_in(&roots.dirs, install);
-    Ok(VmEngine { engine, _roots: roots })
+    let launches = Arc::new(Launches::default());
+    let engine = engine_in(&roots.dirs, install, launches.clone());
+    Ok(VmEngine {
+        engine,
+        launches,
+        roots,
+    })
+}
+
+impl VmEngine {
+    /// A recipe that starts from the Ubuntu base and runs `steps` ([`recipe_in`]), whose file would be in this engine's
+    /// state directory.
+    pub(super) fn recipe(&self, steps: &[&str]) -> Recipe {
+        recipe_in(&self.roots.dirs.state, steps)
+    }
+
+    /// The Ubuntu base, built into this engine's store the first time in a test process and found there afterwards.
+    pub(super) fn base(&self) -> Image {
+        self.engine
+            .build(&self.recipe(&[]), &BuildOptions::default())
+            .unwrap_or_else(|e| panic!("cannot build the Ubuntu base: {e}"))
+    }
+}
+
+/// A recipe file `dir/r.devvm.yaml` that starts from the embedded Ubuntu base and runs `steps`, each one step's YAML.
+pub(super) fn recipe_in(dir: &Path, steps: &[&str]) -> Recipe {
+    let steps = if steps.is_empty() {
+        "steps: []
+"
+        .to_owned()
+    } else {
+        let lines: String = steps
+            .iter()
+            .map(|step| {
+                format!(
+                    "  - {step}
+"
+                )
+            })
+            .collect();
+        format!(
+            "steps:
+{lines}"
+        )
+    };
+    Recipe::parse(
+        &format!(
+            "from: ubuntu-24.04
+{steps}"
+        ),
+        &dir.join("r.devvm.yaml"),
+    )
+    .unwrap()
+}
+
+/// What a test that boots a guest asks for: two processors and 2 GiB, like the contract's guests.
+pub(super) fn guest_options() -> StartOptions {
+    StartOptions {
+        cpus: Some(2),
+        memory: Some(2 << 30),
+        ..StartOptions::default()
+    }
+}
+
+/// What a test that runs several guests at once asks for: one processor and 1 GiB each, so that a 4 vCPU runner is not
+/// loaded past the boot bound.
+pub(super) fn small_options() -> StartOptions {
+    StartOptions {
+        cpus: Some(1),
+        memory: Some(1 << 30),
+        ..StartOptions::default()
+    }
+}
+
+/// Runs `argv` in `guest`, which must exit 0, and returns its stdout.
+pub(super) fn run_ok(guest: &dyn Guest, argv: &[&str]) -> String {
+    run_ok_as(guest, RunAs::User, argv)
+}
+
+/// [`run_ok`] with the privilege `run_as`.
+pub(super) fn run_ok_as(guest: &dyn Guest, run_as: RunAs, argv: &[&str]) -> String {
+    let output = guest
+        .run(&Command {
+            run_as,
+            ..Command::new(argv.iter().copied())
+        })
+        .unwrap_or_else(|e| panic!("cannot run {argv:?}: {e}"));
+    assert_eq!(
+        output.status,
+        ExitStatus::Code(0),
+        "{argv:?}: {}",
+        output.stderr_lossy()
+    );
+    output.stdout_lossy().into_owned()
+}
+
+/// One guest, booted once per test process, for the tests that only look at what a command does in it. It runs until the
+/// process ends.
+pub(super) struct SharedGuest {
+    pub vm: Vm,
+    _image: Image,
+}
+
+#[skuld::fixture(scope = process, serial = GUEST, labels = [crate::test_harness::GUEST])]
+pub(super) fn shared_guest(#[fixture(vm_engine)] engine: &VmEngine) -> Result<SharedGuest, String> {
+    let image = engine.base();
+    let vm = image
+        .start(&guest_options())
+        .map_err(|e| format!("cannot start the shared guest: {e}"))?;
+    Ok(SharedGuest { vm, _image: image })
+}
+
+/// An instance made by `up`, removed when this is dropped: its machine outlives the process, so a test that fails
+/// would leave it running.
+pub(super) struct Up(Option<Instance>);
+
+impl Up {
+    pub(super) fn new(image: &Image, name: &str, opts: &StartOptions) -> Result<Up, Error> {
+        image.up(name, opts).map(|instance| Up(Some(instance)))
+    }
+
+    /// Removes the instance now, and reports how that went.
+    pub(super) fn remove(mut self) -> Result<(), Error> {
+        self.0.take().expect("an instance until it is removed").remove()
+    }
+}
+
+impl Deref for Up {
+    type Target = Instance;
+
+    fn deref(&self) -> &Instance {
+        self.0.as_ref().expect("an instance until it is removed")
+    }
+}
+
+impl Drop for Up {
+    fn drop(&mut self) {
+        if let Some(instance) = self.0.take() {
+            let name = instance.name().to_owned();
+            if let Err(e) = instance.remove() {
+                eprintln!("cannot remove instance {name}: {e}");
+            }
+        }
+    }
 }
 
 // No VM ===============================================================================================================

@@ -290,12 +290,17 @@ impl ContractTarget for QemuTarget {
     }
 
     fn leftover_files(&self) -> Vec<PathBuf> {
-        std::fs::read_dir(self.run.path())
-            .expect("the run directory exists")
-            .map(|entry| entry.expect("a directory entry").path())
-            .filter(|path| path.file_name().is_some_and(|name| name != "runtime.lock"))
-            .collect()
+        files_in_run(self.run.path())
     }
+}
+
+/// What the runtime directory `run` (which must exist) holds, but for the `runtime.lock` that stays there for good.
+pub(crate) fn files_in_run(run: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(run)
+        .unwrap_or_else(|e| panic!("cannot list {}: {e}", run.display()))
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|path| path.file_name().is_some_and(|name| name != "runtime.lock"))
+        .collect()
 }
 
 /// Helper `qemu-launcher <qemu bin> <instance dir> <instance id> <run dir> [<keys dir>]`: launches an `OutlivesOwner`

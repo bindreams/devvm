@@ -476,6 +476,7 @@ pub(crate) fn short_bound_instance(fx: &EngineFixture, home: &Path) -> Instance 
         fx.guests.clone(),
         memory(),
         Duration::from_millis(300),
+        std::sync::Arc::new(crate::engine::NoHooks),
     );
     Instance::open_in(&engine, "foo").unwrap()
 }

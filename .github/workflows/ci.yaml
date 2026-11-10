@@ -151,6 +151,14 @@ jobs:
           DEVVM_TEST_VM_CONSENT: "1"
           DEVVM_TEST_ACP_1252: "1"
 
+      # The same group through the real `devvm` executable; its tests carry the `vm` label only.
+      - name: Test the devvm executable
+        run: cargo test -p devvm-cli --locked --test vm_cli
+        env:
+          SKULD_LABELS: vm
+          DEVVM_TEST_VM: "1"
+          DEVVM_TEST_VM_CONSENT: "1"
+
   # The workspace must build on the oldest toolchain it declares (`rust-version`), with the locked dependencies.
   msrv:
     name: MSRV (${{ matrix.os }})
