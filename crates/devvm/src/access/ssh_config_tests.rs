@@ -49,7 +49,7 @@ fn entry_quotes_values_with_spaces_and_uses_forward_slashes(#[fixture(unicode_ho
     let identity = slashed(&home.join("keys").join("client"));
     let known_hosts = slashed(&home.join("keys").join("known_hosts"));
     let want = format!(
-        "# Written by devvm; rewritten whenever the instance starts.\n\
+        "# Written by devvm; rewritten whenever the instance starts or `devvm ssh` runs.\n\
          Host web\n\
          \x20   HostName 127.0.0.1\n\
          \x20   Port 2222\n\

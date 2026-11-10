@@ -306,13 +306,7 @@ fn ssh_config_of_a_running_instance_is_the_config_file_and_its_entry_names_the_r
     assert_eq!(config, fx.engine.ssh_configs().config());
     assert!(is_there(&config), "{}", config.display());
     let text = std::fs::read_to_string(&conf).unwrap();
-    assert!(
-        text.contains(&format!(
-            "Port {port}
-"
-        )),
-        "{text}"
-    );
+    assert!(text.contains(&format!("Port {port}\n")), "{text}");
 }
 
 #[skuld::test]
@@ -324,6 +318,22 @@ fn ssh_config_of_a_running_instance_without_any_ssh_files_writes_them(#[fixture(
 
     assert!(is_there(&config), "{}", config.display());
     assert!(is_there(&fx.engine.ssh_configs().path().join("foo.conf")));
+}
+
+#[skuld::test]
+fn ssh_config_in_a_state_directory_with_a_percent_fails_but_still_writes_the_entry(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let home = home.join("50% done");
+    std::fs::create_dir_all(&home).unwrap();
+    let fx = engine_fixture(&home, memory());
+    let instance = running_instance(&fx, &home);
+
+    let error = instance.ssh_config().expect_err("no Include can name this directory");
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(is_there(&fx.engine.ssh_configs().path().join("foo.conf")));
+    assert!(!is_there(&fx.engine.ssh_configs().config()));
 }
 
 #[skuld::test]

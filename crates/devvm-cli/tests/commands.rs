@@ -151,9 +151,12 @@ fn devvm_with_stub_ssh(home: &Home, cwd: &Path, args: &[&str], code: i32, record
     command.stdin(Stdio::null()).output().unwrap()
 }
 
+/// A well-formed OpenSSH public key body, for the host key of a seeded machine.
+const HOST_KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderPlaceholderPlaceholderPlace";
+
 /// Gives the seeded instance `name` a machine that the backend finds: the process of this test, which is alive for as
-/// long as the test runs. It has an SSH endpoint, the four key files and the `ssh` configuration files, which is what
-/// `Instance::ssh_config` reads.
+/// long as the test runs. It has an SSH endpoint and the four key files; `Instance::ssh_config` reads the host public key
+/// and writes the `ssh` configuration files from them.
 fn seed_a_running_machine(home: &Home, name: &str) {
     let dir = home.state().join("instances").join(name);
     let process = cosca::identity::ProcessId::current().to_record().unwrap();
@@ -171,14 +174,10 @@ fn seed_a_running_machine(home: &Home, name: &str) {
     std::fs::write(path, record.to_string()).unwrap();
     let keys = dir.join("keys");
     std::fs::create_dir_all(&keys).unwrap();
-    for file in ["client", "client.pub", "host", "host.pub"] {
+    for file in ["client", "client.pub", "host"] {
         std::fs::write(keys.join(file), "key").unwrap();
     }
-    let ssh = home.state().join("ssh");
-    std::fs::create_dir_all(&ssh).unwrap();
-    for file in ["config".to_owned(), format!("{name}.conf")] {
-        std::fs::write(ssh.join(file), "").unwrap();
-    }
+    std::fs::write(keys.join("host.pub"), format!("ssh-ed25519 {HOST_KEY}\n")).unwrap();
 }
 
 #[skuld::test]

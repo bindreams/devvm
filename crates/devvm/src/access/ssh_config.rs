@@ -3,7 +3,8 @@
 //!
 //! `<dir>/<name>.conf` is one instance's entry; `<dir>/config` is static and includes them all. Every change happens
 //! under the OS lock `<dir>/.lock`, so a sweep that found no instance for a name cannot delete the conf of an instance
-//! of that name placed a moment later. Order in `up`: the instance is placed, then its conf is written.
+//! of that name placed a moment later. Order in `up`: the instance is placed, then its conf is written. A start and
+//! `Instance::ssh_config` (`devvm ssh`) rewrite the conf.
 //!
 //! The error messages are written for the user as well as for debugging.
 
@@ -147,7 +148,7 @@ fn quoted(text: &str) -> String {
 
 fn conf_text(e: &SshConfigEntry) -> Result<String> {
     Ok(format!(
-        "# Written by devvm; rewritten whenever the instance starts.\n\
+        "# Written by devvm; rewritten whenever the instance starts or `devvm ssh` runs.\n\
          Host {name}\n\
          \x20   HostName 127.0.0.1\n\
          \x20   Port {port}\n\

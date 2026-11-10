@@ -142,12 +142,13 @@ fn launch_machine(
     }))
 }
 
-/// Writes the instance's `ssh_config` entry for plain `ssh` and editors: the top-level `config`, then the entry for
-/// `target`. The embedded client does not read it, so a start reports a failure and goes on; `Instance::ssh_config` does
-/// not.
+/// Writes the instance's `ssh_config` entry for plain `ssh` and editors: the top-level `config` and the entry for
+/// `target`. A failed `config` does not keep the entry from being written (an editor may include `<name>.conf` on its
+/// own); the first failure is returned. The embedded client does not read it, so a start reports a failure and goes on;
+/// `Instance::ssh_config` does not.
 pub(crate) fn write_ssh_entry(engine: &Engine, dir: &InstanceDir, target: &SshTarget) -> Result<()> {
     let configs = engine.ssh_configs();
-    configs.ensure_top_level()?;
+    let top_level = configs.ensure_top_level();
     let entry = SshConfigEntry {
         name: dir.name().clone(),
         id: *dir.id(),
@@ -155,7 +156,7 @@ pub(crate) fn write_ssh_entry(engine: &Engine, dir: &InstanceDir, target: &SshTa
         identity: client_key_path(&keys_dir(dir)),
         known_hosts: dir.path().join("known_hosts"),
     };
-    configs.write_entry(&entry, &target.host_public)
+    top_level.and(configs.write_entry(&entry, &target.host_public))
 }
 
 fn await_ready(
