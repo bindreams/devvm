@@ -53,7 +53,7 @@ pub(super) struct Roots {
 impl Roots {
     /// Makes the roots. `run` is `XDG_RUNTIME_DIR`: a short directory, because a control socket path is limited
     /// ([`socket_dir`]); `None` leaves the runtime directory unnamed. A base that cannot be made is an error naming it
-    /// and how to turn the group off; it never falls back to another.
+    /// and how to turn the group off.
     pub(super) fn new(run: Option<&Path>) -> Result<Roots, String> {
         let user = base_dir()?.join(UNICODE_DIR);
         let make = |dir: &Path| {
@@ -95,7 +95,7 @@ impl Roots {
     }
 }
 
-/// An engine over `dirs` on the QEMU of `install`, used in place, with the real downloader.
+/// An engine over `dirs` on the QEMU of `install`.
 pub(super) fn engine_in(dirs: &Dirs, install: &QemuInstall) -> Arc<Engine> {
     write_config(
         dirs,
@@ -133,8 +133,8 @@ pub(super) fn vm_engine(#[fixture(qemu_sidecar)] install: &Arc<QemuInstall>) -> 
 // No VM ===============================================================================================================
 
 /// What a user's directories are: the four XDG variables name directories below the user's, and `devvm`'s own are in
-/// them. With `unicode_base` on the base is the literal `C:\Users`. This runs in the Test job's Windows leg, which
-/// sets the group on, and checks the roots are there and not in the temporary directory.
+/// them. With `unicode_base` on the base is the literal `C:\Users`, and this checks the roots are there, not in the
+/// temporary directory.
 #[skuld::test(labels = [])]
 fn dirs_resolve_all_four_xdg_variables_under_the_users_unicode_root(#[fixture(unicode_base)] _group: &Group) {
     let roots = Roots::new(None).unwrap();

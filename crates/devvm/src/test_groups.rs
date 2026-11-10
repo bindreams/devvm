@@ -1,5 +1,5 @@
 //! The lib's test groups: those of `shared` (which a test binary can include by `#[path]` too) and the ones that need
-//! the lib's host and test support. A test joins any of them through `crate::test_groups`.
+//! the lib's host and test support.
 
 #[macro_use]
 mod shared;

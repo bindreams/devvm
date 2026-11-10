@@ -373,7 +373,7 @@ struct QemuGuestTarget {
     engine: Arc<Engine>,
     keys: InstanceKeys,
     keys_dir: PathBuf,
-    /// Where the base recipe is "written", for its relative paths.
+    /// The recipe file's directory; the base recipe resolves relative paths against it.
     home: PathBuf,
 }
 
@@ -406,8 +406,7 @@ impl ContractTarget for QemuGuestTarget {
         self.qemu.backend()
     }
 
-    /// The Ubuntu base: built into the engine's store the first time in a test process, and found there afterwards. The
-    /// contract's own store is not used.
+    /// The Ubuntu base: built into the engine's store the first time in a test process, and found there afterwards.
     fn parent_layer(&self, _store: &LayerStore) -> ChainLease {
         let recipe = Recipe::parse("from: ubuntu-24.04\nsteps: []\n", &self.home.join("r.devvm.yaml")).unwrap();
         self.engine.build(&recipe, &BuildOptions::default()).unwrap().chain
