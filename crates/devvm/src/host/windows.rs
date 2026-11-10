@@ -24,6 +24,7 @@ use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, U
 use crate::exit::ExitWidth;
 use crate::{Arch, Error, ErrorKind, Result};
 
+mod failure;
 mod file_id;
 mod hold;
 mod link;
@@ -165,7 +166,7 @@ impl Host for WindowsHost {
     }
 
     /// The file is created with a protected DACL that grants only the user ([`private_file::create_new`]), which
-    /// OpenSSH for Windows accepts wherever the file is made.
+    /// OpenSSH for Windows accepts on a volume with ACLs. A volume without them (FAT32, exFAT) ignores the descriptor.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         fill_new(private_file::create_new(path)?, path, bytes)
     }

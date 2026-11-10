@@ -147,7 +147,7 @@ pub(crate) trait Host: Send + Sync {
 
     /// Creates `path` with `bytes`, readable by the current user only from the moment it exists; fails with
     /// `AlreadyExists` instead of replacing a file. Unix creates it with mode `0600`; Windows with a protected DACL
-    /// granting only the user, so a directory ACL that lets others read does not reach it.
+    /// granting only the user, so on a volume with ACLs a directory ACL that lets others read does not reach it.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
 
     /// Whether any execute bit of `path` is set; always `false` on Windows.

@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
+use std::marker::PhantomData;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
@@ -30,14 +31,10 @@ use super::wide;
 pub(super) fn create(dir: &Path) -> io::Result<()> {
     let sid = current_sid()?;
     let path = wide(dir)?;
-    let descriptor = Descriptor::from_sddl(&format!("O:{sid}D:P(A;OICI;FA;;;{sid})"))?;
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.as_ptr(),
-        bInheritHandle: 0,
-    };
+    let descriptor = Descriptor::owner_only(true)?;
+    let attributes = descriptor.attributes();
     // SAFETY: `path` is NUL-terminated and `attributes` points at the live descriptor.
-    let made = unsafe { CreateDirectoryW(path.as_ptr(), &attributes) };
+    let made = unsafe { CreateDirectoryW(path.as_ptr(), attributes.as_raw()) };
     let error = io::Error::last_os_error();
     drop(descriptor);
     if made != 0 {
@@ -128,9 +125,42 @@ impl Descriptor {
         Ok(Descriptor(descriptor))
     }
 
+    /// The descriptor of an object that only the user owns and can use: the user is the owner, and the DACL is
+    /// protected (nothing inherited) with one entry, full access for the user. `inherit` makes that entry reach the
+    /// children of a directory too.
+    pub(crate) fn owner_only(inherit: bool) -> io::Result<Descriptor> {
+        let sid = current_sid()?;
+        let flags = if inherit { "OICI" } else { "" };
+        Descriptor::from_sddl(&format!("O:{sid}D:P(A;{flags};FA;;;{sid})"))
+    }
+
     /// Valid while `self` lives.
     pub(crate) fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
         self.0
+    }
+
+    /// The attributes that create an object with this descriptor; not inheritable by a child process.
+    pub(crate) fn attributes(&self) -> Attributes<'_> {
+        Attributes {
+            raw: SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: self.0,
+                bInheritHandle: 0,
+            },
+            descriptor: PhantomData,
+        }
+    }
+}
+
+/// [`SECURITY_ATTRIBUTES`] that point at a [`Descriptor`] and cannot outlive it.
+pub(crate) struct Attributes<'a> {
+    raw: SECURITY_ATTRIBUTES,
+    descriptor: PhantomData<&'a Descriptor>,
+}
+
+impl Attributes<'_> {
+    pub(crate) fn as_raw(&self) -> &SECURITY_ATTRIBUTES {
+        &self.raw
     }
 }
 
