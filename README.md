@@ -32,6 +32,7 @@ devvm doctor
 ```
 
 `doctor` prints one `pass` or `fail` line per check (accelerator, free space, `ssh`, `git`, QEMU) and exits 125 if any
-failed, or prints an error and exits 125 if it cannot find devvm's directories. It downloads nothing: QEMU is downloaded on first use.
+failed, or prints an error and exits 125 if it cannot find devvm's directories. It downloads nothing: QEMU is
+downloaded on first use.
 
 `devvm --help` lists the commands.
