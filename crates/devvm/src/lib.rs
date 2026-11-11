@@ -105,3 +105,22 @@ mod test_helpers {
         crate::backend::qemu::sidecar::sidecar_tests::act_as_qemu_img_when_installed_as_one();
     }
 }
+
+/// Spike only (never merged): reaches `write_cidata_image` from an example.
+#[doc(hidden)]
+pub mod spike {
+    use std::path::Path;
+
+    use crate::media::{SeedFile, write_cidata_image};
+
+    pub fn write_seed(files: &[(&str, Vec<u8>)], into: &Path) -> crate::Result<()> {
+        let files: Vec<SeedFile> = files
+            .iter()
+            .map(|(name, bytes)| SeedFile {
+                name: (*name).to_owned(),
+                bytes: bytes.clone(),
+            })
+            .collect();
+        write_cidata_image(crate::host::current(), &files, into).map(|_| ())
+    }
+}

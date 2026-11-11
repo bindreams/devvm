@@ -1,0 +1,349 @@
+name: Spike Windows guests
+
+# U5 Task S (never merged; attended code, no tests of its own). Measures what a Windows guest needs, in CI only: no VM
+# boots on a developer's PC. Runs on every push to this branch; `spike/PLAN` says which legs and stages.
+#
+#   plan      reads spike/PLAN; records the pins of the small downloads.
+#   seedtool  builds devvm's write_cidata_image as a command (the answer disk and the stage disks).
+#   broker    builds ssh-broker at BROKER_COMMIT (no release exists).
+#   install   per language leg: download the evaluation ISO, patch its boot image, install unattended under QEMU/WHPX
+#             (M1, M2, M9, M11, M14, M15), upload the installed disk, then boot it once with a stage disk (`boot1`).
+#             `reuse=<run id>` in PLAN skips the install and takes that run's disk.
+#   m12b      qemu-img overlay of the ISO and a boot from it.
+
+on:
+  push:
+    branches: [U5-spike-windows]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  WORK: C:/spike
+  BROKER_COMMIT: 9ba824829cb9f0f22a9f97ddc939a5b82434621d
+  OPENSSH_URL: https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip
+  PWSH_URL: https://github.com/PowerShell/PowerShell/releases/download/v7.7.0/PowerShell-7.7.0-win-x64.zip
+  VIRTIO_URL: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302.iso
+  ISO_URL_EN_US: https://go.microsoft.com/fwlink/?linkid=2334167&clcid=0x409&culture=en-us&country=us
+  ISO_URL_DE_DE: https://aka.ms/Win11E-ISO-25H2-de-de
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      legs: ${{ steps.plan.outputs.legs }}
+      reuse: ${{ steps.plan.outputs.reuse }}
+      stage: ${{ steps.plan.outputs.stage }}
+      m12b: ${{ steps.plan.outputs.m12b }}
+      cpu: ${{ steps.plan.outputs.cpu }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read spike/PLAN
+        id: plan
+        run: |
+          set -euxo pipefail
+          get() { sed -n "s/^$1=\(.*\)$/\1/p" spike/PLAN | head -n 1; }
+          {
+            echo "legs=$(jq -cn --arg legs "$(get legs)" '$legs | split(",") | map(select(length > 0))')"
+            echo "reuse=$(get reuse)"
+            echo "stage=$(get stage)"
+            echo "m12b=$(get m12b)"
+            echo "cpu=$(get cpu)"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Record the pins of the small downloads
+        run: |
+          set -euxo pipefail
+          mkdir -p pins
+          for url in "$OPENSSH_URL" "$PWSH_URL"; do
+            curl -X GET -fsSL -o pins/asset.zip "$url"
+            printf '%s\n  url: %s\n  bytes: %s\n  sha256: %s\n' "${url##*/}" "$url" "$(stat -c %s pins/asset.zip)" "$(sha256sum pins/asset.zip | cut -d' ' -f1)" | tee -a pins/pins.txt
+          done
+          rm pins/asset.zip
+          printf 'ssh-broker commit: %s\n' "$BROKER_COMMIT" | tee -a pins/pins.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pins
+          path: pins/
+
+  seedtool:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: spike-seedtool
+
+      - name: Build seed_spike
+        run: |
+          set -euxo pipefail
+          cargo build --locked -p devvm --example seed_spike
+          mkdir -p tool
+          cp target/debug/examples/seed_spike.exe tool/
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: seedtool
+          path: tool/
+
+  broker:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Build ssh-broker at the recorded commit
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/bindreams/ssh-broker.git broker-src
+          git -C broker-src checkout "$BROKER_COMMIT"
+          (cd broker-src && cargo build --release)
+          mkdir -p broker-out
+          find broker-src/target/release -maxdepth 1 -type f -name '*.exe' -exec cp {} broker-out/ \;
+          (cd broker-out && sha256sum ./*.exe | tee sha256.txt)
+          git -C broker-src log -1 --format='%H %s' | tee broker-out/commit.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: broker
+          path: broker-out/
+
+  install:
+    needs: [plan, seedtool]
+    runs-on: windows-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.plan.outputs.legs) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      LEG: ${{ matrix.leg }}
+      REUSE: ${{ needs.plan.outputs.reuse }}
+      STAGE: ${{ needs.plan.outputs.stage }}
+      CPU: ${{ needs.plan.outputs.cpu }}
+      OUT: C:/spike/out
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: 0.13.6
+          enable-cache: false
+
+      - name: Record the runner
+        run: |
+          set -euxo pipefail
+          mkdir -p "$WORK" "$OUT"
+          {
+            echo "leg: $LEG reuse: ${REUSE:-none} stage: ${STAGE:-none} cpu: $CPU"
+            df -h /c /d || true
+            systeminfo | grep -i -e 'total physical memory' -e 'hyper-v' -e 'processor(s)' -A 3 || true
+            nproc
+          } 2>&1 | tee "$OUT/runner.txt"
+
+      - name: Download and verify QEMU
+        run: |
+          set -euxo pipefail
+          url=$(sed -n 's/^url = "\(.*\)"/\1/p' crates/devvm/qemu-manifest.toml)
+          want=$(sed -n 's/^sha256 = "\(.*\)"/\1/p' crates/devvm/qemu-manifest.toml)
+          asset=${url##*/}
+          tag=$(basename "$(dirname "$url")")
+          gh release download "$tag" -R bindreams/devvm -p "$asset" -D "$RUNNER_TEMP/qemu-dl"
+          got=$(sha256sum "$RUNNER_TEMP/qemu-dl/$asset" | cut -d' ' -f1)
+          got=${got#'\'}
+          test "$want" = "$got"
+          mkdir -p "$WORK/qemu"
+          unzip -q "$RUNNER_TEMP/qemu-dl/$asset" -d "$WORK/qemu"
+          echo "$tag" | tee "$OUT/qemu-tag.txt"
+          find "$WORK/qemu" -name '*.exe' | tee "$OUT/qemu-files.txt"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: seedtool
+          path: ${{ env.WORK }}/tool
+
+      # The install ==============================================================================================
+
+      - name: Download the evaluation ISO and the virtio-win ISO
+        if: env.REUSE == ''
+        run: |
+          set -euxo pipefail
+          case "$LEG" in
+            en-US) iso_url=$ISO_URL_EN_US ;;
+            de-DE) iso_url=$ISO_URL_DE_DE ;;
+            *) echo "no ISO URL for leg $LEG" >&2; exit 1 ;;
+          esac
+          mkdir -p "$WORK/iso"
+          curl -X GET -fsSL -o "$WORK/iso/win.iso" -w 'final url: %{url_effective}\nbytes: %{size_download}\n' "$iso_url" | tee "$OUT/iso-download.txt"
+          sha256sum "$WORK/iso/win.iso" | tee "$OUT/iso-sha256.txt"
+          curl -X GET -fsSL -o "$WORK/virtio.iso" -w 'final url: %{url_effective}\nbytes: %{size_download}\n' "$VIRTIO_URL" | tee "$OUT/virtio-download.txt"
+          sha256sum "$WORK/virtio.iso" | tee "$OUT/virtio-sha256.txt"
+          df -h /c | tee "$OUT/df-after-downloads.txt"
+
+      - name: Read the image list and render the answer file
+        if: env.REUSE == ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iso = ("$env:WORK/iso/win.iso").Replace('/', '\')
+          $out = "$env:OUT"
+          New-Item -ItemType Directory -Force -Path "$env:WORK/answer" | Out-Null
+          $image = Mount-DiskImage -ImagePath $iso -PassThru
+          try {
+            $letter = ($image | Get-Volume).DriveLetter
+            Get-ChildItem "${letter}:\sources" | Select-Object Name, Length | Out-String | Tee-Object -FilePath "$out/iso-sources.txt"
+            uv run --script spike/render_answer.py "${letter}:\sources\install.wim" spike/guest/Autounattend.xml.in `
+              "$env:WORK/answer/Autounattend.xml" "$out/Autounattend.redacted.xml" "$out/image.json" "$out/install-wim.xml"
+            if ($LASTEXITCODE -ne 0) { throw "render_answer.py failed with $LASTEXITCODE" }
+          } finally {
+            Dismount-DiskImage -ImagePath $iso | Out-Null
+          }
+
+      - name: Patch the ISO's UEFI boot image to the no-prompt one, in place
+        if: env.REUSE == ''
+        run: |
+          set -euxo pipefail
+          uv run --script spike/patch_iso.py "$WORK/iso/win.iso" "$WORK/iso/win.iso" | tee "$OUT/patch-iso.txt"
+
+      - name: Build the answer disk and the blank disk
+        if: env.REUSE == ''
+        run: |
+          set -euxo pipefail
+          qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
+          "$WORK/tool/seed_spike.exe" "$WORK/answer.img" \
+            "$WORK/answer/Autounattend.xml" spike/guest/bootstrap.ps1 spike/guest/lib.ps1 spike/guest/hook.ps1 | tee "$OUT/answer-disk.txt"
+          "$qemu_img" create -f qcow2 "$WORK/disk.qcow2" 64G
+          share=$(dirname "$(find "$WORK/qemu" -name edk2-x86_64-code.fd | head -n 1)")
+          cp "$share/edk2-i386-vars.fd" "$WORK/vars.fd"
+
+      - name: Install Windows (M1)
+        if: env.REUSE == ''
+        run: |
+          set -euxo pipefail
+          uv run --script spike/run_qemu.py install \
+            --qemu-dir "$WORK/qemu" --out "$OUT/install" --disk "$WORK/disk.qcow2" --vars "$WORK/vars.fd" \
+            --install-iso "$WORK/iso/win.iso" --virtio-iso "$WORK/virtio.iso" --usb-disk "$WORK/answer.img" \
+            --done DEVVM-BASE-DONE --cpu "$CPU"
+
+      - name: Compress the installed disk
+        if: env.REUSE == ''
+        run: |
+          set -euxo pipefail
+          qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
+          mkdir -p "$WORK/base"
+          ls -l "$WORK/disk.qcow2" | tee "$OUT/disk-size.txt"
+          "$qemu_img" info "$WORK/disk.qcow2" | tee -a "$OUT/disk-size.txt"
+          "$qemu_img" convert -c -O qcow2 "$WORK/disk.qcow2" "$WORK/base/base.qcow2"
+          cp "$WORK/vars.fd" "$WORK/base/vars.fd"
+          ls -l "$WORK/base" | tee -a "$OUT/disk-size.txt"
+          df -h /c | tee -a "$OUT/disk-size.txt"
+
+      - name: Upload the installed disk
+        if: env.REUSE == ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: base-${{ matrix.leg }}
+          path: ${{ env.WORK }}/base/
+          compression-level: 0
+          retention-days: 5
+
+      - name: Download the installed disk of an earlier run
+        if: env.REUSE != ''
+        run: |
+          set -euxo pipefail
+          gh run download "$REUSE" -R bindreams/devvm -n "base-$LEG" -D "$WORK/base"
+          ls -l "$WORK/base"
+
+      # The stage ================================================================================================
+
+      - name: Boot the installed disk with a stage disk
+        if: env.STAGE != ''
+        run: |
+          set -euxo pipefail
+          qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
+          "$WORK/tool/seed_spike.exe" "$WORK/stage.img" \
+            "spike/guest/stages/stage-system.ps1" "spike/guest/stages/stage-user.ps1" | tee "$OUT/stage-disk.txt"
+          "$qemu_img" create -f qcow2 -b "$WORK/base/base.qcow2" -F qcow2 "$WORK/stage.qcow2"
+          cp "$WORK/base/vars.fd" "$WORK/stage-vars.fd"
+          uv run --script spike/run_qemu.py stage \
+            --qemu-dir "$WORK/qemu" --out "$OUT/stage-$STAGE" --disk "$WORK/stage.qcow2" --vars "$WORK/stage-vars.fd" \
+            --usb-disk "$WORK/stage.img" --done DEVVM-STAGE-END=user --cpu "$CPU"
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: logs-${{ matrix.leg }}
+          path: ${{ env.OUT }}
+
+  m12b:
+    needs: [plan, seedtool]
+    if: needs.plan.outputs.m12b != ''
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      OUT: C:/spike/out
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: 0.13.6
+          enable-cache: false
+
+      - name: Download and verify QEMU
+        run: |
+          set -euxo pipefail
+          mkdir -p "$WORK" "$OUT"
+          url=$(sed -n 's/^url = "\(.*\)"/\1/p' crates/devvm/qemu-manifest.toml)
+          want=$(sed -n 's/^sha256 = "\(.*\)"/\1/p' crates/devvm/qemu-manifest.toml)
+          asset=${url##*/}
+          tag=$(basename "$(dirname "$url")")
+          gh release download "$tag" -R bindreams/devvm -p "$asset" -D "$RUNNER_TEMP/qemu-dl"
+          got=$(sha256sum "$RUNNER_TEMP/qemu-dl/$asset" | cut -d' ' -f1)
+          got=${got#'\'}
+          test "$want" = "$got"
+          mkdir -p "$WORK/qemu"
+          unzip -q "$RUNNER_TEMP/qemu-dl/$asset" -d "$WORK/qemu"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: seedtool
+          path: ${{ env.WORK }}/tool
+
+      - name: Download the en-US evaluation ISO
+        run: |
+          set -euxo pipefail
+          mkdir -p "$WORK/iso"
+          curl -X GET -fsSL -o "$WORK/iso/win.iso" -w 'final url: %{url_effective}\nbytes: %{size_download}\n' "$ISO_URL_EN_US" | tee "$OUT/iso-download.txt"
+
+      - name: M12b, the overlay
+        run: bash spike/m12b.sh "$WORK/qemu" "$WORK/iso/win.iso" "$WORK/tool/seed_spike.exe" "$OUT" 2>&1 | tee "$OUT/m12b.log"
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: logs-m12b
+          path: ${{ env.OUT }}
