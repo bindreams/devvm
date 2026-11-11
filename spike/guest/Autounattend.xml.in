@@ -120,6 +120,10 @@
           <Order>1</Order>
           <Path>reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
         </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Path>cmd.exe /c "echo DEVVM-PROGRESS=specialize started&gt;\\.\COM1 &amp; exit /b 0"</Path>
+        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>

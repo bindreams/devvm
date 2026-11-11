@@ -35,6 +35,7 @@ from PIL import Image
 QMP_PORT = 4455
 POLL_SECONDS = 15  # screenshot and serial-log cadence: how often the run looks, never a condition
 SCREEN_EVERY = 60
+QMP_REPLY_BOUND = 120  # seconds a QMP command may go unanswered before the run says so and goes on
 FAILED = "DEVVM-BASE-FAILED="
 
 
@@ -84,7 +85,8 @@ class Qmp:
         except OSError:
             return None
         with self.cond:
-            self.cond.wait_for(lambda: self.replies or self.closed)
+            # The reply is an external event that may never come (a hung QEMU); the bound is surfaced by the caller.
+            self.cond.wait_for(lambda: self.replies or self.closed, timeout=QMP_REPLY_BOUND)
             return self.replies.pop(0) if self.replies else None
 
 
@@ -137,6 +139,11 @@ class Run:
         self.timeline = (self.out / "timeline.txt").open("w", encoding="utf-8")
         self.summary: dict = {"launches": [], "markers": []}
 
+    def save(self) -> None:
+        """Rewrites summary.json, so a run killed by a step timeout still leaves its markers and launch times."""
+        self.summary["seconds"] = round(time.time() - self.started, 1)
+        (self.out / "summary.json").write_text(json.dumps(self.summary, indent=2) + "\n", encoding="utf-8")
+
     def say(self, text: str) -> None:
         line = f"[{time.time() - self.started:8.1f}s] {text}"
         print(line, flush=True)
@@ -175,7 +182,13 @@ class Run:
                         last_saved = time.time()
                     last_hash = digest
                     image.close()
+                elif qemu.poll() is None:
+                    self.say("screendump: QMP gave no usable reply")
                 text, seen = self.read_serial(serial, text, seen)
+                self.summary["current"] = {
+                    "launch": n, "serial_bytes": seen, "screenshots": shots, "seconds_in_launch": round(time.time() - began, 1),
+                }  # fmt: skip
+                self.save()
                 if self.a.mode == "stage" and not powered_down and self.a.done and self.a.done in text:
                     self.say("stage marker seen: asking the guest to power down (system_powerdown)")
                     qmp.command("system_powerdown")
@@ -207,8 +220,8 @@ class Run:
 
     def finish(self, ok: bool) -> None:
         self.summary["ok"] = ok
-        self.summary["seconds"] = round(time.time() - self.started, 1)
-        (self.out / "summary.json").write_text(json.dumps(self.summary, indent=2) + "\n", encoding="utf-8")
+        self.summary.pop("current", None)
+        self.save()
         self.say(f"summary: ok={ok}")
         sys.exit(0 if ok else 1)
 

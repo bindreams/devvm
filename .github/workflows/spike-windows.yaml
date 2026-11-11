@@ -124,7 +124,8 @@ jobs:
   install:
     needs: [plan, seedtool]
     runs-on: windows-latest
-    timeout-minutes: 345
+    # The job bound sits above every step bound below, so the log upload always gets to run.
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
@@ -183,6 +184,7 @@ jobs:
 
       - name: Download the evaluation ISO and the virtio-win ISO
         if: env.REUSE == ''
+        timeout-minutes: 45
         run: |
           set -euxo pipefail
           case "$LEG" in
@@ -235,6 +237,9 @@ jobs:
 
       - name: Install Windows (M1)
         if: env.REUSE == ''
+        # The failure bound for Setup and the first logon under nested WHPX: the unmeasured external event. Raise it only
+        # after summary.json shows the run progressing.
+        timeout-minutes: 150
         run: |
           set -euxo pipefail
           uv run --script spike/run_qemu.py install \
@@ -275,6 +280,7 @@ jobs:
 
       - name: Boot the installed disk with a stage disk
         if: env.STAGE != ''
+        timeout-minutes: 45
         run: |
           set -euxo pipefail
           qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
@@ -285,6 +291,10 @@ jobs:
           uv run --script spike/run_qemu.py stage \
             --qemu-dir "$WORK/qemu" --out "$OUT/stage-$STAGE" --disk "$WORK/stage.qcow2" --vars "$WORK/stage-vars.fd" \
             --usb-disk "$WORK/stage.img" --done DEVVM-STAGE-END=user --cpu "$CPU"
+
+      - name: Stop QEMU
+        if: always()
+        run: taskkill //F //IM qemu-system-x86_64.exe || true
 
       - name: Upload the logs
         if: always()
@@ -297,7 +307,7 @@ jobs:
     needs: [plan, seedtool]
     if: needs.plan.outputs.m12b != ''
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -333,12 +343,14 @@ jobs:
           path: ${{ env.WORK }}/tool
 
       - name: Download the en-US evaluation ISO
+        timeout-minutes: 45
         run: |
           set -euxo pipefail
           mkdir -p "$WORK/iso"
           curl -X GET -fsSL -o "$WORK/iso/win.iso" -w 'final url: %{url_effective}\nbytes: %{size_download}\n' "$ISO_URL_EN_US" | tee "$OUT/iso-download.txt"
 
       - name: M12b, the overlay
+        timeout-minutes: 60
         run: bash spike/m12b.sh "$WORK/qemu" "$WORK/iso/win.iso" "$WORK/tool/seed_spike.exe" "$OUT" 2>&1 | tee "$OUT/m12b.log"
 
       - name: Upload the logs

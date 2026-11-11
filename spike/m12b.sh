@@ -29,9 +29,14 @@ overlay="$dir/overlay.qcow2"
 "$qemu_img" convert -n -f raw --target-image-opts "$dir/noprompt.bin" \
     "driver=raw,offset=$offset,size=$length,file.driver=qcow2,file.file.driver=file,file.file.filename=$(cygpath -m "$overlay")"
 
-"$qemu_img" dd -f qcow2 -O raw bs=2048 "skip=$sector" "count=$((length / 2048))" "if=$overlay" "of=$dir/readback.bin"
-cmp "$dir/readback.bin" "$dir/noprompt.bin"
-echo "M12B-WRITE=ok: the extent reads back as efisys_noprompt.bin"
+# Read back independently of the write: the whole overlay as a raw image, then the extent out of it with cmp. (qemu-img dd
+# returned a short read here, so it is not used.)
+"$qemu_img" convert -f qcow2 -O raw "$overlay" "$dir/full.raw"
+ls -l "$dir/full.raw" "$iso"
+cmp -i "$offset:0" -n "$length" "$dir/full.raw" "$dir/noprompt.bin"
+cmp -n "$offset" "$dir/full.raw" "$iso"
+rm "$dir/full.raw"
+echo "M12B-WRITE=ok: the extent reads back as efisys_noprompt.bin and the bytes before it equal the ISO's"
 
 # The overlay differs from the ISO only inside the extent; qemu-img compare names the first difference.
 if "$qemu_img" compare -f raw -F qcow2 "$iso" "$overlay"; then
