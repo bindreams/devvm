@@ -3,7 +3,10 @@
 //!
 //! `<dir>/<name>.conf` is one instance's entry; `<dir>/config` is static and includes them all. Every change happens
 //! under the OS lock `<dir>/.lock`, so a sweep that found no instance for a name cannot delete the conf of an instance
-//! of that name placed a moment later. Order in `up`: the instance is placed, then its conf is written.
+//! of that name placed a moment later. Order in `up`: the instance is placed, then its conf is written. A start and
+//! `Instance::ssh_config` (`devvm ssh`) rewrite the conf.
+//!
+//! The error messages are written for the user as well as for debugging.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -82,7 +85,9 @@ fn check_no_variable(path: &str) -> Result<()> {
     if path.contains("${") {
         return Err(Error::new(
             ErrorKind::Io,
-            format!("{path:?} contains `${{`, which ssh_config reads as an environment variable and cannot escape"),
+            format!(
+                "{path:?} contains `${{`, which ssh_config reads as an environment variable and cannot escape; set XDG_STATE_HOME to a path without one"
+            ),
         ));
     }
     Ok(())
@@ -143,7 +148,7 @@ fn quoted(text: &str) -> String {
 
 fn conf_text(e: &SshConfigEntry) -> Result<String> {
     Ok(format!(
-        "# Written by devvm; rewritten whenever the instance starts.\n\
+        "# Written by devvm; rewritten whenever the instance starts or `devvm ssh` runs.\n\
          Host {name}\n\
          \x20   HostName 127.0.0.1\n\
          \x20   Port {port}\n\
@@ -205,6 +210,11 @@ impl SshConfigDir {
         &self.dir
     }
 
+    /// The static `config` that includes every `<name>.conf`.
+    pub(crate) fn config(&self) -> PathBuf {
+        self.dir.join(CONFIG)
+    }
+
     fn lock(&self) -> Result<FileLock> {
         let mut lock = FileLock::open(&self.dir.join(".lock"))?;
         lock.lock(Mode::Exclusive, "the ssh configuration", &mut |m| {
@@ -248,7 +258,7 @@ impl SshConfigDir {
         let glob = format!("{dir}/*{CONF_SUFFIX}");
         let text = format!("Include {}\n", quoted(&glob));
         let _lock = self.lock()?;
-        write_if_different(&self.dir.join(CONFIG), &text)
+        write_if_different(&self.config(), &text)
     }
 
     /// Removes the conf of every instance `live` denies, and the temporary files a killed writer left. Returns what it

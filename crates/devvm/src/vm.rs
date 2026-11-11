@@ -2,13 +2,14 @@
 //! [`Instance`] (a named VM that stays until it is removed).
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::access::SshSession;
 use crate::backend::MachineRecord;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
+use crate::engine::keys::read_target;
 use crate::exit::{ExitStatus, Output};
 use crate::guest::GuestOs;
 use crate::instance::dir::{InstanceDir, OpShared};
@@ -23,6 +24,7 @@ mod ops;
 
 pub use image::{Image, Vm, availability};
 pub(crate) use launch::Started;
+use launch::write_ssh_entry;
 
 #[cfg(test)]
 #[path = "vm_tests.rs"]
@@ -173,6 +175,25 @@ impl Instance {
             .progress()
             .message(&format!("removed instance {}", dir.name()));
         Ok(())
+    }
+
+    /// The `ssh_config` file through which the system `ssh` reaches this instance by its name, after writing the
+    /// instance's entry in it from the machine that runs now. Fails with `unavailable`, as `run_to` does, when the
+    /// instance's machine is not running.
+    ///
+    /// No lock is held while `ssh` runs: a `stop` or `rm` ends the session.
+    pub fn ssh_config(&self) -> Result<PathBuf> {
+        let dir = self.dir();
+        let op = dir.op_shared()?;
+        let running = read_target(&self.engine, dir, &op)?;
+        write_ssh_entry(&self.engine, dir, &running.target).map_err(|e| {
+            let kind = e.kind();
+            e.with_context(
+                kind,
+                format!("cannot write the ssh configuration of instance {}", dir.name()),
+            )
+        })?;
+        Ok(self.engine.ssh_configs().config())
     }
 }
 
