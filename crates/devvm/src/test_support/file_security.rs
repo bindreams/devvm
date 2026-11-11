@@ -14,32 +14,44 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, READ_CONTROL,
 };
 
-use crate::host::windows::runtime_dir::{Descriptor, Owner};
+use crate::host::windows::security::{Descriptor, Owner};
 use crate::host::windows::{user, wide};
 
 /// Replaces the DACL of `path` with the one `sddl` describes (`D:...`), protected: nothing is inherited.
 pub fn set_protected_dacl(path: &Path, sddl: &str) {
     let wide_path = wide(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let descriptor = Descriptor::from_sddl(sddl).expect("the DACL does not parse");
-    let (mut present, mut defaulted) = (0, 0);
-    let mut dacl: *mut ACL = std::ptr::null_mut();
-    // SAFETY: the descriptor is live and the out-pointers are valid.
-    let got = unsafe { GetSecurityDescriptorDacl(descriptor.as_ptr(), &mut present, &mut dacl, &mut defaulted) };
-    assert!(got != 0 && present != 0, "the descriptor has no DACL");
-    // SAFETY: `wide_path` is NUL-terminated and `dacl` points into the live descriptor; a null owner, group and SACL
-    // are allowed because those parts are not set.
-    let status = unsafe {
-        SetNamedSecurityInfoW(
-            wide_path.as_ptr().cast_mut(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            dacl,
-            std::ptr::null_mut(),
-        )
-    };
+    let status = descriptor.with_attributes(|attributes| {
+        let (mut present, mut defaulted) = (0, 0);
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        // SAFETY: the descriptor is live and the out-pointers are valid.
+        let got = unsafe {
+            GetSecurityDescriptorDacl(attributes.lpSecurityDescriptor, &mut present, &mut dacl, &mut defaulted)
+        };
+        assert!(got != 0 && present != 0, "the descriptor has no DACL");
+        // SAFETY: `wide_path` is NUL-terminated and `dacl` points into the live descriptor; a null owner, group and
+        // SACL are allowed because those parts are not set.
+        unsafe {
+            SetNamedSecurityInfoW(
+                wide_path.as_ptr().cast_mut(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null_mut(),
+            )
+        }
+    });
     assert_eq!(status, 0, "SetNamedSecurityInfoW({})", path.display());
+}
+
+/// A plain allow entry of a DACL.
+pub struct Allowed {
+    pub sid: String,
+    pub mask: u32,
+    /// The entry's `AceFlags`: zero for an entry that is not inherited and does not pass on to children.
+    pub flags: u8,
 }
 
 /// The owner and the DACL of a path, read the way the OS reports them. The owner comes from the production reader.
@@ -99,6 +111,11 @@ impl Security {
 
     /// The SIDs of the DACL's entries, every one of which must be a plain allow entry.
     pub fn allowed_sids(&self) -> Vec<String> {
+        self.allowed().into_iter().map(|entry| entry.sid).collect()
+    }
+
+    /// The DACL's entries, every one of which must be a plain allow entry.
+    pub fn allowed(&self) -> Vec<Allowed> {
         assert!(!self.dacl.is_null(), "a null DACL grants everyone everything");
         let mut size = ACL_SIZE_INFORMATION {
             AceCount: 0,
@@ -123,9 +140,15 @@ impl Security {
                 // SAFETY: every entry starts with a header.
                 let kind = unsafe { std::ptr::read_unaligned(ace.cast::<ACE_HEADER>()) }.AceType;
                 assert_eq!(kind, 0, "entry {index} is not a plain allow entry");
+                let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
                 // SAFETY: a type-0 entry is an `ACCESS_ALLOWED_ACE`, whose SID starts at `SidStart`.
-                let sid = unsafe { (&raw mut (*ace.cast::<ACCESS_ALLOWED_ACE>()).SidStart).cast::<std::ffi::c_void>() };
-                user::sid_string(sid).unwrap()
+                let sid = unsafe { (&raw mut (*ace).SidStart).cast::<std::ffi::c_void>() };
+                Allowed {
+                    sid: user::sid_string(sid).unwrap(),
+                    // SAFETY: as above; the fields are read unaligned because the entry sits in a byte buffer.
+                    mask: unsafe { std::ptr::read_unaligned(&raw const (*ace).Mask) },
+                    flags: unsafe { std::ptr::read_unaligned(&raw const (*ace).Header.AceFlags) },
+                }
             })
             .collect()
     }
