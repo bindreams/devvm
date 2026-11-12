@@ -237,6 +237,7 @@ def main() -> None:
     p.add_argument("--install-format", default="raw")
     p.add_argument("--virtio-iso")
     p.add_argument("--usb-disk")
+    p.add_argument("--usb-writable", action="store_true")
     p.add_argument("--done", default="")
     p.add_argument("--single", action="store_true")
     p.add_argument("--cpu", default="max")
