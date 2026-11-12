@@ -29,11 +29,12 @@ env:
   VIRTIO_URL: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302.iso
   ISO_URL_EN_US: https://go.microsoft.com/fwlink/?linkid=2334167&clcid=0x409&culture=en-us&country=us
   ISO_URL_DE_DE: https://aka.ms/Win11E-ISO-25H2-de-de
-  # Windows 11 IoT Enterprise LTSC 2024 evaluation, x64, en-US, build 26100.1742 (5,060,020,224 bytes). The hash is the SHA256
-  # in Microsoft's published Windows11IoTEnterpriseLTSC2024EvalHashValues.pdf (fwlink 2272287); the 25H2 legs follow their
-  # fwlinks and pin nothing.
+  # Windows 11 IoT Enterprise LTSC 2024 evaluation, x64, en-US, build 26100.1742 (5,060,020,224 bytes). Its pin is
+  # `ltsc_sha256=` in spike/PLAN (Microsoft's Windows11IoTEnterpriseLTSC2024EvalHashValues.pdf, fwlink 2272287, says
+  # 8ABF91C9...); the 25H2 legs follow their fwlinks and pin nothing.
   ISO_URL_LTSC: https://go.microsoft.com/fwlink/?linkid=2270353
-  ISO_SHA256_LTSC: 8abf91c9cd408368dc73aab3425d5e3c02dae74900742072eb5c750fc637c195
+  HASH_PDF_URL: https://go.microsoft.com/fwlink/?linkid=2272287
+  HASH_PDF_SHA256: 629639dca3909505ae0c2335a992daa65821acaf4667286c41e491fe8f076dae
 
 jobs:
   plan:
@@ -46,6 +47,7 @@ jobs:
       m12b: ${{ steps.plan.outputs.m12b }}
       cpu: ${{ steps.plan.outputs.cpu }}
       stacks_from: ${{ steps.plan.outputs.stacks_from }}
+      ltsc_hash: ${{ steps.plan.outputs.ltsc_hash }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -61,6 +63,7 @@ jobs:
             echo "m12b=$(get m12b)"
             echo "cpu=$(get cpu)"
             echo "stacks_from=$(get stacks_from)"
+            echo "ltsc_hash=$(get ltsc_hash)"
           } | tee -a "$GITHUB_OUTPUT"
 
       - name: Record the pins of the small downloads
@@ -96,6 +99,73 @@ jobs:
         with:
           name: pins
           path: pins/
+
+  # M14: which SHA256 is right for the LTSC 2024 evaluation ISO? The first download (run 43329256748) gave 2cee70bd...,
+  # Microsoft's PDF says 8ABF91C9.... This job downloads the ISO again from the same fwlink on an ubuntu runner (no VM, no
+  # install) and records every hop's headers, the size and three digests, and Content-MD5 against the file's md5 when the
+  # server sends one. It also fetches the hash PDF again and searches its text for both values. It decides nothing and
+  # pins nothing. `ltsc_hash=1` in spike/PLAN turns it on.
+  ltsc-hash:
+    needs: [plan]
+    if: needs.plan.outputs.ltsc_hash != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Download the LTSC ISO a second time
+        run: |
+          set +e -uo pipefail
+          mkdir -p out
+          {
+            date -u +'started %Y-%m-%dT%H:%M:%SZ'
+            curl --version | head -n 1
+            echo "runner: $(uname -a)"
+          } | tee out/context.txt
+          # -D writes the headers of every hop (the fwlink redirects, then the file server answers).
+          curl -X GET -fsSL -D out/iso-headers.txt -o "$RUNNER_TEMP/win.iso" \
+            -w 'final url: %{url_effective}\nhttp code: %{http_code}\nbytes: %{size_download}\nremote ip: %{remote_ip}\n' \
+            "$ISO_URL_LTSC" | tee out/iso-download.txt
+          echo "curl exit: ${PIPESTATUS[0]}" | tee -a out/iso-download.txt
+          ls -l "$RUNNER_TEMP/win.iso" | tee -a out/iso-download.txt
+          sha256sum "$RUNNER_TEMP/win.iso" | tee out/iso-digests.txt
+          sha1sum "$RUNNER_TEMP/win.iso" | tee -a out/iso-digests.txt
+          md5sum "$RUNNER_TEMP/win.iso" | tee -a out/iso-digests.txt
+          echo '== headers (CRs removed)'
+          tr -d '\r' < out/iso-headers.txt | tee out/iso-headers.clean.txt
+          echo '== the headers that name the file'
+          grep -i -e '^http/' -e '^location:' -e '^content-length:' -e '^content-type:' -e '^last-modified:' -e '^etag:' \
+            -e 'md5' -e 'x-ms-' -e '^content-disposition:' -e '^age:' -e '^x-cache' out/iso-headers.clean.txt | tee out/iso-headers.key.txt
+          # Content-MD5 (and x-ms-blob-content-md5) are base64 of the raw digest.
+          got=$(md5sum "$RUNNER_TEMP/win.iso" | cut -d' ' -f1)
+          grep -i -e '^content-md5:' -e '^x-ms-blob-content-md5:' out/iso-headers.clean.txt | while IFS=: read -r name value; do
+              value=$(echo "$value" | tr -d ' ')
+              hex=$(echo -n "$value" | base64 -d 2>/dev/null | od -An -tx1 | tr -d ' \n')
+              if [[ "$hex" == "$got" ]]; then verdict=matches; else verdict=DIFFERS; fi
+              echo "$name: $value = $hex; the file's md5 is $got: $verdict"
+          done | tee out/content-md5.txt
+          [[ -s out/content-md5.txt ]] || echo 'the server sent no Content-MD5' | tee out/content-md5.txt
+          rm -f "$RUNNER_TEMP/win.iso"
+
+      - name: Fetch the hash PDF again
+        continue-on-error: true
+        run: |
+          set +e -uo pipefail
+          curl -X GET -fsSL -D out/pdf-headers.txt -o out/hashes.pdf \
+            -w 'final url: %{url_effective}\nbytes: %{size_download}\n' "$HASH_PDF_URL" | tee out/pdf-download.txt
+          got=$(sha256sum out/hashes.pdf | cut -d' ' -f1)
+          echo "pdf sha256: $got (the copy read on 2026-11-13: $HASH_PDF_SHA256)" | tee -a out/pdf-download.txt
+          if [[ "$got" == "$HASH_PDF_SHA256" ]]; then echo 'the PDF is unchanged' | tee -a out/pdf-download.txt; else echo 'the PDF DIFFERS from the copy read on 2026-11-13' | tee -a out/pdf-download.txt; fi
+          tr -d '\r' < out/pdf-headers.txt | grep -i -e '^http/' -e '^last-modified:' -e '^etag:' | tee -a out/pdf-download.txt
+          sudo apt-get install -y -qq poppler-utils > /dev/null 2>&1 || true
+          pdftotext -layout out/hashes.pdf out/hashes.txt
+          grep -i -c '8ABF91C9CD408368DC73AAB3425D5E3C02DAE74900742072EB5C750FC637C195' out/hashes.txt | sed 's/^/lines with 8ABF91C9 (the published value): /' | tee -a out/pdf-download.txt
+          grep -i -c '2CEE70BD183DF42B92A2E0DA08CC2BB7A2A9CE3A3841955A012C0F77AEB3CB29' out/hashes.txt | sed 's/^/lines with 2CEE70BD (the value of the first download): /' | tee -a out/pdf-download.txt
+          grep -i 'sha256' -A 1 out/hashes.txt | tee out/hashes.key.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ltsc-hash
+          path: out/
 
   seedtool:
     runs-on: windows-latest
@@ -150,7 +220,8 @@ jobs:
 
   install:
     needs: [plan, seedtool, broker]
-    if: needs.plan.outputs.stacks_from == ''
+    # `legs=` empty in spike/PLAN is every install leg off: a matrix with no values would fail the workflow.
+    if: needs.plan.outputs.stacks_from == '' && needs.plan.outputs.legs != '[]'
     runs-on: windows-latest
     # The job bound sits above every step bound below, so the log upload always gets to run.
     timeout-minutes: 300
@@ -192,6 +263,12 @@ jobs:
               stage=$(get stage)
           fi
           echo "STAGE=$stage" | tee -a "$GITHUB_ENV"
+          # The LTSC leg's pin is `ltsc_sha256=` in spike/PLAN (SHA256 of the ISO the fwlink serves).
+          if [[ "$LEG" == LTSC* ]]; then
+              pin=$(get ltsc_sha256)
+              if [[ -z "$pin" ]]; then echo 'spike/PLAN has no ltsc_sha256 for the LTSC leg' >&2; exit 1; fi
+              echo "ISO_SHA256_LTSC=${pin,,}" | tee -a "$GITHUB_ENV"
+          fi
 
       - name: Record the runner
         run: |
