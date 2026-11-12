@@ -1,7 +1,7 @@
-legs=de-DE
+legs=en-US,en-US-auto,de-DE-new
 reuse=
-reuse_de-DE=43131311061
-stage=boot1
+stage=boot1,uac:default,uac:autoapprove
 m12b=
 cpu=max
 disk=available
+disk_en-US-auto=auto

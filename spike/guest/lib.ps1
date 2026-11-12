@@ -8,7 +8,7 @@ function Get-SerialMutex {
     $security = New-Object System.Security.AccessControl.MutexSecurity
     $everyone = New-Object System.Security.Principal.SecurityIdentifier 'S-1-1-0'
     $security.AddAccessRule((New-Object System.Security.AccessControl.MutexAccessRule($everyone, 'FullControl', 'Allow')))
-    [System.Threading.Mutex]::new($false, 'Global\devvm-serial', [ref]$created, $security)
+    [System.Threading.Mutex]::new($false, 'Global\devvm-serial-acl', [ref]$created, $security)
 }
 
 function Send-Line {

@@ -8,12 +8,15 @@ The WIM header holds the XML resource's size, flags and offset at byte 0x48 (7-b
 and installs the image by NAME, so nothing in it is English-only.
 
 Disk rule (`--disk-rule`):
-  available  `winpe.cmd` (on the answer disk) partitions the one fixed disk of 32 GB or more and Setup installs to the
-             first available partition (`InstallToAvailablePartition`), so Windows' disk numbering does not matter.
+  available  `winpe.cmd` (on the answer disk) loads the virtio storage driver, partitions the one fixed disk of 32 GB or
+             more and Setup installs to the first available partition (`InstallToAvailablePartition`), so Windows' disk
+             numbering does not matter.
+  auto       the same answer file, with no `partition.flag`: whatever Setup does with a blank disk and
+             `InstallToAvailablePartition` alone.
   id:N       the answer file's own layout on disk N: only right when the numbering is what the run assumed.
 
 Usage: render_answer.py <install.wim> <template> <answer.xml> <redacted.xml> <image.json> <wim.xml> [--name NAME]
-                        [--disk-rule available|id:N]
+                        [--disk-rule available|auto|id:N]
 """
 
 import json
@@ -103,7 +106,7 @@ def disk_and_image(rule: str, image_name: str) -> str:
         "            </MetaData>\n"
         "          </InstallFrom>\n"
     )
-    if rule == "available":
+    if rule in ("available", "auto"):
         install_to = "          <InstallToAvailablePartition>true</InstallToAvailablePartition>\n"
         layout = ""
     elif rule.startswith("id:"):

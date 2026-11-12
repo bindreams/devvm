@@ -40,7 +40,14 @@ try {
     }
     Set-LocalUser -Name 'user' -PasswordNeverExpires $true
     net accounts /maxpwage:unlimited | Out-Null
-    Send-Probe 'M15-PWNEVEREXPIRES' { (Get-LocalUser -Name user).PasswordNeverExpires }
+    # LocalUser has no PasswordNeverExpires property: PasswordExpires is $null when it never expires.
+    Send-Probe 'M15-PWEXPIRES' {
+        $u = Get-LocalUser -Name user
+        "LocalUser.PasswordExpires=[$($u.PasswordExpires)] PasswordLastSet=[$($u.PasswordLastSet)]"
+        $w = Get-CimInstance Win32_UserAccount -Filter "Name='user'"
+        "Win32_UserAccount.PasswordExpires=[$($w.PasswordExpires)] (False = never expires)"
+        net accounts
+    }
     Send-Probe 'M14-LOCALE' { Get-WinSystemLocale; Get-WinUserLanguageList | Select-Object LanguageTag, InputMethodTips | ConvertTo-Json -Compress; (Get-TimeZone).Id }
 
     # Autologon stays on, with no logon count.
@@ -74,6 +81,71 @@ try {
         Get-Partition | Select-Object DiskNumber, PartitionNumber, Type, DriveLetter, Size | ConvertTo-Json -Compress
         Get-Volume | Select-Object DriveLetter, FileSystemLabel, FileSystem, Size, SizeRemaining | ConvertTo-Json -Compress
     }
+
+    # The in-guest installs (plan 6.2), each guarded: a failure is a measurement, not the end of the base.
+    $ProgressPreference = 'SilentlyContinue'
+    function Step([string]$Name, [scriptblock]$Block) {
+        $began = Get-Date
+        try {
+            $out = (& $Block 2>&1 | Out-String)
+            Send-Line "DEVVM-STEP-$Name=ok seconds=$([int]((Get-Date) - $began).TotalSeconds) $out"
+        } catch {
+            Send-Line "DEVVM-STEP-$Name=FAILED seconds=$([int]((Get-Date) - $began).TotalSeconds) $($_ | Out-String)"
+        }
+    }
+    function Get-Pinned([string]$Url, [string]$Sha256, [string]$To) {
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $To
+        $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $To).Hash.ToLowerInvariant()
+        if ($got -ne $Sha256) { throw "sha256 of $Url is $got, expected $Sha256" }
+        "downloaded $Url ($((Get-Item -LiteralPath $To).Length) bytes, sha256 ok)"
+    }
+    $work = Join-Path $env:TEMP 'devvm-dl'
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+    Step 'OPENSSH' {
+        Get-Pinned 'https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip' `
+            'b67ff8becd203502190ec42ac7787c24c2cd3325ed7700485fe7a1c83d2a7957' "$work\openssh.zip"
+        Expand-Archive -LiteralPath "$work\openssh.zip" -DestinationPath "$work\openssh" -Force
+        Move-Item -LiteralPath (Get-ChildItem "$work\openssh" -Directory | Select-Object -First 1).FullName -Destination 'C:\Program Files\OpenSSH'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\Program Files\OpenSSH\install-sshd.ps1'
+        Set-Service -Name sshd -StartupType Manual
+        New-NetFirewallRule -Name devvm-sshd -DisplayName 'devvm sshd' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any | Out-Null
+        Get-Service sshd, ssh-agent | Select-Object Name, Status, StartType | Out-String
+        Get-ChildItem 'C:\Program Files\OpenSSH' | Select-Object Name, Length | Out-String
+    }
+    Step 'PWSH' {
+        Get-Pinned 'https://github.com/PowerShell/PowerShell/releases/download/v7.7.0/PowerShell-7.7.0-win-x64.zip' `
+            '7c74e03b20a75b59715847439d046a6214b1863ee79b187872980f139bb4a05f' "$work\pwsh.zip"
+        Expand-Archive -LiteralPath "$work\pwsh.zip" -DestinationPath 'C:\Program Files\PowerShell\7' -Force
+        & 'C:\Program Files\PowerShell\7\pwsh.exe' -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+    }
+
+    # ssh-broker (M4): the exe comes from the answer disk. `apply` with a config.yaml written first, then the plain way.
+    $broker = Join-Path $disk 'ssh-broker.exe'
+    $config = "shell:`n  start: ['C:\Program Files\PowerShell\7\pwsh.exe']`n  append:`n    with-command: [-c]`n  escaping: msvc`n"
+    Step 'BROKER-APPLY-PREWRITTEN-CONFIG' {
+        New-Item -ItemType Directory -Force -Path 'C:\ProgramData\ssh-broker' | Out-Null
+        Set-Content -LiteralPath 'C:\ProgramData\ssh-broker\config.yaml' -Value $config -Encoding ASCII
+        & $broker apply 2>&1 | Out-String
+        "apply exit code $LASTEXITCODE"
+    }
+    Step 'BROKER-STATE-AFTER-FIRST-APPLY' {
+        Test-Path 'C:\ProgramData\ssh-broker\ssh-broker.exe'
+        Get-ItemProperty 'HKLM:\SOFTWARE\OpenSSH' | Select-Object DefaultShell, DefaultShellCommandOption, DefaultShellEscapeArguments | Out-String
+    }
+    if (-not (Test-Path -LiteralPath 'C:\ProgramData\ssh-broker\ssh-broker.exe')) {
+        Step 'BROKER-APPLY-CLEAN' {
+            Remove-Item -LiteralPath 'C:\ProgramData\ssh-broker' -Recurse -Force
+            & $broker apply 2>&1 | Out-String
+            "apply exit code $LASTEXITCODE"
+            Set-Content -LiteralPath 'C:\ProgramData\ssh-broker\config.yaml' -Value $config -Encoding ASCII
+        }
+    }
+    Step 'BROKER-VERIFY' {
+        & 'C:\ProgramData\ssh-broker\ssh-broker.exe' verify 2>&1 | Out-String
+        "verify exit code $LASTEXITCODE"
+    }
+    Step 'BROKER-CONFIG' { Get-Content -LiteralPath 'C:\ProgramData\ssh-broker\config.yaml' | Out-String }
 
     # The stage hooks: one at boot (SYSTEM), one at logon (the user, Medium integrity).
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

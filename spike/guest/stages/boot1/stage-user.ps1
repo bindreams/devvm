@@ -8,7 +8,14 @@ Send-Line "DEVVM-M11-LOGON-UPTIME-SECONDS=$([int]((Get-Date) - $boot).TotalSecon
 Send-Line "DEVVM-STAGE-WHO=$(whoami) session $(Get-SessionId) integrity $(Get-IntegritySid)"
 Send-Probe 'M4-WHOAMI-GROUPS' { whoami /groups /fo csv }
 Send-Probe 'M4-ELEVATED' { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
-Send-Probe 'M15-PWNEVEREXPIRES' { (Get-LocalUser -Name user).PasswordNeverExpires }
+# LocalUser has no PasswordNeverExpires property (only the Set-LocalUser parameter): PasswordExpires is $null when it never expires.
+Send-Probe 'M15-PWEXPIRES' {
+    $u = Get-LocalUser -Name user
+    "LocalUser.PasswordExpires=[$($u.PasswordExpires)] PasswordLastSet=[$($u.PasswordLastSet)] AccountExpires=[$($u.AccountExpires)]"
+    $w = Get-CimInstance Win32_UserAccount -Filter "Name='user'"
+    "Win32_UserAccount.PasswordExpires=[$($w.PasswordExpires)] (False = never expires)"
+    net accounts
+}
 Send-Probe 'M15-WRITEVOLUMECACHE-MEDIUM' { Write-VolumeCache -DriveLetter C -ErrorAction Stop; 'worked' }
 Send-Probe 'M15-LASTBOOT' { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
 Send-Probe 'ENV' { [Environment]::GetEnvironmentVariables().GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" } }
