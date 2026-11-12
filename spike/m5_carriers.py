@@ -93,7 +93,7 @@ def c2_legacy(argv: list[str], cwd: str | None = None) -> str:
 EB_ROOT = r"C:\ProgramData\devvm\eb"
 
 # E-B (plan M6): the caller runs in the Medium session, hands the command to the elevated scheduled task `devvm-eb`
-# (guest/stages/m5/eb-runner.ps1) through files and plays the result back. Stdin goes to a file first; stdout and
+# (guest/eb-runner.ps1) through files and plays the result back. Stdin goes to a file first; stdout and
 # stderr come back after the command ends (not live); the exit status is the helper's.
 EB_CALLER = r"""$ErrorActionPreference = 'Stop'
 $root = {root}
@@ -120,12 +120,55 @@ def eb(argv: list[str], cwd: str | None = None) -> str:
     return EB_CALLER.replace("{root}", q(EB_ROOT)).replace("{script}", q(c2(argv, cwd)))
 
 
+# E-B with one request per start (plan M6, "two requests at once"): the caller starts `devvm-eb2` through the Task Scheduler
+# COM API with the request directory as the task's argument (guest/eb-runner2.ps1 runs it), so two callers never share a
+# request file, and the task may run in parallel. The wait ends on `done`, or when this request's own instance is no
+# longer among the task's live instances and `done` is still absent (checked after the instance is seen gone, so a
+# `done` written just before the instance ended is not missed).
+EBP_CALLER = r"""$ErrorActionPreference = 'Stop'
+$root = {root}
+$dir = Join-Path $root ('req-' + [guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($dir)
+[IO.File]::WriteAllText("$dir\script.ps1", {script}, [Text.UTF8Encoding]::new($false))
+$in = [IO.File]::Create("$dir\stdin")
+[Console]::OpenStandardInput().CopyTo($in)
+$in.Close()
+$service = New-Object -ComObject 'Schedule.Service'
+$service.Connect()
+$task = $service.GetFolder('\').GetTask('devvm-eb2')
+$guid = $task.Run($dir).InstanceGuid
+function Test-Live {
+    foreach ($instance in $task.GetInstances(0)) { if ($instance.InstanceGuid -eq $guid) { return $true } }
+    return $false
+}
+while (-not [IO.File]::Exists("$dir\done")) {
+    if (-not (Test-Live) -and -not [IO.File]::Exists("$dir\done")) {
+        [Console]::Error.WriteLine('devvm: the elevated helper ended without a result')
+        exit 125
+    }
+    Start-Sleep -Milliseconds 100
+}
+foreach ($pair in @(@('stdout', [Console]::OpenStandardOutput()), @('stderr', [Console]::OpenStandardError()))) {
+    $file = [IO.File]::OpenRead("$dir\$($pair[0])")
+    $file.CopyTo($pair[1])
+    $file.Close()
+}
+exit ([int][IO.File]::ReadAllText("$dir\exit").Trim())
+"""
+
+
+def ebp(argv: list[str], cwd: str | None = None) -> str:
+    """E-B with one request per start: the C2 script for `argv`, run by `devvm-eb2`."""
+    return EBP_CALLER.replace("{root}", q(EB_ROOT)).replace("{script}", q(c2(argv, cwd)))
+
+
 CARRIERS: dict[str, Callable[..., str]] = {
     "C1": c1,
     "C1win": lambda argv, cwd=None: c1(argv, cwd, "Windows"),
     "C2": c2,
     "C2legacy": c2_legacy,
     "EB": eb,
+    "EBP": ebp,
 }
 
 # The expected output of the `argv` helper: its argument count and each argument, as hex of the UTF-8 bytes.

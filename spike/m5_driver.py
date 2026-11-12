@@ -9,6 +9,9 @@ from the Medium session) and E-C (an elevated agent). Results are lines in `<out
 tests. The 1 MiB and 4 MiB stdin tests run last, after the Medium agent is back: a command with a large stdin did not
 end on either guest and sshd then stopped answering (run 43260908167); stage `wedge` isolates that.
 
+Variant `lean` (stage `m5:lean`, the LTSC leg): without E-C and the large stdin tests. E-C is not a candidate any more,
+and the large stdin tests wait for the remedy of the OpenSSH defects (stage `wedge`); everything else runs as before.
+
 Usage: m5_driver.py <out dir> <key dir> <port>
 """
 
@@ -25,6 +28,7 @@ from ssh_lib import in_session, probe_until, say, switch_agent
 ssh_lib.init(sys.argv[1], sys.argv[2], sys.argv[3], "driver.log")
 sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 b.init()
+LEAN = ssh_lib.out.name.removeprefix("stage-m5").removesuffix("-driver").lstrip("-") == "lean"
 
 MEDIUM = ("C1", "C2")
 ELEVATED_AGENT = ("C1/EC", "C2/EC")
@@ -67,7 +71,9 @@ elevated_battery(HELPER, "S-1-16-12288")
 
 # E-C: the elevated agent. =============================================================================================
 say("== E-C: the elevated agent")
-if paramiko_lib.reachable():
+if LEAN:
+    say("E-C SKIPPED: variant lean")
+elif paramiko_lib.reachable():
     switch_agent("E-C", "devvm-agent-elevated", AT_HIGH)
     elevated_battery(ELEVATED_AGENT, "S-1-16-12288")
     b.section("M5 longest command", lambda: b.longest_command(ELEVATED_AGENT, (16_000, 32_000)))
@@ -80,8 +86,11 @@ else:
 
 # The large stdin tests, last: one of them can leave sshd not answering, and nothing after it could run. ===============
 # E-C's large stdin is stage `wedge`'s elevated variant.
-b.section("M5 stdin 1 MiB", lambda: b.stdin_large(MEDIUM + HELPER, 1))
-b.section("M5 stdin 4 MiB", lambda: b.stdin_large(MEDIUM + HELPER, 4))
+if LEAN:
+    say("M5 stdin 1 MiB and 4 MiB SKIPPED: variant lean")
+else:
+    b.section("M5 stdin 1 MiB", lambda: b.stdin_large(MEDIUM + HELPER, 1))
+    b.section("M5 stdin 4 MiB", lambda: b.stdin_large(MEDIUM + HELPER, 4))
 
 b.summary()
 say("done")

@@ -4,6 +4,7 @@
 #                the agent: M4's window. Run 43260908167 had sshd started by this task, 21 s after the agent, so no
 #                window existed. The seed and `Start-Service` still run, for a boot where the files came back empty.
 #                What ran on the first boot is recorded by the marker file.
+# Variant `eb` also registers the E-B helpers on the first boot only (M6: they must survive every later boot).
 # The host side (`restart_driver.py`) drives the launches: restart, shutdown, in-place restart, QMP reset.
 param([Parameter(Mandatory)][string]$Root)
 . C:\ProgramData\devvm\lib.ps1
@@ -19,6 +20,11 @@ if (-not (Test-Path -LiteralPath $marker)) {
     Step 'EXTEND-C' { Invoke-ExtendC }
     Step 'BROKER-APPLY' { Invoke-BrokerApply $Root }
     Step 'SSHD-AUTOMATIC' { Set-Service -Name sshd -StartupType Automatic; (Get-Service sshd).StartType.ToString() }
+    # Variant `eb` (M6): the elevated helpers are registered here once; later boots must find them as they are.
+    if ((Get-Content -Raw -LiteralPath (Join-Path $Root 'variant.txt')).Trim() -eq 'eb') {
+        Step 'EB-HELPER' { Register-EbHelper $Root }
+        Step 'EB-PARALLEL-HELPER' { Register-EbParallelHelper $Root }
+    }
     Set-Content -LiteralPath $marker -Value (Get-Date -Format o)
 } else {
     Send-Line 'DEVVM-BOOT=later'

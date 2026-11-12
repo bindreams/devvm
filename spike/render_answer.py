@@ -19,8 +19,11 @@ Disk rule (`--disk-rule`):
              `InstallToAvailablePartition` alone.
   id:N       the answer file's own layout on disk N: only right when the numbering is what the run assumed.
 
+A WIM with several images needs `--name NAME` or `--edition-id ID[,ID...]` (the image whose EDITIONID is one of them; exactly
+one must match). A WIM with one image needs neither.
+
 Usage: render_answer.py <install.wim> <template> <answer.xml> <redacted.xml> <image.json> <wim.xml> [--name NAME]
-                        [--disk-rule available|available-nopnp|available-offline|auto|id:N]
+                        [--edition-id ID[,ID...]] [--disk-rule available|available-nopnp|available-offline|auto|id:N]
 """
 
 import json
@@ -153,6 +156,7 @@ def option(args: list[str], flag: str, default: str | None) -> str | None:
 def main() -> None:
     args = sys.argv[1:]
     name = option(args, "--name", None)
+    editions = option(args, "--edition-id", None)
     rule = option(args, "--disk-rule", "available")
     wim, template, answer, redacted, image_json, xml_out = map(Path, args)
 
@@ -162,10 +166,13 @@ def main() -> None:
     print(json.dumps(found, indent=2))
     if name is not None:
         chosen = [i for i in found if i["name"] == name]
+    elif editions is not None and len(found) > 1:
+        wanted = editions.split(",")
+        chosen = [i for i in found if i["edition_id"] in wanted]
     elif len(found) == 1:
         chosen = found
     else:
-        raise SystemExit("several images and no --name: " + ", ".join(repr(i["name"]) for i in found))
+        raise SystemExit("several images and no --name or --edition-id: " + ", ".join(repr(i["name"]) for i in found))
     if len(chosen) != 1:
         raise SystemExit(f"expected exactly one image, got {len(chosen)}")
     image = chosen[0]

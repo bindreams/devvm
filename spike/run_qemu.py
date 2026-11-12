@@ -26,7 +26,11 @@ timeout is the failure bound.
 
 Usage: run_qemu.py <install|stage> --qemu-dir D --out D --disk F --vars F [--install-iso F] [--install-format raw|qcow2]
                    [--virtio-iso F] [--usb-disk F [--usb-writable]] [--done TEXT] [--single] [--cpu CPU] [--smp N] [--mem MiB]
-                   [--ssh-port N] [--driver CMD...]
+                   [--ssh-port N] [--driver CMD...] [--expect-failed]
+
+`--expect-failed` (mode `stage`, M2): the stage's guest sends `DEVVM-BASE-FAILED=` from a `catch` and ends itself with
+`shutdown /s`; the run passes when QEMU exited with 0 on its own (no power-down is asked for) and the marker is in the
+serial log, and fails otherwise.
 """
 
 import argparse
@@ -301,6 +305,7 @@ def main() -> None:
     p.add_argument("--usb-writable", action="store_true")
     p.add_argument("--done", default="")
     p.add_argument("--single", action="store_true")
+    p.add_argument("--expect-failed", action="store_true")
     p.add_argument("--cpu", default="max")
     p.add_argument("--smp", type=int, default=2)
     p.add_argument("--mem", type=int, default=4096)
@@ -315,6 +320,12 @@ def main() -> None:
     in_place = False
     while True:
         code, text = run.launch(n, with_install_media=(a.mode == "install" and n == 1), in_place=in_place)
+        if a.expect_failed:
+            if FAILED in text and code == 0:
+                run.say("the guest reported the failure it was meant to, and ended itself: " + text[text.index(FAILED):][:2000])
+                run.finish(True)
+            run.say(f"the guest's marker is missing or QEMU failed (exit {code}); see launch-{n}/serial.log")
+            run.finish(False)
         if FAILED in text:
             run.say("the guest reported a failure: " + text[text.index(FAILED):][:2000])
             run.finish(False)

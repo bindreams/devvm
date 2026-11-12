@@ -1,6 +1,10 @@
-legs=en-US,de-DE-new
+legs=en-US,de-DE-new,LTSC
 reuse=43227036274
-stage=wedge:nobroker.dump,wedge:nobroker.dump.eof
+reuse_LTSC=
+stage=
+stage_en-US=m2:system,m2:user,e2ctl,restart:eb
+stage_de-DE-new=m2:system,m2:user,e2ctl,restart:eb
+stage_LTSC=m5:lean
 m12b=
 cpu=max
 disk=available-offline

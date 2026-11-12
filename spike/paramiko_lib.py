@@ -19,11 +19,6 @@ COMMAND_BOUND = 120
 SCREEN_BOUND = 30
 CHUNK = 32768
 
-# What the last exec_raw saw, so that a command that hit the bound still reports how far it got: bytes the client sent
-# (the SSH window accepted them), bytes received on each stream, whether the channel was still open.
-LAST: dict[str, int | bool | str] = {}
-
-
 class Wedged(Exception):
     """sshd did not send its banner: the guest does not serve SSH now (not a result of the command)."""
 
@@ -59,8 +54,9 @@ def exec_raw(command: str, stdin: bytes = b"", pty: bool = False, eof_after_echo
     With `eof_after_echo` the stdin EOF is sent only once as many stdout bytes have come back as stdin bytes were sent
     (for a program that echoes), or the channel ended: no EOF reaches the server while the transfer is going on."""
     client = connect()
-    LAST.clear()
-    LAST.update(sent=0, out=0, err=0, closed=False)
+    # What this call saw, so that a command that hit the bound still reports how far it got: bytes the client sent (the
+    # SSH window accepted them) and bytes received on each stream. Per call: two calls may run at once.
+    last: dict[str, int] = {"sent": 0, "out": 0, "err": 0}
     try:
         chan = client.get_transport().open_session()
         if pty:
@@ -78,7 +74,7 @@ def exec_raw(command: str, stdin: bytes = b"", pty: bool = False, eof_after_echo
                     chan.send(b"\x1b[1;1R")  # ConPTY asks for the cursor position and waits for the answer
                 with moved:
                     sink += data
-                    LAST[key] = len(sink)
+                    last[key] = len(sink)
                     moved.notify_all()
                 if not data:
                     return
@@ -87,7 +83,7 @@ def exec_raw(command: str, stdin: bytes = b"", pty: bool = False, eof_after_echo
             try:
                 for start in range(0, len(stdin), CHUNK):
                     chan.sendall(stdin[start:start + CHUNK])
-                    LAST["sent"] = min(start + CHUNK, len(stdin))
+                    last["sent"] = min(start + CHUNK, len(stdin))
                 if eof_after_echo:
                     # The wait re-checks the real condition; the bound below closes the channel, which ends the pump.
                     with moved:
@@ -101,11 +97,10 @@ def exec_raw(command: str, stdin: bytes = b"", pty: bool = False, eof_after_echo
         for thread in threads:
             thread.start()
         if not chan.status_event.wait(COMMAND_BOUND):
-            LAST["closed"] = chan.closed
             chan.close()
             raise TimeoutError(
                 f"no exit status {COMMAND_BOUND} s after the command started "
-                f"(client sent {LAST['sent']}/{len(stdin)} stdin bytes, received {LAST['out']} stdout and {LAST['err']} stderr bytes)"
+                f"(client sent {last['sent']}/{len(stdin)} stdin bytes, received {last['out']} stdout and {last['err']} stderr bytes)"
             )
         status = chan.recv_exit_status()
         for thread in threads:

@@ -123,3 +123,19 @@ function Register-EbHelper([string]$Root) {
         -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel Highest) | Out-Null
     (Get-ScheduledTask -TaskName 'devvm-eb').State
 }
+
+# E-B with one request per start (M6, "two requests at once"): `devvm-eb2` runs eb-runner2.ps1 with the request
+# directory as `$(Arg0)` and lets instances run in parallel. The caller starts it through the Task Scheduler COM API
+# (`Run($dir)`), which `Start-ScheduledTask` cannot do.
+function Register-EbParallelHelper([string]$Root) {
+    $dir = 'C:\ProgramData\devvm\eb'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    icacls $dir /grant 'user:(OI)(CI)F' | Out-Null
+    Copy-Item -LiteralPath (Join-Path $Root 'eb-runner2.ps1') -Destination "$dir\eb-runner2.ps1" -Force
+    $action = New-ScheduledTaskAction -Execute 'C:\Program Files\PowerShell\7\pwsh.exe' -Argument "-NoProfile -NonInteractive -File $dir\eb-runner2.ps1 `$(Arg0)"
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel
+    Register-ScheduledTask -TaskName 'devvm-eb2' -Action $action -Settings $settings -Force `
+        -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel Highest) | Out-Null
+    $task = Get-ScheduledTask -TaskName 'devvm-eb2'
+    "$($task.State) multiple instances: $($task.Settings.MultipleInstances) arguments: $($task.Actions[0].Arguments)"
+}
