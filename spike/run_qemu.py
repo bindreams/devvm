@@ -10,6 +10,9 @@ mode `install`: launch 1 has the install media; a launch that ends without `--do
                 line fails the run once QEMU has exited. `--single` makes the first launch the only one.
 mode `stage`:   one launch of an existing disk. After `--done` (a marker line) shows up in the serial log, the guest is
                 asked to power down (QMP `system_powerdown`, measure M8c) and QEMU exiting is the end.
+                With `--driver CMD...` (the rest of the command line) the host runs CMD beside the guest instead,
+                writing its output to `driver.log`; `--done` is ignored, the guest is asked to power down when CMD
+                ends, and the run is ok when CMD exited 0. `--ssh-port N` forwards 127.0.0.1:N to the guest's port 22.
 
 Every launch writes `launch-N/` under the output directory: serial.log, qemu-args.txt, QEMU's stdout and stderr, the QMP
 events with host timestamps, a PNG whenever the screen changed (at most one a minute) and `last.png`. The host clock of
@@ -18,6 +21,7 @@ timeout is the failure bound.
 
 Usage: run_qemu.py <install|stage> --qemu-dir D --out D --disk F --vars F [--install-iso F] [--install-format raw|qcow2]
                    [--virtio-iso F] [--usb-disk F [--usb-writable]] [--done TEXT] [--single] [--cpu CPU] [--smp N] [--mem MiB]
+                   [--ssh-port N] [--driver CMD...]
 """
 
 import argparse
@@ -107,7 +111,8 @@ def qemu_args(a: argparse.Namespace, out: Path, with_install_media: bool) -> lis
         "-device", "ich9-ahci,id=ahci",
         "-drive", f"if=none,id=d0,file={a.disk},format=qcow2",
         "-device", "virtio-blk-pci,drive=d0,bootindex=2",
-        "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0",
+        "-netdev", "user,id=n0" + (f",hostfwd=tcp:127.0.0.1:{a.ssh_port}-:22" if a.ssh_port else ""),
+        "-device", "virtio-net-pci,netdev=n0",
         "-device", "qemu-xhci,id=xhci",
         "-qmp", f"tcp:127.0.0.1:{QMP_PORT},server=on,wait=off",
         "-serial", f"file:{out / 'serial.log'}",
@@ -138,6 +143,7 @@ class Run:
         self.started = time.time()
         self.timeline = (self.out / "timeline.txt").open("w", encoding="utf-8")
         self.summary: dict = {"launches": [], "markers": []}
+        self.driver_code: int | None = None
 
     def save(self) -> None:
         """Rewrites summary.json, so a run killed by a step timeout still leaves its markers and launch times."""
@@ -165,8 +171,12 @@ class Run:
         last_saved = 0.0
         shots = 0
         powered_down = False
+        driver = None
         with (out / "qemu-stdout.log").open("w") as so, (out / "qemu-stderr.log").open("w") as se:
             qemu = subprocess.Popen(args, stdout=so, stderr=se)
+            if self.a.driver:
+                driver_log = (out / "driver.log").open("wb")
+                driver = subprocess.Popen(self.a.driver, stdout=driver_log, stderr=subprocess.STDOUT)
             qmp = Qmp(out / "qmp-events.jsonl", qemu)
             while qemu.poll() is None:
                 ppm = out / "frame.ppm"
@@ -189,7 +199,12 @@ class Run:
                     "launch": n, "serial_bytes": seen, "screenshots": shots, "seconds_in_launch": round(time.time() - began, 1),
                 }  # fmt: skip
                 self.save()
-                if self.a.mode == "stage" and not powered_down and self.a.done and self.a.done in text:
+                if driver is not None and driver.poll() is not None and not powered_down:
+                    self.driver_code = driver.returncode
+                    self.say(f"driver ended with {driver.returncode}: asking the guest to power down")
+                    qmp.command("system_powerdown")
+                    powered_down = True
+                elif driver is None and self.a.mode == "stage" and not powered_down and self.a.done and self.a.done in text:
                     self.say("stage marker seen: asking the guest to power down (system_powerdown)")
                     qmp.command("system_powerdown")
                     powered_down = True
@@ -198,6 +213,12 @@ class Run:
                 except subprocess.TimeoutExpired:
                     pass
             code = qemu.wait()
+        if driver is not None and driver.poll() is None:
+            self.say("QEMU exited before the driver ended: stopping the driver")
+            driver.terminate()
+            driver.wait()
+        if driver is not None and self.driver_code is None:
+            self.driver_code = driver.returncode
         text, seen = self.read_serial(serial, text, seen)
         self.say(f"launch {n}: QEMU exited with {code} after {time.time() - began:.0f}s")
         self.summary["launches"].append(
@@ -243,6 +264,8 @@ def main() -> None:
     p.add_argument("--cpu", default="max")
     p.add_argument("--smp", type=int, default=2)
     p.add_argument("--mem", type=int, default=4096)
+    p.add_argument("--ssh-port", type=int)
+    p.add_argument("--driver", nargs=argparse.REMAINDER, default=[])
     a = p.parse_args()
 
     run = Run(a)
@@ -257,6 +280,8 @@ def main() -> None:
         if code != 0:
             run.say(f"QEMU failed with {code}; see launch-{n}/qemu-stderr.log")
             run.finish(False)
+        if a.mode == "stage" and a.driver:
+            run.finish(run.driver_code == 0)
         if a.mode == "stage":
             run.finish(a.done in text)
         if a.single:

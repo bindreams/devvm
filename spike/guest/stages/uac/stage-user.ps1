@@ -77,15 +77,22 @@ if ($variant -eq 'default') {
 # M7 (autoapprove) and E0(b) (default): a RunAs launch from the Medium session.
 $out = 'C:\Users\Public\devvm-runas-out.txt'
 Remove-Item -Path "$out*" -ErrorAction SilentlyContinue
+# Start-Process returns as soon as the child is launched, so the job ending says nothing about the child: the job hands
+# back the child's process id, and the wait ends with the child's file, a consent prompt, a failed launch or the child gone.
 $job = Start-Job -ScriptBlock {
-    Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\ProgramData\devvm\helper-probe.ps1', '-Out', 'C:\Users\Public\devvm-runas-out.txt')
+    (Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\ProgramData\devvm\helper-probe.ps1', '-Out', 'C:\Users\Public\devvm-runas-out.txt')).Id
 }
 $clock = [Diagnostics.Stopwatch]::StartNew()
-# Ends when the elevated child has written its file, a consent prompt is showing, or the launch failed.
-while (-not (Test-Path -LiteralPath "$out.done") -and -not (Get-Process consent -ErrorAction SilentlyContinue) -and $job.State -eq 'Running') {
+$childId = $null
+while (-not (Test-Path -LiteralPath "$out.done") -and -not (Get-Process consent -ErrorAction SilentlyContinue)) {
+    if ($job.State -ne 'Running') {
+        if ($job.State -ne 'Completed') { break }
+        if ($null -eq $childId) { $childId = @(Receive-Job $job -Keep)[0] }
+        if ($null -eq $childId -or -not (Get-Process -Id $childId -ErrorAction SilentlyContinue)) { break }
+    }
     Start-Sleep -Milliseconds 200
 }
 $clock.Stop()
-Send-Line "DEVVM-RUNAS-$variant=child-ran=$(Test-Path -LiteralPath "$out.done") consent-prompt=$([bool](Get-Process consent -ErrorAction SilentlyContinue)) job=$($job.State) milliseconds=$($clock.ElapsedMilliseconds)"
-if ($job.State -ne 'Running') { Send-Line "DEVVM-RUNAS-JOB=$(Receive-Job $job -ErrorAction SilentlyContinue 2>&1 | Out-String)" }
+Send-Line "DEVVM-RUNAS-$variant=child-ran=$(Test-Path -LiteralPath "$out.done") consent-prompt=$([bool](Get-Process consent -ErrorAction SilentlyContinue)) job=$($job.State) child-id=$childId milliseconds=$($clock.ElapsedMilliseconds)"
+Send-Line "DEVVM-RUNAS-JOB=$(Receive-Job $job -Keep -ErrorAction SilentlyContinue 2>&1 | Out-String) reason=$($job.ChildJobs[0].JobStateInfo.Reason)"
 if (Test-Path -LiteralPath "$out.done") { Send-File "RUNAS-$variant-FACTS" $out }
