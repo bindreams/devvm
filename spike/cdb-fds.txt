@@ -1,9 +1,10 @@
-$$ Spike only (never merged). Best effort, a second cdb pass per dump (stacks.sh): the state of the first ten fds of
-$$ win32compat's fd_table (w32fd.c), whose `pending` flags decide what select reports. The module is sshd_session for
-$$ sshd-session.exe and sshd for sshd.exe; the pass for the other name fails with a symbol error, which is harmless.
+$$ Spike only (never merged). Best effort, a second cdb pass per dump (stacks.sh): the state of the first 32 fds of
+$$ win32compat's fd_table (w32fd.c), whose `pending` flags decide what select reports (the child's pipes are fd 11 and up).
+$$ The module is sshd_session for sshd-session.exe and sshd for sshd.exe; the pass for the other name fails with a symbol
+$$ error, which is harmless. An unused slot is skipped.
 .reload /f
 .echo ==== sshd_session!fd_table
-.for (r $t0 = 0; @$t0 < 0n10; r $t0 = @$t0 + 1) { dx -r2 sshd_session!fd_table.w32_ios[@$t0] }
+.for (r $t0 = 0; @$t0 < 0n32; r $t0 = @$t0 + 1) { .if (@@c++(sshd_session!fd_table.w32_ios[@$t0]) != 0) { dx -r2 sshd_session!fd_table.w32_ios[@$t0] } }
 .echo ==== sshd!fd_table
-.for (r $t0 = 0; @$t0 < 0n10; r $t0 = @$t0 + 1) { dx -r2 sshd!fd_table.w32_ios[@$t0] }
+.for (r $t0 = 0; @$t0 < 0n32; r $t0 = @$t0 + 1) { .if (@@c++(sshd!fd_table.w32_ios[@$t0]) != 0) { dx -r2 sshd!fd_table.w32_ios[@$t0] } }
 q

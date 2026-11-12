@@ -4,7 +4,7 @@
 # A transfer has stalled when `emit.exe` is alive and no sshd process's bytes read or written (nor emit's) changed for
 # $StallSeconds: a normal 1 MiB run takes 0.5 to 2 s, and every hang seen had all counters still for its whole 120 s.
 # Then, once per stalled episode (`DEVVM-HANGDUMP-TRIGGER <n>`): `pktmon stop` and its text (E3, with -Pkt; the next capture
-# starts at once), `procdump -ma` of every sshd and sshd-session process (E1), the process list with thread states, and
+# starts at once), `procdump` of every sshd, sshd-session, emit and pwsh process (E1), the process list with thread states, and
 # sshd's own logs; all of it is PUT to the host's receiver ($Upload, wedge_driver.py) and `DEVVM-HANGDUMP-DONE <n>` goes to
 # the serial log. An episode ends when a counter moves or emit.exe is gone, so a slow pass that recovers has its own
 # dump and a later hang another.
@@ -54,9 +54,12 @@ function Save-Dumps([string]$Label) {
             }
         Get-NetTCPConnection -LocalPort 22 -ErrorAction SilentlyContinue | Select-Object LocalAddress, RemoteAddress, State, OwningProcess | Format-Table | Out-String
     }
-    foreach ($process in @(Get-Process -Name 'sshd', 'sshd-session' -ErrorAction SilentlyContinue)) {
+    # The children too (run 43310480365 read only sshd's side): emit.exe in full (its main thread's wait and its handles),
+    # pwsh.exe as a minidump (native thread stacks; a full dump of a PowerShell process is hundreds of MB).
+    foreach ($process in @(Get-Process -Name 'sshd', 'sshd-session', 'emit', 'pwsh' -ErrorAction SilentlyContinue)) {
         $file = Join-Path $dir "$Label-$($process.Name)-$($process.Id).dmp"
-        $output = & $Procdump -accepteula -ma $process.Id $file 2>&1 | Out-String
+        $kind = if ($process.Name -eq 'pwsh') { '-mm' } else { '-ma' }
+        $output = & $Procdump -accepteula $kind $process.Id $file 2>&1 | Out-String
         Send-Line "DEVVM-HANGDUMP-PROCDUMP $Label $($process.Name)#$($process.Id) exit=$LASTEXITCODE $output"
     }
     foreach ($log in @(Get-ChildItem -LiteralPath 'C:\ProgramData\ssh\logs' -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
