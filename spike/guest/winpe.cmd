@@ -6,6 +6,7 @@ rem   1. Logs what WinPE looks like to winpe.log on the answer disk (attached wr
 rem   2. When partition.flag exists: loads viostor from the virtio CD (drvload), rescans until a disk of 32 GB or more
 rem      shows up, and partitions that disk whatever number Windows gave it, so the answer file need not name a disk
 rem      (it installs to the first available partition). Without the flag it only logs (the `auto` rule).
+rem The log holds diskpart's and pnputil's own text, not only verdicts: after drvload at scans 1, 2, 3 and every 100th.
 set LOG=%~dp0winpe.log
 echo winpe.cmd begins> "%LOG%"
 echo -- serial ports in the registry>> "%LOG%"
@@ -19,6 +20,8 @@ echo -- disks before>> "%LOG%"
 echo list disk> X:\devvm-list.txt
 diskpart /s X:\devvm-list.txt> X:\devvm-list.out 2>&1
 type X:\devvm-list.out>> "%LOG%"
+echo -- devices before (pnputil)>> "%LOG%"
+pnputil /enum-devices /connected>> "%LOG%" 2>&1
 if not exist "%~dp0partition.flag" exit /b 0
 if "%VIRTIO%"=="" goto novirtio
 echo -- drvload>> "%LOG%"
@@ -27,13 +30,26 @@ set TRIES=0
 :scan
 set /a TRIES+=1
 set DISK=
+pnputil /scan-devices> X:\devvm-scan.out 2>&1
 echo rescan> X:\devvm-list.txt
 echo list disk>> X:\devvm-list.txt
 diskpart /s X:\devvm-list.txt> X:\devvm-list.out 2>&1
 for /f "tokens=2,4,5" %%a in ('findstr /b /c:"  Disk " X:\devvm-list.out') do if /i "%%c"=="GB" if %%b GEQ 32 set DISK=%%a
 if not "%DISK%"=="" goto found
-set /a REM10=TRIES %% 10
-if "%REM10%"=="0" echo scan %TRIES%: no disk of 32 GB or more yet>> "%LOG%"
+set /a REM100=TRIES %% 100
+if %TRIES% LEQ 3 goto dump
+if "%REM100%"=="0" goto dump
+goto scan
+:dump
+echo -- scan %TRIES%: no disk of 32 GB or more; diskpart said>> "%LOG%"
+type X:\devvm-list.out>> "%LOG%"
+echo -- pnputil /scan-devices said>> "%LOG%"
+type X:\devvm-scan.out>> "%LOG%"
+if %TRIES% GTR 2 goto scan
+echo -- devices after drvload (pnputil)>> "%LOG%"
+pnputil /enum-devices /connected>> "%LOG%" 2>&1
+echo -- viostor service>> "%LOG%"
+reg query HKLM\SYSTEM\CurrentControlSet\Services\viostor /s>> "%LOG%" 2>&1
 goto scan
 :found
 echo scans needed: %TRIES%>> "%LOG%"
