@@ -10,6 +10,7 @@ $grand = if ($parent) { Get-CimInstance Win32_Process -Filter "ProcessId=$($pare
 "integrity=$((whoami /groups /fo csv | ConvertFrom-Csv | Where-Object { $_.SID -like 'S-1-16-*' } | Select-Object -First 1).SID)"
 "elevated=$(([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
 "hkcu=$(Test-Path 'HKCU:\Software')"
+"boot=$((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks)"
 "parent=$($parent.Name):$($parent.CommandLine)"
 "grandparent=$($grand.Name)"
 "userprofile=$env:USERPROFILE"

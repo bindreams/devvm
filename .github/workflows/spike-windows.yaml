@@ -335,8 +335,9 @@ jobs:
               for f in "$dir"/*; do
                   [[ "$(basename "$f")" == DONE || "$(basename "$f")" == DRIVER ]] || files+=("$f")
               done
-              # A stage with a DRIVER file is driven over SSH from here (spike/ssh_driver.py): keys, the broker and the
-              # larger disk come with it, and the run ends when the driver does.
+              # A stage with a DRIVER file is driven over SSH from here by the script the file names (spike/<script>): keys,
+              # the broker, the shared guest files and the larger disk come with it, and the run ends when the driver does
+              # (run_qemu.py `--driver`: its exit code can ask for a relaunch).
               driver=()
               if [[ -f "$dir/DRIVER" ]]; then
                   openssh=/c/Windows/System32/OpenSSH
@@ -351,7 +352,9 @@ jobs:
                   cp "$keys/host.pub" "$keys/ssh_host_ed25519_key.pub"
                   cp "$keys/client.pub" "$keys/authorized_keys"
                   files+=("$keys/ssh_host_ed25519_key" "$keys/ssh_host_ed25519_key.pub" "$keys/authorized_keys" "$WORK/broker/ssh-broker.exe")
-                  driver=(--ssh-port 2222 --driver uv run --script spike/ssh_driver.py "$(cygpath -w "$OUT/stage-$tag-driver")" "$(cygpath -w "$keys")" 2222)
+                  files+=(spike/guest/probe.ps1 spike/guest/config.yaml spike/guest/ssh-common.ps1)
+                  script=$(cat "$dir/DRIVER")
+                  driver=(--ssh-port 2222 --driver uv run --script "spike/$script" "$(cygpath -w "$OUT/stage-$tag-driver")" "$(cygpath -w "$keys")" 2222)
               fi
               "$WORK/tool/seed_spike.exe" "$WORK/stage-$tag.img" "${files[@]}" | tee "$OUT/stage-disk-$tag.txt"
               "$qemu_img" create -f qcow2 -b "$WORK/base/base.qcow2" -F qcow2 "$WORK/stage-$tag.qcow2"
@@ -359,9 +362,9 @@ jobs:
               if [[ -f "$dir/DRIVER" ]]; then
                   "$qemu_img" resize "$WORK/stage-$tag.qcow2" 80G
               fi
-              # 40 minutes is the failure bound for one stage (the longest one so far took 3); a stage that does not end
-              # is recorded and the next one still runs.
-              if ! timeout 2400 uv run --script spike/run_qemu.py stage \
+              # An hour is the failure bound for one stage (the longest ones so far took 3 minutes; the battery stages are
+              # longer); a stage that does not end is recorded and the next one still runs.
+              if ! timeout 3600 uv run --script spike/run_qemu.py stage \
                 --qemu-dir "$WORK/qemu" --out "$OUT/stage-$tag" --disk "$WORK/stage-$tag.qcow2" --vars "$WORK/stage-$tag-vars.fd" \
                 --usb-disk "$WORK/stage-$tag.img" --done "$(cat "$dir/DONE")" --cpu "$CPU" "${driver[@]}"; then
                   echo "stage $tag did not end cleanly" | tee -a "$OUT/stage-failures.txt"

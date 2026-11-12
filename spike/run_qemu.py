@@ -10,9 +10,13 @@ mode `install`: launch 1 has the install media; a launch that ends without `--do
                 line fails the run once QEMU has exited. `--single` makes the first launch the only one.
 mode `stage`:   one launch of an existing disk. After `--done` (a marker line) shows up in the serial log, the guest is
                 asked to power down (QMP `system_powerdown`, measure M8c) and QEMU exiting is the end.
-                With `--driver CMD...` (the rest of the command line) the host runs CMD beside the guest instead,
-                writing its output to `driver.log`; `--done` is ignored, the guest is asked to power down when CMD
-                ends, and the run is ok when CMD exited 0. `--ssh-port N` forwards 127.0.0.1:N to the guest's port 22.
+                With `--driver CMD...` (the rest of the command line) the host runs CMD beside the guest instead
+                (environment `DEVVM_LAUNCH` = the launch number); `--done` is ignored. CMD's exit code decides:
+                0 = the guest is asked to power down and the run is ok; 75 = the guest ends QEMU by itself (a restart or
+                shutdown CMD issued): wait for QEMU to exit, then launch the same disk again; 76 = the same, and the next
+                launch is without `-no-reboot` (the guest may restart in place); anything else = power down, failed.
+                CMD's stdout lines starting with `QMP:` are QMP commands to run (`QMP:system_reset`); the other lines go
+                to the console. `--ssh-port N` forwards 127.0.0.1:N to the guest's port 22.
 
 Every launch writes `launch-N/` under the output directory: serial.log, qemu-args.txt, QEMU's stdout and stderr, the QMP
 events with host timestamps, a PNG whenever the screen changed (at most one a minute) and `last.png`. The host clock of
@@ -27,6 +31,7 @@ Usage: run_qemu.py <install|stage> --qemu-dir D --out D --disk F --vars F [--ins
 import argparse
 import hashlib
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -41,6 +46,8 @@ POLL_SECONDS = 15  # screenshot and serial-log cadence: how often the run looks,
 SCREEN_EVERY = 60
 QMP_REPLY_BOUND = 120  # seconds a QMP command may go unanswered before the run says so and goes on
 FAILED = "DEVVM-BASE-FAILED="
+RELAUNCH = 75  # driver exit codes, see the module docstring
+RELAUNCH_IN_PLACE = 76
 
 
 class Qmp:
@@ -48,6 +55,7 @@ class Qmp:
         self.events = events.open("w", encoding="utf-8")
         self.replies: list[dict] = []
         self.cond = threading.Condition()
+        self.serial = threading.Lock()
         self.closed = False
         self.sock = None
         while self.sock is None:  # refusal is the real "not yet"; QEMU exiting ends the wait
@@ -83,28 +91,29 @@ class Qmp:
     def command(self, name: str, **arguments) -> dict | None:
         if self.sock is None:
             return None
-        try:
-            self.wfile.write(json.dumps({"execute": name, "arguments": arguments}) + "\n")
-            self.wfile.flush()
-        except OSError:
-            return None
-        with self.cond:
-            # The reply is an external event that may never come (a hung QEMU); the bound is surfaced by the caller.
-            self.cond.wait_for(lambda: self.replies or self.closed, timeout=QMP_REPLY_BOUND)
-            return self.replies.pop(0) if self.replies else None
+        with self.serial:  # the screendump loop and the driver's commands share one reply queue
+            try:
+                self.wfile.write(json.dumps({"execute": name, "arguments": arguments}) + "\n")
+                self.wfile.flush()
+            except OSError:
+                return None
+            with self.cond:
+                # The reply is an external event that may never come (a hung QEMU); the bound is surfaced by the caller.
+                self.cond.wait_for(lambda: self.replies or self.closed, timeout=QMP_REPLY_BOUND)
+                return self.replies.pop(0) if self.replies else None
 
 
 def find(root: Path, name: str) -> Path:
     return next(root.rglob(name))
 
 
-def qemu_args(a: argparse.Namespace, out: Path, with_install_media: bool) -> list[str]:
+def qemu_args(a: argparse.Namespace, out: Path, with_install_media: bool, in_place: bool = False) -> list[str]:
     qemu_dir = Path(a.qemu_dir)
     share = find(qemu_dir, "edk2-x86_64-code.fd").parent
     args = [
         str(find(qemu_dir, "qemu-system-x86_64.exe")),
         "-accel", "whpx", "-machine", "q35", "-cpu", a.cpu, "-smp", str(a.smp), "-m", str(a.mem),
-        "-display", "none", "-nodefaults", "-no-user-config", "-no-reboot", "-rtc", "base=utc",
+        "-display", "none", "-nodefaults", "-no-user-config", "-rtc", "base=utc",
         "-drive", f"if=pflash,format=raw,readonly=on,unit=0,file={share / 'edk2-x86_64-code.fd'}",
         "-drive", f"if=pflash,format=raw,unit=1,file={a.vars}",
         "-device", "VGA",
@@ -117,6 +126,8 @@ def qemu_args(a: argparse.Namespace, out: Path, with_install_media: bool) -> lis
         "-qmp", f"tcp:127.0.0.1:{QMP_PORT},server=on,wait=off",
         "-serial", f"file:{out / 'serial.log'}",
     ]  # fmt: skip
+    if not in_place:
+        args.append("-no-reboot")
     if with_install_media:
         args += [
             "-drive", f"if=none,id=cd0,file={a.install_iso},format={a.install_format},media=cdrom,readonly=on",
@@ -156,13 +167,27 @@ class Run:
         self.timeline.write(line + "\n")
         self.timeline.flush()
 
-    def launch(self, n: int, with_install_media: bool) -> tuple[int, str]:
+    def pump_driver(self, driver: subprocess.Popen, qmp: Qmp) -> None:
+        """Reads the driver's stdout to its end: `QMP:` lines are commands for QEMU, the rest goes to the console."""
+        for raw in driver.stdout:
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line.startswith("QMP:"):
+                reply = qmp.command(line[4:].strip())
+                self.say(f"driver asked for {line[4:].strip()}: {reply}")
+            elif line:
+                self.say(f"driver: {line[:300]}")
+
+    def launch(self, n: int, with_install_media: bool, in_place: bool = False) -> tuple[int, str]:
         """One QEMU process, to its exit. Returns the exit code and the whole serial log."""
         out = self.out / f"launch-{n}"
         out.mkdir(exist_ok=True)
-        args = qemu_args(self.a, out, with_install_media)
+        self.driver_code = None
+        args = qemu_args(self.a, out, with_install_media, in_place)
         (out / "qemu-args.txt").write_text("\n".join(args) + "\n", encoding="utf-8")
-        self.say(f"launch {n}: starting QEMU ({'with' if with_install_media else 'without'} install media)")
+        self.say(
+            f"launch {n}: starting QEMU ({'with' if with_install_media else 'without'} install media"
+            f"{', restarts in place' if in_place else ''})"
+        )
         began = time.time()
         serial = out / "serial.log"
         seen = 0
@@ -174,10 +199,13 @@ class Run:
         driver = None
         with (out / "qemu-stdout.log").open("w") as so, (out / "qemu-stderr.log").open("w") as se:
             qemu = subprocess.Popen(args, stdout=so, stderr=se)
-            if self.a.driver:
-                driver_log = (out / "driver.log").open("wb")
-                driver = subprocess.Popen(self.a.driver, stdout=driver_log, stderr=subprocess.STDOUT)
             qmp = Qmp(out / "qmp-events.jsonl", qemu)
+            if self.a.driver:
+                driver = subprocess.Popen(
+                    self.a.driver, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    env={**os.environ, "DEVVM_LAUNCH": str(n)},
+                )  # fmt: skip
+                threading.Thread(target=self.pump_driver, args=(driver, qmp), daemon=True).start()
             while qemu.poll() is None:
                 ppm = out / "frame.ppm"
                 reply = qmp.command("screendump", filename=str(ppm))
@@ -201,8 +229,11 @@ class Run:
                 self.save()
                 if driver is not None and driver.poll() is not None and not powered_down:
                     self.driver_code = driver.returncode
-                    self.say(f"driver ended with {driver.returncode}: asking the guest to power down")
-                    qmp.command("system_powerdown")
+                    if self.driver_code in (RELAUNCH, RELAUNCH_IN_PLACE):
+                        self.say(f"driver ended with {self.driver_code}: waiting for the guest to end QEMU")
+                    else:
+                        self.say(f"driver ended with {self.driver_code}: asking the guest to power down")
+                        qmp.command("system_powerdown")
                     powered_down = True
                 elif driver is None and self.a.mode == "stage" and not powered_down and self.a.done and self.a.done in text:
                     self.say("stage marker seen: asking the guest to power down (system_powerdown)")
@@ -275,8 +306,9 @@ def main() -> None:
     run.say("qemu: " + subprocess.run([str(find(Path(a.qemu_dir), "qemu-system-x86_64.exe")), "--version"],
                                       capture_output=True, text=True, check=True).stdout.splitlines()[0])  # fmt: skip
     n = 1
+    in_place = False
     while True:
-        code, text = run.launch(n, with_install_media=(a.mode == "install" and n == 1))
+        code, text = run.launch(n, with_install_media=(a.mode == "install" and n == 1), in_place=in_place)
         if FAILED in text:
             run.say("the guest reported a failure: " + text[text.index(FAILED):][:2000])
             run.finish(False)
@@ -284,6 +316,10 @@ def main() -> None:
             run.say(f"QEMU failed with {code}; see launch-{n}/qemu-stderr.log")
             run.finish(False)
         if a.mode == "stage" and a.driver:
+            if run.driver_code in (RELAUNCH, RELAUNCH_IN_PLACE):
+                in_place = run.driver_code == RELAUNCH_IN_PLACE
+                n += 1
+                continue
             run.finish(run.driver_code == 0)
         if a.mode == "stage":
             run.finish(a.done in text)
