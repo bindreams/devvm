@@ -1,7 +1,6 @@
-legs=en-US,en-US-auto,de-DE-new
+legs=en-US,de-DE-new
 reuse=
 stage=boot1,uac:default,uac:autoapprove
 m12b=
 cpu=max
 disk=available
-disk_en-US-auto=auto
