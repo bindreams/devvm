@@ -117,10 +117,52 @@ def process_tree() -> None:
     say(f"M10 sftp-server processes (exit {status}): {out.decode('utf-8', errors='replace').strip()} {err.decode('utf-8', errors='replace').strip()[:300]}")
 
 
+SFTP_INIT = bytes([0, 0, 0, 5, 1, 0, 0, 0, 3])  # length 5, SSH_FXP_INIT, version 3
+
+
+def diagnose(client: paramiko.SSHClient) -> None:
+    """The subsystem did not start: what the guest's side did. Three looks: the subsystem channel itself, where
+    `sftp-server.exe` is for the shell the broker starts, and the same program run as a command with an INIT packet."""
+    chan = client.get_transport().open_session()
+    chan.settimeout(paramiko_lib.SCREEN_BOUND)  # the subsystem may stay silent: the bound is the failure
+    chan.invoke_subsystem("sftp")
+    chan.sendall(SFTP_INIT)
+    got = bytearray()
+    try:
+        while data := chan.recv(4096):
+            got += data
+    except TimeoutError:
+        say(f"M10 diag: subsystem channel silent for {paramiko_lib.SCREEN_BOUND} s after INIT")
+    errs = bytearray()
+    while chan.recv_stderr_ready():
+        errs += chan.recv_stderr(4096)
+    ended = chan.status_event.wait(paramiko_lib.SCREEN_BOUND)
+    say(f"M10 diag: subsystem reply {bytes(got)!r}; stderr {bytes(errs)!r}; exit status {chan.recv_exit_status() if ended else 'none'}")
+    chan.close()
+
+    look = (
+        "Get-Command sftp-server.exe -ErrorAction SilentlyContinue | ForEach-Object Source; "
+        "'path=' + $env:PATH; "
+        r"'in-openssh-dir=' + (Test-Path 'C:\Program Files\OpenSSH\sftp-server.exe'); "
+        r"Get-Content 'C:\ProgramData\ssh\sshd_config' | Select-String 'Subsystem|ForceCommand'"
+    )
+    status, out, err = paramiko_lib.exec_raw(look)
+    say(f"M10 diag: lookup (exit {status}): {out.decode('utf-8', errors='replace').strip()!r} {err.decode('utf-8', errors='replace').strip()[:300]!r}")
+    for label, carrier in (("C1", cr.c1), ("C2", cr.c2)):
+        script = carrier([r"C:\Program Files\OpenSSH\sftp-server.exe"])
+        status, out, err = paramiko_lib.exec_raw(script, SFTP_INIT)
+        say(f"M10 diag: sftp-server.exe as a command through {label} (exit {status}): stdout {out!r} stderr {err[:300]!r}")
+
+
 def measure() -> None:
     client = paramiko_lib.connect()
     try:
-        sftp = client.open_sftp()
+        try:
+            sftp = client.open_sftp()
+        except Exception as error:  # the next lines say why
+            say(f"M10 sftp subsystem did not start: {type(error).__name__}: {error}")
+            diagnose(client)
+            return
         process_tree()
         forms(sftp)
         links(sftp)

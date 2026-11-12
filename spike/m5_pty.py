@@ -24,6 +24,7 @@ def ask(screen: Screen, chan, tag: str, expression: str) -> str | None:
 
 def shell() -> None:
     client = paramiko_lib.connect()
+    screen = None
     try:
         chan = client.get_transport().open_session()
         chan.get_pty(term="xterm-256color", width=120, height=30)
@@ -45,14 +46,18 @@ def shell() -> None:
         say(f"pty shell: helper started: {bool(started)}")
         chan.send(b"\x03")
         interrupted = screen.wait("INTERRUPTED", after)
-        say(f"pty shell: Ctrl-C reached the helper: {bool(interrupted)}")
+        say(f"pty shell: Ctrl-C reached the helper: {bool(interrupted)} (waited {paramiko_lib.SCREEN_BOUND} s at most)")
+        if not interrupted:
+            say(f"pty shell: screen after the Ctrl-C byte: {screen.text()[after:][-400:]!r}")
+            return
         say(f"pty shell: shell alive after Ctrl-C: {ask(screen, chan, 'ALIVE', '1+1')}")
 
         chan.send(b"exit 7\r")
-        status = chan.recv_exit_status()
-        say(f"pty shell: `exit 7` -> exit status {status}")
-        (ssh_lib.out / "pty-shell.raw").write_bytes(bytes(screen.data))
+        ended = chan.status_event.wait(paramiko_lib.SCREEN_BOUND)
+        say(f"pty shell: `exit 7` -> exit status {chan.recv_exit_status() if ended else 'none within the bound'}")
     finally:
+        if screen is not None:
+            (ssh_lib.out / "pty-shell.raw").write_bytes(bytes(screen.data))
         client.close()
 
 

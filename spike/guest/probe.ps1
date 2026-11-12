@@ -22,4 +22,8 @@ try {
 } catch {
     "dpapi=ERROR $($_.Exception.Message -replace '\s+', ' ')"
 }
-"agents=$((Get-CimInstance Win32_Process -Filter "Name='ssh-broker.exe'" | ForEach-Object { "$($_.ProcessId):s$($_.SessionId):$($_.CommandLine)" }) -join ' ; ')"
+# UTC ticks (100 ns since 0001-01-01), so the host can order the guest's events: the window between sshd answering and the agent.
+"now=$([DateTime]::UtcNow.Ticks)"
+"sshd-created=$((Get-CimInstance Win32_Process -Filter "Name='sshd.exe'" | ForEach-Object { "$($_.ProcessId):$($_.CreationDate.ToUniversalTime().Ticks)" }) -join ',')"
+"explorer-created=$((Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | ForEach-Object { "$($_.ProcessId):s$($_.SessionId):$($_.CreationDate.ToUniversalTime().Ticks)" }) -join ',')"
+"agents=$((Get-CimInstance Win32_Process -Filter "Name='ssh-broker.exe'" | ForEach-Object { "$($_.ProcessId):s$($_.SessionId):t$($_.CreationDate.ToUniversalTime().Ticks):$($_.CommandLine)" }) -join ' ; ')"

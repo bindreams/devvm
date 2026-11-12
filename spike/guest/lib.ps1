@@ -14,6 +14,8 @@ function Get-SerialMutex {
 function Send-Line {
     param([Parameter(Mandatory)][string]$Text)
     $line = ($Text -replace '\s*[\r\n]+\s*', ' ').Trim()
+    # UTC ticks of the send: the serial log has no times of its own.
+    $line = "$line @$([DateTime]::UtcNow.Ticks)"
     $log = if ($env:DEVVM_LOG) { $env:DEVVM_LOG } else { 'C:\Users\Public\devvm-log.txt' }
     try { Add-Content -LiteralPath $log -Value $line -Encoding UTF8 } catch { }
 

@@ -67,6 +67,24 @@ jobs:
           rm pins/asset.zip
           printf 'ssh-broker commit: %s\n' "$BROKER_COMMIT" | tee -a pins/pins.txt
 
+      # M14: does the evaluation center offer a Windows 11 LTSC 2024 evaluation ISO? The pages and the download links
+      # they carry, with a HEAD request per link (no download). A page that refuses the runner is the answer too.
+      - name: M14, the LTSC 2024 evaluation ISO
+        run: |
+          set -uo pipefail
+          mkdir -p pins/m14
+          agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36'
+          for page in download-windows-11-iot-enterprise-ltsc-eval evaluate-windows-11-iot-enterprise-ltsc; do
+            curl -X GET -sSL -A "$agent" -o "pins/m14/$page.html" -w "$page: %{http_code} %{url_effective} %{size_download} bytes\n" \
+              "https://www.microsoft.com/en-us/evalcenter/$page" | tee -a pins/m14/pages.txt
+            grep -o 'https\?://go.microsoft.com/fwlink/?linkid=[0-9]*[^"<& ]*' "pins/m14/$page.html" | sort -u | tee -a pins/m14/links.txt || true
+          done
+          sort -u pins/m14/links.txt | while IFS= read -r link; do
+            echo "== $link" | tee -a pins/m14/heads.txt
+            curl -I -sSL -A "$agent" "$link" | grep -i -e '^HTTP' -e '^location' -e '^content-length' -e '^content-type' | tee -a pins/m14/heads.txt || true
+          done
+          exit 0
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pins
@@ -352,7 +370,7 @@ jobs:
                   cp "$keys/host.pub" "$keys/ssh_host_ed25519_key.pub"
                   cp "$keys/client.pub" "$keys/authorized_keys"
                   files+=("$keys/ssh_host_ed25519_key" "$keys/ssh_host_ed25519_key.pub" "$keys/authorized_keys" "$WORK/broker/ssh-broker.exe")
-                  files+=(spike/guest/probe.ps1 spike/guest/config.yaml spike/guest/ssh-common.ps1)
+                  files+=(spike/guest/probe.ps1 spike/guest/config.yaml spike/guest/ssh-common.ps1 spike/guest/watch.ps1 spike/guest/killagent.ps1)
                   script=$(cat "$dir/DRIVER")
                   driver=(--ssh-port 2222 --driver uv run --script "spike/$script" "$(cygpath -w "$OUT/stage-$tag-driver")" "$(cygpath -w "$keys")" 2222)
               fi

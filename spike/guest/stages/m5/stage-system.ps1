@@ -7,7 +7,8 @@ param([Parameter(Mandatory)][string]$Root)
 . C:\ProgramData\devvm\lib.ps1
 . (Join-Path $Root 'ssh-common.ps1')
 
-Copy-Item -LiteralPath (Join-Path $Root 'lib.ps1'), (Join-Path $Root 'hook.ps1'), (Join-Path $Root 'probe.ps1') -Destination C:\ProgramData\devvm -Force
+Copy-Item -LiteralPath (Join-Path $Root 'lib.ps1'), (Join-Path $Root 'hook.ps1'), (Join-Path $Root 'probe.ps1'), (Join-Path $Root 'watch.ps1'), (Join-Path $Root 'killagent.ps1') -Destination C:\ProgramData\devvm -Force
+. C:\ProgramData\devvm\lib.ps1  # the copy sends the time with every line
 
 $bin = 'C:\ProgramData\devvm\m5\bin'
 $work = 'C:\ProgramData\devvm\m5\work'
@@ -32,6 +33,9 @@ Step 'M10-FILES' {
     Get-ChildItem $m10 | Select-Object Name, LinkType, Target | Out-String
 }
 Step 'BROKER-APPLY' { Invoke-BrokerApply $Root }
+Step 'EB-HELPER' { Register-EbHelper $Root }
+Step 'AGENT-TASKS' { Register-AgentTask 'devvm-agent-elevated' 'Highest'; Register-AgentTask 'devvm-agent-medium' 'Limited' }
 Step 'SEED' { Invoke-Seed $Root }
 Step 'SSHD-START' { Invoke-SshdStart }
+Step 'WATCHER' { Start-Watcher }
 Send-Line 'DEVVM-SSH-STARTED'

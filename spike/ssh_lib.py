@@ -67,7 +67,8 @@ def probe(label: str) -> dict[str, str] | None:
     seen = facts(stdout)
     say(f"{label}: exit {code} session={seen.get('session')} integrity={seen.get('integrity')} "
         f"elevated={seen.get('elevated')} hkcu={seen.get('hkcu')} dpapi={seen.get('dpapi')} boot={seen.get('boot')} "
-        f"parent={seen.get('parent')}")  # fmt: skip
+        f"now={seen.get('now')} sshd-created={seen.get('sshd-created')} explorer-created={seen.get('explorer-created')} "
+        f"agents={seen.get('agents')} parent={seen.get('parent')}")  # fmt: skip
     return seen
 
 

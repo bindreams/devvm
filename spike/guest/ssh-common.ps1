@@ -52,7 +52,49 @@ function Invoke-Seed([string]$Root) {
 }
 
 function Invoke-SshdStart {
+    # More of sshd's own account of a connection (the OpenSSH/Operational event log), for the watcher.
+    $config = 'C:\ProgramData\ssh\sshd_config'
+    if ((Test-Path -LiteralPath $config) -and -not (Select-String -Path $config -Pattern '^\s*LogLevel\s+DEBUG1' -Quiet)) {
+        # Before the first Match block: the keyword belongs to the global part.
+        $lines = [System.Collections.Generic.List[string]](Get-Content -LiteralPath $config)
+        $at = $lines.FindIndex({ param($line) $line -match '^\s*Match\s' })
+        if ($at -lt 0) { $at = $lines.Count }
+        $lines.Insert($at, 'LogLevel DEBUG1')
+        Set-Content -LiteralPath $config -Value $lines -Encoding ascii
+    }
     Start-Service sshd
     Get-Service sshd | Select-Object Name, Status, StartType | Out-String
     Select-String -Path 'C:\ProgramData\ssh\sshd_config' -Pattern '^\s*(Subsystem|Match|ForceCommand|AuthorizedKeysFile|PubkeyAuthentication|HostKey)' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }
+}
+
+# The guest's own view next to the host's measurements: watch.ps1 as a SYSTEM task, one line per 10 s on the serial log.
+function Start-Watcher {
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\devvm\watch.ps1'
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName 'devvm-watch' -Action $action -Settings $settings -Force `
+        -Principal (New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest) | Out-Null
+    Start-ScheduledTask -TaskName 'devvm-watch'
+    (Get-ScheduledTask -TaskName 'devvm-watch').State
+}
+
+# An agent on demand (no trigger; the host starts it): elevated for M6 E-C, plain to put the Medium agent back afterwards.
+function Register-AgentTask([string]$Name, [string]$RunLevel) {
+    $action = New-ScheduledTaskAction -Execute 'C:\ProgramData\ssh-broker\ssh-broker.exe' -Argument 'agent'
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel
+    Register-ScheduledTask -TaskName $Name -Action $action -Settings $settings -Force `
+        -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel $RunLevel) | Out-Null
+    (Get-ScheduledTask -TaskName $Name).State
+}
+
+# The elevated scheduled-task helper of M6 E-B: the request directory the Medium session writes into, and the task.
+function Register-EbHelper([string]$Root) {
+    $dir = 'C:\ProgramData\devvm\eb'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    icacls $dir /grant 'user:(OI)(CI)F' | Out-Null
+    Copy-Item -LiteralPath (Join-Path $Root 'eb-runner.ps1') -Destination "$dir\eb-runner.ps1" -Force
+    $action = New-ScheduledTaskAction -Execute 'C:\Program Files\PowerShell\7\pwsh.exe' -Argument "-NoProfile -NonInteractive -File $dir\eb-runner.ps1"
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName 'devvm-eb' -Action $action -Settings $settings -Force `
+        -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel Highest) | Out-Null
+    (Get-ScheduledTask -TaskName 'devvm-eb').State
 }

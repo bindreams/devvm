@@ -7,7 +7,8 @@ param([Parameter(Mandatory)][string]$Root)
 . C:\ProgramData\devvm\lib.ps1
 . (Join-Path $Root 'ssh-common.ps1')
 
-Copy-Item -LiteralPath (Join-Path $Root 'lib.ps1'), (Join-Path $Root 'hook.ps1'), (Join-Path $Root 'probe.ps1') -Destination C:\ProgramData\devvm -Force
+Copy-Item -LiteralPath (Join-Path $Root 'lib.ps1'), (Join-Path $Root 'hook.ps1'), (Join-Path $Root 'probe.ps1'), (Join-Path $Root 'watch.ps1') -Destination C:\ProgramData\devvm -Force
+. C:\ProgramData\devvm\lib.ps1  # the copy sends the time with every line
 
 $marker = 'C:\ProgramData\devvm\restart-first-boot-done'
 if (-not (Test-Path -LiteralPath $marker)) {
@@ -22,4 +23,5 @@ if (-not (Test-Path -LiteralPath $marker)) {
 Step 'SEED' { Invoke-Seed $Root }
 Step 'SSHD-START' { Invoke-SshdStart }
 Send-Line 'DEVVM-SSH-STARTED'
+Step 'WATCHER' { Start-Watcher }
 Step 'AGENT-TASK' { Get-ScheduledTask | Where-Object { $_.TaskName -like '*ssh-broker*' -or $_.TaskPath -like '*ssh-broker*' } | Select-Object TaskPath, TaskName, State | Out-String }

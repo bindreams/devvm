@@ -90,11 +90,42 @@ def c2_legacy(argv: list[str], cwd: str | None = None) -> str:
     return c2(argv, cwd)
 
 
+EB_ROOT = r"C:\ProgramData\devvm\eb"
+
+# E-B (plan M6): the caller runs in the Medium session, hands the command to the elevated scheduled task `devvm-eb`
+# (guest/stages/m5/eb-runner.ps1) through files and plays the result back. Stdin goes to a file first; stdout and
+# stderr come back after the command ends (not live); the exit status is the helper's.
+EB_CALLER = r"""$ErrorActionPreference = 'Stop'
+$root = {root}
+$dir = Join-Path $root ('req-' + [guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($dir)
+[IO.File]::WriteAllText("$dir\script.ps1", {script}, [Text.UTF8Encoding]::new($false))
+$in = [IO.File]::Create("$dir\stdin")
+[Console]::OpenStandardInput().CopyTo($in)
+$in.Close()
+[IO.File]::WriteAllText("$root\current.txt", $dir)
+Start-ScheduledTask -TaskName 'devvm-eb'
+while (-not [IO.File]::Exists("$dir\done")) { Start-Sleep -Milliseconds 100 }
+foreach ($pair in @(@('stdout', [Console]::OpenStandardOutput()), @('stderr', [Console]::OpenStandardError()))) {
+    $file = [IO.File]::OpenRead("$dir\$($pair[0])")
+    $file.CopyTo($pair[1])
+    $file.Close()
+}
+exit ([int][IO.File]::ReadAllText("$dir\exit").Trim())
+"""
+
+
+def eb(argv: list[str], cwd: str | None = None) -> str:
+    """E-B: the C2 script for `argv`, run by the elevated helper task, caller as above."""
+    return EB_CALLER.replace("{root}", q(EB_ROOT)).replace("{script}", q(c2(argv, cwd)))
+
+
 CARRIERS: dict[str, Callable[..., str]] = {
     "C1": c1,
     "C1win": lambda argv, cwd=None: c1(argv, cwd, "Windows"),
     "C2": c2,
     "C2legacy": c2_legacy,
+    "EB": eb,
 }
 
 # The expected output of the `argv` helper: its argument count and each argument, as hex of the UTF-8 bytes.

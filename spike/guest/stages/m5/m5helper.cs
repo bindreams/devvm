@@ -96,12 +96,13 @@ public static class M5Helper
                 return 0;
             case "wait":
                 {
-                    Write(o, "STARTED\n");
+                    // The handler first: a Ctrl-C that arrives right after STARTED must not hit the default handler.
                     Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs ev)
                     {
                         Write(o, "INTERRUPTED\n");
                         Environment.Exit(130);
                     };
+                    Write(o, "STARTED\n");
                     Thread.Sleep(Timeout.Infinite);  // the test ends this with Ctrl-C
                     return 0;
                 }
