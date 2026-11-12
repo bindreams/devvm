@@ -23,6 +23,8 @@ FATAL = ("REMOTE HOST IDENTIFICATION HAS CHANGED", "Host key verification failed
 SESSION_ONE_MEDIUM = ("1", "S-1-16-8192")
 SESSION_ONE_HIGH = ("1", "S-1-16-12288")
 
+sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 out = Path(sys.argv[1])
 keys = Path(sys.argv[2])
 port = sys.argv[3]

@@ -248,6 +248,9 @@ class Run:
 
 
 def main() -> None:
+    # The runner's console is cp1252; guest text (mojibake, German output) must never end the run.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     p = argparse.ArgumentParser()
     p.add_argument("mode", choices=["install", "stage"])
     p.add_argument("--qemu-dir", required=True)
