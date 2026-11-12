@@ -170,6 +170,8 @@ def measure() -> None:
             say(f"M10 sftp subsystem did not start: {type(error).__name__}: {error}")
             diagnose(client)
             return
+        # An operation that gets no answer is a failure line, not a stalled stage (the subsystem has never run before).
+        sftp.get_channel().settimeout(paramiko_lib.SCREEN_BOUND)
         process_tree()
         forms(sftp)
         links(sftp)

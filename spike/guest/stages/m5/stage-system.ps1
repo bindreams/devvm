@@ -22,6 +22,19 @@ Step 'HELPERS' {
     }
     Get-ChildItem $bin | Select-Object Name, Length | Out-String
 }
+# M10: sftp-server.exe failed to start in the user's agent with "Access is denied" (run 43278227165). The base moved the
+# extracted zip from SYSTEM's temp directory into Program Files, and a moved directory keeps its old ACL. The ACLs as they
+# are, then reset to what Program Files gives (what an install would have), so that M10 itself can be measured.
+Step 'OPENSSH-ACL-BEFORE' {
+    foreach ($item in 'C:\Program Files\OpenSSH', 'C:\Program Files\OpenSSH\sftp-server.exe', 'C:\Program Files\OpenSSH\sshd.exe', 'C:\Program Files\PowerShell\7\pwsh.exe') {
+        "== $item"
+        icacls $item
+    }
+}
+Step 'OPENSSH-ACL-RESET' {
+    icacls 'C:\Program Files\OpenSSH' /reset /T /C | Select-Object -Last 2
+    icacls 'C:\Program Files\OpenSSH\sftp-server.exe'
+}
 Step 'M10-FILES' {
     $m10 = 'C:\Users\user\m10'
     New-Item -ItemType Directory -Force -Path "$m10\subdir" | Out-Null

@@ -51,11 +51,19 @@ function Invoke-Seed([string]$Root) {
     }
 }
 
+# $LogLevel '' leaves sshd's default log level (no log file).
 function Invoke-SshdStart([string]$LogLevel = 'DEBUG1') {
     # More of sshd's own account of a connection, for the watcher. The event log channel (OpenSSH/Operational) stayed
     # empty on both guests (run 43260908167), so: `SyslogFacility LOCAL0` makes sshd write C:\ProgramData\ssh\logs\sshd.log.
     $config = 'C:\ProgramData\ssh\sshd_config'
-    if (Test-Path -LiteralPath $config) {
+    if ($LogLevel -and -not (Test-Path -LiteralPath $config)) {
+        # The base holds no sshd_config: the service writes it from sshd_config_default when it first starts (run
+        # 43278227165: the edit below was skipped and the DEBUG3 log never existed). Let it write it, then edit.
+        Start-Service sshd
+        while (-not (Test-Path -LiteralPath $config)) { Start-Sleep -Milliseconds 200 }  # pacing; the file is the condition
+        Stop-Service sshd
+    }
+    if ($LogLevel -and (Test-Path -LiteralPath $config)) {
         $lines = [System.Collections.Generic.List[string]](Get-Content -LiteralPath $config)
         $lines.RemoveAll({ param($line) $line -match '^\s*(LogLevel|SyslogFacility)\s' }) | Out-Null
         # Before the first Match block: the keywords belong to the global part.

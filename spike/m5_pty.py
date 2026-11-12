@@ -69,6 +69,19 @@ def exec_with_pty() -> None:
         status, out, err = paramiko_lib.exec_raw(cr.c2(argv), pty=True)
         (ssh_lib.out / f"pty-exec-{label}.raw").write_bytes(out)
         say(f"pty exec {label}: status={status} stdout={out[-80:]!r} ({len(out)} bytes) stderr={err[:80]!r}")
+    # Did the command run at all? The pseudoconsole's output holds none of it (151 bytes, run 43278227165): a file the
+    # command writes answers that, read back by an exec request without a pty.
+    marker = r"C:\Users\Public\pty-exec-ran.txt"
+    script = (
+        f"Set-Content -LiteralPath '{marker}' -Value ('ran pid=' + $PID + ' session=' + "
+        "[Diagnostics.Process]::GetCurrentProcess().SessionId + ' interactive=' + [Environment]::UserInteractive); "
+        "Write-Output 'PTYEXEC-MARKER'"
+    )
+    status, out, err = paramiko_lib.exec_raw(script, pty=True)
+    (ssh_lib.out / "pty-exec-marker.raw").write_bytes(out)
+    say(f"pty exec marker: status={status} stdout={out[-80:]!r} ({len(out)} bytes) stderr={err[:80]!r}")
+    status, out, err = paramiko_lib.exec_raw(f"if (Test-Path '{marker}') {{ Get-Content -Raw '{marker}' }} else {{ 'marker file absent' }}")
+    say(f"pty exec marker file (read without a pty): {out.decode('utf-8', errors='replace').strip()!r}")
 
 
 def measure() -> None:

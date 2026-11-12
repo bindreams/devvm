@@ -12,7 +12,7 @@
 # `DEVVM-WATCH-SSHD` is the last part of the new text in sshd's own log (SyslogFacility LOCAL0, ssh-common.ps1);
 # `DEVVM-WATCH-LOG` is new text in the broker's logs.
 . C:\ProgramData\devvm\lib.ps1
-$names = 'sshd', 'sshd-session', 'sftp-server', 'ssh-broker', 'pwsh', 'powershell', 'emit', 'argv', 'conhost', 'OpenConsole'
+$names = 'sshd', 'sshd-session', 'sftp-server', 'ssh-broker', 'pwsh', 'powershell', 'emit', 'argv', 'devvm-echo', 'conhost', 'OpenConsole'
 $lastList = ''
 $sshdFrom = 0
 $offsets = @{}
@@ -41,7 +41,7 @@ while ($true) {
             Send-Line "DEVVM-WATCH-PROCS $list"
         }
 
-        $io = Get-CimInstance Win32_Process -Filter "Name='ssh-broker.exe' OR Name='pwsh.exe' OR Name='emit.exe' OR Name='sshd.exe' OR Name='sshd-session.exe'" |
+        $io = Get-CimInstance Win32_Process -Filter "Name='ssh-broker.exe' OR Name='pwsh.exe' OR Name='emit.exe' OR Name='devvm-echo.exe' OR Name='sshd.exe' OR Name='sshd-session.exe'" |
             Sort-Object ProcessId | ForEach-Object {
                 $threads = @((Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).Threads)
                 $waits = ($threads | ForEach-Object { if ($_.ThreadState -eq 'Wait') { "W:$($_.WaitReason)" } else { "$($_.ThreadState)" } } | Group-Object | Sort-Object Name | ForEach-Object { "$($_.Name)*$($_.Count)" }) -join '+'
@@ -49,14 +49,14 @@ while ($true) {
             }
         Send-Line "DEVVM-WATCH-IO $($io -join ' ; ')"
 
-        # sshd's own log: what is new since the last look, its last 6000 bytes (the lines just before a stall matter most).
+        # sshd's own log: what is new since the last look, its last 12000 bytes (the lines just before a stall matter most).
         $sshdLog = 'C:\ProgramData\ssh\logs\sshd.log'
         if (Test-Path -LiteralPath $sshdLog) {
             $length = (Get-Item -LiteralPath $sshdLog).Length
             if ($length -gt $sshdFrom) {
                 $stream = [IO.File]::Open($sshdLog, 'Open', 'Read', 'ReadWrite')
                 try {
-                    $start = [Math]::Max($sshdFrom, $length - 6000)
+                    $start = [Math]::Max($sshdFrom, $length - 12000)
                     [void]$stream.Seek($start, 'Begin')
                     $bytes = New-Object byte[] ([int]($length - $start))
                     $read = $stream.Read($bytes, 0, $bytes.Length)
