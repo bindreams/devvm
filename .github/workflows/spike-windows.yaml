@@ -313,6 +313,7 @@ jobs:
           set -euxo pipefail
           qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
           "$WORK/tool/seed_spike.exe" "$WORK/stage.img" \
+            spike/guest/lib.ps1 spike/guest/hook.ps1 \
             "spike/guest/stages/stage-system.ps1" "spike/guest/stages/stage-user.ps1" | tee "$OUT/stage-disk.txt"
           "$qemu_img" create -f qcow2 -b "$WORK/base/base.qcow2" -F qcow2 "$WORK/stage.qcow2"
           cp "$WORK/base/vars.fd" "$WORK/stage-vars.fd"
