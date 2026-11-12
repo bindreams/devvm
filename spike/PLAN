@@ -1,7 +1,7 @@
 legs=en-US,de-DE
 reuse=
+reuse_de-DE=43131311061
 stage=boot1
 m12b=
 cpu=max
 disk=available
-disk_de-DE=id:1

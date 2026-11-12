@@ -180,7 +180,7 @@ class Run:
                         shots += 1
                         image.save(out / f"screen-{shots:04d}.png")
                         last_saved = time.time()
-                    last_hash = digest
+                        last_hash = digest  # only a saved frame counts, so a change inside the minute is saved after it
                     image.close()
                 elif qemu.poll() is None:
                     self.say("screendump: QMP gave no usable reply")

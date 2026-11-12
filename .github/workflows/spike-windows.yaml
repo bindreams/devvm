@@ -21,7 +21,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  WORK: C:/spike
+  # D: has about 220 GB free on the hosted runner; C: has about 20 GB after the downloads.
+  WORK: D:/spike
   BROKER_COMMIT: 9ba824829cb9f0f22a9f97ddc939a5b82434621d
   OPENSSH_URL: https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip
   PWSH_URL: https://github.com/PowerShell/PowerShell/releases/download/v7.7.0/PowerShell-7.7.0-win-x64.zip
@@ -135,10 +136,9 @@ jobs:
         shell: bash
     env:
       LEG: ${{ matrix.leg }}
-      REUSE: ${{ needs.plan.outputs.reuse }}
       STAGE: ${{ needs.plan.outputs.stage }}
       CPU: ${{ needs.plan.outputs.cpu }}
-      OUT: C:/spike/out
+      OUT: D:/spike/out
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -148,12 +148,22 @@ jobs:
           version: 0.13.6
           enable-cache: false
 
+      - name: Read this leg's plan
+        run: |
+          set -euo pipefail
+          get() { sed -n "s/^$1=\(.*\)$/\1/p" spike/PLAN | head -n 1; }
+          reuse=$(get "reuse_$LEG")
+          if [[ -z "$reuse" ]]; then
+              reuse=$(get reuse)
+          fi
+          echo "REUSE_RUN=$reuse" | tee -a "$GITHUB_ENV"
+
       - name: Record the runner
         run: |
           set -euxo pipefail
           mkdir -p "$WORK" "$OUT"
           {
-            echo "leg: $LEG reuse: ${REUSE:-none} stage: ${STAGE:-none} cpu: $CPU"
+            echo "leg: $LEG reuse: ${REUSE_RUN:-none} stage: ${STAGE:-none} cpu: $CPU"
             df -h /c /d || true
             systeminfo | grep -i -e 'total physical memory' -e 'hyper-v' -e 'processor(s)' -A 3 || true
             nproc
@@ -183,7 +193,7 @@ jobs:
       # The install ==============================================================================================
 
       - name: Download the evaluation ISO and the virtio-win ISO
-        if: env.REUSE == ''
+        if: env.REUSE_RUN == ''
         timeout-minutes: 45
         run: |
           set -euxo pipefail
@@ -197,10 +207,10 @@ jobs:
           sha256sum "$WORK/iso/win.iso" | tee "$OUT/iso-sha256.txt"
           curl -X GET -fsSL -o "$WORK/virtio.iso" -w 'final url: %{url_effective}\nbytes: %{size_download}\n' "$VIRTIO_URL" | tee "$OUT/virtio-download.txt"
           sha256sum "$WORK/virtio.iso" | tee "$OUT/virtio-sha256.txt"
-          df -h /c | tee "$OUT/df-after-downloads.txt"
+          df -h /c /d | tee "$OUT/df-after-downloads.txt"
 
       - name: Choose the disk rule
-        if: env.REUSE == ''
+        if: env.REUSE_RUN == ''
         run: |
           set -euo pipefail
           get() { sed -n "s/^$1=\(.*\)$/\1/p" spike/PLAN | head -n 1; }
@@ -211,7 +221,7 @@ jobs:
           echo "DISK_RULE=$rule" | tee -a "$GITHUB_ENV" "$OUT/disk-rule.txt"
 
       - name: Read the image list and render the answer file
-        if: env.REUSE == ''
+        if: env.REUSE_RUN == ''
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -231,13 +241,13 @@ jobs:
           }
 
       - name: Patch the ISO's UEFI boot image to the no-prompt one, in place
-        if: env.REUSE == ''
+        if: env.REUSE_RUN == ''
         run: |
           set -euxo pipefail
           uv run --script spike/patch_iso.py "$WORK/iso/win.iso" "$WORK/iso/win.iso" | tee "$OUT/patch-iso.txt"
 
       - name: Build the answer disk and the blank disk
-        if: env.REUSE == ''
+        if: env.REUSE_RUN == ''
         run: |
           set -euxo pipefail
           qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
@@ -254,10 +264,10 @@ jobs:
           cp "$share/edk2-i386-vars.fd" "$WORK/vars.fd"
 
       - name: Install Windows (M1)
-        if: env.REUSE == ''
-        # The failure bound for Setup and the first logon under nested WHPX: the unmeasured external event. Raise it only
-        # after summary.json shows the run progressing.
-        timeout-minutes: 150
+        if: env.REUSE_RUN == ''
+        # The failure bound for Setup and the first logon under nested WHPX (the de-DE install took 22 minutes). Raise it
+        # only after summary.json shows the run progressing.
+        timeout-minutes: 75
         run: |
           set -euxo pipefail
           uv run --script spike/run_qemu.py install \
@@ -266,7 +276,7 @@ jobs:
             --done DEVVM-BASE-DONE --cpu "$CPU"
 
       - name: Compress the installed disk
-        if: env.REUSE == ''
+        if: env.REUSE_RUN == ''
         run: |
           set -euxo pipefail
           qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
@@ -276,10 +286,10 @@ jobs:
           "$qemu_img" convert -c -O qcow2 "$WORK/disk.qcow2" "$WORK/base/base.qcow2"
           cp "$WORK/vars.fd" "$WORK/base/vars.fd"
           ls -l "$WORK/base" | tee -a "$OUT/disk-size.txt"
-          df -h /c | tee -a "$OUT/disk-size.txt"
+          df -h /c /d | tee -a "$OUT/disk-size.txt"
 
       - name: Upload the installed disk
-        if: env.REUSE == ''
+        if: env.REUSE_RUN == ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: base-${{ matrix.leg }}
@@ -288,10 +298,10 @@ jobs:
           retention-days: 5
 
       - name: Download the installed disk of an earlier run
-        if: env.REUSE != ''
+        if: env.REUSE_RUN != ''
         run: |
           set -euxo pipefail
-          gh run download "$REUSE" -R bindreams/devvm -n "base-$LEG" -D "$WORK/base"
+          gh run download "$REUSE_RUN" -R bindreams/devvm -n "base-$LEG" -D "$WORK/base"
           ls -l "$WORK/base"
 
       # The stage ================================================================================================
@@ -340,7 +350,7 @@ jobs:
       run:
         shell: bash
     env:
-      OUT: C:/spike/out
+      OUT: D:/spike/out
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

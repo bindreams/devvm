@@ -1,5 +1,6 @@
 @echo off
 rem Spike only (never merged). Run from the answer disk by the windowsPE RunSynchronous (WinPE has no PowerShell).
+rem   0. Is found by the answer file at C: too: with a blank system disk the answer disk can be WinPE's C:.
 rem   1. Logs what the serial port looks like in WinPE to winpe.log on the answer disk (attached writable for this).
 rem   2. When partition.flag exists: partitions the one fixed disk of 32 GB or more, whatever number Windows gave it, so
 rem      the answer file need not name a disk (it installs to the first available partition).
