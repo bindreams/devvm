@@ -17,6 +17,9 @@ if not defined W set W=X:
 if "%~1"=="--replay" goto replay
 set LOG=%~dp0winpe.log
 echo winpe.cmd begins> "%LOG%"
+rem pad.bin only reserves room on the answer disk for logcopy.cmd, which copies Setup's logs there as they grow.
+del "%~dp0pad.bin" 2>nul
+start "" /b cmd /c call "%~dp0logcopy.cmd" "%~dp0" >nul 2>&1
 echo -- tools and serial ports>> "%LOG%"
 ver>> "%LOG%"
 if exist "%SystemRoot%\System32\findstr.exe" (echo findstr.exe is present>> "%LOG%") else (echo findstr.exe is absent>> "%LOG%")

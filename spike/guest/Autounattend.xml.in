@@ -10,11 +10,7 @@
       <UILanguage>{{LANG}}</UILanguage>
       <UserLocale>{{LANG}}</UserLocale>
     </component>
-    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-      <DriverPaths>
-{{DRIVER_PATHS_PE}}
-      </DriverPaths>
-    </component>
+{{PNP_WINPE}}
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
 {{DISK_AND_IMAGE}}
       <RunSynchronous>

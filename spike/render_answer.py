@@ -11,12 +11,14 @@ Disk rule (`--disk-rule`):
   available  `winpe.cmd` (on the answer disk) loads the virtio storage driver, partitions the one fixed disk of 32 GB or
              more and Setup installs to the first available partition (`InstallToAvailablePartition`), so Windows' disk
              numbering does not matter.
+  available-nopnp  `available` without the answer file's PnpCustomizationsWinPE driver paths (`winpe.cmd` already loaded
+             viostor with drvload; measures whether loading it twice breaks Setup).
   auto       the same answer file, with no `partition.flag`: whatever Setup does with a blank disk and
              `InstallToAvailablePartition` alone.
   id:N       the answer file's own layout on disk N: only right when the numbering is what the run assumed.
 
 Usage: render_answer.py <install.wim> <template> <answer.xml> <redacted.xml> <image.json> <wim.xml> [--name NAME]
-                        [--disk-rule available|auto|id:N]
+                        [--disk-rule available|available-nopnp|auto|id:N]
 """
 
 import json
@@ -49,6 +51,13 @@ LAYOUT = """      <DiskConfiguration>
         </Disk>
       </DiskConfiguration>
 """
+
+
+PNP_WINPE = """    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <DriverPaths>
+{{DRIVER_PATHS_PE}}
+      </DriverPaths>
+    </component>"""
 
 
 def wim_xml(path: Path) -> bytes:
@@ -106,7 +115,7 @@ def disk_and_image(rule: str, image_name: str) -> str:
         "            </MetaData>\n"
         "          </InstallFrom>\n"
     )
-    if rule in ("available", "auto"):
+    if rule in ("available", "available-nopnp", "auto"):
         install_to = "          <InstallToAvailablePartition>true</InstallToAvailablePartition>\n"
         layout = ""
     elif rule.startswith("id:"):
@@ -158,7 +167,7 @@ def main() -> None:
     filled = {
         "{{LANG}}": image["default_language"],
         "{{DISK_AND_IMAGE}}": disk_and_image(str(rule), image["name"]),
-        "{{DRIVER_PATHS_PE}}": driver_paths("pe"),
+        "{{PNP_WINPE}}": "" if rule == "available-nopnp" else PNP_WINPE.replace("{{DRIVER_PATHS_PE}}", driver_paths("pe")),
         "{{DRIVER_PATHS}}": driver_paths("os"),
     }
     for key, value in filled.items():

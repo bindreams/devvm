@@ -257,14 +257,16 @@ jobs:
         run: |
           set -euxo pipefail
           qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
-          if [[ "$DISK_RULE" == available ]]; then
+          if [[ "$DISK_RULE" == available* ]]; then
               echo partition > "$WORK/answer/partition.flag"
               flag="$WORK/answer/partition.flag"
           else
               flag=
           fi
+          # pad.bin makes the image big enough for the Setup logs logcopy.cmd copies onto it; winpe.cmd deletes it.
+          head -c 50000000 /dev/zero > "$WORK/answer/pad.bin"
           "$WORK/tool/seed_spike.exe" "$WORK/answer.img" \
-            "$WORK/answer/Autounattend.xml" spike/guest/winpe.cmd spike/guest/bootstrap.ps1 spike/guest/lib.ps1 spike/guest/hook.ps1 "$WORK/broker/ssh-broker.exe" ${flag:+"$flag"} | tee "$OUT/answer-disk.txt"
+            "$WORK/answer/Autounattend.xml" spike/guest/winpe.cmd spike/guest/logcopy.cmd "$WORK/answer/pad.bin" spike/guest/bootstrap.ps1 spike/guest/lib.ps1 spike/guest/hook.ps1 "$WORK/broker/ssh-broker.exe" ${flag:+"$flag"} | tee "$OUT/answer-disk.txt"
           "$qemu_img" create -f qcow2 "$WORK/disk.qcow2" 64G
           share=$(dirname "$(find "$WORK/qemu" -name edk2-x86_64-code.fd | head -n 1)")
           cp "$share/edk2-i386-vars.fd" "$WORK/vars.fd"

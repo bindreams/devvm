@@ -4,3 +4,4 @@ stage=boot1,uac:default,uac:autoapprove
 m12b=
 cpu=max
 disk=available
+disk_de-DE-new=available-nopnp
