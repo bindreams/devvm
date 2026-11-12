@@ -2,6 +2,7 @@
 `probe` and `probe_until`. The log is `<out>/<log name>`; the probe is `probe.ps1` on the guest (`key=value` lines).
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -10,6 +11,8 @@ from pathlib import Path
 
 SSH = r"C:\Windows\System32\OpenSSH\ssh.exe"
 PROBE = r"powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\devvm\probe.ps1"
+KILL = r"powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\devvm\killagent.ps1"
+START_TASK = 'powershell.exe -NoProfile -Command "Start-ScheduledTask -TaskName {}"'
 # A failure of these kinds is the answer, not "not yet".
 FATAL = ("REMOTE HOST IDENTIFICATION HAS CHANGED", "Host key verification failed", "Permission denied")
 
@@ -83,3 +86,35 @@ def probe_until(label: str, accept: Callable[[dict[str, str]], bool]) -> dict[st
 
 def in_session(session: str, integrity: str) -> Callable[[dict[str, str]], bool]:
     return lambda seen: (seen.get("session"), seen.get("integrity")) == (session, integrity)
+
+
+def switch_agent(label: str, task: str, accept: Callable[[dict[str, str]], bool]) -> None:
+    """Ends the serving agent (the connection drops), starts `task` from the plain session sshd makes, waits for it."""
+    code, _, _ = ssh(KILL)
+    say(f"{label}: the serving agent was killed (exit {code})")
+    code, _, error = ssh(START_TASK.format(task))
+    say(f"{label}: Start-ScheduledTask {task} exit {code} {error.decode('utf-8', errors='replace').strip()[:200]}")
+    began = time.time()
+    seen = probe_until(label, accept)
+    say(f"{label}: answered in the expected session after {time.time() - began:.1f}s: {seen.get('session')} {seen.get('integrity')}")
+
+
+def serial_log() -> Path:
+    """The guest's serial log of this launch: run_qemu.py writes it beside the driver's output directory
+    (`<run>/stage-<tag>/launch-N/serial.log` for `<run>/stage-<tag>-driver`)."""
+    return out.parent / out.name.removesuffix("-driver") / f"launch-{os.environ.get('DEVVM_LAUNCH', '1')}" / "serial.log"
+
+
+def serial_text() -> str:
+    try:
+        return serial_log().read_text(encoding="utf-8", errors="replace")
+    except OSError:  # QEMU holds it open; the next look gets it
+        return ""
+
+
+def wait_serial_lines(marker: str, count: int) -> None:
+    """Waits until `count` more lines containing `marker` have reached the serial log (the guest's watcher writes one
+    every 10 s). The wait re-checks the log; the stage's own bound ends it if the guest has stopped writing."""
+    target = serial_text().count(marker) + count
+    while serial_text().count(marker) < target:
+        time.sleep(1)  # pacing between looks at the log

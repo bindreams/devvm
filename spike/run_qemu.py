@@ -16,7 +16,8 @@ mode `stage`:   one launch of an existing disk. After `--done` (a marker line) s
                 shutdown CMD issued): wait for QEMU to exit, then launch the same disk again; 76 = the same, and the next
                 launch is without `-no-reboot` (the guest may restart in place); anything else = power down, failed.
                 CMD's stdout lines starting with `QMP:` are QMP commands to run (`QMP:system_reset`); the other lines go
-                to the console. `--ssh-port N` forwards 127.0.0.1:N to the guest's port 22.
+                to the console. `QMP:quit` ends QEMU at once (a guest that cannot shut down, such as one with a stuck
+                sshd) and counts as exit code 0. `--ssh-port N` forwards 127.0.0.1:N to the guest's port 22.
 
 Every launch writes `launch-N/` under the output directory: serial.log, qemu-args.txt, QEMU's stdout and stderr, the QMP
 events with host timestamps, a PNG whenever the screen changed (at most one a minute) and `last.png`. The host clock of
@@ -155,6 +156,7 @@ class Run:
         self.timeline = (self.out / "timeline.txt").open("w", encoding="utf-8")
         self.summary: dict = {"launches": [], "markers": []}
         self.driver_code: int | None = None
+        self.quit_asked = False
 
     def save(self) -> None:
         """Rewrites summary.json, so a run killed by a step timeout still leaves its markers and launch times."""
@@ -172,6 +174,7 @@ class Run:
         for raw in driver.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             if line.startswith("QMP:"):
+                self.quit_asked = self.quit_asked or line[4:].strip() == "quit"
                 reply = qmp.command(line[4:].strip())
                 self.say(f"driver asked for {line[4:].strip()}: {reply}")
             elif line:
@@ -250,6 +253,9 @@ class Run:
             driver.wait()
         if driver is not None and self.driver_code is None:
             self.driver_code = driver.returncode
+        if self.quit_asked:
+            self.driver_code = 0  # the driver asked for the end; its own exit code races with QEMU's
+            self.quit_asked = False
         text, seen = self.read_serial(serial, text, seen)
         self.say(f"launch {n}: QEMU exited with {code} after {time.time() - began:.0f}s")
         self.summary["launches"].append(

@@ -6,7 +6,7 @@ number is `DEVVM_LAUNCH`). The guest boots three times on one disk; each launch'
 with the next restart. Results go to `<out>/driver-<launch>.log`.
 
   launch 1  (`-no-reboot`)  first boot: the agent, the boot id. Then `shutdown /r`: QEMU must exit by itself (M8 a).
-  launch 2  (`-no-reboot`)  boot after a guest restart: sshd before the logon, so the window (M4) is the probes before
+  launch 2  (`-no-reboot`)  boot after a guest restart: sshd (Automatic) before the logon, so the window (M4) is the probes before
                             session 1 answers; a new boot id; the pinned host key still accepted. Then `shutdown /s`.
   launch 3  (in place)      boot after a stop/start (M15's `LastBootUpTime` changes, the host key again, the window
                             again). Then a guest restart without `-no-reboot` (M8 b), then a QMP `system_reset` (M8 b).
@@ -51,7 +51,7 @@ def new_boot(previous: str):
 
 def first_answers(label: str) -> dict[str, str]:
     """Probes until session 1 (Medium) answers; every probe before it is a line of the window."""
-    say(f"{label}: probing from the start of the launch (sshd is started by the guest's boot task)")
+    say(f"{label}: probing from the start of the launch (sshd starts with the service manager on boots 2 and later)")
     seen = probe_until("window", MEDIUM)
     say(f"{label}: agent session (1, Medium) answered {time.time() - begin:.1f}s after the driver started; boot={seen.get('boot')}")
     return seen

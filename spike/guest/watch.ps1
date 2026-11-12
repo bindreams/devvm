@@ -6,11 +6,15 @@
 #   ssh     the sshd service state and the handle and thread counts of its processes
 #   mem     free physical memory in MB
 # A line `DEVVM-WATCH-PROCS` lists the processes with parent, session, age and CPU seconds whenever that list changed.
-# Lines `DEVVM-WATCH-EVENT` are the OpenSSH event log's new entries; `DEVVM-WATCH-LOG` is new text in the broker's logs.
+# A line `DEVVM-WATCH-IO` (every cycle) gives per process the bytes it has read and written (Win32_Process transfer
+# counts: every file, pipe and socket read or write), its thread count and what its threads wait for: where a stream
+# stopped is the process whose reads exceed its writes by the stuck bytes.
+# `DEVVM-WATCH-SSHD` is the last part of the new text in sshd's own log (SyslogFacility LOCAL0, ssh-common.ps1);
+# `DEVVM-WATCH-LOG` is new text in the broker's logs.
 . C:\ProgramData\devvm\lib.ps1
 $names = 'sshd', 'sshd-session', 'sftp-server', 'ssh-broker', 'pwsh', 'powershell', 'emit', 'argv', 'conhost', 'OpenConsole'
 $lastList = ''
-$lastRecord = 0
+$sshdFrom = 0
 $offsets = @{}
 $began = Get-Date
 
@@ -37,12 +41,29 @@ while ($true) {
             Send-Line "DEVVM-WATCH-PROCS $list"
         }
 
-        $events = @(Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.RecordId -gt $lastRecord } | Sort-Object RecordId)
-        foreach ($event in $events) {
-            $lastRecord = $event.RecordId
-            $text = ($event.Message -replace '\s+', ' ')
-            if ($text.Length -gt 220) { $text = $text.Substring(0, 220) }
-            Send-Line "DEVVM-WATCH-EVENT $($event.TimeCreated.ToUniversalTime().ToString('HH:mm:ss')) id$($event.Id) $text"
+        $io = Get-CimInstance Win32_Process -Filter "Name='ssh-broker.exe' OR Name='pwsh.exe' OR Name='emit.exe' OR Name='sshd.exe' OR Name='sshd-session.exe'" |
+            Sort-Object ProcessId | ForEach-Object {
+                $threads = @((Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).Threads)
+                $waits = ($threads | ForEach-Object { if ($_.ThreadState -eq 'Wait') { "W:$($_.WaitReason)" } else { "$($_.ThreadState)" } } | Group-Object | Sort-Object Name | ForEach-Object { "$($_.Name)*$($_.Count)" }) -join '+'
+                "$($_.Name)#$($_.ProcessId) r=$($_.ReadTransferCount) w=$($_.WriteTransferCount) t=$($threads.Count) $waits"
+            }
+        Send-Line "DEVVM-WATCH-IO $($io -join ' ; ')"
+
+        # sshd's own log: what is new since the last look, its last 6000 bytes (the lines just before a stall matter most).
+        $sshdLog = 'C:\ProgramData\ssh\logs\sshd.log'
+        if (Test-Path -LiteralPath $sshdLog) {
+            $length = (Get-Item -LiteralPath $sshdLog).Length
+            if ($length -gt $sshdFrom) {
+                $stream = [IO.File]::Open($sshdLog, 'Open', 'Read', 'ReadWrite')
+                try {
+                    $start = [Math]::Max($sshdFrom, $length - 6000)
+                    [void]$stream.Seek($start, 'Begin')
+                    $bytes = New-Object byte[] ([int]($length - $start))
+                    $read = $stream.Read($bytes, 0, $bytes.Length)
+                    Send-Line "DEVVM-WATCH-SSHD new=$($length - $sshdFrom) $([Text.Encoding]::UTF8.GetString($bytes, 0, $read))"
+                    $sshdFrom = $length
+                } finally { $stream.Close() }
+            }
         }
 
         foreach ($file in Get-ChildItem -LiteralPath 'C:\Users\user\AppData\Local\ssh-broker\logs' -File -ErrorAction SilentlyContinue) {

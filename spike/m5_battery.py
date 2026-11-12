@@ -124,9 +124,9 @@ def megabytes(count: int) -> bytes:
 # The tests ============================================================================================================
 
 
-def bytes_and_streams(carriers: tuple[str, ...], stdin_mib: int = 1) -> None:
-    """All 256 byte values, CRLF, 4 MiB on both streams, and stdin (256 bytes, `stdin_mib` MiB). The 4 MiB stdin test is
-    `stdin_4mib`: it is the one that did not end on a guest once."""
+def bytes_and_streams(carriers: tuple[str, ...]) -> None:
+    """All 256 byte values, CRLF, 4 MiB on both streams, and stdin of 256 bytes. The large stdin tests (`stdin_large`)
+    run last: they are the ones that wedged sshd."""
     all256 = bytes(range(256))
     for carrier in carriers:
         status, out, err = run(carrier, ["emit", "all256"])
@@ -140,17 +140,17 @@ def bytes_and_streams(carriers: tuple[str, ...], stdin_mib: int = 1) -> None:
         want_out, want_err = megabytes(4), b"".join(cr.pattern(k, stream="err") for k in range(4))
         verdict("4mib-both-streams", carrier, out == want_out and err == want_err,
                 f"status={status} stdout={len(out)}/{len(want_out)} ok={out == want_out} stderr={len(err)}/{len(want_err)} ok={err == want_err}", out[:4096], err[:4096])  # fmt: skip
-        for label, data in (("all256", all256), (f"{stdin_mib}mib", megabytes(stdin_mib))):
-            status, out, err = run(carrier, ["emit", "cat"], stdin=data)
-            verdict(f"stdin-{label}", carrier, mask(status) == 0 and out == data,
-                    f"status={status} stdout={len(out)}/{len(data)} ok={out == data} err={show(err)}", out[:4096], err)  # fmt: skip
+        status, out, err = run(carrier, ["emit", "cat"], stdin=all256)
+        verdict("stdin-all256", carrier, mask(status) == 0 and out == all256,
+                f"status={status} stdout={len(out)}/{len(all256)} ok={out == all256} err={show(err)}", out[:4096], err)  # fmt: skip
 
 
-def stdin_4mib(carriers: tuple[str, ...]) -> None:
-    data = megabytes(4)
+def stdin_large(carriers: tuple[str, ...], mib: int) -> None:
+    """`mib` MiB through stdin and back out of `emit cat`."""
+    data = megabytes(mib)
     for carrier in carriers:
         status, out, err = run(carrier, ["emit", "cat"], stdin=data)
-        verdict("stdin-4mib", carrier, mask(status) == 0 and out == data,
+        verdict(f"stdin-{mib}mib", carrier, mask(status) == 0 and out == data,
                 f"status={status} stdout={len(out)}/{len(data)} ok={out == data} err={show(err)}", out[:4096], err)  # fmt: skip
 
 

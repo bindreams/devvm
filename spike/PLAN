@@ -1,6 +1,6 @@
 legs=en-US,de-DE-new
 reuse=43227036274
-stage=m5,restart
+stage=m5,restart,wedge:local,wedge:nobroker,wedge:medium,wedge:elevated
 m12b=
 cpu=max
 disk=available-offline

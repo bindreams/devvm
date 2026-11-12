@@ -50,6 +50,9 @@ def shell() -> None:
         if not interrupted:
             say(f"pty shell: screen after the Ctrl-C byte: {screen.text()[after:][-400:]!r}")
             return
+        # Typed before the prompt is back, a line is lost (run 43260908167: the ALIVE line never reached the shell).
+        prompt = screen.wait(r"PS [A-Za-z]:[^>\r\n]*> ", interrupted.end())
+        say(f"pty shell: the prompt came back after Ctrl-C: {bool(prompt)}")
         say(f"pty shell: shell alive after Ctrl-C: {ask(screen, chan, 'ALIVE', '1+1')}")
 
         chan.send(b"exit 7\r")
@@ -64,7 +67,8 @@ def shell() -> None:
 def exec_with_pty() -> None:
     for label, argv in (("exit-7", ["emit", "exit", "7"]), ("crlf", ["emit", "crlf"]), ("all256", ["emit", "all256"])):
         status, out, err = paramiko_lib.exec_raw(cr.c2(argv), pty=True)
-        say(f"pty exec {label}: status={status} stdout={out[:80]!r} ({len(out)} bytes) stderr={err[:80]!r}")
+        (ssh_lib.out / f"pty-exec-{label}.raw").write_bytes(out)
+        say(f"pty exec {label}: status={status} stdout={out[-80:]!r} ({len(out)} bytes) stderr={err[:80]!r}")
 
 
 def measure() -> None:

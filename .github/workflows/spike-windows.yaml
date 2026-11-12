@@ -370,7 +370,7 @@ jobs:
                   cp "$keys/host.pub" "$keys/ssh_host_ed25519_key.pub"
                   cp "$keys/client.pub" "$keys/authorized_keys"
                   files+=("$keys/ssh_host_ed25519_key" "$keys/ssh_host_ed25519_key.pub" "$keys/authorized_keys" "$WORK/broker/ssh-broker.exe")
-                  files+=(spike/guest/probe.ps1 spike/guest/config.yaml spike/guest/ssh-common.ps1 spike/guest/watch.ps1 spike/guest/killagent.ps1)
+                  files+=(spike/guest/probe.ps1 spike/guest/config.yaml spike/guest/ssh-common.ps1 spike/guest/watch.ps1 spike/guest/killagent.ps1 spike/guest/m5helper.cs)
                   script=$(cat "$dir/DRIVER")
                   driver=(--ssh-port 2222 --driver uv run --script "spike/$script" "$(cygpath -w "$OUT/stage-$tag-driver")" "$(cygpath -w "$keys")" 2222)
               fi

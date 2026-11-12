@@ -1,7 +1,9 @@
 # Spike only (never merged). Stage `restart`, boot task (SYSTEM), on every boot of the stage's launches:
 #   first boot:  C: into the larger disk, `ssh-broker apply`, then the seed and sshd (as the ssh stage did).
-#   later boots: the seed and sshd first thing, before anything else, so that sshd answers before the logon has made
-#                the agent (M4's window). What ran on the first boot is recorded by the marker file.
+#   later boots: sshd starts with the service manager (the first boot sets it to Automatic), before the logon has made
+#                the agent: M4's window. Run 43260908167 had sshd started by this task, 21 s after the agent, so no
+#                window existed. The seed and `Start-Service` still run, for a boot where the files came back empty.
+#                What ran on the first boot is recorded by the marker file.
 # The host side (`restart_driver.py`) drives the launches: restart, shutdown, in-place restart, QMP reset.
 param([Parameter(Mandatory)][string]$Root)
 . C:\ProgramData\devvm\lib.ps1
@@ -16,6 +18,7 @@ if (-not (Test-Path -LiteralPath $marker)) {
     Step 'BASE-SSH-DIR' { Get-ChildItem C:\ProgramData\ssh -ErrorAction SilentlyContinue | Select-Object Name, Length | Out-String }
     Step 'EXTEND-C' { Invoke-ExtendC }
     Step 'BROKER-APPLY' { Invoke-BrokerApply $Root }
+    Step 'SSHD-AUTOMATIC' { Set-Service -Name sshd -StartupType Automatic; (Get-Service sshd).StartType.ToString() }
     Set-Content -LiteralPath $marker -Value (Get-Date -Format o)
 } else {
     Send-Line 'DEVVM-BOOT=later'

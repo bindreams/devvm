@@ -6,7 +6,8 @@
 M5 (the wrapper battery through the broker and `pwsh -c`, carriers C1 and C2 of plan 6.5), M10 (the SFTP server), a pty
 smoke, and the same battery through the two elevated candidates of M6: E-B (the elevated scheduled-task helper, started
 from the Medium session) and E-C (an elevated agent). Results are lines in `<out>/driver.log`; `m5_battery.py` has the
-tests. The 4 MiB stdin test runs last: it did not end on one guest and sshd stopped answering after it.
+tests. The 1 MiB and 4 MiB stdin tests run last, after the Medium agent is back: a command with a large stdin did not
+end on either guest and sshd then stopped answering (run 43260908167); stage `wedge` isolates that.
 
 Usage: m5_driver.py <out dir> <key dir> <port>
 """
@@ -19,7 +20,7 @@ import m5_pty
 import m10_sftp
 import paramiko_lib
 import ssh_lib
-from ssh_lib import in_session, probe_until, say, ssh
+from ssh_lib import in_session, probe_until, say, switch_agent
 
 ssh_lib.init(sys.argv[1], sys.argv[2], sys.argv[3], "driver.log")
 sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -30,21 +31,8 @@ ELEVATED_AGENT = ("C1/EC", "C2/EC")
 HELPER = ("EB",)
 AT_MEDIUM = in_session("1", "S-1-16-8192")
 AT_HIGH = in_session("1", "S-1-16-12288")
-KILL = r"powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\devvm\killagent.ps1"
-START_TASK = 'powershell.exe -NoProfile -Command "Start-ScheduledTask -TaskName {}"'
 # Padding sizes (characters added to the script) around the length where the command stopped arriving.
 SIZES = (1_000, 8_000, 16_000, 30_000, 32_000, 32_100, 32_200, 32_300, 32_400, 32_500, 40_000, 130_000)
-
-
-def switch_agent(label: str, task: str, accept) -> None:
-    """Ends the serving agent (the connection drops), starts `task` from the plain session sshd makes, waits for it."""
-    code, _, _ = ssh(KILL)
-    say(f"{label}: the serving agent was killed (exit {code})")
-    code, _, error = ssh(START_TASK.format(task))
-    say(f"{label}: Start-ScheduledTask {task} exit {code} {error.decode('utf-8', errors='replace').strip()[:200]}")
-    began = time.time()
-    seen = probe_until(label, accept)
-    say(f"{label}: answered in the expected session after {time.time() - began:.1f}s: {seen.get('session')} {seen.get('integrity')}")
 
 
 def elevated_battery(carriers: tuple[str, ...], integrity: str) -> None:
@@ -83,12 +71,19 @@ if paramiko_lib.reachable():
     switch_agent("E-C", "devvm-agent-elevated", AT_HIGH)
     elevated_battery(ELEVATED_AGENT, "S-1-16-12288")
     b.section("M5 longest command", lambda: b.longest_command(ELEVATED_AGENT, (16_000, 32_000)))
-    switch_agent("Medium again", "devvm-agent-medium", AT_MEDIUM)
+    if paramiko_lib.reachable():
+        switch_agent("Medium again", "devvm-agent-medium", AT_MEDIUM)
+    else:
+        say("Medium again SKIPPED: sshd does not send its banner")
 else:
     say("E-C SKIPPED: sshd does not send its banner")
 
-# The 4 MiB stdin tests, last. =========================================================================================
-b.section("M5 stdin 4 MiB", lambda: b.stdin_4mib(MEDIUM + HELPER))
+# The large stdin tests, last: one of them can leave sshd not answering, and nothing after it could run. ===============
+# E-C's large stdin is stage `wedge`'s elevated variant.
+b.section("M5 stdin 1 MiB", lambda: b.stdin_large(MEDIUM + HELPER, 1))
+b.section("M5 stdin 4 MiB", lambda: b.stdin_large(MEDIUM + HELPER, 4))
 
 b.summary()
 say("done")
+if not paramiko_lib.reachable():
+    print("QMP:quit", flush=True)  # a guest with a wedged sshd may not shut down: end QEMU

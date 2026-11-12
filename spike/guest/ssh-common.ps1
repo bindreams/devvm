@@ -51,20 +51,23 @@ function Invoke-Seed([string]$Root) {
     }
 }
 
-function Invoke-SshdStart {
-    # More of sshd's own account of a connection (the OpenSSH/Operational event log), for the watcher.
+function Invoke-SshdStart([string]$LogLevel = 'DEBUG1') {
+    # More of sshd's own account of a connection, for the watcher. The event log channel (OpenSSH/Operational) stayed
+    # empty on both guests (run 43260908167), so: `SyslogFacility LOCAL0` makes sshd write C:\ProgramData\ssh\logs\sshd.log.
     $config = 'C:\ProgramData\ssh\sshd_config'
-    if ((Test-Path -LiteralPath $config) -and -not (Select-String -Path $config -Pattern '^\s*LogLevel\s+DEBUG1' -Quiet)) {
-        # Before the first Match block: the keyword belongs to the global part.
+    if (Test-Path -LiteralPath $config) {
         $lines = [System.Collections.Generic.List[string]](Get-Content -LiteralPath $config)
+        $lines.RemoveAll({ param($line) $line -match '^\s*(LogLevel|SyslogFacility)\s' }) | Out-Null
+        # Before the first Match block: the keywords belong to the global part.
         $at = $lines.FindIndex({ param($line) $line -match '^\s*Match\s' })
         if ($at -lt 0) { $at = $lines.Count }
-        $lines.Insert($at, 'LogLevel DEBUG1')
+        $lines.Insert($at, "LogLevel $LogLevel")
+        $lines.Insert($at, 'SyslogFacility LOCAL0')
         Set-Content -LiteralPath $config -Value $lines -Encoding ascii
     }
     Start-Service sshd
     Get-Service sshd | Select-Object Name, Status, StartType | Out-String
-    Select-String -Path 'C:\ProgramData\ssh\sshd_config' -Pattern '^\s*(Subsystem|Match|ForceCommand|AuthorizedKeysFile|PubkeyAuthentication|HostKey)' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }
+    Select-String -Path 'C:\ProgramData\ssh\sshd_config' -Pattern '^\s*(Subsystem|Match|ForceCommand|AuthorizedKeysFile|PubkeyAuthentication|HostKey|LogLevel|SyslogFacility)' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }
 }
 
 # The guest's own view next to the host's measurements: watch.ps1 as a SYSTEM task, one line per 10 s on the serial log.

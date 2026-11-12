@@ -3,6 +3,8 @@
 symlink). Every line is `M10 <what>: ok <result>` or `M10 <what>: <exception>: <message>` in `<out>/driver.log`.
 """
 
+import re
+
 import paramiko
 
 import m5_carriers as cr
@@ -16,6 +18,11 @@ FORMS = [
     "c:/users/user/m10/forms.txt", r"\Users\user\m10\forms.txt", "/Users/user/m10/forms.txt", "m10/forms.txt",
     r"m10\forms.txt", "~/m10/forms.txt", "./m10/forms.txt", "/c/Users/user/m10/forms.txt",
 ]  # fmt: skip
+
+
+def plain(data: bytes) -> str:
+    """Text without the terminal colour sequences PowerShell puts in its error messages."""
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", data.decode("utf-8", errors="replace"))
 
 
 def attempt(what: str, action):
@@ -151,7 +158,7 @@ def diagnose(client: paramiko.SSHClient) -> None:
     for label, carrier in (("C1", cr.c1), ("C2", cr.c2)):
         script = carrier([r"C:\Program Files\OpenSSH\sftp-server.exe"])
         status, out, err = paramiko_lib.exec_raw(script, SFTP_INIT)
-        say(f"M10 diag: sftp-server.exe as a command through {label} (exit {status}): stdout {out!r} stderr {err[:300]!r}")
+        say(f"M10 diag: sftp-server.exe as a command through {label} (exit {status}): stdout {out!r} stderr {plain(err)[:1500]!r}")
 
 
 def measure() -> None:

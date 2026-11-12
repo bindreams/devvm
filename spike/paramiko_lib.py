@@ -72,6 +72,8 @@ def exec_raw(command: str, stdin: bytes = b"", pty: bool = False) -> tuple[int, 
                 data = read(65536)
                 if not data:
                     return
+                if pty and Screen.DSR in data:
+                    chan.send(b"\x1b[1;1R")  # ConPTY asks for the cursor position and waits for the answer
                 sink += data
                 LAST[key] = len(sink)
 
