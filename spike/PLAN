@@ -1,6 +1,7 @@
 legs=en-US,de-DE-new
 reuse=43227036274
-stage=m5,wedge:echo,wedge:nobroker.d3,wedge:nobroker.d1,wedge:medium.d3,wedge:nobroker.b95,wedge:medium.b95,wedge:nobroker.inbox,wedge:medium.inbox,wedge:nobroker.p98,wedge:medium.p98,wedge:nobroker.p100,wedge:medium.p100
+stage=wedge:nobroker.d3.dump.pkt,wedge:medium.d3.dump,wedge:nobroker.dump.eof
 m12b=
 cpu=max
 disk=available-offline
+stacks_from=

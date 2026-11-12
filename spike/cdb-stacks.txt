@@ -1,0 +1,15 @@
+$$ Spike only (never merged). Commands cdb runs on each hang dump (stacks.sh: cdb -z <dump> -y <symbols> -cf this file).
+$$ The text is read for the call every thread of the process waits in; `lm` says per module whether its symbols are private
+$$ pdb symbols, export symbols or none.
+.reload /f
+.echo ==== process
+|
+.echo ==== modules
+lm
+.echo ==== threads
+~
+.echo ==== all threads, call stacks
+~*kn 80
+.echo ==== all threads, call stacks with parameters
+~*kP 80
+q

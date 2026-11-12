@@ -9,12 +9,13 @@
 # A line `DEVVM-WATCH-IO` (every cycle) gives per process the bytes it has read and written (Win32_Process transfer
 # counts: every file, pipe and socket read or write), its thread count and what its threads wait for: where a stream
 # stopped is the process whose reads exceed its writes by the stuck bytes.
-# `DEVVM-WATCH-SSHD` is the last part of the new text in sshd's own log (SyslogFacility LOCAL0, ssh-common.ps1);
+# `DEVVM-WATCH-SSHD <file>` is the last part of the new text in one of sshd's own logs (SyslogFacility LOCAL0,
+# ssh-common.ps1): sshd.log is the listener's, sshd-session.log the monitors' and sessions' (sshd-auth.log where it exists);
 # `DEVVM-WATCH-LOG` is new text in the broker's logs.
 . C:\ProgramData\devvm\lib.ps1
 $names = 'sshd', 'sshd-session', 'sftp-server', 'ssh-broker', 'pwsh', 'powershell', 'emit', 'argv', 'devvm-echo', 'conhost', 'OpenConsole'
 $lastList = ''
-$sshdFrom = 0
+$sshdFrom = @{}
 $offsets = @{}
 $began = Get-Date
 
@@ -49,19 +50,20 @@ while ($true) {
             }
         Send-Line "DEVVM-WATCH-IO $($io -join ' ; ')"
 
-        # sshd's own log: what is new since the last look, its last 12000 bytes (the lines just before a stall matter most).
-        $sshdLog = 'C:\ProgramData\ssh\logs\sshd.log'
-        if (Test-Path -LiteralPath $sshdLog) {
-            $length = (Get-Item -LiteralPath $sshdLog).Length
-            if ($length -gt $sshdFrom) {
-                $stream = [IO.File]::Open($sshdLog, 'Open', 'Read', 'ReadWrite')
+        # sshd's own logs, one file per program: what is new since the last look, its last 12000 bytes (the lines just
+        # before a stall matter most). The first field of every line is the writing process's pid.
+        foreach ($log in Get-ChildItem -LiteralPath 'C:\ProgramData\ssh\logs' -Filter '*.log' -File -ErrorAction SilentlyContinue) {
+            $logFrom = if ($sshdFrom.ContainsKey($log.Name)) { $sshdFrom[$log.Name] } else { 0 }
+            $length = $log.Length
+            if ($length -gt $logFrom) {
+                $stream = [IO.File]::Open($log.FullName, 'Open', 'Read', 'ReadWrite')
                 try {
-                    $start = [Math]::Max($sshdFrom, $length - 12000)
+                    $start = [Math]::Max($logFrom, $length - 12000)
                     [void]$stream.Seek($start, 'Begin')
                     $bytes = New-Object byte[] ([int]($length - $start))
                     $read = $stream.Read($bytes, 0, $bytes.Length)
-                    Send-Line "DEVVM-WATCH-SSHD new=$($length - $sshdFrom) $([Text.Encoding]::UTF8.GetString($bytes, 0, $read))"
-                    $sshdFrom = $length
+                    Send-Line "DEVVM-WATCH-SSHD $($log.Name) new=$($length - $logFrom) $([Text.Encoding]::UTF8.GetString($bytes, 0, $read))"
+                    $sshdFrom[$log.Name] = $length
                 } finally { $stream.Close() }
             }
         }

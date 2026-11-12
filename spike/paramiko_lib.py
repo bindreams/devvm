@@ -54,8 +54,10 @@ def reachable() -> bool:
         return False
 
 
-def exec_raw(command: str, stdin: bytes = b"", pty: bool = False) -> tuple[int, bytes, bytes]:
-    """Runs `command` as an SSH exec request. Returns the exit status as sent (unsigned 32 bits), stdout, stderr."""
+def exec_raw(command: str, stdin: bytes = b"", pty: bool = False, eof_after_echo: bool = False) -> tuple[int, bytes, bytes]:
+    """Runs `command` as an SSH exec request. Returns the exit status as sent (unsigned 32 bits), stdout, stderr.
+    With `eof_after_echo` the stdin EOF is sent only once as many stdout bytes have come back as stdin bytes were sent
+    (for a program that echoes), or the channel ended: no EOF reaches the server while the transfer is going on."""
     client = connect()
     LAST.clear()
     LAST.update(sent=0, out=0, err=0, closed=False)
@@ -67,21 +69,29 @@ def exec_raw(command: str, stdin: bytes = b"", pty: bool = False) -> tuple[int, 
         out = bytearray()
         err = bytearray()
 
+        moved = threading.Condition()  # notified on every arrival and when a stream ends
+
         def pump(read, sink: bytearray, key: str) -> None:
             while True:
                 data = read(65536)
+                if data and pty and Screen.DSR in data:
+                    chan.send(b"\x1b[1;1R")  # ConPTY asks for the cursor position and waits for the answer
+                with moved:
+                    sink += data
+                    LAST[key] = len(sink)
+                    moved.notify_all()
                 if not data:
                     return
-                if pty and Screen.DSR in data:
-                    chan.send(b"\x1b[1;1R")  # ConPTY asks for the cursor position and waits for the answer
-                sink += data
-                LAST[key] = len(sink)
 
         def feed() -> None:
             try:
                 for start in range(0, len(stdin), CHUNK):
                     chan.sendall(stdin[start:start + CHUNK])
                     LAST["sent"] = min(start + CHUNK, len(stdin))
+                if eof_after_echo:
+                    # The wait re-checks the real condition; the bound below closes the channel, which ends the pump.
+                    with moved:
+                        moved.wait_for(lambda: len(out) >= len(stdin) or chan.closed or chan.eof_received)
                 chan.shutdown_write()
             except (OSError, EOFError):  # the command ended, or the channel was closed on the bound below
                 pass

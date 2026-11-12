@@ -88,6 +88,20 @@ function Start-Watcher {
     (Get-ScheduledTask -TaskName 'devvm-watch').State
 }
 
+# E1 of the wedge root-cause run: hangdump.ps1 as a SYSTEM task. It waits for a stalled transfer, then dumps sshd and
+# sshd-session (procdump64.exe from the stage disk) and sends the dumps and logs to the host (wedge_driver.py).
+function Start-HangDump([string]$Root, [bool]$Capture) {
+    Copy-Item -LiteralPath (Join-Path $Root 'hangdump.ps1'), (Join-Path $Root 'procdump64.exe') -Destination C:\ProgramData\devvm -Force
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\devvm\hangdump.ps1'
+    if ($Capture) { $arguments += ' -Pkt' }
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName 'devvm-hangdump' -Action $action -Settings $settings -Force `
+        -Principal (New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest) | Out-Null
+    Start-ScheduledTask -TaskName 'devvm-hangdump'
+    (Get-ScheduledTask -TaskName 'devvm-hangdump').State
+}
+
 # An agent on demand (no trigger; the host starts it): elevated for M6 E-C, plain to put the Medium agent back afterwards.
 function Register-AgentTask([string]$Name, [string]$RunLevel) {
     $action = New-ScheduledTaskAction -Execute 'C:\ProgramData\ssh-broker\ssh-broker.exe' -Argument 'agent'

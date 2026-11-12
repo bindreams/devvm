@@ -6,8 +6,12 @@
 #   elevated   the same through the elevated agent (the host switches the agent first)
 #   local      no sshd in the path: stage-user.ps1 runs the shim itself with pipes, from the user's own session
 # The variant is `<path>` plus dot-separated options (variant.txt, e.g. `medium.b95`):
-#   d1 | d3   sshd logs at DEBUG1 | DEBUG3 to C:\ProgramData\ssh\logs\sshd.log, and the watcher keeps the last part of it
+#   d1 | d3   sshd logs at DEBUG1 | DEBUG3 to C:\ProgramData\ssh\logs\<program>.log (sshd.log for the listener,
+#             sshd-session.log for the sessions), and the watcher keeps the last part of each
 #             (no option: sshd's default log level, the setting every earlier hang was seen with)
+#   dump      hangdump.ps1: on a stalled transfer, procdump -ma of every sshd process and the logs, sent to the host (E1)
+#   pkt       with `dump`: a pktmon capture of port 22 per stalled episode, written and converted by hangdump.ps1 (E3)
+#   eof       the host client sends the stdin EOF only after the whole echo came back (E2; the host's option, nothing here)
 #   b95 | p98 | p100 | inbox   a different sshd instead of the base's pinned 10.4.0.0p1-Preview (the wedge remedies)
 param([Parameter(Mandatory)][string]$Root)
 . C:\ProgramData\devvm\lib.ps1
@@ -21,6 +25,8 @@ $tokens = $full.Split('.')
 $variant = $tokens[0]
 $sshdKey = $tokens | Where-Object { $_ -in 'b95', 'p98', 'p100', 'inbox' } | Select-Object -First 1
 $logLevel = if ($tokens -contains 'd3') { 'DEBUG3' } elseif ($tokens -contains 'd1') { 'DEBUG1' } else { '' }
+$dump = $tokens -contains 'dump'
+$capture = $tokens -contains 'pkt'
 Send-Line "DEVVM-WEDGE-VARIANT=$full path=$variant sshd=$sshdKey loglevel=$logLevel"
 
 # The sshd to measure. Win32-OpenSSH zips from GitHub, pinned by sha256 (10.0.0.0p2's is the release's own digest; the
@@ -107,4 +113,5 @@ if ($variant -eq 'nobroker') {
 Step 'SEED' { Invoke-Seed $Root }
 Step 'SSHD-START' { Invoke-SshdStart $logLevel }
 Step 'WATCHER' { Start-Watcher }
+if ($dump) { Step 'HANGDUMP' { Start-HangDump $Root $capture } }
 Send-Line 'DEVVM-SSH-STARTED'

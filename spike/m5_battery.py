@@ -66,12 +66,12 @@ def note_wedge() -> None:
     say(f"host: TCP connections on the forwarded port {ssh_lib.port} by state: {states}")
 
 
-def run_script(script: str, stdin: bytes = b"") -> tuple[int, bytes, bytes]:
+def run_script(script: str, stdin: bytes = b"", eof_after_echo: bool = False) -> tuple[int, bytes, bytes]:
     """exec_raw, with a command that did not end reported as status -2 and the reason on stderr. A guest that does not
     send its banner raises Wedged: that is not a result of the command."""
     began = time.monotonic()
     try:
-        return paramiko_lib.exec_raw(script, stdin)
+        return paramiko_lib.exec_raw(script, stdin, eof_after_echo=eof_after_echo)
     except paramiko_lib.Wedged:
         note_wedge()
         raise
