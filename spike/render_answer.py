@@ -7,7 +7,13 @@ The WIM header holds the XML resource's size, flags and offset at byte 0x48 (7-b
 8-byte original size); the XML is UTF-16LE. The answer file takes its language from the chosen image's default language
 and installs the image by NAME, so nothing in it is English-only.
 
+Disk rule (`--disk-rule`):
+  available  `winpe.cmd` (on the answer disk) partitions the one fixed disk of 32 GB or more and Setup installs to the
+             first available partition (`InstallToAvailablePartition`), so Windows' disk numbering does not matter.
+  id:N       the answer file's own layout on disk N: only right when the numbering is what the run assumed.
+
 Usage: render_answer.py <install.wim> <template> <answer.xml> <redacted.xml> <image.json> <wim.xml> [--name NAME]
+                        [--disk-rule available|id:N]
 """
 
 import json
@@ -21,6 +27,25 @@ from xml.sax.saxutils import escape
 COMPRESSED = 0x04
 VIRTIO_LETTERS = "DEFGH"
 VIRTIO_DIRS = ("viostor", "NetKVM")
+
+LAYOUT = """      <DiskConfiguration>
+        <WillShowUI>OnError</WillShowUI>
+        <Disk wcm:action="add">
+          <DiskID>{{DISK}}</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>100</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Label>System</Label><Format>FAT32</Format></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>3</Order><PartitionID>3</PartitionID><Label>Windows</Label><Letter>C</Letter><Format>NTFS</Format></ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+"""
 
 
 def wim_xml(path: Path) -> bytes:
@@ -69,13 +94,43 @@ def driver_paths(prefix: str) -> str:
     return "\n".join(entries)
 
 
+def disk_and_image(rule: str, image_name: str) -> str:
+    install_from = (
+        "          <InstallFrom>\n"
+        '            <MetaData wcm:action="add">\n'
+        "              <Key>/IMAGE/NAME</Key>\n"
+        f"              <Value>{escape(image_name)}</Value>\n"
+        "            </MetaData>\n"
+        "          </InstallFrom>\n"
+    )
+    if rule == "available":
+        install_to = "          <InstallToAvailablePartition>true</InstallToAvailablePartition>\n"
+        layout = ""
+    elif rule.startswith("id:"):
+        disk = int(rule[3:])
+        install_to = (
+            f"          <InstallTo>\n            <DiskID>{disk}</DiskID>\n            <PartitionID>3</PartitionID>\n"
+            "          </InstallTo>\n"
+        )
+        layout = LAYOUT.replace("{{DISK}}", str(disk))
+    else:
+        raise SystemExit(f"unknown disk rule {rule!r}")
+    return layout + "      <ImageInstall>\n        <OSImage>\n" + install_to + install_from + "        </OSImage>\n      </ImageInstall>"
+
+
+def option(args: list[str], flag: str, default: str | None) -> str | None:
+    if flag not in args:
+        return default
+    at = args.index(flag)
+    value = args[at + 1]
+    del args[at : at + 2]
+    return value
+
+
 def main() -> None:
     args = sys.argv[1:]
-    name = None
-    if "--name" in args:
-        at = args.index("--name")
-        name = args[at + 1]
-        del args[at : at + 2]
+    name = option(args, "--name", None)
+    rule = option(args, "--disk-rule", "available")
     wim, template, answer, redacted, image_json, xml_out = map(Path, args)
 
     raw = wim_xml(wim)
@@ -99,7 +154,7 @@ def main() -> None:
     text = template.read_text(encoding="utf-8")
     filled = {
         "{{LANG}}": image["default_language"],
-        "{{IMAGE_NAME}}": escape(image["name"]),
+        "{{DISK_AND_IMAGE}}": disk_and_image(str(rule), image["name"]),
         "{{DRIVER_PATHS_PE}}": driver_paths("pe"),
         "{{DRIVER_PATHS}}": driver_paths("os"),
     }
@@ -107,7 +162,7 @@ def main() -> None:
         text = text.replace(key, value)
     answer.write_text(text.replace("{{PASSWORD}}", password), encoding="utf-8")
     redacted.write_text(text.replace("{{PASSWORD}}", "REDACTED"), encoding="utf-8")
-    print(f"chosen: {image}")
+    print(f"chosen: {image}; disk rule: {rule}")
 
 
 main()

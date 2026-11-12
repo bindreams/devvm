@@ -199,6 +199,17 @@ jobs:
           sha256sum "$WORK/virtio.iso" | tee "$OUT/virtio-sha256.txt"
           df -h /c | tee "$OUT/df-after-downloads.txt"
 
+      - name: Choose the disk rule
+        if: env.REUSE == ''
+        run: |
+          set -euo pipefail
+          get() { sed -n "s/^$1=\(.*\)$/\1/p" spike/PLAN | head -n 1; }
+          rule=$(get "disk_$LEG")
+          if [[ -z "$rule" ]]; then
+              rule=$(get disk)
+          fi
+          echo "DISK_RULE=$rule" | tee -a "$GITHUB_ENV" "$OUT/disk-rule.txt"
+
       - name: Read the image list and render the answer file
         if: env.REUSE == ''
         shell: pwsh
@@ -212,7 +223,8 @@ jobs:
             $letter = ($image | Get-Volume).DriveLetter
             Get-ChildItem "${letter}:\sources" | Select-Object Name, Length | Out-String | Tee-Object -FilePath "$out/iso-sources.txt"
             uv run --script spike/render_answer.py "${letter}:\sources\install.wim" spike/guest/Autounattend.xml.in `
-              "$env:WORK/answer/Autounattend.xml" "$out/Autounattend.redacted.xml" "$out/image.json" "$out/install-wim.xml"
+              "$env:WORK/answer/Autounattend.xml" "$out/Autounattend.redacted.xml" "$out/image.json" "$out/install-wim.xml" `
+              --disk-rule $env:DISK_RULE
             if ($LASTEXITCODE -ne 0) { throw "render_answer.py failed with $LASTEXITCODE" }
           } finally {
             Dismount-DiskImage -ImagePath $iso | Out-Null
@@ -229,8 +241,14 @@ jobs:
         run: |
           set -euxo pipefail
           qemu_img=$(find "$WORK/qemu" -name qemu-img.exe | head -n 1)
+          if [[ "$DISK_RULE" == available ]]; then
+              echo partition > "$WORK/answer/partition.flag"
+              flag="$WORK/answer/partition.flag"
+          else
+              flag=
+          fi
           "$WORK/tool/seed_spike.exe" "$WORK/answer.img" \
-            "$WORK/answer/Autounattend.xml" spike/guest/bootstrap.ps1 spike/guest/lib.ps1 spike/guest/hook.ps1 | tee "$OUT/answer-disk.txt"
+            "$WORK/answer/Autounattend.xml" spike/guest/winpe.cmd spike/guest/bootstrap.ps1 spike/guest/lib.ps1 spike/guest/hook.ps1 ${flag:+"$flag"} | tee "$OUT/answer-disk.txt"
           "$qemu_img" create -f qcow2 "$WORK/disk.qcow2" 64G
           share=$(dirname "$(find "$WORK/qemu" -name edk2-x86_64-code.fd | head -n 1)")
           cp "$share/edk2-i386-vars.fd" "$WORK/vars.fd"
@@ -244,7 +262,7 @@ jobs:
           set -euxo pipefail
           uv run --script spike/run_qemu.py install \
             --qemu-dir "$WORK/qemu" --out "$OUT/install" --disk "$WORK/disk.qcow2" --vars "$WORK/vars.fd" \
-            --install-iso "$WORK/iso/win.iso" --virtio-iso "$WORK/virtio.iso" --usb-disk "$WORK/answer.img" \
+            --install-iso "$WORK/iso/win.iso" --virtio-iso "$WORK/virtio.iso" --usb-disk "$WORK/answer.img" --usb-writable \
             --done DEVVM-BASE-DONE --cpu "$CPU"
 
       - name: Compress the installed disk
@@ -295,6 +313,16 @@ jobs:
       - name: Stop QEMU
         if: always()
         run: taskkill //F //IM qemu-system-x86_64.exe || true
+
+      # winpe.cmd logs onto the writable answer disk; 7-Zip reads the FAT image.
+      - name: Collect the answer disk's files
+        if: always()
+        run: |
+          set -x
+          if [[ -f "$WORK/answer.img" ]]; then
+              cp "$WORK/answer.img" "$OUT/answer-after.img"
+              "/c/Program Files/7-Zip/7z.exe" x -y "-o$OUT/answer-disk-files" "$WORK/answer.img" || true
+          fi
 
       - name: Upload the logs
         if: always()

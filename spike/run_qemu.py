@@ -17,7 +17,7 @@ every serial line goes to the console and to `timeline.txt`. The run has no dead
 timeout is the failure bound.
 
 Usage: run_qemu.py <install|stage> --qemu-dir D --out D --disk F --vars F [--install-iso F] [--install-format raw|qcow2]
-                   [--virtio-iso F] [--usb-disk F] [--done TEXT] [--single] [--cpu CPU] [--smp N] [--mem MiB]
+                   [--virtio-iso F] [--usb-disk F [--usb-writable]] [--done TEXT] [--single] [--cpu CPU] [--smp N] [--mem MiB]
 """
 
 import argparse
@@ -124,7 +124,7 @@ def qemu_args(a: argparse.Namespace, out: Path, with_install_media: bool) -> lis
         ]  # fmt: skip
     if a.usb_disk:
         args += [
-            "-drive", f"if=none,id=usb0,file={a.usb_disk},format=raw,readonly=on",
+            "-drive", f"if=none,id=usb0,file={a.usb_disk},format=raw,readonly={'off' if a.usb_writable else 'on'}",
             "-device", "usb-storage,drive=usb0,removable=on,bus=xhci.0",
         ]  # fmt: skip
     return args

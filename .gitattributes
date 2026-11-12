@@ -1,1 +1,2 @@
 * text=auto eol=lf
+spike/guest/*.cmd text eol=crlf
