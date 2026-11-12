@@ -10,25 +10,45 @@ use super::isolate::isolate;
 use super::unicode::UNICODE_DIR;
 
 pub struct Home {
-    _tmp: skuld::TempDir,
+    _tmp: Option<skuld::TempDir>,
     pub root: PathBuf,
+    /// `XDG_CACHE_HOME`, where it is not `<root>/cache`.
+    cache: Option<PathBuf>,
+    /// `XDG_RUNTIME_DIR`, where it is not `<root>/run`.
+    run: Option<PathBuf>,
 }
 
 pub fn home() -> Home {
     let tmp = skuld::TempDir::new().unwrap();
     let root = tmp.join(UNICODE_DIR);
     std::fs::create_dir(&root).unwrap();
-    Home { _tmp: tmp, root }
+    Home {
+        _tmp: Some(tmp),
+        root,
+        cache: None,
+        run: None,
+    }
 }
 
 impl Home {
+    /// The directories of a test that made `root` itself and keeps it alive: its cache is `cache`, which other
+    /// processes share, and its runtime directory is `run`, which exists and is short enough for a control socket.
+    pub fn at(root: &Path, cache: &Path, run: &Path) -> Home {
+        Home {
+            _tmp: None,
+            root: root.to_path_buf(),
+            cache: Some(cache.to_path_buf()),
+            run: Some(run.to_path_buf()),
+        }
+    }
+
     pub fn state(&self) -> PathBuf {
         self.root.join("state").join("devvm")
     }
 
     /// devvm's runtime directory, which `reap` sweeps.
     pub fn run(&self) -> PathBuf {
-        self.root.join("run").join("devvm")
+        self.run.clone().unwrap_or_else(|| self.root.join("run")).join("devvm")
     }
 
     pub fn config_file(&self) -> PathBuf {
@@ -41,11 +61,23 @@ impl Home {
         path
     }
 
-    pub fn devvm(&self, cwd: &Path, args: &[&str]) -> Output {
+    /// The command `devvm <args>` in `cwd`, with no stdin.
+    pub fn command(&self, cwd: &Path, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_devvm"));
         command.current_dir(cwd).args(args).env_remove("DEVVM_STATUS_FILE");
         isolate(&mut command, &self.root);
-        command.stdin(Stdio::null()).output().unwrap()
+        if let Some(cache) = &self.cache {
+            command.env("XDG_CACHE_HOME", cache);
+        }
+        if let Some(run) = &self.run {
+            command.env("XDG_RUNTIME_DIR", run);
+        }
+        command.stdin(Stdio::null());
+        command
+    }
+
+    pub fn devvm(&self, cwd: &Path, args: &[&str]) -> Output {
+        self.command(cwd, args).output().unwrap()
     }
 }
 

@@ -16,8 +16,12 @@ pub mod name_change;
 pub mod other_account;
 pub mod qemu;
 pub mod refusing;
+pub mod roots;
 pub mod sshd;
 pub mod stub_backend;
 pub mod symlink;
 pub mod transport;
 pub mod unix_files;
+
+// `roots.rs` names `super::UNICODE_DIR`, as it does in the test binary that includes it.
+use fixtures::UNICODE_DIR;

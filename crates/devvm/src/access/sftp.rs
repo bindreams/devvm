@@ -58,7 +58,7 @@ use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "sftp_tests.rs"]
-mod sftp_tests;
+pub(crate) mod sftp_tests;
 
 const POSIX_RENAME: &str = "posix-rename@openssh.com";
 /// How much of a file is read or written in one go; the SFTP library splits it into packets and keeps several in

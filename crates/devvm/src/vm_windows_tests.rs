@@ -1194,6 +1194,7 @@ fn an_unready_guest_reports_what_it_awaited_and_the_serial_log(#[fixture(unicode
         fx.guests.clone(),
         Arc::new(MemoryProgress::default()),
         std::time::Duration::from_millis(300),
+        Arc::new(crate::engine::NoHooks),
     );
 
     let error = Instance::open_in(&engine, "foo")
@@ -1343,6 +1344,35 @@ fn an_ssh_config_refusal_is_shown_and_the_instance_still_starts(#[fixture(unicod
         "{messages:?}"
     );
     assert!(running(&recorded(&instance).unwrap()));
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
+fn an_ssh_config_refusal_and_a_failed_entry_write_are_both_shown(#[fixture(unicode_home)] home: &Path) {
+    // `%` in the state directory: `ensure_top_level` refuses. A directory where `foo.conf` goes: the entry cannot be
+    // written either.
+    let home = home.join("100%");
+    std::fs::create_dir(&home).unwrap();
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(&home, progress.clone());
+    instance_in(&fx, "foo", &home);
+    std::fs::create_dir_all(fx.env.dirs.ssh().join("foo.conf")).unwrap();
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance
+        .start()
+        .expect("the embedded client does not read the ssh configuration");
+
+    let messages = progress.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.starts_with("instance foo: cannot write the ssh configuration:")
+                && m.find("ssh cannot include portably") < m.find("foo.conf")
+                && m.contains("ssh cannot include portably")
+                && m.ends_with(" as well")),
+        "{messages:?}"
+    );
     instance.remove().unwrap();
 }
 
