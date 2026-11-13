@@ -11,7 +11,7 @@ use crate::contain::Lifetime;
 use crate::host::{Accel, Comparison, FileId, Hold, HoldOutcome, Host, is_absent, symlink_metadata_if_present};
 use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
-use crate::{Arch, ErrorKind, Network, Result};
+use crate::{Arch, Error, ErrorKind, Network, Result};
 
 #[cfg(test)]
 #[path = "backend_tests.rs"]
@@ -98,16 +98,87 @@ pub(crate) trait Storage: Send + Sync {
     fn create_blank_disk(&self, size: u64, arch: Arch, staging: &LayerDir) -> Result<()>;
 
     /// Makes `into` a copy-on-write disk over `backing`, a raw image that is only read, and writes each of `patches`
-    /// into it: a read of the disk gives the patch's bytes where a patch lies and `backing`'s bytes elsewhere. A
-    /// `backing` that is not there is `NotFound`, naming it, with nothing made.
+    /// into it: a read of the disk gives the patch's bytes where a patch lies and `backing`'s bytes elsewhere. Every
+    /// request [`check_overlay`] refuses is refused with nothing made. A failure after that leaves no `into`.
     fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()>;
 }
+
+/// The granularity of a patch: its offset and its length are multiples of it. QEMU's raw driver takes nothing finer.
+pub(crate) const PATCH_ALIGNMENT: u64 = 512;
 
 /// Bytes to write at `offset` into a disk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Patch {
     pub offset: u64,
     pub bytes: Vec<u8>,
+}
+
+/// The contract of [`Storage::overlay_with_patches`], for every backend to check before it makes anything:
+/// - `backing` is an absolute path: a relative one would be resolved against the overlay's directory by one tool and
+///   the working directory by another. `Internal`;
+/// - `backing` is there: `NotFound`, naming it;
+/// - every patch is non-empty, has an offset and a length that are multiples of [`PATCH_ALIGNMENT`], and lies within
+///   `backing`'s size: `Internal`, naming the patch and the rule;
+/// - `into` is not there: `AlreadyExists`, so an earlier overlay is never overwritten.
+pub(crate) fn check_overlay(backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
+    if !backing.is_absolute() {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            format!("the backing file {} must be an absolute path", backing.display()),
+        ));
+    }
+    let size = match std::fs::metadata(backing) {
+        Ok(meta) => meta.len(),
+        Err(e) if is_absent(&e) => {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                format!("the backing file {} is not there", backing.display()),
+            ));
+        }
+        Err(e) => {
+            return Err(Error::io(
+                ErrorKind::Io,
+                format!("cannot look at the backing file {}", backing.display()),
+                e,
+            ));
+        }
+    };
+    for (n, patch) in patches.iter().enumerate() {
+        let len = patch.bytes.len() as u64;
+        let wrong = if len == 0 {
+            Some("it is empty".to_owned())
+        } else if !patch.offset.is_multiple_of(PATCH_ALIGNMENT) || !len.is_multiple_of(PATCH_ALIGNMENT) {
+            Some(format!(
+                "its offset and its length must be multiples of {PATCH_ALIGNMENT}"
+            ))
+        } else if patch.offset.checked_add(len).is_none_or(|end| end > size) {
+            Some(format!("it ends past the end of the backing file ({size} bytes)"))
+        } else {
+            None
+        };
+        if let Some(rule) = wrong {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("patch {n} (offset {}, {len} bytes): {rule}", patch.offset),
+            ));
+        }
+    }
+    if symlink_metadata_if_present(into)
+        .map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot look at the overlay {}", into.display()),
+                e,
+            )
+        })?
+        .is_some()
+    {
+        return Err(Error::new(
+            ErrorKind::AlreadyExists,
+            format!("the overlay {} is already there", into.display()),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) trait Machine: Send {

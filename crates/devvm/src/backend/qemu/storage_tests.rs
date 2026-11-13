@@ -116,6 +116,13 @@ fn committing_an_instance_disk_with_no_directory_is_refused_naming_it(#[fixture(
         .unwrap();
 }
 
+#[skuld::test]
+fn the_real_storage_refuses_what_the_storage_contract_refuses_before_qemu_img_runs(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    crate::backend::contract::storage_refuses_what_its_contract_refuses(&storage_without_qemu(home), home);
+}
+
 /// Same sizes as for an instance disk: `made_size` is the one rule.
 #[skuld::test]
 fn a_blank_disk_over_the_qcow2_limit_is_refused_as_recipe_before_qemu_img_runs(#[fixture(unicode_home)] home: &Path) {
@@ -128,7 +135,7 @@ fn a_blank_disk_over_the_qcow2_limit_is_refused_as_recipe_before_qemu_img_runs(#
 
                 assert_eq!(error.kind(), ErrorKind::Recipe, "{size}: {error}");
                 assert!(error.message().contains(&size.to_string()), "{size}: {error}");
-                assert!(error.message().contains("resources.disk"), "{size}: {error}");
+                assert!(!error.message().contains("resources.disk"), "{size}: {error}");
                 assert!(!staging.dir.path().join(DISK).exists(), "{size}: a disk was made");
                 assert!(!staging.dir.path().join(VARS).exists(), "{size}: variables were copied");
             }

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 
 use crate::ErrorKind;
-use crate::backend::{Backend, Machine, MachineRecord, MachineSpec};
+use crate::backend::{Backend, Machine, MachineRecord, MachineSpec, Patch, Storage};
 use crate::contain::VmProcess;
 use crate::store::layers::layers_tests::{Env, env, key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
@@ -462,4 +462,104 @@ pub(crate) fn storage_writes_only_into_staging(target: &dyn ContractTarget, root
         "the instance disk is only read"
     );
     assert_eq!(committed.layers().len(), world.parent.layers().len() + 1);
+}
+
+/// A request `Storage::overlay_with_patches` refuses, whichever backend: it fails as `kind`, the message holds every
+/// `mentions`, and nothing is made at `into`.
+fn overlay_is_refused(
+    storage: &dyn Storage,
+    backing: &Path,
+    patches: &[Patch],
+    into: &Path,
+    kind: ErrorKind,
+    mentions: &[&str],
+) {
+    let error = storage
+        .overlay_with_patches(backing, patches, into)
+        .expect_err("the contract refuses this request");
+    assert_eq!(error.kind(), kind, "{error}");
+    for text in mentions {
+        assert!(error.message().contains(text), "{text:?} not in: {error}");
+    }
+    assert!(!into.exists(), "{error}: an overlay was made");
+}
+
+/// What the contract of `Storage::overlay_with_patches` and `Storage::create_blank_disk` refuses is refused by every
+/// backend, with nothing made: a backing file that is not there, a relative one, a patch that is empty, off a 512-byte
+/// boundary or past the end of the backing file, an overlay already there, and a blank disk of a size that cannot be made.
+pub(crate) fn storage_refuses_what_its_contract_refuses(storage: &dyn Storage, root: &Path) {
+    let backing = root.join("backing.iso");
+    std::fs::write(&backing, vec![0u8; 4096]).unwrap();
+    let into = root.join("overlay.qcow2");
+    let patch = |offset: u64, len: usize| Patch {
+        offset,
+        bytes: vec![1; len],
+    };
+    let refused = |patches: &[Patch], kind, mentions: &[&str]| {
+        overlay_is_refused(storage, &backing, patches, &into, kind, mentions)
+    };
+
+    overlay_is_refused(
+        storage,
+        &root.join("no-such.iso"),
+        &[patch(0, 512)],
+        &into,
+        ErrorKind::NotFound,
+        &["no-such.iso"],
+    );
+    overlay_is_refused(
+        storage,
+        Path::new("backing.iso"),
+        &[patch(0, 512)],
+        &into,
+        ErrorKind::Internal,
+        &["backing.iso", "absolute"],
+    );
+    refused(
+        &[patch(0, 512), patch(100, 512)],
+        ErrorKind::Internal,
+        &["patch 1", "offset 100", "512"],
+    );
+    refused(&[patch(0, 700)], ErrorKind::Internal, &["patch 0", "700 bytes", "512"]);
+    refused(&[patch(512, 0)], ErrorKind::Internal, &["patch 0", "empty"]);
+    refused(
+        &[patch(3584, 1024)],
+        ErrorKind::Internal,
+        &["patch 0", "past the end", "4096"],
+    );
+    refused(
+        &[patch(u64::MAX - 511, 512)],
+        ErrorKind::Internal,
+        &["patch 0", "past the end"],
+    );
+    refused(&[patch(4096, 512)], ErrorKind::Internal, &["patch 0", "past the end"]);
+
+    // An overlay that is already there is not overwritten.
+    std::fs::write(&into, b"earlier").unwrap();
+    let error = storage
+        .overlay_with_patches(&backing, &[patch(0, 512)], &into)
+        .expect_err("the overlay is already there");
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert!(error.message().contains("overlay.qcow2"), "{error}");
+    assert_eq!(std::fs::read(&into).unwrap(), b"earlier", "{error}");
+    std::fs::remove_file(&into).unwrap();
+
+    let env = env(root);
+    env.store
+        .build(&request(key(7)), None, |staging| {
+            for size in [u64::MAX, u64::MAX - 510, (1 << 51) + 1] {
+                let error = storage
+                    .create_blank_disk(size, crate::Arch::Amd64, staging.dir)
+                    .expect_err("no backend makes this disk");
+                assert_eq!(error.kind(), ErrorKind::Recipe, "{size}: {error}");
+                assert!(error.message().contains(&size.to_string()), "{size}: {error}");
+                assert!(!error.message().contains("resources.disk"), "{size}: {error}");
+                assert!(
+                    std::fs::read_dir(staging.dir.path()).unwrap().next().is_none(),
+                    "{size}: a disk was made"
+                );
+            }
+            Ok(Built::default())
+        })
+        .unwrap();
 }

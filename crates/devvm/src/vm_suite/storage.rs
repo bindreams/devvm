@@ -621,15 +621,15 @@ fn the_overlay_reads_the_patch_where_the_patch_is_and_the_iso_elsewhere(
     let storage = storage(install);
     let base = pattern(BASE_LEN, 1);
     let backing = write_raw(home, "backing.iso", &base);
-    let (first, second) = (pattern(70_000, 9), pattern(513, 4));
-    // Neither patch starts or ends on a cluster of the overlay.
+    let (first, second) = (pattern(70_144, 9), pattern(1536, 4));
+    // Sector-aligned, as QEMU's raw driver needs, yet neither patch starts or ends on a cluster of the overlay.
     let patches = [
         Patch {
-            offset: 100_001,
+            offset: 102_400,
             bytes: first.clone(),
         },
         Patch {
-            offset: 900_000,
+            offset: 900_096,
             bytes: second.clone(),
         },
     ];
@@ -641,7 +641,7 @@ fn the_overlay_reads_the_patch_where_the_patch_is_and_the_iso_elsewhere(
     assert_eq!(info["format"], "qcow2");
     assert_eq!(info["virtual-size"], BASE_LEN);
     assert!(info["actual-size"].as_u64().unwrap() < BASE_LEN as u64, "{info}");
-    let expected = patched(&patched(&base, 100_001, &first), 900_000, &second);
+    let expected = patched(&patched(&base, 102_400, &first), 900_096, &second);
     assert_eq!(read_through(install, &into, home), expected);
     assert_eq!(std::fs::read(&backing).unwrap(), base, "the backing file is only read");
     let left: Vec<_> = std::fs::read_dir(home)
@@ -679,28 +679,4 @@ fn an_iso_path_with_space_cyrillic_and_a_surrogate_pair_backs_an_overlay(
         .unwrap();
 
     assert_eq!(read_through(install, &into, home), patched(&base, 8192, &patch));
-}
-
-#[skuld::test]
-fn a_patch_past_the_end_of_the_backing_file_is_refused_and_leaves_no_overlay(
-    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let storage = storage(install);
-    let backing = write_raw(home, "backing.iso", &pattern(BASE_LEN, 1));
-    let into = home.join("overlay.qcow2");
-
-    let error = storage
-        .overlay_with_patches(
-            &backing,
-            &[Patch {
-                offset: BASE_LEN as u64,
-                bytes: vec![1; 512],
-            }],
-            &into,
-        )
-        .unwrap_err();
-
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
-    assert!(!into.exists(), "a half-made overlay was left");
 }

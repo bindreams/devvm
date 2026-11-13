@@ -9,8 +9,8 @@ use std::sync::Arc;
 use super::args::{ArchFiles, escape_option_value};
 use super::directory_of;
 use super::sidecar::LazyInstall;
-use crate::backend::{DEFAULT_DISK, Patch, Storage};
-use crate::host::{Host, symlink_metadata_if_present};
+use crate::backend::{DEFAULT_DISK, Patch, Storage, check_overlay};
+use crate::host::Host;
 use crate::store::layers::LayerDir;
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -107,20 +107,33 @@ fn virtual_size_in(info: &serde_json::Value, image: &Path) -> Result<u64> {
     })
 }
 
-/// The size of the disk `qemu-img create` makes of a request for `size` bytes: rounded up to 512 bytes. `Recipe` when
+/// The size of the disk `qemu-img create` makes of a request for `size` bytes: rounded up to 512 bytes. `None` when
 /// that is more than a qcow2 disk can have.
-fn made_size(size: u64) -> Result<u64> {
+fn made_size(size: u64) -> Option<u64> {
     size.checked_next_multiple_of(512)
         .filter(|made| *made <= QCOW2_MAX_SIZE)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Recipe,
-                format!(
-                    "a disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have; \
-                     set resources.disk to at most {QCOW2_MAX_SIZE}"
-                ),
-            )
-        })
+}
+
+/// `Recipe` when no qcow2 disk is `size` bytes: the size of an instance disk is the recipe's `resources.disk`.
+fn instance_disk_size(size: u64) -> Result<u64> {
+    made_size(size).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Recipe,
+            format!(
+                "a disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have;                  set resources.disk to at most {QCOW2_MAX_SIZE}"
+            ),
+        )
+    })
+}
+
+/// `Recipe` when no qcow2 disk is `size` bytes. The caller of a blank disk names its size, not `resources.disk`.
+pub(crate) fn check_blank_disk_size(size: u64) -> Result<()> {
+    made_size(size).map(drop).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Recipe,
+            format!("a blank disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have"),
+        )
+    })
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<()> {
@@ -151,7 +164,7 @@ fn require_vars(dir: &Path, what: &str) -> Result<PathBuf> {
 
 impl Storage for QemuStorage {
     fn create_instance_disk(&self, layer: &LayerDir, into: &Path, size: Option<u64>) -> Result<()> {
-        let made = size.map(made_size).transpose()?;
+        let made = size.map(instance_disk_size).transpose()?;
         let vars = require_vars(layer.path(), "the layer")?;
         let backing = layer.path().join(DISK);
         let beside = directory_of(into, "the instance disk")?.join(VARS);
@@ -254,7 +267,7 @@ impl Storage for QemuStorage {
     }
 
     fn create_blank_disk(&self, size: u64, arch: Arch, staging: &LayerDir) -> Result<()> {
-        made_size(size)?;
+        check_blank_disk_size(size)?;
         self.qemu_img(&[
             "create".as_ref(),
             "-f".as_ref(),
@@ -266,41 +279,30 @@ impl Storage for QemuStorage {
     }
 
     /// `qemu-img create` of the overlay, then one `qemu-img convert -n` per patch: the raw patch file is written into the
-    /// overlay as the sub-range `[offset, offset + len)` of the disk, so `backing` is never written. An overlay that was
-    /// not finished is deleted.
+    /// overlay as the sub-range `[offset, offset + len)` of the disk, so `backing` is never written. [`check_overlay`]
+    /// runs first. An overlay that was not finished is deleted: `into` was not there before, so it is this call's.
     fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
-        if symlink_metadata_if_present(backing)
-            .map_err(|e| {
-                Error::io(
-                    ErrorKind::Io,
-                    format!("cannot look at the backing file {}", backing.display()),
-                    e,
-                )
-            })?
-            .is_none()
-        {
-            return Err(Error::new(
-                ErrorKind::NotFound,
-                format!("the backing file {} is not there", backing.display()),
-            ));
-        }
+        check_overlay(backing, patches, into)?;
         let directory = directory_of(into, "the overlay")?;
         let target = escape_option_value(into)?;
-        self.qemu_img(&[
-            "create".as_ref(),
-            "-f".as_ref(),
-            QCOW2.as_ref(),
-            "-b".as_ref(),
-            backing.as_os_str(),
-            "-F".as_ref(),
-            "raw".as_ref(),
-            into.as_os_str(),
-        ])?;
-        let written = patches
-            .iter()
-            .try_for_each(|patch| self.write_patch(patch, &target, directory));
-        if let Err(e) = written {
-            // Best effort: the error that matters is the patch's.
+        let made = self
+            .qemu_img(&[
+                "create".as_ref(),
+                "-f".as_ref(),
+                QCOW2.as_ref(),
+                "-b".as_ref(),
+                backing.as_os_str(),
+                "-F".as_ref(),
+                "raw".as_ref(),
+                into.as_os_str(),
+            ])
+            .and_then(|_| {
+                patches
+                    .iter()
+                    .try_for_each(|patch| self.write_patch(patch, &target, directory))
+            });
+        if let Err(e) = made {
+            // Best effort: the error that matters is the one that stopped the overlay.
             let _ = std::fs::remove_file(into);
             return Err(e);
         }

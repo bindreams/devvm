@@ -11,9 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
+use crate::backend::qemu::storage::check_blank_disk_size;
 use crate::backend::{
     Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
-    Patch, SshEndpoint, Storage, Video,
+    Patch, SshEndpoint, Storage, Video, check_overlay,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
@@ -491,6 +492,7 @@ impl Storage for FakeStorage {
 
     /// The disk file says it is blank and how large; there are no firmware variables, as for `import_base`.
     fn create_blank_disk(&self, size: u64, _arch: Arch, staging: &LayerDir) -> Result<()> {
+        check_blank_disk_size(size)?;
         let target = staging.path().join(LAYER_DISK);
         std::fs::write(&target, format!("blank size={size}"))
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", target.display()), e))
@@ -498,6 +500,7 @@ impl Storage for FakeStorage {
 
     /// A file naming the backing file and each patch's offset and length.
     fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
+        check_overlay(backing, patches, into)?;
         let patches: Vec<String> = patches
             .iter()
             .map(|patch| format!("{}+{}", patch.offset, patch.bytes.len()))

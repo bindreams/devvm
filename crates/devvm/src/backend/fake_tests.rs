@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{FakeBackend, FakeTarget};
+use super::{FakeBackend, FakeStorage, FakeTarget};
 use crate::backend::contract::{self, ContractTarget};
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{env, key, request};
@@ -11,6 +11,11 @@ use crate::{Arch, ErrorKind};
 #[skuld::test]
 fn fake_storage_writes_only_into_staging(#[fixture(unicode_home)] home: &Path) {
     contract::storage_writes_only_into_staging(&FakeTarget::new(), home);
+}
+
+#[skuld::test]
+fn fake_storage_refuses_what_the_storage_contract_refuses(#[fixture(unicode_home)] home: &Path) {
+    contract::storage_refuses_what_its_contract_refuses(&FakeStorage::default(), home);
 }
 
 #[skuld::test]

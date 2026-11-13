@@ -120,16 +120,21 @@ fn build_failed(error: std::io::Error) -> Error {
     Error::new(ErrorKind::Internal, format!("cannot build the seed image: {error}"))
 }
 
-/// The size in bytes of the image that holds `contents` bytes of files, `Internal` when that is more than a FAT12
-/// volume holds ([`LARGEST_FAT12_CONTENTS`]).
-fn image_size(contents: u64) -> Result<u64> {
+/// The size in bytes of the image that holds `files` bytes of files and leaves `spare` bytes free, `Internal` when that
+/// is more than a FAT12 volume holds ([`LARGEST_FAT12_CONTENTS`], files and spare together).
+fn image_size(files: u64, spare: u64) -> Result<u64> {
+    let contents = files.saturating_add(spare);
     let size = unchecked_image_size(contents);
     if contents > LARGEST_FAT12_CONTENTS {
+        let what = if spare == 0 {
+            format!("the seed files ({files} bytes)")
+        } else {
+            format!("the seed files ({files} bytes) and {spare} bytes of spare room")
+        };
         return Err(Error::new(
             ErrorKind::Internal,
             format!(
-                "the seed files ({contents} bytes) need an image of {size} bytes, which would not be FAT12: \
-                 at most {LARGEST_FAT12_CONTENTS} bytes of files fit"
+                "{what} need an image of {size} bytes, which would not be FAT12:                  at most {LARGEST_FAT12_CONTENTS} bytes of files and spare room fit"
             ),
         ));
     }
@@ -165,7 +170,7 @@ fn format_options(size: u64) -> FormatVolumeOptions {
 /// debug assertion checks it did.
 fn fat_image(files: &[SeedFile], spare: u64) -> Result<Vec<u8>> {
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
-    let size = image_size(contents.saturating_add(spare))?;
+    let size = image_size(contents, spare)?;
 
     let mut disk = Cursor::new(vec![0u8; size as usize]);
     fatfs::format_volume(&mut disk, format_options(size)).map_err(build_failed)?;
@@ -211,32 +216,118 @@ pub(crate) fn read_files(image: &Path) -> Result<Vec<SeedFile>> {
 }
 
 /// The files of the volume in `disk`, as [`read_files`].
+///
+/// A guest wrote the volume, so it is not trusted to be a tree. `fatfs` follows what it finds: a chain of clusters that
+/// leads back to itself is read for ever. The reading refuses every loop and counts nothing arbitrary: the clusters
+/// of a chain are checked once each ([`require_chains_end`]), and an honest volume holds at most one 32-byte entry per
+/// 32 bytes of the image and one byte of content per byte of the image, which bounds the walk through directories that
+/// lead back to a directory above them.
 fn tree_of(disk: &mut Cursor<Vec<u8>>) -> std::io::Result<Vec<SeedFile>> {
     disk.set_position(0);
+    let (fat_type, clusters) = {
+        let fs = FileSystem::new(&mut *disk, FsOptions::new())?;
+        (fs.fat_type(), fs.stats()?.total_clusters())
+    };
+    let image_len = disk.get_ref().len() as u64;
+    require_chains_end(disk.get_ref(), fat_type, clusters)?;
+
+    disk.set_position(0);
     let fs = FileSystem::new(disk, FsOptions::new())?;
+    let mut entries_left = image_len / ENTRY_SIZE;
+    let mut bytes_left = image_len;
     let mut files = Vec::new();
-    collect(&fs.root_dir(), "", &mut files)?;
+    let mut directories = vec![(fs.root_dir(), String::new())];
+    while let Some((dir, prefix)) = directories.pop() {
+        for entry in dir.iter() {
+            let entry = entry?;
+            entries_left = entries_left
+                .checked_sub(1)
+                .ok_or_else(|| corrupt("the directories lead back to a directory above them".to_owned()))?;
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let path = format!("{prefix}{name}");
+            if entry.is_dir() {
+                directories.push((entry.to_dir(), format!("{path}/")));
+            } else {
+                // One byte past what is left shows that the file is more than the volume has room for.
+                let mut bytes = Vec::new();
+                entry.to_file().take(bytes_left + 1).read_to_end(&mut bytes)?;
+                bytes_left = bytes_left
+                    .checked_sub(bytes.len() as u64)
+                    .ok_or_else(|| corrupt("the files hold more bytes than the volume has room for".to_owned()))?;
+                files.push(SeedFile { name: path, bytes });
+            }
+        }
+    }
     Ok(files)
 }
 
-fn collect<T: fatfs::ReadWriteSeek>(
-    dir: &fatfs::Dir<'_, T>,
-    prefix: &str,
-    files: &mut Vec<SeedFile>,
-) -> std::io::Result<()> {
-    for entry in dir.iter() {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name == "." || name == ".." {
+/// The size of a directory entry, and so of a slot in a directory.
+const ENTRY_SIZE: u64 = 32;
+
+fn corrupt(message: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+/// Requires that no chain of clusters in the allocation table of the FAT volume `image` leads back to one of its own
+/// clusters. Every cluster is walked once: a cluster seen on the walk in progress is a loop, one seen on an earlier walk
+/// ends this one.
+fn require_chains_end(image: &[u8], fat_type: FatType, clusters: u32) -> std::io::Result<()> {
+    let word = |at: usize| {
+        image
+            .get(at..at + 2)
+            .map(|b| u32::from(u16::from_le_bytes([b[0], b[1]])))
+    };
+    let sector = word(11).unwrap_or(0) as usize;
+    let table = word(14).unwrap_or(0) as usize * sector;
+    let next = |cluster: usize| -> Option<usize> {
+        let value = match fat_type {
+            FatType::Fat12 => {
+                let at = table + cluster * 3 / 2;
+                let pair = word(at)?;
+                if cluster.is_multiple_of(2) {
+                    pair & 0xFFF
+                } else {
+                    pair >> 4
+                }
+            }
+            FatType::Fat16 => word(table + cluster * 2)?,
+            FatType::Fat32 => {
+                let at = table + cluster * 4;
+                (word(at)? | word(at + 2)? << 16) & 0x0FFF_FFFF
+            }
+        } as usize;
+        (2..clusters as usize + 2).contains(&value).then_some(value)
+    };
+
+    const UNSEEN: u8 = 0;
+    const ON_THE_WALK: u8 = 1;
+    const WALKED: u8 = 2;
+    let mut state = vec![UNSEEN; clusters as usize + 2];
+    for start in 2..clusters as usize + 2 {
+        if state[start] != UNSEEN {
             continue;
         }
-        let path = format!("{prefix}{name}");
-        if entry.is_dir() {
-            collect(&entry.to_dir(), &format!("{path}/"), files)?;
-        } else {
-            let mut bytes = Vec::new();
-            entry.to_file().read_to_end(&mut bytes)?;
-            files.push(SeedFile { name: path, bytes });
+        let mut at = start;
+        loop {
+            state[at] = ON_THE_WALK;
+            match next(at) {
+                Some(following) if state[following] == ON_THE_WALK => {
+                    return Err(corrupt(format!("cluster {following} leads back to itself")));
+                }
+                Some(following) if state[following] == UNSEEN => at = following,
+                _ => break,
+            }
+        }
+        let mut at = start;
+        while state[at] == ON_THE_WALK {
+            state[at] = WALKED;
+            match next(at) {
+                Some(following) => at = following,
+                None => break,
+            }
         }
     }
     Ok(())

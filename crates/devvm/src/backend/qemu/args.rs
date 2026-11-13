@@ -113,6 +113,12 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
                 "WHPX cannot run an arm64 guest; arm64 runs under software emulation only",
             ));
         }
+        Arch::Arm64 if spec.profile.video == Video::Vga => {
+            return Err(Error::new(
+                ErrorKind::NotSupported,
+                "an arm64 machine has no VGA adapter: its firmware and guests have no driver for one",
+            ));
+        }
         Arch::Arm64 => "virt,gic-version=3",
     };
     args.pair("-accel", spec.accel.name());

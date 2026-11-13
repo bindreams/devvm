@@ -643,6 +643,26 @@ fn the_vga_profile_adds_a_vga_device_and_keeps_display_none() {
     assert!(!values_of(&without, "-device").contains(&"VGA"), "{without:?}");
 }
 
+#[skuld::test]
+fn an_arm64_guest_with_a_vga_adapter_is_refused_under_every_accelerator() {
+    for accel in [Accel::Tcg, Accel::Kvm, Accel::Hvf] {
+        let mut spec = spec();
+        spec.arch = Arch::Arm64;
+        spec.accel = accel;
+        spec.profile.video = Video::Vga;
+
+        let error = build_args(&spec, &paths()).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::NotSupported, "{accel:?}: {error}");
+        assert!(error.message().contains("VGA"), "{accel:?}: {error}");
+        spec.profile.video = Video::None;
+        assert!(
+            build_args(&spec, &paths()).is_ok(),
+            "{accel:?}: the same machine without video"
+        );
+    }
+}
+
 /// The Linux guest's machine, written out from the command line main produced before USB media and video existed: the
 /// read-only virtio-blk seed and no video adapter.
 #[skuld::test]
