@@ -54,11 +54,11 @@ fn only_the_prefix_of_a_failed_marker_is_read_and_its_localized_text_is_kept_as_
 }
 
 #[skuld::test]
-fn a_marker_is_read_after_the_terminal_bytes_that_precede_it_on_its_line() {
+fn a_marker_is_read_after_the_terminal_control_before_it() {
     let log = "\x1b[2J\x1b[0mDEVVM-PROGRESS=after a clear\r\n\
                \x1b[?25h\x08DEVVM-LICENSE=null\r\n\
                \x1b[0mDEVVM-BASE-FAILED=boom\r\n\
-               \x1b[0mDEVVM-BASE-DONE\r\n";
+               \x1bcDEVVM-BASE-DONE\r\n";
 
     let serial = read(log.as_bytes());
 
@@ -69,7 +69,33 @@ fn a_marker_is_read_after_the_terminal_bytes_that_precede_it_on_its_line() {
 }
 
 #[skuld::test]
-fn the_first_marker_on_a_line_is_the_one_it_holds() {
+fn a_marker_is_read_through_the_terminal_control_after_it() {
+    let log = "\x1b[0mDEVVM-PROGRESS=a \x1b[K\r\n\
+               DEVVM-LICENSE=null\x1b[0m\r\n\
+               \x1b[0mDEVVM-BASE-DONE \x1b[K\r\n";
+
+    let serial = read(log.as_bytes());
+
+    assert_eq!(serial.progress, ["a"]);
+    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
+    assert!(serial.done, "{serial:?}");
+}
+
+#[skuld::test]
+fn a_marker_that_does_not_start_its_line_is_not_one() {
+    let log = "echo DEVVM-BASE-DONE\nx DEVVM-PROGRESS=nope\n\x1b[0mmore DEVVM-LICENSE=nope\n\
+               say DEVVM-BASE-FAILED=nope\nDEVVM-BASE-DONE and more\nDEVVM-BASE-DONEX\n";
+
+    let serial = read(log.as_bytes());
+
+    assert!(!serial.done, "{serial:?}");
+    assert!(serial.progress.is_empty(), "{serial:?}");
+    assert_eq!(serial.license, None);
+    assert_eq!(serial.failed, None);
+}
+
+#[skuld::test]
+fn the_text_of_a_failed_marker_may_hold_other_markers() {
     let log = "DEVVM-BASE-FAILED=saw DEVVM-PROGRESS=x and DEVVM-BASE-DONE\n";
 
     let serial = read(log.as_bytes());
@@ -83,12 +109,21 @@ fn the_first_marker_on_a_line_is_the_one_it_holds() {
 }
 
 #[skuld::test]
-fn the_done_marker_ends_its_line() {
-    let log = "DEVVM-BASE-DONE and more\nDEVVM-BASE-DONEX\n";
+fn a_line_that_a_carriage_return_ends_holds_its_marker() {
+    let log = "\r\r\nDEVVM-PROGRESS=a\rDEVVM-LICENSE=null\r\r\rDEVVM-BASE-DONE\r";
 
     let serial = read(log.as_bytes());
 
-    assert!(!serial.done, "{serial:?}");
+    assert_eq!(serial.progress, ["a"]);
+    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
+    assert!(serial.done);
+}
+
+#[skuld::test]
+fn an_escape_sequence_that_never_ends_hides_nothing_before_it() {
+    let serial = read(b"DEVVM-PROGRESS=a\n\x1b[0\x1b");
+
+    assert_eq!(serial.progress, ["a"]);
 }
 
 #[skuld::test]
@@ -160,18 +195,9 @@ fn the_last_marker_is_the_newest_of_every_launch() {
 fn a_poll_returns_only_the_markers_written_since_the_one_before(#[fixture(unicode_home)] home: &Path) {
     let log = home.join("serial.log");
     let mut reader = LogReader::new(&log);
-    append(
-        &log,
-        b"DEVVM-PROGRESS=a
-DEVVM-LICENSE=first
-",
-    );
+    append(&log, b"DEVVM-PROGRESS=a\nDEVVM-LICENSE=first\n");
     let first = reader.poll(false).unwrap();
-    append(
-        &log,
-        b"DEVVM-PROGRESS=b
-",
-    );
+    append(&log, b"DEVVM-PROGRESS=b\n");
 
     let second = reader.poll(false).unwrap();
 
@@ -186,17 +212,24 @@ DEVVM-LICENSE=first
 fn a_line_the_guest_is_still_writing_waits_for_its_line_end(#[fixture(unicode_home)] home: &Path) {
     let log = home.join("serial.log");
     let mut reader = LogReader::new(&log);
-    append(
-        &log,
-        b"DEVVM-PROGRESS=a
-DEVVM-PROGRESS=spec",
-    );
+    append(&log, b"DEVVM-PROGRESS=a\nDEVVM-PROGRESS=spec");
 
     let early = reader.poll(false).unwrap();
-    append(
-        &log, b"ialize
-",
-    );
+    append(&log, b"ialize\n");
+    let late = reader.poll(false).unwrap();
+
+    assert_eq!(early.progress, ["a"]);
+    assert_eq!(late.progress, ["specialize"]);
+}
+
+#[skuld::test]
+fn a_carriage_return_ends_a_line_a_poll_may_read(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    let mut reader = LogReader::new(&log);
+    append(&log, b"DEVVM-PROGRESS=a\rDEVVM-PROGRESS=spec");
+
+    let early = reader.poll(false).unwrap();
+    append(&log, b"ialize\r");
     let late = reader.poll(false).unwrap();
 
     assert_eq!(early.progress, ["a"]);
@@ -207,11 +240,7 @@ DEVVM-PROGRESS=spec",
 fn the_last_poll_takes_a_final_line_that_has_no_line_end(#[fixture(unicode_home)] home: &Path) {
     let log = home.join("serial.log");
     let mut reader = LogReader::new(&log);
-    append(
-        &log,
-        b"DEVVM-PROGRESS=a
-DEVVM-BASE-DONE",
-    );
+    append(&log, b"DEVVM-PROGRESS=a\nDEVVM-BASE-DONE");
 
     let before = reader.poll(false).unwrap();
     let last = reader.poll(true).unwrap();
@@ -230,11 +259,7 @@ fn a_log_qemu_has_not_made_yet_holds_nothing_and_is_read_from_its_start_once_it_
     let mut reader = LogReader::new(&log);
 
     assert_eq!(reader.poll(false).unwrap(), Serial::default());
-    append(
-        &log,
-        b"DEVVM-PROGRESS=a
-",
-    );
+    append(&log, b"DEVVM-PROGRESS=a\n");
 
     assert_eq!(reader.poll(false).unwrap().progress, ["a"]);
 }
@@ -243,20 +268,9 @@ fn a_log_qemu_has_not_made_yet_holds_nothing_and_is_read_from_its_start_once_it_
 fn the_whole_log_is_every_poll_together_with_the_last_license_and_failure(#[fixture(unicode_home)] home: &Path) {
     let log = home.join("serial.log");
     let mut reader = LogReader::new(&log);
-    append(
-        &log,
-        b"DEVVM-PROGRESS=a
-DEVVM-LICENSE=1
-",
-    );
+    append(&log, b"DEVVM-PROGRESS=a\nDEVVM-LICENSE=1\n");
     reader.poll(false).unwrap();
-    append(
-        &log,
-        b"DEVVM-PROGRESS=b
-DEVVM-LICENSE=2
-DEVVM-BASE-FAILED=boom
-",
-    );
+    append(&log, b"DEVVM-PROGRESS=b\nDEVVM-LICENSE=2\nDEVVM-BASE-FAILED=boom\n");
     reader.poll(true).unwrap();
 
     let whole = reader.whole();

@@ -1,7 +1,7 @@
 //! The base build's serial log: the markers the guest writes to COM1 and the rule that lets a build go on after a
 //! guest exit.
 //!
-//! A marker is a line that holds a fixed prefix. Only the prefix and the numbers after it are ever read as
+//! A marker is a line that starts with a fixed prefix. Only the prefix and the numbers after it are ever read as
 //! meaning; the text after `DEVVM-BASE-FAILED=` is localized and only echoed.
 
 use std::path::{Path, PathBuf};
@@ -31,49 +31,50 @@ pub(super) struct Serial {
     pub done: bool,
 }
 
-/// The markers of `log`. Lines end in `\n` or `\r\n`; a line holds a marker where its first marker prefix is, whatever
-/// precedes it (a serial terminal may write escape bytes first), and the text from the prefix on is the marker. Bytes
-/// that are not UTF-8 are read as the replacement character.
+/// The markers of `log`. A line ends in `\n`, `\r` or both, and it holds a marker when it starts with a marker's prefix
+/// once the terminal's control is taken out of it ([`without_control`]): text before the prefix, or a prefix in the
+/// middle of a line, is no marker. `DEVVM-BASE-DONE` is a marker only when nothing follows it. Bytes that are not UTF-8
+/// are read as the replacement character.
 pub(super) fn read(log: &[u8]) -> Serial {
     let text = String::from_utf8_lossy(log);
     let mut serial = Serial::default();
-    for line in text.split('\n') {
-        match marker_in(line.trim_end_matches('\r')) {
-            Some(Marker::Progress(phase)) => serial.progress.push(phase.trim().to_owned()),
-            Some(Marker::License(read)) => serial.license = Some(read.trim_end().to_owned()),
-            Some(Marker::Failed(why)) => serial.failed = Some(why.trim().to_owned()),
-            Some(Marker::Done) => serial.done = true,
-            None => {}
+    for line in text.split(LINE_ENDS) {
+        let line = without_control(line);
+        if let Some(phase) = line.strip_prefix(PROGRESS) {
+            serial.progress.push(phase.trim().to_owned());
+        } else if line.starts_with(LICENSE) {
+            serial.license = Some(line);
+        } else if let Some(why) = line.strip_prefix(FAILED) {
+            serial.failed = Some(why.trim().to_owned());
+        } else if line == DONE {
+            serial.done = true;
         }
     }
     serial
 }
 
-/// What a line's marker says, from its prefix on.
-enum Marker<'a> {
-    Progress(&'a str),
-    License(&'a str),
-    Failed(&'a str),
-    Done,
-}
+/// The characters that end a line of the serial log.
+const LINE_ENDS: [char; 2] = ['\n', '\r'];
 
-/// The marker whose prefix comes first in `line`. `DEVVM-BASE-DONE` is a marker only when nothing follows it.
-fn marker_in(line: &str) -> Option<Marker<'_>> {
-    let done = line
-        .find(DONE)
-        .filter(|at| line[at + DONE.len()..].trim_end().is_empty());
-    [
-        line.find(PROGRESS)
-            .map(|at| (at, Marker::Progress(&line[at + PROGRESS.len()..]))),
-        line.find(LICENSE).map(|at| (at, Marker::License(&line[at..]))),
-        line.find(FAILED)
-            .map(|at| (at, Marker::Failed(&line[at + FAILED.len()..]))),
-        done.map(|at| (at, Marker::Done)),
-    ]
-    .into_iter()
-    .flatten()
-    .min_by_key(|(at, _)| *at)
-    .map(|(_, marker)| marker)
+const ESC: char = '\x1b';
+
+/// `line` as the terminal's own control leaves it out: escape sequences (`ESC [`, parameters and a final byte, or `ESC`
+/// and one more character) anywhere, control characters at its start, and whitespace and control characters at its end.
+/// A sequence the line ends in the middle of is dropped to the end of the line.
+fn without_control(line: &str) -> String {
+    let mut text = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != ESC {
+            text.push(c);
+        } else if chars.next() == Some('[') {
+            // The final byte of a control sequence is the first one that is not a parameter or an intermediate.
+            chars.find(|c| ('@'..='~').contains(c));
+        }
+    }
+    text.trim_start_matches(char::is_control)
+        .trim_end_matches(|c: char| c.is_control() || c.is_whitespace())
+        .to_owned()
 }
 
 impl Serial {
@@ -122,7 +123,7 @@ impl LogReader {
             self.unfinished.len()
         } else {
             new.iter()
-                .rposition(|byte| *byte == b'\n')
+                .rposition(|byte| matches!(byte, b'\n' | b'\r'))
                 .map_or(0, |end| before + end + 1)
         };
         let part = read(&self.unfinished[..used]);
