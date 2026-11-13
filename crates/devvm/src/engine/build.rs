@@ -48,9 +48,10 @@ impl Engine {
     /// [`Engine::reap`].
     pub fn build(self: &Arc<Engine>, recipe: &Recipe, opts: &BuildOptions) -> Result<Image> {
         let flat = recipe.flatten()?;
-        refuse_set_steps(&flat)?;
         let arch = opts.arch.unwrap_or_else(Arch::host);
         let guest = self.guests.os(flat.guest)?;
+        // Before anything is built or keyed: a setting the guest does not have is the recipe's mistake.
+        refuse_unavailable_settings(&flat, &*guest)?;
         let builder = self.guests.builder(flat.guest)?;
         self.backend()?;
         let store = self.store()?;
@@ -136,22 +137,16 @@ impl Engine {
     }
 }
 
-fn refuse_set_steps(flat: &Flattened) -> Result<()> {
-    match flat
-        .steps
-        .iter()
-        .position(|flat_step| matches!(flat_step.step, Step::Set(_)))
-    {
-        Some(index) => Err(Error::new(
-            ErrorKind::Recipe,
-            format!(
-                "step {} is `set.uac`, which a {} guest does not have",
-                index + 1,
-                flat.guest.as_str()
-            ),
-        )),
-        None => Ok(()),
+/// The first `set` step the guest cannot apply is an error, in the words of the guest and the step.
+fn refuse_unavailable_settings(flat: &Flattened, guest: &dyn GuestOs) -> Result<()> {
+    for (index, flat_step) in flat.steps.iter().enumerate() {
+        if let Step::Set(setting) = &flat_step.step {
+            guest
+                .setting_command(setting)
+                .map_err(|error| in_step(error, index, flat.steps.len(), setting.name()))?;
+        }
     }
+    Ok(())
 }
 
 /// What the root layer of a build is made from.
@@ -274,8 +269,10 @@ impl StepRun<'_> {
                 cwd,
             } => self.run_command(&vm, command, *shell, *run_as, cwd.clone())?,
             Step::Copy { to, .. } => self.copy(&vm, to)?,
-            Step::Set(_) => {
-                return Err(Error::new(ErrorKind::Internal, "a set step reached a build")).during("running the step");
+            Step::Set(setting) => {
+                let what = format!("`{}`", setting.name());
+                let command = self.guest.setting_command(setting).during(&what)?;
+                self.execute(&vm, &command, &what, ErrorKind::Recipe)?;
             }
         }
         self.flush(&vm)?;
@@ -422,7 +419,7 @@ fn describe(step: &Step) -> String {
     match step {
         Step::Run { command, .. } => command.lines().next().unwrap_or_default().to_owned(),
         Step::Copy { to, .. } => format!("copy to {to}"),
-        Step::Set(_) => "set".to_owned(),
+        Step::Set(setting) => setting.name().to_owned(),
     }
 }
 

@@ -98,6 +98,9 @@ mod test_helpers {
         ("access-heap", crate::access::heap_tests::access_heap),
         ("snapshot-big", crate::copy::heap_tests::snapshot_big),
         ("snapshot-git-env", crate::copy::copy_tests::snapshot_with_git_variables),
+        ("wrap-argv", crate::test_support::wrapped_programs::argv_echo),
+        ("wrap-exit", crate::test_support::wrapped_programs::exit_with),
+        ("wrap-bytes", crate::test_support::wrapped_programs::write_bytes),
     ];
 
     pub fn run_if_requested() {

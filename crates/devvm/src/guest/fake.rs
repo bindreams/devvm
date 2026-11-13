@@ -12,13 +12,14 @@ use crate::backend::fake::LAYER_DISK;
 use crate::backend::{DeviceProfile, DiskBus, Media, MediaFormat, MediaKind, NetModel, Video};
 use crate::exit::ExitStatus;
 use crate::guest::linux::LinuxGuest;
+use crate::guest::windows::WindowsGuest;
 use crate::guest::{
     BaseBuilder, BuildCtx, GuestOs, Guests, Readiness, SeedKeys, SeedMedia, SeedSpec, posix_root, windows_root,
 };
 use crate::host::{Host, names};
 use crate::instance::record::InstanceId;
 use crate::recipe::hash::LayerKey;
-use crate::recipe::{Shell, Source};
+use crate::recipe::{Setting, Shell, Source};
 use crate::store::layers::{Generation, LayerDir, LayerMeta};
 use crate::test_support::sshd::TestSshd;
 use crate::{Command, Error, ErrorKind, GuestKind, Result};
@@ -216,6 +217,14 @@ impl GuestOs for FakeGuestOs {
     /// As in a Linux guest.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>> {
         LinuxGuest.shell_argv(shell, script)
+    }
+
+    /// As the real guest of its kind does.
+    fn setting_command(&self, setting: &Setting) -> Result<Command> {
+        match self.kind {
+            GuestKind::Windows => WindowsGuest.setting_command(setting),
+            GuestKind::Linux | GuestKind::Macos => LinuxGuest.setting_command(setting),
+        }
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {

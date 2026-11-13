@@ -3,14 +3,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, Media};
 use crate::exit::Progress;
 use crate::host::Host;
 use crate::instance::record::InstanceId;
-use crate::recipe::{Shell, Source};
+use crate::recipe::{Setting, Shell, Source};
 use crate::store::layers::{LayerDir, LayerMeta};
 use crate::{Arch, Command, Dirs, Error, ErrorKind, GuestKind, Result};
 
@@ -21,6 +21,10 @@ mod guest_tests;
 #[cfg(test)]
 pub(crate) mod fake;
 pub(crate) mod linux;
+pub(crate) mod windows;
+
+/// Written next to the instance's other scratch files; its name is not part of any contract.
+pub(crate) const SEED_IMAGE: &str = "cidata.img";
 
 pub(crate) trait GuestOs: Send + Sync {
     /// The per-instance first-boot media (account, keys, hostname). It holds the guest's private key, so `host` writes
@@ -54,6 +58,9 @@ pub(crate) trait GuestOs: Send + Sync {
     /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
     /// the guest does not have is a `recipe` error.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>>;
+    /// The command that applies `setting`, run as a recipe step does (elevated if it says so). A guest that does not
+    /// have the setting says so with a `recipe` error naming it and the guest.
+    fn setting_command(&self, setting: &Setting) -> Result<Command>;
     /// Why `name`, a file name taken from the host, cannot be one file name in a guest directory (a Windows guest
     /// refuses `a?b` and device names); `None` when it can.
     fn file_name_problem(&self, name: &str) -> Option<String>;
@@ -140,6 +147,26 @@ pub(crate) struct SeedKeys {
     /// The guest's SSH host key pair.
     pub host_private: SecretString,
     pub host_public: String,
+}
+
+impl SeedKeys {
+    /// An error (kind `internal`) naming the first key that is empty: a seed without it would boot a guest nobody can
+    /// log in to, or one with no host key.
+    pub(crate) fn require_present(&self) -> Result<()> {
+        for (name, empty) in [
+            ("client_public", self.client_public.is_empty()),
+            ("host_private", self.host_private.expose_secret().is_empty()),
+            ("host_public", self.host_public.is_empty()),
+        ] {
+            if empty {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    format!("the seed key `{name}` is empty, so the guest would boot without it"),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct SeedMedia {

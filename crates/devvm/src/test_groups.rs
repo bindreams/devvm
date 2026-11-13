@@ -17,6 +17,13 @@ test_group!(
     precondition = socket_dir_fits_unicode
 );
 
+// The tests run the scripts of `guest/windows/wrap.rs` in `pwsh`, whose first statement ends the script in session 0.
+test_group!(
+    PWSH_WRAP => pwsh_wrap,
+    env = "DEVVM_TEST_PWSH_WRAP",
+    precondition = host_runs_pwsh_outside_session_0
+);
+
 fn host_has_code_page_1252(opt_out: &str) -> Result<(), String> {
     let code_page = host::current().ansi_code_page();
     if code_page == Some(1252) {
@@ -42,4 +49,31 @@ fn socket_dir_fits_unicode(opt_out: &str) -> Result<(), String> {
     crate::test_support::qemu::unicode_socket_dir_fits().map_err(|why| {
         format!("the group needs a socket directory with a space and a non-ASCII character: {why}; {opt_out}")
     })
+}
+
+/// Asks `pwsh` for its own session id, which is this process's: the wrapped scripts end with 126 in session 0.
+fn host_runs_pwsh_outside_session_0(opt_out: &str) -> Result<(), String> {
+    let output = std::process::Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Diagnostics.Process]::GetCurrentProcess().SessionId",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("the group needs `pwsh` (PowerShell 7) on the PATH: {e}; {opt_out}"))?;
+    let answer = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    match answer.parse::<u32>() {
+        Ok(0) => Err(format!(
+            "the group needs a host process outside session 0, where every wrapped script ends with 126 before it runs \
+             anything; this process and the `pwsh` it started are in session 0; {opt_out}"
+        )),
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!(
+            "the group asked `pwsh` for its session id and got {answer:?} (status {:?}, stderr: {}); {opt_out}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
 }

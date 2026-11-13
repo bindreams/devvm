@@ -190,6 +190,11 @@ impl SftpFs {
     }
 
     /// Whether the entries of the directory holding `path` cannot be changed.
+    /// Whether a handle is open on `path` on a server that, like a Windows one, will not remove or move it then.
+    fn is_open(&self, path: &str) -> bool {
+        self.state.options.windows_open_files && self.state.open_files.lock().unwrap().get(path).is_some_and(|n| *n > 0)
+    }
+
     fn is_locked(&self, path: &str) -> bool {
         self.state.read_only_dirs.lock().unwrap().contains(&parent(path))
     }
@@ -286,7 +291,7 @@ impl SftpFs {
     fn rename_path(&self, old: &str, new: &str, replace: bool) -> Result<(), StatusReply> {
         // The directories on the way are followed, as the OS does; the last name is not.
         let (old, new) = (self.resolve(old, false)?, self.resolve(new, false)?);
-        if self.is_locked(&new) || self.is_locked(&old) {
+        if self.is_locked(&new) || self.is_locked(&old) || self.is_open(&new) || self.is_open(&old) {
             return Err(StatusCode::PermissionDenied.into());
         }
         let exists = self.attributes(&new, false).is_ok();
@@ -372,6 +377,7 @@ impl Handler for SftpFs {
             let file = std::fs::OpenOptions::from(pflags)
                 .open(self.real(&path))
                 .map_err(from_io)?;
+            *self.state.open_files.lock().unwrap().entry(path.clone()).or_default() += 1;
             Open::File {
                 file,
                 path: path.clone(),
@@ -387,12 +393,20 @@ impl Handler for SftpFs {
     }
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusReply> {
-        if let Some(Open::Sink { path, hasher, len }) = self.handles.remove(&handle) {
-            self.state
-                .sinks
-                .lock()
-                .unwrap()
-                .insert(path, (len, hex::encode(hasher.finalize())));
+        match self.handles.remove(&handle) {
+            Some(Open::Sink { path, hasher, len }) => {
+                self.state
+                    .sinks
+                    .lock()
+                    .unwrap()
+                    .insert(path, (len, hex::encode(hasher.finalize())));
+            }
+            Some(Open::File { path, .. }) => {
+                if let Some(count) = self.state.open_files.lock().unwrap().get_mut(&path) {
+                    *count = count.saturating_sub(1);
+                }
+            }
+            _ => {}
         }
         Ok(ok(id))
     }
@@ -568,7 +582,7 @@ impl Handler for SftpFs {
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, StatusReply> {
         let path = self.resolve(&filename, false)?;
-        if self.is_locked(&path) {
+        if self.is_locked(&path) || self.is_open(&path) {
             return Err(StatusCode::PermissionDenied.into());
         }
         if self.state.links.lock().unwrap().remove(&path).is_some()

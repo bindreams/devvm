@@ -315,7 +315,7 @@ fn the_extraction_command_takes_its_paths_as_arguments_and_removes_the_archive_w
 }
 
 #[skuld::test]
-fn set_uac_on_linux_is_a_recipe_error(#[fixture(unicode_home)] home: &Path) {
+fn a_linux_recipe_with_set_uac_is_refused_naming_the_guest_not_silently_accepted(#[fixture(unicode_home)] home: &Path) {
     let engine = engine_with(Dirs::under(home), &TestHost, None, Arc::new(FakeGuests), memory());
     let recipe = recipe(home, &["run: echo one", "set: { uac: auto-approve }"]);
 
@@ -327,6 +327,26 @@ fn set_uac_on_linux_is_a_recipe_error(#[fixture(unicode_home)] home: &Path) {
         "{error}"
     );
     assert!(error.message().contains("linux"), "{error}");
+}
+
+/// A refused `set` step is found before anything is built or keyed: no base is built, no guest is asked, and the
+/// store, the build directories and the ISO memo are not made.
+#[skuld::test]
+fn a_refused_set_step_fails_before_any_base_is_built_or_keyed(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let built = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = built.clone();
+    fx.guests
+        .on_base(move || _ = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    let recipe = recipe(home, &["run: echo one", "run: echo two", "set: { uac: auto-approve }"]);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
+    assert!(error.message().contains("step 3 of 3"), "{error}");
+    assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 0, "a base was built");
+    assert!(fx.server.commands().is_empty(), "a guest ran a command");
+    assert!(!is_there(&fx.dirs.builds()), "a build directory was made");
 }
 
 #[skuld::test]

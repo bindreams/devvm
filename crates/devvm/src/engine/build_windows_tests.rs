@@ -543,3 +543,55 @@ steps:
         "the ISO was still held while the step ran"
     );
 }
+
+/// A Windows recipe that copies the fixture ISO to `home` and then takes `steps`.
+fn windows_recipe(home: &Path, steps: &[&str]) -> Recipe {
+    std::fs::copy(iso_fixture("single-image.iso"), home.join("win.iso")).unwrap();
+    let steps: String = steps
+        .iter()
+        .map(|step| {
+            format!(
+                "  - {step}
+"
+            )
+        })
+        .collect();
+    Recipe::parse(
+        &format!(
+            "from: {{ iso: win.iso }}
+steps:
+{steps}"
+        ),
+        &home.join("r.devvm.yaml"),
+    )
+    .unwrap()
+}
+
+#[skuld::test]
+fn a_set_step_builds_as_an_elevated_step_and_changes_the_key(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let plain = windows_recipe(home, &["run: echo one"]);
+    let with_set = windows_recipe(home, &["run: echo one", "set: { uac: auto-approve }"]);
+
+    let before = layer_keys(&fx.engine.build(&plain, &BuildOptions::default()).unwrap());
+    assert!(
+        !fx.server
+            .commands()
+            .iter()
+            .any(|command| command.contains("ConsentPromptBehaviorAdmin"))
+    );
+    let after = layer_keys(&fx.engine.build(&with_set, &BuildOptions::default()).unwrap());
+
+    // The layers up to the step are reused, and the step is a layer of its own.
+    assert_eq!(after[..before.len()], before[..]);
+    assert_eq!(after.len(), before.len() + 1);
+    // The step ran the guest's registry write, as the elevated command the guest says it is.
+    let commands = fx.server.commands();
+    let writes: Vec<&String> = commands
+        .iter()
+        .filter(|command| command.contains("ConsentPromptBehaviorAdmin"))
+        .collect();
+    assert_eq!(writes.len(), 1, "{commands:?}");
+    assert!(writes[0].contains("-Value 0"), "{}", writes[0]);
+    no_instance_or_build_is_left(&fx);
+}
