@@ -1,7 +1,7 @@
 //! Golden tests of the script `wrap` builds. What the script does in a real PowerShell is checked in
 //! `wrap_pwsh_tests.rs`.
 
-use super::{LINE_LIMIT, command_line_lengths, wrap};
+use super::{LINE_LIMIT, NOT_IN_SESSION, command_line_lengths, literal, session_check, wrap};
 use crate::{Command, ErrorKind, RunAs};
 
 fn command(argv: &[&str]) -> Command {
@@ -227,4 +227,68 @@ fn wrap_of_an_elevated_command_calls_the_helper() {
     assert!(text.contains("'exit'") && text.contains("'done'"), "{text}");
     // A user command's script has none of it.
     assert!(!script(&["tool"]).contains("devvm-eb"));
+}
+
+#[skuld::test]
+fn the_session_check_prints_the_message_the_readiness_probe_matches() {
+    let check = session_check();
+    assert!(check.contains(&literal(&format!("devvm: {NOT_IN_SESSION}"))), "{check}");
+    assert!(check.ends_with("exit 126 }\n"), "{check}");
+}
+
+#[skuld::test]
+fn an_elevated_script_checks_its_session_where_the_caller_and_the_inner_script_both_run() {
+    let mut cmd = command(&["tool"]);
+    cmd.run_as = RunAs::Elevated;
+    let text = wrap(&cmd).unwrap();
+    // The caller's check is the first statement after the preference line.
+    assert!(
+        text.starts_with(&format!("$ErrorActionPreference = 'Stop'\n{}", session_check())),
+        "{text}"
+    );
+    // The inner script keeps its own check (a literal, so each quote is doubled): the helper's runner must run in the
+    // user's interactive session, or the command ends with 126 there.
+    let inner = session_check().replace('\'', "''");
+    assert_eq!(text.matches(&inner).count(), 1, "{text}");
+}
+
+#[skuld::test]
+fn a_multi_line_cmd_script_runs_from_a_temporary_cmd_file_the_script_removes() {
+    let text = script(&["cmd", "/d", "/c", "echo a\necho b"]);
+    // The lines are written, each ending with CR LF, to a file of its own name, which `cmd.exe` runs as a batch file.
+    assert!(text.contains("'echo a\necho b'.Replace("), "{text}");
+    assert!(!text.contains('\r'), "no CR travels in the script");
+    assert!(text.contains("[IO.File]::WriteAllBytes($tmp,"), "{text}");
+    assert!(text.contains("'/d /c \"\"' + $tmp + '\"\"'"), "{text}");
+    // It is removed whatever happens to the command, before the script ends with the command's status.
+    let carried = text.find("[Diagnostics.Process]::Start($psi)").unwrap();
+    let removed = text.find("Remove-Item -LiteralPath $tmp").unwrap();
+    let exit = text.rfind("exit $p.ExitCode").unwrap();
+    let tried = text.find("try {\n$p = ").unwrap();
+    assert!(tried < carried && carried < removed && removed < exit, "{text}");
+    assert!(text.contains("} finally {"), "{text}");
+    // A command without a line break has no file, and the other targets are untouched.
+    for argv in [&["cmd", "/d", "/c", "echo a"][..], &["tool", "a\nb"]] {
+        let plain = script(argv);
+        assert!(
+            !plain.contains("WriteAllBytes") && !plain.contains("finally"),
+            "{plain}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_line_break_in_one_word_of_a_cmd_command_is_refused_in_the_script() {
+    let text = script(&["cmd", "/d", "/c", "echo", "a\nb"]);
+    assert!(
+        text.contains("[Console]::Error.WriteLine('devvm: argument 4 contains a line break"),
+        "{text}"
+    );
+    assert!(!text.contains("WriteAllBytes"), "{text}");
+}
+
+#[skuld::test]
+fn the_words_of_a_cmd_command_are_quoted_one_by_one_in_the_script() {
+    let text = script(&["cmd", "/d", "/c", "dir", r"C:\Program Files"]);
+    assert!(text.contains(r#"'/d /c "dir "C:\Program Files"""#), "{text}");
 }

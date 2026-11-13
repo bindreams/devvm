@@ -10,12 +10,13 @@
 //!    the child's status (the "C2" carrier: every byte of stdout and stderr, and every 32-bit status, measured exact).
 //!    The arguments are built on the host in the three forms the guest can need, and the guest picks by the file it
 //!    found: a list for a program, the batch-file command line of [`cmdquote`] for a `.cmd` or `.bat` file, and the
-//!    command line of `cmd.exe /c <text>` for `cmd.exe`. No output encoding is set here: it would re-encode every
+//!    command line of `cmd.exe /c <text>` for `cmd.exe` (a text of several lines is run from a temporary `.cmd` file the
+//!    script writes and removes). No output encoding is set here: it would re-encode every
 //!    user program's output.
 //!
 //! An elevated command is the same script run by the helper of [`elevate`].
 
-use super::cmdquote;
+use super::cmdquote::{self, CmdCommand};
 use super::elevate;
 use crate::{Command, Error, ErrorKind, Result, RunAs};
 
@@ -39,10 +40,17 @@ pub(super) const LINE_LIMIT: usize = 32_767;
 pub(super) const NOT_IN_SESSION: &str = "the command did not reach the user's session";
 
 /// The first statement of every script and the helper's caller: in session 0 (the agent died, or its session logged
-/// off) the shell is a plain sshd one, at High, and nothing is run.
-pub(super) const SESSION_CHECK: &str = "if ([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0) { [Console]::Error.WriteLine('devvm: the command did not reach the user''s session'); exit 126 }\n";
+/// off) the shell is a plain sshd one, at High, and nothing is run. The message is [`NOT_IN_SESSION`], which the
+/// readiness probe matches.
+pub(super) fn session_check() -> String {
+    format!(
+        "if ([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0) {{ [Console]::Error.WriteLine({}); exit 126 }}
+",
+        literal(&format!("devvm: {NOT_IN_SESSION}"))
+    )
+}
 
-/// The copy of the standard streams and the end with the child's status, after the arguments are set.
+/// The copy of the standard streams, after the arguments are set.
 const CARRY: &str = "$p = [Diagnostics.Process]::Start($psi)
 $stdout = [Console]::OpenStandardOutput()
 $stderr = [Console]::OpenStandardError()
@@ -53,7 +61,10 @@ $both = [Threading.Tasks.Task]::WhenAll($to, $te)
 if ([Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]@($ti, $both)) -eq 0) { try { $p.StandardInput.Close() } catch { } }
 $both.Wait()
 $p.WaitForExit()
-exit $p.ExitCode
+";
+
+/// The end with the child's status.
+const EXIT: &str = "exit $p.ExitCode
 ";
 
 /// `text` as a PowerShell single-quoted string. PowerShell reads U+2018 to U+201B as a single quote too, so each is
@@ -133,7 +144,7 @@ fn user_script(cmd: &Command) -> Result<String> {
     let program = &cmd.argv[0];
     let args = &cmd.argv[1..];
     let mut script = String::from("$ErrorActionPreference = 'Stop'\n");
-    script.push_str(SESSION_CHECK);
+    script.push_str(&session_check());
     if let Some(cwd) = &cmd.cwd {
         script.push_str(&format!("Set-Location -LiteralPath {}\n", literal(cwd)));
     }
@@ -156,10 +167,15 @@ fn user_script(cmd: &Command) -> Result<String> {
     script.push_str("if ($ext -ieq '.cmd' -or $ext -ieq '.bat') {\n");
     script.push_str(&batch_form(args));
     script.push('}');
+    let mut file = false;
     if let Some(form) = cmdquote::command_line_arguments(&cmd.argv) {
         script.push_str(" elseif ([IO.Path]::GetFileName($app.Source) -ieq 'cmd.exe') {\n");
         script.push_str(&match form {
-            Ok(line) => format!("$psi.Arguments = {}\n", literal(&line)),
+            Ok(CmdCommand::Line(line)) => format!("$psi.Arguments = {}\n", literal(&line)),
+            Ok(CmdCommand::Script { switches, text }) => {
+                file = true;
+                script_file_form(&switches, &text)
+            }
             Err(why) => refusal(&why),
         });
         script.push('}');
@@ -169,8 +185,31 @@ fn user_script(cmd: &Command) -> Result<String> {
         script.push_str(&format!("$psi.ArgumentList.Add({})\n", literal(arg)));
     }
     script.push_str("}\n");
-    script.push_str(CARRY);
+    if file {
+        // The temporary file goes whatever becomes of the command, and the script then ends with the status.
+        script.push_str("try {\n");
+        script.push_str(CARRY);
+        script.push_str(
+            "} finally {\nif ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }\n}\n",
+        );
+    } else {
+        script.push_str(CARRY);
+    }
+    script.push_str(EXIT);
     Ok(script)
+}
+
+/// The arguments of `cmd.exe` for a command of several lines: the lines are written to a file of a new name in the
+/// user's temporary directory, in the console's code page (which is how `cmd.exe` reads a batch file), and `cmd.exe`
+/// runs it like a batch file, as `cmd /c ""<file>""`.
+fn script_file_form(switches: &str, text: &str) -> String {
+    format!(
+        "$tmp = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'devvm-' + [guid]::NewGuid().ToString('N') + '.cmd')\n\
+         [IO.File]::WriteAllBytes($tmp, [Text.Encoding]::GetEncoding([Console]::OutputEncoding.CodePage).GetBytes({}.Replace(\"`n\", \"`r`n\")))\n\
+         $psi.Arguments = {} + $tmp + '\"\"'\n",
+        literal(text),
+        literal(&format!("{switches} \"\""))
+    )
 }
 
 /// The arguments of a batch file: std's own command line, `cmd.exe /e:ON /v:OFF /d /c ""<file>" <arguments>"`, or the

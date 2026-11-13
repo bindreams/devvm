@@ -53,7 +53,9 @@ pub(crate) trait GuestOs: Send + Sync {
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;
     /// Blocks until the guest's boot has finished. An unfinished or failed boot is an error; a boot that finished
-    /// with recoverable problems is [`Readiness::Degraded`], for the caller to report.
+    /// with recoverable problems is [`Readiness::Degraded`], for the caller to report. A `connection-lost` error is the
+    /// caller's to retry on a new connection while the VM lives and the boot bound has not passed: a guest may restart
+    /// during its boot.
     fn wait_ready(&self, ssh: &SshSession) -> Result<Readiness>;
     /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
     /// the guest does not have is a `recipe` error.

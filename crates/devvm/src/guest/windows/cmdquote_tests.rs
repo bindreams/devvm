@@ -1,4 +1,4 @@
-use super::{batch_arguments, command_line_arguments};
+use super::{CmdCommand, batch_arguments, command_line_arguments};
 
 fn args(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| (*item).to_owned()).collect()
@@ -59,7 +59,36 @@ fn a_cmd_command_is_its_switches_then_its_text_in_one_pair_of_quotes() {
         (&["CMD", "/D", "/C", "dir"], r#"/D /C "dir""#),
         (&["cmd", "/s", "/d", "/c", "a", "b"], r#"/s /d /c "a b""#),
     ] {
-        assert_eq!(command_line_arguments(&args(argv)).unwrap().unwrap(), want, "{argv:?}");
+        assert_eq!(
+            command_line_arguments(&args(argv)).unwrap().unwrap(),
+            CmdCommand::Line(want.to_owned()),
+            "{argv:?}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_cmd_command_of_several_words_quotes_each_word_the_way_a_batch_file_argument_is() {
+    for (argv, want) in [
+        (
+            &["cmd", "/c", "dir", r"C:\Program Files"][..],
+            r#"/c "dir "C:\Program Files"""#,
+        ),
+        (
+            &["cmd", "/d", "/c", "echo", "a&b", "50%"],
+            r#"/d /c "echo "a&b" "50%%cd:~,%"""#,
+        ),
+        (
+            &["cmd", "/c", r"C:\Program Files\x.exe", "a"],
+            r#"/c ""C:\Program Files\x.exe" a""#,
+        ),
+        (&["cmd", "/c", "echo", ""], r#"/c "echo """"#),
+    ] {
+        assert_eq!(
+            command_line_arguments(&args(argv)).unwrap().unwrap(),
+            CmdCommand::Line(want.to_owned()),
+            "{argv:?}"
+        );
     }
 }
 
@@ -77,9 +106,33 @@ fn a_cmd_argv_that_is_not_a_command_has_no_command_line() {
 }
 
 #[skuld::test]
-fn a_cmd_command_with_a_line_break_is_refused() {
-    let error = command_line_arguments(&args(&["cmd", "/c", "echo a\necho b"]))
-        .unwrap()
-        .unwrap_err();
-    assert!(error.contains("argument 2") && error.contains("line break"), "{error}");
+fn a_cmd_script_of_several_lines_is_a_file_with_lf_line_ends() {
+    for (argv, switches) in [
+        (&["cmd", "/d", "/c", "echo a\necho b"][..], "/d /c"),
+        (&["CMD.EXE", "/s", "/d", "/C", "echo a\r\necho b"], "/s /d /C"),
+    ] {
+        assert_eq!(
+            command_line_arguments(&args(argv)).unwrap().unwrap(),
+            CmdCommand::Script {
+                switches: switches.to_owned(),
+                text: "echo a\necho b".to_owned()
+            },
+            "{argv:?}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_line_break_in_one_of_several_words_is_refused_naming_its_place() {
+    for (argv, place) in [
+        (&["cmd", "/c", "echo", "a\nb"][..], "argument 3 "),
+        (&["cmd", "/c", "echo\r", "b"], "argument 2 "),
+        (&["cmd", "/d\n", "/c", "echo"], "argument 1 "),
+    ] {
+        let error = command_line_arguments(&args(argv)).unwrap().unwrap_err();
+        assert!(
+            error.starts_with(place) && error.contains("line break"),
+            "{argv:?}: {error}"
+        );
+    }
 }

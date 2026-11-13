@@ -18,8 +18,8 @@ mod ready_tests;
 /// The first word of the probe's answer. Only digits and SIDs follow it: nothing localized is read.
 pub(crate) const READY_PROBE: &str = "DEVVM-READY";
 
-/// The session id `user`'s commands run in, and the SID of the Medium mandatory level.
-const USER_SESSION: u32 = 1;
+/// The SID of the Medium mandatory level. The session of `user`'s commands is any but 0, which is the wrapper's own
+/// rule (its session check), so that a user whose session is not the first is up too.
 const MEDIUM: &str = "S-1-16-8192";
 
 /// PowerShell 7. `whoami /groups` lists the token's mandatory label; its CSV header is localized, its `SID` column is
@@ -39,7 +39,8 @@ enum ProbeOutcome {
 }
 
 /// Blocks until a command runs in the user's session at Medium integrity. Every other answer is asked again, paced by
-/// the connection retry's pause; only a probe that cannot run is an error. There is no bound here: `ssh`'s boot bound
+/// the connection retry's pause; only a probe that cannot run is an error. A lost connection ends the call as
+/// `connection-lost`: the engine's wait reconnects, since a guest may restart during its boot. There is no bound here: `ssh`'s boot bound
 /// ends the wait, and its error names the last answer.
 pub(super) fn wait(ssh: &SshSession) -> Result<Readiness> {
     let command = wrap(&Command::new([
@@ -55,7 +56,7 @@ pub(super) fn wait(ssh: &SshSession) -> Result<Readiness> {
             let kind = e.kind();
             e.with_context(
                 kind,
-                format!("waiting for the guest's user session (session 1, Medium integrity; the last answer: {last})"),
+                format!("waiting for the user's session of the guest (not session 0, Medium integrity; the last answer: {last})"),
             )
         })?;
         match assess(&output) {
@@ -86,7 +87,7 @@ fn assess(output: &Output) -> ProbeOutcome {
     match output.status {
         ExitStatus::Code(126) if stderr.contains(NOT_IN_SESSION) => ProbeOutcome::NotYet(NOT_IN_SESSION.to_owned()),
         ExitStatus::Code(0) => match answer(&stdout) {
-            Some((session, integrity)) if session == USER_SESSION && integrity == MEDIUM => ProbeOutcome::Ready,
+            Some((session, integrity)) if session != 0 && integrity == MEDIUM => ProbeOutcome::Ready,
             Some((session, integrity)) => {
                 ProbeOutcome::NotYet(format!("the session is {session} and the integrity level {integrity}"))
             }

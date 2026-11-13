@@ -15,7 +15,6 @@ use crate::recipe::Shell;
 use crate::test_groups::{Group, pwsh_wrap};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper::HELPER_VAR;
-use crate::test_support::wrapped_programs::hex;
 use crate::{Command, ErrorKind};
 
 // Running a script ====================================================================================================
@@ -48,18 +47,20 @@ fn shown(output: &Output) -> String {
     )
 }
 
+/// The text of hex digits `hex` wrote.
+fn unhex(digits: &str) -> String {
+    let bytes: Vec<u8> = (0..digits.len() / 2)
+        .map(|i| u8::from_str_radix(&digits[2 * i..2 * i + 2], 16).unwrap())
+        .collect();
+    String::from_utf8(bytes).unwrap()
+}
+
 /// The arguments `argv_echo` printed.
 fn echoed(output: &Output) -> Vec<String> {
     let text = String::from_utf8(output.stdout.clone()).unwrap_or_else(|_| panic!("{}", shown(output)));
     text.lines()
         .filter_map(|line| line.strip_prefix("ARG"))
-        .map(|line| {
-            let (_, digits) = line.split_once('=').unwrap();
-            let bytes: Vec<u8> = (0..digits.len() / 2)
-                .map(|i| u8::from_str_radix(&digits[2 * i..2 * i + 2], 16).unwrap())
-                .collect();
-            String::from_utf8(bytes).unwrap()
-        })
+        .map(|line| unhex(line.split_once('=').unwrap().1))
         .collect()
 }
 
@@ -141,7 +142,8 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
     let bin = home.join("bin");
     std::fs::create_dir(&bin).unwrap();
     for name in ["-x.exe", "a=b.exe"] {
-        std::fs::hard_link(test_binary(), bin.join(name)).unwrap();
+        // A copy: the test binary may be on another drive than `home`, which a hard link cannot cross.
+        std::fs::copy(test_binary(), bin.join(name)).unwrap();
     }
     for name in ["-x", "a=b"] {
         let output = run(&wrapped(&[name, "ok"]), "wrap-argv", Some(&bin));
@@ -203,7 +205,14 @@ fn wrap_sets_the_working_directory_of_the_program(
             .find_map(|line| line.strip_prefix("CWD="))
             .unwrap_or_default()
             .to_owned();
-        assert_eq!(cwd, hex(&dir.display().to_string()), "{name}: {}", shown(&output));
+        // The same directory by identity: the program reports the long spelling of a path given in the 8.3 one
+        // (`RUNNER~1`), which is the directory's own.
+        assert_eq!(
+            std::fs::canonicalize(unhex(&cwd)).unwrap(),
+            std::fs::canonicalize(&dir).unwrap(),
+            "{name}: {}",
+            shown(&output)
+        );
     }
     let mut missing = Command::new([exe.as_str()]);
     missing.cwd = Some(home.join("does-not-exist").display().to_string());
@@ -252,6 +261,8 @@ fn a_cmd_file_target_keeps_cmd_quoting(#[fixture(unicode_home)] home: &Path, #[f
         ("exit /b 3", Some(""), 3),
         (quoted.as_str(), None, 0),
         ("echo \"x\" && exit /b 4", Some("\"x\""), 4),
+        // Several lines run from a temporary batch file.
+        ("echo a\necho b\nexit /b 6", Some("a\r\nb"), 6),
     ] {
         let output = run(&wrapped(&["cmd.exe", "/d", "/c", script]), "wrap-argv", None);
         assert_eq!(output.status.code(), Some(status), "{script}: {}", shown(&output));
@@ -267,6 +278,13 @@ fn a_cmd_file_target_keeps_cmd_quoting(#[fixture(unicode_home)] home: &Path, #[f
             None => assert_eq!(echoed(&output), ["a b", "c&d", "q\"x"], "{script}: {}", shown(&output)),
         }
     }
+    // The words after `/c` stay one each when they are a program and its arguments.
+    let words = run(
+        &wrapped(&["cmd.exe", "/d", "/c", exe.as_str(), "a b", "c&d", "q\"x"]),
+        "wrap-argv",
+        None,
+    );
+    assert_eq!(echoed(&words), ["a b", "c&d", "q\"x"], "{}", shown(&words));
 }
 
 #[skuld::test]

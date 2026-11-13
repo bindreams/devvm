@@ -38,6 +38,27 @@ fn a_probe_from_session_1_medium_is_ready(#[fixture(unicode_home)] home: &Path) 
 }
 
 #[skuld::test]
+fn a_probe_from_session_2_medium_is_ready(#[fixture(unicode_home)] home: &Path) {
+    // The wrapper accepts any session but 0, and so does the readiness: a user whose session is not the first is up.
+    let rig = rig(
+        home,
+        vec![ProbeReply::new(
+            0,
+            "DEVVM-READY session=2 integrity=S-1-16-8192\r\n",
+            "",
+        )],
+    );
+    assert_eq!(WindowsGuest.wait_ready(&rig.connect()).unwrap(), Readiness::Ready);
+}
+
+#[skuld::test]
+fn a_probe_from_session_0_at_medium_is_not_ready(#[fixture(unicode_home)] home: &Path) {
+    let zero = ProbeReply::new(0, "DEVVM-READY session=0 integrity=S-1-16-8192\n", "");
+    let error = the_bound_ends_the_wait(home, vec![zero]);
+    assert!(error.message().contains("the session is 0"), "{error}");
+}
+
+#[skuld::test]
 fn a_probe_that_cannot_run_is_an_error_naming_the_cause(#[fixture(unicode_home)] home: &Path) {
     for (reply, cause) in [
         (
@@ -64,7 +85,7 @@ fn the_bound_ends_the_wait(home: &Path, probes: Vec<ProbeReply>) -> crate::Error
     let session = rig.connect_with(VmExit::never(), Some(bound)).unwrap();
     let error = WindowsGuest.wait_ready(&session).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("session 1"), "{error}");
+    assert!(error.message().contains("the user's session"), "{error}");
     assert!(
         error.message().contains(&rig.serial_log.display().to_string()),
         "{error}"

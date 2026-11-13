@@ -219,10 +219,18 @@ impl GuestOs for FakeGuestOs {
         LinuxGuest.shell_argv(shell, script)
     }
 
-    /// As the real guest of its kind does.
+    /// As the real guest of its kind does, except that the Windows guest's script is carried by a shell script, which
+    /// the test SSH server runs (as it runs every fake guest's commands): it has no `pwsh`.
     fn setting_command(&self, setting: &Setting) -> Result<Command> {
         match self.kind {
-            GuestKind::Windows => WindowsGuest.setting_command(setting),
+            GuestKind::Windows => {
+                let real = WindowsGuest.setting_command(setting)?;
+                let script = real.argv.last().expect("the command has a script").clone();
+                Ok(Command {
+                    argv: vec!["sh".to_owned(), "-c".to_owned(), script],
+                    ..real
+                })
+            }
             GuestKind::Linux | GuestKind::Macos => LinuxGuest.setting_command(setting),
         }
     }
@@ -254,6 +262,8 @@ struct Served {
     server: Arc<TestSshd>,
     seeds: Mutex<Vec<SeedSeen>>,
     ready_command: Mutex<String>,
+    /// How many of the next `wait_ready`s end with the guest dropping the connection.
+    dropped_readiness: Mutex<usize>,
     degraded: Mutex<Option<String>>,
     on_ready: Mutex<Option<Box<dyn Fn() + Send>>>,
     on_base: Mutex<Option<Box<dyn Fn() + Send>>>,
@@ -285,6 +295,7 @@ impl ServedGuests {
             server,
             seeds: Mutex::default(),
             ready_command: Mutex::new("echo ready".to_owned()),
+            dropped_readiness: Mutex::default(),
             degraded: Mutex::default(),
             on_ready: Mutex::default(),
             on_base: Mutex::default(),
@@ -335,6 +346,12 @@ impl ServedGuests {
     /// The command that `wait_ready` runs through the session (`echo ready`): it is ready when the command exits 0.
     pub(crate) fn ready_when(&self, command: &str) {
         *self.0.ready_command.lock().unwrap() = command.to_owned();
+    }
+
+    /// The next `waits` runs of `wait_ready` end with the guest dropping the connection, as one that restarts during its
+    /// boot does.
+    pub(crate) fn drop_connections_in_readiness(&self, waits: usize) {
+        *self.0.dropped_readiness.lock().unwrap() = waits;
     }
 
     /// `wait_ready` finds the guest [`Readiness::Degraded`], for the reason `what`.
@@ -414,7 +431,14 @@ impl Served {
         if let Some(hook) = self.on_ready.lock().unwrap().as_ref() {
             hook();
         }
-        let command = self.ready_command.lock().unwrap().clone();
+        let mut dropped = self.dropped_readiness.lock().unwrap();
+        let command = if *dropped > 0 {
+            *dropped -= 1;
+            "drop-connection".to_owned()
+        } else {
+            self.ready_command.lock().unwrap().clone()
+        };
+        drop(dropped);
         let output = ssh.exec_collect(&command)?;
         if output.status != ExitStatus::Code(0) {
             return Err(Error::new(

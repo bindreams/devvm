@@ -105,3 +105,13 @@ fn a_command_is_wrapped_by_the_windows_wrapper() {
     let text = WindowsGuest.wrap(&Command::new(["tool"])).unwrap();
     assert!(text.contains("Get-Command -CommandType Application"), "{text}");
 }
+
+#[skuld::test]
+fn a_multi_line_cmd_step_script_is_wrapped_to_run_and_is_not_refused() {
+    let argv = WindowsGuest.shell_argv(Some(Shell::Cmd), "echo a\r\necho b").unwrap();
+    let text = WindowsGuest.wrap(&Command::new(argv)).unwrap();
+    assert!(text.contains("WriteAllBytes"), "{text}");
+    // What runs for `cmd.exe` is not a refusal.
+    let cmd_branch = &text[text.find("elseif").unwrap()..text.find("} else {").unwrap()];
+    assert!(!cmd_branch.contains("exit 126"), "{text}");
+}
