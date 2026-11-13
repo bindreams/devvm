@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::{Bounds, Watch, WindowsBuilder, after_kill};
+use super::serial::Serial;
+use super::{Bounds, Exit, Stall, Watch, WindowsBuilder, after_kill, verdict};
 use crate::backend::fake::FakeBackend;
 use crate::guest::windows::pins::VIRTIO_WIN;
 use crate::guest::windows::templates;
@@ -31,8 +32,8 @@ pub(super) struct Rig {
 }
 
 /// A builder over `backend`, whose ISO is the fixture `iso` copied into `home`, with the pinned virtio-win ISO already
-/// in the download cache (any bytes: the cache is trusted by name). The backend is returned for the tests that read what
-/// it launched.
+/// in the download cache (any bytes: the cache is trusted by name). The backend is returned for the tests that read
+/// what it launched.
 pub(super) fn rig(home: &Path, iso: &str, backend: FakeBackend, bounds: Bounds) -> (Rig, Arc<FakeBackend>) {
     let env = env(home);
     let dirs = Dirs::under(home);
@@ -334,12 +335,19 @@ fn bounds() -> Bounds {
     }
 }
 
+fn progress_of(phase: &str) -> Serial {
+    Serial {
+        progress: vec![phase.to_owned()],
+        ..Serial::default()
+    }
+}
+
 #[skuld::test]
 fn a_marker_restarts_the_clock_of_the_phase() {
     let start = Instant::now();
     let mut watch = Watch::new(start);
 
-    watch.marker("specialize", start + 9 * MINUTE);
+    watch.observe(&progress_of("specialize"), start + 9 * MINUTE);
 
     assert!(
         watch.stall(&bounds(), start + 19 * MINUTE).is_none(),
@@ -368,7 +376,7 @@ fn the_first_logon_scripts_first_marker_moves_the_wait_to_its_bound() {
     let start = Instant::now();
     let mut watch = Watch::new(start);
 
-    watch.marker(&format!("{} x", super::FIRST_LOGON), start + MINUTE);
+    watch.observe(&progress_of(&format!("{} x", super::FIRST_LOGON)), start + MINUTE);
 
     assert!(watch.stall(&bounds(), start + 2 * MINUTE).is_none());
     let stall = watch.stall(&bounds(), start + 4 * MINUTE).unwrap();
@@ -377,12 +385,54 @@ fn the_first_logon_scripts_first_marker_moves_the_wait_to_its_bound() {
 }
 
 #[skuld::test]
+fn every_kind_of_marker_restarts_the_clock() {
+    for (kind, written) in [
+        ("progress", progress_of("specialize")),
+        (
+            "license",
+            Serial {
+                license: Some("DEVVM-LICENSE=null".to_owned()),
+                ..Serial::default()
+            },
+        ),
+        ("failed", wrote(Some("boom"), false)),
+        ("done", wrote(None, true)),
+    ] {
+        let start = Instant::now();
+        let mut watch = Watch::new(start);
+
+        watch.observe(&written, start + 9 * MINUTE);
+
+        assert!(
+            watch.stall(&bounds(), start + 19 * MINUTE).is_none(),
+            "{kind}: ten minutes after the marker"
+        );
+        assert!(
+            watch
+                .stall(&bounds(), start + 19 * MINUTE + Duration::from_secs(1))
+                .is_some(),
+            "{kind}"
+        );
+    }
+}
+
+#[skuld::test]
+fn nothing_written_leaves_the_clock_where_it_was() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+
+    watch.observe(&Serial::default(), start + 9 * MINUTE);
+
+    assert!(watch.stall(&bounds(), start + 11 * MINUTE).is_some());
+}
+
+#[skuld::test]
 fn winpe_is_over_once_any_marker_has_been_seen() {
     let start = Instant::now();
     let mut watch = Watch::new(start);
     assert!(!watch.marker_seen());
 
-    watch.marker("specialize", start);
+    watch.observe(&progress_of("specialize"), start);
 
     assert!(watch.marker_seen());
 }
@@ -393,7 +443,7 @@ fn winpe_is_over_once_any_marker_has_been_seen() {
 fn a_failed_launch_stays_the_headline_when_the_kill_failed_too() {
     let outcome: Result<()> = Err(Error::new(ErrorKind::Unavailable, "the guest failed to build the base"));
 
-    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
+    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM")), false).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert!(
@@ -406,7 +456,7 @@ fn a_failed_launch_stays_the_headline_when_the_kill_failed_too() {
 
 #[skuld::test]
 fn a_launch_that_went_well_is_the_kills_error_when_the_kill_failed() {
-    let error = after_kill(Ok(5), Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
+    let error = after_kill(Ok(5), Err(Error::new(ErrorKind::Io, "cannot kill the VM")), true).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Io);
     assert_eq!(error.message(), "cannot kill the VM");
@@ -414,7 +464,84 @@ fn a_launch_that_went_well_is_the_kills_error_when_the_kill_failed() {
 
 #[skuld::test]
 fn a_kill_that_worked_leaves_the_outcome_as_it_was() {
-    assert_eq!(after_kill(Ok(5), Ok(())).unwrap(), 5);
-    let error = after_kill::<()>(Err(Error::new(ErrorKind::Unavailable, "failed")), Ok(())).unwrap_err();
+    assert_eq!(after_kill(Ok(5), Ok(()), true).unwrap(), 5);
+    let error = after_kill::<()>(Err(Error::new(ErrorKind::Unavailable, "failed")), Ok(()), false).unwrap_err();
     assert_eq!(error.message(), "failed");
+}
+
+#[skuld::test]
+fn a_failed_kill_of_a_vm_that_exited_says_cleanup_failed_and_not_that_a_process_may_run() {
+    let outcome: Result<()> = Err(Error::new(ErrorKind::Unavailable, "the guest failed to build the base"));
+
+    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM")), true).unwrap_err();
+
+    assert!(
+        error.message().starts_with("the guest failed to build the base"),
+        "{error}"
+    );
+    assert!(error.message().contains("cleaning up after the VM failed"), "{error}");
+    assert!(error.message().contains("cannot kill the VM"), "{error}");
+    assert!(!error.message().contains("may still run"), "{error}");
+}
+
+// What a launch that was stopped at its bound came to =================================================================
+
+fn stalled() -> Exit {
+    Exit::Stalled(Stall {
+        awaited: "the first-logon script",
+        bound: 2 * MINUTE,
+    })
+}
+
+fn wrote(failed: Option<&str>, done: bool) -> Serial {
+    Serial {
+        failed: failed.map(Into::into),
+        done,
+        ..Serial::default()
+    }
+}
+
+#[skuld::test]
+fn a_stall_alone_names_what_made_no_progress_and_that_the_guest_was_stopped() {
+    let error = verdict(1, stalled(), &wrote(None, false)).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(
+        error.message(),
+        "the first-logon script made no progress for 2m; the guest was stopped"
+    );
+}
+
+#[skuld::test]
+fn a_failed_marker_is_the_headline_of_a_stall_and_the_stall_follows() {
+    let error = verdict(1, stalled(), &wrote(Some("boom"), false)).err().unwrap();
+
+    assert_eq!(
+        error.message(),
+        "the Windows guest failed to build the base: boom\nthe first-logon script made no progress for 2m; the guest \
+         was stopped"
+    );
+}
+
+#[skuld::test]
+fn a_failed_marker_wins_over_a_done_marker_at_a_stall() {
+    let error = verdict(1, stalled(), &wrote(Some("boom"), true)).err().unwrap();
+
+    assert!(
+        error
+            .message()
+            .starts_with("the Windows guest failed to build the base: boom"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn a_done_marker_at_a_stall_says_the_guest_did_not_power_off() {
+    let error = verdict(1, stalled(), &wrote(None, true)).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(
+        error.message(),
+        "the guest reported done but did not power off within 2m"
+    );
 }

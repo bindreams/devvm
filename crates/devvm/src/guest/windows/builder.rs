@@ -62,12 +62,13 @@ const ANSWER_SPARE: u64 = 8 << 20;
 const FIRST_LOGON: &str = "first logon";
 
 /// How long the guest may go without a sign of life before the build fails naming what it waited for, and how often the
-/// serial log is read for progress while the guest runs. A sign of life is the start of a launch or a marker. A bound
-/// ends a wait on the guest, never decides that the guest is done.
+/// serial log is read for progress while the guest runs. A sign of life is the start of a launch or a marker of any
+/// kind, so each bound is the longest gap allowed, per launch and per marker. A bound ends a wait on the guest, never
+/// decides that the guest is done.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Bounds {
-    /// Windows Setup, which writes no marker before the first-logon script's first. Measured: 22 to 40 minutes from the
-    /// first launch to that marker.
+    /// Windows Setup, until the first-logon script's first marker. Measured: 22 to 40 minutes from the first launch to
+    /// that marker.
     setup: Duration,
     /// The first-logon script, from its first marker to its end. Measured: about 4 minutes.
     first_logon: Duration,
@@ -178,13 +179,22 @@ impl Watch {
         self.since = now;
     }
 
-    /// The guest wrote the marker `phase` at `now`: it moves forward, so the clock restarts. The first-logon script's
-    /// first marker ends Windows Setup.
-    fn marker(&mut self, phase: &str, now: Instant) {
+    /// The guest wrote the progress marker `phase`. The first-logon script's first marker ends Windows Setup.
+    fn marker(&mut self, phase: &str) {
         self.saw_marker = true;
-        self.since = now;
         if self.phase == Phase::Setup && phase.starts_with(FIRST_LOGON) {
             self.phase = Phase::FirstLogon;
+        }
+    }
+
+    /// Takes in what the guest wrote, which was seen at `now`: a marker of any kind is a sign of life, so the clock
+    /// restarts.
+    fn observe(&mut self, written: &Serial, now: Instant) {
+        for phase in &written.progress {
+            self.marker(phase);
+        }
+        if !written.progress.is_empty() || written.license.is_some() || written.failed.is_some() || written.done {
+            self.since = now;
         }
     }
 
@@ -216,6 +226,53 @@ enum Launched {
     Finished,
     /// The guest restarted, and made progress.
     Restarted,
+}
+
+/// What a launch came to, from how it ended and the markers it wrote; [`Launched::Restarted`] is a guest that powered
+/// off with neither marker, which [`Launches`] then judges. The guest's own account comes first: a `DEVVM-BASE-FAILED=`
+/// marker is the headline of an error whatever the end, and the stop or exit is named after it. `DEVVM-BASE-DONE` with
+/// a stop or a failing exit is an error too: the disk may be incomplete.
+fn verdict(number: usize, exit: Exit, serial: &Serial) -> Result<Launched> {
+    let ended = match &exit {
+        Exit::Stalled(stall) => format!(
+            "{} made no progress for {}; the guest was stopped",
+            stall.awaited,
+            humanly(stall.bound)
+        ),
+        Exit::Exited(exited) => format!("the VM process of launch {number} exited with {}", exited.status),
+    };
+    let powered_off = matches!(&exit, Exit::Exited(exited) if exited.status.success());
+    // A failing exit carries what QEMU printed in this launch.
+    let error = |headline: String| {
+        let error = Error::new(ErrorKind::Unavailable, headline);
+        match &exit {
+            Exit::Exited(exited) if !exited.status.success() => with_qemu_output(error, &exited.output),
+            _ => error,
+        }
+    };
+    if let Some(why) = &serial.failed {
+        let mut headline = format!("the Windows guest failed to build the base: {why}");
+        if !powered_off {
+            headline.push_str(&format!("\n{ended}"));
+        }
+        return Err(error(headline));
+    }
+    if serial.done {
+        return match &exit {
+            Exit::Stalled(stall) => Err(error(format!(
+                "the guest reported done but did not power off within {}",
+                humanly(stall.bound)
+            ))),
+            Exit::Exited(_) if powered_off => Ok(Launched::Finished),
+            Exit::Exited(_) => Err(error(format!(
+                "the guest wrote DEVVM-BASE-DONE, but {ended}, so the disk may be incomplete"
+            ))),
+        };
+    }
+    if !powered_off {
+        return Err(error(ended));
+    }
+    Ok(Launched::Restarted)
 }
 
 /// One build of a base: the files it made and what it has seen of the guest.
@@ -334,7 +391,7 @@ impl<'a> Build<'a> {
         self.ctx.progress.message(&format!("Windows base: launch {number}"));
         let mut machine = self.builder.backend.launch(&spec)?;
         if let Err(error) = machine.resume() {
-            return Err(error.after_cleanup("a VM process that may still run", machine.kill()));
+            return after_kill(Err(error), machine.kill(), false);
         }
         // The ISO is open in QEMU once `resume` has returned: `Machine::resume` completes a command of QEMU's main
         // loop, which starts after `qemu_init` has opened every drive.
@@ -362,65 +419,29 @@ impl<'a> Build<'a> {
         // The log's tail is read first: a wait that failed has left markers unread, and `fail` tells WinPE's logs from
         // the first-logon script's by the markers seen. A VM process that is gone (it exited, or the kill worked)
         // writes no more, so its last line is read whole; one that may still be writing gives its complete lines only.
-        let gone = killed.is_ok() || matches!(exit, Ok(Exit::Exited(_)));
-        let rest = reader.poll(gone);
+        let exited = matches!(exit, Ok(Exit::Exited(_)));
+        let rest = reader.poll(killed.is_ok() || exited);
         if let Ok(rest) = &rest {
             self.observe(rest);
         }
         let outcome = match (exit, rest) {
-            (Err(wait), _) => Err(wait),
+            (Err(wait), Err(read)) => Err(wait.together_with(read)),
+            (Err(wait), Ok(_)) => Err(wait),
             (Ok(_), Err(read)) => Err(read),
             (Ok(exit), Ok(_)) => self.judge(number, exit, reader),
         };
-        after_kill(outcome, killed)
+        after_kill(outcome, killed, exited)
     }
 
-    /// What a launch came to, from how it ended and the markers it wrote.
+    /// What a launch came to, from how it ended and the markers it wrote. A guest that restarted must have moved
+    /// forward since the launches before.
     fn judge(&mut self, number: usize, exit: Exit, reader: &LogReader) -> Result<Launched> {
         let serial = reader.whole();
-        let exited = match exit {
-            Exit::Stalled(stall) => {
-                return Err(Error::new(
-                    ErrorKind::Unavailable,
-                    format!(
-                        "{} made no progress for {}; the guest was stopped",
-                        stall.awaited,
-                        humanly(stall.bound)
-                    ),
-                ));
-            }
-            Exit::Exited(exited) => exited,
-        };
-        let status = exited.status;
-        let ended = format!("the VM process of launch {number} exited with {status}");
-        // A failing exit carries what QEMU printed in this launch.
-        let error = |headline: String| {
-            let error = Error::new(ErrorKind::Unavailable, headline);
-            if status.success() {
-                error
-            } else {
-                with_qemu_output(error, &exited.output)
-            }
-        };
-        if let Some(why) = &serial.failed {
-            let mut headline = format!("the Windows guest failed to build the base: {why}");
-            if !status.success() {
-                headline.push_str(&format!("\n{ended}"));
-            }
-            return Err(error(headline));
+        let launched = verdict(number, exit, serial)?;
+        if let Launched::Restarted = launched {
+            self.launches.note(serial)?;
         }
-        match (serial.done, status.success()) {
-            (true, true) => return Ok(Launched::Finished),
-            (true, false) => {
-                return Err(error(format!(
-                    "the guest wrote DEVVM-BASE-DONE, but {ended}, so the disk may be incomplete"
-                )));
-            }
-            (false, false) => return Err(error(ended)),
-            (false, true) => {}
-        }
-        self.launches.note(serial)?;
-        Ok(Launched::Restarted)
+        Ok(launched)
     }
 
     /// `error` of a launch whose serial log is `log`, with the end of that log and, while no marker has been written,
@@ -477,8 +498,9 @@ impl<'a> Build<'a> {
     }
 
     /// Waits until the machine's VM process exits, reporting the guest's progress as it writes it, and returns how it
-    /// exited. The wait ends with [`Exit::Stalled`] when the guest gives no sign of life within the bound of the phase it
-    /// is in: the bound ends the wait for an event that may never happen, and the error that follows names it. The caller kills the VM.
+    /// exited. The wait ends with [`Exit::Stalled`] when the guest gives no sign of life within the bound of the phase
+    /// it is in: the bound ends the wait for an event that may never happen, and the error that follows names it. The
+    /// caller kills the VM.
     fn wait(&mut self, machine: &mut dyn Machine, reader: &mut LogReader) -> Result<Exit> {
         loop {
             // The status is read before anything can reap the process.
@@ -502,11 +524,10 @@ impl<'a> Build<'a> {
     /// Takes in what the guest wrote: reports each marker, which restarts the clock of the bound and moves to the
     /// first-logon phase when its script starts, and keeps the last license read.
     fn observe(&mut self, written: &Serial) {
-        let now = Instant::now();
         for phase in &written.progress {
             self.ctx.progress.message(&format!("Windows base: {phase}"));
-            self.watch.marker(phase, now);
         }
+        self.watch.observe(written, Instant::now());
         if let Some(license) = &written.license {
             self.license = Some((license.clone(), self.ctx.clock.now()));
         }
@@ -560,17 +581,22 @@ impl<'a> Build<'a> {
     }
 }
 
-/// `outcome` of a launch whose VM process was then killed with `killed`. A failed outcome stays the headline and names a
-/// kill that failed after it; an outcome that went well is the kill's error, since the VM process may still run.
-fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
+/// `outcome` of a launch whose VM process was then killed with `killed`; `exited` says the VM process had exited by
+/// itself. A failed outcome stays the headline and names a kill that failed after it: of an exited VM it failed to
+/// clean up what the VM left, of any other a VM process may still run. An outcome that went well is the kill's error.
+fn after_kill<T>(outcome: Result<T>, killed: Result<()>, exited: bool) -> Result<T> {
     match outcome {
+        Err(error) if exited => Err(match killed {
+            Ok(()) => error,
+            Err(failed) => error.together_with(format!("cleaning up after the VM failed ({failed})")),
+        }),
         Err(error) => Err(error.after_cleanup("a VM process that may still run", killed)),
         Ok(value) => killed.map(|()| value),
     }
 }
 
-/// `error`, with the last lines of the log `what` at `path`: the build's directory, and the log with it, is gone when the
-/// error is read. A log that is missing or empty adds nothing, and one that cannot be read says so.
+/// `error`, with the last lines of the log `what` at `path`: the build's directory, and the log with it, is gone when
+/// the error is read. A log that is missing or empty adds nothing, and one that cannot be read says so.
 fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
     match std::fs::read(path) {
         Ok(bytes) => with_tail(error, what, &String::from_utf8_lossy(&bytes)),
@@ -585,12 +611,7 @@ fn with_qemu_output(error: Error, output: &str) -> Error {
     if output.trim().is_empty() {
         return Error::new(
             error.kind(),
-            format!(
-                "{}
-QEMU's output:
-{PRINTED_NOTHING}",
-                error.message()
-            ),
+            format!("{}\nQEMU's output:\n{PRINTED_NOTHING}", error.message()),
         );
     }
     with_tail(error, "QEMU's output", output)

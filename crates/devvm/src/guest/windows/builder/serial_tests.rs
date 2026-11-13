@@ -82,6 +82,62 @@ fn a_marker_is_read_through_the_terminal_control_after_it() {
 }
 
 #[skuld::test]
+fn a_marker_is_read_after_an_escape_with_intermediate_bytes() {
+    // `ESC ( B` selects a character set; `ESC # 8` fills the screen: an escape, bytes 0x20 to 0x2F, one final byte.
+    let log = "\x1b(BDEVVM-PROGRESS=charset\r\n\x1b#8DEVVM-LICENSE=null\r\n\x1b(0\x1b(BDEVVM-BASE-DONE\r\n";
+
+    let serial = read(log.as_bytes());
+
+    assert_eq!(serial.progress, ["charset"]);
+    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
+    assert!(serial.done, "{serial:?}");
+}
+
+#[skuld::test]
+fn a_marker_is_read_after_an_operating_system_command_that_ends_in_bel_or_in_st() {
+    let log = "\x1b]0;a title\x07DEVVM-PROGRESS=bel\r\n\x1b]2;another\x1b\\DEVVM-LICENSE=null\r\n\
+               \x1b]0;x\x07\x1b]0;y\x1b\\DEVVM-BASE-DONE\r\n";
+
+    let serial = read(log.as_bytes());
+
+    assert_eq!(serial.progress, ["bel"]);
+    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
+    assert!(serial.done, "{serial:?}");
+}
+
+#[skuld::test]
+fn an_operating_system_command_that_an_escape_cuts_short_ends_there() {
+    let serial = read(b"\x1b]0;a title\x1b[0mDEVVM-PROGRESS=after\r\n");
+
+    assert_eq!(serial.progress, ["after"]);
+}
+
+#[skuld::test]
+fn an_operating_system_command_that_never_ends_hides_the_rest_of_its_line_only() {
+    let serial = read(b"\x1b]0;DEVVM-PROGRESS=inside\r\nDEVVM-PROGRESS=next line\r\n");
+
+    assert_eq!(serial.progress, ["next line"]);
+}
+
+#[skuld::test]
+fn an_escape_and_one_character_is_dropped_wherever_it_stands() {
+    let serial = read(b"\x1b7\x1b8DEVVM-PROGRESS=a\x1bM \r\n");
+
+    assert_eq!(serial.progress, ["a"]);
+}
+
+#[skuld::test]
+fn a_marker_is_read_after_whitespace_as_well_as_control() {
+    let log = " \t DEVVM-PROGRESS=indented\r\n\x1b[0m  DEVVM-LICENSE=null\r\n\u{a0}DEVVM-BASE-DONE\r\n";
+
+    let serial = read(log.as_bytes());
+
+    assert_eq!(serial.progress, ["indented"]);
+    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
+    assert!(serial.done, "{serial:?}");
+}
+
+#[skuld::test]
 fn a_marker_that_does_not_start_its_line_is_not_one() {
     let log = "echo DEVVM-BASE-DONE\nx DEVVM-PROGRESS=nope\n\x1b[0mmore DEVVM-LICENSE=nope\n\
                say DEVVM-BASE-FAILED=nope\nDEVVM-BASE-DONE and more\nDEVVM-BASE-DONEX\n";

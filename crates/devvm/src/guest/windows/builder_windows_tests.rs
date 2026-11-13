@@ -1,6 +1,6 @@
-//! `WindowsBuilder::build_base` over the fake backend, with machines that launch: a fake machine is a frozen process, which only
-//! Windows can spawn. The guest is a script: it writes the serial log and the answer disk as a guest does, and powers
-//! off, which ends the fake VM process.
+//! `WindowsBuilder::build_base` over the fake backend, with machines that launch: a fake machine is a frozen process,
+//! which only Windows can spawn. The guest is a script: it writes the serial log and the answer disk as a guest does,
+//! and powers off, which ends the fake VM process.
 
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -305,10 +305,7 @@ fn a_wait_that_fails_still_reads_the_markers_the_guest_wrote_before_it_names_the
 fn a_vm_that_may_still_run_after_a_failed_kill_gives_only_its_complete_lines_and_the_stall_stays_the_headline(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let logon = Launch::running(
-        "DEVVM-PROGRESS=first logon: whole
-DEVVM-PROGRESS=first logon: half",
-    );
+    let logon = Launch::running("DEVVM-PROGRESS=first logon: whole\nDEVVM-PROGRESS=first logon: half");
     let backend = FakeBackend::new(&TestHost)
         .with_guest(guest(vec![logon]))
         .with_failing_kill();
@@ -323,10 +320,7 @@ DEVVM-PROGRESS=first logon: half",
     );
     assert!(message.contains("the fake machine's kill fails"), "{message}");
     assert!(message.contains("may still run"), "{message}");
-    let progress = rig.progress().join(
-        "
-",
-    );
+    let progress = rig.progress().join("\n");
     assert!(progress.contains("first logon: whole"), "{progress}");
     assert!(
         !progress.contains("first logon: half"),
@@ -336,10 +330,7 @@ DEVVM-PROGRESS=first logon: half",
 
 #[skuld::test]
 fn a_vm_that_exited_gives_its_last_line_whole_though_its_kill_failed(#[fixture(unicode_home)] home: &Path) {
-    let logon = Launch::off(
-        "DEVVM-PROGRESS=first logon: whole
-DEVVM-PROGRESS=first logon: last",
-    );
+    let logon = Launch::off("DEVVM-PROGRESS=first logon: whole\nDEVVM-PROGRESS=first logon: last");
     let backend = FakeBackend::new(&TestHost)
         .with_guest(guest(vec![logon]))
         .with_failing_kill();
@@ -348,10 +339,7 @@ DEVVM-PROGRESS=first logon: last",
     let error = rig.build(None).unwrap_err();
 
     assert!(error.message().contains("the fake machine's kill fails"), "{error}");
-    let progress = rig.progress().join(
-        "
-",
-    );
+    let progress = rig.progress().join("\n");
     assert!(
         progress.contains("first logon: last"),
         "an exited VM writes no more: {progress}"
@@ -374,6 +362,84 @@ fn a_wait_and_a_kill_that_both_fail_are_both_named(#[fixture(unicode_home)] home
     assert!(
         message.contains("may still run"),
         "the VM may still be running: {message}"
+    );
+}
+
+#[skuld::test]
+fn a_wait_and_a_serial_log_that_both_fail_are_both_named(#[fixture(unicode_home)] home: &Path) {
+    let logon = Launch::running("DEVVM-PROGRESS=first logon: x\r\n").before(serial_log_becomes_a_directory);
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![logon]))
+        .with_failing_try_wait();
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(
+        message.starts_with("cannot read the VM process's status"),
+        "the wait is the headline: {message}"
+    );
+    assert!(message.contains("cannot read the serial log"), "{message}");
+}
+
+#[skuld::test]
+fn a_vm_that_exited_and_could_not_be_cleaned_up_after_is_not_said_to_run(#[fixture(unicode_home)] home: &Path) {
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![Launch::crashing("DEVVM-PROGRESS=first logon: x\r\n")]))
+        .with_failing_kill();
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(message.contains("exit code: 1"), "{message}");
+    assert!(message.contains("cleaning up after the VM failed"), "{message}");
+    assert!(message.contains("the fake machine's kill fails"), "{message}");
+    assert!(!message.contains("may still run"), "the VM exited: {message}");
+}
+
+#[skuld::test]
+fn a_failed_marker_is_the_headline_when_the_guest_then_stalls(#[fixture(unicode_home)] home: &Path) {
+    let logon = Launch::running("DEVVM-PROGRESS=first logon: x\r\nDEVVM-BASE-FAILED=boom\r\n");
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![logon]));
+    let (rig, _) = rig(
+        home,
+        "single-image.iso",
+        backend,
+        bounds(HOUR, Duration::from_millis(300)),
+    );
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(
+        message.starts_with("the Windows guest failed to build the base: boom"),
+        "{message}"
+    );
+    assert!(message.contains("the first-logon script made no progress"), "{message}");
+}
+
+#[skuld::test]
+fn a_guest_that_wrote_done_and_never_powered_off_is_not_a_plain_stall(#[fixture(unicode_home)] home: &Path) {
+    let logon = Launch::running(&format!(
+        "DEVVM-PROGRESS=first logon: x\r\n{LICENSED}\r\nDEVVM-BASE-DONE\r\n"
+    ));
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![logon]));
+    let (rig, _) = rig(
+        home,
+        "single-image.iso",
+        backend,
+        bounds(HOUR, Duration::from_millis(300)),
+    );
+
+    let error = rig.build(None).unwrap_err();
+
+    assert!(
+        error
+            .message()
+            .starts_with("the guest reported done but did not power off within 300ms"),
+        "{error}"
     );
 }
 

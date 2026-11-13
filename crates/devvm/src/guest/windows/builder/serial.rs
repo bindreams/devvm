@@ -58,27 +58,72 @@ const LINE_ENDS: [char; 2] = ['\n', '\r'];
 
 const ESC: char = '\x1b';
 
-/// `line` as the terminal's own control leaves it out: escape sequences (`ESC [`, parameters and a final byte, or `ESC`
-/// and one more character) anywhere, control characters at its start, and whitespace and control characters at its end.
-/// A sequence the line ends in the middle of is dropped to the end of the line.
+const BEL: char = '\x07';
+
+/// The bytes between an escape and the final byte of a sequence that has some (`ESC ( B`).
+const INTERMEDIATES: std::ops::RangeInclusive<char> = ' '..='/';
+
+/// `line` as the terminal's own control leaves it out. Escape sequences are dropped anywhere in it:
+/// - `ESC [`, parameters and a final byte (CSI);
+/// - `ESC ]` and text up to a BEL or `ESC \` (OSC);
+/// - `ESC`, bytes `0x20` to `0x2F` and a final byte (`ESC ( B`);
+/// - `ESC` and one more character.
+///
+/// Whitespace and control characters are dropped at its start and at its end. A sequence the line ends in the middle of
+/// is dropped to the end of the line.
 fn without_control(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
     let mut text = String::with_capacity(line.len());
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        if c != ESC {
+    let mut at = 0;
+    while at < chars.len() {
+        let c = chars[at];
+        at += 1;
+        if c == ESC {
+            at = after_sequence(&chars, at);
+        } else {
             text.push(c);
-        } else if chars.next() == Some('[') {
-            // The final byte of a control sequence is the first one that is not a parameter or an intermediate.
-            chars.find(|c| ('@'..='~').contains(c));
         }
     }
-    text.trim_start_matches(char::is_control)
+    text.trim_start_matches(|c: char| c.is_control() || c.is_whitespace())
         .trim_end_matches(|c: char| c.is_control() || c.is_whitespace())
         .to_owned()
 }
 
+/// Where the escape sequence ends whose `ESC` is just before `at` in `chars`: the end of `chars` for one they end in
+/// the middle of.
+fn after_sequence(chars: &[char], at: usize) -> usize {
+    // The index after the first character from `from` on that `is_final`.
+    let after_first = |from: usize, is_final: &dyn Fn(char) -> bool| {
+        chars[from..]
+            .iter()
+            .position(|&c| is_final(c))
+            .map_or(chars.len(), |found| from + found + 1)
+    };
+    match chars.get(at) {
+        None => at,
+        // The final byte of a control sequence is the first one that is not a parameter or an intermediate.
+        Some('[') => after_first(at + 1, &|c| ('@'..='~').contains(&c)),
+        // An operating system command ends at BEL or at `ESC \`. Any other escape ends it too, and begins the next
+        // sequence.
+        Some(']') => match chars[at + 1..].iter().position(|&c| c == BEL || c == ESC) {
+            None => chars.len(),
+            Some(found) => {
+                let end = at + 1 + found;
+                match (chars[end], chars.get(end + 1)) {
+                    (ESC, Some('\\')) => end + 2,
+                    (ESC, _) => end,
+                    _ => end + 1,
+                }
+            }
+        },
+        Some(c) if INTERMEDIATES.contains(c) => after_first(at + 1, &|c| !INTERMEDIATES.contains(&c)),
+        Some(_) => at + 1,
+    }
+}
+
 impl Serial {
-    /// Adds what a later part of the same log says: its phases follow, and its license and failure replace earlier ones.
+    /// Adds what a later part of the same log says: its phases follow, and its license and failure replace earlier
+    /// ones.
     fn append(&mut self, later: &Serial) {
         self.progress.extend(later.progress.iter().cloned());
         self.license = later.license.clone().or(self.license.take());
