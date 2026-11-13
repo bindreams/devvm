@@ -67,6 +67,23 @@ fn the_extraction_overwrites_and_the_archive_is_removed_whatever_the_extraction_
 }
 
 #[skuld::test]
+fn read_only_files_are_cleared_before_the_extraction_and_marked_after_it() {
+    let script = script_of("C:/d", "C:/a.tar");
+    let at = |needle: &str| {
+        script
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` is not in {script}"))
+    };
+    // An entry with no owner-write bit is the one that gets the attribute, as `tar -xf` makes the file read-only.
+    assert!(script.contains("UnixFileMode]::UserWrite"), "{script}");
+    assert!(
+        at("-bxor [System.IO.FileAttributes]::ReadOnly") < at("ExtractToDirectory")
+            && at("ExtractToDirectory") < at("-bor [System.IO.FileAttributes]::ReadOnly"),
+        "{script}"
+    );
+}
+
+#[skuld::test]
 fn a_hostile_destination_or_archive_path_stays_one_literal_in_the_windows_script() {
     let plain = script_of("C:/d", "C:/a.tar");
     for hostile in HOSTILE {

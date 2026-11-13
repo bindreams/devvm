@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::Output;
 
 use super::extract_command;
+use crate::copy::copy_tests::{add_all, new_repo, put, take};
 use crate::guest::windows::wrap::wrap_pwsh_tests::{run, shown};
 use crate::test_groups::{Group, pwsh_wrap};
 use crate::test_support::fixtures::unicode_home;
@@ -148,4 +149,76 @@ fn a_snapshot_entry_the_windows_extraction_cannot_make_ends_the_step_naming_it_a
         assert!(stderr.contains("a link.txt"), "{}", shown(&finished));
     }
     assert!(!archive.exists());
+}
+
+/// Whether the file has the ReadOnly attribute, which is what Rust's `readonly` reads on Windows.
+fn read_only(path: &Path) -> bool {
+    std::fs::metadata(path).unwrap().permissions().readonly()
+}
+
+/// A snapshot of `repo` made as a `copy` step makes it, copied to `copy` so that a second extraction can use it too:
+/// the extraction removes the archive it is given.
+fn snapshot_of(repo: &Path, read_only: bool, scratch: &Path) -> std::path::PathBuf {
+    let archive = take(repo, read_only, scratch).unwrap().snapshot.archive;
+    let copy = scratch.join("copy.tar");
+    std::fs::copy(&archive, &copy).unwrap();
+    std::fs::remove_file(&archive).unwrap();
+    copy
+}
+
+#[skuld::test]
+fn a_read_only_snapshot_makes_read_only_files_in_writable_directories_and_a_second_copy_overwrites_them(
+    #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "a.txt", b"first");
+    put(&repo, "dir/b.txt", b"b");
+    add_all(&repo);
+    let destination = home.join("target");
+
+    let first = extract(&destination, &snapshot_of(&repo, true, &home.join("one")));
+    put(&repo, "a.txt", b"second, and longer than the first");
+    add_all(&repo);
+    let second = extract(&destination, &snapshot_of(&repo, true, &home.join("two")));
+
+    assert_eq!(first.status.code(), Some(0), "{}", shown(&first));
+    assert_eq!(second.status.code(), Some(0), "{}", shown(&second));
+    assert_eq!(
+        std::fs::read_to_string(destination.join("a.txt")).unwrap(),
+        "second, and longer than the first",
+        "a read-only file from the earlier copy is overwritten"
+    );
+    for file in ["a.txt", "dir/b.txt"] {
+        assert!(read_only(&destination.join(file)), "{file}");
+    }
+    assert!(!read_only(&destination.join("dir")), "directories stay writable");
+    assert!(!read_only(&destination));
+}
+
+#[skuld::test]
+fn a_snapshot_that_is_not_read_only_leaves_no_file_read_only_and_overwrites_one_that_is(
+    #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = new_repo(home, "repo");
+    put(&repo, "a.txt", b"new");
+    put(&repo, "b.txt", b"b");
+    add_all(&repo);
+    let destination = home.join("target");
+    std::fs::create_dir_all(&destination).unwrap();
+    // A file a `run` step made read-only, as `attrib +r` does.
+    let earlier = destination.join("a.txt");
+    std::fs::write(&earlier, "old, and longer than the new one").unwrap();
+    let mut permissions = std::fs::metadata(&earlier).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&earlier, permissions).unwrap();
+
+    let finished = extract(&destination, &snapshot_of(&repo, false, home));
+
+    assert_eq!(finished.status.code(), Some(0), "{}", shown(&finished));
+    assert_eq!(std::fs::read_to_string(&earlier).unwrap(), "new");
+    for file in ["a.txt", "b.txt"] {
+        assert!(!read_only(&destination.join(file)), "{file}");
+    }
 }

@@ -67,7 +67,8 @@ user, not elevated, through ssh-broker in the user's own session, so they see it
   Windows guest. A `cmd` script is one line, and a line break in it is refused before the build starts: use
   `shell: pwsh`, or `copy` a `.cmd` file in and run it.
 - **`copy`.** A `copy` step extracts its archive with PowerShell. A tracked symlink ends the step with an error that
-  names it: the guest's user cannot create one.
+  names it: the guest's user cannot create one. `read-only: true` sets the ReadOnly attribute on the copied files;
+  directories stay writable.
 - **Paths.** Write guest paths with `/`: `C:/x/y`, `~/x`. `~` is the user's profile; `~\x` and `C:\x` are refused with the
   spelling that works.
 - **`elevated: true`, `--elevated`** run at High integrity with no prompt, through a scheduled task. Each costs 2 to 6
