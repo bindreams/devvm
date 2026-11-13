@@ -1,5 +1,4 @@
-//! The extraction command of a `copy` step, wrapped as the guest wraps it and run by a real `sh` with a real `tar`. They
-//! spawn both, so they run in the deputy's runner and CI.
+//! The extraction command of a `copy` step, wrapped as the guest wraps it and run by a real `sh` with a real `tar`.
 
 use std::path::Path;
 use std::process::ExitStatus;

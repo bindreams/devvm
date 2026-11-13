@@ -1,6 +1,5 @@
-//! `extract_command`'s script in a real PowerShell 7 on the test host (the `pwsh_wrap` group: it spawns `pwsh`, which the
-//! CI Windows Test lane and the deputy's runner do). The archives are the snapshot's shape: a tar of files and links, no
-//! directory entries.
+//! `extract_command`'s script in a real PowerShell 7 on the test host (the `pwsh_wrap` group). The archives are the
+//! snapshot's shape: a tar of files and links, no directory entries.
 
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
@@ -61,8 +60,6 @@ fn an_archive_the_snapshot_makes_extracts_with_the_windows_script(
     // The destination does not exist, and holds a file the archive overwrites once it is made.
     let destination = home.join("made \u{1f600} here").join("sub");
     std::fs::create_dir_all(&destination).unwrap();
-    std::fs::write(destination.join("a.txt"), "old, and longer than the new one").unwrap();
-    std::fs::remove_file(destination.join("a.txt")).unwrap();
     std::fs::write(destination.join("a.txt"), "old, and longer than the new one").unwrap();
     let missing = home.join("missing \u{1f600}").join("deeper").join("still");
 
