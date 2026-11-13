@@ -8,7 +8,8 @@
 use std::path::Path;
 use std::process::{Command as Process, Output, Stdio};
 
-use super::{LINE_LIMIT, command_line_lengths, script_unchecked, wrap};
+use super::wrap;
+use super::wrap_tests::longest_fit;
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::recipe::Shell;
@@ -19,12 +20,12 @@ use crate::{Command, ErrorKind};
 
 // Running a script ====================================================================================================
 
-fn test_binary() -> String {
+pub(in crate::guest::windows) fn test_binary() -> String {
     std::env::current_exe().unwrap().display().to_string()
 }
 
 /// `script` in `pwsh -c`, the test binary in `helper` mode, `path` (a directory) first on the PATH.
-fn run(script: &str, helper: &str, path: Option<&Path>) -> Output {
+pub(in crate::guest::windows) fn run(script: &str, helper: &str, path: Option<&Path>) -> Output {
     let mut process = Process::new("pwsh");
     process
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
@@ -38,7 +39,7 @@ fn run(script: &str, helper: &str, path: Option<&Path>) -> Output {
     process.output().expect("pwsh runs")
 }
 
-fn shown(output: &Output) -> String {
+pub(in crate::guest::windows) fn shown(output: &Output) -> String {
     format!(
         "status {:?}, stdout {:?}, stderr {:?}",
         output.status.code(),
@@ -64,7 +65,7 @@ fn echoed(output: &Output) -> Vec<String> {
         .collect()
 }
 
-fn wrapped(argv: &[&str]) -> String {
+pub(in crate::guest::windows) fn wrapped(argv: &[&str]) -> String {
     wrap(&Command::new(argv.iter().copied())).unwrap()
 }
 
@@ -216,7 +217,57 @@ fn wrap_sets_the_working_directory_of_the_program(
     }
     let mut missing = Command::new([exe.as_str()]);
     missing.cwd = Some(home.join("does-not-exist").display().to_string());
-    assert_ne!(run(&wrap(&missing).unwrap(), "wrap-argv", None).status.code(), Some(0));
+    // A directory that cannot be entered is a command that did not run: 126 and the reason, not the status of a failed
+    // script.
+    let output = run(&wrap(&missing).unwrap(), "wrap-argv", None);
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    assert!(output.stdout.is_empty(), "{}", shown(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("devvm: working directory "),
+        "{}",
+        shown(&output)
+    );
+}
+
+#[skuld::test]
+fn a_program_that_cannot_start_exits_126_naming_it(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let bad = home.join("bad.exe");
+    std::fs::write(&bad, "this is not a program").unwrap();
+    let bad = bad.display().to_string();
+    let output = run(&wrapped(&[&bad, "x"]), "wrap-argv", None);
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    assert!(output.stdout.is_empty(), "{}", shown(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&format!("devvm: {bad}: ")),
+        "{}",
+        shown(&output)
+    );
+}
+
+/// `[`, `]` and a backtick are wildcard syntax and an escape for PowerShell, and ordinary characters of a file name.
+#[skuld::test]
+fn a_program_is_found_by_its_literal_path_or_name(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let bin = home.join("tools[x86] `a`");
+    std::fs::create_dir(&bin).unwrap();
+    for name in ["w[1].exe", "tick`.exe"] {
+        std::fs::copy(test_binary(), bin.join(name)).unwrap();
+    }
+    for typed in ["w[1].exe", "w[1]", "tick`"] {
+        let path = bin.join(typed).display().to_string();
+        let output = run(&wrapped(&[&path, "ok"]), "wrap-argv", None);
+        assert_eq!(echoed(&output), ["ok"], "{path}: {}", shown(&output));
+        let output = run(&wrapped(&[typed, "ok"]), "wrap-argv", Some(&bin));
+        assert_eq!(echoed(&output), ["ok"], "{typed} on the PATH: {}", shown(&output));
+    }
+    // A file the brackets would match as a wildcard is not found by a name that only matches it so.
+    let output = run(&wrapped(&["w[1-9]", "ok"]), "wrap-argv", Some(&bin));
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
 }
 
 /// The 18 cases measured on a guest where the other carriers differ: the arguments of a `.cmd` file, and `cmd /c`.
@@ -261,8 +312,6 @@ fn a_cmd_file_target_keeps_cmd_quoting(#[fixture(unicode_home)] home: &Path, #[f
         ("exit /b 3", Some(""), 3),
         (quoted.as_str(), None, 0),
         ("echo \"x\" && exit /b 4", Some("\"x\""), 4),
-        // Several lines run from a temporary batch file.
-        ("echo a\necho b\nexit /b 6", Some("a\r\nb"), 6),
     ] {
         let output = run(&wrapped(&["cmd.exe", "/d", "/c", script]), "wrap-argv", None);
         assert_eq!(output.status.code(), Some(status), "{script}: {}", shown(&output));
@@ -287,6 +336,16 @@ fn a_cmd_file_target_keeps_cmd_quoting(#[fixture(unicode_home)] home: &Path, #[f
         "{}",
         shown(&lines)
     );
+    // `/c` ends a chain of switches, and is a plain argument of a program that is not cmd.
+    let chained = run(&wrapped(&["cmd.exe", "/d/c", "echo hello"]), "wrap-argv", None);
+    assert_eq!(chained.status.code(), Some(0), "{}", shown(&chained));
+    assert_eq!(String::from_utf8_lossy(&chained.stdout).trim_end(), "hello");
+    let other = run(&wrapped(&[exe.as_str(), "/c", "a b"]), "wrap-argv", None);
+    assert_eq!(echoed(&other), ["/c", "a b"], "{}", shown(&other));
+    // A `/c` stuck to other text is refused, and nothing runs.
+    let stuck = run(&wrapped(&["cmd.exe", "/cecho hi"]), "wrap-argv", None);
+    assert_eq!(stuck.status.code(), Some(126), "{}", shown(&stuck));
+    assert!(stuck.stdout.is_empty(), "{}", shown(&stuck));
     // The words after `/c` stay one each when they are a program and its arguments.
     let words = run(
         &wrapped(&["cmd.exe", "/d", "/c", exe.as_str(), "a b", "c&d", "q\"x"]),
@@ -309,18 +368,29 @@ fn shell_argv_for_pwsh_writes_non_ascii_as_utf8(#[fixture(pwsh_wrap)] _group: &G
 }
 
 #[skuld::test]
+fn a_pwsh_step_whose_first_statement_must_come_first_runs_and_keeps_its_status(#[fixture(pwsh_wrap)] _group: &Group) {
+    for (script, stdout, status) in [
+        (
+            "using namespace System.IO\n[Path]::GetFileName('a/b.txt')",
+            "b.txt\r\n",
+            0,
+        ),
+        ("param()\nWrite-Output 'ok'", "ok\r\n", 0),
+        ("Write-Output 'before'\nexit 3", "before\r\n", 3),
+    ] {
+        let argv = WindowsGuest.shell_argv(Some(Shell::Pwsh), script).unwrap();
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let output = run(&wrapped(&argv), "wrap-argv", None);
+        assert_eq!(output.stdout, stdout.as_bytes(), "{script:?}: {}", shown(&output));
+        assert_eq!(output.status.code(), Some(status), "{script:?}: {}", shown(&output));
+    }
+}
+
+#[skuld::test]
 fn a_line_at_the_limit_runs_and_one_over_is_refused(#[fixture(pwsh_wrap)] _group: &Group) {
     let exe = test_binary();
     let pad = |n: usize| Command::new([exe.clone(), "x".repeat(n)]);
-    let fits = |n: usize| {
-        let (sshd, broker) = command_line_lengths(&script_unchecked(&pad(n)).unwrap());
-        sshd.max(broker) <= LINE_LIMIT
-    };
-    let (mut low, mut high) = (0, LINE_LIMIT);
-    while low + 1 < high {
-        let middle = (low + high) / 2;
-        if fits(middle) { low = middle } else { high = middle }
-    }
+    let low = longest_fit(&pad);
     let output = run(&wrap(&pad(low)).unwrap(), "wrap-argv", None);
     assert_eq!(
         echoed(&output),

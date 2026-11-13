@@ -1,4 +1,4 @@
-//! The per-instance seed of a Windows guest: the files the boot task reads from the `CIDATA` disk and applies (plan 6.3).
+//! The per-instance seed of a Windows guest: the files the boot task reads from the `CIDATA` disk and applies.
 
 use secrecy::ExposeSecret;
 use serde::Serialize;

@@ -177,7 +177,8 @@ async fn pump(
             }
             ChannelMsg::ExitStatus { exit_status } => {
                 // SSH carries the status as 32 unsigned bits; a Windows status such as 0xC0000005 is the same bits as
-                // the negative code the guest's own tools report.
+                // the negative code the guest's own tools report. How many bits a status has is the guest's contract: a
+                // Linux server's is 0..=255, and this does not check it.
                 *status = Some(ExitStatus::Code(exit_status as i32));
                 continue;
             }

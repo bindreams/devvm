@@ -3,15 +3,17 @@
 //! sshd hands the string to ssh-broker (`<broker> -c "<script>"`), which starts `pwsh.exe -c <script>` in the user's
 //! session. The script, in this order:
 //!
-//! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High (6.5);
-//! 2. sets the working directory, if the command has one, and resolves argv[0] as an **application**, never a cmdlet
-//!    or an alias; a name that is not found is 127;
+//! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High;
+//! 2. sets the working directory, if the command has one, and finds argv[0] as a **file**: the file itself for a name
+//!    with a path, a file of `PATH` otherwise, as it is or with an extension of `PATHEXT`, never a cmdlet or an alias
+//!    and never read as a wildcard; a name that is not found is 127;
 //! 3. starts the file found with `System.Diagnostics.Process`, copies the standard streams as raw bytes and ends with
-//!    the child's status (the "C2" carrier: every byte of stdout and stderr, and every 32-bit status, measured exact).
-//!    The arguments are built on the host in the three forms the guest can need, and the guest picks by the file it
-//!    found: a list for a program, the batch-file command line of [`cmdquote`] for a `.cmd` or `.bat` file, and the
-//!    command line of `cmd.exe /c <text>` for `cmd.exe` (a text of several lines is refused, as any argument with a line
-//!    break is). No output encoding is set here: it would re-encode every user program's output.
+//!    the child's status (every byte of stdout and stderr and every 32-bit status is carried exactly). A directory that
+//!    cannot be entered and a program that cannot start end with 126 and the reason: the command did not run.
+//!    The arguments are built on the host in the forms the guest can need, and the guest picks by the file it found: a
+//!    list for a program, the batch-file command line of [`cmdquote`] for a `.cmd` or `.bat` file, and, when argv[0]
+//!    names `cmd`, the command line of `cmd.exe /c <text>` for `cmd.exe` (a text of several lines is refused, as any
+//!    argument with a line break is). No output encoding is set here: it would re-encode every user program's output.
 //!
 //! An elevated command is the same script run by the helper of [`elevate`].
 
@@ -25,7 +27,7 @@ mod wrap_tests;
 
 #[cfg(all(test, windows))]
 #[path = "wrap_pwsh_tests.rs"]
-mod wrap_pwsh_tests;
+pub(super) mod wrap_pwsh_tests;
 
 /// Where ssh-broker is installed, whose `-c "<script>"` is the line sshd builds.
 pub(super) const BROKER_EXE: &str = r"C:\ProgramData\ssh-broker\ssh-broker.exe";
@@ -49,9 +51,22 @@ pub(super) fn session_check() -> String {
     )
 }
 
-/// The copy of the standard streams, after the arguments are set.
-const CARRY: &str = "$p = [Diagnostics.Process]::Start($psi)
-$stdout = [Console]::OpenStandardOutput()
+/// The file `name` names, or nothing: `name` is the file itself when it has a path (relative to the working directory)
+/// and a file of PATH otherwise, as it is or with an extension of PATHEXT. It is a plain name: no wildcard reads its
+/// `[` or `*`, and no cmdlet or alias answers to it.
+const RESOLVE: &str = "function Find-Program([string]$name) {
+    $exts = @($env:PATHEXT -split ';' | Where-Object { $_ })
+    $named = $exts -contains [IO.Path]::GetExtension($name)
+    $stems = if ($name.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { @([IO.Path]::GetFullPath($name, (Get-Location).ProviderPath)) } else { @($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) }) }
+    foreach ($stem in $stems) {
+        if ($named -and [IO.File]::Exists($stem)) { return $stem }
+        foreach ($ext in $exts) { if ([IO.File]::Exists($stem + $ext)) { return $stem + $ext } }
+    }
+}
+";
+
+/// The copy of the standard streams, after the arguments are set and the program started.
+const CARRY: &str = "$stdout = [Console]::OpenStandardOutput()
 $stderr = [Console]::OpenStandardError()
 $ti = [Console]::OpenStandardInput().CopyToAsync($p.StandardInput.BaseStream)
 $to = $p.StandardOutput.BaseStream.CopyToAsync($stdout)
@@ -145,29 +160,31 @@ fn user_script(cmd: &Command) -> Result<String> {
     let mut script = String::from("$ErrorActionPreference = 'Stop'\n");
     script.push_str(&session_check());
     if let Some(cwd) = &cmd.cwd {
-        script.push_str(&format!("Set-Location -LiteralPath {}\n", literal(cwd)));
+        script.push_str(&format!(
+            "try {{ Set-Location -LiteralPath {} }} catch {{ {} }}\n",
+            literal(cwd),
+            failure(&format!("working directory {cwd}"))
+        ));
     }
-    script.push_str(&format!(
-        "$app = Get-Command -CommandType Application -Name ([Management.Automation.WildcardPattern]::Escape({})) -ErrorAction SilentlyContinue | Select-Object -First 1\n",
-        literal(program)
-    ));
+    script.push_str(RESOLVE);
+    script.push_str(&format!("$app = Find-Program {}\n", literal(program)));
     script.push_str(&format!(
         "if (-not $app) {{ [Console]::Error.WriteLine({}); exit 127 }}\n",
         literal(&format!("devvm: {program}: command not found"))
     ));
-    script.push_str("$psi = [Diagnostics.ProcessStartInfo]::new($app.Source)\n");
+    script.push_str("$psi = [Diagnostics.ProcessStartInfo]::new($app)\n");
     if cmd.cwd.is_some() {
         script.push_str("$psi.WorkingDirectory = (Get-Location).ProviderPath\n");
     }
     script.push_str(
         "$psi.UseShellExecute = $false\n$psi.RedirectStandardInput = $true\n$psi.RedirectStandardOutput = $true\n$psi.RedirectStandardError = $true\n",
     );
-    script.push_str("$ext = [IO.Path]::GetExtension($app.Source)\n");
+    script.push_str("$ext = [IO.Path]::GetExtension($app)\n");
     script.push_str("if ($ext -ieq '.cmd' -or $ext -ieq '.bat') {\n");
     script.push_str(&batch_form(args));
     script.push('}');
     if let Some(form) = cmdquote::command_line_arguments(&cmd.argv) {
-        script.push_str(" elseif ([IO.Path]::GetFileName($app.Source) -ieq 'cmd.exe') {\n");
+        script.push_str(" elseif ([IO.Path]::GetFileName($app) -ieq 'cmd.exe') {\n");
         script.push_str(&match form {
             Ok(line) => format!("$psi.Arguments = {}\n", literal(&line)),
             Err(why) => refusal(&why),
@@ -179,6 +196,10 @@ fn user_script(cmd: &Command) -> Result<String> {
         script.push_str(&format!("$psi.ArgumentList.Add({})\n", literal(arg)));
     }
     script.push_str("}\n");
+    script.push_str(&format!(
+        "try {{ $p = [Diagnostics.Process]::Start($psi) }} catch {{ {} }}\n",
+        failure(program)
+    ));
     script.push_str(CARRY);
     script.push_str(EXIT);
     Ok(script)
@@ -189,11 +210,20 @@ fn user_script(cmd: &Command) -> Result<String> {
 fn batch_form(args: &[String]) -> String {
     match cmdquote::batch_arguments(args) {
         Ok(tail) => format!(
-            "$psi.FileName = [IO.Path]::Combine([Environment]::SystemDirectory, 'cmd.exe')\n$psi.Arguments = '/e:ON /v:OFF /d /c \"\"' + $app.Source + '\"' + {} + '\"'\n",
+            "$psi.FileName = [IO.Path]::Combine([Environment]::SystemDirectory, 'cmd.exe')\n$psi.Arguments = '/e:ON /v:OFF /d /c \"\"' + $app + '\"' + {} + '\"'\n",
             literal(&tail)
         ),
         Err(why) => refusal(&why),
     }
+}
+
+/// What the script does when what it names (`what`) cannot be started or entered: says why and ends with 126, the status
+/// of a command that did not run.
+fn failure(what: &str) -> String {
+    format!(
+        "[Console]::Error.WriteLine({} + $_.Exception.Message); exit 126",
+        literal(&format!("devvm: {what}: "))
+    )
 }
 
 /// What the script does for an argument `cmd.exe` cannot be given: says so and does not run the command.

@@ -65,7 +65,7 @@ user, not elevated, through ssh-broker in the user's own session, so they see it
   (`0xC0000005`, say) is passed on in all 32 bits on a Windows host; a Unix host keeps the low byte.
 - **Shells.** A `run` step uses `pwsh` (PowerShell 7) unless it says `shell: cmd`. `sh` and `bash` do not exist in a
   Windows guest. A `cmd` script is one line, and a line break in it is refused before the build starts: use
-  `shell: pwsh`, or copy in a .cmd file and run it.
+  `shell: pwsh`. A `copy` step is refused before the build starts: its extraction runs `sh`.
 - **Paths.** Write guest paths with `/`: `C:/x/y`, `~/x`. `~` is the user's profile; `~\x` and `C:\x` are refused with the
   spelling that works.
 - **`elevated: true`, `--elevated`** run at High integrity with no prompt, through a scheduled task. Each costs 2 to 6

@@ -431,9 +431,22 @@ fn qemu_guests(home: &Path) -> Arc<dyn Guests> {
 /// backend and the ISO is missing: either would be the error if the step were not looked at first.
 #[skuld::test]
 fn a_run_step_the_guest_cannot_be_given_fails_before_any_base_is_built(#[fixture(unicode_home)] home: &Path) {
-    for (step, say) in [
-        ("run: |\n      echo a\n      echo b\n    shell: cmd", "pwsh"),
-        ("run: echo hi\n    shell: sh", "windows"),
+    let oversize = format!("run: {}", "x".repeat(40_000));
+    for (step, kind, say) in [
+        (
+            "run: |\n      echo a\n      echo b\n    shell: cmd",
+            ErrorKind::Recipe,
+            "pwsh",
+        ),
+        ("run: echo hi\n    shell: sh", ErrorKind::Recipe, "windows"),
+        // Refused by the guest's wrapping, which the step's run would reach only after the steps before it were built.
+        (oversize.as_str(), ErrorKind::Usage, "too long for a Windows guest"),
+        // The extraction runs `sh`, which a Windows guest has not.
+        (
+            "copy: { from: git-tracked, to: C:/x }",
+            ErrorKind::Recipe,
+            "windows guest",
+        ),
     ] {
         let dirs = Dirs::under(home);
         let engine = engine_with(dirs.clone(), &TestHost, None, qemu_guests(home), memory());
@@ -445,9 +458,9 @@ fn a_run_step_the_guest_cannot_be_given_fails_before_any_base_is_built(#[fixture
 
         let error = engine.build(&recipe, &BuildOptions::default()).err().unwrap();
 
-        assert_eq!(error.kind(), ErrorKind::Recipe, "{step}: {error}");
-        assert!(error.message().contains("step 1 of 1"), "{step}: {error}");
-        assert!(error.message().contains(say), "{step}: {error}");
-        assert!(!dirs.iso_memo().exists() && !is_there(&dirs.builds()), "{step}");
+        assert_eq!(error.kind(), kind, "{error}");
+        assert!(error.message().contains("step 1 of 1"), "{error}");
+        assert!(error.message().contains(say), "{error}");
+        assert!(!dirs.iso_memo().exists() && !is_there(&dirs.builds()), "{error}");
     }
 }

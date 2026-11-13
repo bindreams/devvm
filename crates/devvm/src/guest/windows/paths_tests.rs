@@ -84,3 +84,17 @@ fn the_roots_of_a_windows_path() {
     // Relative to the current directory of a drive: no path names it.
     assert_eq!(split_root("C:a").unwrap_err().kind(), ErrorKind::Usage);
 }
+
+#[skuld::test]
+fn a_unc_path_with_no_share_is_refused_naming_the_spelling_that_works() {
+    // A guest reads `//server` as `C:/server`, not as a network path.
+    for typed in ["//server", "//server/", "//server//"] {
+        let error = split_root(typed).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage, "{typed}");
+        assert!(error.message().contains("//server/share"), "{typed}: {error}");
+    }
+    // No server is not a UNC path either: it is the root of the current drive, as before.
+    for typed in ["//", "///x"] {
+        assert_eq!(split_root(typed).unwrap().0, "/", "{typed}");
+    }
+}

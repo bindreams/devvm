@@ -29,15 +29,16 @@ fn flush_runs_unelevated() {
 }
 
 #[skuld::test]
-fn shell_argv_for_pwsh_writes_the_output_as_utf8_first() {
-    let argv = WindowsGuest.shell_argv(Some(Shell::Pwsh), "Write-Output hi").unwrap();
+fn shell_argv_for_pwsh_writes_the_output_as_utf8_first_and_keeps_the_script_its_own_block() {
+    let argv = WindowsGuest.shell_argv(Some(Shell::Pwsh), "Write-Output 'hi'").unwrap();
     assert_eq!(argv[..4], ["pwsh", "-NoProfile", "-NonInteractive", "-Command"]);
+    // The script is a literal of its own: a first statement that must come first (`using`, `param`) still does.
     assert_eq!(
         argv[4],
-        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Write-Output hi"
+        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); & ([scriptblock]::Create('Write-Output ''hi'''))"
     );
     // The guest's default shell is the same one.
-    assert_eq!(WindowsGuest.shell_argv(None, "Write-Output hi").unwrap(), argv);
+    assert_eq!(WindowsGuest.shell_argv(None, "Write-Output 'hi'").unwrap(), argv);
 }
 
 #[skuld::test]
@@ -103,7 +104,7 @@ fn a_file_name_follows_the_rules_of_windows() {
 #[skuld::test]
 fn a_command_is_wrapped_by_the_windows_wrapper() {
     let text = WindowsGuest.wrap(&Command::new(["tool"])).unwrap();
-    assert!(text.contains("Get-Command -CommandType Application"), "{text}");
+    assert!(text.contains("$app = Find-Program 'tool'"), "{text}");
 }
 
 #[skuld::test]
@@ -112,7 +113,8 @@ fn a_cmd_step_script_with_a_block_scalars_line_end_is_wrapped_to_run_and_is_not_
     let text = WindowsGuest.wrap(&Command::new(argv)).unwrap();
     assert!(text.contains(r#"$psi.Arguments = '/d /c "echo a"'"#), "{text}");
     // What runs for `cmd.exe` is not a refusal.
-    let cmd_branch = &text[text.find("elseif").unwrap()..text.find("} else {").unwrap()];
+    let cmd_branch = &text[text.find("elseif").unwrap()..];
+    let cmd_branch = &cmd_branch[..cmd_branch.find("} else {").unwrap()];
     assert!(!cmd_branch.contains("exit 126"), "{text}");
 }
 
@@ -128,12 +130,14 @@ fn shell_argv_for_cmd_drops_the_line_end_a_block_scalar_leaves() {
 }
 
 #[skuld::test]
-fn shell_argv_for_cmd_refuses_several_lines_naming_the_limit_and_the_ways_out() {
+fn shell_argv_for_cmd_refuses_several_lines_naming_the_limit_and_the_way_out() {
     for script in ["echo a\necho b", "echo a\r\necho b\n", "echo a\recho b"] {
         let error = WindowsGuest.shell_argv(Some(Shell::Cmd), script).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Recipe, "{script:?}");
-        for word in ["cmd", "one line", "shell: pwsh", ".cmd file"] {
+        for word in ["cmd", "one line", "shell: pwsh"] {
             assert!(error.message().contains(word), "{word}: {error}");
         }
+        // A `copy` step cannot bring in a file on this guest, so none is advised.
+        assert!(!error.message().contains("copy"), "{error}");
     }
 }

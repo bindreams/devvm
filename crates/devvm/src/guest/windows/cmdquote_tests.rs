@@ -58,6 +58,13 @@ fn a_cmd_command_is_its_switches_then_its_text_in_one_pair_of_quotes() {
         (&["cmd.exe", "/c", r#"echo "a" & echo b"#], r#"/c "echo "a" & echo b""#),
         (&["CMD", "/D", "/C", "dir"], r#"/D /C "dir""#),
         (&["cmd", "/s", "/d", "/c", "a", "b"], r#"/s /d /c "a b""#),
+        // Switches chained in one word, which cmd reads one by one.
+        (&["cmd", "/d/c", "echo hi"], r#"/d/c "echo hi""#),
+        (&["cmd.exe", "/s/D/C", "a", "b"], r#"/s/D/C "a b""#),
+        (&["cmd", "/e:on/c", "dir"], r#"/e:on/c "dir""#),
+        // Where the program is, and in what case, does not matter.
+        (&[r"C:\Windows\System32\CMD.EXE", "/c", "dir"], r#"/c "dir""#),
+        (&["C:/x/cmd", "/c", "dir"], r#"/c "dir""#),
     ] {
         assert_eq!(command_line_arguments(&args(argv)).unwrap().unwrap(), want, "{argv:?}");
     }
@@ -110,6 +117,37 @@ fn a_line_break_in_any_word_is_refused_naming_its_place() {
         let error = command_line_arguments(&args(argv)).unwrap().unwrap_err();
         assert!(
             error.starts_with(place) && error.contains("line break"),
+            "{argv:?}: {error}"
+        );
+    }
+}
+
+#[skuld::test]
+fn only_a_program_that_names_cmd_has_the_cmd_command_line() {
+    // The guest decides the other names (an alias) by the file it finds.
+    for argv in [
+        &["tool.exe", "/c", "file"][..],
+        &["mycmd.exe", "/c", "dir"],
+        &[r"C:\x\notcmd.exe", "/c", "dir"],
+        &["cmd.exe.exe", "/c", "dir"],
+    ] {
+        assert!(command_line_arguments(&args(argv)).is_none(), "{argv:?}");
+    }
+}
+
+#[skuld::test]
+fn a_spelling_of_c_or_k_that_is_not_carried_is_refused_naming_its_place() {
+    for (argv, place) in [
+        (&["cmd", "/cdir"][..], "argument 1 "),
+        (&["cmd", "/d", "/c\"dir\""], "argument 2 "),
+        (&["cmd", "/d/cdir", "x"], "argument 1 "),
+        (&["cmd", "/k", "dir"], "argument 1 "),
+        (&["cmd", "/d/K", "dir"], "argument 1 "),
+        (&["cmd", "/d", "/c ", "dir"], "argument 2 "),
+    ] {
+        let error = command_line_arguments(&args(argv)).unwrap().unwrap_err();
+        assert!(
+            error.starts_with(place) && error.contains("/c") && error.contains("/d/c"),
             "{argv:?}: {error}"
         );
     }

@@ -24,7 +24,8 @@ mod wrap;
 mod windows_tests;
 
 /// The first statement of every PowerShell that devvm starts itself: the console's output encoding is the OEM code
-/// page otherwise, and non-ASCII text a program prints through it comes out as `?`.
+/// page otherwise, and non-ASCII text a program prints through it comes out as `?`. The user's script follows as a
+/// script block of its own, so that a first statement that must come first (`using`, `param`) still does.
 const UTF8_OUTPUT: &str = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)";
 
 /// The boot task's fresh random id of this boot, written before sshd starts.
@@ -80,7 +81,7 @@ impl GuestOs for WindowsGuest {
         paths::split_root(path)
     }
 
-    /// Bumped whenever `wrap`, `user:`, `cwd:` or elevation behavior changes.
+    /// Bumped when command semantics change.
     fn semantics_version(&self) -> u32 {
         1
     }
@@ -103,7 +104,10 @@ impl GuestOs for WindowsGuest {
             None | Some(Shell::Pwsh) => ["pwsh", "-NoProfile", "-NonInteractive", "-Command"]
                 .iter()
                 .map(|part| (*part).to_owned())
-                .chain([format!("{UTF8_OUTPUT}; {script}")])
+                .chain([format!(
+                    "{UTF8_OUTPUT}; & ([scriptblock]::Create({}))",
+                    wrap::literal(script)
+                )])
                 .collect(),
             Some(Shell::Cmd) => {
                 // A block scalar ends with a line end, which is not a second line.
@@ -112,7 +116,7 @@ impl GuestOs for WindowsGuest {
                     return Err(Error::new(
                         ErrorKind::Recipe,
                         "`shell: cmd` runs one line: cmd.exe cannot be given a line break in a command line. Use \
-                         `shell: pwsh`, or copy in a .cmd file and run it",
+                         `shell: pwsh`",
                     ));
                 }
                 ["cmd", "/d", "/c"]

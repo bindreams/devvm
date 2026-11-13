@@ -36,10 +36,7 @@ fn wrap_takes_the_c2_form_for_programs_and_the_legacy_form_for_batch_targets() {
     assert!(text.contains("$psi.ArgumentList.Add('x\\')"), "{text}");
     assert!(text.contains("$psi.ArgumentList.Add('e\u{e9}\u{4e16}')"), "{text}");
     // The legacy form is in the script too, in std's batch quoting, and the guest picks by the file it found.
-    assert!(
-        text.contains(r#"'/e:ON /v:OFF /d /c ""' + $app.Source + '"'"#),
-        "{text}"
-    );
+    assert!(text.contains(r#"'/e:ON /v:OFF /d /c ""' + $app + '"'"#), "{text}");
     assert!(text.contains(r#"' "it''s" "#), "{text}");
     assert!(text.contains(r#""a b""#), "{text}");
     assert!(
@@ -47,10 +44,7 @@ fn wrap_takes_the_c2_form_for_programs_and_the_legacy_form_for_batch_targets() {
         "{text}"
     );
     // The program is started by the file the lookup found, never by the name typed.
-    assert!(
-        text.contains("[Diagnostics.ProcessStartInfo]::new($app.Source)"),
-        "{text}"
-    );
+    assert!(text.contains("[Diagnostics.ProcessStartInfo]::new($app)"), "{text}");
 }
 
 #[skuld::test]
@@ -63,14 +57,44 @@ fn a_cmd_command_gets_the_command_line_form_for_cmd_exe_only() {
 }
 
 #[skuld::test]
+fn a_program_that_does_not_name_cmd_carries_no_cmd_command_line() {
+    // The host decides by argv[0]: another program's `/c` is one of its arguments, written once.
+    let text = script(&["tool.exe", "/c", "file with spaces"]);
+    assert!(!text.contains("-ieq 'cmd.exe'"), "{text}");
+    assert_eq!(text.matches("file with spaces").count(), 2, "{text}");
+}
+
+#[skuld::test]
 fn wrap_resolves_argv0_as_an_application_never_a_cmdlet() {
     let text = script(&["Get-ChildItem", "x"]);
+    assert!(text.contains("$app = Find-Program 'Get-ChildItem'\n"), "{text}");
+    // The name is looked up as the file it is: PATH and PATHEXT, with no wildcard reading of `[` or `*`.
+    assert!(text.contains("[IO.File]::Exists("), "{text}");
     assert!(
-        text.contains("Get-Command -CommandType Application -Name ([Management.Automation.WildcardPattern]::Escape('Get-ChildItem'))"),
+        !text.contains("Get-Command") && !text.contains("WildcardPattern"),
         "{text}"
     );
     assert!(
         !text.contains("& $app") && !text.contains("Invoke-Expression"),
+        "{text}"
+    );
+}
+
+#[skuld::test]
+fn a_program_that_cannot_start_and_a_directory_that_cannot_be_entered_exit_126_naming_what_they_are() {
+    let mut cmd = command(&["it's a tool"]);
+    cmd.cwd = Some("C:/x".to_owned());
+    let text = wrap(&cmd).unwrap();
+    assert!(
+        text.contains(
+            "try { Set-Location -LiteralPath 'C:/x' } catch { [Console]::Error.WriteLine('devvm: working directory C:/x: ' + $_.Exception.Message); exit 126 }"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "try { $p = [Diagnostics.Process]::Start($psi) } catch { [Console]::Error.WriteLine('devvm: it''s a tool: ' + $_.Exception.Message); exit 126 }"
+        ),
         "{text}"
     );
 }
@@ -90,7 +114,7 @@ fn wrap_sets_the_working_directory_literally() {
     );
     // The directory comes before the lookup, as `cd` does before `exec` on Linux: a relative argv[0] is found from it.
     assert!(
-        text.find("Set-Location").unwrap() < text.find("Get-Command").unwrap(),
+        text.find("Set-Location").unwrap() < text.find("$app = Find-Program").unwrap(),
         "{text}"
     );
     // No directory asked for: the command starts where the session starts.
@@ -124,7 +148,7 @@ fn wrap_starts_with_a_session_check_that_exits_126_in_session_0() {
             "{text}"
         );
         // Before the directory, the lookup, the helper request and everything else that has an effect.
-        for later in ["Set-Location", "Get-Command", "CreateDirectory", "Run("] {
+        for later in ["Set-Location", "Find-Program", "CreateDirectory", "Run("] {
             if let Some(at) = text.find(later) {
                 assert!(check < at, "{later} comes before the session check in {text}");
             }
@@ -158,19 +182,9 @@ fn wrap_refuses_an_empty_argv_a_nul_and_an_oversize_line() {
     nul_cwd.cwd = Some("a\0b".to_owned());
     assert!(refused(&nul_cwd).message().contains("NUL"));
 
-    // The line is over when the larger of the two lines is, and the error names both and the limit. Padding the one
-    // argument by one character at a time finds the edge from the lengths `wrap` itself computes.
+    // The line is over when the larger of the two lines is, and the error names both and the limit.
     let pad = |n: usize| command(&["tool", &"x".repeat(n)]);
-    let fits = |n: usize| {
-        let text = super::script_unchecked(&pad(n)).unwrap();
-        let (sshd, broker) = command_line_lengths(&text);
-        sshd.max(broker) <= LINE_LIMIT
-    };
-    let (mut low, mut high) = (0, LINE_LIMIT);
-    while low + 1 < high {
-        let middle = (low + high) / 2;
-        if fits(middle) { low = middle } else { high = middle }
-    }
+    let low = longest_fit(&pad);
     assert!(wrap(&pad(low)).is_ok());
     let error = refused(&pad(low + 1));
     let (sshd, broker) = command_line_lengths(&super::script_unchecked(&pad(low + 1)).unwrap());
@@ -180,6 +194,54 @@ fn wrap_refuses_an_empty_argv_a_nul_and_an_oversize_line() {
             "{number} is not in {error}"
         );
     }
+}
+
+/// The most that `make(n)` can be padded by (`n` characters of its argument) and still fit both command lines, found
+/// from the lengths `wrap` computes, one character at a time.
+pub(super) fn longest_fit(make: &dyn Fn(usize) -> Command) -> usize {
+    let fits = |n: usize| {
+        let (sshd, broker) = command_line_lengths(&super::script_unchecked(&make(n)).unwrap());
+        sshd.max(broker) <= LINE_LIMIT
+    };
+    let (mut low, mut high) = (0, LINE_LIMIT);
+    while low + 1 < high {
+        let middle = (low + high) / 2;
+        if fits(middle) { low = middle } else { high = middle }
+    }
+    low
+}
+
+/// What the edge test of the lengths cannot do: they are counted by the code under test there. Here they are counted by
+/// hand, for a script with a quote, a backslash before a character and a backslash at its end.
+#[skuld::test]
+fn the_lines_of_a_small_script_are_counted_by_hand() {
+    // `a "b" c\d\` is 10 units. It has a space, so it is one quoted argument (2 units); each of its two quotes gets a
+    // backslash (2) and its last backslash is doubled before the closing quote (1): 15 units. The broker line is
+    // `C:\ProgramData\ssh-broker\ssh-broker.exe` (40) and ` -c `; the PowerShell line is
+    // `"C:\Program Files\PowerShell\7\pwsh.exe"` (38 and two quotes) and ` -c `.
+    assert_eq!(command_line_lengths(r#"a "b" c\d\"#), (40 + 4 + 15, 38 + 2 + 4 + 15));
+}
+
+#[skuld::test]
+fn the_limit_holds_for_an_elevated_command_and_for_an_argument_that_quoting_makes_longer() {
+    let edge = |run_as: RunAs, filler: &'static str| {
+        let make = move |n: usize| {
+            let mut cmd = command(&["tool", &filler.repeat(n)]);
+            cmd.run_as = run_as;
+            cmd
+        };
+        let low = longest_fit(&make);
+        assert!(wrap(&make(low)).is_ok(), "{run_as:?} {filler}: {low} fits");
+        let error = wrap(&make(low + 1)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Usage, "{run_as:?} {filler}: {error}");
+        low
+    };
+    let user = edge(RunAs::User, "x");
+    // The helper's script holds the user's as a literal inside its own, so less fits.
+    assert!(edge(RunAs::Elevated, "x") < user);
+    // A quote costs two units on each command line, and one more in the script that carries the helper's request.
+    assert!(edge(RunAs::User, "\"") < user / 2 + 1);
+    assert!(edge(RunAs::Elevated, "\"") < edge(RunAs::Elevated, "x") / 2 + 1);
 }
 
 #[skuld::test]

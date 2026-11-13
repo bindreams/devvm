@@ -66,21 +66,82 @@ fn append_batch_argument(line: &mut String, arg: &str) {
     }
 }
 
-/// The arguments of `cmd.exe` for `argv` when `argv` is a `/c` command (`cmd /d /c <command>`), or `None` when it is
-/// not: the switches, `/c`, and the command in one pair of quotes, which `cmd /c` strips. One word after `/c` is cmd's
-/// own command text, which a script of the recipe is, and cmd reads it as it is; several are a program and its
-/// arguments, each quoted as a batch file's argument is (std's rule), so that every word stays one. A word that cannot
-/// be given to cmd, a line break in the text included, is an `Err` naming its place. `argv[0]` is the program.
+/// How `cmd.exe` reads one argument before its command text.
+enum Switches {
+    /// Switches that end in `/c`, as one word (`/c`, `/d/c`, `/e:on/c`): the command text follows.
+    Carrier,
+    /// Other switches, or text cmd reads as itself.
+    Plain,
+    /// A `/c` or `/k` that is not carried: stuck to other text (`/cdir`) or `/k`.
+    Stuck,
+}
+
+/// Reads the switches of `arg`, one at a time as cmd does: a switch is `/` and a letter, and `/e:on` takes its value up
+/// to the next `/`.
+fn read_switches(arg: &str) -> Switches {
+    let mut rest = arg;
+    while let Some(after) = rest.strip_prefix('/') {
+        let mut chars = after.chars();
+        let Some(letter) = chars.next() else { break };
+        let tail = chars.as_str();
+        match letter.to_ascii_lowercase() {
+            'c' | 'k' => {
+                let plain = arg.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | ':'));
+                return if letter.eq_ignore_ascii_case(&'c') && tail.is_empty() && plain {
+                    Switches::Carrier
+                } else {
+                    Switches::Stuck
+                };
+            }
+            _ => rest = tail.find('/').map_or("", |at| &tail[at..]),
+        }
+    }
+    Switches::Plain
+}
+
+/// Whether `program` names `cmd.exe`: `cmd` or `cmd.exe` in any case, after any directory. Another name for it (a
+/// copy) is decided in the guest, by the file found.
+fn names_cmd(program: &str) -> bool {
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    name.eq_ignore_ascii_case("cmd") || name.eq_ignore_ascii_case("cmd.exe")
+}
+
+/// The arguments of `cmd.exe` for `argv` when `argv[0]` names cmd and `argv` is a `/c` command (`cmd /d /c <command>`),
+/// or `None` when it is not: the switches, `/c`, and the command in one pair of quotes, which `cmd /c` strips. The `/c`
+/// is a word of its own or the end of a chain of switches (`/d/c`); a `/c` stuck to other text and a `/k` are an `Err`,
+/// not carried. One word after `/c` is cmd's own command text, which a script of the recipe is, and cmd reads it as it
+/// is; several are a program and its arguments, each quoted as a batch file's argument is (std's rule), so that every
+/// word stays one. A word that cannot be given to cmd, a line break in the text included, is an `Err` naming its place,
+/// the number of its argument in `argv`.
 pub(super) fn command_line_arguments(argv: &[String]) -> Option<Result<String, String>> {
-    let at = argv.iter().skip(1).position(|arg| arg.eq_ignore_ascii_case("/c"))? + 1;
+    if !names_cmd(&argv[0]) {
+        return None;
+    }
+    let mut carrier = None;
+    for (place, arg) in argv.iter().enumerate().skip(1) {
+        match read_switches(arg) {
+            Switches::Carrier => {
+                carrier = Some(place);
+                break;
+            }
+            Switches::Stuck => {
+                return Some(Err(format!(
+                    "argument {place} ({arg:?}) is a /c or /k that devvm does not carry to cmd.exe; write /c as an \
+                     argument of its own, or ending a chain of switches such as /d/c"
+                )));
+            }
+            Switches::Plain => {}
+        }
+    }
+    let at = carrier?;
     let words = &argv[at + 1..];
     if words.is_empty() {
         return None;
     }
     let mut line = String::new();
-    for (index, switch) in argv[1..at].iter().enumerate() {
+    for (place, switch) in argv.iter().enumerate().take(at).skip(1) {
         if let Some(why) = refusal(switch) {
-            return Some(Err(format!("argument {} {why}", index + 1)));
+            return Some(Err(format!("argument {place} {why}")));
         }
         append_batch_argument(&mut line, switch);
         line.push(' ');

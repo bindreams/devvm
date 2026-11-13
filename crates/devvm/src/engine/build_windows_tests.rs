@@ -196,7 +196,8 @@ fn a_shell_the_guest_does_not_have_names_the_step_and_its_command(#[fixture(unic
 
     let message = error.message();
     assert!(message.contains("step 1 of 1"), "{message}");
-    assert!(message.contains("`dir`"), "{message}");
+    // The upfront check names the step by its first line.
+    assert!(message.contains("step 1 of 1 (dir)"), "{message}");
     assert!(message.contains("does not exist in a Linux guest"), "{message}");
     no_instance_or_build_is_left(&fx);
 }

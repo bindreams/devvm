@@ -1,4 +1,4 @@
-//! Guest paths of a Windows guest as devvm's SFTP client spells them (measured, M10): the server takes `C:\x`, `C:/x`,
+//! Guest paths of a Windows guest as devvm's SFTP client spells them (measured): the server takes `C:\x`, `C:/x`,
 //! `/C:/x`, `c:/x`, `\x` and a relative path for one file, answers `realpath` with the `/C:/Users/user` form, does not
 //! expand `~`, and reads backslashes as separators, which devvm's own path planning does not.
 

@@ -78,7 +78,7 @@ pub(crate) fn posix_root(path: &str) -> (String, &str) {
 
 /// [`GuestOs::split_root`] for a Windows guest: `C:` (with or without `/` after it) and `//server/share` are roots,
 /// otherwise as [`posix_root`]. `C:a` is relative to the current directory of drive `C:`, which a path cannot name:
-/// it is refused.
+/// it is refused, as is a UNC path with a server and no share, which a guest reads as a path on its current drive.
 pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
     let mut letters = path.chars();
     if let (Some(letter), Some(':')) = (letters.next(), letters.next())
@@ -97,13 +97,17 @@ pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
             ));
         }
     }
-    if let Some(unc) = path.strip_prefix("//")
-        && let Some((server, after_server)) = unc.split_once('/')
-        && !server.is_empty()
-    {
-        let after_server = after_server.trim_start_matches('/');
-        let (share, rest) = after_server.split_once('/').unwrap_or((after_server, ""));
-        if !share.is_empty() {
+    if let Some(unc) = path.strip_prefix("//") {
+        let (server, after_server) = unc.split_once('/').unwrap_or((unc, ""));
+        if !server.is_empty() {
+            let after_server = after_server.trim_start_matches('/');
+            let (share, rest) = after_server.split_once('/').unwrap_or((after_server, ""));
+            if share.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Usage,
+                    format!("the guest path {path} has a server and no share; a UNC path needs //{server}/share"),
+                ));
+            }
             return Ok((format!("//{server}/{share}/"), rest.trim_start_matches('/')));
         }
     }

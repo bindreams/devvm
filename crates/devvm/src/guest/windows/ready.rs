@@ -1,4 +1,4 @@
-//! Telling that a Windows guest's user session is up: a command that runs there, at Medium integrity (plan 6.6).
+//! Telling that a Windows guest's user session is up: a command that runs there, at Medium integrity.
 //!
 //! sshd answers before the agent of ssh-broker exists (the boot task starts it after the agent, but the user's session
 //! is what a command needs), and after `shutdown /r` the old boot answers from session 0 at High until it goes down.
@@ -14,6 +14,10 @@ use crate::{Command, Error, ErrorKind, Result};
 #[cfg(test)]
 #[path = "ready_tests.rs"]
 mod ready_tests;
+
+#[cfg(all(test, windows))]
+#[path = "ready_pwsh_tests.rs"]
+mod ready_pwsh_tests;
 
 /// The first word of the probe's answer. Only digits and SIDs follow it: nothing localized is read.
 pub(crate) const READY_PROBE: &str = "DEVVM-READY";
@@ -40,16 +44,10 @@ enum ProbeOutcome {
 
 /// Blocks until a command runs in the user's session at Medium integrity. Every other answer is asked again, paced by
 /// the connection retry's pause; only a probe that cannot run is an error. A lost connection ends the call as
-/// `connection-lost`: the engine's wait reconnects, since a guest may restart during its boot. There is no bound here: `ssh`'s boot bound
-/// ends the wait, and its error names the last answer.
+/// `connection-lost`: the engine's wait reconnects, since a guest may restart during its boot. No bound here: the
+/// caller's boot bound ends the wait and names the last answer.
 pub(super) fn wait(ssh: &SshSession) -> Result<Readiness> {
-    let command = wrap(&Command::new([
-        "pwsh",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        PROBE,
-    ]))?;
+    let command = probe_command()?;
     let mut last = "nothing yet".to_owned();
     loop {
         let output = ssh.exec_collect(&command).map_err(|e| {
@@ -66,6 +64,17 @@ pub(super) fn wait(ssh: &SshSession) -> Result<Readiness> {
         }
         std::thread::sleep(crate::access::session::RETRY_PAUSE);
     }
+}
+
+/// The probe as the script sshd hands to ssh-broker.
+fn probe_command() -> Result<String> {
+    wrap(&Command::new([
+        "pwsh",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        PROBE,
+    ]))
 }
 
 fn assess(output: &Output) -> ProbeOutcome {
