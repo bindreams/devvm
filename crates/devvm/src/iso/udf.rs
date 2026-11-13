@@ -27,6 +27,68 @@ pub(super) struct Piece {
     pub len: u64,
 }
 
+/// How many extents `Udf::pieces` asks for at a time.
+const PAGE: usize = 16;
+
+/// Why a file's extents are not pieces.
+#[derive(Debug)]
+enum MapError<E> {
+    /// Asking for extents failed.
+    Page(E),
+    /// The extents do not map the file's bytes; what is wrong, to follow the file's name.
+    Refused(&'static str),
+}
+
+/// The extents of a file of `length` bytes, from `page(from, out)` (which fills `out` with the extents that end after
+/// byte `from`, in file order, and returns how many), as pieces. The extents must follow one another from byte 0 to
+/// `length`: a hole (which `extents` leaves out) anywhere makes a gap, and the bytes of an unwritten part are not in
+/// the ISO.
+fn map_extents<E>(
+    length: u64,
+    mut page: impl FnMut(u64, &mut [Extent]) -> std::result::Result<usize, E>,
+) -> std::result::Result<Vec<Piece>, MapError<E>> {
+    let mut found = Vec::new();
+    let mut buffer = [Extent::new(0, 0); PAGE];
+    let mut from = 0;
+    // Where the extents so far end in the file.
+    let mut end = 0u64;
+    loop {
+        let count = page(from, &mut buffer).map_err(MapError::Page)?;
+        for extent in &buffer[..count] {
+            if extent.is_unwritten() {
+                return Err(MapError::Refused("has a part that was never written"));
+            }
+            match extent.file_offset() {
+                start if start > end => return Err(MapError::Refused("has no storage (a gap)")),
+                start if start < end => return Err(MapError::Refused("has parts that overlap")),
+                _ => {}
+            }
+            end = end
+                .checked_add(extent.len())
+                .ok_or(MapError::Refused("has a part whose end is out of range"))?;
+            if end > length {
+                return Err(MapError::Refused("has a part past its end"));
+            }
+            found.push(Piece {
+                offset: extent.offset(),
+                len: extent.len(),
+            });
+        }
+        if count < buffer.len() {
+            break;
+        }
+        // A full page: the next one starts where this one ended, which must be further on.
+        if end <= from {
+            return Err(MapError::Refused("has a list of parts that does not advance"));
+        }
+        from = end;
+    }
+    if end != length {
+        return Err(MapError::Refused("has no storage (a gap)"));
+    }
+    Ok(found)
+}
+
 /// What an El Torito catalog entry says about one boot image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BootEntry {
@@ -126,9 +188,10 @@ impl<'a> Udf<'a> {
     }
 
     /// Where the bytes of the file `path` lie in the ISO, in file order; `None` when the tree has no such file. A file
-    /// may lie in several pieces. A directory or a link, a file with a part that was never written and a file with a
-    /// part that has no storage (a gap) are refused: their bytes are not in the ISO where the pieces say. For mapping
-    /// raw bytes, as the boot images need; `open_file` reads a file whole.
+    /// may lie in several pieces. A directory or a link, and a file whose parts do not follow one another from byte 0
+    /// to its length (a part that was never written, one that has no storage (a gap), parts that overlap or run past
+    /// the end), are refused: their bytes are not in the ISO where the pieces say. For mapping raw bytes, as the boot
+    /// images need; `open_file` reads a file whole.
     pub(super) fn pieces(&self, path: &str) -> Result<Option<Vec<Piece>>> {
         let Some(path) = self.spelled(path)? else {
             return Ok(None);
@@ -161,35 +224,12 @@ impl<'a> Udf<'a> {
             FileType::Symlink => return Err(refused("is a link, not a file")),
             _ => return Err(refused("is not a file")),
         }
-        let length = meta.len();
-        let mut found = Vec::new();
-        let mut buffer = [Extent::new(0, 0); 16];
-        let mut from = 0;
-        let mut stored = 0;
-        loop {
-            let count = udf
-                .extents(node, from, &mut buffer)
-                .map_err(|e| unreadable(self.iso, &format!("read where {path} is stored in"), &e))?;
-            for extent in &buffer[..count] {
-                if extent.is_unwritten() {
-                    return Err(refused("has a part that was never written"));
-                }
-                stored += extent.len();
-                found.push(Piece {
-                    offset: extent.offset(),
-                    len: extent.len(),
-                });
-            }
-            match buffer[..count].last() {
-                Some(last) if count == buffer.len() => from = last.file_offset() + last.len(),
-                _ => break,
-            }
-        }
-        // `extents` leaves holes out: a hole anywhere makes the extents hold less than the file's length.
-        if stored != length {
-            return Err(refused("has no storage (a gap)"));
-        }
-        Ok(Some(found))
+        map_extents(meta.len(), |from, out| udf.extents(node, from, out))
+            .map(Some)
+            .map_err(|e| match e {
+                MapError::Page(e) => unreadable(self.iso, &format!("read where {path} is stored in"), &e),
+                MapError::Refused(why) => refused(why),
+            })
     }
 
     /// The file `path`, readable and seekable across all its pieces; `None` when the tree has no such file.

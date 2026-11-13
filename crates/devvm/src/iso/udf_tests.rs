@@ -1,7 +1,9 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use super::{Platform, SECTOR, Udf};
+use hadris_fs::Extent;
+
+use super::{MapError, PAGE, Piece, Platform, SECTOR, Udf, map_extents};
 use crate::test_support::fixtures::{iso_fixture, unicode_home};
 use crate::{ErrorKind, Result};
 
@@ -119,6 +121,30 @@ fn a_file_in_several_extents_is_found_piece_by_piece_and_read_across_them() {
 }
 
 #[skuld::test]
+fn a_file_in_more_extents_than_a_page_holds_is_found_whole() {
+    let iso = iso_fixture("install-wim-in-many-extents.iso");
+    let udf = open(&iso).unwrap();
+    let pieces = udf.pieces("/sources/install.wim").unwrap().unwrap();
+    assert_eq!(pieces.len(), 20, "{pieces:?}");
+    for pair in pieces.windows(2) {
+        assert_eq!(pair[0].offset + pair[0].len, pair[1].offset, "{pieces:?}");
+    }
+    let mut file = udf.open_file("/sources/install.wim").unwrap().unwrap();
+    let length = file.seek(hadris_fs::SeekFrom::End(0)).unwrap();
+    assert_eq!(pieces.iter().map(|piece| piece.len).sum::<u64>(), length);
+    assert_eq!(udf.read_pieces(&pieces).unwrap().len() as u64, length);
+}
+
+#[skuld::test]
+fn an_empty_file_has_no_pieces() {
+    let iso = iso_fixture("empty-install-wim.iso");
+    assert_eq!(
+        open(&iso).unwrap().pieces("/sources/install.wim").unwrap(),
+        Some(vec![])
+    );
+}
+
+#[skuld::test]
 fn what_is_not_a_whole_file_in_the_iso_is_refused_naming_it() {
     for (fixture, path, why) in [
         (
@@ -135,6 +161,21 @@ fn what_is_not_a_whole_file_in_the_iso_is_refused_naming_it() {
             "install-wim-ending-in-a-hole.iso",
             "/sources/install.wim",
             "no storage (a gap)",
+        ),
+        (
+            "install-wim-starting-with-a-hole.iso",
+            "/sources/install.wim",
+            "no storage (a gap)",
+        ),
+        (
+            "install-wim-with-a-hole-after-a-full-page.iso",
+            "/sources/install.wim",
+            "no storage (a gap)",
+        ),
+        (
+            "install-wim-that-is-a-pipe.iso",
+            "/sources/install.wim",
+            "is not a file",
         ),
         (
             "install-wim-that-is-a-link.iso",
@@ -181,4 +222,118 @@ fn two_names_that_differ_only_in_case_are_refused_naming_both() {
             "{error}"
         );
     }
+}
+
+// The extents of a file, as `extents` pages them, made up -------------------------------------------------------------
+
+/// The pages `extents` would return, one after the other, whatever `from` is asked for.
+fn pages_of(mut pages: Vec<Vec<Extent>>) -> impl FnMut(u64, &mut [Extent]) -> std::result::Result<usize, ()> {
+    pages.reverse();
+    move |_, out| {
+        let page = pages.pop().expect("asked for a page after the last one");
+        out[..page.len()].copy_from_slice(&page);
+        Ok(page.len())
+    }
+}
+
+fn extent(offset: u64, file_offset: u64, len: u64) -> Extent {
+    Extent::new(offset, len).with_file_offset(file_offset)
+}
+
+fn refusal(length: u64, pages: Vec<Vec<Extent>>) -> &'static str {
+    match map_extents(length, pages_of(pages)) {
+        Err(MapError::Refused(why)) => why,
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+#[skuld::test]
+fn extents_that_follow_one_another_to_the_length_are_pieces() {
+    let pieces = map_extents(
+        4096,
+        pages_of(vec![vec![extent(10_000, 0, 2048), extent(50_000, 2048, 2048)]]),
+    )
+    .unwrap();
+    assert_eq!(
+        pieces,
+        [
+            Piece {
+                offset: 10_000,
+                len: 2048
+            },
+            Piece {
+                offset: 50_000,
+                len: 2048
+            }
+        ]
+    );
+}
+
+#[skuld::test]
+fn a_file_of_no_length_has_no_pieces() {
+    assert_eq!(map_extents(0, pages_of(vec![vec![]])).unwrap(), []);
+}
+
+#[skuld::test]
+fn an_extent_that_starts_after_the_end_of_the_one_before_is_a_gap() {
+    assert!(refusal(6144, vec![vec![extent(0, 0, 2048), extent(9000, 4096, 2048)]]).contains("a gap"));
+    assert!(refusal(4096, vec![vec![extent(9000, 2048, 2048)]]).contains("a gap"));
+}
+
+#[skuld::test]
+fn extents_that_end_before_the_length_are_a_gap() {
+    assert!(refusal(4096, vec![vec![extent(0, 0, 2048)]]).contains("a gap"));
+}
+
+#[skuld::test]
+fn an_extent_that_starts_before_the_end_of_the_one_before_overlaps_it() {
+    assert!(refusal(3072, vec![vec![extent(0, 0, 2048), extent(9000, 1024, 2048)]]).contains("overlap"));
+}
+
+#[skuld::test]
+fn an_extent_that_runs_past_the_length_is_refused() {
+    assert!(refusal(2048, vec![vec![extent(0, 0, 4096)]]).contains("past its end"));
+}
+
+#[skuld::test]
+fn extents_whose_ends_overflow_are_refused_not_wrapped() {
+    let refused = refusal(u64::MAX, vec![vec![extent(0, 0, u64::MAX), extent(9000, u64::MAX, 2)]]);
+    assert!(refused.contains("out of range"), "{refused}");
+}
+
+#[skuld::test]
+fn a_part_that_was_never_written_is_refused() {
+    let refused = refusal(2048, vec![vec![extent(0, 0, 2048).with_unwritten()]]);
+    assert!(refused.contains("never written"), "{refused}");
+}
+
+#[skuld::test]
+fn a_full_page_is_followed_by_the_next_until_one_is_not_full() {
+    let first: Vec<Extent> = (0..PAGE as u64).map(|i| extent(1000 * i, 2048 * i, 2048)).collect();
+    let second = vec![extent(7, 2048 * PAGE as u64, 2048)];
+    let pieces = map_extents(2048 * (PAGE as u64 + 1), pages_of(vec![first, second])).unwrap();
+    assert_eq!(pieces.len(), PAGE + 1);
+}
+
+#[skuld::test]
+fn a_full_page_after_which_the_listing_does_not_advance_is_an_error_not_a_hang() {
+    // Empty parts fill a page and leave the listing where it began.
+    let page = vec![extent(0, 0, 0); PAGE];
+    let mut asked = 0;
+    let outcome = map_extents(0, |_, out: &mut [Extent]| -> std::result::Result<usize, ()> {
+        asked += 1;
+        assert_eq!(asked, 1, "asked for another page of a listing that did not advance");
+        out[..PAGE].copy_from_slice(&page);
+        Ok(PAGE)
+    });
+    match outcome {
+        Err(MapError::Refused(why)) => assert!(why.contains("does not advance"), "{why}"),
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+#[skuld::test]
+fn a_failed_page_is_passed_on() {
+    let outcome = map_extents(2048, |_, _: &mut [Extent]| Err("boom"));
+    assert!(matches!(outcome, Err(MapError::Page("boom"))), "{outcome:?}");
 }

@@ -25,7 +25,8 @@ HEADER_SIZE = 208
 FLAG_METADATA = 0x02
 FLAG_COMPRESSED = 0x04
 
-# The ECMA-167 file type of a symbolic link.
+# ECMA-167 file types (4/14.6.6) other than a regular file: a named pipe, a symbolic link.
+FILE_TYPE_FIFO = 9
 FILE_TYPE_SYMLINK = 12
 
 
@@ -75,10 +76,10 @@ def cut(iso: pycdlib.PyCdlib, udf_path: str, extent_types: tuple[int, ...]) -> N
 
 def build(name: str, *, xml: str, noprompt_size: int = IMAGE_SIZE, noprompt: bool = True, install: str | None = "install.wim",
           xml_flags: int = FLAG_METADATA, xml_at: int = HEADER_SIZE, extent_types: tuple[int, ...] = (),
-          efisys_extent_types: tuple[int, ...] = (), link: bool = False, spell=str,
-          also_install: str | None = None) -> None:
+          efisys_extent_types: tuple[int, ...] = (), link: bool = False, file_type: int | None = None,
+          empty: bool = False, spell=str, also_install: str | None = None) -> None:
     """`extent_types` and `efisys_extent_types` cut `install` and the UDF `efisys.bin` (see `cut`). `link` makes
-    `install` a UDF symbolic link. `spell` writes every UDF path; `also_install` adds a second `install` file under that
+    `install` a UDF symbolic link, `file_type` gives it another type, `empty` has it hold no bytes. `spell` writes every UDF path; `also_install` adds a second `install` file under that
     name."""
     efisys, efisys_noprompt = image(1), image(2, noprompt_size)
     iso = pycdlib.PyCdlib()
@@ -99,14 +100,17 @@ def build(name: str, *, xml: str, noprompt_size: int = IMAGE_SIZE, noprompt: boo
         data = wim(xml, xml_flags, esd=install.endswith(".esd"), xml_at=xml_at)
         if link:
             data = symlink_to("elsewhere.wim")
+            file_type = FILE_TYPE_SYMLINK
+        if empty:
+            data = b""
         add(data, None, f"/sources/{install}")
         if also_install:
             add(data, None, f"/sources/{also_install}")
         if extent_types:
             # A file over 1 GiB is stored in several extents.
             cut(iso, spell(f"/sources/{install}"), extent_types)
-        if link:
-            iso.get_record(udf_path=spell(f"/sources/{install}")).icb_tag.file_type = FILE_TYPE_SYMLINK
+        if file_type is not None:
+            iso.get_record(udf_path=spell(f"/sources/{install}")).icb_tag.file_type = file_type
     add(image(3, 4096), "/ETFSBOOT.BIN;1", None)
     add(efisys, "/EFISYS.BIN;1", None)
     iso.add_eltorito("/ETFSBOOT.BIN;1", "/BOOT.CAT;1", boot_load_size=8)
@@ -127,10 +131,16 @@ build("no-install-image.iso", xml=SINGLE, install=None)
 build("install-wim-in-two-extents.iso", xml=SINGLE, xml_at=4096, extent_types=(0, 0))
 build("install-wim-with-an-unwritten-extent.iso", xml=SINGLE, xml_at=4096, extent_types=(0, 1))
 build("install-wim-with-a-hole.iso", xml=SINGLE, xml_at=6144, extent_types=(0, 2, 0))
-# Files whose last extent is a hole, and a file that is a link.
+# Files with a hole at the start or at the end, and files that are a link or a pipe, or empty.
+build("install-wim-starting-with-a-hole.iso", xml=SINGLE, extent_types=(2, 0))
 build("install-wim-ending-in-a-hole.iso", xml=SINGLE, extent_types=(0, 2))
 build("efisys-ending-in-a-hole.iso", xml=SINGLE, efisys_extent_types=(0, 2))
 build("install-wim-that-is-a-link.iso", xml=SINGLE, link=True)
+build("install-wim-that-is-a-pipe.iso", xml=SINGLE, file_type=FILE_TYPE_FIFO)
+build("empty-install-wim.iso", xml=SINGLE, empty=True)
+# `extents` returns 16 at a time: files of more extents, one of them with a hole where a page ends.
+build("install-wim-in-many-extents.iso", xml=SINGLE, xml_at=20 * 2048, extent_types=(0,) * 20)
+build("install-wim-with-a-hole-after-a-full-page.iso", xml=SINGLE, xml_at=20 * 2048, extent_types=(0,) * 16 + (2,) + (0,) * 3)
 # UDF names are exact-case; Windows ISOs differ in case from one another.
 build("upper-case-names.iso", xml=SINGLE, spell=str.upper)
 build("two-install-names-of-one-spelling.iso", xml=SINGLE, also_install="INSTALL.WIM")
