@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use hadris_fs::sync::{File, FileSystem, Volume};
-use hadris_fs::{Extent, MountOptions, OpenOptions, Resolve};
+use hadris_fs::{Extent, FileType, MountOptions, OpenOptions, Resolve};
 use hadris_iso::sync::IsoFs;
 use hadris_storage::host::FileDevice;
 use hadris_udf::sync::UdfFs;
@@ -27,6 +27,68 @@ pub(super) struct Piece {
     pub len: u64,
 }
 
+/// How many extents `Udf::pieces` asks for at a time.
+const PAGE: usize = 16;
+
+/// Why a file's extents are not pieces.
+#[derive(Debug)]
+enum MapError<E> {
+    /// Asking for extents failed.
+    Page(E),
+    /// The extents do not map the file's bytes; what is wrong, to follow the file's name.
+    Refused(&'static str),
+}
+
+/// The extents of a file of `length` bytes, from `page(from, out)` (which fills `out` with the extents that end after
+/// byte `from`, in file order, and returns how many), as pieces. The extents must follow one another from byte 0 to
+/// `length`: a hole (which `extents` leaves out) anywhere makes a gap, and the bytes of an unwritten part are not in
+/// the ISO.
+fn map_extents<E>(
+    length: u64,
+    mut page: impl FnMut(u64, &mut [Extent]) -> std::result::Result<usize, E>,
+) -> std::result::Result<Vec<Piece>, MapError<E>> {
+    let mut found = Vec::new();
+    let mut buffer = [Extent::new(0, 0); PAGE];
+    let mut from = 0;
+    // Where the extents so far end in the file.
+    let mut end = 0u64;
+    loop {
+        let count = page(from, &mut buffer).map_err(MapError::Page)?;
+        for extent in &buffer[..count] {
+            if extent.is_unwritten() {
+                return Err(MapError::Refused("has a part that was never written"));
+            }
+            match extent.file_offset() {
+                start if start > end => return Err(MapError::Refused("has no storage (a gap)")),
+                start if start < end => return Err(MapError::Refused("has parts that overlap")),
+                _ => {}
+            }
+            end = end
+                .checked_add(extent.len())
+                .ok_or(MapError::Refused("has a part whose end is out of range"))?;
+            if end > length {
+                return Err(MapError::Refused("has a part past its end"));
+            }
+            found.push(Piece {
+                offset: extent.offset(),
+                len: extent.len(),
+            });
+        }
+        if count < buffer.len() {
+            break;
+        }
+        // A full page: the next one starts where this one ended, which must be further on.
+        if end <= from {
+            return Err(MapError::Refused("has a list of parts that does not advance"));
+        }
+        from = end;
+    }
+    if end != length {
+        return Err(MapError::Refused("has no storage (a gap)"));
+    }
+    Ok(found)
+}
+
 /// What an El Torito catalog entry says about one boot image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BootEntry {
@@ -44,7 +106,7 @@ pub(super) enum Platform {
 }
 
 /// An ISO file, read through its UDF tree. The file is opened by the caller and everything is read through that one
-/// handle. The UDF tree is mounted once.
+/// handle.
 pub(super) struct Udf<'a> {
     iso: &'a Path,
     file: std::fs::File,
@@ -126,8 +188,9 @@ impl<'a> Udf<'a> {
     }
 
     /// Where the bytes of the file `path` lie in the ISO, in file order; `None` when the tree has no such file. A file
-    /// may lie in several pieces. A file with a part that was never written or has no storage (a gap) is refused: its
-    /// bytes are not in the ISO where the pieces say.
+    /// may lie in several pieces. Refuses anything but a regular file whose parts are contiguous, all hold data and
+    /// cover its length (a directory, a link, an unwritten extent, a hole anywhere): its bytes would not be in the ISO
+    /// where the pieces say. For mapping raw bytes, as the boot images need; `open_file` reads a file whole.
     pub(super) fn pieces(&self, path: &str) -> Result<Option<Vec<Piece>>> {
         let Some(path) = self.spelled(path)? else {
             return Ok(None);
@@ -151,32 +214,21 @@ impl<'a> Udf<'a> {
                 ),
             )
         };
-        let mut found = Vec::new();
-        let mut buffer = [Extent::new(0, 0); 16];
-        let mut from = 0;
-        let mut stored = 0;
-        loop {
-            let count = udf
-                .extents(node, from, &mut buffer)
-                .map_err(|e| unreadable(self.iso, &format!("read where {path} is stored in"), &e))?;
-            for extent in &buffer[..count] {
-                if extent.is_unwritten() {
-                    return Err(refused("has a part that was never written"));
-                }
-                if extent.file_offset() != stored {
-                    return Err(refused("has a gap between its parts"));
-                }
-                stored += extent.len();
-                found.push(Piece {
-                    offset: extent.offset(),
-                    len: extent.len(),
-                });
-            }
-            match buffer[..count].last() {
-                Some(last) if count == buffer.len() => from = last.file_offset() + last.len(),
-                _ => return Ok(Some(found)),
-            }
+        let meta = udf
+            .stat(node)
+            .map_err(|e| unreadable(self.iso, &format!("read the size of {path} in"), &e))?;
+        match meta.file_type() {
+            FileType::File => {}
+            FileType::Dir => return Err(refused("is a directory, not a file")),
+            FileType::Symlink => return Err(refused("is a link, not a file")),
+            _ => return Err(refused("is not a file")),
         }
+        map_extents(meta.len(), |from, out| udf.extents(node, from, out))
+            .map(Some)
+            .map_err(|e| match e {
+                MapError::Page(e) => unreadable(self.iso, &format!("read where {path} is stored in"), &e),
+                MapError::Refused(why) => refused(why),
+            })
     }
 
     /// The file `path`, readable and seekable across all its pieces; `None` when the tree has no such file.
