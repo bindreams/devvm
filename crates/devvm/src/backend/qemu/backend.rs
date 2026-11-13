@@ -12,8 +12,12 @@ use super::storage::QemuStorage;
 use crate::backend::{Backend, Check, Detail, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
-use crate::host::{Hold, Host, remove_tree, symlink_metadata_if_present};
+use crate::host::{Hold, Host, is_absent, remove_tree};
 use crate::{Error, ErrorKind, Result};
+
+#[cfg(test)]
+#[path = "backend_tests.rs"]
+mod backend_tests;
 
 pub(crate) struct QemuBackend {
     install: Arc<LazyInstall>,
@@ -109,14 +113,25 @@ impl QemuBackend {
             .map_err(|e| Error::new(ErrorKind::Io, format!("cannot pass the launch's hold to QEMU: {e}")))?;
         // Every launch in a directory appends to its `qemu.log`: this one's output begins where the file ends now.
         let log = qemu_log(&spec.dir);
-        let log_from = symlink_metadata_if_present(&log)
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at the VM log {}", log.display()), e))?
-            .map_or(0, |meta| meta.len());
+        let log_from = log_length(&log)?;
         let vm = started.insert(VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?);
         drop(hold);
         let process = vm.record()?;
         let watch = self.host.watch_process(vm.id())?;
         Ok((MachineRecordParts { process, log, log_from }, watch))
+    }
+}
+
+/// How long the file `log` is, 0 when it is not there. A link is followed: QEMU appends to the file it leads to.
+fn log_length(log: &Path) -> Result<u64> {
+    match std::fs::metadata(log) {
+        Ok(meta) => Ok(meta.len()),
+        Err(e) if is_absent(&e) => Ok(0),
+        Err(e) => Err(Error::io(
+            ErrorKind::Io,
+            format!("cannot look at the VM log {}", log.display()),
+            e,
+        )),
     }
 }
 
