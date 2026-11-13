@@ -7,7 +7,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
@@ -74,6 +74,8 @@ pub(crate) struct FakeBackend {
     launch_fails: bool,
     try_wait_fails: bool,
     kill_fails: bool,
+    resume_fails: bool,
+    late_exit_status: bool,
     guest: Option<GuestScript>,
 }
 
@@ -144,6 +146,8 @@ impl FakeBackend {
             launch_fails: false,
             try_wait_fails: false,
             kill_fails: false,
+            resume_fails: false,
+            late_exit_status: false,
             guest: None,
         }
     }
@@ -170,6 +174,20 @@ impl FakeBackend {
     /// is gone.
     pub(crate) fn with_failing_kill(mut self) -> FakeBackend {
         self.kill_fails = true;
+        self
+    }
+
+    /// A backend whose machines cannot be resumed: `resume` lets the VM run and fails, as one does that cannot say
+    /// whether QEMU finished starting.
+    pub(crate) fn with_failing_resume(mut self) -> FakeBackend {
+        self.resume_fails = true;
+        self
+    }
+
+    /// A backend whose machines report their VM process's exit one look late: the first `try_wait` answers `None`
+    /// after the process has exited, as a process that exits between a status read and the next does.
+    pub(crate) fn with_late_exit_status(mut self) -> FakeBackend {
+        self.late_exit_status = true;
         self
     }
 
@@ -349,6 +367,8 @@ impl Backend for FakeBackend {
             shutdown_fails: self.shutdown_fails,
             try_wait_fails: self.try_wait_fails,
             kill_fails: self.kill_fails,
+            resume_fails: self.resume_fails,
+            late_exit_status: self.late_exit_status.then(|| AtomicBool::new(false)),
             guest: self.guest.clone().map(|script| (script, index, spec.clone())),
         }))
     }
@@ -375,6 +395,8 @@ impl Backend for FakeBackend {
             shutdown_fails: self.shutdown_fails,
             try_wait_fails: self.try_wait_fails,
             kill_fails: self.kill_fails,
+            resume_fails: self.resume_fails,
+            late_exit_status: None,
             guest: None,
         }))
     }
@@ -420,6 +442,10 @@ struct FakeMachine {
     try_wait_fails: bool,
     /// See [`FakeBackend::with_failing_kill`].
     kill_fails: bool,
+    /// See [`FakeBackend::with_failing_resume`].
+    resume_fails: bool,
+    /// See [`FakeBackend::with_late_exit_status`]: whether the late answer has been given.
+    late_exit_status: Option<AtomicBool>,
     /// See [`FakeBackend::with_guest`]: the script, the launch's number and its spec.
     guest: Option<(GuestScript, usize, MachineSpec)>,
 }
@@ -439,6 +465,9 @@ impl Machine for FakeMachine {
 
     fn resume(&mut self) -> Result<()> {
         self.vm.resume()?;
+        if self.resume_fails {
+            return Err(Error::new(ErrorKind::Io, "the fake machine's resume fails"));
+        }
         let own = SocketAddr::from((Ipv4Addr::LOCALHOST, fake_vm::await_port(&self.vm, &self.state_dir)));
         let addr = self.ssh_endpoint.unwrap_or(own);
         self.ssh = vec![(Endpoint::Normal, addr)];
@@ -471,6 +500,12 @@ impl Machine for FakeMachine {
                 ErrorKind::Io,
                 "cannot read the VM process's status: the fake machine's try_wait fails",
             ));
+        }
+        if let Some(answered) = &self.late_exit_status
+            && !answered.swap(true, Ordering::SeqCst)
+        {
+            self.vm.wait()?;
+            return Ok(None);
         }
         Ok(self.vm.try_wait()?.map(|status| MachineExit {
             output: if status.success() {

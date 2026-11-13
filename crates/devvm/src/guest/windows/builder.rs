@@ -180,8 +180,8 @@ struct Build<'a> {
     /// The overlay of the ISO, attached to the first launch only.
     overlay: PathBuf,
     launches: Launches,
-    /// The last `DEVVM-LICENSE=` line.
-    license: Option<String>,
+    /// The last `DEVVM-LICENSE=` line and when it was observed: the license's grace counts from the read.
+    license: Option<(String, SystemTime)>,
     phase: Phase,
     /// When the phase began.
     since: Instant,
@@ -269,7 +269,7 @@ impl<'a> Build<'a> {
             }
         };
         self.report_winpe_log_sizes();
-        let Some(read) = &self.license else {
+        let Some((read, read_at)) = &self.license else {
             return Err(with_log_tail(
                 Error::new(
                     ErrorKind::Unavailable,
@@ -279,7 +279,7 @@ impl<'a> Build<'a> {
                 &log,
             ));
         };
-        expiry_from(read, evaluation, self.ctx.clock.now()).map_err(|error| {
+        expiry_from(read, evaluation, *read_at).map_err(|error| {
             let kind = error.kind();
             error.with_context(kind, "the Windows base's license read")
         })
@@ -291,11 +291,10 @@ impl<'a> Build<'a> {
         self.ctx.progress.message(&format!("Windows base: launch {number}"));
         let mut machine = self.builder.backend.launch(&spec)?;
         if let Err(error) = machine.resume() {
-            let _ = machine.kill();
-            return Err(error);
+            return Err(error.after_cleanup("a VM process that may still run", machine.kill()));
         }
-        // The ISO is open in QEMU once `resume` has returned: `qemu_init` opens every drive before the main loop that
-        // serves the control socket's greeting starts (QEMU's source order, not a measurement of ours).
+        // The ISO is open in QEMU once `resume` has returned: `Machine::resume` completes a command of QEMU's main
+        // loop, which starts after `qemu_init` has opened every drive.
         drop(held.take());
         let mut reader = LogReader::new(log);
         let exit = self.wait(&mut *machine, &mut reader);
@@ -442,7 +441,12 @@ impl<'a> Build<'a> {
             let written = reader.poll(false)?;
             self.observe(&written);
             if let Some(stall) = self.stall() {
-                return Ok(Exit::Stalled(stall));
+                // The process may have exited since the status was read, and an exit wins over a stall: the guest
+                // that finished as its bound passed has finished.
+                return Ok(match machine.try_wait()? {
+                    Some(exited) => Exit::Exited(exited),
+                    None => Exit::Stalled(stall),
+                });
             }
             std::thread::sleep(self.builder.bounds.poll);
         }
@@ -469,7 +473,7 @@ impl<'a> Build<'a> {
             }
         }
         if let Some(license) = &written.license {
-            self.license = Some(license.clone());
+            self.license = Some((license.clone(), self.ctx.clock.now()));
         }
     }
 

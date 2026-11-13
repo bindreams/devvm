@@ -15,7 +15,8 @@ use crate::backend::fake::{EXIT_OUTPUT, FakeBackend, GuestScript};
 use crate::backend::{MachineSpec, MediaFormat, MediaKind};
 use crate::contain::Lifetime;
 use crate::store::layers::Clock;
-use crate::test_support::fixtures::unicode_home;
+use crate::store::layers::layers_tests::{days, t0};
+use crate::test_support::fixtures::{FakeClock, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::{Error, ErrorKind};
 
@@ -350,6 +351,19 @@ fn a_wait_and_a_kill_that_both_fail_are_both_named(#[fixture(unicode_home)] home
 }
 
 #[skuld::test]
+fn a_machine_that_fails_to_resume_is_killed_and_a_kill_that_fails_too_is_named(#[fixture(unicode_home)] home: &Path) {
+    let backend = FakeBackend::new(&TestHost).with_failing_resume().with_failing_kill();
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(message.contains("the fake machine's resume fails"), "{message}");
+    assert!(message.contains("the fake machine's kill fails"), "{message}");
+    assert!(message.contains("may still run"), "{message}");
+}
+
+#[skuld::test]
 fn a_failed_marker_is_the_headline_whatever_the_exit_and_the_exit_is_named_after_it(
     #[fixture(unicode_home)] home: &Path,
 ) {
@@ -520,6 +534,60 @@ fn a_base_with_less_than_ten_days_of_grace_is_expired_base_naming_the_date(#[fix
     assert!(error.message().contains("within 10 days"), "{error}");
 }
 
+/// A license read whose grace is `minutes`.
+fn licensed_for(minutes: u64) -> String {
+    LICENSED.replace("129600", &minutes.to_string())
+}
+
+#[skuld::test]
+fn a_base_with_exactly_ten_days_of_grace_is_expired_base(#[fixture(unicode_home)] home: &Path) {
+    let ten_days = licensed_for(10 * 24 * 60);
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![finished(&ten_days)]));
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ExpiredBase, "{error}");
+}
+
+#[skuld::test]
+fn a_base_with_ten_days_and_a_minute_of_grace_is_accepted(#[fixture(unicode_home)] home: &Path) {
+    let more = licensed_for(10 * 24 * 60 + 1);
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![finished(&more)]));
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let layer = rig.build(None).unwrap();
+
+    let now: SystemTime = rig.env.clock.now();
+    assert_eq!(
+        layer.tip().meta().expires,
+        Some(now + Duration::from_secs((10 * 24 * 60 + 1) * 60))
+    );
+}
+
+#[skuld::test]
+fn the_expiry_counts_from_when_the_guest_printed_the_license_not_from_the_end_of_the_build(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The build's clock is set forward in the last launch, after the license was printed in the one before.
+    let clock = Arc::new(FakeClock::new(t0()));
+    let later = clock.clone();
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![
+        Launch::off(&format!("DEVVM-PROGRESS=first logon: x\r\n{LICENSED}\r\n")),
+        Launch::off("DEVVM-PROGRESS=installing OpenSSH\r\nDEVVM-BASE-DONE\r\n")
+            .before(move |_| later.set(t0() + days(5))),
+    ]));
+    let (mut rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+    rig.ctx.clock = clock;
+
+    let layer = rig.build(None).unwrap();
+
+    assert_eq!(
+        layer.tip().meta().expires,
+        Some(t0() + Duration::from_secs(129_600 * 60))
+    );
+}
+
 #[skuld::test]
 fn each_launch_writes_its_own_serial_log_and_an_error_names_the_phase_that_failed(
     #[fixture(unicode_home)] home: &Path,
@@ -633,6 +701,18 @@ fn a_stall_after_setup_names_the_first_logon_script_and_not_winpes_logs(#[fixtur
     let message = error.message();
     assert!(message.contains("the first-logon script"), "{message}");
     assert!(!message.contains("old winpe line"), "WinPE is long over: {message}");
+}
+
+#[skuld::test]
+fn a_guest_that_finished_as_its_bound_passed_is_finished_not_stalled(#[fixture(unicode_home)] home: &Path) {
+    // The VM process has exited when the stall is found: the first look says it still runs, and the bound is already
+    // past (no first-logon marker has moved the build out of the phase with the zero bound).
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![Launch::off(&format!("{LICENSED}\r\nDEVVM-BASE-DONE\r\n"))]))
+        .with_late_exit_status();
+    let (rig, _) = rig(home, "single-image.iso", backend, bounds(Duration::ZERO, HOUR));
+
+    rig.build(None).unwrap();
 }
 
 #[skuld::test]
