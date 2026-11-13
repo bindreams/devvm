@@ -268,6 +268,23 @@ fn a_line_that_takes_several_polls_to_finish_is_read_once_and_each_poll_reads_on
 }
 
 #[skuld::test]
+fn a_line_end_that_opens_a_poll_ends_the_line_the_poll_before_left_unfinished(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    let mut reader = LogReader::new(&log);
+
+    append(&log, b"DEVVM-PROGRESS=special");
+    reader.poll(false).unwrap();
+    append(&log, b"ize\nDEVVM-PROGRESS=next");
+    let second = reader.poll(false).unwrap();
+    append(&log, b"\n");
+    let third = reader.poll(false).unwrap();
+
+    assert_eq!(second.progress, ["specialize"]);
+    assert_eq!(third.progress, ["next"]);
+    assert_eq!(reader.whole().progress, ["specialize", "next"]);
+}
+
+#[skuld::test]
 fn a_log_that_cannot_be_read_is_an_error_that_does_not_name_its_path(#[fixture(unicode_home)] home: &Path) {
     // A directory where the log should be: opening or reading it fails on every host.
     let log = home.join("a-directory-not-a-log");

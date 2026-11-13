@@ -91,14 +91,15 @@ impl LogReader {
     pub(super) fn poll(&mut self, complete: bool) -> Result<Serial> {
         let new = self.read_new()?;
         self.read += new.len() as u64;
+        // `unfinished` holds no line end, so the last one is in the new bytes if it is anywhere.
+        let before = self.unfinished.len();
         self.unfinished.extend_from_slice(&new);
         let used = if complete {
             self.unfinished.len()
         } else {
-            self.unfinished
-                .iter()
+            new.iter()
                 .rposition(|byte| *byte == b'\n')
-                .map_or(0, |end| end + 1)
+                .map_or(0, |end| before + end + 1)
         };
         let part = read(&self.unfinished[..used]);
         self.unfinished.drain(..used);
