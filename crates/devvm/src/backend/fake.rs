@@ -86,27 +86,35 @@ pub(crate) struct PowerOff {
 }
 
 impl PowerOff {
-    /// Powers the guest off: the VM process exits. Fails the test if the VM cannot be asked.
+    /// Powers the guest off: the VM process exits with status 0. Fails the test if the VM cannot be asked.
     pub(crate) fn power_off(&self) {
         ask_to_exit(self.vm).unwrap_or_else(|e| panic!("the fake guest cannot power off: {e}"));
+    }
+
+    /// Ends the VM process with status 1, as QEMU dying does. Fails the test if the VM cannot be asked.
+    pub(crate) fn crash(&self) {
+        ask_to_crash(self.vm).unwrap_or_else(|e| panic!("the fake guest cannot crash: {e}"));
     }
 }
 
 /// Asks the fake VM at `addr` to exit, as a backend asks its guest to power off, and returns once it has closed the
 /// connection.
-fn ask_to_exit(addr: SocketAddr) -> Result<()> {
-    let ask = |e| {
-        Error::io(
-            ErrorKind::Io,
-            format!("cannot ask the machine at {addr} to shut down"),
-            e,
-        )
-    };
-    let mut stream = TcpStream::connect(addr).map_err(ask)?;
+pub(crate) fn ask_to_exit(addr: SocketAddr) -> Result<()> {
+    ask(addr, fake_vm::SHUTDOWN_REQUEST)
+}
+
+/// Asks the fake VM at `addr` to exit with status 1, and returns once it has closed the connection.
+pub(crate) fn ask_to_crash(addr: SocketAddr) -> Result<()> {
+    ask(addr, fake_vm::CRASH_REQUEST)
+}
+
+fn ask(addr: SocketAddr, request: &str) -> Result<()> {
+    let refused = |e| Error::io(ErrorKind::Io, format!("cannot ask the machine at {addr} to exit"), e);
+    let mut stream = TcpStream::connect(addr).map_err(refused)?;
     // The VM greets first. Closing with its greeting unread would reset the connection and could drop the request.
     let mut greeting = String::new();
-    BufReader::new(&stream).read_line(&mut greeting).map_err(ask)?;
-    writeln!(stream, "{}", fake_vm::SHUTDOWN_REQUEST).map_err(ask)?;
+    BufReader::new(&stream).read_line(&mut greeting).map_err(refused)?;
+    writeln!(stream, "{request}").map_err(refused)?;
     // The VM drops the connection when it exits, as a close or as a reset; the process exit is what is awaited.
     let _ = std::io::copy(&mut stream, &mut std::io::sink());
     Ok(())
@@ -425,6 +433,10 @@ impl Machine for FakeMachine {
 
     fn release(&mut self) -> Result<()> {
         if self.attached { Ok(()) } else { self.vm.release() }
+    }
+
+    fn try_wait(&self) -> Result<Option<std::process::ExitStatus>> {
+        self.vm.try_wait()
     }
 
     /// Counts the reset: the fake guest's boot id changes when the code around it reads the count.

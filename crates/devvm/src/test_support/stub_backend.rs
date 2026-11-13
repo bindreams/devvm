@@ -147,6 +147,13 @@ impl Machine for StubMachine {
         Ok(())
     }
 
+    fn try_wait(&self) -> Result<Option<std::process::ExitStatus>> {
+        Err(Error::new(
+            ErrorKind::Internal,
+            "a stub machine was found, not launched: its exit status is not this process's to read",
+        ))
+    }
+
     fn shutdown(&mut self) -> Result<()> {
         self.stop("shutdown")
     }

@@ -31,7 +31,7 @@ const NO_REBOOT_REFUSAL: &str = "cannot reset the VM: it runs with -no-reboot, u
                                  instead of resetting the guest";
 
 /// What QEMU wrote to its standard output and error: `qemu.log` in the instance directory.
-pub(super) fn qemu_log(dir: &Path) -> PathBuf {
+pub(crate) fn qemu_log(dir: &Path) -> PathBuf {
     dir.join("qemu.log")
 }
 
@@ -272,6 +272,10 @@ impl Machine for QemuMachine {
 
     fn release(&mut self) -> Result<()> {
         if self.attached { Ok(()) } else { self.vm.release() }
+    }
+
+    fn try_wait(&self) -> Result<Option<std::process::ExitStatus>> {
+        self.vm.try_wait()
     }
 
     /// Resets the guest inside this QEMU. Nothing is sent to the VM for a refusal: a machine launched with `-no-reboot`

@@ -1,9 +1,11 @@
 use std::io::{BufRead, BufReader, Read};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::Stdio;
 
 use cosca::identity::ProcessIdRecord;
 
+use crate::backend::fake::{ask_to_crash, ask_to_exit};
 use crate::contain::{Lifetime, VmProcess};
 use crate::test_support::fake_vm::{self, STARTED, await_port, connect_when_up};
 use crate::test_support::fixtures::unicode_home;
@@ -267,4 +269,45 @@ fn fake_vms_bind_their_own_port_and_report_it_once_they_listen(#[fixture(unicode
     for vm in &mut vms {
         vm.kill().unwrap();
     }
+}
+
+#[skuld::test]
+fn try_wait_is_none_while_the_vm_runs_and_its_status_after_a_clean_exit(#[fixture(unicode_home)] home: &Path) {
+    let mut vm = frozen(home, Lifetime::DiesWithOwner);
+    vm.resume().unwrap();
+    let port = await_port(&vm, home);
+    assert!(vm.try_wait().unwrap().is_none(), "the VM runs");
+
+    ask_to_exit(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).unwrap();
+    vm.wait().unwrap();
+
+    assert!(vm.try_wait().unwrap().expect("the VM has exited").success());
+    vm.kill().unwrap();
+}
+
+#[skuld::test]
+fn try_wait_names_the_failure_status_of_a_vm_that_died(#[fixture(unicode_home)] home: &Path) {
+    let mut vm = frozen(home, Lifetime::DiesWithOwner);
+    vm.resume().unwrap();
+    let port = await_port(&vm, home);
+
+    ask_to_crash(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).unwrap();
+    vm.wait().unwrap();
+
+    let status = vm.try_wait().unwrap().expect("the VM has exited");
+    assert_eq!(status.code(), Some(1), "{status}");
+    vm.kill().unwrap();
+}
+
+#[skuld::test]
+fn try_wait_of_a_vm_this_process_did_not_start_is_an_internal_error(#[fixture(unicode_home)] home: &Path) {
+    let mut vm = frozen(home, Lifetime::DiesWithOwner);
+    vm.resume().unwrap();
+    await_port(&vm, home);
+    let foreign = VmProcess::attach(&vm.record().unwrap()).unwrap().expect("the VM runs");
+
+    let error = foreign.try_wait().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    vm.kill().unwrap();
 }

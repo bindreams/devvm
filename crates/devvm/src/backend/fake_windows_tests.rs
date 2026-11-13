@@ -87,6 +87,10 @@ impl Machine for Strict {
         self.inner.release()
     }
 
+    fn try_wait(&self) -> crate::Result<Option<std::process::ExitStatus>> {
+        self.inner.try_wait()
+    }
+
     fn reset(&mut self) -> crate::Result<()> {
         self.inner.reset()
     }
@@ -238,6 +242,10 @@ impl Machine for Deleting {
 
     fn release(&mut self) -> crate::Result<()> {
         self.0.release()
+    }
+
+    fn try_wait(&self) -> crate::Result<Option<std::process::ExitStatus>> {
+        self.0.try_wait()
     }
 
     fn reset(&mut self) -> crate::Result<()> {

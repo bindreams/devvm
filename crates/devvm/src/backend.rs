@@ -326,6 +326,11 @@ pub(crate) trait Machine: Send {
         ))
     }
 
+    /// The exit status of the VM process if it has exited, `None` while it runs: std's `Child::try_wait`. `Internal`
+    /// for a machine from `Backend::attach` or a released one, whose status this process cannot read, and for one that
+    /// is not resumed.
+    fn try_wait(&self) -> Result<Option<std::process::ExitStatus>>;
+
     /// Graceful shutdown; returns after the process has exited and its `leftovers` are deleted.
     fn shutdown(&mut self) -> Result<()>;
 

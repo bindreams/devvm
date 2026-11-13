@@ -472,6 +472,10 @@ impl Machine for LateMachine {
         self.inner.release()
     }
 
+    fn try_wait(&self) -> crate::Result<Option<std::process::ExitStatus>> {
+        self.inner.try_wait()
+    }
+
     fn shutdown(&mut self) -> crate::Result<()> {
         self.inner.shutdown()
     }
@@ -742,6 +746,10 @@ impl Machine for SpiedMachine {
         self.inner.release()
     }
 
+    fn try_wait(&self) -> crate::Result<Option<std::process::ExitStatus>> {
+        self.inner.try_wait()
+    }
+
     fn shutdown(&mut self) -> crate::Result<()> {
         self.inner.shutdown()
     }
@@ -825,6 +833,10 @@ impl Machine for NotesOpLockMachine {
             return Err(crate::Error::new(ErrorKind::Internal, "the machine cannot be released"));
         }
         self.inner.release()
+    }
+
+    fn try_wait(&self) -> crate::Result<Option<std::process::ExitStatus>> {
+        self.inner.try_wait()
     }
 
     fn shutdown(&mut self) -> crate::Result<()> {
