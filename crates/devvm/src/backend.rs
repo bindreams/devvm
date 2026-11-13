@@ -92,6 +92,22 @@ pub(crate) trait Storage: Send + Sync {
     /// Makes the downloaded disk `image` (any format the backend reads) the root layer's disk in `staging`, with the
     /// firmware variables template for `arch`. Writes only into `staging`.
     fn import_base(&self, image: &Path, arch: Arch, staging: &LayerDir) -> Result<()>;
+
+    /// Makes an empty disk of `size` bytes, the root layer's disk in `staging`, with the firmware variables template for
+    /// `arch`. A `size` the backend cannot make is `Recipe`, with nothing made. Writes only into `staging`.
+    fn create_blank_disk(&self, size: u64, arch: Arch, staging: &LayerDir) -> Result<()>;
+
+    /// Makes `into` a copy-on-write disk over `backing`, a raw image that is only read, and writes each of `patches`
+    /// into it: a read of the disk gives the patch's bytes where a patch lies and `backing`'s bytes elsewhere. A
+    /// `backing` that is not there is `NotFound`, naming it, with nothing made.
+    fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()>;
+}
+
+/// Bytes to write at `offset` into a disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Patch {
+    pub offset: u64,
+    pub bytes: Vec<u8>,
 }
 
 pub(crate) trait Machine: Send {
@@ -300,7 +316,10 @@ pub(crate) struct Media {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MediaKind {
     Cdrom,
+    /// A virtio-blk disk.
     Disk,
+    /// A removable USB mass-storage disk on the machine's one `qemu-xhci` controller.
+    UsbDisk,
 }
 
 #[derive(Clone, Debug)]
@@ -314,6 +333,7 @@ pub(crate) struct Firmware {
 pub(crate) struct DeviceProfile {
     pub disk: DiskBus,
     pub net: NetModel,
+    pub video: Video,
     /// Do not reboot after a guest-initiated reset (installs).
     pub no_reboot: bool,
 }
@@ -323,6 +343,13 @@ pub(crate) enum DiskBus {
     Virtio,
     Sata,
     Nvme,
+}
+
+/// The display adapter. Either way the machine has no display window (`-display none`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Video {
+    None,
+    Vga,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

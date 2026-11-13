@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
     Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
-    SshEndpoint, Storage,
+    Patch, SshEndpoint, Storage, Video,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
@@ -489,6 +489,26 @@ impl Storage for FakeStorage {
         })
     }
 
+    /// The disk file says it is blank and how large; there are no firmware variables, as for `import_base`.
+    fn create_blank_disk(&self, size: u64, _arch: Arch, staging: &LayerDir) -> Result<()> {
+        let target = staging.path().join(LAYER_DISK);
+        std::fs::write(&target, format!("blank size={size}"))
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", target.display()), e))
+    }
+
+    /// A file naming the backing file and each patch's offset and length.
+    fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
+        let patches: Vec<String> = patches
+            .iter()
+            .map(|patch| format!("{}+{}", patch.offset, patch.bytes.len()))
+            .collect();
+        std::fs::write(
+            into,
+            format!("overlay of {} patches={}", backing.display(), patches.join(",")),
+        )
+        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write the overlay {}", into.display()), e))
+    }
+
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()> {
         if self.commit_fails {
             return Err(Error::new(ErrorKind::Io, "the fake storage cannot commit"));
@@ -521,6 +541,7 @@ pub(crate) fn fake_spec(disk: PathBuf, serial_log: PathBuf, lifetime: Lifetime) 
         profile: DeviceProfile {
             disk: DiskBus::Virtio,
             net: NetModel::Virtio,
+            video: Video::None,
             no_reboot: false,
         },
         firmware: None,

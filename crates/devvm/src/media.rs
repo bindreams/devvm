@@ -14,6 +14,7 @@ use crate::{Error, ErrorKind, Result};
 pub(crate) mod media_tests;
 
 /// A file to put in a seed image.
+#[derive(Debug)]
 pub(crate) struct SeedFile {
     pub name: String,
     pub bytes: Vec<u8>,
@@ -32,7 +33,9 @@ const _: () = assert!(
 /// The volume id of every image: a fixed value keeps equal inputs byte-identical.
 const VOLUME_ID: u32 = 0x4456_4d53;
 
-/// Writes the NoCloud `cidata` image holding `files` to `into` and returns it as a read-only guest disk.
+/// Writes the NoCloud `cidata` image holding `files` to `into` and returns it as a guest disk of `kind`, read-only when
+/// `readonly`. `spare` bytes of free room are left in the volume for the guest to write into (0 for a disk the guest
+/// only reads).
 ///
 /// The image can hold private keys, so `host` writes it as a private file ([`Host::write_private`]). An image left at
 /// `into` by an earlier launch is touched only after the new image is built.
@@ -43,9 +46,16 @@ const VOLUME_ID: u32 = 0x4456_4d53;
 ///
 /// The image is a pure function of `files`: no timestamps, a fixed volume id. The names and contents are read back from
 /// the finished image before anything is written; an image that does not hold exactly `files` is an error.
-pub(crate) fn write_cidata_image(host: &dyn Host, files: &[SeedFile], into: &Path) -> Result<Media> {
+pub(crate) fn write_cidata_image(
+    host: &dyn Host,
+    files: &[SeedFile],
+    kind: MediaKind,
+    readonly: bool,
+    spare: u64,
+    into: &Path,
+) -> Result<Media> {
     refuse_path_names(files)?;
-    let image = fat_image(files)?;
+    let image = fat_image(files, spare)?;
     let written = match std::fs::remove_file(into) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -61,9 +71,9 @@ pub(crate) fn write_cidata_image(host: &dyn Host, files: &[SeedFile], into: &Pat
     })?;
     Ok(Media {
         path: into.to_path_buf(),
-        kind: MediaKind::Disk,
+        kind,
         boot_index: None,
-        readonly: true,
+        readonly,
     })
 }
 
@@ -147,13 +157,14 @@ fn format_options(size: u64) -> FormatVolumeOptions {
         .volume_label(*b"CIDATA     ")
 }
 
-/// The seed image, built in memory: every `fatfs` failure here is `Internal`, as nothing touches the host.
+/// The seed image, built in memory: every `fatfs` failure here is `Internal`, as nothing touches the host. `spare` bytes
+/// count as contents when the image is sized, so they are free after `files` are in.
 ///
 /// The volume is FAT12 because [`image_size`] bounds the image; `fatfs` chooses the type from the geometry, and the
 /// debug assertion checks it did.
-fn fat_image(files: &[SeedFile]) -> Result<Vec<u8>> {
+fn fat_image(files: &[SeedFile], spare: u64) -> Result<Vec<u8>> {
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
-    let size = image_size(contents)?;
+    let size = image_size(contents.saturating_add(spare))?;
 
     let mut disk = Cursor::new(vec![0u8; size as usize]);
     fatfs::format_volume(&mut disk, format_options(size)).map_err(build_failed)?;
@@ -177,23 +188,67 @@ fn fat_image(files: &[SeedFile]) -> Result<Vec<u8>> {
     Ok(disk.into_inner())
 }
 
-/// Reads the root directory of the finished image back and requires exactly `files`: the same long names, the same
+/// Every file of the FAT volume at `image`, in every directory, named by its path with `/` between the parts (a file a
+/// guest wrote to `logs\setupact.log` is `logs/setupact.log`). A directory with no files adds nothing, so a guest
+/// that wrote no `logs` directory has no such files and no error. A volume the guest left dirty is read as it is.
+#[allow(dead_code, reason = "unused until the Windows base build reads back the answer disk")]
+pub(crate) fn read_files(image: &Path) -> Result<Vec<SeedFile>> {
+    let bytes = std::fs::read(image).map_err(|e| {
+        Error::io(
+            ErrorKind::Io,
+            format!("cannot read the disk image {}", image.display()),
+            e,
+        )
+    })?;
+    tree_of(&mut Cursor::new(bytes)).map_err(|e| {
+        Error::io(
+            ErrorKind::Io,
+            format!("cannot read {} as a FAT volume", image.display()),
+            e,
+        )
+    })
+}
+
+/// The files of the volume in `disk`, as [`read_files`].
+fn tree_of(disk: &mut Cursor<Vec<u8>>) -> std::io::Result<Vec<SeedFile>> {
+    disk.set_position(0);
+    let fs = FileSystem::new(disk, FsOptions::new())?;
+    let mut files = Vec::new();
+    collect(&fs.root_dir(), "", &mut files)?;
+    Ok(files)
+}
+
+fn collect<T: fatfs::ReadWriteSeek>(
+    dir: &fatfs::Dir<'_, T>,
+    prefix: &str,
+    files: &mut Vec<SeedFile>,
+) -> std::io::Result<()> {
+    for entry in dir.iter() {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let path = format!("{prefix}{name}");
+        if entry.is_dir() {
+            collect(&entry.to_dir(), &format!("{path}/"), files)?;
+        } else {
+            let mut bytes = Vec::new();
+            entry.to_file().read_to_end(&mut bytes)?;
+            files.push(SeedFile { name: path, bytes });
+        }
+    }
+    Ok(())
+}
+
+/// Reads the finished image back with [`read_files`]' reader and requires exactly `files`: the same long names, the same
 /// count, the same contents.
 ///
 /// `fatfs` merges names whose generated 8.3 short names, trailing dots or U+FFFF padding collide, and renames some, so
 /// no list of name patterns closes the class; only the image says what it holds.
 fn require_files_as_asked(disk: &mut Cursor<Vec<u8>>, files: &[SeedFile]) -> Result<()> {
-    disk.set_position(0);
-    let fs = FileSystem::new(disk, FsOptions::new()).map_err(build_failed)?;
-    let mut held = Vec::new();
-    for entry in fs.root_dir().iter() {
-        let entry = entry.map_err(build_failed)?;
-        let mut bytes = Vec::new();
-        if entry.is_file() {
-            entry.to_file().read_to_end(&mut bytes).map_err(build_failed)?;
-        }
-        held.push((entry.file_name(), bytes));
-    }
+    let held = tree_of(disk).map_err(build_failed)?;
+    let held: Vec<(String, Vec<u8>)> = held.into_iter().map(|file| (file.name, file.bytes)).collect();
 
     let mut held_names: Vec<&str> = held.iter().map(|(name, _)| name.as_str()).collect();
     let mut asked_names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();

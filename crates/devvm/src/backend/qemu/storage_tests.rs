@@ -2,14 +2,14 @@
 
 use std::path::Path;
 
-use super::{DISK, QemuStorage};
-use crate::ErrorKind;
-use crate::backend::Storage;
+use super::{DISK, QemuStorage, VARS};
+use crate::backend::{Patch, Storage};
 use crate::host;
 use crate::store::layers::layers_tests::{env, key, request};
 use crate::store::layers::{Built, ChainLease};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::qemu::{lazy_at, refused_without_a_disk};
+use crate::{Arch, ErrorKind};
 
 /// A storage whose QEMU does not exist: an operation that reaches `qemu-img` fails naming the missing tool.
 fn storage_without_qemu(home: &Path) -> QemuStorage {
@@ -23,7 +23,7 @@ fn layer(home: &Path, vars: bool) -> ChainLease {
         .build(&request(key(1)), None, |staging| {
             std::fs::write(staging.dir.path().join(DISK), b"disk").unwrap();
             if vars {
-                std::fs::write(staging.dir.path().join(super::VARS), b"vars").unwrap();
+                std::fs::write(staging.dir.path().join(VARS), b"vars").unwrap();
             }
             Ok(Built::default())
         })
@@ -114,4 +114,42 @@ fn committing_an_instance_disk_with_no_directory_is_refused_naming_it(#[fixture(
             Ok(Built::default())
         })
         .unwrap();
+}
+
+/// Same sizes as for an instance disk: `made_size` is the one rule.
+#[skuld::test]
+fn a_blank_disk_over_the_qcow2_limit_is_refused_as_recipe_before_qemu_img_runs(#[fixture(unicode_home)] home: &Path) {
+    let storage = storage_without_qemu(home);
+    env(home)
+        .store
+        .build(&request(key(4)), None, |staging| {
+            for size in [u64::MAX, u64::MAX - 510, (1 << 51) + 1] {
+                let error = storage.create_blank_disk(size, Arch::Amd64, staging.dir).unwrap_err();
+
+                assert_eq!(error.kind(), ErrorKind::Recipe, "{size}: {error}");
+                assert!(error.message().contains(&size.to_string()), "{size}: {error}");
+                assert!(error.message().contains("resources.disk"), "{size}: {error}");
+                assert!(!staging.dir.path().join(DISK).exists(), "{size}: a disk was made");
+                assert!(!staging.dir.path().join(VARS).exists(), "{size}: variables were copied");
+            }
+            Ok(Built::default())
+        })
+        .unwrap();
+}
+
+#[skuld::test]
+fn a_missing_backing_file_is_refused_naming_it_before_qemu_img_runs(#[fixture(unicode_home)] home: &Path) {
+    let storage = storage_without_qemu(home);
+    let backing = home.join("no-such.iso");
+    let into = home.join("overlay.qcow2");
+    let patches = [Patch {
+        offset: 0,
+        bytes: vec![1],
+    }];
+
+    let error = storage.overlay_with_patches(&backing, &patches, &into).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::NotFound, "{error}");
+    assert!(error.message().contains("no-such.iso"), "{error}");
+    assert!(!into.exists(), "an overlay was made over nothing");
 }

@@ -2,14 +2,15 @@
 //! overlay of the tip layer. Everything goes through the sidecar's `qemu-img`.
 
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::args::ArchFiles;
+use super::args::{ArchFiles, escape_option_value};
 use super::directory_of;
 use super::sidecar::LazyInstall;
-use crate::backend::{DEFAULT_DISK, Storage};
-use crate::host::Host;
+use crate::backend::{DEFAULT_DISK, Patch, Storage};
+use crate::host::{Host, symlink_metadata_if_present};
 use crate::store::layers::LayerDir;
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -249,9 +250,100 @@ impl Storage for QemuStorage {
                 disk.as_os_str(),
             ])?;
         }
+        self.add_vars(arch, staging)
+    }
+
+    fn create_blank_disk(&self, size: u64, arch: Arch, staging: &LayerDir) -> Result<()> {
+        made_size(size)?;
+        self.qemu_img(&[
+            "create".as_ref(),
+            "-f".as_ref(),
+            QCOW2.as_ref(),
+            staging.path().join(DISK).as_os_str(),
+            size.to_string().as_ref(),
+        ])?;
+        self.add_vars(arch, staging)
+    }
+
+    /// `qemu-img create` of the overlay, then one `qemu-img convert -n` per patch: the raw patch file is written into the
+    /// overlay as the sub-range `[offset, offset + len)` of the disk, so `backing` is never written. An overlay that was
+    /// not finished is deleted.
+    fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
+        if symlink_metadata_if_present(backing)
+            .map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot look at the backing file {}", backing.display()),
+                    e,
+                )
+            })?
+            .is_none()
+        {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                format!("the backing file {} is not there", backing.display()),
+            ));
+        }
+        let directory = directory_of(into, "the overlay")?;
+        let target = escape_option_value(into)?;
+        self.qemu_img(&[
+            "create".as_ref(),
+            "-f".as_ref(),
+            QCOW2.as_ref(),
+            "-b".as_ref(),
+            backing.as_os_str(),
+            "-F".as_ref(),
+            "raw".as_ref(),
+            into.as_os_str(),
+        ])?;
+        let written = patches
+            .iter()
+            .try_for_each(|patch| self.write_patch(patch, &target, directory));
+        if let Err(e) = written {
+            // Best effort: the error that matters is the patch's.
+            let _ = std::fs::remove_file(into);
+            return Err(e);
+        }
+        Ok(())
+    }
+}
+
+impl QemuStorage {
+    /// Copies the firmware variables template for `arch` into `staging`.
+    fn add_vars(&self, arch: Arch, staging: &LayerDir) -> Result<()> {
         copy_file(
             &self.share()?.join(ArchFiles::of(arch).vars),
             &staging.path().join(VARS),
         )
+    }
+
+    /// Writes `patch` into the qcow2 disk at `target` (an option value), through a raw file in `directory` that is gone
+    /// afterwards.
+    fn write_patch(&self, patch: &Patch, target: &str, directory: &Path) -> Result<()> {
+        let io = |e| Error::io(ErrorKind::Io, "cannot write a patch file", e);
+        let mut file = tempfile::Builder::new()
+            .prefix("patch-")
+            .tempfile_in(directory)
+            .map_err(io)?;
+        file.write_all(&patch.bytes).map_err(io)?;
+        file.flush().map_err(io)?;
+        // The handle is closed: `qemu-img` opens the file by name, which Windows lets a process do only once the
+        // other handles are gone.
+        let source = file.into_temp_path();
+        self.qemu_img(&[
+            "convert".as_ref(),
+            "-n".as_ref(),
+            "-f".as_ref(),
+            "raw".as_ref(),
+            "--target-image-opts".as_ref(),
+            source.as_os_str(),
+            format!(
+                "driver=raw,offset={},size={},file.driver=qcow2,file.file.driver=file,file.file.filename={target}",
+                patch.offset,
+                patch.bytes.len()
+            )
+            .as_ref(),
+        ])?;
+        Ok(())
     }
 }

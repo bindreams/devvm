@@ -21,6 +21,15 @@ use crate::test_support::manual_exit::ManualExit;
 use crate::test_support::qemu::{Sock, assert_unicode_socket_path, scratch_run, socket_dir};
 use crate::test_support::refusing::{REFUSED, Refusing};
 
+// A QMP query only the tests make =====================================================================================
+
+impl Qmp {
+    /// `query-block`: the drives the machine's devices use, with what the guest sees of them.
+    pub(crate) fn query_block(&mut self) -> crate::Result<Vec<qapi::qmp::BlockInfo>> {
+        self.execute(&qapi::qmp::query_block {})
+    }
+}
+
 // A fake QMP server ===================================================================================================
 
 /// One accepted connection, speaking QMP as QEMU does.

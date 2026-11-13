@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::{DISK, QCOW2, QemuStorage, VARS};
-use crate::backend::{DEFAULT_DISK, Storage};
+use crate::backend::{DEFAULT_DISK, Patch, Storage};
 use crate::host;
 use crate::store::layers::layers_tests::{Env, env, key, request};
 use crate::store::layers::{Built, ChainLease};
@@ -572,4 +572,135 @@ fn vars_are_copied_per_instance_and_do_not_alias(
 
     assert_eq!(std::fs::read(vars_of(&second)).unwrap(), template);
     assert_eq!(std::fs::read(base.tip().dir().path().join(VARS)).unwrap(), template);
+}
+
+#[skuld::test]
+fn a_blank_disk_has_the_virtual_size_and_a_vars_copy(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+    let size = 8 << 20;
+
+    let layer = world
+        .store
+        .build(&request(key(1)), None, |staging| {
+            storage.create_blank_disk(size, Arch::Amd64, staging.dir)?;
+            Ok(Built::default())
+        })
+        .unwrap();
+
+    let info = qemu_img_info(install, &disk_of(&layer), false);
+    assert_eq!(info["format"], "qcow2");
+    assert_eq!(info["virtual-size"], size);
+    assert!(info.get("backing-filename").is_none(), "{info}");
+    assert_eq!(
+        std::fs::read(layer.tip().dir().path().join(VARS)).unwrap(),
+        std::fs::read(install.share.join("edk2-i386-vars.fd")).unwrap()
+    );
+    assert!(
+        read_through(install, &disk_of(&layer), home)
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+}
+
+/// `base` with `patch` laid over it at `offset`.
+fn patched(base: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
+    let mut bytes = base.to_vec();
+    bytes[offset..offset + patch.len()].copy_from_slice(patch);
+    bytes
+}
+
+#[skuld::test]
+fn the_overlay_reads_the_patch_where_the_patch_is_and_the_iso_elsewhere(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let storage = storage(install);
+    let base = pattern(BASE_LEN, 1);
+    let backing = write_raw(home, "backing.iso", &base);
+    let (first, second) = (pattern(70_000, 9), pattern(513, 4));
+    // Neither patch starts or ends on a cluster of the overlay.
+    let patches = [
+        Patch {
+            offset: 100_001,
+            bytes: first.clone(),
+        },
+        Patch {
+            offset: 900_000,
+            bytes: second.clone(),
+        },
+    ];
+    let into = home.join("overlay.qcow2");
+
+    storage.overlay_with_patches(&backing, &patches, &into).unwrap();
+
+    let info = qemu_img_info(install, &into, false);
+    assert_eq!(info["format"], "qcow2");
+    assert_eq!(info["virtual-size"], BASE_LEN);
+    assert!(info["actual-size"].as_u64().unwrap() < BASE_LEN as u64, "{info}");
+    let expected = patched(&patched(&base, 100_001, &first), 900_000, &second);
+    assert_eq!(read_through(install, &into, home), expected);
+    assert_eq!(std::fs::read(&backing).unwrap(), base, "the backing file is only read");
+    let left: Vec<_> = std::fs::read_dir(home)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(
+        !left.iter().any(|name| name.to_string_lossy().contains("patch")),
+        "a patch file was left behind: {left:?}"
+    );
+}
+
+#[skuld::test]
+fn an_iso_path_with_space_cyrillic_and_a_surrogate_pair_backs_an_overlay(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let storage = storage(install);
+    let dir = home.join("пробел space 😀, dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = pattern(BASE_LEN, 2);
+    let backing = write_raw(&dir, "win 😀.iso", &base);
+    let patch = pattern(4096, 6);
+    let into = dir.join("overlay,with comma.qcow2");
+
+    storage
+        .overlay_with_patches(
+            &backing,
+            &[Patch {
+                offset: 8192,
+                bytes: patch.clone(),
+            }],
+            &into,
+        )
+        .unwrap();
+
+    assert_eq!(read_through(install, &into, home), patched(&base, 8192, &patch));
+}
+
+#[skuld::test]
+fn a_patch_past_the_end_of_the_backing_file_is_refused_and_leaves_no_overlay(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let storage = storage(install);
+    let backing = write_raw(home, "backing.iso", &pattern(BASE_LEN, 1));
+    let into = home.join("overlay.qcow2");
+
+    let error = storage
+        .overlay_with_patches(
+            &backing,
+            &[Patch {
+                offset: BASE_LEN as u64,
+                bytes: vec![1; 512],
+            }],
+            &into,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(!into.exists(), "a half-made overlay was left");
 }
