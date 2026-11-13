@@ -193,7 +193,7 @@ impl Watch {
         for phase in &written.progress {
             self.marker(phase);
         }
-        if !written.progress.is_empty() || written.license.is_some() || written.failed.is_some() || written.done {
+        if *written != Serial::default() {
             self.since = now;
         }
     }
@@ -251,7 +251,7 @@ fn verdict(number: usize, exit: Exit, serial: &Serial) -> Result<Launched> {
         }
     };
     if let Some(why) = &serial.failed {
-        let mut headline = format!("the Windows guest failed to build the base: {why}");
+        let mut headline = guest_failed(why);
         if !powered_off {
             headline.push_str(&format!("\n{ended}"));
         }
@@ -264,15 +264,34 @@ fn verdict(number: usize, exit: Exit, serial: &Serial) -> Result<Launched> {
                 humanly(stall.bound)
             ))),
             Exit::Exited(_) if powered_off => Ok(Launched::Finished),
-            Exit::Exited(_) => Err(error(format!(
-                "the guest wrote DEVVM-BASE-DONE, but {ended}, so the disk may be incomplete"
-            ))),
+            Exit::Exited(_) => Err(error(done_but(&ended))),
         };
     }
     if !powered_off {
         return Err(error(ended));
     }
     Ok(Launched::Restarted)
+}
+
+/// What a launch came to when its end could not be read (the wait or the read of the log's tail failed): `error`, after
+/// the guest's account as far as it was seen. The rule is [`verdict`]'s.
+fn with_guest_account(error: Error, serial: &Serial) -> Error {
+    let account = if let Some(why) = &serial.failed {
+        guest_failed(why)
+    } else if serial.done {
+        done_but("the launch's end could not be read")
+    } else {
+        return error;
+    };
+    Error::new(ErrorKind::Unavailable, account).together_with(error)
+}
+
+fn guest_failed(why: &str) -> String {
+    format!("the Windows guest failed to build the base: {why}")
+}
+
+fn done_but(ended: &str) -> String {
+    format!("the guest wrote DEVVM-BASE-DONE, but {ended}, so the disk may be incomplete")
 }
 
 /// One build of a base: the files it made and what it has seen of the guest.
@@ -391,7 +410,7 @@ impl<'a> Build<'a> {
         self.ctx.progress.message(&format!("Windows base: launch {number}"));
         let mut machine = self.builder.backend.launch(&spec)?;
         if let Err(error) = machine.resume() {
-            return after_kill(Err(error), machine.kill(), false);
+            return after_kill(Err(error), machine.kill());
         }
         // The ISO is open in QEMU once `resume` has returned: `Machine::resume` completes a command of QEMU's main
         // loop, which starts after `qemu_init` has opened every drive.
@@ -406,9 +425,8 @@ impl<'a> Build<'a> {
             .map_err(|error| self.fail(error, log))
     }
 
-    /// What a launch that has ended came to: the markers it wrote and how its VM process ended, read in that order. A
-    /// `DEVVM-BASE-FAILED=` marker is the headline of an error whatever the exit, since it is the guest's own account.
-    /// `DEVVM-BASE-DONE` with a failing exit is an error too: the disk may be incomplete.
+    /// What a launch that has ended came to: the markers it wrote and how its VM process ended, read in that order.
+    /// [`verdict`] holds the rule; a launch whose end could not be read gets the guest's account as far as it was seen.
     fn conclude(
         &mut self,
         number: usize,
@@ -425,12 +443,12 @@ impl<'a> Build<'a> {
             self.observe(rest);
         }
         let outcome = match (exit, rest) {
-            (Err(wait), Err(read)) => Err(wait.together_with(read)),
-            (Err(wait), Ok(_)) => Err(wait),
-            (Ok(_), Err(read)) => Err(read),
             (Ok(exit), Ok(_)) => self.judge(number, exit, reader),
+            (Ok(_), Err(read)) => Err(with_guest_account(read, reader.whole())),
+            (Err(wait), Ok(_)) => Err(with_guest_account(wait, reader.whole())),
+            (Err(wait), Err(read)) => Err(with_guest_account(wait.together_with(read), reader.whole())),
         };
-        after_kill(outcome, killed, exited)
+        after_kill(outcome, killed)
     }
 
     /// What a launch came to, from how it ended and the markers it wrote. A guest that restarted must have moved
@@ -581,15 +599,11 @@ impl<'a> Build<'a> {
     }
 }
 
-/// `outcome` of a launch whose VM process was then killed with `killed`; `exited` says the VM process had exited by
-/// itself. A failed outcome stays the headline and names a kill that failed after it: of an exited VM it failed to
-/// clean up what the VM left, of any other a VM process may still run. An outcome that went well is the kill's error.
-fn after_kill<T>(outcome: Result<T>, killed: Result<()>, exited: bool) -> Result<T> {
+/// `outcome` of a launch whose VM process was then killed with `killed`. A failed outcome stays the headline and names
+/// a kill that failed after it: the tree kill may have left a descendant running. An outcome that went well is the
+/// kill's error.
+fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
     match outcome {
-        Err(error) if exited => Err(match killed {
-            Ok(()) => error,
-            Err(failed) => error.together_with(format!("cleaning up after the VM failed ({failed})")),
-        }),
         Err(error) => Err(error.after_cleanup("a VM process that may still run", killed)),
         Ok(value) => killed.map(|()| value),
     }

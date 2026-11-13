@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::serial::Serial;
-use super::{Bounds, Exit, Stall, Watch, WindowsBuilder, after_kill, verdict};
+use super::{Bounds, Exit, Stall, Watch, WindowsBuilder, after_kill, verdict, with_guest_account};
 use crate::backend::fake::FakeBackend;
 use crate::guest::windows::pins::VIRTIO_WIN;
 use crate::guest::windows::templates;
@@ -443,7 +443,7 @@ fn winpe_is_over_once_any_marker_has_been_seen() {
 fn a_failed_launch_stays_the_headline_when_the_kill_failed_too() {
     let outcome: Result<()> = Err(Error::new(ErrorKind::Unavailable, "the guest failed to build the base"));
 
-    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM")), false).unwrap_err();
+    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert!(
@@ -451,12 +451,15 @@ fn a_failed_launch_stays_the_headline_when_the_kill_failed_too() {
         "{error}"
     );
     assert!(error.message().contains("cannot kill the VM"), "{error}");
-    assert!(error.message().contains("a VM process that may still run"), "{error}");
+    assert!(
+        error.message().contains("so a VM process that may still run remains"),
+        "{error}"
+    );
 }
 
 #[skuld::test]
 fn a_launch_that_went_well_is_the_kills_error_when_the_kill_failed() {
-    let error = after_kill(Ok(5), Err(Error::new(ErrorKind::Io, "cannot kill the VM")), true).unwrap_err();
+    let error = after_kill(Ok(5), Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Io);
     assert_eq!(error.message(), "cannot kill the VM");
@@ -464,24 +467,9 @@ fn a_launch_that_went_well_is_the_kills_error_when_the_kill_failed() {
 
 #[skuld::test]
 fn a_kill_that_worked_leaves_the_outcome_as_it_was() {
-    assert_eq!(after_kill(Ok(5), Ok(()), true).unwrap(), 5);
-    let error = after_kill::<()>(Err(Error::new(ErrorKind::Unavailable, "failed")), Ok(()), false).unwrap_err();
+    assert_eq!(after_kill(Ok(5), Ok(())).unwrap(), 5);
+    let error = after_kill::<()>(Err(Error::new(ErrorKind::Unavailable, "failed")), Ok(())).unwrap_err();
     assert_eq!(error.message(), "failed");
-}
-
-#[skuld::test]
-fn a_failed_kill_of_a_vm_that_exited_says_cleanup_failed_and_not_that_a_process_may_run() {
-    let outcome: Result<()> = Err(Error::new(ErrorKind::Unavailable, "the guest failed to build the base"));
-
-    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM")), true).unwrap_err();
-
-    assert!(
-        error.message().starts_with("the guest failed to build the base"),
-        "{error}"
-    );
-    assert!(error.message().contains("cleaning up after the VM failed"), "{error}");
-    assert!(error.message().contains("cannot kill the VM"), "{error}");
-    assert!(!error.message().contains("may still run"), "{error}");
 }
 
 // What a launch that was stopped at its bound came to =================================================================
@@ -544,4 +532,68 @@ fn a_done_marker_at_a_stall_says_the_guest_did_not_power_off() {
         error.message(),
         "the guest reported done but did not power off within 2m"
     );
+}
+
+// What a launch came to when its end could not be read ================================================================
+
+#[skuld::test]
+fn a_failed_marker_held_stays_the_headline_when_the_launchs_end_could_not_be_read() {
+    let error = with_guest_account(
+        Error::new(ErrorKind::Io, "cannot read the serial log"),
+        &wrote(Some("boom"), false),
+    );
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert!(
+        error
+            .message()
+            .starts_with("the Windows guest failed to build the base: boom"),
+        "{error}"
+    );
+    assert!(error.message().contains("cannot read the serial log"), "{error}");
+}
+
+#[skuld::test]
+fn a_failed_marker_wins_over_a_done_marker_when_the_launchs_end_could_not_be_read() {
+    let error = with_guest_account(
+        Error::new(ErrorKind::Io, "cannot read the VM process's status"),
+        &wrote(Some("boom"), true),
+    );
+
+    assert!(
+        error
+            .message()
+            .starts_with("the Windows guest failed to build the base: boom"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn a_done_marker_held_says_the_disk_may_be_incomplete_when_the_launchs_end_could_not_be_read() {
+    let error = with_guest_account(
+        Error::new(ErrorKind::Io, "cannot read the VM process's status"),
+        &wrote(None, true),
+    );
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert!(
+        error.message().starts_with("the guest wrote DEVVM-BASE-DONE"),
+        "{error}"
+    );
+    assert!(error.message().contains("so the disk may be incomplete"), "{error}");
+    assert!(
+        error.message().contains("cannot read the VM process's status"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn an_end_that_could_not_be_read_stays_the_error_when_the_guest_wrote_no_account() {
+    let error = with_guest_account(
+        Error::new(ErrorKind::Io, "cannot read the serial log"),
+        &Serial::default(),
+    );
+
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.message(), "cannot read the serial log");
 }

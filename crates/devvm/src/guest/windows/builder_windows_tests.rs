@@ -384,7 +384,27 @@ fn a_wait_and_a_serial_log_that_both_fail_are_both_named(#[fixture(unicode_home)
 }
 
 #[skuld::test]
-fn a_vm_that_exited_and_could_not_be_cleaned_up_after_is_not_said_to_run(#[fixture(unicode_home)] home: &Path) {
+fn a_failed_marker_stays_the_headline_when_the_wait_fails(#[fixture(unicode_home)] home: &Path) {
+    let logon = Launch::running("DEVVM-PROGRESS=first logon: x\r\nDEVVM-BASE-FAILED=boom\r\n");
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![logon]))
+        .with_failing_try_wait();
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(
+        message.starts_with("the Windows guest failed to build the base: boom"),
+        "{message}"
+    );
+    assert!(message.contains("cannot read the VM process's status"), "{message}");
+}
+
+#[skuld::test]
+fn a_vm_that_exited_and_could_not_be_killed_after_is_still_said_to_leave_a_process_that_may_run(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let backend = FakeBackend::new(&TestHost)
         .with_guest(guest(vec![Launch::crashing("DEVVM-PROGRESS=first logon: x\r\n")]))
         .with_failing_kill();
@@ -394,9 +414,8 @@ fn a_vm_that_exited_and_could_not_be_cleaned_up_after_is_not_said_to_run(#[fixtu
 
     let message = error.message();
     assert!(message.contains("exit code: 1"), "{message}");
-    assert!(message.contains("cleaning up after the VM failed"), "{message}");
     assert!(message.contains("the fake machine's kill fails"), "{message}");
-    assert!(!message.contains("may still run"), "the VM exited: {message}");
+    assert!(message.contains("a VM process that may still run remains"), "{message}");
 }
 
 #[skuld::test]
