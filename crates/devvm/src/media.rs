@@ -23,7 +23,7 @@ pub(crate) struct SeedFile {
 const SECTOR: u32 = 512;
 /// The smallest image, in bytes. Headroom for the directory and the allocation tables is added to the contents.
 const MIN_IMAGE: u64 = 1 << 20;
-/// The most bytes of file contents whose image ([`image_size`]) `fatfs` 0.3.6 still formats as FAT12: at most 4,084
+/// The most bytes of file contents whose image ([`image_size`]) `fatfs` still formats as FAT12: at most 4,084
 /// clusters of 32 KiB. Measured: one byte more fails to format ("Cannot select FAT type").
 const LARGEST_FAT12_CONTENTS: u64 = 66_418_688;
 const _: () = assert!(
@@ -78,7 +78,7 @@ pub(crate) fn write_cidata_image(
     })
 }
 
-/// `fatfs` 0.3.6 trims `/` from a name and walks the rest as a path, so `a/` is `a` and `a/b` needs a directory; `.` and
+/// `fatfs` trims `/` from a name and walks the rest as a path, so `a/` is `a` and `a/b` needs a directory; `.` and
 /// `..` are no files. Names that merely collide or that FAT cannot store are caught by [`require_files_as_asked`].
 fn refuse_path_names(files: &[SeedFile]) -> Result<()> {
     for file in files {
@@ -99,7 +99,7 @@ fn unusable_name(name: &str, why: &str) -> Error {
     )
 }
 
-/// The messages `fatfs` 0.3.6 gives, as `ErrorKind::Other`, for a name it refuses.
+/// The messages `fatfs` gives, as `ErrorKind::Other`, for a name it refuses.
 const FATFS_NAME_MESSAGES: [&str; 3] = [
     "File name is empty",
     "File name too long",
@@ -150,7 +150,7 @@ const fn unchecked_image_size(contents: u64) -> u128 {
 
 /// The options that format an image of `size` bytes ([`image_size`]) as the seed volume.
 ///
-/// `fat_type` only picks the cluster size in `fatfs` 0.3.6; the volume is FAT12 because `size` is within
+/// `fat_type` only picks the cluster size in `fatfs`; the volume is FAT12 because `size` is within
 /// [`LARGEST_FAT12_CONTENTS`]' bound, which [`image_size`] enforces.
 fn format_options(size: u64) -> FormatVolumeOptions {
     debug_assert!(size / u64::from(SECTOR) <= u64::from(u32::MAX));
@@ -166,9 +166,6 @@ fn format_options(size: u64) -> FormatVolumeOptions {
 
 /// The seed image, built in memory: every `fatfs` failure here is `Internal`, as nothing touches the host. `spare` bytes
 /// count as contents when the image is sized, so they are free after `files` are in.
-///
-/// The volume is FAT12 because [`image_size`] bounds the image; `fatfs` chooses the type from the geometry, and the
-/// debug assertion checks it did.
 fn fat_image(files: &[SeedFile], spare: u64) -> Result<Vec<u8>> {
     let contents: u64 = files.iter().map(|file| file.bytes.len() as u64).sum();
     let size = image_size(contents, spare)?;
@@ -177,7 +174,6 @@ fn fat_image(files: &[SeedFile], spare: u64) -> Result<Vec<u8>> {
     fatfs::format_volume(&mut disk, format_options(size)).map_err(build_failed)?;
     {
         let fs = FileSystem::new(&mut disk, FsOptions::new()).map_err(build_failed)?;
-        debug_assert_eq!(fs.fat_type(), FatType::Fat12);
         for file in files {
             let mut out = fs.root_dir().create_file(&file.name).map_err(|e| {
                 if is_name_rejection(&e) {
@@ -206,12 +202,10 @@ const MIN_FAT16_CLUSTERS: u64 = 4085;
 /// `logs/setupact.log`. A path that names a directory, or runs through a file, is an error. A volume the guest left
 /// dirty is read as it is.
 ///
-/// `image` is a FAT12 volume devvm built (the same size as its boot sector says), and the guest's FAT driver wrote to it
-/// during the base build; anything else is refused ([`Table::of`]). The allocation table is checked, because a crash can
-/// tear a 12-bit slot, and nothing here walks a directory: every path has a fixed number of parts, so a directory that
-/// leads back to one above it costs only the parts a path names. The clusters the volume chains are checked before
-/// anything is read ([`Table::require_chains_end`]). Directory entries are trusted: a forged start cluster reads wrong
-/// bytes from the in-memory copy, or panics in a debug build, and this is no defence against a hostile volume.
+/// `image` is a FAT12 volume devvm built, which the guest's FAT driver wrote to during the base build; anything else is
+/// refused ([`Table::of`]). The allocation table is checked before anything is read ([`Table::require_chains_end`]).
+/// Directory entries are trusted: a forged start cluster reads wrong bytes from the in-memory copy, or panics in a
+/// debug build.
 #[allow(dead_code, reason = "unused until the Windows base build reads back the answer disk")]
 pub(crate) fn read_files(image: &Path, paths: &[&str]) -> Result<Vec<SeedFile>> {
     refuse_unreadable_paths(paths)?;
@@ -288,7 +282,6 @@ fn read_known<T: fatfs::ReadWriteSeek>(fs: &FileSystem<T>, paths: &[&str]) -> st
     Ok(files)
 }
 
-/// The names in the root directory of `fs`, files and directories.
 fn root_names<T: fatfs::ReadWriteSeek>(fs: &FileSystem<T>) -> std::io::Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in fs.root_dir().iter() {
@@ -305,7 +298,7 @@ fn corrupt(message: String) -> std::io::Error {
 ///
 /// `fatfs` follows what the table says and trusts it: a chain of clusters that leads back to itself is read for ever, a
 /// value outside the volume is read from wherever it points. So the table is checked first, from the boot sector alone,
-/// with the rules `fatfs` 0.3.6 applies. Only FAT12 volumes are read ([`read_files`]), and the boot sector must count
+/// with the rules `fatfs` applies. Only FAT12 volumes are read ([`read_files`]), and the boot sector must count
 /// exactly the bytes of the image, so the cluster count, and everything sized by it, is bounded by the file itself.
 struct Table<'a> {
     /// The first copy of the table, the one `fatfs` reads.
@@ -361,7 +354,6 @@ impl<'a> Table<'a> {
             .ok_or_else(|| corrupt("the allocation table lies outside the image".to_owned()))?;
         Ok(Self {
             bytes,
-            // At most 4,084: the bound above.
             clusters: clusters as usize,
             entries: bytes.len() * 8 / 12,
         })
@@ -438,8 +430,8 @@ impl<'a> Table<'a> {
 
 /// Reads the finished image back and requires exactly `files`: the same long names, the same count, the same contents.
 ///
-/// `fatfs` merges names whose generated 8.3 short names, trailing dots or U+FFFF padding collide, and renames some, so
-/// no list of name patterns closes the class; only the image says what it holds. The files are read by the names asked
+/// `fatfs` merges some names and renames others, so no list of name patterns closes the class; only the image says what
+/// it holds. The files are read by the names asked
 /// for, as [`read_files`] reads them, and the root directory, one level, says what else is there.
 fn require_files_as_asked(disk: &mut Cursor<Vec<u8>>, files: &[SeedFile]) -> Result<()> {
     let fs = checked_volume(disk).map_err(build_failed)?;

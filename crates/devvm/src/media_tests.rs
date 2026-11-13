@@ -7,7 +7,7 @@ use super::{
     LARGEST_FAT12_CONTENTS, SeedFile, fat_image, format_options, image_size, read_files, unchecked_image_size,
     write_cidata_image,
 };
-use crate::backend::MediaKind;
+use crate::backend::{MediaFormat, MediaKind};
 use crate::host::symlink_metadata_if_present;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{RecordingHost, TestHost};
@@ -481,6 +481,7 @@ fn the_returned_media_has_the_kind_and_the_read_only_flag_the_caller_asked_for(#
     let image = home.join("answer.img");
     let media = write_cidata_image(&TestHost, &[file("a", b"1")], MediaKind::UsbDisk, false, 0, &image).unwrap();
     assert_eq!(media.kind, MediaKind::UsbDisk);
+    assert_eq!(media.format, MediaFormat::Raw);
     assert!(!media.readonly);
     assert_eq!(media.path, image);
     assert_eq!(media.boot_index, None);
@@ -881,12 +882,19 @@ fn a_file_claiming_more_than_its_clusters_is_read_as_far_as_they_go(#[fixture(un
     let mut bytes = volume_with(&[file("winpe.cmd", b"echo")], &[("logs/x.txt", b"x")]);
     let entry = entry_at(&bytes, b"X       TXT");
     bytes[entry + 28..entry + 32].copy_from_slice(&u32::MAX.to_le_bytes());
+
+    let cluster_size = FileSystem::new(Cursor::new(bytes.clone()), FsOptions::new())
+        .unwrap()
+        .stats()
+        .unwrap()
+        .cluster_size() as usize;
     std::fs::write(&image, bytes).unwrap();
 
     let files = read_files(&image, &["logs/x.txt"]).unwrap();
 
+    // The file has one cluster, so the read ends with it.
     assert!(files[0].bytes.starts_with(b"x"));
-    assert!(files[0].bytes.len() <= 1 << 20, "{} bytes", files[0].bytes.len());
+    assert_eq!(files[0].bytes.len(), cluster_size);
 }
 
 #[skuld::test]
@@ -905,6 +913,63 @@ fn a_directory_with_many_entries_is_not_mistaken_for_a_loop(#[fixture(unicode_ho
 /// A FAT12 volume holding the one-byte file `LOOP`, as the guest's own driver leaves it.
 fn loop_volume() -> Vec<u8> {
     volume_of(fatfs::FatType::Fat12, 1)
+}
+
+#[skuld::test]
+fn a_cycle_of_two_or_three_clusters_is_refused(#[fixture(unicode_home)] home: &Path) {
+    for length in [2, 3] {
+        let mut bytes = loop_volume();
+        let first = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
+        // first -> first + 1 [-> first + 2] -> first
+        for step in 0..length {
+            let next = if step + 1 == length { first } else { first + step + 1 };
+            chain_cluster_to(&mut bytes, first + step, next);
+        }
+
+        let error = read_loop(home, bytes).expect_err("a chain that leads back to its start");
+
+        assert_eq!(error.kind(), crate::ErrorKind::Io, "{length}: {error}");
+        assert!(
+            error
+                .message()
+                .contains(&format!("cluster {first} leads back to itself")),
+            "{length}: {error}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_cycle_entered_from_a_tail_outside_it_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let mut bytes = loop_volume();
+    // tail -> loop start -> next -> loop start
+    let tail = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
+    chain_cluster_to(&mut bytes, tail, tail + 1);
+    chain_cluster_to(&mut bytes, tail + 1, tail + 2);
+    chain_cluster_to(&mut bytes, tail + 2, tail + 1);
+
+    let error = read_loop(home, bytes).expect_err("a chain that enters a cycle");
+
+    assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
+    assert!(
+        error
+            .message()
+            .contains(&format!("cluster {} leads back to itself", tail + 1)),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn chains_that_converge_on_one_cluster_are_no_cycle(#[fixture(unicode_home)] home: &Path) {
+    let mut bytes = loop_volume();
+    let first = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
+    // `first` and `first + 1` both lead to `first + 2`, which ends the chain.
+    chain_cluster_to(&mut bytes, first, first + 2);
+    chain_cluster_to(&mut bytes, first + 1, first + 2);
+    chain_cluster_to(&mut bytes, first + 2, 0xFFF);
+
+    let files = read_loop(home, bytes).unwrap();
+
+    assert_eq!(bytes_of(&files, "LOOP"), b"x");
 }
 
 #[skuld::test]

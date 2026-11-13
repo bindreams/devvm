@@ -561,6 +561,14 @@ fn vm_qemu_a_frozen_machine_has_not_run_and_kill_leaves_nothing(
 }
 
 #[skuld::test]
+fn vm_qemu_a_spec_the_contract_refuses_is_refused_and_leaves_nothing(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    contract::a_spec_the_contract_refuses_is_refused_and_leaves_nothing(&QemuTarget::new(install), home);
+}
+
+#[skuld::test]
 fn vm_qemu_a_released_machine_outlives_its_launcher_and_attach_finds_it(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,

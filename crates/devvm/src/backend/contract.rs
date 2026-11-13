@@ -16,11 +16,12 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 
-use crate::ErrorKind;
-use crate::backend::{Backend, Machine, MachineRecord, MachineSpec, Patch, Storage};
+use crate::backend::{Backend, Machine, MachineRecord, MachineSpec, Patch, Storage, Video};
 use crate::contain::VmProcess;
+use crate::host::Accel;
 use crate::store::layers::layers_tests::{Env, env, key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
+use crate::{Arch, ErrorKind};
 
 pub(crate) trait ContractTarget {
     fn backend(&self) -> Arc<dyn Backend>;
@@ -200,6 +201,25 @@ pub(crate) fn a_frozen_machine_has_not_run_and_kill_leaves_nothing(target: &dyn 
     assert!(!is_running(&record), "kill leaves no process");
     assert!(!target.has_run(&spec), "a killed frozen machine never ran");
     assert_no_leftovers(target, &before, "kill");
+}
+
+/// A spec the contract refuses ([`check_machine_spec`](crate::backend::check_machine_spec)) is refused by `launch` as
+/// `NotSupported`, before any machine exists: no process starts and no file is left. It needs no process, so it runs
+/// wherever the backend's tests do.
+pub(crate) fn a_spec_the_contract_refuses_is_refused_and_leaves_nothing(target: &dyn ContractTarget, root: &Path) {
+    let mut spec = target.spec(root, 0);
+    spec.arch = Arch::Arm64;
+    spec.accel = Accel::Tcg;
+    spec.profile.video = Video::Vga;
+    let before = leftovers_before(target);
+
+    let Err(error) = target.backend().launch(&spec) else {
+        panic!("an arm64 machine with a VGA adapter was launched");
+    };
+
+    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+    assert!(error.message().contains("VGA"), "{error}");
+    assert_no_leftovers(target, &before, "the refused launch");
 }
 
 /// How a running machine is ended.
@@ -534,7 +554,6 @@ pub(crate) fn storage_refuses_what_its_contract_refuses(storage: &dyn Storage, r
     );
     refused(&[patch(4096, 512)], ErrorKind::Internal, &["patch 0", "past the end"]);
 
-    // An overlay that is already there is not overwritten.
     std::fs::write(&into, b"earlier").unwrap();
     let error = storage
         .overlay_with_patches(&backing, &[patch(0, 512)], &into)
@@ -562,4 +581,37 @@ pub(crate) fn storage_refuses_what_its_contract_refuses(storage: &dyn Storage, r
             Ok(Built::default())
         })
         .unwrap();
+}
+
+/// What the contract of `Storage::overlay_with_patches` and `Storage::create_blank_disk` allows at its edge is made by
+/// every backend: a patch that ends exactly at the end of the backing file, and a blank disk of the largest size and of
+/// a size that is no multiple of 512.
+pub(crate) fn storage_accepts_what_its_contract_allows(storage: &dyn Storage, root: &Path) {
+    let backing = root.join("backing.iso");
+    std::fs::write(&backing, vec![0u8; 4096]).unwrap();
+    let into = root.join("overlay.qcow2");
+    let last = Patch {
+        offset: 3584,
+        bytes: vec![1; 512],
+    };
+    storage
+        .overlay_with_patches(&backing, &[last], &into)
+        .expect("a patch that ends at the end of the backing file");
+    assert!(into.exists(), "no overlay was made");
+
+    let env = env(root);
+    for (n, size) in [1u64 << 51, (1 << 20) + 1].into_iter().enumerate() {
+        env.store
+            .build(&request(key(n as u8)), None, |staging| {
+                storage
+                    .create_blank_disk(size, crate::Arch::Amd64, staging.dir)
+                    .unwrap_or_else(|e| panic!("{size}: {e}"));
+                assert!(
+                    std::fs::read_dir(staging.dir.path()).unwrap().next().is_some(),
+                    "{size}: no disk was made"
+                );
+                Ok(Built::default())
+            })
+            .unwrap();
+    }
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::{DISK, QCOW2, QemuStorage, VARS};
-use crate::backend::{DEFAULT_DISK, Patch, Storage};
+use crate::backend::{DEFAULT_DISK, Patch, QCOW2_MAX_SIZE, Storage};
 use crate::host;
 use crate::store::layers::layers_tests::{Env, env, key, request};
 use crate::store::layers::{Built, ChainLease};
@@ -606,6 +606,43 @@ fn a_blank_disk_has_the_virtual_size_and_a_vars_copy(
     );
 }
 
+#[skuld::test]
+fn the_real_storage_accepts_what_the_storage_contract_allows(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    crate::backend::contract::storage_accepts_what_its_contract_allows(&storage(install), home);
+}
+
+#[skuld::test]
+fn a_blank_disk_of_the_largest_size_or_an_unaligned_one_has_the_size_qemu_img_makes(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = env(home);
+    let storage = storage(install);
+
+    // The largest qcow2 disk, and one byte over a sector, which is made a sector larger.
+    for (n, (size, made)) in [(QCOW2_MAX_SIZE, QCOW2_MAX_SIZE), ((1 << 20) + 1, (1 << 20) + 512)]
+        .into_iter()
+        .enumerate()
+    {
+        let layer = world
+            .store
+            .build(&request(key(n as u8 + 1)), None, |staging| {
+                storage.create_blank_disk(size, Arch::Amd64, staging.dir)?;
+                Ok(Built::default())
+            })
+            .unwrap();
+
+        assert_eq!(
+            qemu_img_info(install, &disk_of(&layer), false)["virtual-size"],
+            made,
+            "{size}"
+        );
+    }
+}
+
 /// `base` with `patch` laid over it at `offset`.
 fn patched(base: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
     let mut bytes = base.to_vec();
@@ -691,7 +728,7 @@ fn two_calls_for_one_overlay_make_it_once_and_neither_touches_the_other(
         handles.into_iter().map(|handle| handle.join().unwrap()).collect()
     });
 
-    // Whichever call published first has the overlay; the other is refused, as it would be a moment later.
+    // Whichever call published first has the overlay; the other is refused.
     let winners: Vec<usize> = (0..calls.len()).filter(|n| outcomes[*n].is_ok()).collect();
     assert_eq!(winners.len(), 1, "{outcomes:?}");
     for (n, outcome) in outcomes.iter().enumerate() {

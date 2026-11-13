@@ -5,7 +5,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::backend::{DiskBus, Endpoint, MachineSpec, Media, MediaKind, NetModel, Video, directory_of};
+use crate::backend::{
+    DiskBus, Endpoint, MachineSpec, Media, MediaKind, NetModel, Video, check_machine_spec, directory_of,
+};
 use crate::host::Accel;
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -103,6 +105,7 @@ pub(crate) fn escape_option_value(path: &Path) -> Result<String> {
 
 /// The argument list for `spec` (without the executable).
 pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<OsString>> {
+    check_machine_spec(spec)?;
     let mut args = Args(Vec::new());
     let machine = match spec.arch {
         Arch::Amd64 => "q35",
@@ -110,12 +113,6 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
             return Err(Error::new(
                 ErrorKind::NotSupported,
                 "WHPX cannot run an arm64 guest; arm64 runs under software emulation only",
-            ));
-        }
-        Arch::Arm64 if spec.profile.video == Video::Vga => {
-            return Err(Error::new(
-                ErrorKind::NotSupported,
-                "an arm64 machine has no VGA adapter: its firmware and guests have no driver for one",
             ));
         }
         Arch::Arm64 => "virt,gic-version=3",
@@ -239,8 +236,7 @@ fn system_disk_device(bus: DiskBus, boot_index: u32, args: &mut Args) -> String 
 /// The one USB controller every [`MediaKind::UsbDisk`] sits on.
 const XHCI: &str = "qemu-xhci,id=xhci";
 
-/// `Cdrom` is `ide-cd` with no `bus=`, the form Task S's install booted; `Disk` is virtio-blk; `UsbDisk` is removable
-/// `usb-storage` on [`XHCI`].
+/// `Cdrom` is `ide-cd` with no `bus=`; `Disk` is virtio-blk; `UsbDisk` is removable `usb-storage` on [`XHCI`].
 fn medium_args(args: &mut Args, index: usize, medium: &Media) -> Result<()> {
     let file = escape_option_value(&medium.path)?;
     let readonly = if medium.readonly { ",readonly=on" } else { "" };

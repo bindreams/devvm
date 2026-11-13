@@ -663,8 +663,7 @@ fn an_arm64_guest_with_a_vga_adapter_is_refused_under_every_accelerator() {
     }
 }
 
-/// The Linux guest's machine, written out from the command line main produced before USB media and video existed: the
-/// read-only virtio-blk seed and no video adapter.
+/// The Linux guest's machine: the read-only virtio-blk seed and no video adapter.
 #[skuld::test]
 fn the_linux_profile_args_are_unchanged() {
     let mut spec = fake_spec(
@@ -728,7 +727,7 @@ fn the_linux_profile_args_are_unchanged() {
     assert_eq!(args(&spec, &paths()), expected);
 }
 
-/// The install media of a Windows build: `ide-cd` with no `bus=`, the form Task S's boot used.
+/// The install media of a Windows build.
 #[skuld::test]
 fn an_install_cdrom_is_an_ide_cd_with_no_bus() {
     let mut spec = spec();

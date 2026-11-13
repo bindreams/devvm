@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
     Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
-    Patch, SshEndpoint, Storage, Video, check_blank_disk_size, check_overlay, make_overlay,
+    Patch, SshEndpoint, Storage, Video, check_blank_disk_size, check_machine_spec, check_overlay, make_overlay,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
@@ -211,6 +211,7 @@ impl Backend for FakeBackend {
         if self.launch_fails {
             return Err(Error::new(ErrorKind::Io, "the fake backend cannot launch"));
         }
+        check_machine_spec(spec)?;
         FakeBackend::backing_layer(&spec.disk)?;
         let state_dir = spec.serial_log.parent().expect("a serial log has a directory");
         fake_vm::forget_earlier_runs(state_dir).map_err(|e| {

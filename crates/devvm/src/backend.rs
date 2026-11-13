@@ -123,7 +123,7 @@ pub(crate) struct Patch {
 /// - `backing` is there: `NotFound`, naming it;
 /// - every patch is non-empty, has an offset and a length that are multiples of [`PATCH_ALIGNMENT`], and lies within
 ///   `backing`'s size: `Internal`, naming the patch and the rule;
-/// - `into` is not there: `AlreadyExists`, so an earlier overlay is never overwritten.
+/// - `into` is not there: `AlreadyExists`.
 pub(crate) fn check_overlay(backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
     if !backing.is_absolute() {
         return Err(Error::new(
@@ -186,10 +186,8 @@ pub(crate) fn check_overlay(backing: &Path, patches: &[Patch], into: &Path) -> R
 }
 
 /// The largest virtual size of a qcow2 disk: 2 PiB, the most `qemu-img create -f qcow2` makes with its default 64 KiB
-/// clusters. An L2 table maps 512 MiB and the L1 table holds at most `QCOW_MAX_L1_SIZE` / `L1E_SIZE` = 4 Mi tables
-/// (QEMU 11.1.2 `block/qcow2.h:59,104`). Past that `qcow2_co_create` (`block/qcow2.c:3918`) fails in
-/// `qcow2_co_truncate`, which calls `qcow2_grow_l1_table` (`block/qcow2.c:4563`; `-EFBIG` at `block/qcow2-cluster.c:120`).
-/// Every backend refuses a disk beyond it, as [`Storage::create_blank_disk`] says.
+/// clusters (an L2 table maps 512 MiB, and the L1 table holds at most 4 Mi tables). Past that, `qemu-img create` fails
+/// with EFBIG. Every backend refuses a disk beyond it, as [`Storage::create_blank_disk`] says.
 pub(crate) const QCOW2_MAX_SIZE: u64 = 1 << 51;
 
 /// The size of the disk `qemu-img create` makes of a request for `size` bytes: rounded up to 512 bytes. `None` when
@@ -210,6 +208,18 @@ pub(crate) fn check_blank_disk_size(size: u64) -> Result<()> {
     })
 }
 
+/// The contract of [`Backend::launch`] on the spec, for every backend to check before it starts anything: `NotSupported`
+/// for an arm64 machine with a VGA adapter, whose firmware and guests have no driver for one.
+pub(crate) fn check_machine_spec(spec: &MachineSpec) -> Result<()> {
+    if spec.arch == Arch::Arm64 && spec.profile.video == Video::Vga {
+        return Err(Error::new(
+            ErrorKind::NotSupported,
+            "an arm64 machine has no VGA adapter: its firmware and guests have no driver for one",
+        ));
+    }
+    Ok(())
+}
+
 /// The directory that holds `path`, which is `what`. Every path devvm gives the backend is absolute and in a directory, so
 /// a path without one is a bug in the caller, named here instead of resolved against the working directory.
 pub(crate) fn directory_of<'a>(path: &'a Path, what: &str) -> Result<&'a Path> {
@@ -223,17 +233,14 @@ pub(crate) fn directory_of<'a>(path: &'a Path, what: &str) -> Result<&'a Path> {
         })
 }
 
-/// Makes the overlay at `into`, for every backend ([`Storage::overlay_with_patches`]). Of several calls for one `into`
-/// exactly one makes it and none touches another's file. [`check_overlay`] looks at `into` first, but another call can
-/// make it between that look and this one, so the look decides nothing: `fill` is handed a new path in the directory of
-/// `into` and that directory, writes the overlay to the path (and any temporary of its own into the directory), and the
-/// overlay goes to `into` in one step that fails with `AlreadyExists` for anything there. Only the new path is ever
-/// deleted, on every failure of `fill` or of the publish.
+/// Makes the overlay at `into`, for every backend, under the contract of [`Storage::overlay_with_patches`]. [`check_overlay`]
+/// looks at `into` first, but another call can make it between that look and this one, so the look decides nothing:
+/// `fill` is handed a new path in the directory of `into` and that directory, writes the overlay to the path (and any
+/// temporary of its own into the directory), and the overlay goes to `into` in one step that fails with `AlreadyExists`
+/// for anything there. Only the new path is ever deleted, on every failure of `fill` or of the publish.
 ///
-/// The directory is a staging directory the caller owns: what a killed call left in it is the caller's to clean up.
-///
-/// The overlay file is private to the account, as a temporary file is (`0600` on Unix); `qemu-img` would make it `0644`
-/// under the usual umask. Devvm's host is Windows, where there is no such difference.
+/// The overlay is synced before it is published, and the directory after (Unix). The file is private to the account, as
+/// a temporary file is (`0600` on Unix).
 pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Result<()>) -> Result<()> {
     let directory = directory_of(into, "the overlay")?;
     let staging = tempfile::Builder::new()
@@ -250,7 +257,22 @@ pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Resul
         // handles are gone.
         .into_temp_path();
     let left = format!("the file {}", staging.display());
-    if let Err(e) = fill(&staging, directory) {
+    let filled = fill(&staging, directory).and_then(|()| {
+        // The handle `fill` used is closed, and the data must be on the disk before the name is: a crash must not leave
+        // an overlay that is there and empty. Windows flushes only a handle opened for writing.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&staging)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot flush the overlay {}", staging.display()),
+                    e,
+                )
+            })
+    });
+    if let Err(e) = filled {
         return Err(e.after_cleanup(&left, staging.close()));
     }
     staging.persist_noclobber(into).map_err(|failed| {
@@ -268,6 +290,11 @@ pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Resul
             )
         };
         refused.after_cleanup(&left, path.close())
+    })?;
+    // The overlay is in place, so a directory that cannot be flushed takes it out again: the call made nothing.
+    crate::host::current().sync_dir(directory).map_err(|e| {
+        let error = Error::io(ErrorKind::Io, format!("cannot flush {}", directory.display()), e);
+        error.after_cleanup(&format!("the overlay {}", into.display()), std::fs::remove_file(into))
     })
 }
 
@@ -483,7 +510,6 @@ pub(crate) enum MediaFormat {
 }
 
 impl MediaFormat {
-    /// QEMU's name for the format.
     pub(crate) fn name(self) -> &'static str {
         match self {
             MediaFormat::Raw => "raw",
@@ -495,7 +521,6 @@ impl MediaFormat {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MediaKind {
     Cdrom,
-    /// A virtio-blk disk.
     Disk,
     /// A removable USB mass-storage disk on the machine's one `qemu-xhci` controller.
     UsbDisk,

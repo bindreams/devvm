@@ -20,6 +20,16 @@ fn fake_storage_refuses_what_the_storage_contract_refuses(#[fixture(unicode_home
 }
 
 #[skuld::test]
+fn fake_storage_accepts_what_the_storage_contract_allows(#[fixture(unicode_home)] home: &Path) {
+    contract::storage_accepts_what_its_contract_allows(&FakeStorage::default(), home);
+}
+
+#[skuld::test]
+fn fake_launch_refuses_a_spec_the_machine_contract_refuses(#[fixture(unicode_home)] home: &Path) {
+    contract::a_spec_the_contract_refuses_is_refused_and_leaves_nothing(&FakeTarget::new(), home);
+}
+
+#[skuld::test]
 fn the_fake_makes_an_overlay_once_and_refuses_a_second_call_leaving_the_first_whole(
     #[fixture(unicode_home)] home: &Path,
 ) {

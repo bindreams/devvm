@@ -304,7 +304,7 @@ impl QemuStorage {
         // The handle is closed: `qemu-img` opens the file by name, which Windows lets a process do only once the
         // other handles are gone.
         let source = file.into_temp_path();
-        self.qemu_img(&[
+        let converted = self.qemu_img(&[
             "convert".as_ref(),
             "-n".as_ref(),
             "-f".as_ref(),
@@ -317,7 +317,12 @@ impl QemuStorage {
                 patch.bytes.len()
             )
             .as_ref(),
-        ])?;
-        Ok(())
+        ]);
+        let left = format!("the file {}", source.display());
+        let removed = source.close();
+        match converted {
+            Ok(_) => removed.map_err(|e| Error::io(ErrorKind::Io, format!("cannot delete {left}"), e)),
+            Err(e) => Err(e.after_cleanup(&left, removed)),
+        }
     }
 }
