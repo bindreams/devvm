@@ -7,7 +7,7 @@ use crate::access::ssh_config::SshConfigEntry;
 use crate::access::{SshSession, SshTarget};
 use crate::backend::{Endpoint, Machine, MachineRecord, MachineSpec};
 use crate::contain::Lifetime;
-use crate::engine::keys::{ensure_keys, keys_dir, target_for};
+use crate::engine::keys::{ensure_keys, keys_dir, read_record, target_for};
 use crate::engine::ready::connect_ready;
 use crate::engine::{Engine, LaunchStep};
 use crate::guest::{GuestOs, SeedKeys, SeedSpec};
@@ -65,8 +65,8 @@ fn launch_machine(
     op: &OpExclusive,
     lifetime: Lifetime,
 ) -> Result<Option<Launched>> {
+    let record = read_record(engine, dir, op)?;
     let backend = engine.backend()?;
-    let record = dir.record()?;
     if let Some(machine) = &record.machine {
         if backend.find(machine)?.is_some() {
             return Ok(None);

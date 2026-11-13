@@ -8,6 +8,7 @@ use crate::backend::{Endpoint, Machine, MachineRecord};
 use crate::engine::Engine;
 use crate::host::Host;
 use crate::instance::dir::{InstanceDir, OpExclusive, OpHeld};
+use crate::instance::expiry::warn_if_expired;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
 use crate::{Error, ErrorKind, Result};
@@ -79,16 +80,33 @@ pub(crate) struct Running {
     pub target: SshTarget,
 }
 
+/// The record of `dir`, read under the op lock. Warns first if the guest has expired: every operation that reaches the
+/// guest reads its record here, once.
+pub(crate) fn read_record(engine: &Engine, dir: &InstanceDir, _op: &impl OpHeld) -> Result<InstanceRecord> {
+    let record = dir.record()?;
+    warn_if_expired(engine, dir.name(), record.expires);
+    Ok(record)
+}
+
 /// The machine `dir` has now, built from its record, the backend and the key files: the op lock keeps the starter from
 /// rewriting any of them. A recorded machine that the backend does not find is not running: the record is stale.
-pub(crate) fn read_target(engine: &Engine, dir: &InstanceDir, _op: &impl OpHeld) -> Result<Running> {
-    let record = dir.record()?;
+pub(crate) fn read_target(engine: &Engine, dir: &InstanceDir, op: &impl OpHeld) -> Result<Running> {
+    running_of(engine, dir, &read_record(engine, dir, op)?, op)
+}
+
+/// [`read_target`] from a `record` already read under `op`.
+pub(crate) fn running_of(
+    engine: &Engine,
+    dir: &InstanceDir,
+    record: &InstanceRecord,
+    _op: &impl OpHeld,
+) -> Result<Running> {
     // A stopped instance may be one that never started, and has no keys.
     let Some(machine) = &record.machine else {
-        return Err(not_running(&record));
+        return Err(not_running(record));
     };
     let Some(found) = engine.backend()?.find(machine)? else {
-        return Err(not_running(&record));
+        return Err(not_running(record));
     };
     let target = target_for(&record.name, machine, &InstanceKeys::read(&keys_dir(dir))?)?;
     Ok(Running {

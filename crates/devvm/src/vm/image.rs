@@ -9,6 +9,7 @@ use crate::access::sftp::Sftp;
 use crate::backend::Machine;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
+use crate::engine::keys::read_record;
 use crate::exit::{ExitStatus, Output};
 use crate::guest::GuestOs;
 use crate::host::Unavailable;
@@ -312,11 +313,12 @@ impl Vm {
         let instance = self.instance();
         let dir = instance.dir();
         let op = dir.op_shared()?;
-        let guest = ops::guest_of(&instance.engine, dir)?;
+        let record = read_record(&instance.engine, dir, &op)?;
+        let guest = instance.engine.guests().os(record.guest)?;
         let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
         let session = match slot.as_ref().filter(|session| session.is_alive()) {
             Some(session) => session.clone(),
-            None => slot.insert(ops::reach(&instance.engine, dir, &op)?.1).clone(),
+            None => slot.insert(ops::reach(&instance.engine, dir, &record, &op)?.1).clone(),
         };
         Ok((guest, session, op))
     }

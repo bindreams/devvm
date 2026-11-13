@@ -17,6 +17,7 @@ use crate::exit::{Progress, StderrProgress};
 use crate::guest::Guests;
 use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
+use crate::instance::expiry::warn_if_expired;
 use crate::instance::info::{InstanceInfo, InstanceState};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{MarkerRead, Owner, RecordRead};
@@ -291,6 +292,7 @@ impl Engine {
                     continue;
                 }
             };
+            warn_if_expired(self, dir.name(), record.expires);
             infos.push(InstanceInfo {
                 name: record.name.as_str().to_owned(),
                 state: self.state_of(&record.machine, dir.name().as_str()),
