@@ -20,7 +20,7 @@ use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::{DISK, QemuStorage, VARS};
 use crate::backend::{
     Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Firmware, Machine, MachineRecord, MachineSpec,
-    NetModel, Storage,
+    Media, MediaKind, NetModel, Storage, Video,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::engine::Engine;
@@ -32,6 +32,7 @@ use crate::guest::{GuestOs, SeedKeys, SeedSpec};
 use crate::host::{self, HoldOutcome, Host, ProcessWatch};
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceId;
+use crate::media::{SeedFile, write_cidata_image};
 use crate::recipe::Recipe;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
@@ -124,6 +125,7 @@ fn spec_in(dir: &Path, id: InstanceId, lifetime: Lifetime) -> MachineSpec {
         profile: DeviceProfile {
             disk: DiskBus::Virtio,
             net: NetModel::Virtio,
+            video: Video::None,
             no_reboot: false,
         },
         firmware: None,
@@ -559,6 +561,14 @@ fn vm_qemu_a_frozen_machine_has_not_run_and_kill_leaves_nothing(
 }
 
 #[skuld::test]
+fn vm_qemu_a_spec_the_contract_refuses_is_refused_and_leaves_nothing(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    contract::a_spec_the_contract_refuses_is_refused_and_leaves_nothing(&QemuTarget::new(install), home);
+}
+
+#[skuld::test]
 fn vm_qemu_a_released_machine_outlives_its_launcher_and_attach_finds_it(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(unicode_home)] home: &Path,
@@ -599,6 +609,47 @@ fn vm_qemu_concurrent_launches_get_distinct_processes_and_endpoints(
 }
 
 // QEMU only ===========================================================================================================
+
+/// A FAT image of one file at `home/name`, as the medium kind `kind`.
+fn media_of(home: &Path, name: &str, kind: MediaKind, readonly: bool) -> Media {
+    let files = [SeedFile {
+        name: "a".to_owned(),
+        bytes: b"1".to_vec(),
+    }];
+    write_cidata_image(host::current(), &files, kind, readonly, 0, &home.join(name)).unwrap()
+}
+
+#[skuld::test]
+fn vm_qemu_a_usb_disk_is_attached_read_only_and_removable(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let target = QemuTarget::new(install);
+    let (spec, _parent) = target.prepared(home, 0, |spec| {
+        spec.media = vec![
+            media_of(home, "answer.img", MediaKind::UsbDisk, false),
+            media_of(home, "seed.img", MediaKind::UsbDisk, true),
+        ];
+    });
+    let mut machine = target.backend().launch(&spec).unwrap();
+    machine.resume().unwrap();
+
+    let blocks = session_of(&machine.record()).query_block().unwrap();
+
+    // The media are the drives `m0` (writable) and `m1` (read-only), in the order they were given.
+    let block = |drive: &str| {
+        blocks
+            .iter()
+            .find(|block| block.device == drive)
+            .unwrap_or_else(|| panic!("no drive {drive} in {blocks:?}"))
+    };
+    for (drive, read_only) in [("m0", false), ("m1", true)] {
+        assert!(block(drive).removable, "{drive} is not removable: {blocks:?}");
+        let inserted = block(drive).inserted.as_ref().expect("the medium is inserted");
+        assert_eq!(inserted.ro, read_only, "{drive}: {blocks:?}");
+    }
+    machine.kill().unwrap();
+}
 
 #[skuld::test]
 fn vm_qemu_spawned_through_the_backend_has_no_console_and_no_window(

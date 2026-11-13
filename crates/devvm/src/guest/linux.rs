@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::access::SshSession;
 use crate::access::paths::expand_guest_path;
-use crate::backend::{DeviceProfile, DiskBus, NetModel};
+use crate::backend::{DeviceProfile, DiskBus, MediaKind, NetModel, Video};
 use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedMedia, SeedSpec, missing};
 use crate::host::{Host, names};
 use crate::media::write_cidata_image;
@@ -76,7 +76,14 @@ exit $status
 
 impl GuestOs for LinuxGuest {
     fn instance_seed(&self, host: &dyn Host, spec: &SeedSpec) -> Result<SeedMedia> {
-        let media = write_cidata_image(host, &seed::seed_files(spec)?, &spec.dir.join(SEED_IMAGE))?;
+        let media = write_cidata_image(
+            host,
+            &seed::seed_files(spec)?,
+            MediaKind::Disk,
+            true,
+            0,
+            &spec.dir.join(SEED_IMAGE),
+        )?;
         Ok(SeedMedia { media })
     }
 
@@ -121,6 +128,7 @@ impl GuestOs for LinuxGuest {
         DeviceProfile {
             disk: DiskBus::Virtio,
             net: NetModel::Virtio,
+            video: Video::None,
             no_reboot: false,
         }
     }

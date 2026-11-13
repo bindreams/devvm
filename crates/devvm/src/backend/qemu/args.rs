@@ -5,8 +5,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use super::directory_of;
-use crate::backend::{DiskBus, Endpoint, MachineSpec, Media, MediaKind, NetModel};
+use crate::backend::{
+    DiskBus, Endpoint, MachineSpec, Media, MediaKind, NetModel, Video, check_machine_spec, directory_of,
+};
 use crate::host::Accel;
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -104,6 +105,7 @@ pub(crate) fn escape_option_value(path: &Path) -> Result<String> {
 
 /// The argument list for `spec` (without the executable).
 pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<OsString>> {
+    check_machine_spec(spec)?;
     let mut args = Args(Vec::new());
     let machine = match spec.arch {
         Arch::Amd64 => "q35",
@@ -167,6 +169,9 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
     );
     let system_disk = system_disk_device(spec.profile.disk, disk_boot_index, &mut args);
     args.pair("-device", system_disk);
+    if media.iter().any(|medium| medium.kind == MediaKind::UsbDisk) {
+        args.pair("-device", XHCI);
+    }
     for (index, medium) in media.iter().enumerate() {
         medium_args(&mut args, index, medium)?;
     }
@@ -187,6 +192,10 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
             NetModel::E1000 => "e1000,netdev=n0",
         },
     );
+    match spec.profile.video {
+        Video::None => {}
+        Video::Vga => args.pair("-device", "VGA"),
+    }
     Ok(args.0)
 }
 
@@ -224,28 +233,33 @@ fn system_disk_device(bus: DiskBus, boot_index: u32, args: &mut Args) -> String 
     }
 }
 
+/// The one USB controller every [`MediaKind::UsbDisk`] sits on.
+const XHCI: &str = "qemu-xhci,id=xhci";
+
+/// `Cdrom` is `ide-cd` with no `bus=`; `Disk` is virtio-blk; `UsbDisk` is removable `usb-storage` on [`XHCI`].
 fn medium_args(args: &mut Args, index: usize, medium: &Media) -> Result<()> {
     let file = escape_option_value(&medium.path)?;
     let readonly = if medium.readonly { ",readonly=on" } else { "" };
     let boot = medium
         .boot_index
         .map_or_else(String::new, |boot_index| format!(",bootindex={boot_index}"));
-    match medium.kind {
-        MediaKind::Cdrom => {
-            args.pair(
-                "-drive",
-                format!("if=none,id=m{index},file={file},format=raw,media=cdrom{readonly}"),
-            );
-            args.pair("-device", format!("ide-cd,drive=m{index}{boot}"));
-        }
-        MediaKind::Disk => {
-            args.pair(
-                "-drive",
-                format!("if=none,id=m{index},file={file},format=raw{readonly}"),
-            );
-            args.pair("-device", format!("virtio-blk-pci,drive=m{index}{boot}"));
-        }
-    }
+    let format = medium.format.name();
+    let (drive, device) = match medium.kind {
+        MediaKind::Cdrom => (
+            format!("if=none,id=m{index},file={file},format={format},media=cdrom{readonly}"),
+            format!("ide-cd,drive=m{index}{boot}"),
+        ),
+        MediaKind::Disk => (
+            format!("if=none,id=m{index},file={file},format={format}{readonly}"),
+            format!("virtio-blk-pci,drive=m{index}{boot}"),
+        ),
+        MediaKind::UsbDisk => (
+            format!("if=none,id=m{index},file={file},format={format}{readonly}"),
+            format!("usb-storage,drive=m{index},removable=on,bus=xhci.0{boot}"),
+        ),
+    };
+    args.pair("-drive", drive);
+    args.pair("-device", device);
     Ok(())
 }
 
