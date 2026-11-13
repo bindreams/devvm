@@ -5,7 +5,7 @@ use std::path::Path;
 
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 
-use crate::backend::{Media, MediaKind};
+use crate::backend::{Media, MediaFormat, MediaKind};
 use crate::host::Host;
 use crate::{Error, ErrorKind, Result};
 
@@ -74,6 +74,7 @@ pub(crate) fn write_cidata_image(
         kind,
         boot_index: None,
         readonly,
+        format: MediaFormat::Raw,
     })
 }
 

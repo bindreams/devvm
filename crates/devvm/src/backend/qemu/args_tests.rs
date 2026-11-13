@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use super::{LaunchPaths, build_args, escape_option_value, guest_port};
 use crate::backend::fake::fake_spec;
-use crate::backend::{DeviceProfile, DiskBus, Endpoint, Firmware, MachineSpec, Media, MediaKind, NetModel, Video};
+use crate::backend::{
+    DeviceProfile, DiskBus, Endpoint, Firmware, MachineSpec, Media, MediaFormat, MediaKind, NetModel, Video,
+};
 use crate::contain::Lifetime;
 use crate::host::Accel;
 use crate::test_support::fixtures::UNICODE_DIR;
@@ -23,6 +25,7 @@ fn spec() -> MachineSpec {
         kind: MediaKind::Cdrom,
         boot_index: None,
         readonly: true,
+        format: MediaFormat::Raw,
     }];
     spec
 }
@@ -191,18 +194,21 @@ fn media_follow_boot_index_and_the_seed_is_read_only() {
             kind: MediaKind::Disk,
             boot_index: None,
             readonly: false,
+            format: MediaFormat::Raw,
         },
         Media {
             path: PathBuf::from("isos/win.iso"),
             kind: MediaKind::Cdrom,
             boot_index: Some(1),
             readonly: true,
+            format: MediaFormat::Raw,
         },
         Media {
             path: PathBuf::from("inst/seed.img"),
             kind: MediaKind::Disk,
             boot_index: Some(2),
             readonly: true,
+            format: MediaFormat::Raw,
         },
     ];
 
@@ -241,12 +247,14 @@ fn a_disk_kind_medium_is_a_readonly_virtio_blk_and_a_cdrom_is_ide_cd() {
             kind: MediaKind::Disk,
             boot_index: None,
             readonly: true,
+            format: MediaFormat::Raw,
         },
         Media {
             path: PathBuf::from("seed.iso"),
             kind: MediaKind::Cdrom,
             boot_index: None,
             readonly: true,
+            format: MediaFormat::Raw,
         },
     ];
     let args = args(&spec, &paths());
@@ -328,12 +336,14 @@ fn a_comma_in_a_firmware_or_media_path_is_doubled() {
             kind: MediaKind::Cdrom,
             boot_index: None,
             readonly: true,
+            format: MediaFormat::Raw,
         },
         Media {
             path: PathBuf::from("da,ta/data.img"),
             kind: MediaKind::Disk,
             boot_index: None,
             readonly: false,
+            format: MediaFormat::Raw,
         },
     ];
     let mut paths = paths();
@@ -353,10 +363,45 @@ fn a_comma_in_a_firmware_or_media_path_is_doubled() {
 }
 
 #[skuld::test]
-fn a_cdrom_is_opened_as_raw_so_its_content_cannot_pick_the_format() {
+fn a_cdrom_is_opened_with_the_format_named_so_its_content_cannot_pick_it() {
     let args = args(&spec(), &paths());
     let drive = args.iter().find(|arg| arg.contains("media=cdrom")).unwrap();
     assert!(drive.contains(",format=raw,"), "{drive}");
+}
+
+#[skuld::test]
+fn a_qcow2_cdrom_is_opened_as_qcow2() {
+    let mut spec = spec();
+    spec.media[0].format = MediaFormat::Qcow2;
+    let args = args(&spec, &paths());
+    let drive = args.iter().find(|arg| arg.contains("media=cdrom")).unwrap();
+    assert_eq!(
+        *drive,
+        "if=none,id=m0,file=inst/seed/seed.iso,format=qcow2,media=cdrom,readonly=on"
+    );
+}
+
+#[skuld::test]
+fn every_medium_kind_names_its_format() {
+    let mut spec = spec();
+    spec.media = [MediaKind::Cdrom, MediaKind::Disk, MediaKind::UsbDisk]
+        .into_iter()
+        .enumerate()
+        .map(|(i, kind)| Media {
+            path: PathBuf::from(format!("m{i}.img")),
+            kind,
+            boot_index: None,
+            readonly: true,
+            format: MediaFormat::Qcow2,
+        })
+        .collect();
+    let args = args(&spec, &paths());
+    let drives: Vec<&str> = values_of(&args, "-drive")
+        .into_iter()
+        .filter(|d| d.starts_with("if=none,id=m"))
+        .collect();
+    assert_eq!(drives.len(), 3);
+    assert!(drives.iter().all(|drive| drive.contains(",format=qcow2")), "{drives:?}");
 }
 
 #[skuld::test]
@@ -368,6 +413,7 @@ fn the_system_disk_boots_after_the_highest_boot_index() {
         kind: MediaKind::Disk,
         boot_index: Some(i32::MAX as u32 - 1),
         readonly: true,
+        format: MediaFormat::Raw,
     }];
     let args = args(&spec, &paths());
     assert!(
@@ -385,6 +431,7 @@ fn a_boot_index_that_leaves_no_room_for_the_system_disk_is_refused_naming_the_me
             kind: MediaKind::Cdrom,
             boot_index: Some(index),
             readonly: true,
+            format: MediaFormat::Raw,
         }];
 
         let error = build_args(&spec, &paths()).unwrap_err();
@@ -502,6 +549,7 @@ fn usb(path: &str, boot_index: Option<u32>, readonly: bool) -> Media {
         kind: MediaKind::UsbDisk,
         boot_index,
         readonly,
+        format: MediaFormat::Raw,
     }
 }
 
@@ -612,6 +660,7 @@ fn the_linux_profile_args_are_unchanged() {
         kind: MediaKind::Disk,
         boot_index: None,
         readonly: true,
+        format: MediaFormat::Raw,
     }];
 
     let expected = [
@@ -668,6 +717,7 @@ fn an_install_cdrom_is_an_ide_cd_with_no_bus() {
         kind: MediaKind::Cdrom,
         boot_index: Some(1),
         readonly: true,
+        format: MediaFormat::Raw,
     }];
     let args = args(&spec, &paths());
     assert!(

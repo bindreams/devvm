@@ -242,17 +242,18 @@ fn medium_args(args: &mut Args, index: usize, medium: &Media) -> Result<()> {
     let boot = medium
         .boot_index
         .map_or_else(String::new, |boot_index| format!(",bootindex={boot_index}"));
+    let format = medium.format.name();
     let (drive, device) = match medium.kind {
         MediaKind::Cdrom => (
-            format!("if=none,id=m{index},file={file},format=raw,media=cdrom{readonly}"),
+            format!("if=none,id=m{index},file={file},format={format},media=cdrom{readonly}"),
             format!("ide-cd,drive=m{index}{boot}"),
         ),
         MediaKind::Disk => (
-            format!("if=none,id=m{index},file={file},format=raw{readonly}"),
+            format!("if=none,id=m{index},file={file},format={format}{readonly}"),
             format!("virtio-blk-pci,drive=m{index}{boot}"),
         ),
         MediaKind::UsbDisk => (
-            format!("if=none,id=m{index},file={file},format=raw{readonly}"),
+            format!("if=none,id=m{index},file={file},format={format}{readonly}"),
             format!("usb-storage,drive=m{index},removable=on,bus=xhci.0{boot}"),
         ),
     };

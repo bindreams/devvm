@@ -311,6 +311,24 @@ pub(crate) struct Media {
     pub kind: MediaKind,
     pub boot_index: Option<u32>,
     pub readonly: bool,
+    /// How QEMU reads `path`. Always named on the command line, never probed from the file's content.
+    pub format: MediaFormat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MediaFormat {
+    Raw,
+    Qcow2,
+}
+
+impl MediaFormat {
+    /// QEMU's name for the format.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            MediaFormat::Raw => "raw",
+            MediaFormat::Qcow2 => "qcow2",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
