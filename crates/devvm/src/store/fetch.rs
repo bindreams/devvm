@@ -480,10 +480,17 @@ fn remove_if_present(path: &Path) -> Result<()> {
 
 /// A hasher primed with the bytes already in `path`.
 fn hash_file_state(path: &Path) -> Result<Sha2> {
+    let fail = |e| Error::io(ErrorKind::Io, format!("cannot read {}", path.display()), e);
+    hash_reader(File::open(path).map_err(fail)?, path, &mut |_| {})
+}
+
+/// The SHA-256 state after all the bytes `file` holds from where it is; `path` names it in errors, and `done` is told
+/// how many bytes were hashed after each read.
+pub(crate) fn hash_reader(mut file: impl Read, path: &Path, done: &mut dyn FnMut(u64)) -> Result<Sha2> {
     let mut hasher = Sha2::new();
     let fail = |e| Error::io(ErrorKind::Io, format!("cannot read {}", path.display()), e);
-    let mut file = File::open(path).map_err(fail)?;
     let mut buffer = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
     loop {
         let read = match file.read(&mut buffer) {
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -493,6 +500,8 @@ fn hash_file_state(path: &Path) -> Result<Sha2> {
             return Ok(hasher);
         }
         hasher.update(&buffer[..read]);
+        total += read as u64;
+        done(total);
     }
 }
 

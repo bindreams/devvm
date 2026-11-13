@@ -111,6 +111,24 @@ fn oci_digest_case_does_not_change_the_key() {
 }
 
 #[skuld::test]
+fn the_image_selected_changes_the_layer_key() {
+    let mut chain = Chain::base();
+    let mut key = |index: u32, name: &str| {
+        chain.content = RootContent::Iso {
+            sha256: sha(1),
+            image_index: index,
+            image_name: name.into(),
+        };
+        chain.root()
+    };
+    let (pro, home) = (key(1, "Windows 11 Pro"), key(2, "Windows 11 Home"));
+    assert_ne!(pro, home);
+    assert_ne!(key(1, "Windows 11 Pro"), key(2, "Windows 11 Pro"), "the index");
+    assert_ne!(key(1, "Windows 11 Pro"), key(1, "Windows 11 Home"), "the name");
+    assert_eq!(key(1, "Windows 11 Pro"), pro);
+}
+
+#[skuld::test]
 fn every_key_input_changes_the_key() {
     let base = Chain::base();
     let mut variants: Vec<(&str, Chain)> = Vec::new();
@@ -125,6 +143,34 @@ fn every_key_input_changes_the_key() {
     });
     vary("oci digest", &|c| {
         c.content = RootContent::OciDigest("sha256:other".into())
+    });
+    vary("iso vs equal sha256", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(1),
+            image_index: 1,
+            image_name: "Windows 11 Pro".into(),
+        }
+    });
+    vary("iso image index", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(1),
+            image_index: 2,
+            image_name: "Windows 11 Pro".into(),
+        }
+    });
+    vary("iso image name", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(1),
+            image_index: 1,
+            image_name: "Windows 11 Home".into(),
+        }
+    });
+    vary("iso content", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(2),
+            image_index: 1,
+            image_name: "Windows 11 Pro".into(),
+        }
     });
     vary("base definition", &|c| c.base_definition = [8; 32]);
     vary("arch", &|c| c.arch = Arch::Arm64);

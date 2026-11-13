@@ -8,11 +8,11 @@ use std::sync::Arc;
 use crate::access::keys::InstanceKeys;
 use crate::backend::Backend;
 use crate::backend::fake::FakeBackend;
-use crate::engine::build::{Lines, extract_command, guest_destination, root_content};
+use crate::engine::build::{Lines, extract_command, guest_destination, root_of};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
-use crate::guest::fake::{FakeBaseBuilder, FakeGuests, ServedGuests};
-use crate::guest::{BaseBuilder, GuestOs, Guests};
+use crate::guest::fake::{FakeGuests, ServedGuests};
+use crate::guest::{GuestOs, Guests};
 use crate::host::symlink_metadata_if_present;
 use crate::recipe::Recipe;
 use crate::recipe::hash::{KeyContext, LayerKey, chain_keys};
@@ -84,14 +84,21 @@ pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
 /// The keys of the layers `recipe` builds, root first, when it has no `copy` step.
 pub(super) fn keys_of(recipe: &Recipe) -> Vec<LayerKey> {
     let flat = recipe.flatten().unwrap();
-    let (root, _) = root_content(&flat.root, Arch::host()).unwrap();
+    let (root, _) = root_of(&flat.root, Arch::host(), &|_, _| unreachable!("no ISO here")).unwrap();
     let ctx = KeyContext {
         arch: Arch::host(),
         disk: flat.resources.disk,
         guest_semantics_version: FakeGuests.os(GuestKind::Linux).unwrap().semantics_version(),
     };
     let manifests = vec![None; flat.steps.len()];
-    chain_keys(&flat, &ctx, &root, &FakeBaseBuilder.definition_hash(), &manifests).unwrap()
+    chain_keys(
+        &flat,
+        &ctx,
+        &root.content(),
+        &FakeGuests.builder(GuestKind::Linux).unwrap().definition_hash(),
+        &manifests,
+    )
+    .unwrap()
 }
 
 /// The commands the server was given that a recipe step ran, in order: the guest's `bash -c` of a `run` step.
@@ -162,6 +169,63 @@ fn a_guest_that_cannot_start_names_the_step_and_commits_nothing(#[fixture(unicod
 }
 
 // Pure parts ==========================================================================================================
+
+#[skuld::test]
+fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home)] home: &Path) {
+    use crate::iso::{IsoMemo, key_iso};
+    use crate::recipe::Source;
+    use crate::recipe::hash::root_key;
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let progress = MemoryProgress::default();
+    let fixture = crate::test_support::fixtures::iso_fixture;
+    let (one, two, three) = (home.join("one.iso"), home.join("two.iso"), home.join("three.iso"));
+    std::fs::copy(fixture("single-image.iso"), &one).unwrap();
+    std::fs::copy(fixture("single-image.iso"), &two).unwrap();
+    std::fs::copy(fixture("three-images.iso"), &three).unwrap();
+    let key = |path: &Path, edition: Option<&str>| {
+        let source = Source::Iso {
+            path: path.to_owned(),
+            edition: edition.map(Into::into),
+        };
+        let (root, _) = root_of(&source, Arch::host(), &|iso, edition| {
+            key_iso(&TestHost, &memo, iso, edition, &progress)
+        })
+        .unwrap();
+        let ctx = KeyContext {
+            arch: Arch::host(),
+            disk: None,
+            guest_semantics_version: 1,
+        };
+        root_key(&ctx, &root.content(), &[0; 32])
+    };
+    let (only, first, second) = (
+        "Windows 11 Enterprise Evaluation",
+        "Windows 11 Enterprise LTSC 2024",
+        "Windows 11 IoT Enterprise LTSC 2024",
+    );
+    assert_eq!(key(&one, None), key(&two, None), "two paths, equal bytes, one key");
+    assert_ne!(key(&one, None), key(&three, Some(first)));
+    assert_ne!(
+        key(&three, Some(first)),
+        key(&three, Some(second)),
+        "two images of one ISO"
+    );
+    assert_eq!(
+        key(&one, None),
+        key(&one, Some(only)),
+        "an omitted edition and the name of the only image are one install"
+    );
+}
+
+#[skuld::test]
+fn a_build_with_no_backend_fails_before_the_iso_is_read(#[fixture(unicode_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let engine = engine_with(dirs.clone(), &TestHost, None, Arc::new(FakeGuests), memory());
+    let recipe = Recipe::parse("from: { iso: missing.iso }\nsteps: []\n", &home.join("r.devvm.yaml")).unwrap();
+    let error = engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+    assert!(!dirs.iso_memo().exists());
+}
 
 fn linux() -> Arc<dyn GuestOs> {
     FakeGuests.os(GuestKind::Linux).unwrap()

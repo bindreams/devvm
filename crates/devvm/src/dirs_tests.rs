@@ -89,6 +89,7 @@ fn under_places_all_four_below_the_root_and_names_subdirectories(#[fixture(unico
     assert_eq!(dirs.layers(), dirs.data.join("layers"));
     assert_eq!(dirs.downloads(), dirs.cache.join("downloads"));
     assert_eq!(dirs.quarantine(), dirs.data.join("quarantine"));
+    assert_eq!(dirs.iso_memo(), dirs.cache.join("iso-memo"));
     let distinct: std::collections::HashSet<PathBuf> = [&dirs.config, &dirs.data, &dirs.cache, &dirs.state]
         .into_iter()
         .cloned()

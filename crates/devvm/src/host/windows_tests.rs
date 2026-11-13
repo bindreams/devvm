@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::fs::OpenOptions;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
@@ -409,4 +410,42 @@ fn remove_tree_deletes_a_junction_at_the_root_and_leaves_its_target(#[fixture(un
 
     assert!(std::fs::symlink_metadata(&link).is_err());
     assert!(target.join("kept").is_file());
+}
+
+#[skuld::test]
+fn a_file_held_for_reading_cannot_be_written_deleted_or_renamed_onto_or_away(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.iso");
+    std::fs::write(&path, b"windows").unwrap();
+    let other = home.join("b.iso");
+    std::fs::write(&other, b"somewhere else").unwrap();
+    let held = WindowsHost.open_held_read(&path).unwrap();
+
+    assert!(OpenOptions::new().write(true).open(&path).is_err(), "written in place");
+    assert!(std::fs::write(&path, b"patched").is_err(), "truncated in place");
+    assert!(std::fs::remove_file(&path).is_err(), "deleted");
+    assert!(std::fs::rename(&other, &path).is_err(), "replaced by a rename onto it");
+    assert!(std::fs::rename(&path, home.join("moved.iso")).is_err(), "renamed away");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"windows",
+        "still the file that was held"
+    );
+
+    drop(held);
+    std::fs::rename(&other, &path).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"somewhere else",
+        "nothing holds it any more"
+    );
+}
+
+#[skuld::test]
+fn a_file_open_for_writing_cannot_be_held_and_the_error_says_why(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a.iso");
+    std::fs::write(&path, b"windows").unwrap();
+    let _writer = OpenOptions::new().write(true).open(&path).unwrap();
+    let error = WindowsHost.open_held_read(&path).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::ResourceBusy, "{error}");
+    assert!(error.to_string().contains("open for writing"), "{error}");
 }

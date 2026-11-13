@@ -12,8 +12,9 @@ use crate::backend::{Check, Detail};
 use crate::copy::Git;
 use crate::exit::Progress;
 use crate::host::Host;
+use crate::iso::{IsoMemo, Known, QuarantineOutcome};
 use crate::store::fetch::Transport;
-use crate::{Arch, Dirs, Result, Unavailable};
+use crate::{Arch, Dirs, ErrorKind, Result, Sha256, Unavailable};
 
 #[cfg(test)]
 #[path = "checks_tests.rs"]
@@ -36,6 +37,7 @@ impl Engine {
         let mut checks = host_checks(self.host, &self.dirs);
         checks.push(ssh_check(self.host));
         checks.push(git_check(self.host, self.progress.as_ref()));
+        checks.extend(iso_checks(&IsoMemo::new(&self.dirs), self.host, self.progress.as_ref()));
         checks.extend(self.backend_checks(Detail::Full));
         checks
     }
@@ -94,6 +96,65 @@ fn space_check(host: &dyn Host, what: &str, dir: &Path) -> Check {
         outcome: match host.free_space(dir) {
             Ok(bytes) => Ok(format!("{} free in {}", bytesize::ByteSize(bytes), dir.display())),
             Err(e) => Err(format!("cannot tell the free space in {}: {e}", dir.display())),
+        },
+    }
+}
+
+/// One line per Windows ISO a build has keyed: the ISO is hashed again, and the line fails when it is no longer the one
+/// the memo hashed. An ISO that is not there is information: it may have been moved, which a rebuild does not mind. A
+/// memo that cannot be read is moved to quarantine, and its line says why.
+fn iso_checks(memo: &IsoMemo, host: &dyn Host, progress: &dyn Progress) -> Vec<Check> {
+    let known = match memo.known() {
+        Ok(known) => known,
+        Err(e) => {
+            return vec![Check {
+                name: "iso".to_owned(),
+                outcome: Err(e.message().to_owned()),
+            }];
+        }
+    };
+    known
+        .into_iter()
+        .filter_map(|known| iso_check(memo, host, known, progress))
+        .collect()
+}
+
+/// The line for `known`; none for a memo file that another process has already moved away.
+fn iso_check(memo: &IsoMemo, host: &dyn Host, known: Known, progress: &dyn Progress) -> Option<Check> {
+    match known {
+        Known::Iso { path, sha256 } => Some(iso_line(memo, host, &path, sha256, progress)),
+        Known::Unreadable { file, why } => {
+            let name = format!("iso memo {}", file.display());
+            match memo.quarantine_unreadable(&file, progress) {
+                Ok(QuarantineOutcome::Moved(target)) => Some(Check {
+                    name,
+                    outcome: Ok(format!("{why}; moved to quarantine: {}", target.display())),
+                }),
+                // Another process wrote a good memo there since the listing.
+                Ok(QuarantineOutcome::Valid { path, sha256 }) => Some(iso_line(memo, host, &path, sha256, progress)),
+                Ok(QuarantineOutcome::Gone) => None,
+                Err(e) => Some(Check {
+                    name,
+                    outcome: Err(format!("{why}; {}", e.message())),
+                }),
+            }
+        }
+    }
+}
+
+/// The line of the ISO at `path` that the memo hashed as `sha256`.
+fn iso_line(memo: &IsoMemo, host: &dyn Host, path: &Path, sha256: Sha256, progress: &dyn Progress) -> Check {
+    Check {
+        name: format!("iso {}", path.display()),
+        outcome: match memo.rehash(host, path, progress) {
+            Ok(now) if now == sha256 => Ok(now.to_string()),
+            Ok(now) => Err(format!(
+                "it changed since it was keyed (sha256 {sha256} then, {now} now); builds that name it need a new key"
+            )),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                Ok("not found; a build that names it where it is now uses it from there".to_owned())
+            }
+            Err(e) => Err(e.message().to_owned()),
         },
     }
 }

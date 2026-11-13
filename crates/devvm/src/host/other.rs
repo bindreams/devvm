@@ -7,7 +7,7 @@ use std::path::Path;
 use super::unsupported::{FileModes, claim_then_rename};
 use super::{Entry, FileId};
 
-pub(super) struct OtherHost;
+pub(crate) struct OtherHost;
 
 impl FileModes for OtherHost {
     fn private_options(&self) -> OpenOptions {

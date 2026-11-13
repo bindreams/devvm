@@ -15,7 +15,7 @@ use crate::test_support::helper;
 use crate::test_support::sshd::{BIG_SIZE, big_file_digest_from, expected_big_digest};
 
 /// The SHA-256 of the file at `path`, read in pieces.
-fn sha256_of(path: &Path) -> crate::Sha256 {
+pub(crate) fn sha256_of(path: &Path) -> crate::Sha256 {
     let mut file = std::fs::File::open(path).expect("the source file");
     let mut hasher = Sha256::new();
     let mut piece = vec![0u8; 1 << 20];
