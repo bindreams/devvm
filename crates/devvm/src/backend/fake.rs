@@ -82,7 +82,8 @@ pub(crate) struct FakeBackend {
 /// its media, as a guest does, and may leave the machine running.
 pub(crate) type GuestScript = Arc<dyn Fn(usize, &MachineSpec, &PowerOff) + Send + Sync>;
 
-/// What a fake machine says of its VM process's exit: the fake VM prints nothing, so this stands in for QEMU's output.
+/// What a fake machine says of its VM process's failing exit: the fake VM prints nothing, so this stands in for QEMU's
+/// output.
 pub(crate) const EXIT_OUTPUT: &str = "the fake VM's own account of its exit";
 
 /// The power button of a fake machine's guest.
@@ -460,7 +461,6 @@ impl Machine for FakeMachine {
         }
         Ok(self.vm.try_wait()?.map(|status| MachineExit {
             status,
-            output: EXIT_OUTPUT.to_owned(),
         }))
     }
 
@@ -472,6 +472,7 @@ impl Machine for FakeMachine {
                 "a fake machine that has not run cannot be reset",
             ));
         }
+            output: if status.success() { String::new() } else { EXIT_OUTPUT.to_owned() },
         self.resets.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
