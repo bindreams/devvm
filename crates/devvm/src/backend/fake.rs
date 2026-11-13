@@ -11,10 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
-use crate::backend::qemu::storage::check_blank_disk_size;
 use crate::backend::{
     Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
-    Patch, SshEndpoint, Storage, Video, check_overlay,
+    Patch, SshEndpoint, Storage, Video, check_blank_disk_size, check_overlay, make_overlay,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
@@ -505,11 +504,13 @@ impl Storage for FakeStorage {
             .iter()
             .map(|patch| format!("{}+{}", patch.offset, patch.bytes.len()))
             .collect();
-        std::fs::write(
-            into,
-            format!("overlay of {} patches={}", backing.display(), patches.join(",")),
-        )
-        .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write the overlay {}", into.display()), e))
+        make_overlay(into, |staging| {
+            std::fs::write(
+                staging,
+                format!("overlay of {} patches={}", backing.display(), patches.join(",")),
+            )
+            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write the overlay {}", into.display()), e))
+        })
     }
 
     fn commit_layer(&self, instance_disk: &Path, staging: &LayerDir) -> Result<()> {

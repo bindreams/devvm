@@ -5,8 +5,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use super::directory_of;
-use crate::backend::{DiskBus, Endpoint, MachineSpec, Media, MediaKind, NetModel, Video};
+use crate::backend::{DiskBus, Endpoint, MachineSpec, Media, MediaKind, NetModel, Video, directory_of};
 use crate::host::Accel;
 use crate::{Arch, Error, ErrorKind, Result};
 

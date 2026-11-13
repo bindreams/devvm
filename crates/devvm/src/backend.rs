@@ -99,7 +99,9 @@ pub(crate) trait Storage: Send + Sync {
 
     /// Makes `into` a copy-on-write disk over `backing`, a raw image that is only read, and writes each of `patches`
     /// into it: a read of the disk gives the patch's bytes where a patch lies and `backing`'s bytes elsewhere. Every
-    /// request [`check_overlay`] refuses is refused with nothing made. A failure after that leaves no `into`.
+    /// request [`check_overlay`] refuses is refused with nothing made. A failure after that leaves no overlay of its own. Of several
+    /// calls for one `into`, one makes it and the others fail with `AlreadyExists` ([`make_overlay`]); a call never
+    /// deletes or changes an overlay another call made.
     fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()>;
 }
 
@@ -179,6 +181,86 @@ pub(crate) fn check_overlay(backing: &Path, patches: &[Patch], into: &Path) -> R
         ));
     }
     Ok(())
+}
+
+/// The largest virtual size of a qcow2 disk: 2 PiB, the most `qemu-img create -f qcow2` makes with its default 64 KiB
+/// clusters. An L2 table maps 512 MiB and the L1 table holds at most `QCOW_MAX_L1_SIZE` / `L1E_SIZE` = 4 Mi tables
+/// (QEMU 11.1.2 `block/qcow2.h:59,104`). Past that `qcow2_co_create` (`block/qcow2.c:3918`) fails in
+/// `qcow2_co_truncate`, which calls `qcow2_grow_l1_table` (`block/qcow2.c:4563`; `-EFBIG` at `block/qcow2-cluster.c:120`).
+/// Every backend refuses a disk beyond it, as [`Storage::create_blank_disk`] says.
+pub(crate) const QCOW2_MAX_SIZE: u64 = 1 << 51;
+
+/// The size of the disk `qemu-img create` makes of a request for `size` bytes: rounded up to 512 bytes. `None` when
+/// that is more than a qcow2 disk can have ([`QCOW2_MAX_SIZE`]).
+pub(crate) fn made_size(size: u64) -> Option<u64> {
+    size.checked_next_multiple_of(512)
+        .filter(|made| *made <= QCOW2_MAX_SIZE)
+}
+
+/// The contract of [`Storage::create_blank_disk`], for every backend to check before it makes anything: `Recipe` when
+/// no qcow2 disk is `size` bytes. The caller of a blank disk names its size, not `resources.disk`.
+pub(crate) fn check_blank_disk_size(size: u64) -> Result<()> {
+    made_size(size).map(drop).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Recipe,
+            format!("a blank disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have"),
+        )
+    })
+}
+
+/// The directory that holds `path`, which is `what`. Every path devvm gives the backend is absolute and in a directory, so
+/// a path without one is a bug in the caller, named here instead of resolved against the working directory.
+pub(crate) fn directory_of<'a>(path: &'a Path, what: &str) -> Result<&'a Path> {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("{what} {} has no directory to put its files in", path.display()),
+            )
+        })
+}
+
+/// Makes the overlay at `into`, for every backend, so that of several calls for one `into` exactly one makes it and none
+/// touches another's file ([`Storage::overlay_with_patches`]). [`check_overlay`] looks at `into` first, but another call
+/// can make it between that look and this one, so the look decides nothing: `fill` writes the overlay to a path that
+/// is new, in the directory of `into`, and the overlay goes to `into` in one step that fails with `AlreadyExists` for
+/// anything there. Only the new path is ever deleted: on every failure of `fill` or of the publish.
+pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    let directory = directory_of(into, "the overlay")?;
+    let staging = tempfile::Builder::new()
+        .prefix("overlay-")
+        .tempfile_in(directory)
+        .map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot create a file in {} to make the overlay in", directory.display()),
+                e,
+            )
+        })?
+        // The handle is closed: `qemu-img` opens the file by name, which Windows lets a process do only once the other
+        // handles are gone.
+        .into_temp_path();
+    let left = format!("the file {}", staging.display());
+    if let Err(e) = fill(&staging) {
+        return Err(e.after_cleanup(&left, staging.close()));
+    }
+    staging.persist_noclobber(into).map_err(|failed| {
+        let tempfile::PathPersistError { error, path } = failed;
+        let refused = if error.kind() == std::io::ErrorKind::AlreadyExists {
+            Error::new(
+                ErrorKind::AlreadyExists,
+                format!("the overlay {} is already there", into.display()),
+            )
+        } else {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot move the overlay into place at {}", into.display()),
+                error,
+            )
+        };
+        refused.after_cleanup(&left, path.close())
+    })
 }
 
 pub(crate) trait Machine: Send {

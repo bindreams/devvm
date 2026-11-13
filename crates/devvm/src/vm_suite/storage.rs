@@ -649,8 +649,72 @@ fn the_overlay_reads_the_patch_where_the_patch_is_and_the_iso_elsewhere(
         .map(|entry| entry.unwrap().file_name())
         .collect();
     assert!(
-        !left.iter().any(|name| name.to_string_lossy().contains("patch")),
-        "a patch file was left behind: {left:?}"
+        !left.iter().any(|name| {
+            let name = name.to_string_lossy();
+            name.contains("patch") || name.starts_with("overlay-")
+        }),
+        "a patch or staging file was left behind: {left:?}"
+    );
+}
+
+#[skuld::test]
+fn two_calls_for_one_overlay_make_it_once_and_neither_touches_the_other(
+    #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let storage = storage(install);
+    let base = pattern(BASE_LEN, 3);
+    let backing = write_raw(home, "backing.iso", &base);
+    let into = home.join("overlay.qcow2");
+    let calls = [
+        Patch {
+            offset: 4096,
+            bytes: pattern(4096, 5),
+        },
+        Patch {
+            offset: 8192,
+            bytes: pattern(4096, 6),
+        },
+    ];
+
+    let start_together = std::sync::Barrier::new(calls.len());
+    let outcomes: Vec<_> = std::thread::scope(|scope| {
+        let handles: Vec<_> = calls
+            .iter()
+            .map(|patch| {
+                scope.spawn(|| {
+                    start_together.wait();
+                    storage.overlay_with_patches(&backing, std::slice::from_ref(patch), &into)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+    });
+
+    // Whichever call published first has the overlay; the other is refused, as it would be a moment later.
+    let winners: Vec<usize> = (0..calls.len()).filter(|n| outcomes[*n].is_ok()).collect();
+    assert_eq!(winners.len(), 1, "{outcomes:?}");
+    for (n, outcome) in outcomes.iter().enumerate() {
+        if n != winners[0] {
+            assert_eq!(
+                outcome.as_ref().unwrap_err().kind(),
+                ErrorKind::AlreadyExists,
+                "{outcomes:?}"
+            );
+        }
+    }
+    let winner = &calls[winners[0]];
+    assert_eq!(
+        read_through(install, &into, home),
+        patched(&base, winner.offset as usize, &winner.bytes)
+    );
+    let left: Vec<_> = std::fs::read_dir(home)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(
+        !left.iter().any(|name| name.to_string_lossy().starts_with("overlay-")),
+        "a staging file was left behind: {left:?}"
     );
 }
 

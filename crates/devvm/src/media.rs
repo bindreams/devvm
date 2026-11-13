@@ -134,7 +134,8 @@ fn image_size(files: u64, spare: u64) -> Result<u64> {
         return Err(Error::new(
             ErrorKind::Internal,
             format!(
-                "{what} need an image of {size} bytes, which would not be FAT12:                  at most {LARGEST_FAT12_CONTENTS} bytes of files and spare room fit"
+                "{what} need an image of {size} bytes, which would not be FAT12: at most {LARGEST_FAT12_CONTENTS} bytes of \
+                 files and spare room fit"
             ),
         ));
     }
@@ -194,11 +195,21 @@ fn fat_image(files: &[SeedFile], spare: u64) -> Result<Vec<u8>> {
     Ok(disk.into_inner())
 }
 
-/// Every file of the FAT volume at `image`, in every directory, named by its path with `/` between the parts (a file a
-/// guest wrote to `logs\setupact.log` is `logs/setupact.log`). A directory with no files adds nothing, so a guest
-/// that wrote no `logs` directory has no such files and no error. A volume the guest left dirty is read as it is.
+/// The size of a directory entry, and so of a slot in a directory.
+const ENTRY_SIZE: u64 = 32;
+
+/// The files of the FAT volume at `image` that are at `paths`, each named by its path as given. A path has parts
+/// separated by `/` (`logs/setupact.log`), none empty, `.` or `..`; a path with such a part is refused as `Internal`.
+/// A path the volume does not hold is not in the result and is no error: a guest that wrote no `logs` directory has no
+/// `logs/setupact.log`. A path that names a directory, or runs through a file, is an error. A volume the guest left
+/// dirty is read as it is.
+///
+/// A guest wrote the volume, so it is not trusted to be a tree: nothing here walks a directory. Every path has a fixed
+/// number of parts, so a directory that leads back to one above it costs only the parts a path names. The clusters
+/// the volume chains are checked before anything is read ([`Table::require_chains_end`]).
 #[allow(dead_code, reason = "unused until the Windows base build reads back the answer disk")]
-pub(crate) fn read_files(image: &Path) -> Result<Vec<SeedFile>> {
+pub(crate) fn read_files(image: &Path, paths: &[&str]) -> Result<Vec<SeedFile>> {
+    refuse_unreadable_paths(paths)?;
     let bytes = std::fs::read(image).map_err(|e| {
         Error::io(
             ErrorKind::Io,
@@ -206,143 +217,245 @@ pub(crate) fn read_files(image: &Path) -> Result<Vec<SeedFile>> {
             e,
         )
     })?;
-    tree_of(&mut Cursor::new(bytes)).map_err(|e| {
-        Error::io(
-            ErrorKind::Io,
-            format!("cannot read {} as a FAT volume", image.display()),
-            e,
-        )
-    })
+    let mut disk = Cursor::new(bytes);
+    checked_volume(&mut disk)
+        .and_then(|fs| read_known(&fs, paths))
+        .map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot read {} as a FAT volume", image.display()),
+                e,
+            )
+        })
 }
 
-/// The files of the volume in `disk`, as [`read_files`].
-///
-/// A guest wrote the volume, so it is not trusted to be a tree. `fatfs` follows what it finds: a chain of clusters that
-/// leads back to itself is read for ever. The reading refuses every loop and counts nothing arbitrary: the clusters
-/// of a chain are checked once each ([`require_chains_end`]), and an honest volume holds at most one 32-byte entry per
-/// 32 bytes of the image and one byte of content per byte of the image, which bounds the walk through directories that
-/// lead back to a directory above them.
-fn tree_of(disk: &mut Cursor<Vec<u8>>) -> std::io::Result<Vec<SeedFile>> {
-    disk.set_position(0);
-    let (fat_type, clusters) = {
-        let fs = FileSystem::new(&mut *disk, FsOptions::new())?;
-        (fs.fat_type(), fs.stats()?.total_clusters())
-    };
-    let image_len = disk.get_ref().len() as u64;
-    require_chains_end(disk.get_ref(), fat_type, clusters)?;
-
-    disk.set_position(0);
-    let fs = FileSystem::new(disk, FsOptions::new())?;
-    let mut entries_left = image_len / ENTRY_SIZE;
-    let mut bytes_left = image_len;
-    let mut files = Vec::new();
-    let mut directories = vec![(fs.root_dir(), String::new())];
-    while let Some((dir, prefix)) = directories.pop() {
-        for entry in dir.iter() {
-            let entry = entry?;
-            entries_left = entries_left
-                .checked_sub(1)
-                .ok_or_else(|| corrupt("the directories lead back to a directory above them".to_owned()))?;
-            let name = entry.file_name();
-            if name == "." || name == ".." {
-                continue;
-            }
-            let path = format!("{prefix}{name}");
-            if entry.is_dir() {
-                directories.push((entry.to_dir(), format!("{path}/")));
-            } else {
-                // One byte past what is left shows that the file is more than the volume has room for.
-                let mut bytes = Vec::new();
-                entry.to_file().take(bytes_left + 1).read_to_end(&mut bytes)?;
-                bytes_left = bytes_left
-                    .checked_sub(bytes.len() as u64)
-                    .ok_or_else(|| corrupt("the files hold more bytes than the volume has room for".to_owned()))?;
-                files.push(SeedFile { name: path, bytes });
-            }
-        }
-    }
-    Ok(files)
-}
-
-/// The size of a directory entry, and so of a slot in a directory.
-const ENTRY_SIZE: u64 = 32;
-
-fn corrupt(message: String) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
-}
-
-/// Requires that no chain of clusters in the allocation table of the FAT volume `image` leads back to one of its own
-/// clusters. Every cluster is walked once: a cluster seen on the walk in progress is a loop, one seen on an earlier walk
-/// ends this one.
-fn require_chains_end(image: &[u8], fat_type: FatType, clusters: u32) -> std::io::Result<()> {
-    let word = |at: usize| {
-        image
-            .get(at..at + 2)
-            .map(|b| u32::from(u16::from_le_bytes([b[0], b[1]])))
-    };
-    let sector = word(11).unwrap_or(0) as usize;
-    let table = word(14).unwrap_or(0) as usize * sector;
-    let next = |cluster: usize| -> Option<usize> {
-        let value = match fat_type {
-            FatType::Fat12 => {
-                let at = table + cluster * 3 / 2;
-                let pair = word(at)?;
-                if cluster.is_multiple_of(2) {
-                    pair & 0xFFF
-                } else {
-                    pair >> 4
-                }
-            }
-            FatType::Fat16 => word(table + cluster * 2)?,
-            FatType::Fat32 => {
-                let at = table + cluster * 4;
-                (word(at)? | word(at + 2)? << 16) & 0x0FFF_FFFF
-            }
-        } as usize;
-        (2..clusters as usize + 2).contains(&value).then_some(value)
-    };
-
-    const UNSEEN: u8 = 0;
-    const ON_THE_WALK: u8 = 1;
-    const WALKED: u8 = 2;
-    let mut state = vec![UNSEEN; clusters as usize + 2];
-    for start in 2..clusters as usize + 2 {
-        if state[start] != UNSEEN {
-            continue;
-        }
-        let mut at = start;
-        loop {
-            state[at] = ON_THE_WALK;
-            match next(at) {
-                Some(following) if state[following] == ON_THE_WALK => {
-                    return Err(corrupt(format!("cluster {following} leads back to itself")));
-                }
-                Some(following) if state[following] == UNSEEN => at = following,
-                _ => break,
-            }
-        }
-        let mut at = start;
-        while state[at] == ON_THE_WALK {
-            state[at] = WALKED;
-            match next(at) {
-                Some(following) => at = following,
-                None => break,
-            }
+fn refuse_unreadable_paths(paths: &[&str]) -> Result<()> {
+    for path in paths {
+        let unreadable = path.contains('\\')
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..");
+        if unreadable {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!(
+                    "`{path}` cannot be read from an image: it is empty, or has an empty, `.` or `..` part, or a `\\`"
+                ),
+            ));
         }
     }
     Ok(())
 }
 
-/// Reads the finished image back with [`read_files`]' reader and requires exactly `files`: the same long names, the same
-/// count, the same contents.
+/// The volume in `disk`, mounted once, after its allocation table is checked.
+fn checked_volume(disk: &mut Cursor<Vec<u8>>) -> std::io::Result<FileSystem<&mut Cursor<Vec<u8>>>> {
+    let table = Table::of(disk.get_ref())?;
+    table.require_chains_end()?;
+    let fat_type = table.fat_type;
+    disk.set_position(0);
+    let fs = FileSystem::new(disk, FsOptions::new())?;
+    if fs.fat_type() != fat_type {
+        return Err(corrupt(format!(
+            "the boot sector says {fat_type:?}, the volume mounts as {:?}",
+            fs.fat_type()
+        )));
+    }
+    Ok(fs)
+}
+
+/// The files of `fs` at `paths` ([`read_files`]), those that exist.
+fn read_known<T: fatfs::ReadWriteSeek>(fs: &FileSystem<T>, paths: &[&str]) -> std::io::Result<Vec<SeedFile>> {
+    let named = |path: &str, e: std::io::Error| std::io::Error::new(e.kind(), format!("{path}: {e}"));
+    let mut files = Vec::new();
+    for path in paths {
+        let mut file = match fs.root_dir().open_file(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(named(path, e)),
+        };
+        // The chain of the file is checked, and a read ends where the chain does, whatever size the entry claims.
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|e| named(path, e))?;
+        files.push(SeedFile {
+            name: (*path).to_owned(),
+            bytes,
+        });
+    }
+    Ok(files)
+}
+
+/// The names in the root directory of `fs`, files and directories.
+fn root_names<T: fatfs::ReadWriteSeek>(fs: &FileSystem<T>) -> std::io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in fs.root_dir().iter() {
+        names.push(entry?.file_name());
+    }
+    Ok(names)
+}
+
+fn corrupt(message: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+/// The allocation table of a FAT volume, read from its boot sector.
+///
+/// `fatfs` follows what the table says and trusts it: a chain of clusters that leads back to itself is read for ever, a
+/// value outside the volume is read from wherever it points. So the table is checked first, from the boot sector alone,
+/// with the rules `fatfs` 0.3.6 applies.
+struct Table<'a> {
+    /// The copy of the table that `fatfs` reads: the first, or the one the boot sector names when mirroring is off.
+    bytes: &'a [u8],
+    fat_type: FatType,
+    /// The clusters of the volume, numbered from 2.
+    clusters: usize,
+    /// The slots the copy has, whether or not they are clusters of the volume.
+    entries: usize,
+}
+
+impl<'a> Table<'a> {
+    fn of(image: &'a [u8]) -> std::io::Result<Self> {
+        let field = |at: usize, len: usize| -> std::io::Result<u64> {
+            let bytes = image
+                .get(at..at + len)
+                .ok_or_else(|| corrupt("the boot sector is cut short".to_owned()))?;
+            Ok(bytes.iter().rev().fold(0, |value, byte| value << 8 | u64::from(*byte)))
+        };
+        let (sector, per_cluster, reserved, fats) = (field(11, 2)?, field(13, 1)?, field(14, 2)?, field(16, 1)?);
+        let root_entries = field(17, 2)?;
+        let total = match field(19, 2)? {
+            0 => field(32, 4)?,
+            sectors => sectors,
+        };
+        // A FAT32 volume has no 16-bit sector count of the table; there the table is longer and has flags.
+        let (per_fat, flags) = match field(22, 2)? {
+            0 => (field(36, 4)?, field(40, 2)?),
+            sectors => (sectors, 0),
+        };
+        if sector == 0 || per_cluster == 0 || per_fat == 0 {
+            return Err(corrupt("the boot sector is not that of a FAT volume".to_owned()));
+        }
+        let first_data = reserved + fats * per_fat + (root_entries * ENTRY_SIZE).div_ceil(sector);
+        let clusters = total
+            .checked_sub(first_data)
+            .map(|sectors| sectors / per_cluster)
+            .filter(|clusters| *clusters > 0)
+            .ok_or_else(|| corrupt("the volume has no room for data".to_owned()))?;
+        let fat_type = match clusters {
+            0..4085 => FatType::Fat12,
+            4085..65525 => FatType::Fat16,
+            _ => FatType::Fat32,
+        };
+        // Bit 7 of the flags turns mirroring off; the low four bits then name the one copy in use.
+        let active = if flags & 0x80 == 0 { 0 } else { flags & 0x0F };
+        let start = (reserved + active * per_fat) * sector;
+        let bytes = usize::try_from(start)
+            .ok()
+            .zip(usize::try_from(per_fat * sector).ok())
+            .and_then(|(start, len)| image.get(start..start.checked_add(len)?))
+            .ok_or_else(|| corrupt("the allocation table lies outside the image".to_owned()))?;
+        let bits = match fat_type {
+            FatType::Fat12 => 12,
+            FatType::Fat16 => 16,
+            FatType::Fat32 => 32,
+        };
+        Ok(Self {
+            bytes,
+            fat_type,
+            clusters: usize::try_from(clusters).map_err(|_| corrupt("the volume has too many clusters".to_owned()))?,
+            entries: bytes.len() * 8 / bits,
+        })
+    }
+
+    /// The cluster that follows `index` in its chain, `None` where `fatfs` ends the chain: a free slot, a bad cluster,
+    /// the end mark. A value `fatfs` would follow that is not a cluster of the volume is an error.
+    fn next(&self, index: usize) -> std::io::Result<Option<usize>> {
+        let read = |at: usize, len: usize| -> std::io::Result<usize> {
+            let bytes = self
+                .bytes
+                .get(at..at + len)
+                .ok_or_else(|| corrupt(format!("cluster {index} lies beyond the allocation table")))?;
+            Ok(bytes
+                .iter()
+                .rev()
+                .fold(0, |value, byte| value << 8 | usize::from(*byte)))
+        };
+        let (value, last) = match self.fat_type {
+            FatType::Fat12 => {
+                let pair = read(index * 3 / 2, 2)?;
+                (
+                    if index.is_multiple_of(2) {
+                        pair & 0xFFF
+                    } else {
+                        pair >> 4
+                    },
+                    0xFFF,
+                )
+            }
+            FatType::Fat16 => (read(index * 2, 2)?, 0xFFFF),
+            FatType::Fat32 => (read(index * 4, 4)? & 0x0FFF_FFFF, 0x0FFF_FFFF),
+        };
+        // `last - 8` is the bad-cluster mark, `last - 7` to `last` are end marks.
+        if value == 0 || value >= last - 8 {
+            Ok(None)
+        } else if (2..self.clusters + 2).contains(&value) {
+            Ok(Some(value))
+        } else {
+            Err(corrupt(format!(
+                "cluster {index} is followed by cluster {value}, outside the {} clusters of the volume",
+                self.clusters
+            )))
+        }
+    }
+
+    /// Requires that every value in the table that `fatfs` would follow is a cluster of the volume, and that no chain of
+    /// clusters leads back to one of its own. A directory entry can start a chain at any slot, so every slot is
+    /// looked at; each cluster is then walked once: a cluster seen on the walk in progress is a loop, one seen on an
+    /// earlier walk ends this one.
+    fn require_chains_end(&self) -> std::io::Result<()> {
+        for index in 1..self.entries {
+            self.next(index)?;
+        }
+
+        const UNSEEN: u8 = 0;
+        const ON_THE_WALK: u8 = 1;
+        const WALKED: u8 = 2;
+        let mut state = vec![UNSEEN; self.clusters + 2];
+        for start in 2..(self.clusters + 2).min(self.entries) {
+            if state[start] != UNSEEN {
+                continue;
+            }
+            let mut at = start;
+            loop {
+                state[at] = ON_THE_WALK;
+                match self.next(at)? {
+                    Some(following) if state[following] == ON_THE_WALK => {
+                        return Err(corrupt(format!("cluster {following} leads back to itself")));
+                    }
+                    Some(following) if state[following] == UNSEEN => at = following,
+                    _ => break,
+                }
+            }
+            let mut at = start;
+            while state[at] == ON_THE_WALK {
+                state[at] = WALKED;
+                match self.next(at)? {
+                    Some(following) => at = following,
+                    None => break,
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Reads the finished image back and requires exactly `files`: the same long names, the same count, the same contents.
 ///
 /// `fatfs` merges names whose generated 8.3 short names, trailing dots or U+FFFF padding collide, and renames some, so
-/// no list of name patterns closes the class; only the image says what it holds.
+/// no list of name patterns closes the class; only the image says what it holds. The files are read by the names asked
+/// for, as [`read_files`] reads them, and the root directory, one level, says what else is there.
 fn require_files_as_asked(disk: &mut Cursor<Vec<u8>>, files: &[SeedFile]) -> Result<()> {
-    let held = tree_of(disk).map_err(build_failed)?;
-    let held: Vec<(String, Vec<u8>)> = held.into_iter().map(|file| (file.name, file.bytes)).collect();
-
-    let mut held_names: Vec<&str> = held.iter().map(|(name, _)| name.as_str()).collect();
+    let fs = checked_volume(disk).map_err(build_failed)?;
+    let mut held_names = root_names(&fs).map_err(build_failed)?;
     let mut asked_names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
     held_names.sort_unstable();
     asked_names.sort_unstable();
@@ -355,11 +468,12 @@ fn require_files_as_asked(disk: &mut Cursor<Vec<u8>>, files: &[SeedFile]) -> Res
             ),
         ));
     }
+    let held = read_known(&fs, &asked_names).map_err(build_failed)?;
     for file in files {
-        if let Some((_, bytes)) = held.iter().find(|(name, _)| *name == file.name)
-            && *bytes != file.bytes
-        {
-            return Err(unusable_name(&file.name, "the image holds other bytes under that name"));
+        match held.iter().find(|held| held.name == file.name) {
+            Some(held) if held.bytes == file.bytes => {}
+            Some(_) => return Err(unusable_name(&file.name, "the image holds other bytes under that name")),
+            None => return Err(unusable_name(&file.name, "the image holds no file of that name")),
         }
     }
     Ok(())

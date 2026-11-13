@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use cosca::identity::{Platform, ProcessIdRecord};
 
-use crate::backend::{Backend, Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint, Storage, remove_files};
+use crate::backend::{
+    Backend, Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint, Storage, directory_of, make_overlay,
+    remove_files,
+};
 use crate::guest::{BaseBuilder, GuestOs, Guests};
 use crate::host::{self, FileId, HoldOutcome};
 use crate::test_support::fixtures::unicode_home;
@@ -276,4 +279,124 @@ fn remove_held_deletes_nothing_when_the_name_now_belongs_to_another_file(#[fixtu
 
     assert_eq!(warnings, Vec::<String>::new());
     assert!(later.iter().all(|path| path.exists()));
+}
+
+// make_overlay --------------------------------------------------------------------------------------------------------
+
+/// The names in `dir`, sorted.
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+fn write_to(staging: &Path, bytes: &[u8]) -> crate::Result<()> {
+    std::fs::write(staging, bytes)
+        .map_err(|e| crate::Error::io(crate::ErrorKind::Io, "cannot write the staging file", e))
+}
+
+#[skuld::test]
+fn an_overlay_is_written_beside_its_name_and_published_whole(#[fixture(unicode_home)] home: &Path) {
+    let into = home.join("overlay.qcow2");
+
+    make_overlay(&into, |staging| {
+        assert_eq!(
+            staging.parent(),
+            Some(home),
+            "the staging file must be on the volume of the overlay"
+        );
+        assert_ne!(staging, into);
+        assert!(!into.exists(), "the overlay is visible before it is whole");
+        write_to(staging, b"overlay")
+    })
+    .unwrap();
+
+    assert_eq!(std::fs::read(&into).unwrap(), b"overlay");
+    assert_eq!(names_in(home), ["overlay.qcow2"], "the staging file is gone");
+}
+
+#[skuld::test]
+fn an_overlay_that_fails_after_it_was_started_leaves_nothing(#[fixture(unicode_home)] home: &Path) {
+    let into = home.join("overlay.qcow2");
+
+    let error = make_overlay(&into, |staging| {
+        write_to(staging, b"half an overlay")?;
+        Err(crate::Error::new(crate::ErrorKind::Io, "the patch did not go in"))
+    })
+    .unwrap_err();
+
+    assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
+    assert_eq!(error.message(), "the patch did not go in");
+    assert_eq!(names_in(home), Vec::<String>::new());
+}
+
+#[skuld::test]
+fn two_calls_for_one_overlay_the_first_to_publish_keeps_it_and_the_other_is_refused(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let into = home.join("overlay.qcow2");
+
+    // The second call checks and starts while the first is still writing, and publishes first.
+    let error = make_overlay(&into, |first| {
+        write_to(first, b"first, unfinished")?;
+        make_overlay(&into, |second| write_to(second, b"second")).unwrap();
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert_eq!(error.kind(), crate::ErrorKind::AlreadyExists, "{error}");
+    assert!(error.message().contains("overlay.qcow2"), "{error}");
+    assert_eq!(
+        std::fs::read(&into).unwrap(),
+        b"second",
+        "the first call overwrote the second's overlay"
+    );
+    assert_eq!(names_in(home), ["overlay.qcow2"], "a staging file was left");
+}
+
+#[skuld::test]
+fn a_call_that_fails_never_deletes_the_overlay_another_call_published(#[fixture(unicode_home)] home: &Path) {
+    let into = home.join("overlay.qcow2");
+
+    let error = make_overlay(&into, |first| {
+        write_to(first, b"first, unfinished")?;
+        make_overlay(&into, |second| write_to(second, b"second")).unwrap();
+        Err(crate::Error::new(crate::ErrorKind::Io, "the patch did not go in"))
+    })
+    .unwrap_err();
+
+    assert_eq!(error.message(), "the patch did not go in");
+    assert_eq!(
+        std::fs::read(&into).unwrap(),
+        b"second",
+        "the failed call deleted the other call's overlay"
+    );
+    assert_eq!(names_in(home), ["overlay.qcow2"]);
+}
+
+#[skuld::test]
+fn an_overlay_with_no_directory_is_refused_before_anything_is_made() {
+    let error = make_overlay(Path::new("overlay.qcow2"), |_| panic!("nothing is made")).unwrap_err();
+
+    assert_eq!(error.kind(), crate::ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("the overlay"), "{error}");
+}
+
+#[skuld::test]
+fn a_path_without_a_directory_is_refused_naming_what_it_is() {
+    // `Path::parent` gives an empty path for a bare file name, which would resolve against the working directory.
+    for path in ["", "disk.img", ".", "/"] {
+        let error = directory_of(Path::new(path), "the machine's disk").unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::Internal, "{path:?}: {error}");
+        assert!(error.message().contains("the machine's disk"), "{path:?}: {error}");
+    }
+}
+
+#[skuld::test]
+fn a_path_in_a_directory_gives_the_directory() {
+    let dir = std::env::temp_dir();
+    assert_eq!(directory_of(&dir.join("disk.img"), "the disk").unwrap(), dir);
 }

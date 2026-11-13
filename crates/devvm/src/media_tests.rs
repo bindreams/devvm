@@ -458,9 +458,13 @@ fn the_image_size_is_refused_beyond_the_fat12_limit_naming_the_sum_and_the_image
 
     let error = image_size(LARGEST_FAT12_CONTENTS + 1, 0).expect_err("over the limit");
     assert_eq!(error.kind(), crate::ErrorKind::Internal, "{error}");
-    assert!(error.message().contains("66418689 bytes"), "{error}");
-    assert!(error.message().contains("133886464 bytes"), "{error}");
-    assert!(error.message().contains("FAT12"), "{error}");
+    assert_eq!(
+        error.message(),
+        concat!(
+            "the seed files (66418689 bytes) need an image of 133886464 bytes, which would not be FAT12: ",
+            "at most 66418688 bytes of files and spare room fit"
+        )
+    );
 
     for contents in [1 << 40, u64::MAX] {
         let error = image_size(contents, 0).expect_err("over the limit");
@@ -525,14 +529,13 @@ fn spare_room_counts_toward_the_fat12_limit() {
 fn a_spare_that_overfills_the_volume_is_named_apart_from_the_files() {
     let error = fat_image(&[file("a", &[0; 10])], LARGEST_FAT12_CONTENTS).expect_err("over the limit");
 
-    assert!(error.message().contains("seed files (10 bytes)"), "{error}");
-    assert!(
-        error
-            .message()
-            .contains(&format!("{LARGEST_FAT12_CONTENTS} bytes of spare room")),
-        "{error}"
+    assert_eq!(
+        error.message(),
+        concat!(
+            "the seed files (10 bytes) and 66418688 bytes of spare room need an image of 133886464 bytes, ",
+            "which would not be FAT12: at most 66418688 bytes of files and spare room fit"
+        )
     );
-    assert!(error.message().contains("FAT12"), "{error}");
 }
 
 // read_files ----------------------------------------------------------------------------------------------------------
@@ -562,6 +565,10 @@ fn names_of(files: &[SeedFile]) -> Vec<&str> {
     names
 }
 
+fn bytes_of<'a>(files: &'a [SeedFile], name: &str) -> &'a [u8] {
+    &files.iter().find(|file| file.name == name).unwrap().bytes
+}
+
 #[skuld::test]
 fn a_file_in_a_subdirectory_written_by_a_guest_is_read_back_with_its_path(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("answer.img");
@@ -575,16 +582,32 @@ fn a_file_in_a_subdirectory_written_by_a_guest_is_read_back_with_its_path(#[fixt
     )
     .unwrap();
 
-    let files = read_files(&image).unwrap();
+    let files = read_files(&image, &["winpe.cmd", "logs/setupact.log", "logs/deep/er/diag.txt"]).unwrap();
 
     assert_eq!(
         names_of(&files),
         ["logs/deep/er/diag.txt", "logs/setupact.log", "winpe.cmd"]
     );
-    let by_name = |name: &str| &files.iter().find(|file| file.name == name).unwrap().bytes;
-    assert_eq!(*by_name("logs/setupact.log"), log);
-    assert_eq!(*by_name("logs/deep/er/diag.txt"), b"d");
-    assert_eq!(*by_name("winpe.cmd"), b"echo");
+    assert_eq!(bytes_of(&files, "logs/setupact.log"), log);
+    assert_eq!(bytes_of(&files, "logs/deep/er/diag.txt"), b"d");
+    assert_eq!(bytes_of(&files, "winpe.cmd"), b"echo");
+}
+
+#[skuld::test]
+fn only_the_paths_asked_for_are_read(#[fixture(unicode_home)] home: &Path) {
+    let image = home.join("answer.img");
+    std::fs::write(
+        &image,
+        volume_with(
+            &[file("winpe.cmd", b"echo")],
+            &[("logs/a.log", b"a"), ("logs/b.log", b"b")],
+        ),
+    )
+    .unwrap();
+
+    let files = read_files(&image, &["logs/b.log"]).unwrap();
+
+    assert_eq!(names_of(&files), ["logs/b.log"]);
 }
 
 #[skuld::test]
@@ -603,19 +626,57 @@ fn a_volume_left_dirty_by_the_guest_is_read(#[fixture(unicode_home)] home: &Path
     );
     std::fs::write(&image, bytes).unwrap();
 
-    let files = read_files(&image).unwrap();
+    let files = read_files(&image, &["winpe.cmd", "logs/setupact.log"]).unwrap();
 
     assert_eq!(names_of(&files), ["logs/setupact.log", "winpe.cmd"]);
 }
 
 #[skuld::test]
-fn an_image_with_no_logs_directory_reads_as_no_logs_not_an_error(#[fixture(unicode_home)] home: &Path) {
+fn a_path_the_guest_did_not_write_reads_as_absent_not_an_error(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("answer.img");
     std::fs::write(&image, volume_with(&[file("winpe.cmd", b"echo")], &[])).unwrap();
 
-    let files = read_files(&image).unwrap();
+    let files = read_files(&image, &["winpe.cmd", "logs/setupact.log", "nothing/at/all.txt"]).unwrap();
 
     assert_eq!(names_of(&files), ["winpe.cmd"]);
+}
+
+#[skuld::test]
+fn a_path_through_a_file_or_to_a_directory_is_an_error(#[fixture(unicode_home)] home: &Path) {
+    let image = home.join("answer.img");
+    std::fs::write(
+        &image,
+        volume_with(&[file("winpe.cmd", b"echo")], &[("logs/a.log", b"a")]),
+    )
+    .unwrap();
+
+    for path in ["winpe.cmd/inside", "logs"] {
+        let error = read_files(&image, &[path]).expect_err(path);
+        assert_eq!(error.kind(), crate::ErrorKind::Io, "{path}: {error}");
+        assert!(error.message().contains("answer.img"), "{path}: {error}");
+    }
+}
+
+#[skuld::test]
+fn a_path_that_walks_up_or_names_nothing_is_refused_before_the_image_is_read(#[fixture(unicode_home)] home: &Path) {
+    // The image does not exist: a refused path must not get as far as reading it.
+    let image = home.join("missing.img");
+    for path in [
+        "",
+        "/",
+        "logs//a.log",
+        "logs/../winpe.cmd",
+        "./winpe.cmd",
+        "logs\\a.log",
+    ] {
+        let error = read_files(&image, &[path]).expect_err(path);
+        assert_eq!(error.kind(), crate::ErrorKind::Internal, "{path:?}: {error}");
+        assert_eq!(
+            error.message(),
+            format!("`{path}` cannot be read from an image: it is empty, or has an empty, `.` or `..` part, or a `\\`"),
+            "{path:?}"
+        );
+    }
 }
 
 #[skuld::test]
@@ -635,27 +696,24 @@ fn read_files_returns_what_write_cidata_image_wrote(#[fixture(unicode_home)] hom
     )
     .unwrap();
 
-    let files = read_files(&image).unwrap();
+    let files = read_files(&image, &["empty", "user-data", "with space"]).unwrap();
 
     assert_eq!(names_of(&files), ["empty", "user-data", "with space"]);
-    assert_eq!(
-        files.iter().find(|file| file.name == "user-data").unwrap().bytes,
-        all_bytes()
-    );
+    assert_eq!(bytes_of(&files, "user-data"), all_bytes());
 }
 
 #[skuld::test]
 fn an_image_that_is_not_a_fat_volume_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("not-fat.img");
     std::fs::write(&image, vec![0u8; 4096]).unwrap();
-    let error = read_files(&image).expect_err("zeros are no volume");
+    let error = read_files(&image, &["a"]).expect_err("zeros are no volume");
     assert_eq!(error.kind(), crate::ErrorKind::Io);
     assert!(error.message().contains("not-fat.img"), "{}", error.message());
 }
 
 #[skuld::test]
 fn a_missing_image_is_an_io_error_naming_it(#[fixture(unicode_home)] home: &Path) {
-    let error = read_files(&home.join("missing.img")).expect_err("there is no such file");
+    let error = read_files(&home.join("missing.img"), &["a"]).expect_err("there is no such file");
     assert_eq!(error.kind(), crate::ErrorKind::Io);
     assert!(error.message().contains("missing.img"), "{}", error.message());
 }
@@ -674,14 +732,15 @@ fn word(image: &[u8], at: usize) -> usize {
     usize::from(u16::from_le_bytes([image[at], image[at + 1]]))
 }
 
-/// Makes the table of `image`, a volume of `fat_type`, say that `cluster` is followed by `next`, in every copy.
-fn chain_cluster_to(image: &mut [u8], fat_type: fatfs::FatType, cluster: usize, next: usize) {
+/// Makes the table of `image`, a volume of `fat_type`, say that `cluster` is followed by `next`, in every copy of the
+/// table, or in copy `only` alone.
+fn chain_cluster_in(image: &mut [u8], fat_type: fatfs::FatType, cluster: usize, next: usize, only: Option<usize>) {
     let (reserved, fats, sector) = (word(image, 14), usize::from(image[16]), word(image, 11));
     let per_fat = match fat_type {
         fatfs::FatType::Fat32 => word(image, 36) | word(image, 38) << 16,
         _ => word(image, 22),
     };
-    for copy in 0..fats {
+    for copy in (0..fats).filter(|copy| only.is_none_or(|only| only == *copy)) {
         let table = (reserved + copy * per_fat) * sector;
         match fat_type {
             fatfs::FatType::Fat12 => {
@@ -706,16 +765,16 @@ fn chain_cluster_to(image: &mut [u8], fat_type: fatfs::FatType, cluster: usize, 
     }
 }
 
+fn chain_cluster_to(image: &mut [u8], fat_type: fatfs::FatType, cluster: usize, next: usize) {
+    chain_cluster_in(image, fat_type, cluster, next, None);
+}
+
 fn first_cluster_of(image: &[u8], entry: usize) -> usize {
-    word(image, entry + 26)
+    word(image, entry + 26) | word(image, entry + 20) << 16
 }
 
 fn set_first_cluster(image: &mut [u8], entry: usize, cluster: usize) {
     image[entry + 26..entry + 28].copy_from_slice(&(cluster as u16).to_le_bytes());
-}
-
-fn size_of_entry(image: &[u8], entry: usize) -> [u8; 4] {
-    image[entry + 28..entry + 32].try_into().unwrap()
 }
 
 /// Rewrites every slot of `cluster` as a deleted entry: a directory that never says it has ended.
@@ -735,20 +794,64 @@ fn delete_every_entry_in(image: &mut [u8], cluster: usize) {
     }
 }
 
-#[skuld::test]
-fn a_directory_that_leads_back_to_an_ancestor_is_an_error_not_a_stack_overflow(#[fixture(unicode_home)] home: &Path) {
+/// How many clusters the volume `image` has.
+fn clusters_of(image: &[u8]) -> usize {
+    let fs = FileSystem::new(Cursor::new(image.to_vec()), FsOptions::new()).unwrap();
+    fs.stats().unwrap().total_clusters() as usize
+}
+
+/// A volume of `fat_type` and `megabytes` holding the one-byte file `LOOP`.
+fn volume_of(fat_type: fatfs::FatType, megabytes: usize) -> Vec<u8> {
+    let mut disk = Cursor::new(vec![0u8; megabytes << 20]);
+    let options = fatfs::FormatVolumeOptions::new()
+        .fat_type(fat_type)
+        .total_sectors(((megabytes << 20) / 512) as u32);
+    fatfs::format_volume(&mut disk, options).unwrap();
+    let fs = FileSystem::new(&mut disk, FsOptions::new()).unwrap();
+    assert_eq!(fs.fat_type(), fat_type);
+    fs.root_dir().create_file("LOOP").unwrap().write_all(b"x").unwrap();
+    fs.unmount().unwrap();
+    disk.into_inner()
+}
+
+const THE_THREE: [(fatfs::FatType, usize); 3] = [
+    (fatfs::FatType::Fat12, 1),
+    (fatfs::FatType::Fat16, 20),
+    (fatfs::FatType::Fat32, 40),
+];
+
+fn read_loop(home: &Path, bytes: Vec<u8>) -> crate::Result<Vec<SeedFile>> {
     let image = home.join("answer.img");
-    let mut bytes = volume_with(&[file("winpe.cmd", b"echo")], &[("logs/sub/x.txt", b"x")]);
+    std::fs::write(&image, bytes).unwrap();
+    read_files(&image, &["LOOP"])
+}
+
+#[skuld::test]
+fn a_directory_that_leads_back_to_an_ancestor_costs_only_the_paths_asked(#[fixture(unicode_home)] home: &Path) {
+    let image = home.join("answer.img");
+    let mut bytes = volume_with(
+        &[file("winpe.cmd", b"echo")],
+        &[("logs/sub/y.txt", b"y"), ("logs/x.txt", b"x")],
+    );
     let logs = first_cluster_of(&bytes, entry_at(&bytes, b"LOGS       "));
     let sub = entry_at(&bytes, b"SUB        ");
     set_first_cluster(&mut bytes, sub, logs);
     std::fs::write(&image, bytes).unwrap();
 
-    let error = read_files(&image).expect_err("logs/sub is logs");
+    // `logs/sub` is `logs`, so each `sub` in a path comes back to it; the path decides how far that goes.
+    let files = read_files(
+        &image,
+        &[
+            "logs/x.txt",
+            "logs/sub/sub/sub/x.txt",
+            "logs/sub/sub/missing.txt",
+            "logs/sub/y.txt",
+        ],
+    )
+    .unwrap();
 
-    assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
-    assert!(error.message().contains("answer.img"), "{error}");
-    assert!(error.message().contains("directories lead back"), "{error}");
+    assert_eq!(names_of(&files), ["logs/sub/sub/sub/x.txt", "logs/x.txt"]);
+    assert_eq!(bytes_of(&files, "logs/sub/sub/sub/x.txt"), b"x");
 }
 
 #[skuld::test]
@@ -761,11 +864,13 @@ fn a_directory_whose_clusters_loop_is_an_error_not_an_endless_read(#[fixture(uni
     chain_cluster_to(&mut bytes, fatfs::FatType::Fat12, logs, logs);
     std::fs::write(&image, bytes).unwrap();
 
-    let error = read_files(&image).expect_err("the directory has no end");
+    let error = read_files(&image, &["logs/nothing.txt"]).expect_err("the directory has no end");
 
     assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
     assert!(
-        error.message().contains(&format!("cluster {logs} leads back")),
+        error
+            .message()
+            .contains(&format!("cluster {logs} leads back to itself")),
         "{error}"
     );
 }
@@ -781,88 +886,166 @@ fn a_file_whose_clusters_loop_is_an_error_not_a_read_of_its_claimed_size(#[fixtu
     bytes[entry + 28..entry + 32].copy_from_slice(&u32::MAX.to_le_bytes());
     std::fs::write(&image, bytes).unwrap();
 
-    let error = read_files(&image).expect_err("the file has no end");
+    let error = read_files(&image, &["logs/x.txt"]).expect_err("the file has no end");
 
     assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
     assert!(
-        error.message().contains(&format!("cluster {cluster} leads back")),
+        error
+            .message()
+            .contains(&format!("cluster {cluster} leads back to itself")),
         "{error}"
     );
 }
 
 #[skuld::test]
-fn files_that_share_clusters_hold_more_bytes_than_the_volume_and_are_an_error(#[fixture(unicode_home)] home: &Path) {
+fn a_file_claiming_more_than_its_clusters_is_read_as_far_as_they_go(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("answer.img");
-    let big = vec![7u8; 300 << 10];
-    let mut files = vec![file("BIG", &big)];
-    let names: Vec<String> = (0..8).map(|n| format!("F{n}")).collect();
-    files.extend(names.iter().map(|name| file(name, b"x")));
-    let mut bytes = fat_image(&files, 0).unwrap();
-    let big_entry = entry_at(&bytes, b"BIG        ");
-    let (cluster, size) = (first_cluster_of(&bytes, big_entry), size_of_entry(&bytes, big_entry));
-    for name in &names {
-        let mut short = [b' '; 11];
-        short[..name.len()].copy_from_slice(name.as_bytes());
-        let entry = entry_at(&bytes, &short);
-        set_first_cluster(&mut bytes, entry, cluster);
-        bytes[entry + 28..entry + 32].copy_from_slice(&size);
-    }
-    assert!(
-        bytes.len() < 9 * big.len(),
-        "the fixture is larger than the volume it fills"
-    );
+    let mut bytes = volume_with(&[file("winpe.cmd", b"echo")], &[("logs/x.txt", b"x")]);
+    let entry = entry_at(&bytes, b"X       TXT");
+    bytes[entry + 28..entry + 32].copy_from_slice(&u32::MAX.to_le_bytes());
     std::fs::write(&image, bytes).unwrap();
 
-    let error = read_files(&image).expect_err("nine files of 300 KiB do not fit");
+    let files = read_files(&image, &["logs/x.txt"]).unwrap();
 
-    assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
-    assert!(error.message().contains("more bytes"), "{error}");
+    assert!(files[0].bytes.starts_with(b"x"));
+    assert!(files[0].bytes.len() <= 1 << 20, "{} bytes", files[0].bytes.len());
 }
 
 #[skuld::test]
-fn a_volume_full_of_files_and_directories_is_read_whole(#[fixture(unicode_home)] home: &Path) {
-    // Many entries in two directories: the room an honest volume has is not mistaken for a loop.
+fn a_directory_with_many_entries_is_not_mistaken_for_a_loop(#[fixture(unicode_home)] home: &Path) {
     let image = home.join("answer.img");
     let names: Vec<String> = (0..200).map(|n| format!("f{n}.txt")).collect();
     let nested: Vec<(String, &[u8])> = names.iter().map(|n| (format!("logs/{n}"), &b"x"[..])).collect();
     let nested: Vec<(&str, &[u8])> = nested.iter().map(|(n, b)| (n.as_str(), *b)).collect();
     std::fs::write(&image, volume_with(&[file("winpe.cmd", b"echo")], &nested)).unwrap();
 
-    let files = read_files(&image).unwrap();
+    let files = read_files(&image, &["logs/f0.txt", "logs/f199.txt"]).unwrap();
 
-    assert_eq!(files.len(), 201);
+    assert_eq!(names_of(&files), ["logs/f0.txt", "logs/f199.txt"]);
 }
 
 #[skuld::test]
-fn a_file_whose_clusters_loop_is_an_error_on_a_fat16_and_a_fat32_volume(#[fixture(unicode_home)] home: &Path) {
-    for (fat_type, megabytes) in [(fatfs::FatType::Fat16, 20), (fatfs::FatType::Fat32, 40)] {
-        let mut disk = Cursor::new(vec![0u8; megabytes << 20]);
-        let sectors = (megabytes << 20) / 512;
-        let options = fatfs::FormatVolumeOptions::new()
-            .fat_type(fat_type)
-            .total_sectors(sectors as u32);
-        fatfs::format_volume(&mut disk, options).unwrap();
-        let fs = FileSystem::new(&mut disk, FsOptions::new()).unwrap();
-        assert_eq!(fs.fat_type(), fat_type);
-        fs.root_dir().create_file("LOOP").unwrap().write_all(b"x").unwrap();
-        fs.unmount().unwrap();
-        let mut bytes = disk.into_inner();
-        let entry = entry_at(&bytes, b"LOOP       ");
-        let hi = if fat_type == fatfs::FatType::Fat32 {
-            word(&bytes, entry + 20) << 16
-        } else {
-            0
-        };
-        let cluster = hi | first_cluster_of(&bytes, entry);
+fn a_file_whose_clusters_loop_is_an_error_on_every_fat_type(#[fixture(unicode_home)] home: &Path) {
+    for (fat_type, megabytes) in THE_THREE {
+        let mut bytes = volume_of(fat_type, megabytes);
+        let cluster = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
         chain_cluster_to(&mut bytes, fat_type, cluster, cluster);
-        let image = home.join("answer.img");
-        std::fs::write(&image, bytes).unwrap();
 
-        let error = read_files(&image).expect_err("the file has no end");
+        let error = read_loop(home, bytes).expect_err("the file has no end");
 
         assert!(
-            error.message().contains(&format!("cluster {cluster} leads back")),
+            error
+                .message()
+                .contains(&format!("cluster {cluster} leads back to itself")),
             "{fat_type:?}: {error}"
         );
     }
+}
+
+#[skuld::test]
+fn a_table_value_fatfs_follows_outside_the_volume_is_refused_on_every_fat_type(#[fixture(unicode_home)] home: &Path) {
+    for (fat_type, megabytes) in THE_THREE {
+        let clusters = clusters_of(&volume_of(fat_type, megabytes));
+        // 1 is below the first cluster; `clusters + 2` is the first number past the last; the largest value fatfs
+        // still reads as a cluster number is the one before the bad-cluster mark.
+        let largest = match fat_type {
+            fatfs::FatType::Fat12 => 0xFF6,
+            fatfs::FatType::Fat16 => 0xFFF6,
+            fatfs::FatType::Fat32 => 0x0FFF_FFF6,
+        };
+        for next in [1, clusters + 2, largest] {
+            let mut bytes = volume_of(fat_type, megabytes);
+            let cluster = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
+            chain_cluster_to(&mut bytes, fat_type, cluster, next);
+
+            let error = read_loop(home, bytes).expect_err("a chain that leaves the volume");
+
+            assert_eq!(error.kind(), crate::ErrorKind::Io, "{fat_type:?} -> {next}: {error}");
+            assert!(
+                error.message().contains(&format!(
+                    "cluster {cluster} is followed by cluster {next}, outside the {clusters} clusters"
+                )),
+                "{fat_type:?} -> {next}: {error}"
+            );
+        }
+    }
+}
+
+#[skuld::test]
+fn a_chain_the_table_ends_in_any_way_fatfs_ends_it_is_not_corrupt(#[fixture(unicode_home)] home: &Path) {
+    for (fat_type, megabytes) in THE_THREE {
+        let (free, bad, end) = match fat_type {
+            fatfs::FatType::Fat12 => (0, 0xFF7, 0xFF8),
+            fatfs::FatType::Fat16 => (0, 0xFFF7, 0xFFF8),
+            fatfs::FatType::Fat32 => (0, 0x0FFF_FFF7, 0x0FFF_FFF8),
+        };
+        for next in [free, bad, end] {
+            let mut bytes = volume_of(fat_type, megabytes);
+            let cluster = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
+            chain_cluster_to(&mut bytes, fat_type, cluster, next);
+
+            let files = read_loop(home, bytes).unwrap_or_else(|e| panic!("{fat_type:?} -> {next:#x}: {e}"));
+
+            assert_eq!(bytes_of(&files, "LOOP"), b"x", "{fat_type:?} -> {next:#x}");
+        }
+    }
+}
+
+#[skuld::test]
+fn a_file_that_starts_past_the_last_cluster_and_loops_there_is_refused(#[fixture(unicode_home)] home: &Path) {
+    for (fat_type, megabytes) in [(fatfs::FatType::Fat12, 1), (fatfs::FatType::Fat16, 20)] {
+        let mut bytes = volume_of(fat_type, megabytes);
+        let clusters = clusters_of(&bytes);
+        let entry = entry_at(&bytes, b"LOOP       ");
+        let past = clusters + 3;
+        set_first_cluster(&mut bytes, entry, past);
+        chain_cluster_to(&mut bytes, fat_type, past, past);
+
+        let error = read_loop(home, bytes).expect_err("a chain that never ends, outside the volume");
+
+        assert_eq!(error.kind(), crate::ErrorKind::Io, "{fat_type:?}: {error}");
+        assert!(
+            error
+                .message()
+                .contains(&format!("cluster {past} is followed by cluster {past}")),
+            "{fat_type:?}: {error}"
+        );
+    }
+}
+
+/// FAT32 boot sector, offset 40: the flags of the table; bit 7 turns mirroring off, the low four bits name the copy in
+/// use.
+fn use_one_table_copy(image: &mut [u8], copy: u16) {
+    let flags = 0x80 | copy;
+    image[40..42].copy_from_slice(&flags.to_le_bytes());
+}
+
+#[skuld::test]
+fn the_table_copy_fatfs_reads_is_the_one_that_is_checked(#[fixture(unicode_home)] home: &Path) {
+    let fat_type = fatfs::FatType::Fat32;
+    let fresh = || {
+        let mut bytes = volume_of(fat_type, 40);
+        assert_eq!(bytes[16], 2, "two copies of the table");
+        use_one_table_copy(&mut bytes, 1);
+        bytes
+    };
+    let fixture = fresh();
+    let cluster = first_cluster_of(&fixture, entry_at(&fixture, b"LOOP       "));
+
+    // A loop in the copy in use is refused, as it would be with mirroring on.
+    let mut in_use = fresh();
+    chain_cluster_in(&mut in_use, fat_type, cluster, cluster, Some(1));
+    let error = read_loop(home, in_use).expect_err("the copy in use loops");
+    assert!(
+        error
+            .message()
+            .contains(&format!("cluster {cluster} leads back to itself")),
+        "{error}"
+    );
+
+    // A loop in the other copy is not read by fatfs, so it is no fault of the volume.
+    let mut unused = fresh();
+    chain_cluster_in(&mut unused, fat_type, cluster, cluster, Some(0));
+    let files = read_loop(home, unused).unwrap();
+    assert_eq!(bytes_of(&files, "LOOP"), b"x");
 }

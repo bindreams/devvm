@@ -7,9 +7,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::args::{ArchFiles, escape_option_value};
-use super::directory_of;
 use super::sidecar::LazyInstall;
-use crate::backend::{DEFAULT_DISK, Patch, Storage, check_overlay};
+use crate::backend::{
+    DEFAULT_DISK, Patch, QCOW2_MAX_SIZE, Storage, check_blank_disk_size, check_overlay, directory_of, made_size,
+    make_overlay,
+};
 use crate::host::Host;
 use crate::store::layers::LayerDir;
 use crate::{Arch, Error, ErrorKind, Result};
@@ -24,12 +26,6 @@ pub(crate) const DISK: &str = "disk.qcow2";
 pub(crate) const VARS: &str = "vars.fd";
 /// The format of every layer and instance disk.
 pub(crate) const QCOW2: &str = "qcow2";
-/// The largest virtual size of an instance disk: 2 PiB, the most `qemu-img create -f qcow2` makes with its default
-/// 64 KiB clusters. An L2 table maps 512 MiB and the L1 table holds at most `QCOW_MAX_L1_SIZE` / `L1E_SIZE` = 4 Mi
-/// tables (QEMU 11.1.2 `block/qcow2.h:59,104`). Past that `qcow2_co_create` (`block/qcow2.c:3918`) fails in
-/// `qcow2_co_truncate`, which calls `qcow2_grow_l1_table` (`block/qcow2.c:4563`; `-EFBIG` at `block/qcow2-cluster.c:120`).
-const QCOW2_MAX_SIZE: u64 = 1 << 51;
-
 pub(crate) struct QemuStorage {
     install: Arc<LazyInstall>,
     host: &'static dyn Host,
@@ -107,31 +103,15 @@ fn virtual_size_in(info: &serde_json::Value, image: &Path) -> Result<u64> {
     })
 }
 
-/// The size of the disk `qemu-img create` makes of a request for `size` bytes: rounded up to 512 bytes. `None` when
-/// that is more than a qcow2 disk can have.
-fn made_size(size: u64) -> Option<u64> {
-    size.checked_next_multiple_of(512)
-        .filter(|made| *made <= QCOW2_MAX_SIZE)
-}
-
 /// `Recipe` when no qcow2 disk is `size` bytes: the size of an instance disk is the recipe's `resources.disk`.
 fn instance_disk_size(size: u64) -> Result<u64> {
     made_size(size).ok_or_else(|| {
         Error::new(
             ErrorKind::Recipe,
             format!(
-                "a disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have;                  set resources.disk to at most {QCOW2_MAX_SIZE}"
+                "a disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have; set \
+                 resources.disk to at most {QCOW2_MAX_SIZE}"
             ),
-        )
-    })
-}
-
-/// `Recipe` when no qcow2 disk is `size` bytes. The caller of a blank disk names its size, not `resources.disk`.
-pub(crate) fn check_blank_disk_size(size: u64) -> Result<()> {
-    made_size(size).map(drop).ok_or_else(|| {
-        Error::new(
-            ErrorKind::Recipe,
-            format!("a blank disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have"),
         )
     })
 }
@@ -280,13 +260,13 @@ impl Storage for QemuStorage {
 
     /// `qemu-img create` of the overlay, then one `qemu-img convert -n` per patch: the raw patch file is written into the
     /// overlay as the sub-range `[offset, offset + len)` of the disk, so `backing` is never written. [`check_overlay`]
-    /// runs first. An overlay that was not finished is deleted: `into` was not there before, so it is this call's.
+    /// runs first. The overlay is made at a new path beside `into` and published by [`make_overlay`].
     fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
         check_overlay(backing, patches, into)?;
         let directory = directory_of(into, "the overlay")?;
-        let target = escape_option_value(into)?;
-        let made = self
-            .qemu_img(&[
+        make_overlay(into, |staging| {
+            let target = escape_option_value(staging)?;
+            self.qemu_img(&[
                 "create".as_ref(),
                 "-f".as_ref(),
                 QCOW2.as_ref(),
@@ -294,19 +274,12 @@ impl Storage for QemuStorage {
                 backing.as_os_str(),
                 "-F".as_ref(),
                 "raw".as_ref(),
-                into.as_os_str(),
-            ])
-            .and_then(|_| {
-                patches
-                    .iter()
-                    .try_for_each(|patch| self.write_patch(patch, &target, directory))
-            });
-        if let Err(e) = made {
-            // Best effort: the error that matters is the one that stopped the overlay.
-            let _ = std::fs::remove_file(into);
-            return Err(e);
-        }
-        Ok(())
+                staging.as_os_str(),
+            ])?;
+            patches
+                .iter()
+                .try_for_each(|patch| self.write_patch(patch, &target, directory))
+        })
     }
 }
 
