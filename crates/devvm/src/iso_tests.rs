@@ -99,6 +99,14 @@ fn an_iso_without_a_no_prompt_boot_image_is_refused_naming_the_file(#[fixture(un
 }
 
 #[skuld::test]
+fn a_boot_image_that_ends_in_a_hole_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let error = read(home, "efisys-ending-in-a-hole.iso", None).1.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("efi/microsoft/boot/efisys.bin"), "{error}");
+    assert!(error.message().contains("no storage (a gap)"), "{error}");
+}
+
+#[skuld::test]
 fn a_uefi_boot_image_that_is_not_efisys_bin_is_refused_naming_the_block(#[fixture(unicode_home)] home: &Path) {
     let offset = read(home, "single-image.iso", None).1.unwrap().boot_patches[0].offset;
     let error = read_after(home, "single-image.iso", None, |iso| {

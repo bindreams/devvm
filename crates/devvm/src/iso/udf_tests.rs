@@ -119,35 +119,40 @@ fn a_file_in_several_extents_is_found_piece_by_piece_and_read_across_them() {
 }
 
 #[skuld::test]
-fn a_file_with_an_extent_that_was_never_written_is_refused_naming_it() {
-    let iso = iso_fixture("install-wim-with-an-unwritten-extent.iso");
-    let error = open(&iso).unwrap().pieces("/sources/install.wim").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert!(
-        error.message().contains("install-wim-with-an-unwritten-extent.iso"),
-        "{error}"
-    );
-    assert!(error.message().contains("sources/install.wim"), "{error}");
-    assert!(error.message().contains("never written"), "{error}");
-}
-
-#[skuld::test]
-fn a_file_with_a_gap_between_its_extents_is_refused_naming_it() {
-    let iso = iso_fixture("install-wim-with-a-hole.iso");
-    let error = open(&iso).unwrap().pieces("/sources/install.wim").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert!(error.message().contains("sources/install.wim"), "{error}");
-    assert!(error.message().contains("gap"), "{error}");
-}
-
-#[skuld::test]
-fn a_file_that_ends_in_a_hole_is_refused_naming_it() {
-    let iso = iso_fixture("install-wim-ending-in-a-hole.iso");
-    let error = open(&iso).unwrap().pieces("/sources/install.wim").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert!(error.message().contains("install-wim-ending-in-a-hole.iso"), "{error}");
-    assert!(error.message().contains("sources/install.wim"), "{error}");
-    assert!(error.message().contains("no storage"), "{error}");
+fn what_is_not_a_whole_file_in_the_iso_is_refused_naming_it() {
+    for (fixture, path, why) in [
+        (
+            "install-wim-with-an-unwritten-extent.iso",
+            "/sources/install.wim",
+            "never written",
+        ),
+        (
+            "install-wim-with-a-hole.iso",
+            "/sources/install.wim",
+            "no storage (a gap)",
+        ),
+        (
+            "install-wim-ending-in-a-hole.iso",
+            "/sources/install.wim",
+            "no storage (a gap)",
+        ),
+        (
+            "install-wim-that-is-a-link.iso",
+            "/sources/install.wim",
+            "is a link, not a file",
+        ),
+        ("three-images.iso", "/sources", "is a directory, not a file"),
+    ] {
+        let iso = iso_fixture(fixture);
+        let error = open(&iso).unwrap().pieces(path).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{fixture}: {error}");
+        assert!(error.message().contains(fixture), "{fixture}: {error}");
+        assert!(
+            error.message().contains(path.trim_start_matches('/')),
+            "{fixture}: {error}"
+        );
+        assert!(error.message().contains(why), "{fixture}: {error}");
+    }
 }
 
 #[skuld::test]

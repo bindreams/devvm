@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use hadris_fs::sync::{File, FileSystem, Volume};
-use hadris_fs::{Extent, MountOptions, OpenOptions, Resolve};
+use hadris_fs::{Extent, FileType, MountOptions, OpenOptions, Resolve};
 use hadris_iso::sync::IsoFs;
 use hadris_storage::host::FileDevice;
 use hadris_udf::sync::UdfFs;
@@ -126,8 +126,9 @@ impl<'a> Udf<'a> {
     }
 
     /// Where the bytes of the file `path` lie in the ISO, in file order; `None` when the tree has no such file. A file
-    /// may lie in several pieces. A file with a part that was never written or has no storage (a gap) is refused: its
-    /// bytes are not in the ISO where the pieces say.
+    /// may lie in several pieces. A directory or a link, a file with a part that was never written and a file with a
+    /// part that has no storage (a gap) are refused: their bytes are not in the ISO where the pieces say. For mapping
+    /// raw bytes, as the boot images need; `open_file` reads a file whole.
     pub(super) fn pieces(&self, path: &str) -> Result<Option<Vec<Piece>>> {
         let Some(path) = self.spelled(path)? else {
             return Ok(None);
@@ -151,6 +152,16 @@ impl<'a> Udf<'a> {
                 ),
             )
         };
+        let meta = udf
+            .stat(node)
+            .map_err(|e| unreadable(self.iso, &format!("read the size of {path} in"), &e))?;
+        match meta.file_type() {
+            FileType::File => {}
+            FileType::Dir => return Err(refused("is a directory, not a file")),
+            FileType::Symlink => return Err(refused("is a link, not a file")),
+            _ => return Err(refused("is not a file")),
+        }
+        let length = meta.len();
         let mut found = Vec::new();
         let mut buffer = [Extent::new(0, 0); 16];
         let mut from = 0;
@@ -163,9 +174,6 @@ impl<'a> Udf<'a> {
                 if extent.is_unwritten() {
                     return Err(refused("has a part that was never written"));
                 }
-                if extent.file_offset() != stored {
-                    return Err(refused("has a gap between its parts"));
-                }
                 stored += extent.len();
                 found.push(Piece {
                     offset: extent.offset(),
@@ -177,13 +185,9 @@ impl<'a> Udf<'a> {
                 _ => break,
             }
         }
-        // `extents` leaves holes out, so a hole at the end has no extent whose offset shows the gap.
-        let length = udf
-            .stat(node)
-            .map_err(|e| unreadable(self.iso, &format!("read the size of {path} in"), &e))?
-            .len();
+        // `extents` leaves holes out: a hole anywhere makes the extents hold less than the file's length.
         if stored != length {
-            return Err(refused("ends in a part that has no storage"));
+            return Err(refused("has no storage (a gap)"));
         }
         Ok(Some(found))
     }
