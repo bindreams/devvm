@@ -254,20 +254,19 @@ fn medium_args(args: &mut Args, index: usize, medium: &Media, cdroms: usize) -> 
     let format = medium.format.name();
     let (drive, device) = match medium.kind {
         MediaKind::Cdrom => {
-            let port = cdroms;
-            if port >= AHCI_PORTS {
+            if cdroms >= AHCI_PORTS {
                 return Err(Error::new(
                     ErrorKind::Usage,
                     format!(
-                        "{} is CD-ROM number {}: the machine's AHCI controller has {AHCI_PORTS} ports, one CD-ROM each, so at most six CD-ROMs can be attached",
+                        "{} is CD-ROM number {}: the machine's AHCI controller has {AHCI_PORTS} ports, one CD-ROM each, so at most {AHCI_PORTS} CD-ROMs can be attached",
                         medium.path.display(),
-                        port + 1
+                        cdroms + 1
                     ),
                 ));
             }
             (
                 format!("if=none,id=m{index},file={file},format={format},media=cdrom{readonly}"),
-                format!("ide-cd,drive=m{index},bus=ide.{port}{boot}"),
+                format!("ide-cd,drive=m{index},bus=ide.{cdroms}{boot}"),
             )
         }
         MediaKind::Disk => (

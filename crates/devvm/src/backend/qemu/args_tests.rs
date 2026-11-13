@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use super::{LaunchPaths, build_args, escape_option_value, guest_port};
+use super::{AHCI_PORTS, LaunchPaths, build_args, escape_option_value, guest_port};
 use crate::backend::fake::fake_spec;
 use crate::backend::{
     DeviceProfile, DiskBus, Endpoint, Firmware, MachineSpec, Media, MediaFormat, MediaKind, NetModel, Video,
@@ -757,7 +757,7 @@ fn cdroms(count: usize) -> Vec<Media> {
         .collect()
 }
 
-/// q35's built-in AHCI controller is the bus `ide`, with one unit on each of its six ports.
+/// q35's built-in AHCI controller is the bus `ide`, with one unit on each of its ports.
 #[skuld::test]
 fn each_cdrom_gets_its_own_ahci_port_in_order() {
     let mut spec = spec();
@@ -798,20 +798,23 @@ fn each_cdrom_gets_its_own_ahci_port_in_order() {
 }
 
 #[skuld::test]
-fn six_cdroms_fill_the_six_ahci_ports_and_a_seventh_is_refused() {
+fn as_many_cdroms_as_ahci_ports_fit_and_one_more_is_refused() {
     let mut spec = spec();
-    spec.media = cdroms(6);
+    spec.media = cdroms(AHCI_PORTS);
     let args = args(&spec, &paths());
     let buses: Vec<String> = values_of(&args, "-device")
         .into_iter()
         .filter_map(|device| device.split(',').find_map(|part| part.strip_prefix("bus=ide.")))
         .map(str::to_owned)
         .collect();
-    assert_eq!(buses, ["0", "1", "2", "3", "4", "5"]);
+    assert_eq!(buses, (0..AHCI_PORTS).map(|port| port.to_string()).collect::<Vec<_>>());
 
-    spec.media = cdroms(7);
+    spec.media = cdroms(AHCI_PORTS + 1);
     let error = build_args(&spec, &paths()).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
-    assert!(error.message().contains("six"), "{error}");
-    assert!(error.message().contains("cd6.iso"), "{error}");
+    assert!(
+        error.message().contains(&format!("at most {AHCI_PORTS} CD-ROMs")),
+        "{error}"
+    );
+    assert!(error.message().contains(&format!("cd{AHCI_PORTS}.iso")), "{error}");
 }
