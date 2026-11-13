@@ -302,6 +302,9 @@ pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Resul
     })
 }
 
+/// What an error says in place of the output of a VM process that printed nothing.
+pub(crate) const PRINTED_NOTHING: &str = "(it printed nothing)";
+
 /// How a VM process ended, as the backend that started it tells it.
 #[derive(Clone, Debug)]
 pub(crate) struct MachineExit {

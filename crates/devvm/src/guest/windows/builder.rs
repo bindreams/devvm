@@ -18,7 +18,8 @@ use super::pins::VIRTIO_WIN;
 use super::templates::{self, AnswerInputs, COMPUTER_NAME, TIME_ZONE};
 use crate::access::session::humanly;
 use crate::backend::{
-    Backend, DeviceProfile, LAYER_DISK, Machine, MachineExit, MachineSpec, Media, MediaFormat, MediaKind, Patch,
+    Backend, DeviceProfile, LAYER_DISK, Machine, MachineExit, MachineSpec, Media, MediaFormat, MediaKind,
+    PRINTED_NOTHING, Patch,
 };
 use crate::contain::Lifetime;
 use crate::guest::{BaseBuilder, BuildCtx, GuestOs};
@@ -60,11 +61,13 @@ const ANSWER_SPARE: u64 = 8 << 20;
 /// script writes it.
 const FIRST_LOGON: &str = "first logon";
 
-/// How long each external event of the build may take before the build fails naming it, and how often the serial log is
-/// read for progress while the guest runs. A bound ends a wait on the guest, never decides that the guest is done.
+/// How long the guest may go without a sign of life before the build fails naming what it waited for, and how often the
+/// serial log is read for progress while the guest runs. A sign of life is the start of a launch or a marker. A bound
+/// ends a wait on the guest, never decides that the guest is done.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Bounds {
-    /// Windows Setup, from the first launch to the first-logon script's first marker. Measured: 22 to 40 minutes.
+    /// Windows Setup, which writes no marker before the first-logon script's first. Measured: 22 to 40 minutes from the
+    /// first launch to that marker.
     setup: Duration,
     /// The first-logon script, from its first marker to its end. Measured: about 4 minutes.
     first_logon: Duration,
@@ -152,6 +155,53 @@ struct Stall {
     bound: Duration,
 }
 
+/// What the build waits for and since when: the clock of the bound that applies.
+struct Watch {
+    phase: Phase,
+    /// The last sign of life: the start of the launch, or the last marker.
+    since: Instant,
+    /// Whether any progress marker has been seen: WinPE, which has no serial port, is over once one has.
+    saw_marker: bool,
+}
+
+impl Watch {
+    fn new(now: Instant) -> Watch {
+        Watch {
+            phase: Phase::Setup,
+            since: now,
+            saw_marker: false,
+        }
+    }
+
+    /// A launch begins at `now`: its clock starts then, never earlier.
+    fn launched(&mut self, now: Instant) {
+        self.since = now;
+    }
+
+    /// The guest wrote the marker `phase` at `now`: it moves forward, so the clock restarts. The first-logon script's
+    /// first marker ends Windows Setup.
+    fn marker(&mut self, phase: &str, now: Instant) {
+        self.saw_marker = true;
+        self.since = now;
+        if self.phase == Phase::Setup && phase.starts_with(FIRST_LOGON) {
+            self.phase = Phase::FirstLogon;
+        }
+    }
+
+    fn marker_seen(&self) -> bool {
+        self.saw_marker
+    }
+
+    /// The bound that has passed at `now`, if one has.
+    fn stall(&self, bounds: &Bounds, now: Instant) -> Option<Stall> {
+        let (awaited, bound) = match self.phase {
+            Phase::Setup => ("Windows Setup", bounds.setup),
+            Phase::FirstLogon => ("the first-logon script", bounds.first_logon),
+        };
+        (now.saturating_duration_since(self.since) > bound).then_some(Stall { awaited, bound })
+    }
+}
+
 /// How a launch ended.
 enum Exit {
     /// The VM process exited by itself, as the machine tells it.
@@ -182,11 +232,7 @@ struct Build<'a> {
     launches: Launches,
     /// The last `DEVVM-LICENSE=` line and when it was observed: the license's grace counts from the read.
     license: Option<(String, SystemTime)>,
-    phase: Phase,
-    /// When the phase began.
-    since: Instant,
-    /// Whether any progress marker has been seen: WinPE, which has no serial port, is over once one has.
-    saw_marker: bool,
+    watch: Watch,
 }
 
 impl<'a> Build<'a> {
@@ -248,9 +294,7 @@ impl<'a> Build<'a> {
             overlay,
             launches: Launches::default(),
             license: None,
-            phase: Phase::Setup,
-            since: Instant::now(),
-            saw_marker: false,
+            watch: Watch::new(Instant::now()),
         })
     }
 
@@ -258,7 +302,6 @@ impl<'a> Build<'a> {
     fn run(mut self, install: InstallIso, evaluation: bool) -> Result<Option<SystemTime>> {
         // The ISO is held until QEMU has opened it, which the first `resume` returning says.
         let mut held = Some(install.iso);
-        self.since = Instant::now();
         let mut number = 0;
         let log = loop {
             number += 1;
@@ -297,6 +340,7 @@ impl<'a> Build<'a> {
         // loop, which starts after `qemu_init` has opened every drive.
         drop(held.take());
         let mut reader = LogReader::new(log);
+        self.watch.launched(Instant::now());
         let exit = self.wait(&mut *machine, &mut reader);
         // The VM is gone, killed or exited: this removes what it left outside its directory.
         let killed = machine.kill();
@@ -316,27 +360,30 @@ impl<'a> Build<'a> {
         reader: &mut LogReader,
     ) -> Result<Launched> {
         // The log's tail is read first: a wait that failed has left markers unread, and `fail` tells WinPE's logs from
-        // the first-logon script's by the markers seen. A VM that could not be killed may still be writing, so only
-        // its complete lines are read.
-        let rest = reader.poll(killed.is_ok());
+        // the first-logon script's by the markers seen. A VM process that is gone (it exited, or the kill worked)
+        // writes no more, so its last line is read whole; one that may still be writing gives its complete lines only.
+        let gone = killed.is_ok() || matches!(exit, Ok(Exit::Exited(_)));
+        let rest = reader.poll(gone);
         if let Ok(rest) = &rest {
             self.observe(rest);
         }
-        let exit = match (exit, killed) {
-            (Ok(exit), Ok(())) => exit,
-            (Ok(_), Err(kill)) => return Err(kill),
-            (Err(wait), kill) => {
-                return Err(wait.after_cleanup("a VM process that may still run", kill));
-            }
+        let outcome = match (exit, rest) {
+            (Err(wait), _) => Err(wait),
+            (Ok(_), Err(read)) => Err(read),
+            (Ok(exit), Ok(_)) => self.judge(number, exit, reader),
         };
-        rest?;
+        after_kill(outcome, killed)
+    }
+
+    /// What a launch came to, from how it ended and the markers it wrote.
+    fn judge(&mut self, number: usize, exit: Exit, reader: &LogReader) -> Result<Launched> {
         let serial = reader.whole();
         let exited = match exit {
             Exit::Stalled(stall) => {
                 return Err(Error::new(
                     ErrorKind::Unavailable,
                     format!(
-                        "{} did not finish within {}; the guest was stopped",
+                        "{} made no progress for {}; the guest was stopped",
                         stall.awaited,
                         humanly(stall.bound)
                     ),
@@ -430,8 +477,8 @@ impl<'a> Build<'a> {
     }
 
     /// Waits until the machine's VM process exits, reporting the guest's progress as it writes it, and returns how it
-    /// exited. The wait ends with [`Exit::Stalled`] when the bound of the phase it is in passes: the bound ends the wait
-    /// for an event that may never happen, and the error that follows names it. The caller kills the VM.
+    /// exited. The wait ends with [`Exit::Stalled`] when the guest gives no sign of life within the bound of the phase it
+    /// is in: the bound ends the wait for an event that may never happen, and the error that follows names it. The caller kills the VM.
     fn wait(&mut self, machine: &mut dyn Machine, reader: &mut LogReader) -> Result<Exit> {
         loop {
             // The status is read before anything can reap the process.
@@ -440,7 +487,7 @@ impl<'a> Build<'a> {
             }
             let written = reader.poll(false)?;
             self.observe(&written);
-            if let Some(stall) = self.stall() {
+            if let Some(stall) = self.watch.stall(&self.builder.bounds, Instant::now()) {
                 // The process may have exited since the status was read, and an exit wins over a stall: the guest
                 // that finished as its bound passed has finished.
                 return Ok(match machine.try_wait()? {
@@ -452,25 +499,13 @@ impl<'a> Build<'a> {
         }
     }
 
-    /// The bound that has passed, if one has.
-    fn stall(&self) -> Option<Stall> {
-        let (awaited, bound) = match self.phase {
-            Phase::Setup => ("Windows Setup", self.builder.bounds.setup),
-            Phase::FirstLogon => ("the first-logon script", self.builder.bounds.first_logon),
-        };
-        (self.since.elapsed() > bound).then_some(Stall { awaited, bound })
-    }
-
-    /// Takes in what the guest wrote: reports each marker, moves to the first-logon phase when its script starts, and
-    /// keeps the last license read.
+    /// Takes in what the guest wrote: reports each marker, which restarts the clock of the bound and moves to the
+    /// first-logon phase when its script starts, and keeps the last license read.
     fn observe(&mut self, written: &Serial) {
+        let now = Instant::now();
         for phase in &written.progress {
             self.ctx.progress.message(&format!("Windows base: {phase}"));
-            self.saw_marker = true;
-            if self.phase == Phase::Setup && phase.starts_with(FIRST_LOGON) {
-                self.phase = Phase::FirstLogon;
-                self.since = Instant::now();
-            }
+            self.watch.marker(phase, now);
         }
         if let Some(license) = &written.license {
             self.license = Some((license.clone(), self.ctx.clock.now()));
@@ -503,7 +538,7 @@ impl<'a> Build<'a> {
     /// `error`, with what WinPE wrote to the answer disk when the guest has not yet written any marker: WinPE has no
     /// serial port, so this is where a failure in it is told.
     fn with_winpe_logs(&self, error: Error) -> Error {
-        if self.saw_marker {
+        if self.watch.marker_seen() {
             return error;
         }
         let logs = match self.winpe_logs() {
@@ -525,6 +560,15 @@ impl<'a> Build<'a> {
     }
 }
 
+/// `outcome` of a launch whose VM process was then killed with `killed`. A failed outcome stays the headline and names a
+/// kill that failed after it; an outcome that went well is the kill's error, since the VM process may still run.
+fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
+    match outcome {
+        Err(error) => Err(error.after_cleanup("a VM process that may still run", killed)),
+        Ok(value) => killed.map(|()| value),
+    }
+}
+
 /// `error`, with the last lines of the log `what` at `path`: the build's directory, and the log with it, is gone when the
 /// error is read. A log that is missing or empty adds nothing, and one that cannot be read says so.
 fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
@@ -539,7 +583,15 @@ fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
 /// printed nothing.
 fn with_qemu_output(error: Error, output: &str) -> Error {
     if output.trim().is_empty() {
-        return Error::new(error.kind(), format!("{}\nQEMU printed nothing", error.message()));
+        return Error::new(
+            error.kind(),
+            format!(
+                "{}
+QEMU's output:
+{PRINTED_NOTHING}",
+                error.message()
+            ),
+        );
     }
     with_tail(error, "QEMU's output", output)
 }

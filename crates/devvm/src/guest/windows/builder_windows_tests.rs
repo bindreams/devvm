@@ -302,10 +302,44 @@ fn a_wait_that_fails_still_reads_the_markers_the_guest_wrote_before_it_names_the
 }
 
 #[skuld::test]
-fn a_vm_that_could_not_be_killed_may_still_write_so_only_its_complete_lines_are_read(
+fn a_vm_that_may_still_run_after_a_failed_kill_gives_only_its_complete_lines_and_the_stall_stays_the_headline(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let logon = Launch::off("DEVVM-PROGRESS=first logon: whole\nDEVVM-PROGRESS=first logon: half");
+    let logon = Launch::running(
+        "DEVVM-PROGRESS=first logon: whole
+DEVVM-PROGRESS=first logon: half",
+    );
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![logon]))
+        .with_failing_kill();
+    let (rig, _) = rig(home, "single-image.iso", backend, bounds(HOUR, Duration::ZERO));
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(
+        message.starts_with("the first-logon script made no progress for"),
+        "the stall is the headline: {message}"
+    );
+    assert!(message.contains("the fake machine's kill fails"), "{message}");
+    assert!(message.contains("may still run"), "{message}");
+    let progress = rig.progress().join(
+        "
+",
+    );
+    assert!(progress.contains("first logon: whole"), "{progress}");
+    assert!(
+        !progress.contains("first logon: half"),
+        "a line the VM may still be writing is not a marker: {progress}"
+    );
+}
+
+#[skuld::test]
+fn a_vm_that_exited_gives_its_last_line_whole_though_its_kill_failed(#[fixture(unicode_home)] home: &Path) {
+    let logon = Launch::off(
+        "DEVVM-PROGRESS=first logon: whole
+DEVVM-PROGRESS=first logon: last",
+    );
     let backend = FakeBackend::new(&TestHost)
         .with_guest(guest(vec![logon]))
         .with_failing_kill();
@@ -314,11 +348,13 @@ fn a_vm_that_could_not_be_killed_may_still_write_so_only_its_complete_lines_are_
     let error = rig.build(None).unwrap_err();
 
     assert!(error.message().contains("the fake machine's kill fails"), "{error}");
-    let progress = rig.progress().join("\n");
-    assert!(progress.contains("first logon: whole"), "{progress}");
+    let progress = rig.progress().join(
+        "
+",
+    );
     assert!(
-        !progress.contains("first logon: half"),
-        "a line the VM may still be writing is not a marker: {progress}"
+        progress.contains("first logon: last"),
+        "an exited VM writes no more: {progress}"
     );
 }
 
@@ -666,7 +702,7 @@ fn a_stall_in_winpe_names_the_log_read_back_from_the_answer_disk(#[fixture(unico
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     let message = error.message();
     assert!(message.contains("Windows Setup"), "{message}");
-    assert!(message.contains("within 300ms"), "{message}");
+    assert!(message.contains("no progress for 300ms"), "{message}");
     assert!(message.contains("firmware line"), "{message}");
     rig.assert_names_no_build_file(&error);
     assert!(message.contains("logs/winpe.log"), "{message}");

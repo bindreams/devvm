@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use super::args::guest_port;
 use super::qmp::{Qmp, QmpEndpoint, VmEnd};
-use crate::backend::{Endpoint, FileClaim, Machine, MachineExit, MachineRecord, SshEndpoint, directory_of};
+use crate::backend::{
+    Endpoint, FileClaim, Machine, MachineExit, MachineRecord, PRINTED_NOTHING, SshEndpoint, directory_of,
+};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Host, ProcessWatch, read_from};
@@ -163,7 +165,7 @@ impl QemuMachine {
     /// file cannot be read.
     fn output(&self) -> String {
         match printed_since(&self.log, self.log_from) {
-            Ok(text) if text.is_empty() => "(it printed nothing)".to_owned(),
+            Ok(text) if text.is_empty() => PRINTED_NOTHING.to_owned(),
             Ok(text) => text,
             Err(e) => unreadable_log(&e),
         }

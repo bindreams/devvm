@@ -3,8 +3,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use super::{Bounds, WindowsBuilder};
+use super::{Bounds, Watch, WindowsBuilder, after_kill};
 use crate::backend::fake::FakeBackend;
 use crate::guest::windows::pins::VIRTIO_WIN;
 use crate::guest::windows::templates;
@@ -18,7 +19,7 @@ use crate::store::layers::{Built, ChainLease};
 use crate::test_support::fixtures::{build_ctx, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::transport::RefusingTransport;
-use crate::{Arch, Dirs, ErrorKind, Result};
+use crate::{Arch, Dirs, Error, ErrorKind, Result};
 
 pub(super) struct Rig {
     pub(super) env: Env,
@@ -306,7 +307,10 @@ fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
     let quiet = super::with_qemu_output(exited(), "");
     assert_eq!(
         quiet.message(),
-        "the VM process of launch 2 exited with exit code: 1\nQEMU printed nothing"
+        format!(
+            "the VM process of launch 2 exited with exit code: 1\nQEMU's output:\n{}",
+            crate::backend::PRINTED_NOTHING
+        )
     );
     assert_eq!(quiet.kind(), ErrorKind::Unavailable);
 
@@ -315,4 +319,102 @@ fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
         loud.message(),
         "the VM process of launch 2 exited with exit code: 1\nthe end of QEMU's output:\nqemu: out of memory"
     );
+}
+
+// The clock of a bound ================================================================================================
+
+const MINUTE: Duration = Duration::from_secs(60);
+
+/// A setup bound of ten minutes and a first-logon bound of two.
+fn bounds() -> Bounds {
+    Bounds {
+        setup: 10 * MINUTE,
+        first_logon: 2 * MINUTE,
+        poll: Duration::from_millis(1),
+    }
+}
+
+#[skuld::test]
+fn a_marker_restarts_the_clock_of_the_phase() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+
+    watch.marker("specialize", start + 9 * MINUTE);
+
+    assert!(
+        watch.stall(&bounds(), start + 19 * MINUTE).is_none(),
+        "ten minutes after the marker"
+    );
+    let stall = watch
+        .stall(&bounds(), start + 19 * MINUTE + Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(stall.awaited, "Windows Setup");
+    assert_eq!(stall.bound, 10 * MINUTE);
+}
+
+#[skuld::test]
+fn a_launch_starts_the_clock_no_earlier_than_itself() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+
+    watch.launched(start + 30 * MINUTE);
+
+    assert!(watch.stall(&bounds(), start + 35 * MINUTE).is_none());
+    assert!(watch.stall(&bounds(), start + 41 * MINUTE).is_some());
+}
+
+#[skuld::test]
+fn the_first_logon_scripts_first_marker_moves_the_wait_to_its_bound() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+
+    watch.marker(&format!("{} x", super::FIRST_LOGON), start + MINUTE);
+
+    assert!(watch.stall(&bounds(), start + 2 * MINUTE).is_none());
+    let stall = watch.stall(&bounds(), start + 4 * MINUTE).unwrap();
+    assert_eq!(stall.awaited, "the first-logon script");
+    assert_eq!(stall.bound, 2 * MINUTE);
+}
+
+#[skuld::test]
+fn winpe_is_over_once_any_marker_has_been_seen() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+    assert!(!watch.marker_seen());
+
+    watch.marker("specialize", start);
+
+    assert!(watch.marker_seen());
+}
+
+// A launch that ends with a VM process that may still run =============================================================
+
+#[skuld::test]
+fn a_failed_launch_stays_the_headline_when_the_kill_failed_too() {
+    let outcome: Result<()> = Err(Error::new(ErrorKind::Unavailable, "the guest failed to build the base"));
+
+    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert!(
+        error.message().starts_with("the guest failed to build the base"),
+        "{error}"
+    );
+    assert!(error.message().contains("cannot kill the VM"), "{error}");
+    assert!(error.message().contains("a VM process that may still run"), "{error}");
+}
+
+#[skuld::test]
+fn a_launch_that_went_well_is_the_kills_error_when_the_kill_failed() {
+    let error = after_kill(Ok(5), Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.message(), "cannot kill the VM");
+}
+
+#[skuld::test]
+fn a_kill_that_worked_leaves_the_outcome_as_it_was() {
+    assert_eq!(after_kill(Ok(5), Ok(())).unwrap(), 5);
+    let error = after_kill::<()>(Err(Error::new(ErrorKind::Unavailable, "failed")), Ok(())).unwrap_err();
+    assert_eq!(error.message(), "failed");
 }
