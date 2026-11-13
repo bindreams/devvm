@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::serial::Serial;
-use super::{Bounds, Exit, Stall, Watch, WindowsBuilder, after_kill, verdict};
+use super::{Bounds, End, Exit, Launched, Stall, Watch, WindowsBuilder, after_kill, verdict};
+use crate::backend::MachineExit;
 use crate::backend::fake::FakeBackend;
 use crate::guest::windows::pins::VIRTIO_WIN;
 use crate::guest::windows::templates;
@@ -491,7 +492,7 @@ fn wrote(failed: Option<&str>, done: bool) -> Serial {
 
 #[skuld::test]
 fn a_stall_alone_names_what_made_no_progress_and_that_the_guest_was_stopped() {
-    let error = verdict(1, Ok(stalled()), Ok(()), &wrote(None, false)).err().unwrap();
+    let error = verdict(1, End::of(stalled()), &wrote(None, false)).err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(
@@ -502,7 +503,7 @@ fn a_stall_alone_names_what_made_no_progress_and_that_the_guest_was_stopped() {
 
 #[skuld::test]
 fn a_failed_marker_is_the_headline_of_a_stall_and_the_stall_follows() {
-    let error = verdict(1, Ok(stalled()), Ok(()), &wrote(Some("boom"), false))
+    let error = verdict(1, End::of(stalled()), &wrote(Some("boom"), false))
         .err()
         .unwrap();
 
@@ -515,7 +516,7 @@ fn a_failed_marker_is_the_headline_of_a_stall_and_the_stall_follows() {
 
 #[skuld::test]
 fn a_failed_marker_wins_over_a_done_marker_at_a_stall() {
-    let error = verdict(1, Ok(stalled()), Ok(()), &wrote(Some("boom"), true))
+    let error = verdict(1, End::of(stalled()), &wrote(Some("boom"), true))
         .err()
         .unwrap();
 
@@ -529,7 +530,7 @@ fn a_failed_marker_wins_over_a_done_marker_at_a_stall() {
 
 #[skuld::test]
 fn a_done_marker_at_a_stall_says_the_guest_did_not_power_off() {
-    let error = verdict(1, Ok(stalled()), Ok(()), &wrote(None, true)).err().unwrap();
+    let error = verdict(1, End::of(stalled()), &wrote(None, true)).err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(
@@ -538,128 +539,146 @@ fn a_done_marker_at_a_stall_says_the_guest_did_not_power_off() {
     );
 }
 
-// What a launch came to when its end or its log could not be read =====================================================
+// What a launch came to, for every account, end and log read ==========================================================
 
-fn unread_end() -> Result<Exit> {
-    Err(Error::new(ErrorKind::Io, "cannot read the VM process's status"))
+#[cfg(windows)]
+fn failing_status() -> std::process::ExitStatus {
+    std::os::windows::process::ExitStatusExt::from_raw(1)
 }
 
-fn unread_log() -> Result<()> {
-    Err(Error::new(ErrorKind::Io, "cannot read the serial log"))
+#[cfg(unix)]
+fn failing_status() -> std::process::ExitStatus {
+    std::os::unix::process::ExitStatusExt::from_raw(1 << 8)
 }
 
-#[skuld::test]
-fn a_failed_marker_held_stays_the_headline_when_the_launchs_end_could_not_be_read() {
-    let error = verdict(1, unread_end(), Ok(()), &wrote(Some("boom"), false))
-        .err()
-        .unwrap();
-
-    assert_eq!(error.kind(), ErrorKind::Io, "the host's failure keeps its own kind");
-    assert!(
-        error
-            .message()
-            .starts_with("the Windows guest failed to build the base: boom"),
-        "{error}"
-    );
-    assert!(
-        error.message().contains("cannot read the VM process's status"),
-        "{error}"
-    );
+#[derive(Clone, Copy, Debug)]
+enum Account {
+    Nothing,
+    Failed,
+    Done,
 }
 
-#[skuld::test]
-fn a_failed_marker_wins_over_a_done_marker_when_the_launchs_end_could_not_be_read() {
-    let error = verdict(1, unread_end(), Ok(()), &wrote(Some("boom"), true))
-        .err()
-        .unwrap();
-
-    assert!(
-        error
-            .message()
-            .starts_with("the Windows guest failed to build the base: boom"),
-        "{error}"
-    );
+#[derive(Clone, Copy, Debug)]
+enum Ending {
+    CleanExit,
+    FailingExit,
+    Stall,
+    StatusUnknown,
 }
 
-#[skuld::test]
-fn a_done_marker_held_says_the_disk_may_be_incomplete_when_the_launchs_end_could_not_be_read() {
-    let error = verdict(1, unread_end(), Ok(()), &wrote(None, true)).err().unwrap();
+const STATUS_TEXT: &str = "cannot read the VM process's status";
+const LOG_TEXT: &str = "cannot read the serial log";
 
-    assert_eq!(error.kind(), ErrorKind::Io);
-    assert!(
-        error.message().starts_with("the guest wrote DEVVM-BASE-DONE"),
-        "{error}"
-    );
-    assert!(error.message().contains("so the disk may be incomplete"), "{error}");
-    assert!(
-        error.message().contains("cannot read the VM process's status"),
-        "{error}"
-    );
-}
-
-#[skuld::test]
-fn a_done_marker_held_says_the_disk_may_be_incomplete_when_the_log_could_not_be_read_to_its_end() {
-    let error = verdict(1, Ok(stalled()), unread_log(), &wrote(None, true))
-        .err()
-        .unwrap();
-
-    assert_eq!(error.kind(), ErrorKind::Io);
-    assert!(
-        error
-            .message()
-            .starts_with("the guest reported done but did not power off within 2m"),
-        "{error}"
-    );
-    assert!(error.message().contains("cannot read the serial log"), "{error}");
+/// The result a launch must come to, as `Ok(true)` for a finished launch and `Ok(false)` for a restarted one, or the
+/// kind and the beginning of the error.
+fn expected(
+    account: Account,
+    ending: Ending,
+    read_failed: bool,
+) -> std::result::Result<bool, (ErrorKind, &'static str)> {
+    use {Account::*, Ending::*};
+    const UNAVAILABLE: ErrorKind = ErrorKind::Unavailable;
+    const FAILED: &str = "the Windows guest failed to build the base: boom";
+    match (account, ending, read_failed) {
+        (Failed, ..) => Err((UNAVAILABLE, FAILED)),
+        (Done, CleanExit, false) => Ok(true),
+        (Done, CleanExit, true) => Err((
+            UNAVAILABLE,
+            "the guest wrote DEVVM-BASE-DONE, but the serial log could not be read to its end, so the disk may be \
+             incomplete",
+        )),
+        (Done, FailingExit, _) => Err((
+            UNAVAILABLE,
+            "the guest wrote DEVVM-BASE-DONE, but the VM process of launch 1 exited with",
+        )),
+        (Done, Stall, _) => Err((UNAVAILABLE, "the guest reported done but did not power off within 2m")),
+        (Done, StatusUnknown, _) => Err((
+            UNAVAILABLE,
+            "the guest wrote DEVVM-BASE-DONE, but the launch's end could not be read, so the disk may be incomplete",
+        )),
+        (Nothing, CleanExit, false) => Ok(false),
+        (Nothing, CleanExit, true) => Err((ErrorKind::Io, LOG_TEXT)),
+        (Nothing, FailingExit, _) => Err((UNAVAILABLE, "the VM process of launch 1 exited with")),
+        (Nothing, Stall, _) => Err((
+            UNAVAILABLE,
+            "the first-logon script made no progress for 2m; the guest was stopped",
+        )),
+        (Nothing, StatusUnknown, _) => Err((ErrorKind::Io, STATUS_TEXT)),
+    }
 }
 
 #[skuld::test]
-fn an_end_or_log_that_could_not_be_read_is_the_error_when_the_guest_wrote_no_account() {
-    let end = verdict(1, unread_end(), Ok(()), &Serial::default()).err().unwrap();
-    let log = verdict(1, Ok(stalled()), unread_log(), &Serial::default())
-        .err()
-        .unwrap();
+fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and_each_host_failure_named_once() {
+    for account in [Account::Nothing, Account::Failed, Account::Done] {
+        for ending in [
+            Ending::CleanExit,
+            Ending::FailingExit,
+            Ending::Stall,
+            Ending::StatusUnknown,
+        ] {
+            for read_failed in [false, true] {
+                let row = format!("{account:?}, {ending:?}, log read failed: {read_failed}");
+                let serial = match account {
+                    Account::Nothing => Serial::default(),
+                    Account::Failed => wrote(Some("boom"), false),
+                    Account::Done => wrote(None, true),
+                };
+                let mut end = End {
+                    exit: match ending {
+                        Ending::CleanExit => Some(Exit::Exited(MachineExit {
+                            status: std::process::ExitStatus::default(),
+                            output: String::new(),
+                        })),
+                        Ending::FailingExit => Some(Exit::Exited(MachineExit {
+                            status: failing_status(),
+                            output: "qemu: out of memory".to_owned(),
+                        })),
+                        Ending::Stall => Some(stalled()),
+                        Ending::StatusUnknown => None,
+                    },
+                    host: Vec::new(),
+                };
+                let mut host_texts = Vec::new();
+                if matches!(ending, Ending::StatusUnknown) {
+                    end.host.push(Error::new(ErrorKind::Io, STATUS_TEXT));
+                    host_texts.push(STATUS_TEXT);
+                }
+                if read_failed {
+                    end.host.push(Error::new(ErrorKind::Io, LOG_TEXT));
+                    host_texts.push(LOG_TEXT);
+                }
 
-    assert_eq!(end.kind(), ErrorKind::Io);
-    assert_eq!(end.message(), "cannot read the VM process's status");
-    assert_eq!(log.kind(), ErrorKind::Io);
-    assert!(
-        log.message()
-            .starts_with("the first-logon script made no progress for 2m; the guest was stopped"),
-        "the end that was read is not dropped: {log}"
-    );
-    assert!(log.message().contains("cannot read the serial log"), "{log}");
-}
+                let result = verdict(1, end, &serial);
 
-#[skuld::test]
-fn a_failed_marker_is_the_headline_and_the_end_follows_when_the_log_could_not_be_read_to_its_end() {
-    let error = verdict(1, Ok(stalled()), unread_log(), &wrote(Some("boom"), false))
-        .err()
-        .unwrap();
-
-    assert_eq!(error.kind(), ErrorKind::Io);
-    assert_eq!(
-        error.message(),
-        "the Windows guest failed to build the base: boom\nthe first-logon script made no progress for 2m; the guest \
-         was stopped; io: cannot read the serial log as well"
-    );
-}
-
-#[skuld::test]
-fn an_end_and_a_log_that_could_neither_be_read_are_each_named_once() {
-    let error = verdict(1, unread_end(), unread_log(), &Serial::default())
-        .err()
-        .unwrap();
-
-    assert_eq!(error.kind(), ErrorKind::Io);
-    assert_eq!(
-        error.message().matches("cannot read the VM process's status").count(),
-        1,
-        "{error}"
-    );
-    assert_eq!(
-        error.message().matches("cannot read the serial log").count(),
-        1,
-        "{error}"
-    );
+                match (expected(account, ending, read_failed), result) {
+                    (Ok(finished), Ok(launched)) => {
+                        assert_eq!(matches!(launched, Launched::Finished), finished, "{row}");
+                    }
+                    (Err((kind, headline)), Err(error)) => {
+                        assert_eq!(error.kind(), kind, "{row}: {error}");
+                        assert!(error.message().starts_with(headline), "{row}: {error}");
+                        for text in &host_texts {
+                            assert_eq!(error.message().matches(text).count(), 1, "{row}: {text}: {error}");
+                        }
+                        assert!(!error.message().contains("as well"), "{row}: {error}");
+                        // The host's own failure is the headline, and so is the error itself, only when the guest
+                        // gave no account and the end told nothing.
+                        let is_the_host = matches!(account, Account::Nothing)
+                            && matches!(ending, Ending::CleanExit | Ending::StatusUnknown);
+                        let source = std::error::Error::source(&error);
+                        if host_texts.is_empty() || (is_the_host && host_texts.len() == 1) {
+                            assert!(source.is_none(), "{row}");
+                        } else {
+                            let source = source.unwrap_or_else(|| panic!("{row}: no source"));
+                            assert!(source.to_string().contains(host_texts[0]), "{row}: {source}");
+                        }
+                    }
+                    (expected, result) => panic!(
+                        "{row}: expected {expected:?}, got {:?}",
+                        result.map(|launched| matches!(launched, Launched::Finished))
+                    ),
+                }
+            }
+        }
+    }
 }
