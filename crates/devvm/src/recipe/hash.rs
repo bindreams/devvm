@@ -93,24 +93,34 @@ pub enum RootContent {
 // Framing =============================================================================================================
 
 /// The only place that frames bytes for hashing: every field is an 8-byte little-endian length and the bytes, so two
-/// different field sequences never produce the same input.
-struct Framer(Sha2);
+/// different field sequences never produce the same input. The guests' definition hashes use it too.
+pub(crate) struct Framer(Sha2);
 
 impl Framer {
     fn new(kind: &str) -> Framer {
-        let mut framer = Framer(Sha2::new());
+        let mut framer = Framer::unkeyed();
         framer.str(DOMAIN);
         framer.str(kind);
         framer
     }
 
-    fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
+    /// A framer whose first field is the caller's own domain tag: the layer-key domain is not written.
+    pub(crate) fn unkeyed() -> Framer {
+        Framer(Sha2::new())
+    }
+
+    /// The whole digest, not a key's first 128 bits.
+    pub(crate) fn finish_digest(self) -> [u8; 32] {
+        self.0.finalize().into()
+    }
+
+    pub(crate) fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
         self.0.update((bytes.len() as u64).to_le_bytes());
         self.0.update(bytes);
         self
     }
 
-    fn str(&mut self, text: &str) -> &mut Self {
+    pub(crate) fn str(&mut self, text: &str) -> &mut Self {
         self.bytes(text.as_bytes())
     }
 
@@ -119,11 +129,11 @@ impl Framer {
         self.bytes(&[tag])
     }
 
-    fn u32(&mut self, value: u32) -> &mut Self {
+    pub(crate) fn u32(&mut self, value: u32) -> &mut Self {
         self.bytes(&value.to_le_bytes())
     }
 
-    fn u64(&mut self, value: u64) -> &mut Self {
+    pub(crate) fn u64(&mut self, value: u64) -> &mut Self {
         self.bytes(&value.to_le_bytes())
     }
 

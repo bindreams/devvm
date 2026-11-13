@@ -71,7 +71,7 @@ pub(in crate::guest::windows) fn wrapped(argv: &[&str]) -> String {
 
 // The tests ===========================================================================================================
 
-const HOSTILE: &[&str] = &[
+pub(in crate::guest::windows) const HOSTILE: &[&str] = &[
     "",
     " ",
     "a b",
