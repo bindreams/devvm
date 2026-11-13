@@ -3,7 +3,6 @@
 //! QEMU's output goes to `qemu.log` in the instance directory. The file is quoted in errors when the process has exited
 //! and is never parsed: a healthy guest reset writes WHPX error lines to it.
 
-use std::io::{Read, Seek, SeekFrom};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,7 +12,7 @@ use super::qmp::{Qmp, QmpEndpoint, VmEnd};
 use crate::backend::{Endpoint, FileClaim, Machine, MachineExit, MachineRecord, SshEndpoint, directory_of};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
-use crate::host::{Host, ProcessWatch};
+use crate::host::{Host, ProcessWatch, read_from};
 use crate::{Arch, Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -37,14 +36,9 @@ pub(super) fn qemu_log(dir: &Path) -> PathBuf {
 }
 
 /// The text `log` holds from byte `from` on, trimmed: one launch's output, since every launch in a directory appends to
-/// the file. Only that part is read. A `from` past the end of the file (it was truncated) reads the whole file.
+/// the file. Only that part is read ([`read_from`]).
 fn printed_since(log: &Path, from: u64) -> std::io::Result<String> {
-    let mut file = std::fs::File::open(log)?;
-    let from = if from <= file.metadata()?.len() { from } else { 0 };
-    file.seek(SeekFrom::Start(from))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
+    Ok(String::from_utf8_lossy(&read_from(log, from)?).trim().to_owned())
 }
 
 /// The note that stands for a log that could not be read.

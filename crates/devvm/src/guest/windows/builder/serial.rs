@@ -4,10 +4,9 @@
 //! A marker is a line that starts with a fixed prefix. Only the prefix and the numbers after it are ever read as
 //! meaning; the text after `DEVVM-BASE-FAILED=` is localized and only echoed.
 
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use crate::host::is_absent;
+use crate::host::{is_absent, read_from};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -113,16 +112,10 @@ impl LogReader {
     }
 
     fn read_new(&self) -> Result<Vec<u8>> {
-        let fail = |e| Error::io(ErrorKind::Io, "cannot read the serial log", e);
-        let mut file = match std::fs::File::open(&self.path) {
-            Ok(file) => file,
-            Err(e) if is_absent(&e) => return Ok(Vec::new()),
-            Err(e) => return Err(fail(e)),
-        };
-        file.seek(SeekFrom::Start(self.read)).map_err(fail)?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(fail)?;
-        Ok(bytes)
+        match read_from(&self.path, self.read) {
+            Err(e) if is_absent(&e) => Ok(Vec::new()),
+            other => other.map_err(|e| Error::io(ErrorKind::Io, "cannot read the serial log", e)),
+        }
     }
 }
 
