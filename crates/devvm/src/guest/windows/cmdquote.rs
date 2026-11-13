@@ -3,7 +3,8 @@
 //! one copy in this repository: cosca's `quote::windows` quotes for `CommandLineToArgvW` and its `batch_gate` refuses
 //! batch targets, and ssh-broker's shim packs one command for a shell, so none of them quotes for `cmd.exe`.
 //!
-//! The arguments std refuses are refused: a NUL, a `\r` or a `\n` (cmd ends the command line there).
+//! The arguments std refuses are refused: a `\r` or a `\n`, which ends a cmd.exe command line, so a command of several
+//! lines has no command line. A NUL never gets here: `wrap` refuses it in every argument first.
 
 #[cfg(test)]
 #[path = "cmdquote_tests.rs"]
@@ -11,13 +12,9 @@ mod cmdquote_tests;
 
 /// Why `cmd.exe` cannot be given `arg`, if it cannot.
 fn refusal(arg: &str) -> Option<&'static str> {
-    if arg.contains('\0') {
-        Some("contains a NUL")
-    } else if arg.contains(['\r', '\n']) {
-        Some("contains a line break, which ends a cmd.exe command line")
-    } else {
-        None
-    }
+    debug_assert!(!arg.contains('\0'), "a NUL is refused before the quoting");
+    arg.contains(['\r', '\n'])
+        .then_some("contains a line break, which ends a cmd.exe command line")
 }
 
 /// `args` as the words of a batch file's command line, each after a space: quoted unless every character is known to be
@@ -69,58 +66,41 @@ fn append_batch_argument(line: &mut String, arg: &str) {
     }
 }
 
-/// How `cmd.exe` is given the command of `cmd [switches] /c <command>`.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum CmdCommand {
-    /// The arguments of `cmd.exe`: the switches, `/c`, and the command in one pair of quotes, which `cmd /c` strips.
-    Line(String),
-    /// A command of several lines, which a command line cannot carry: it runs from a temporary `.cmd` file, as a batch
-    /// file does. `switches` is what comes before the file (the switches and `/c`, quoted) and `text` the lines, each
-    /// ending with LF.
-    Script { switches: String, text: String },
-}
-
-/// The way `cmd.exe` is given the command for `argv` when `argv` is a `/c` command (`cmd /d /c <command>`), or `None`
-/// when it is not. One word after `/c` is cmd's own command text, which a script of the recipe is, and cmd reads it
-/// as it is; several are a program and its arguments, each quoted as a batch file's argument is (std's rule), so that
-/// every word stays one. A text of several lines is a [`CmdCommand::Script`]; a line break in any other word is
-/// refused. `argv[0]` is the program.
-pub(super) fn command_line_arguments(argv: &[String]) -> Option<Result<CmdCommand, String>> {
+/// The arguments of `cmd.exe` for `argv` when `argv` is a `/c` command (`cmd /d /c <command>`), or `None` when it is
+/// not: the switches, `/c`, and the command in one pair of quotes, which `cmd /c` strips. One word after `/c` is cmd's
+/// own command text, which a script of the recipe is, and cmd reads it as it is; several are a program and its
+/// arguments, each quoted as a batch file's argument is (std's rule), so that every word stays one. A word that cannot
+/// be given to cmd, a line break in the text included, is an `Err` naming its place. `argv[0]` is the program.
+pub(super) fn command_line_arguments(argv: &[String]) -> Option<Result<String, String>> {
     let at = argv.iter().skip(1).position(|arg| arg.eq_ignore_ascii_case("/c"))? + 1;
     let words = &argv[at + 1..];
     if words.is_empty() {
         return None;
     }
-    let mut switches = String::new();
+    let mut line = String::new();
     for (index, switch) in argv[1..at].iter().enumerate() {
         if let Some(why) = refusal(switch) {
             return Some(Err(format!("argument {} {why}", index + 1)));
         }
-        append_batch_argument(&mut switches, switch);
-        switches.push(' ');
+        append_batch_argument(&mut line, switch);
+        line.push(' ');
     }
-    switches.push_str(&argv[at]);
-    if let [text] = words {
-        if text.contains('\0') {
-            return Some(Err(format!("argument {} contains a NUL", at + 1)));
-        }
-        if text.contains(['\r', '\n']) {
-            return Some(Ok(CmdCommand::Script {
-                switches,
-                text: text.replace("\r\n", "\n").replace('\r', "\n"),
-            }));
-        }
-        return Some(Ok(CmdCommand::Line(format!("{switches} \"{text}\""))));
-    }
-    let mut command = String::new();
+    line.push_str(&argv[at]);
+    line.push_str(" \"");
+    let single = words.len() == 1;
     for (index, word) in words.iter().enumerate() {
         if let Some(why) = refusal(word) {
             return Some(Err(format!("argument {} {why}", at + 1 + index)));
         }
-        if index > 0 {
-            command.push(' ');
+        if single {
+            line.push_str(word);
+        } else {
+            if index > 0 {
+                line.push(' ');
+            }
+            append_batch_argument(&mut line, word);
         }
-        append_batch_argument(&mut command, word);
     }
-    Some(Ok(CmdCommand::Line(format!("{switches} \"{command}\""))))
+    line.push('"');
+    Some(Ok(line))
 }

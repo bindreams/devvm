@@ -107,11 +107,33 @@ fn a_command_is_wrapped_by_the_windows_wrapper() {
 }
 
 #[skuld::test]
-fn a_multi_line_cmd_step_script_is_wrapped_to_run_and_is_not_refused() {
-    let argv = WindowsGuest.shell_argv(Some(Shell::Cmd), "echo a\r\necho b").unwrap();
+fn a_cmd_step_script_with_a_block_scalars_line_end_is_wrapped_to_run_and_is_not_refused() {
+    let argv = WindowsGuest.shell_argv(Some(Shell::Cmd), "echo a\r\n").unwrap();
     let text = WindowsGuest.wrap(&Command::new(argv)).unwrap();
-    assert!(text.contains("WriteAllBytes"), "{text}");
+    assert!(text.contains(r#"$psi.Arguments = '/d /c "echo a"'"#), "{text}");
     // What runs for `cmd.exe` is not a refusal.
     let cmd_branch = &text[text.find("elseif").unwrap()..text.find("} else {").unwrap()];
     assert!(!cmd_branch.contains("exit 126"), "{text}");
+}
+
+#[skuld::test]
+fn shell_argv_for_cmd_drops_the_line_end_a_block_scalar_leaves() {
+    for script in ["echo hi\n", "echo hi\r\n", "echo hi\n\n"] {
+        assert_eq!(
+            WindowsGuest.shell_argv(Some(Shell::Cmd), script).unwrap(),
+            ["cmd", "/d", "/c", "echo hi"],
+            "{script:?}"
+        );
+    }
+}
+
+#[skuld::test]
+fn shell_argv_for_cmd_refuses_several_lines_naming_the_limit_and_the_ways_out() {
+    for script in ["echo a\necho b", "echo a\r\necho b\n", "echo a\recho b"] {
+        let error = WindowsGuest.shell_argv(Some(Shell::Cmd), script).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{script:?}");
+        for word in ["cmd", "one line", "shell: pwsh", ".cmd file"] {
+            assert!(error.message().contains(word), "{word}: {error}");
+        }
+    }
 }

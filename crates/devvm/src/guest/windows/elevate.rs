@@ -57,8 +57,9 @@ pub(super) const READ: &str = "read";
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
 const PAUSE_MILLISECONDS: u32 = 200;
 
-/// The task is looked up, and the request is built, before the request is published; the start comes after. Whatever
-/// ends the script past the publication runs the `finally`, which releases what the caller opened and either removes the
+/// The task is looked up, and the request is built, before the request is published; the start comes after, and
+/// everything after the publication is inside one `try`. A failure in it is an answer of 126 that names it, and the
+/// request is withdrawn if no runner holds it. The `finally` releases what the caller opened and either removes the
 /// request (a caller that claimed it itself, or a runner that died: nobody else will touch it) or tells the runner it was
 /// read.
 const CALLER_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
@@ -77,14 +78,8 @@ $self = [Diagnostics.Process]::GetCurrentProcess()
 $id = [guid]::NewGuid().ToString('N')
 $dir = Join-Path $root $id
 $building = "$dir.tmp"
-[void][IO.Directory]::CreateDirectory($building)
-[IO.File]::WriteAllText("$building\{SCRIPT}", {INNER}, $utf8)
-[IO.File]::WriteAllText("$building\{CALLER}", "$($self.Id) $($self.StartTime.ToUniversalTime().Ticks)", $utf8)
-[IO.Directory]::Move($building, $dir)
 $claim = Join-Path $dir '{CLAIM}'
 $done = Join-Path $dir '{DONE}'
-$stdout = [Console]::OpenStandardOutput()
-$stderr = [Console]::OpenStandardError()
 $streams = @{}
 function Copy-Out([string]$name, $sink) {
     if (-not $streams.ContainsKey($name)) {
@@ -100,16 +95,26 @@ function Test-Held([string]$path) {
     catch [IO.FileNotFoundException] { return $false }
     catch [IO.IOException] { return $true }
 }
+# Claiming the request ourselves withdraws it: no runner takes it. False when the claim is not ours but a runner's, which
+# serves the request.
+function Withdraw-Request {
+    try { [IO.File]::Open($claim, 'CreateNew', 'Write', 'None').Dispose(); return $true }
+    catch [IO.IOException] { return $false }
+}
 $code = 126
 $message = $null
 $abandoned = $false
+[void][IO.Directory]::CreateDirectory($building)
+[IO.File]::WriteAllText("$building\{SCRIPT}", {INNER}, $utf8)
+[IO.File]::WriteAllText("$building\{CALLER}", "$($self.Id) $($self.StartTime.ToUniversalTime().Ticks)", $utf8)
+[IO.Directory]::Move($building, $dir)
 try {
+    $stdout = [Console]::OpenStandardOutput()
+    $stderr = [Console]::OpenStandardError()
     try { [void]$task.Run($null) }
     catch {
         $message = "the elevated helper did not start: $($_.Exception.Message)"
-        # Claiming the request ourselves withdraws it. A claim that is not ours is a runner's, which serves it.
-        try { [IO.File]::Open($claim, 'CreateNew', 'Write', 'None').Dispose(); $abandoned = $true }
-        catch [IO.IOException] { $message = $null }
+        if (Withdraw-Request) { $abandoned = $true } else { $message = $null }
     }
     while (-not $message) {
         $claimed = [IO.File]::Exists($claim)
@@ -117,17 +122,25 @@ try {
         $finished = [IO.File]::Exists($done)
         Copy-Out {STDOUT} $stdout
         Copy-Out {STDERR} $stderr
-        if ($finished) { $code = [int]([IO.File]::ReadAllText((Join-Path $dir '{EXIT}')).Trim()); break }
+        if ($finished) {
+            $status = [IO.File]::ReadAllText((Join-Path $dir '{EXIT}')).Trim()
+            if (-not [int]::TryParse($status, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref]$code)) {
+                $message = 'the elevated runner wrote an unreadable status'
+            }
+            break
+        }
         if ($claimed -and -not $held) { $message = 'the elevated runner ended without a result'; $abandoned = $true; break }
         if (-not $claimed -and $task.GetInstances(0).Count -eq 0) {
-            try { [IO.File]::Open($claim, 'CreateNew', 'Write', 'None').Dispose() }
-            catch [IO.IOException] { Start-Sleep -Milliseconds {PAUSE}; continue }
+            if (-not (Withdraw-Request)) { Start-Sleep -Milliseconds {PAUSE}; continue }
             $message = "the elevated helper did not run the command (task state: $($states[[int]$task.State]))"
             $abandoned = $true
             break
         }
         Start-Sleep -Milliseconds {PAUSE}
     }
+} catch {
+    $message = "the elevated helper failed: $($_.Exception.Message)"
+    if (-not $abandoned) { $abandoned = Withdraw-Request }
 } finally {
     foreach ($stream in $streams.Values) { $stream.Dispose() }
     if ($abandoned) {

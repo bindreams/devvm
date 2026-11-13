@@ -253,26 +253,17 @@ fn an_elevated_script_checks_its_session_where_the_caller_and_the_inner_script_b
 }
 
 #[skuld::test]
-fn a_multi_line_cmd_script_runs_from_a_temporary_cmd_file_the_script_removes() {
-    let text = script(&["cmd", "/d", "/c", "echo a\necho b"]);
-    // The lines are written, each ending with CR LF, to a file of its own name, which `cmd.exe` runs as a batch file.
-    assert!(text.contains("'echo a\necho b'.Replace("), "{text}");
-    assert!(!text.contains('\r'), "no CR travels in the script");
-    assert!(text.contains("[IO.File]::WriteAllBytes($tmp,"), "{text}");
-    assert!(text.contains("'/d /c \"\"' + $tmp + '\"\"'"), "{text}");
-    // It is removed whatever happens to the command, before the script ends with the command's status.
-    let carried = text.find("[Diagnostics.Process]::Start($psi)").unwrap();
-    let removed = text.find("Remove-Item -LiteralPath $tmp").unwrap();
-    let exit = text.rfind("exit $p.ExitCode").unwrap();
-    let tried = text.find("try {\n$p = ").unwrap();
-    assert!(tried < carried && carried < removed && removed < exit, "{text}");
-    assert!(text.contains("} finally {"), "{text}");
-    // A command without a line break has no file, and the other targets are untouched.
-    for argv in [&["cmd", "/d", "/c", "echo a"][..], &["tool", "a\nb"]] {
-        let plain = script(argv);
+fn a_multi_line_cmd_text_is_refused_in_the_script_like_any_argument() {
+    for text in ["echo a\necho b", "echo a\r\necho b"] {
+        let script = script(&["cmd", "/d", "/c", text]);
         assert!(
-            !plain.contains("WriteAllBytes") && !plain.contains("finally"),
-            "{plain}"
+            script.contains("[Console]::Error.WriteLine('devvm: argument 3 contains a line break"),
+            "{script}"
+        );
+        // No file is written and nothing is cleaned up: the command is not run.
+        assert!(
+            !script.contains("WriteAllBytes") && !script.contains("finally"),
+            "{script}"
         );
     }
 }

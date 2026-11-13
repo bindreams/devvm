@@ -105,11 +105,22 @@ impl GuestOs for WindowsGuest {
                 .map(|part| (*part).to_owned())
                 .chain([format!("{UTF8_OUTPUT}; {script}")])
                 .collect(),
-            Some(Shell::Cmd) => ["cmd", "/d", "/c"]
-                .iter()
-                .map(|part| (*part).to_owned())
-                .chain([script.to_owned()])
-                .collect(),
+            Some(Shell::Cmd) => {
+                // A block scalar ends with a line end, which is not a second line.
+                let script = script.trim_end_matches(['\r', '\n']);
+                if script.contains(['\r', '\n']) {
+                    return Err(Error::new(
+                        ErrorKind::Recipe,
+                        "`shell: cmd` runs one line: cmd.exe cannot be given a line break in a command line. Use \
+                         `shell: pwsh`, or copy in a .cmd file and run it",
+                    ));
+                }
+                ["cmd", "/d", "/c"]
+                    .iter()
+                    .map(|part| (*part).to_owned())
+                    .chain([script.to_owned()])
+                    .collect()
+            }
             Some(Shell::Sh | Shell::Bash) => {
                 return Err(Error::new(
                     ErrorKind::Recipe,

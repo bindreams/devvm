@@ -50,8 +50,9 @@ impl Engine {
         let flat = recipe.flatten()?;
         let arch = opts.arch.unwrap_or_else(Arch::host);
         let guest = self.guests.os(flat.guest)?;
-        // Before anything is built or keyed: a setting the guest does not have is the recipe's mistake.
-        refuse_unavailable_settings(&flat, &*guest)?;
+        // Before anything is built or keyed: a setting the guest does not have, or a script its shell cannot carry, is the
+        // recipe's mistake.
+        refuse_unavailable_commands(&flat, &*guest)?;
         let builder = self.guests.builder(flat.guest)?;
         self.backend()?;
         let store = self.store()?;
@@ -137,14 +138,17 @@ impl Engine {
     }
 }
 
-/// The first `set` step the guest cannot apply is an error, in the words of the guest and the step.
-fn refuse_unavailable_settings(flat: &Flattened, guest: &dyn GuestOs) -> Result<()> {
+/// The first step whose guest command the guest cannot be given is an error, in the words of the guest and the step: a
+/// `set` step it cannot apply, and a `run` step whose script its shell cannot carry. It is the one check of the commands
+/// the recipe holds, made before anything is built or keyed.
+fn refuse_unavailable_commands(flat: &Flattened, guest: &dyn GuestOs) -> Result<()> {
     for (index, flat_step) in flat.steps.iter().enumerate() {
-        if let Step::Set(setting) = &flat_step.step {
-            guest
-                .setting_command(setting)
-                .map_err(|error| in_step(error, index, flat.steps.len(), setting.name()))?;
-        }
+        let found = match &flat_step.step {
+            Step::Set(setting) => guest.setting_command(setting).map(drop),
+            Step::Run { command, shell, .. } => guest.shell_argv(*shell, command).map(drop),
+            Step::Copy { .. } => continue,
+        };
+        found.map_err(|error| in_step(error, index, flat.steps.len(), &describe(&flat_step.step)))?;
     }
     Ok(())
 }

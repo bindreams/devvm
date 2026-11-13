@@ -278,6 +278,15 @@ fn a_cmd_file_target_keeps_cmd_quoting(#[fixture(unicode_home)] home: &Path, #[f
             None => assert_eq!(echoed(&output), ["a b", "c&d", "q\"x"], "{script}: {}", shown(&output)),
         }
     }
+    // A text of several lines is refused, and nothing runs.
+    let lines = run(&wrapped(&["cmd.exe", "/d", "/c", "echo a\necho b"]), "wrap-argv", None);
+    assert_eq!(lines.status.code(), Some(126), "{}", shown(&lines));
+    assert!(lines.stdout.is_empty(), "{}", shown(&lines));
+    assert!(
+        String::from_utf8_lossy(&lines.stderr).contains("line break"),
+        "{}",
+        shown(&lines)
+    );
     // The words after `/c` stay one each when they are a program and its arguments.
     let words = run(
         &wrapped(&["cmd.exe", "/d", "/c", exe.as_str(), "a b", "c&d", "q\"x"]),

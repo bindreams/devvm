@@ -25,19 +25,25 @@ pub(crate) fn connect_ready(
 ) -> Result<SshSession> {
     let bound = BootBound::start(engine.boot_bound())?;
     let vm = engine.vm_exit(machine).map_err(|e| awaiting_ssh(e, target))?;
-    let session = SshSession::connect(
+    let session = connect(engine, target, &vm, bound)?;
+    ready_session(engine, guest, name, target, &vm, bound, session)
+}
+
+/// A connection to the guest at `target` for the boot wait, which `vm` and `bound` end.
+fn connect(engine: &Engine, target: &SshTarget, vm: &VmExit, bound: BootBound) -> Result<SshSession> {
+    SshSession::connect(
         target,
         Keepalive::STANDARD,
         vm.clone(),
         Some(bound),
         engine.progress().as_ref(),
-    )?;
-    ready_session(engine, guest, name, target, &vm, bound, session)
+    )
 }
 
 /// Waits for the guest's readiness on `session`, past its boot phase. A guest that restarts during its boot ends the
 /// connection: that is not an end of the wait while the VM lives and the boot bound has not passed, so the wait goes
-/// on over a new connection, which reaches the new boot. Any other failure ends it.
+/// on over a new connection, which reaches the new boot, after the connection retry's pause: a guest that answers and
+/// drops the connection at once would otherwise be asked in a tight loop. Any other failure ends it.
 fn ready_session(
     engine: &Engine,
     guest: &dyn GuestOs,
@@ -54,13 +60,8 @@ fn ready_session(
                 return Ok(session);
             }
             Err(e) if e.kind() == ErrorKind::ConnectionLost && !bound.has_passed() && !vm.has_ended() => {
-                session = SshSession::connect(
-                    target,
-                    Keepalive::STANDARD,
-                    vm.clone(),
-                    Some(bound),
-                    engine.progress().as_ref(),
-                )?;
+                std::thread::sleep(RETRY_PAUSE);
+                session = connect(engine, target, vm, bound)?;
             }
             Err(e) => return Err(e),
         }
@@ -129,14 +130,7 @@ pub(crate) fn reconnect_after_reset(
     let vm = engine.vm_exit(machine).map_err(|e| awaiting_ssh(e, target))?;
     let mut last_failed_read: Option<Error> = None;
     loop {
-        let session = SshSession::connect(
-            target,
-            Keepalive::STANDARD,
-            vm.clone(),
-            Some(bound),
-            engine.progress().as_ref(),
-        )
-        .map_err(|e| match &last_failed_read {
+        let session = connect(engine, target, &vm, bound).map_err(|e| match &last_failed_read {
             Some(read) => e.together_with(format!("the last read of the boot id failed ({})", read.message())),
             None => e,
         })?;

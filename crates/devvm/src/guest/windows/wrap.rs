@@ -10,13 +10,12 @@
 //!    the child's status (the "C2" carrier: every byte of stdout and stderr, and every 32-bit status, measured exact).
 //!    The arguments are built on the host in the three forms the guest can need, and the guest picks by the file it
 //!    found: a list for a program, the batch-file command line of [`cmdquote`] for a `.cmd` or `.bat` file, and the
-//!    command line of `cmd.exe /c <text>` for `cmd.exe` (a text of several lines is run from a temporary `.cmd` file the
-//!    script writes and removes). No output encoding is set here: it would re-encode every
-//!    user program's output.
+//!    command line of `cmd.exe /c <text>` for `cmd.exe` (a text of several lines is refused, as any argument with a line
+//!    break is). No output encoding is set here: it would re-encode every user program's output.
 //!
 //! An elevated command is the same script run by the helper of [`elevate`].
 
-use super::cmdquote::{self, CmdCommand};
+use super::cmdquote;
 use super::elevate;
 use crate::{Command, Error, ErrorKind, Result, RunAs};
 
@@ -167,15 +166,10 @@ fn user_script(cmd: &Command) -> Result<String> {
     script.push_str("if ($ext -ieq '.cmd' -or $ext -ieq '.bat') {\n");
     script.push_str(&batch_form(args));
     script.push('}');
-    let mut file = false;
     if let Some(form) = cmdquote::command_line_arguments(&cmd.argv) {
         script.push_str(" elseif ([IO.Path]::GetFileName($app.Source) -ieq 'cmd.exe') {\n");
         script.push_str(&match form {
-            Ok(CmdCommand::Line(line)) => format!("$psi.Arguments = {}\n", literal(&line)),
-            Ok(CmdCommand::Script { switches, text }) => {
-                file = true;
-                script_file_form(&switches, &text)
-            }
+            Ok(line) => format!("$psi.Arguments = {}\n", literal(&line)),
             Err(why) => refusal(&why),
         });
         script.push('}');
@@ -185,31 +179,9 @@ fn user_script(cmd: &Command) -> Result<String> {
         script.push_str(&format!("$psi.ArgumentList.Add({})\n", literal(arg)));
     }
     script.push_str("}\n");
-    if file {
-        // The temporary file goes whatever becomes of the command, and the script then ends with the status.
-        script.push_str("try {\n");
-        script.push_str(CARRY);
-        script.push_str(
-            "} finally {\nif ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }\n}\n",
-        );
-    } else {
-        script.push_str(CARRY);
-    }
+    script.push_str(CARRY);
     script.push_str(EXIT);
     Ok(script)
-}
-
-/// The arguments of `cmd.exe` for a command of several lines: the lines are written to a file of a new name in the
-/// user's temporary directory, in the console's code page (which is how `cmd.exe` reads a batch file), and `cmd.exe`
-/// runs it like a batch file, as `cmd /c ""<file>""`.
-fn script_file_form(switches: &str, text: &str) -> String {
-    format!(
-        "$tmp = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'devvm-' + [guid]::NewGuid().ToString('N') + '.cmd')\n\
-         [IO.File]::WriteAllBytes($tmp, [Text.Encoding]::GetEncoding([Console]::OutputEncoding.CodePage).GetBytes({}.Replace(\"`n\", \"`r`n\")))\n\
-         $psi.Arguments = {} + $tmp + '\"\"'\n",
-        literal(text),
-        literal(&format!("{switches} \"\""))
-    )
 }
 
 /// The arguments of a batch file: std's own command line, `cmd.exe /e:ON /v:OFF /d /c ""<file>" <arguments>"`, or the

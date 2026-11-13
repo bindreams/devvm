@@ -7,15 +7,18 @@ use std::sync::Arc;
 
 use crate::access::keys::InstanceKeys;
 use crate::backend::Backend;
-use crate::backend::fake::FakeBackend;
+use crate::backend::fake::{FakeBackend, FakeStorage};
 use crate::engine::build::{Lines, extract_command, guest_destination, root_of};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
+use crate::exit::NullProgress;
 use crate::guest::fake::{FakeGuests, ServedGuests};
+use crate::guest::linux::{LinuxBuilder, QemuGuests};
 use crate::guest::{GuestOs, Guests};
 use crate::host::symlink_metadata_if_present;
 use crate::recipe::Recipe;
 use crate::recipe::hash::{KeyContext, LayerKey, chain_keys};
+use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::sshd::{SshdOptions, TestSshd};
@@ -408,4 +411,43 @@ fn a_carriage_return_with_nothing_pending_reports_no_line() {
         ["x"],
         "wherever the writes split them"
     );
+}
+
+/// The guests of the QEMU backend: a Windows recipe's guest is the real one, whose shells are the real ones.
+fn qemu_guests(home: &Path) -> Arc<dyn Guests> {
+    let fetcher = Fetcher::new(
+        Dirs::under(home).downloads(),
+        Arc::new(HttpTransport::new().unwrap()),
+        Arc::new(NullProgress),
+    );
+    Arc::new(QemuGuests::new(Arc::new(LinuxBuilder::new(
+        Arc::new(fetcher),
+        Arc::new(FakeStorage::default()),
+    ))))
+}
+
+/// A `run` step whose command the guest cannot be given is found before anything is built or keyed, like a refused
+/// `set` step: it is the recipe's mistake, and a build of an hour would otherwise end at its step. The engine has no
+/// backend and the ISO is missing: either would be the error if the step were not looked at first.
+#[skuld::test]
+fn a_run_step_the_guest_cannot_be_given_fails_before_any_base_is_built(#[fixture(unicode_home)] home: &Path) {
+    for (step, say) in [
+        ("run: |\n      echo a\n      echo b\n    shell: cmd", "pwsh"),
+        ("run: echo hi\n    shell: sh", "windows"),
+    ] {
+        let dirs = Dirs::under(home);
+        let engine = engine_with(dirs.clone(), &TestHost, None, qemu_guests(home), memory());
+        let recipe = Recipe::parse(
+            &format!("from: {{ iso: missing.iso }}\nsteps:\n  - {step}\n"),
+            &home.join("r.devvm.yaml"),
+        )
+        .unwrap();
+
+        let error = engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{step}: {error}");
+        assert!(error.message().contains("step 1 of 1"), "{step}: {error}");
+        assert!(error.message().contains(say), "{step}: {error}");
+        assert!(!dirs.iso_memo().exists() && !is_there(&dirs.builds()), "{step}");
+    }
 }

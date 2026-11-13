@@ -85,6 +85,29 @@ fn a_connection_lost_while_waiting_for_readiness_is_reconnected_and_the_wait_goe
 }
 
 #[skuld::test]
+fn a_connection_lost_while_waiting_for_readiness_is_followed_by_the_retry_pause_before_the_reconnect(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let target = target_at(&fx, home);
+    // A guest whose session answers with the connection lost each time, as one that restarts does.
+    fx.guests.drop_connections_in_readiness(3);
+
+    let started = Instant::now();
+    connect_ready(
+        &fx.engine,
+        &*linux(&fx),
+        &name(),
+        &target,
+        &running_machine(home, fx.server.addr()),
+    )
+    .unwrap();
+
+    // Each loss is followed by a pause: no connect-and-probe loop runs free.
+    assert!(started.elapsed() >= 3 * RETRY_PAUSE, "{:?}", started.elapsed());
+}
+
+#[skuld::test]
 fn a_boot_id_that_cannot_be_read_yet_is_asked_again_after_the_retry_pause_each_time(
     #[fixture(unicode_home)] home: &Path,
 ) {
