@@ -273,6 +273,16 @@ fn definition_hash_changes_when_the_seed_template_changes() {
     assert_ne!(definition_hash_of(&a, 1), definition_hash_of(&b, 1));
 }
 
+/// The layer keys of every cached Linux base contain this hash: it is pinned, so that a change to how it is made
+/// shows up here and not as a cache that misses.
+#[skuld::test]
+fn the_definition_hash_of_a_known_seed_is_the_value_cached_bases_were_keyed_with() {
+    assert_eq!(
+        hex::encode(definition_hash_of(&files("template one"), 1)),
+        "affd9ffa0a68854353ec5636cdd2089cb3e4f5bb6d941c1c1b34fad5de49cd91"
+    );
+}
+
 #[skuld::test]
 fn the_builders_definition_hash_is_the_hash_of_the_real_seed_and_follows_its_inputs(
     #[fixture(unicode_home)] home: &Path,

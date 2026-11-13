@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use secrecy::SecretString;
-use sha2::{Digest, Sha256 as Sha2};
 
 use super::{LinuxGuest, seed};
 use crate::backend::Storage;
@@ -13,7 +12,7 @@ use crate::guest::{BaseBuilder, BuildCtx, SeedKeys, SeedSpec};
 use crate::instance::record::InstanceId;
 use crate::media::SeedFile;
 use crate::recipe::Source;
-use crate::recipe::hash::LayerKey;
+use crate::recipe::hash::{Framer, LayerKey};
 use crate::store::fetch::{Artifact, Fetcher};
 use crate::store::layers::{Generation, LayerDir, LayerMeta};
 use crate::{Error, ErrorKind, Result};
@@ -92,21 +91,15 @@ fn probe_spec() -> SeedSpec {
     }
 }
 
-/// The hash of a seed definition: every file, name and contents, and the semantics version. Fields are length-prefixed,
-/// so no two definitions share a byte stream.
+/// The hash of a seed definition: every file, name and contents, and the semantics version. The domain tag and the
+/// field layout are those of every cached Linux base's key; a change to either invalidates them.
 fn definition_hash_of(files: &[SeedFile], semantics_version: u32) -> [u8; 32] {
-    let mut hasher = Sha2::new();
-    let mut field = |bytes: &[u8]| {
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(bytes);
-    };
-    field(b"devvm linux base definition 1");
-    field(&semantics_version.to_le_bytes());
+    let mut framer = Framer::unkeyed();
+    framer.str("devvm linux base definition 1").u32(semantics_version);
     for file in files {
-        field(file.name.as_bytes());
-        field(&file.bytes);
+        framer.str(&file.name).bytes(&file.bytes);
     }
-    hasher.finalize().into()
+    framer.finish_digest()
 }
 
 /// A source in the words of an error message.
