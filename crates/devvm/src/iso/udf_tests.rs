@@ -82,7 +82,6 @@ fn the_tree_is_read_through_the_handle_it_was_opened_with_not_the_path(#[fixture
     let iso = home.join("kept.iso");
     std::fs::copy(iso_fixture("three-images.iso"), &iso).unwrap();
     let udf = open(&iso).unwrap();
-    // Another file takes the ISO's path.
     std::fs::write(home.join("other.iso"), vec![9u8; 700_000]).unwrap();
     std::fs::rename(home.join("other.iso"), &iso).unwrap();
 

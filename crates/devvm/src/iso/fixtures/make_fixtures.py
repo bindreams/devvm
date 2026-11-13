@@ -78,9 +78,7 @@ def build(name: str, *, xml: str, noprompt_size: int = IMAGE_SIZE, noprompt: boo
           xml_flags: int = FLAG_METADATA, xml_at: int = HEADER_SIZE, extent_types: tuple[int, ...] = (),
           efisys_extent_types: tuple[int, ...] = (), link: bool = False, file_type: int | None = None,
           empty: bool = False, spell=str, also_install: str | None = None) -> None:
-    """`extent_types` and `efisys_extent_types` cut `install` and the UDF `efisys.bin` (see `cut`). `link` makes
-    `install` a UDF symbolic link, `file_type` gives it another type, `empty` has it hold no bytes. `spell` writes every UDF path; `also_install` adds a second `install` file under that
-    name."""
+    """`spell` maps every UDF path (e.g. to upper case)."""
     efisys, efisys_noprompt = image(1), image(2, noprompt_size)
     iso = pycdlib.PyCdlib()
     iso.new(interchange_level=3, udf="2.60")
@@ -107,7 +105,6 @@ def build(name: str, *, xml: str, noprompt_size: int = IMAGE_SIZE, noprompt: boo
         if also_install:
             add(data, None, f"/sources/{also_install}")
         if extent_types:
-            # A file over 1 GiB is stored in several extents.
             cut(iso, spell(f"/sources/{install}"), extent_types)
         if file_type is not None:
             iso.get_record(udf_path=spell(f"/sources/{install}")).icb_tag.file_type = file_type

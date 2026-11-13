@@ -106,7 +106,7 @@ pub(super) enum Platform {
 }
 
 /// An ISO file, read through its UDF tree. The file is opened by the caller and everything is read through that one
-/// handle. The UDF tree is mounted once.
+/// handle.
 pub(super) struct Udf<'a> {
     iso: &'a Path,
     file: std::fs::File,
@@ -188,10 +188,9 @@ impl<'a> Udf<'a> {
     }
 
     /// Where the bytes of the file `path` lie in the ISO, in file order; `None` when the tree has no such file. A file
-    /// may lie in several pieces. A directory or a link, and a file whose parts do not follow one another from byte 0
-    /// to its length (a part that was never written, one that has no storage (a gap), parts that overlap or run past
-    /// the end), are refused: their bytes are not in the ISO where the pieces say. For mapping raw bytes, as the boot
-    /// images need; `open_file` reads a file whole.
+    /// may lie in several pieces. Refuses anything but a regular file whose parts are contiguous, all hold data and
+    /// cover its length (a directory, a link, an unwritten extent, a hole anywhere): its bytes would not be in the ISO
+    /// where the pieces say. For mapping raw bytes, as the boot images need; `open_file` reads a file whole.
     pub(super) fn pieces(&self, path: &str) -> Result<Option<Vec<Piece>>> {
         let Some(path) = self.spelled(path)? else {
             return Ok(None);
