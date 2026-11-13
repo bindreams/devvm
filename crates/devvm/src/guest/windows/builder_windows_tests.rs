@@ -11,13 +11,14 @@ use fatfs::{FileSystem, FsOptions};
 
 use super::Bounds;
 use super::builder_tests::{Rig, rig, text_of};
-use crate::ErrorKind;
 use crate::backend::fake::{FakeBackend, GuestScript};
+use crate::backend::qemu::machine::qemu_log;
 use crate::backend::{MachineSpec, MediaFormat, MediaKind};
 use crate::contain::Lifetime;
 use crate::store::layers::Clock;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::TestHost;
+use crate::{Error, ErrorKind};
 
 impl Rig {
     fn serial_log(&self, launch: usize) -> PathBuf {
@@ -26,6 +27,14 @@ impl Rig {
 
     fn progress(&self) -> Vec<String> {
         self.env.progress.messages()
+    }
+
+    /// A failed build's directory goes with it, so its error names nothing in it and carries what it held.
+    fn assert_names_no_build_file(&self, error: &Error) {
+        assert!(
+            !error.message().contains(&self.ctx.work.display().to_string()),
+            "{error}"
+        );
     }
 }
 
@@ -43,8 +52,17 @@ struct Launch {
     serial: String,
     /// Done before the guest powers off: it may write the answer disk.
     before: Option<Before>,
-    /// The guest powers off at the end; otherwise it runs for ever.
-    off: bool,
+    end: End,
+}
+
+/// How a launch ends.
+enum End {
+    /// The guest powers off: the VM process exits with status 0.
+    PowersOff,
+    /// The VM process dies with status 1.
+    Crashes,
+    /// The guest runs for ever.
+    Runs,
 }
 
 impl Launch {
@@ -52,13 +70,20 @@ impl Launch {
         Launch {
             serial: serial.to_owned(),
             before: None,
-            off: true,
+            end: End::PowersOff,
         }
     }
 
     fn running(serial: &str) -> Launch {
         Launch {
-            off: false,
+            end: End::Runs,
+            ..Launch::off(serial)
+        }
+    }
+
+    fn crashing(serial: &str) -> Launch {
+        Launch {
+            end: End::Crashes,
             ..Launch::off(serial)
         }
     }
@@ -85,8 +110,10 @@ fn guest(launches: Vec<Launch>) -> GuestScript {
         if let Some(before) = &launch.before {
             before(spec);
         }
-        if launch.off {
-            power.power_off();
+        match launch.end {
+            End::PowersOff => power.power_off(),
+            End::Crashes => power.crash(),
+            End::Runs => {}
         }
     })
 }
@@ -207,7 +234,8 @@ fn a_launch_after_the_first_without_a_new_progress_marker_is_a_boot_loop_and_fai
     let message = error.message();
     assert!(message.contains("launch 3"), "{message}");
     assert!(message.contains("specialize"), "{message}");
-    assert!(message.contains(&rig.serial_log(3).display().to_string()), "{message}");
+    assert!(message.contains("the end of the serial log"), "{message}");
+    rig.assert_names_no_build_file(&error);
     assert_eq!(backend.launches(), 3, "no fourth launch");
 }
 
@@ -219,7 +247,30 @@ fn a_boot_loop_that_never_wrote_a_marker_is_found_at_the_second_launch(#[fixture
     let error = rig.build(None).unwrap_err();
 
     assert!(error.message().contains("launch 2"), "{error}");
+    rig.assert_names_no_build_file(&error);
     assert_eq!(backend.launches(), 2);
+}
+
+#[skuld::test]
+fn an_exit_with_a_failure_status_is_an_error_naming_the_launch_and_status(#[fixture(unicode_home)] home: &Path) {
+    let crashed = Launch::crashing("DEVVM-PROGRESS=specialize\r\n")
+        .before(|spec| std::fs::write(qemu_log(&spec.dir), "qemu: fatal: out of memory\n").unwrap());
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![Launch::off(""), crashed]));
+    let (rig, backend) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    let message = error.message();
+    assert!(message.contains("launch 2"), "{message}");
+    assert!(message.contains("exit code: 1"), "{message}");
+    assert!(message.contains("specialize"), "the serial tail: {message}");
+    assert!(
+        message.contains("qemu: fatal: out of memory"),
+        "QEMU's own log: {message}"
+    );
+    rig.assert_names_no_build_file(&error);
+    assert_eq!(backend.launches(), 2, "a crashed VM is not a Setup reboot");
 }
 
 #[skuld::test]
@@ -238,7 +289,8 @@ fn the_failed_marker_fails_the_build_at_once_and_only_its_prefix_is_read(#[fixtu
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     let message = error.message();
     assert!(message.contains(german), "{message}");
-    assert!(message.contains(&rig.serial_log(2).display().to_string()), "{message}");
+    assert!(message.contains("the end of the serial log"), "{message}");
+    rig.assert_names_no_build_file(&error);
     assert_eq!(backend.launches(), 2, "a failed first logon is not a Setup reboot");
 }
 
@@ -253,10 +305,9 @@ fn a_missing_license_marker_fails_the_build(#[fixture(unicode_home)] home: &Path
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(error.message().contains("DEVVM-LICENSE"), "{error}");
-    assert!(
-        error.message().contains(&rig.serial_log(1).display().to_string()),
-        "{error}"
-    );
+    assert!(error.message().contains("the end of the serial log"), "{error}");
+    assert!(error.message().contains("DEVVM-BASE-DONE"), "{error}");
+    rig.assert_names_no_build_file(&error);
 }
 
 #[skuld::test]
@@ -266,7 +317,8 @@ fn an_unreadable_license_marker_fails_the_build(#[fixture(unicode_home)] home: &
 
     let error = rig.build(None).unwrap_err();
 
-    assert!(error.message().contains("DEVVM-LICENSE"), "{error}");
+    assert!(error.message().contains("DEVVM-LICENSE=not json"), "{error}");
+    rig.assert_names_no_build_file(&error);
 }
 
 #[skuld::test]
@@ -322,13 +374,10 @@ fn each_launch_writes_its_own_serial_log_and_an_error_names_the_phase_that_faile
     for (n, text) in [(1, "first"), (2, "second")] {
         assert!(text_of(&rig.serial_log(n)).contains(text), "serial-{n}.log");
     }
+    assert!(error.message().contains("boom"), "{error}");
     assert!(
-        error.message().contains(&rig.serial_log(3).display().to_string()),
-        "{error}"
-    );
-    assert!(
-        !error.message().contains("serial-2.log"),
-        "only the failed phase's log: {error}"
+        !error.message().contains("second"),
+        "only the failed launch's log: {error}"
     );
 }
 
@@ -376,7 +425,7 @@ fn the_sizes_of_the_logs_winpe_left_on_the_answer_disk_are_reported_at_the_end_o
 
 #[skuld::test]
 fn a_stall_in_winpe_names_the_log_read_back_from_the_answer_disk(#[fixture(unicode_home)] home: &Path) {
-    let winpe = Launch::running("").before(|spec| {
+    let winpe = Launch::running("firmware line\r\n").before(|spec| {
         guest_writes(
             &answer_disk(spec),
             "logs/winpe.log",
@@ -396,7 +445,9 @@ fn a_stall_in_winpe_names_the_log_read_back_from_the_answer_disk(#[fixture(unico
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     let message = error.message();
     assert!(message.contains("Windows Setup"), "{message}");
-    assert!(message.contains(&rig.serial_log(1).display().to_string()), "{message}");
+    assert!(message.contains("within 300ms"), "{message}");
+    assert!(message.contains("firmware line"), "{message}");
+    rig.assert_names_no_build_file(&error);
     assert!(message.contains("logs/winpe.log"), "{message}");
     assert!(message.contains("last winpe line"), "{message}");
     assert_eq!(backend.launches(), 1);

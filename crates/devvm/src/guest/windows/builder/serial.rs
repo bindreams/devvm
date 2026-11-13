@@ -4,8 +4,10 @@
 //! A marker is a line that starts with a fixed prefix. Only the prefix and the numbers after it are ever read as
 //! meaning; the text after `DEVVM-BASE-FAILED=` is localized and only echoed.
 
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
+use crate::host::is_absent;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -50,9 +52,73 @@ pub(super) fn read(log: &[u8]) -> Serial {
     serial
 }
 
-/// The length of the part of `log` that ends in a line end: what can be read while the guest may still be writing.
-pub(super) fn whole_lines(log: &[u8]) -> usize {
-    log.iter().rposition(|byte| *byte == b'\n').map_or(0, |end| end + 1)
+impl Serial {
+    /// Adds what a later part of the same log says: its phases follow, and its license and failure replace earlier ones.
+    fn append(&mut self, later: &Serial) {
+        self.progress.extend(later.progress.iter().cloned());
+        self.license = later.license.clone().or(self.license.take());
+        self.failed = later.failed.clone().or(self.failed.take());
+        self.done |= later.done;
+    }
+}
+
+/// A launch's serial log, read as the guest writes it: each read takes only the bytes written since the one before, so
+/// a long build does not read its log again for every poll.
+pub(super) struct LogReader {
+    path: PathBuf,
+    /// How many bytes are taken in: those up to the last line end, until the log is complete.
+    offset: u64,
+    whole: Serial,
+}
+
+impl LogReader {
+    pub(super) fn new(path: &Path) -> LogReader {
+        LogReader {
+            path: path.to_owned(),
+            offset: 0,
+            whole: Serial::default(),
+        }
+    }
+
+    /// Takes in what the guest wrote since the last call and returns the markers of that part alone. A line the guest
+    /// is still writing waits for its line end, unless the log is `complete` (the guest is gone): then a last line
+    /// without one is read too. A log QEMU has not made yet is empty.
+    pub(super) fn poll(&mut self, complete: bool) -> Result<Serial> {
+        let new = self.read_new()?;
+        let used = if complete {
+            new.len()
+        } else {
+            new.iter().rposition(|byte| *byte == b'\n').map_or(0, |end| end + 1)
+        };
+        self.offset += used as u64;
+        let part = read(&new[..used]);
+        self.whole.append(&part);
+        Ok(part)
+    }
+
+    /// Every marker taken in so far.
+    pub(super) fn whole(&self) -> &Serial {
+        &self.whole
+    }
+
+    fn read_new(&self) -> Result<Vec<u8>> {
+        let fail = |e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot read the serial log {}", self.path.display()),
+                e,
+            )
+        };
+        let mut file = match std::fs::File::open(&self.path) {
+            Ok(file) => file,
+            Err(e) if is_absent(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(fail(e)),
+        };
+        file.seek(SeekFrom::Start(self.offset)).map_err(fail)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(fail)?;
+        Ok(bytes)
+    }
 }
 
 /// The launches of a build that ended without finishing it, and the markers they wrote. A guest reboot is a process
@@ -65,10 +131,10 @@ pub(super) struct Launches {
 }
 
 impl Launches {
-    /// Records a launch, whose serial log `log` is, that ended without the build being done or failed. The first launch
-    /// is Windows Setup's first stage, which has no way to write a marker, so it needs none; every later launch must
-    /// have written a marker no earlier launch wrote, or the build is looping.
-    pub(super) fn note(&mut self, serial: &Serial, log: &Path) -> Result<()> {
+    /// Records a launch that ended without the build being done or failed. The first launch is Windows Setup's first
+    /// stage, which has no way to write a marker, so it needs none; every later launch must have written a marker no
+    /// earlier launch wrote, or the build is looping.
+    pub(super) fn note(&mut self, serial: &Serial) -> Result<()> {
         self.count += 1;
         let before = self.seen.len();
         for phase in &serial.progress {
@@ -90,9 +156,8 @@ impl Launches {
                 ErrorKind::Unavailable,
                 format!(
                     "the guest restarted and wrote {wrote} in launch {}, so the Windows build is not moving forward \
-                     ({last}); serial log: {}",
-                    self.count,
-                    log.display()
+                     ({last})",
+                    self.count
                 ),
             ));
         }

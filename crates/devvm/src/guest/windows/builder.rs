@@ -7,17 +7,19 @@
 //! exit (`no_reboot`), so the build relaunches, and goes on only while each launch moves forward.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::process::ExitStatus;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
-use self::serial::{Launches, Serial};
+use self::serial::{Launches, LogReader, Serial};
 use super::WindowsGuest;
 use super::expiry::expiry_from;
 use super::pins::VIRTIO_WIN;
 use super::templates::{self, AnswerInputs, COMPUTER_NAME, TIME_ZONE};
+use crate::access::session::humanly;
+use crate::backend::qemu::machine::qemu_log;
 use crate::backend::{Backend, DeviceProfile, LAYER_DISK, Machine, MachineSpec, Media, MediaFormat, MediaKind, Patch};
-use crate::contain::{Lifetime, VmProcess};
+use crate::contain::Lifetime;
 use crate::guest::{BaseBuilder, BuildCtx, GuestOs};
 use crate::host::{Host, is_absent};
 use crate::instance::record::InstanceId;
@@ -151,8 +153,8 @@ struct Stall {
 
 /// How a launch ended.
 enum Exit {
-    /// The VM process exited by itself.
-    Exited,
+    /// The VM process exited by itself, with this status.
+    Exited(ExitStatus),
     /// The VM was killed because [`Stall`]'s bound passed.
     Stalled(Stall),
 }
@@ -177,15 +179,13 @@ struct Build<'a> {
     /// The overlay of the ISO, attached to the first launch only.
     overlay: PathBuf,
     launches: Launches,
-    /// The last `DEVVM-LICENSE=` line and the serial log it is in.
-    license: Option<(String, PathBuf)>,
+    /// The last `DEVVM-LICENSE=` line.
+    license: Option<String>,
     phase: Phase,
     /// When the phase began.
     since: Instant,
     /// Whether any progress marker has been seen: WinPE, which has no serial port, is over once one has.
     saw_marker: bool,
-    /// How many markers of the running launch's serial log are on the progress channel.
-    echoed: usize,
 }
 
 impl<'a> Build<'a> {
@@ -250,7 +250,6 @@ impl<'a> Build<'a> {
             phase: Phase::Setup,
             since: Instant::now(),
             saw_marker: false,
-            echoed: 0,
         })
     }
 
@@ -269,21 +268,19 @@ impl<'a> Build<'a> {
             }
         };
         self.report_winpe_log_sizes();
-        let (read, license_log) = self.license.as_ref().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Unavailable,
-                format!(
-                    "the guest finished without a DEVVM-LICENSE line, so when the base expires is not known; serial log: {}",
-                    log.display()
+        let Some(read) = &self.license else {
+            return Err(with_log_tail(
+                Error::new(
+                    ErrorKind::Unavailable,
+                    "the guest finished without a DEVVM-LICENSE line, so when the base expires is not known",
                 ),
-            )
-        })?;
+                "the serial log",
+                &log,
+            ));
+        };
         expiry_from(read, evaluation, self.ctx.clock.now()).map_err(|error| {
             let kind = error.kind();
-            error.with_context(
-                kind,
-                format!("the Windows base's license read (serial log {})", license_log.display()),
-            )
+            error.with_context(kind, "the Windows base's license read")
         })
     }
 
@@ -296,46 +293,61 @@ impl<'a> Build<'a> {
             let _ = machine.kill();
             return Err(error);
         }
-        // QEMU opens its media before it answers on its control socket, which `resume` waits for.
+        // The ISO is open in QEMU once `resume` has returned: `qemu_init` opens every drive before the main loop that
+        // serves the control socket's greeting starts (QEMU's source order, not a measurement of ours).
         drop(held.take());
-        self.echoed = 0;
-        let exit = self.wait(&mut *machine, log);
+        let mut reader = LogReader::new(log);
+        let exit = self.wait(&mut *machine, &mut reader);
         // The VM is gone, killed or exited: this removes what it left outside its directory.
         let killed = machine.kill();
         let exit = exit?;
         killed?;
 
-        let bytes = read_log(log)?;
-        let serial = serial::read(&bytes);
-        self.observe(&serial, log);
-        if let Exit::Stalled(stall) = exit {
-            let error = Error::new(
-                ErrorKind::Unavailable,
-                format!(
-                    "{} did not finish within {}; the guest was stopped; serial log: {}",
-                    stall.awaited,
-                    describe(stall.bound),
-                    log.display()
-                ),
-            );
-            return Err(self.with_winpe_logs(with_serial_tail(error, &bytes)));
+        let rest = reader.poll(true)?;
+        self.observe(&rest);
+        let serial = reader.whole();
+        match exit {
+            Exit::Stalled(stall) => {
+                let error = Error::new(
+                    ErrorKind::Unavailable,
+                    format!(
+                        "{} did not finish within {}; the guest was stopped",
+                        stall.awaited,
+                        humanly(stall.bound)
+                    ),
+                );
+                return Err(self.fail(error, log));
+            }
+            Exit::Exited(status) if !status.success() => {
+                let error = Error::new(
+                    ErrorKind::Unavailable,
+                    format!("the VM process of launch {number} exited with {status}"),
+                );
+                let error = with_log_tail(error, "QEMU's log", &qemu_log(&self.work.join(MACHINE_DIR)));
+                return Err(self.fail(error, log));
+            }
+            Exit::Exited(_) => {}
         }
         if let Some(why) = &serial.failed {
-            return Err(self.with_winpe_logs(Error::new(
+            let error = Error::new(
                 ErrorKind::Unavailable,
-                format!(
-                    "the Windows guest failed to build the base: {why}; serial log: {}",
-                    log.display()
-                ),
-            )));
+                format!("the Windows guest failed to build the base: {why}"),
+            );
+            return Err(self.fail(error, log));
         }
         if serial.done {
             return Ok(Launched::Finished);
         }
-        self.launches
-            .note(&serial, log)
-            .map_err(|error| self.with_winpe_logs(with_serial_tail(error, &bytes)))?;
+        if let Err(error) = self.launches.note(serial) {
+            return Err(self.fail(error, log));
+        }
         Ok(Launched::Restarted)
+    }
+
+    /// `error` of a launch whose serial log is `log`, with the end of that log and, while no marker has been written,
+    /// what WinPE left on the answer disk.
+    fn fail(&self, error: Error, log: &Path) -> Error {
+        self.with_winpe_logs(with_log_tail(error, "the serial log", log))
     }
 
     /// The spec of launch `number`: the install media only in the first.
@@ -385,49 +397,21 @@ impl<'a> Build<'a> {
         })
     }
 
-    /// Waits until the machine's VM process exits, reporting the guest's progress as it writes it. The VM is killed
-    /// when the bound of the phase it is in passes: the bound ends the wait for an event that may never happen, and
-    /// the error that follows names it.
-    fn wait(&mut self, machine: &mut dyn Machine, log: &Path) -> Result<Exit> {
-        let Some(process) = VmProcess::attach(&machine.record().process)? else {
-            return Ok(Exit::Exited);
-        };
-        let (sender, exited) = mpsc::channel();
-        // A thread that blocks until the process exits, as the engine's exit watcher does. It ends with the process.
-        std::thread::Builder::new()
-            .name("devvm-windows-base-exit".to_owned())
-            .spawn(move || {
-                let _ = sender.send(process.wait().map_err(|e| e.message().to_owned()));
-            })
-            .map_err(|e| Error::io(ErrorKind::Io, "cannot start the thread that watches the VM process", e))?;
+    /// Waits until the machine's VM process exits, reporting the guest's progress as it writes it, and returns how it
+    /// exited. The wait ends with [`Exit::Stalled`] when the bound of the phase it is in passes: the bound ends the wait
+    /// for an event that may never happen, and the error that follows names it. The caller kills the VM.
+    fn wait(&mut self, machine: &mut dyn Machine, reader: &mut LogReader) -> Result<Exit> {
         loop {
-            match exited.recv_timeout(self.builder.bounds.poll) {
-                Ok(Ok(())) => return Ok(Exit::Exited),
-                Ok(Err(why)) => {
-                    let _ = machine.kill();
-                    return Err(Error::new(
-                        ErrorKind::Io,
-                        format!("cannot wait for the VM process: {why}; serial log: {}", log.display()),
-                    ));
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Err(error) = read_log(log).map(|bytes| self.observe_whole_lines(&bytes, log)) {
-                        let _ = machine.kill();
-                        return Err(error);
-                    }
-                    if let Some(stall) = self.stall() {
-                        machine.kill()?;
-                        return Ok(Exit::Stalled(stall));
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    let _ = machine.kill();
-                    return Err(Error::new(
-                        ErrorKind::Internal,
-                        "the thread that watches the VM process ended without saying that it exited",
-                    ));
-                }
+            // The status is read before anything can reap the process.
+            if let Some(status) = machine.try_wait()? {
+                return Ok(Exit::Exited(status));
             }
+            let written = reader.poll(false)?;
+            self.observe(&written);
+            if let Some(stall) = self.stall() {
+                return Ok(Exit::Stalled(stall));
+            }
+            std::thread::sleep(self.builder.bounds.poll);
         }
     }
 
@@ -440,15 +424,10 @@ impl<'a> Build<'a> {
         (self.since.elapsed() > bound).then_some(Stall { awaited, bound })
     }
 
-    /// What the running guest has written so far; a line the guest is still writing is left for the next read.
-    fn observe_whole_lines(&mut self, bytes: &[u8], log: &Path) {
-        self.observe(&serial::read(&bytes[..serial::whole_lines(bytes)]), log);
-    }
-
-    /// Takes in what the guest wrote to `log`: reports each new marker, moves to the first-logon phase when its script
-    /// starts, and keeps the last license read.
-    fn observe(&mut self, serial: &Serial, log: &Path) {
-        for phase in &serial.progress[self.echoed.min(serial.progress.len())..] {
+    /// Takes in what the guest wrote: reports each marker, moves to the first-logon phase when its script starts, and
+    /// keeps the last license read.
+    fn observe(&mut self, written: &Serial) {
+        for phase in &written.progress {
             self.ctx.progress.message(&format!("Windows base: {phase}"));
             self.saw_marker = true;
             if self.phase == Phase::Setup && phase.starts_with(FIRST_LOGON) {
@@ -456,9 +435,8 @@ impl<'a> Build<'a> {
                 self.since = Instant::now();
             }
         }
-        self.echoed = serial.progress.len();
-        if let Some(license) = &serial.license {
-            self.license = Some((license.clone(), log.to_owned()));
+        if let Some(license) = &written.license {
+            self.license = Some(license.clone());
         }
     }
 
@@ -510,29 +488,18 @@ impl<'a> Build<'a> {
     }
 }
 
-/// The serial log as it is now. A log QEMU has not made yet is empty.
-fn read_log(path: &Path) -> Result<Vec<u8>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(bytes),
-        Err(e) if is_absent(&e) => Ok(Vec::new()),
-        Err(e) => Err(Error::io(
-            ErrorKind::Io,
-            format!("cannot read the serial log {}", path.display()),
-            e,
-        )),
-    }
-}
-
-/// `error`, with the end of the serial log it names: the file goes with the build's directory.
-fn with_serial_tail(error: Error, serial: &[u8]) -> Error {
-    let tail = last_lines(serial);
+/// `error`, with the last lines of the log `what` at `path`: the build's directory, and the log with it, is gone when the
+/// error is read. A log that is missing or empty adds nothing, and one that cannot be read says so.
+fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
+    let tail = match std::fs::read(path) {
+        Ok(bytes) => last_lines(&bytes),
+        Err(e) if is_absent(&e) => String::new(),
+        Err(e) => format!("(cannot be read: {e})"),
+    };
     if tail.is_empty() {
         return error;
     }
-    Error::new(
-        error.kind(),
-        format!("{}\nthe end of the serial log:\n{tail}", error.message()),
-    )
+    Error::new(error.kind(), format!("{}\nthe end of {what}:\n{tail}", error.message()))
 }
 
 /// The last 20 lines of a log, with the line ends of a Windows file taken off.
@@ -540,15 +507,6 @@ fn last_lines(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(20)..].join("\n")
-}
-
-/// A bound in the words of an error.
-fn describe(bound: Duration) -> String {
-    match bound.as_secs() {
-        0 => format!("{} ms", bound.as_millis()),
-        1..=59 => format!("{} seconds", bound.as_secs()),
-        seconds => format!("{} minutes", seconds / 60),
-    }
 }
 
 /// The password of the guest's account and its autologon: random for each build and never stored by devvm (the guest

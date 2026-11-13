@@ -1,11 +1,24 @@
+use std::io::Write;
 use std::path::Path;
 
-use super::{Launches, read};
+use super::{Launches, LogReader, Serial, read};
+use crate::test_support::fixtures::unicode_home;
 use crate::{ErrorKind, Result};
 
 /// One finished launch whose serial log held `log`.
 fn note(launches: &mut Launches, log: &[u8]) -> Result<()> {
-    launches.note(&read(log), Path::new("serial.log"))
+    launches.note(&read(log))
+}
+
+/// Appends `bytes` to `path`, as the guest's serial port does.
+fn append(path: &Path, bytes: &[u8]) {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(bytes)
+        .unwrap();
 }
 
 #[skuld::test]
@@ -94,7 +107,6 @@ fn a_later_launch_needs_a_marker_no_earlier_launch_wrote() {
     let message = error.message();
     assert!(message.contains("launch 4"), "{message}");
     assert!(message.contains("first logon"), "{message}");
-    assert!(message.contains("serial.log"), "{message}");
 }
 
 #[skuld::test]
@@ -114,4 +126,115 @@ fn the_last_marker_is_the_newest_of_every_launch() {
     note(&mut launches, b"DEVVM-PROGRESS=a\n").unwrap();
     note(&mut launches, b"DEVVM-PROGRESS=a\nDEVVM-PROGRESS=b\n").unwrap();
     assert_eq!(launches.last_marker(), Some("b"));
+}
+
+#[skuld::test]
+fn a_poll_returns_only_the_markers_written_since_the_one_before(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    let mut reader = LogReader::new(&log);
+    append(
+        &log,
+        b"DEVVM-PROGRESS=a
+DEVVM-LICENSE=first
+",
+    );
+    let first = reader.poll(false).unwrap();
+    append(
+        &log,
+        b"DEVVM-PROGRESS=b
+",
+    );
+
+    let second = reader.poll(false).unwrap();
+
+    assert_eq!(first.progress, ["a"]);
+    assert_eq!(first.license.as_deref(), Some("DEVVM-LICENSE=first"));
+    assert_eq!(second.progress, ["b"]);
+    assert_eq!(second.license, None, "the license is the first poll's");
+    assert_eq!(reader.poll(false).unwrap(), Serial::default(), "nothing was written");
+}
+
+#[skuld::test]
+fn a_line_the_guest_is_still_writing_waits_for_its_line_end(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    let mut reader = LogReader::new(&log);
+    append(
+        &log,
+        b"DEVVM-PROGRESS=a
+DEVVM-PROGRESS=spec",
+    );
+
+    let early = reader.poll(false).unwrap();
+    append(
+        &log, b"ialize
+",
+    );
+    let late = reader.poll(false).unwrap();
+
+    assert_eq!(early.progress, ["a"]);
+    assert_eq!(late.progress, ["specialize"]);
+}
+
+#[skuld::test]
+fn the_last_poll_takes_a_final_line_that_has_no_line_end(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    let mut reader = LogReader::new(&log);
+    append(
+        &log,
+        b"DEVVM-PROGRESS=a
+DEVVM-BASE-DONE",
+    );
+
+    let before = reader.poll(false).unwrap();
+    let last = reader.poll(true).unwrap();
+
+    assert!(!before.done);
+    assert!(last.done);
+    assert!(reader.whole().done);
+    assert_eq!(reader.whole().progress, ["a"]);
+}
+
+#[skuld::test]
+fn a_log_qemu_has_not_made_yet_holds_nothing_and_is_read_from_its_start_once_it_exists(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let log = home.join("serial.log");
+    let mut reader = LogReader::new(&log);
+
+    assert_eq!(reader.poll(false).unwrap(), Serial::default());
+    append(
+        &log,
+        b"DEVVM-PROGRESS=a
+",
+    );
+
+    assert_eq!(reader.poll(false).unwrap().progress, ["a"]);
+}
+
+#[skuld::test]
+fn the_whole_log_is_every_poll_together_with_the_last_license_and_failure(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    let mut reader = LogReader::new(&log);
+    append(
+        &log,
+        b"DEVVM-PROGRESS=a
+DEVVM-LICENSE=1
+",
+    );
+    reader.poll(false).unwrap();
+    append(
+        &log,
+        b"DEVVM-PROGRESS=b
+DEVVM-LICENSE=2
+DEVVM-BASE-FAILED=boom
+",
+    );
+    reader.poll(true).unwrap();
+
+    let whole = reader.whole();
+
+    assert_eq!(whole.progress, ["a", "b"]);
+    assert_eq!(whole.license.as_deref(), Some("DEVVM-LICENSE=2"));
+    assert_eq!(whole.failed.as_deref(), Some("boom"));
+    assert!(!whole.done);
 }
