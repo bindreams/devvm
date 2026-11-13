@@ -104,6 +104,7 @@ build("no-install-image.iso", xml=SINGLE, install=None)
 build("install-wim-in-two-extents.iso", xml=SINGLE, xml_at=4096, extent_types=(0, 0))
 build("install-wim-with-an-unwritten-extent.iso", xml=SINGLE, xml_at=4096, extent_types=(0, 1))
 build("install-wim-with-a-hole.iso", xml=SINGLE, xml_at=6144, extent_types=(0, 2, 0))
+build("install-wim-ending-in-a-hole.iso", xml=SINGLE, extent_types=(0, 2))
 # UDF names are exact-case; Windows ISOs differ in case from one another.
 build("upper-case-names.iso", xml=SINGLE, spell=str.upper)
 build("two-install-names-of-one-spelling.iso", xml=SINGLE, also_install="INSTALL.WIM")

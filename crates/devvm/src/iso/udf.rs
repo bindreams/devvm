@@ -174,9 +174,18 @@ impl<'a> Udf<'a> {
             }
             match buffer[..count].last() {
                 Some(last) if count == buffer.len() => from = last.file_offset() + last.len(),
-                _ => return Ok(Some(found)),
+                _ => break,
             }
         }
+        // `extents` leaves holes out, so a hole at the end has no extent whose offset shows the gap.
+        let length = udf
+            .stat(node)
+            .map_err(|e| unreadable(self.iso, &format!("read the size of {path} in"), &e))?
+            .len();
+        if stored != length {
+            return Err(refused("ends in a part that has no storage"));
+        }
+        Ok(Some(found))
     }
 
     /// The file `path`, readable and seekable across all its pieces; `None` when the tree has no such file.

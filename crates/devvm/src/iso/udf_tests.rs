@@ -141,6 +141,16 @@ fn a_file_with_a_gap_between_its_extents_is_refused_naming_it() {
 }
 
 #[skuld::test]
+fn a_file_that_ends_in_a_hole_is_refused_naming_it() {
+    let iso = iso_fixture("install-wim-ending-in-a-hole.iso");
+    let error = open(&iso).unwrap().pieces("/sources/install.wim").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("install-wim-ending-in-a-hole.iso"), "{error}");
+    assert!(error.message().contains("sources/install.wim"), "{error}");
+    assert!(error.message().contains("no storage"), "{error}");
+}
+
+#[skuld::test]
 fn names_are_found_whatever_their_case() {
     let iso = iso_fixture("upper-case-names.iso");
     let udf = open(&iso).unwrap();
