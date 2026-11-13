@@ -4,7 +4,8 @@
 //! The ISO is installed from a qcow2 overlay that holds only its patched boot image, so Setup starts without a key
 //! press and no copy of the ISO is made. The guest answers from a writable USB disk whose scripts install OpenSSH,
 //! PowerShell and ssh-broker and write markers to the serial port ([`serial`]). Every guest restart is a VM process
-//! exit (`no_reboot`), so the build relaunches, and goes on only while each launch moves forward.
+//! exit (`no_reboot`), so the build relaunches, and goes on only while each launch moves forward. A VM process that
+//! exits with a failure status ends the build.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
