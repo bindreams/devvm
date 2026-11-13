@@ -72,6 +72,7 @@ pub(crate) struct FakeBackend {
     ssh_endpoint: Option<SocketAddr>,
     shutdown_fails: bool,
     launch_fails: bool,
+    try_wait_fails: bool,
     guest: Option<GuestScript>,
 }
 
@@ -139,6 +140,7 @@ impl FakeBackend {
             ssh_endpoint: None,
             shutdown_fails: false,
             launch_fails: false,
+            try_wait_fails: false,
             guest: None,
         }
     }
@@ -152,6 +154,12 @@ impl FakeBackend {
     /// A backend whose machines refuse every graceful `shutdown`; `kill` still works.
     pub(crate) fn with_failing_shutdown(mut self) -> FakeBackend {
         self.shutdown_fails = true;
+        self
+    }
+
+    /// A backend whose machines cannot say whether their VM process has exited: `try_wait` fails.
+    pub(crate) fn with_failing_try_wait(mut self) -> FakeBackend {
+        self.try_wait_fails = true;
         self
     }
 
@@ -329,6 +337,7 @@ impl Backend for FakeBackend {
             host: self.host,
             ssh_endpoint: self.ssh_endpoint,
             shutdown_fails: self.shutdown_fails,
+            try_wait_fails: self.try_wait_fails,
             guest: self.guest.clone().map(|script| (script, index, spec.clone())),
         }))
     }
@@ -353,6 +362,7 @@ impl Backend for FakeBackend {
             host: self.host,
             ssh_endpoint: self.ssh_endpoint,
             shutdown_fails: self.shutdown_fails,
+            try_wait_fails: self.try_wait_fails,
             guest: None,
         }))
     }
@@ -394,6 +404,8 @@ struct FakeMachine {
     ssh_endpoint: Option<SocketAddr>,
     /// See [`FakeBackend::with_failing_shutdown`].
     shutdown_fails: bool,
+    /// See [`FakeBackend::with_failing_try_wait`].
+    try_wait_fails: bool,
     /// See [`FakeBackend::with_guest`]: the script, the launch's number and its spec.
     guest: Option<(GuestScript, usize, MachineSpec)>,
 }
@@ -440,6 +452,12 @@ impl Machine for FakeMachine {
     }
 
     fn try_wait(&self) -> Result<Option<MachineExit>> {
+        if self.try_wait_fails {
+            return Err(Error::new(
+                ErrorKind::Io,
+                "cannot read the VM process's status: the fake machine's try_wait fails",
+            ));
+        }
         Ok(self.vm.try_wait()?.map(|status| MachineExit {
             status,
             output: EXIT_OUTPUT.to_owned(),

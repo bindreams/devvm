@@ -316,10 +316,15 @@ impl<'a> Build<'a> {
         killed: Result<()>,
         reader: &mut LogReader,
     ) -> Result<Launched> {
+        // The log's tail is read first: a wait that failed has left markers unread, and `fail` tells WinPE's logs from
+        // the first-logon script's by the markers seen.
+        let rest = reader.poll(true);
+        if let Ok(rest) = &rest {
+            self.observe(rest);
+        }
         let exit = exit?;
         killed?;
-        let rest = reader.poll(true)?;
-        self.observe(&rest);
+        rest?;
         let serial = reader.whole();
         let exited = match exit {
             Exit::Stalled(stall) => {

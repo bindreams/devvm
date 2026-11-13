@@ -272,6 +272,35 @@ fn an_exit_with_a_failure_status_is_an_error_naming_the_launch_and_status(#[fixt
 }
 
 #[skuld::test]
+fn a_wait_that_fails_still_reads_the_markers_the_guest_wrote_before_it_names_the_error(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let logon = Launch::running("DEVVM-PROGRESS=first logon: x\r\nlast serial line\r\n").before(|spec| {
+        guest_writes(&answer_disk(spec), "logs/winpe.log", b"old winpe line");
+    });
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![logon]))
+        .with_failing_try_wait();
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(message.contains("cannot read the VM process's status"), "{message}");
+    assert!(message.contains("last serial line"), "the serial tail: {message}");
+    assert!(
+        rig.progress().iter().any(|line| line.contains("first logon: x")),
+        "the marker the wait never polled is reported: {:?}",
+        rig.progress()
+    );
+    assert!(
+        !message.contains("old winpe line"),
+        "a marker was seen, so WinPE's logs are not the account of the failure: {message}"
+    );
+    rig.assert_names_no_build_file(&error);
+}
+
+#[skuld::test]
 fn a_failed_marker_is_the_headline_whatever_the_exit_and_the_exit_is_named_after_it(
     #[fixture(unicode_home)] home: &Path,
 ) {
