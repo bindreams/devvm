@@ -5,10 +5,14 @@
 #   medium     sshd -> broker shim -> Medium agent -> pwsh -> emit
 #   elevated   the same through the elevated agent (the host switches the agent first)
 #   local      no sshd in the path: stage-user.ps1 runs the shim itself with pipes, from the user's own session
+#   b2b        M-d (plan 9.4): sshd's DefaultShell is cmd.exe; the host makes back-to-back connections from five threads, a
+#              command with no stdin each, so sessions end while the next connection is spawned. With `hk1` or `hkdef`.
 # The variant is `<path>` plus dot-separated options (variant.txt, e.g. `medium.b95`):
 #   d1 | d3   sshd logs at DEBUG1 | DEBUG3 to C:\ProgramData\ssh\logs\<program>.log (sshd.log for the listener,
 #             sshd-session.log for the sessions), and the watcher keeps the last part of each
 #             (no option: sshd's default log level, the setting every earlier hang was seen with)
+#   hk1 | hkdef   (b2b) sshd_config's `HostKey` is the seeded ed25519 key only (the product's, plan 6.3) | no `HostKey` line:
+#             sshd loads the default host keys (the base's setting, where the listener wedge was seen)
 #   dump      hangdump.ps1: on a stalled transfer, procdump -ma of every sshd process and the logs, sent to the host (E1)
 #   pkt       with `dump`: a pktmon capture of port 22 per stalled episode, written and converted by hangdump.ps1 (E3)
 #   eof       the host client sends the stdin EOF only after the whole echo came back (E2; the host's option, nothing here)
@@ -27,6 +31,7 @@ $sshdKey = $tokens | Where-Object { $_ -in 'b95', 'p98', 'p100', 'inbox' } | Sel
 $logLevel = if ($tokens -contains 'd3') { 'DEBUG3' } elseif ($tokens -contains 'd1') { 'DEBUG1' } else { '' }
 $dump = $tokens -contains 'dump'
 $capture = $tokens -contains 'pkt'
+$onlyEd25519 = $tokens -contains 'hk1'
 Send-Line "DEVVM-WEDGE-VARIANT=$full path=$variant sshd=$sshdKey loglevel=$logLevel"
 
 # The sshd to measure. Win32-OpenSSH zips from GitHub, pinned by sha256 (10.0.0.0p2's is the release's own digest; the
@@ -102,16 +107,23 @@ Step 'HELPERS' {
 if ($sshdKey) { Step 'SSHD-VARIANT' { Install-SshdVariant $sshdKey } }
 Step 'BROKER-APPLY' { Invoke-BrokerApply $Root }
 Step 'AGENT-TASKS' { Register-AgentTask 'devvm-agent-elevated' 'Highest'; Register-AgentTask 'devvm-agent-medium' 'Limited' }
-if ($variant -eq 'nobroker') {
-    # What `apply` set is the broker as the shell; sshd reads it for every session. pwsh runs the command itself.
+if ($variant -in 'nobroker', 'b2b') {
+    # What `apply` set is the broker as the shell; sshd reads it for every session. pwsh runs the command itself (b2b:
+    # cmd.exe, which starts at once; the connections are the measurement, not the shell).
+    $shell = if ($variant -eq 'b2b') { 'C:\Windows\System32\cmd.exe' } else { 'C:\Program Files\PowerShell\7\pwsh.exe' }
     Step 'NOBROKER' {
         $key = 'HKLM:\SOFTWARE\OpenSSH'
-        Set-ItemProperty -LiteralPath $key -Name DefaultShell -Value 'C:\Program Files\PowerShell\7\pwsh.exe'
+        Set-ItemProperty -LiteralPath $key -Name DefaultShell -Value $shell
+        if ($variant -eq 'b2b') { Set-ItemProperty -LiteralPath $key -Name DefaultShellCommandOption -Value '/c' }  # `apply` sets the broker's `-c`
         Get-ItemProperty -LiteralPath $key | Select-Object DefaultShell, DefaultShellCommandOption, DefaultShellEscapeArguments | Out-String
     }
 }
 Step 'SEED' { Invoke-Seed $Root }
-Step 'SSHD-START' { Invoke-SshdStart $logLevel }
+Step 'SSHD-START' { Invoke-SshdStart $logLevel $onlyEd25519 }
+if ($variant -eq 'b2b') {
+    # The host keys sshd loaded, as sshd reports its effective configuration.
+    Step 'HOSTKEYS' { & 'C:\Program Files\OpenSSH\sshd.exe' -T 2>&1 | Select-String -Pattern '^(hostkey|loglevel|syslogfacility) ' | ForEach-Object { $_.Line } }
+}
 Step 'WATCHER' { Start-Watcher }
 if ($dump) { Step 'HANGDUMP' { Start-HangDump $Root $capture } }
 Send-Line 'DEVVM-SSH-STARTED'

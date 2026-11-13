@@ -15,6 +15,12 @@ payload-*.ps1, the program `emit cat` as the wrapper would call it) with 1 MiB o
              this driver sends 1 MiB and reads it back, SAMPLES times
   local      the guest runs the shim itself, with pipes, no sshd and no network (stages/wedge/stage-user.ps1); this driver
              only waits for it
+  b2b        M-d (plan 9.4), with `hk1` (sshd_config's one `HostKey`: ed25519) or `hkdef` (no `HostKey` line: the default
+             host keys): sshd's DefaultShell is cmd.exe and the client sends no stdin. First the size of what the listener
+             writes for one connection (the watcher's per-process write counter of sshd.exe before and after), then
+             SAMPLES bursts of THREADS threads, PER_THREAD sequential connections each (`exit 0`), so sessions end while
+             another connection is spawned. A burst is PASS when every connection ended with status 0 and sshd still
+             sends its banner afterwards; the first banner that does not come is a WEDGE (listener) and ends the stage.
 
 The variant name may carry options after dots (`medium.b95`; stages/wedge/stage-system.ps1 lists them): a different sshd
 (`b95` 9.5.0.0p1-Beta, `p98` 9.8.3.0p2-Preview, `p100` 10.0.0.0p2-Preview, `inbox` Windows' own), sshd's log level, and the
@@ -33,6 +39,7 @@ Usage: wedge_driver.py <out dir> <key dir> <port>
 """
 
 import os
+import re
 import socket
 import sys
 import threading
@@ -56,6 +63,9 @@ DUMP = "dump" in OPTIONS
 EOF_AFTER_ECHO = "eof" in OPTIONS
 # The number of runs per payload is the sample size of the measurement, not a retry limit.
 SAMPLES = 20
+# b2b: a burst is THREADS clients at once, each making PER_THREAD connections one after the other (20 connections).
+THREADS = 5
+PER_THREAD = 4
 # QEMU's user network reaches the host's loopback as 10.0.2.2 (hangdump.ps1's $Upload).
 RECEIVER_PORT = 8765
 HANG_DIR = Path(os.environ.get("DEVVM_HANG_DIR") or ssh_lib.out / "hang")
@@ -196,6 +206,83 @@ if VARIANT == "echo":
         say(f"WEDGE echo #{n}: {'PASS' if ok else 'HANG'} sent={sent}/{len(data)} echoed={echoed}/{len(data)} took={took:.1f}s")
         if not ok:
             break
+    ssh_lib.wait_serial_lines(WATCH, 2)
+    end(0)
+
+IO = "DEVVM-WATCH-IO"
+LISTENER_WRITTEN = re.compile(r"sshd\.exe#\d+ r=\d+ w=(\d+)")
+
+
+def listener_written() -> int:
+    """The bytes the listener (the only sshd.exe) had written at the guest watcher's last DEVVM-WATCH-IO line: Win32_Process
+    WriteTransferCount, every write on a file or pipe. With no sshd log file (the default log level) the listener's writes
+    are what it sends to each new sshd-session: the config and the host keys."""
+    return int(LISTENER_WRITTEN.findall(ssh_lib.serial_text())[-1])
+
+
+def settled_listener_written() -> int:
+    """listener_written(), after two more watcher lines: the counter of a line that came after the connection ended."""
+    ssh_lib.wait_serial_lines(IO, 2)
+    return listener_written()
+
+
+def connection() -> int:
+    """One connection with a command that reads no stdin. Wedged (no banner) is raised, not a result."""
+    return b.mask(b.run_script("exit 0")[0])
+
+
+def burst() -> tuple[int, int, float]:
+    """THREADS threads at once, PER_THREAD sequential connections each. Returns (connections with status 0, connections
+    that did not, seconds). A Wedged ends a thread and is counted as not 0."""
+    began = time.monotonic()
+    results: list[int] = []
+
+    def worker() -> None:
+        for _ in range(PER_THREAD):
+            try:
+                status = connection()
+            except paramiko_lib.Wedged:
+                results.append(-1)
+                return
+            results.append(status)
+
+    threads = [threading.Thread(target=worker) for _ in range(THREADS)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return results.count(0), len(results) - results.count(0), time.monotonic() - began
+
+
+if VARIANT == "b2b":
+    # sshd answers with the command shell (no agent, no probe script).
+    while True:
+        try:
+            if connection() == 0:
+                break
+        except paramiko_lib.Wedged:
+            pass  # sshd is still starting; a listener that stays silent ends with the stage's bound
+        time.sleep(1)  # pacing between tries
+    before = settled_listener_written()
+    try:
+        status = connection()
+    except paramiko_lib.Wedged:
+        end_wedged()
+    after = settled_listener_written()
+    say(f"BLOB {FULL}: one connection (status {status}): the listener wrote {after - before} bytes to the new sshd-session (config and host keys; plan 9.4: under 4096 is the question)")  # fmt: skip
+    first = settled_listener_written()
+    total = 0
+    for n in range(1, SAMPLES + 1):
+        good, bad, took = burst()
+        total += good + bad
+        say(f"WEDGE {FULL} burst #{n}: {'PASS' if bad == 0 else 'FAIL'} ok={good} not-ok={bad} connections={good + bad} took={took:.1f}s")  # fmt: skip
+        if bad and not paramiko_lib.reachable():
+            end_wedged()
+        if bad:
+            break  # sshd still serves: the failure is the finding, the next burst would start on what it left
+    last = settled_listener_written()
+    say(f"BLOB {FULL}: {total} connections in the bursts: the listener wrote {last - first} bytes, {(last - first) / max(total, 1):.1f} per connection")  # fmt: skip
+    say("every burst ran")
     ssh_lib.wait_serial_lines(WATCH, 2)
     end(0)
 

@@ -51,26 +51,30 @@ function Invoke-Seed([string]$Root) {
     }
 }
 
-# $LogLevel '' leaves sshd's default log level (no log file).
-function Invoke-SshdStart([string]$LogLevel = 'DEBUG1') {
+# $LogLevel '' leaves sshd's default log level (no log file). $OnlyEd25519 puts the product's one `HostKey` (the seeded
+# ed25519 key) into sshd_config; without it sshd loads the default host keys (rsa, ecdsa, ed25519, mldsa44_ed25519).
+function Invoke-SshdStart([string]$LogLevel = 'DEBUG1', [bool]$OnlyEd25519 = $false) {
     # More of sshd's own account of a connection, for the watcher. The event log channel (OpenSSH/Operational) stayed
     # empty on both guests (run 43260908167), so: `SyslogFacility LOCAL0` makes sshd write C:\ProgramData\ssh\logs\sshd.log.
     $config = 'C:\ProgramData\ssh\sshd_config'
-    if ($LogLevel -and -not (Test-Path -LiteralPath $config)) {
+    if (($LogLevel -or $OnlyEd25519) -and -not (Test-Path -LiteralPath $config)) {
         # The base holds no sshd_config: the service writes it from sshd_config_default when it first starts (run
         # 43278227165: the edit below was skipped and the DEBUG3 log never existed). Let it write it, then edit.
         Start-Service sshd
         while (-not (Test-Path -LiteralPath $config)) { Start-Sleep -Milliseconds 200 }  # pacing; the file is the condition
         Stop-Service sshd
     }
-    if ($LogLevel -and (Test-Path -LiteralPath $config)) {
+    if (($LogLevel -or $OnlyEd25519) -and (Test-Path -LiteralPath $config)) {
         $lines = [System.Collections.Generic.List[string]](Get-Content -LiteralPath $config)
-        $lines.RemoveAll({ param($line) $line -match '^\s*(LogLevel|SyslogFacility)\s' }) | Out-Null
+        $lines.RemoveAll({ param($line) $line -match '^\s*(LogLevel|SyslogFacility|HostKey)\s' }) | Out-Null
         # Before the first Match block: the keywords belong to the global part.
         $at = $lines.FindIndex({ param($line) $line -match '^\s*Match\s' })
         if ($at -lt 0) { $at = $lines.Count }
-        $lines.Insert($at, "LogLevel $LogLevel")
-        $lines.Insert($at, 'SyslogFacility LOCAL0')
+        if ($LogLevel) {
+            $lines.Insert($at, "LogLevel $LogLevel")
+            $lines.Insert($at, 'SyslogFacility LOCAL0')
+        }
+        if ($OnlyEd25519) { $lines.Insert($at, 'HostKey __PROGRAMDATA__/ssh/ssh_host_ed25519_key') }
         Set-Content -LiteralPath $config -Value $lines -Encoding ascii
     }
     Start-Service sshd

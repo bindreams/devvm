@@ -1,21 +1,22 @@
 # One `key=value` per line; lines starting with # are comments. The workflow reads this on every push.
 #
-# Everything off except the LTSC ISO check: `legs=` is empty, so no install leg runs. `ltsc_hash=1` runs job `ltsc-hash`,
-# a second download of the LTSC 2024 evaluation ISO that records its size, digests and headers (it decides nothing).
+# M-d (plan 9.4): stage `wedge:b2b.hkdef` (default host keys: the control, where the listener wedge is expected) and
+# `wedge:b2b.hk1` (sshd_config's one ed25519 `HostKey`) on both 25H2 legs, from the bases of run 43227036274 (they expire
+# 2026-11-17). The LTSC leg is off (its settings stay below).
 #
 # To run the LTSC leg once its pin is decided (M1, M5:lean, M9, M14 and E-B; the 25H2 legs stay off):
 #   1. set `legs=LTSC` below;
 #   2. set `ltsc_sha256=` to the pin (SHA256 of the ISO fwlink 2270353 serves; case does not matter);
 #   3. optionally set `ltsc_hash=` empty to skip the check job.
 # `reuse_LTSC=` (empty) means a fresh install; `stage_LTSC=` lists the stages that boot after it.
-legs=LTSC
+legs=en-US,de-DE-new
 ltsc_hash=
 # Microsoft's published value (Windows11IoTEnterpriseLTSC2024EvalHashValues.pdf, x64 en-us DVD9). The first download gave
 # 2cee70bd183df42b92a2e0da08cc2bb7a2a9ce3a3841955a012c0f77aeb3cb29 (run 43329256748). Deputy 2026-11-13: pinned to what Microsoft serves; run 43333339814 got the same bytes on another runner, the file is Last-Modified 2025-02-12 and the PDF (8abf91c9...) 2024-06-21, so the PDF is stale.
 ltsc_sha256=2cee70bd183df42b92a2e0da08cc2bb7a2a9ce3a3841955a012c0f77aeb3cb29
 reuse=43227036274
 reuse_LTSC=
-stage=
+stage=wedge:b2b.hkdef,wedge:b2b.hk1
 stage_LTSC=m5:lean,restart:eb
 m12b=
 cpu=max
