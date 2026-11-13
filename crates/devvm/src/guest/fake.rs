@@ -65,7 +65,7 @@ impl Guests for FakeGuests {
     }
 
     fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Ok(Arc::new(FakeBaseBuilder(None, None)))
+        Ok(Arc::new(FakeBaseBuilder::default()))
     }
 }
 
@@ -78,17 +78,25 @@ impl Guests for ExpiringGuests {
     }
 
     fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Ok(Arc::new(FakeBaseBuilder(None, Some(self.0))))
+        Ok(Arc::new(FakeBaseBuilder {
+            expires: Some(self.0),
+            ..FakeBaseBuilder::default()
+        }))
     }
 }
 
 /// Builds a root layer without an image: one file in `staging`, which the fake backend's machines sit on. Its definition
 /// hash is a constant. Built for [`ServedGuests`], it runs their `on_base` hook first.
-pub(crate) struct FakeBaseBuilder(Option<Arc<Served>>, Option<SystemTime>);
+#[derive(Default)]
+pub(crate) struct FakeBaseBuilder {
+    served: Option<Arc<Served>>,
+    /// When the base ends.
+    expires: Option<SystemTime>,
+}
 
 impl BaseBuilder for FakeBaseBuilder {
     fn build_base(&self, _src: &Source, _ctx: &BuildCtx, staging: &LayerDir) -> Result<LayerMeta> {
-        if let Some(served) = &self.0
+        if let Some(served) = &self.served
             && let Some(hook) = served.on_base.lock().unwrap().as_ref()
         {
             hook();
@@ -101,7 +109,7 @@ impl BaseBuilder for FakeBaseBuilder {
             generation: Generation::from_bytes([0; 16]),
             parent: None,
             created: SystemTime::UNIX_EPOCH,
-            expires: self.1,
+            expires: self.expires,
         })
     }
 
@@ -488,6 +496,9 @@ impl Guests for ServedGuests {
     }
 
     fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Ok(Arc::new(FakeBaseBuilder(Some(self.0.clone()), None)))
+        Ok(Arc::new(FakeBaseBuilder {
+            served: Some(self.0.clone()),
+            ..FakeBaseBuilder::default()
+        }))
     }
 }

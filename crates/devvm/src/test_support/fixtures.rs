@@ -118,17 +118,32 @@ impl crate::store::layers::Clock for FakeClock {
 
 /// A progress sink the test reads back.
 #[derive(Default)]
-pub struct MemoryProgress(std::sync::Mutex<Vec<String>>);
+pub struct MemoryProgress {
+    lines: std::sync::Mutex<Vec<String>>,
+    echo: bool,
+}
 
 impl MemoryProgress {
+    /// A sink that also prints each message to stderr, for a test that runs long enough for its progress to be read
+    /// live.
+    pub fn echoing() -> MemoryProgress {
+        MemoryProgress {
+            echo: true,
+            ..MemoryProgress::default()
+        }
+    }
+
     pub fn messages(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
+        self.lines.lock().unwrap().clone()
     }
 }
 
 impl crate::exit::Progress for MemoryProgress {
     fn message(&self, text: &str) {
-        self.0.lock().unwrap().push(text.to_owned());
+        if self.echo {
+            crate::exit::StderrProgress.message(text);
+        }
+        self.lines.lock().unwrap().push(text.to_owned());
     }
 }
 

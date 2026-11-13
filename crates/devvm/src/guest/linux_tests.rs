@@ -82,9 +82,12 @@ fn the_qemu_guests_serve_linux_and_windows_and_name_the_missing_ones(#[fixture(u
         guests.builder(GuestKind::Macos).err().unwrap(),
     ];
     for error in errors {
-        let kind = GuestKind::Macos;
         assert_eq!(error.kind(), ErrorKind::NotSupported);
-        assert!(error.message().contains(kind.as_str()), "{}", error.message());
+        assert!(
+            error.message().contains(GuestKind::Macos.as_str()),
+            "{}",
+            error.message()
+        );
     }
 }
 

@@ -5,13 +5,12 @@
 //! that only look at what a command does in the guest. Both run alone among the tests that boot a guest (`GUEST`).
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use super::fixture::{Launches, Roots, engine_reporting_to, run_ok, run_ok_as};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::engine::Engine;
-use crate::exit::{Progress, StderrProgress};
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::elevate::TASK;
@@ -19,34 +18,15 @@ use crate::guest::windows::wrap::BROKER_EXE;
 use crate::recipe::Recipe;
 use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
 use crate::test_harness::GUEST;
+use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir};
 use crate::{BuildOptions, Command, ExitStatus, Guest, Image, RunAs, StartOptions, Vm};
-
-/// A progress channel that reports to stderr and keeps what it reported.
-#[derive(Default)]
-pub(super) struct Recorded(Mutex<Vec<String>>);
-
-impl Recorded {
-    pub(super) fn messages(&self) -> Vec<String> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
-    }
-}
-
-impl Progress for Recorded {
-    fn message(&self, text: &str) {
-        StderrProgress.message(text);
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(text.to_owned());
-    }
-}
 
 /// The Windows base of this test process, with the engine that built it and what it reported.
 pub(super) struct WindowsBase {
     pub engine: Arc<Engine>,
     pub image: Image,
-    pub progress: Arc<Recorded>,
+    pub progress: Arc<MemoryProgress>,
     recipe: Recipe,
     _roots: Roots,
 }
@@ -88,7 +68,7 @@ pub(super) fn windows_base(
     #[fixture(windows_iso)] iso: &PathBuf,
 ) -> Result<WindowsBase, String> {
     let roots = Roots::new(Some(&socket_dir()))?;
-    let progress = Arc::new(Recorded::default());
+    let progress = Arc::new(MemoryProgress::echoing());
     let engine = engine_reporting_to(&roots.dirs, install, Arc::new(Launches::default()), progress.clone());
     let recipe = windows_recipe(&roots.dirs.state, iso, &[]);
     let image = engine
