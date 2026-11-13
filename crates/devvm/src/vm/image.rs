@@ -34,8 +34,9 @@ mod image_windows_tests;
 #[path = "image_other_tests.rs"]
 mod image_other_tests;
 
-const DEFAULT_CPUS: u32 = 2;
-const DEFAULT_MEMORY: u64 = 4 << 30;
+/// The CPUs and memory of a guest whose recipe sets none: an instance's, and a Windows base build's.
+pub(crate) const DEFAULT_CPUS: u32 = 2;
+pub(crate) const DEFAULT_MEMORY: u64 = 4 << 30;
 
 /// A built image: the layers a VM starts from. While the handle lives, garbage collection keeps those layers.
 pub struct Image {

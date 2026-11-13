@@ -22,6 +22,7 @@ mod image;
 mod launch;
 mod ops;
 
+pub(crate) use image::{DEFAULT_CPUS, DEFAULT_MEMORY};
 pub use image::{Image, Vm, availability};
 pub(crate) use launch::Started;
 use launch::write_ssh_entry;

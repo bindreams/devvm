@@ -6,6 +6,7 @@ use crate::access::SshSession;
 use crate::access::paths::expand_guest_path;
 use crate::backend::{DeviceProfile, DiskBus, MediaKind, NetModel, Video};
 use crate::guest::windows::WindowsGuest;
+use crate::guest::windows::builder::WindowsBuilder;
 use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SEED_IMAGE, SeedMedia, SeedSpec, missing};
 use crate::host::{Host, names};
 use crate::media::write_cidata_image;
@@ -27,15 +28,15 @@ mod linux_tests;
 #[path = "linux_flush_tests.rs"]
 mod flush_tests;
 
-/// The guests a build with the QEMU backend knows: Linux and, as far as the host side goes, Windows (its base builder is
-/// not wired yet). macOS guests are not built yet.
+/// The guests a build with the QEMU backend knows: Linux and Windows. macOS guests are not built yet.
 pub(crate) struct QemuGuests {
-    builder: Arc<LinuxBuilder>,
+    linux: Arc<LinuxBuilder>,
+    windows: Arc<WindowsBuilder>,
 }
 
 impl QemuGuests {
-    pub(crate) fn new(builder: Arc<LinuxBuilder>) -> QemuGuests {
-        QemuGuests { builder }
+    pub(crate) fn new(linux: Arc<LinuxBuilder>, windows: Arc<WindowsBuilder>) -> QemuGuests {
+        QemuGuests { linux, windows }
     }
 }
 
@@ -50,8 +51,9 @@ impl Guests for QemuGuests {
 
     fn builder(&self, kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
         match kind {
-            GuestKind::Linux => Ok(self.builder.clone()),
-            GuestKind::Windows | GuestKind::Macos => Err(missing(kind)),
+            GuestKind::Linux => Ok(self.linux.clone()),
+            GuestKind::Windows => Ok(self.windows.clone()),
+            GuestKind::Macos => Err(missing(kind)),
         }
     }
 }
@@ -73,6 +75,10 @@ while read -r source target _; do
 done < "${1:-/proc/mounts}" || status=1
 exit $status
 "#;
+
+/// The shell script of a `copy` step's one guest command. `$1` is the destination directory, `$2` the uploaded archive.
+/// The archive is removed whatever the extraction did, and the command ends with the extraction's status.
+const EXTRACT: &str = r#"mkdir -p -- "$1" && tar -xf "$2" -C "$1"; status=$?; rm -f -- "$2"; exit $status"#;
 
 impl GuestOs for LinuxGuest {
     fn instance_seed(&self, host: &dyn Host, spec: &SeedSpec) -> Result<SeedMedia> {
@@ -169,5 +175,22 @@ impl GuestOs for LinuxGuest {
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
         names::posix_problem(name)
+    }
+
+    /// The paths are arguments of the script, never text in it, so no quoting of theirs is written here: the guest's
+    /// own wrapping quotes them. The archive is outside `destination` and gone before the disk is committed, so no
+    /// later layer or instance carries it.
+    fn extract_command(&self, destination: &str, archive: &str) -> Result<Command> {
+        let mut argv = self.shell_argv(Some(Shell::Sh), EXTRACT)?;
+        argv.extend(["devvm-copy".to_owned(), destination.to_owned(), archive.to_owned()]);
+        Ok(Command {
+            argv,
+            run_as: RunAs::User,
+            cwd: None,
+        })
+    }
+
+    fn copy_scratch_dir(&self) -> &'static str {
+        "/tmp"
     }
 }

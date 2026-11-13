@@ -65,7 +65,9 @@ user, not elevated, through ssh-broker in the user's own session, so they see it
   (`0xC0000005`, say) is passed on in all 32 bits on a Windows host; a Unix host keeps the low byte.
 - **Shells.** A `run` step uses `pwsh` (PowerShell 7) unless it says `shell: cmd`. `sh` and `bash` do not exist in a
   Windows guest. A `cmd` script is one line, and a line break in it is refused before the build starts: use
-  `shell: pwsh`. A `copy` step is refused before the build starts: its extraction runs `sh`.
+  `shell: pwsh`, or `copy` a `.cmd` file in and run it.
+- **`copy`.** A `copy` step extracts its archive with PowerShell. A tracked symlink ends the step with an error that
+  names it: the guest's user cannot create one.
 - **Paths.** Write guest paths with `/`: `C:/x/y`, `~/x`. `~` is the user's profile; `~\x` and `C:\x` are refused with the
   spelling that works.
 - **`elevated: true`, `--elevated`** run at High integrity with no prompt, through a scheduled task. Each costs 2 to 6
@@ -84,3 +86,6 @@ Limits:
 - Piping large input through `devvm ssh` (system `ssh`), or into a .NET program such as Windows PowerShell 5.1, can hang
   that session; `devvm stop` and `devvm start` recover it. `devvm run` sends no stdin.
 - Interactive `devvm ssh <name>` and `ssh -t` end with status 0 on a Windows guest; commands keep their status.
+- On a Windows guest, a session that asks for a terminal (`ssh -t`/`-tt`) while its input is not a terminal (`</dev/null`,
+  a pipe that ends, or a library that sends end-of-input) may end with status 0 without running the command. Drop `-t`,
+  or keep the input open.

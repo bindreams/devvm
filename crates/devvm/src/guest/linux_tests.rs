@@ -1,14 +1,16 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::backend::fake::FakeStorage;
+use crate::backend::fake::{FakeBackend, FakeStorage};
 use crate::backend::{DeviceProfile, DiskBus, NetModel, Video};
 use crate::exit::NullProgress;
 use crate::guest::linux::{LinuxBuilder, LinuxGuest, QemuGuests};
+use crate::guest::windows::builder::{Bounds, WindowsBuilder};
 use crate::guest::{GuestOs, Guests, Readiness};
 use crate::recipe::{Setting, Shell, UacMode};
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::host::TestHost;
 use crate::test_support::sshd::Rig;
 use crate::{Command, Dirs, ErrorKind, GuestKind, RunAs};
 
@@ -48,15 +50,20 @@ fn virtio_devices_and_a_guest_that_reboots_inside_its_process() {
 // The `Guests` and `GuestOs` implementations ==========================================================================
 
 fn guests(home: &Path) -> QemuGuests {
-    let fetcher = Fetcher::new(
+    let fetcher = Arc::new(Fetcher::new(
         Dirs::under(home).downloads(),
         Arc::new(HttpTransport::new().unwrap()),
         Arc::new(NullProgress),
-    );
-    QemuGuests::new(Arc::new(LinuxBuilder::new(
-        Arc::new(fetcher),
-        Arc::new(FakeStorage::default()),
-    )))
+    ));
+    QemuGuests::new(
+        Arc::new(LinuxBuilder::new(fetcher.clone(), Arc::new(FakeStorage::default()))),
+        Arc::new(WindowsBuilder::new(
+            fetcher,
+            Arc::new(FakeBackend::new(&TestHost)),
+            &TestHost,
+            Bounds::default(),
+        )),
+    )
 }
 
 fn os(home: &Path) -> Arc<dyn GuestOs> {
@@ -69,16 +76,13 @@ fn the_qemu_guests_serve_linux_and_windows_and_name_the_missing_ones(#[fixture(u
     guests.os(GuestKind::Linux).unwrap();
     guests.os(GuestKind::Windows).unwrap();
     guests.builder(GuestKind::Linux).unwrap();
-    // The Windows guest is served on the host side; its base builder is not wired yet.
+    guests.builder(GuestKind::Windows).unwrap();
     let errors = [
         guests.os(GuestKind::Macos).err().unwrap(),
-        guests.builder(GuestKind::Windows).err().unwrap(),
         guests.builder(GuestKind::Macos).err().unwrap(),
     ];
-    for (error, kind) in errors
-        .into_iter()
-        .zip([GuestKind::Macos, GuestKind::Windows, GuestKind::Macos])
-    {
+    for error in errors {
+        let kind = GuestKind::Macos;
         assert_eq!(error.kind(), ErrorKind::NotSupported);
         assert!(error.message().contains(kind.as_str()), "{}", error.message());
     }

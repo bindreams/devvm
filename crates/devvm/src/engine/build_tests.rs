@@ -8,12 +8,13 @@ use std::sync::Arc;
 use crate::access::keys::InstanceKeys;
 use crate::backend::Backend;
 use crate::backend::fake::{FakeBackend, FakeStorage};
-use crate::engine::build::{Lines, extract_command, guest_destination, root_of};
+use crate::engine::build::{Lines, guest_destination, root_of};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
 use crate::exit::NullProgress;
 use crate::guest::fake::{FakeGuests, ServedGuests};
 use crate::guest::linux::{LinuxBuilder, QemuGuests};
+use crate::guest::windows::builder::{Bounds, WindowsBuilder};
 use crate::guest::{GuestOs, Guests};
 use crate::host::symlink_metadata_if_present;
 use crate::recipe::Recipe;
@@ -283,10 +284,12 @@ fn a_copy_step_whose_files_cannot_be_snapshotted_names_the_step_and_its_destinat
 }
 
 #[skuld::test]
-fn the_extraction_command_takes_its_paths_as_arguments_and_removes_the_archive_whatever_happened() {
+fn the_linux_extract_command_is_the_one_the_engine_built_before() {
     let guest = linux();
 
-    let command = extract_command(&*guest, "/home/user/a b; rm -rf /", "/tmp/devvm-copy-x.tar").unwrap();
+    let command = guest
+        .extract_command("/home/user/a b; rm -rf /", "/tmp/devvm-copy-x.tar")
+        .unwrap();
 
     let [shell, flag, script, name, destination, archive] = command.argv.as_slice() else {
         panic!("{:?}", command.argv);
@@ -415,15 +418,20 @@ fn a_carriage_return_with_nothing_pending_reports_no_line() {
 
 /// The guests of the QEMU backend: a Windows recipe's guest is the real one, whose shells are the real ones.
 fn qemu_guests(home: &Path) -> Arc<dyn Guests> {
-    let fetcher = Fetcher::new(
+    let fetcher = Arc::new(Fetcher::new(
         Dirs::under(home).downloads(),
         Arc::new(HttpTransport::new().unwrap()),
         Arc::new(NullProgress),
-    );
-    Arc::new(QemuGuests::new(Arc::new(LinuxBuilder::new(
-        Arc::new(fetcher),
-        Arc::new(FakeStorage::default()),
-    ))))
+    ));
+    Arc::new(QemuGuests::new(
+        Arc::new(LinuxBuilder::new(fetcher.clone(), Arc::new(FakeStorage::default()))),
+        Arc::new(WindowsBuilder::new(
+            fetcher,
+            Arc::new(FakeBackend::new(&TestHost)),
+            &TestHost,
+            Bounds::default(),
+        )),
+    ))
 }
 
 /// A `run` step whose command the guest cannot be given is found before anything is built or keyed, like a refused
@@ -441,12 +449,6 @@ fn a_run_step_the_guest_cannot_be_given_fails_before_any_base_is_built(#[fixture
         ("run: echo hi\n    shell: sh", ErrorKind::Recipe, "windows"),
         // Refused by the guest's wrapping, which the step's run would reach only after the steps before it were built.
         (oversize.as_str(), ErrorKind::Usage, "too long for a Windows guest"),
-        // The extraction runs `sh`, which a Windows guest has not.
-        (
-            "copy: { from: git-tracked, to: C:/x }",
-            ErrorKind::Recipe,
-            "windows guest",
-        ),
     ] {
         let dirs = Dirs::under(home);
         let engine = engine_with(dirs.clone(), &TestHost, None, qemu_guests(home), memory());
@@ -463,4 +465,79 @@ fn a_run_step_the_guest_cannot_be_given_fails_before_any_base_is_built(#[fixture
         assert!(error.message().contains(say), "{error}");
         assert!(!dirs.iso_memo().exists() && !is_there(&dirs.builds()), "{error}");
     }
+}
+
+/// The extraction of a `copy` step is a PowerShell script on a Windows guest, so the step passes the one check of the
+/// recipe's commands: with no backend, the build ends where it needs one, after the check, instead of at the step.
+#[skuld::test]
+fn a_copy_step_passes_the_upfront_check_on_a_windows_guest(#[fixture(unicode_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let engine = engine_with(dirs.clone(), &TestHost, None, qemu_guests(home), memory());
+    let recipe = Recipe::parse(
+        "from: { iso: missing.iso }
+steps:
+  - copy: { from: git-tracked, to: C:/x }
+",
+        &home.join("r.devvm.yaml"),
+    )
+    .unwrap();
+
+    let error = engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+    assert!(error.message().contains("no VM backend"), "{error}");
+    assert!(!error.message().contains("step 1 of 1"), "{error}");
+}
+
+// A Windows base's expiry =============================================================================================
+
+/// The build of an ISO root whose base builder says the base ends at `expires`: the guests are the fake ones, so no
+/// Windows is installed. Nothing starts, as the recipe has no step.
+fn build_with_a_base_that_ends(home: &Path, expires: std::time::SystemTime) -> crate::Error {
+    let iso = home.join("windows.iso");
+    std::fs::copy(crate::test_support::fixtures::iso_fixture("single-image.iso"), &iso).unwrap();
+    let engine = engine_with(
+        Dirs::under(home),
+        &TestHost,
+        Some(Arc::new(FakeBackend::new(&TestHost))),
+        Arc::new(crate::guest::fake::ExpiringGuests(expires)),
+        memory(),
+    );
+    let recipe = Recipe::parse(
+        &format!(
+            "from: {{ iso: {} }}
+steps: []
+",
+            serde_json::to_string(iso.to_str().unwrap()).unwrap()
+        ),
+        &home.join("r.devvm.yaml"),
+    )
+    .unwrap();
+
+    engine
+        .build(&recipe, &BuildOptions::default())
+        .err()
+        .expect("the base is too close to its end")
+}
+
+#[skuld::test]
+fn a_base_born_within_ten_days_is_expired_base_naming_date_and_iso(#[fixture(unicode_home)] home: &Path) {
+    let expires = std::time::SystemTime::now() + std::time::Duration::from_secs(5 * 24 * 3600);
+
+    let error = build_with_a_base_that_ends(home, expires);
+
+    assert_eq!(error.kind(), ErrorKind::ExpiredBase, "{error}");
+    assert!(error.message().contains("within 10 days"), "{error}");
+    assert!(error.message().contains("windows.iso"), "{error}");
+    assert!(
+        error.message().contains(&crate::store::layers::date_text(expires)),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn an_evaluation_base_born_expired_is_expired_base(#[fixture(unicode_home)] home: &Path) {
+    let error = build_with_a_base_that_ends(home, std::time::SystemTime::now());
+
+    assert_eq!(error.kind(), ErrorKind::ExpiredBase, "{error}");
 }

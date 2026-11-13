@@ -15,7 +15,7 @@ use crate::recipe::{PerArch, Pin, Source};
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{env, key, request};
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{build_ctx, unicode_home};
 use crate::test_support::http::TestServer;
 use crate::test_support::transport::RefusingTransport;
 use crate::{Arch, Dirs, ErrorKind, Sha256};
@@ -41,11 +41,7 @@ fn builder(home: &Path) -> LinuxBuilder {
 }
 
 fn ctx(home: &Path, arch: Arch) -> BuildCtx {
-    BuildCtx {
-        dirs: Dirs::under(home),
-        arch,
-        progress: Arc::new(NullProgress),
-    }
+    build_ctx(home, arch)
 }
 
 /// The names in `dir`, sorted.

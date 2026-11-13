@@ -76,6 +76,10 @@ pub struct Check {
     pub outcome: std::result::Result<String, String>,
 }
 
+/// The disk of a layer in its directory: every backend's layers hold it under this name, so a builder that fills a
+/// layer's disk by running a machine on it can name the file.
+pub(crate) const LAYER_DISK: &str = "disk.qcow2";
+
 /// The instance disk size when the recipe sets none and the layer's disk is no bigger.
 pub(crate) const DEFAULT_DISK: u64 = 40 << 30;
 

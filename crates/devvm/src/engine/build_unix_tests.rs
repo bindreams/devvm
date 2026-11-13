@@ -4,7 +4,6 @@
 use std::path::Path;
 use std::process::ExitStatus;
 
-use crate::engine::build::extract_command;
 use crate::guest::GuestOs;
 use crate::guest::linux::LinuxGuest;
 use crate::host::symlink_metadata_if_present;
@@ -16,7 +15,9 @@ const DESTINATION: &str = "sp ace;semi &amp 'quote' \"double\" $(dollar) `tick` 
 /// Runs the extraction of `archive` into `destination` as the guest would: the string the guest's wrapping makes of
 /// the command, handed to `sh -c` as sshd hands it to the account's shell.
 fn extract(destination: &Path, archive: &Path) -> ExitStatus {
-    let command = extract_command(&LinuxGuest, destination.to_str().unwrap(), archive.to_str().unwrap()).unwrap();
+    let command = LinuxGuest
+        .extract_command(destination.to_str().unwrap(), archive.to_str().unwrap())
+        .unwrap();
     std::process::Command::new("sh")
         .args(["-c", &LinuxGuest.wrap(&command).unwrap()])
         .status()

@@ -1,0 +1,102 @@
+use super::{SCRATCH_DIR, script};
+use crate::RunAs;
+use crate::guest::GuestOs;
+use crate::guest::windows::WindowsGuest;
+use crate::guest::windows::wrap::literal;
+
+/// The paths a copy step can be given: a space, a quote, `$`, a backtick, a bracket, a PowerShell quote that is not
+/// `'`, a non-ASCII letter and a surrogate pair.
+const HOSTILE: &[&str] = &[
+    "C:/Users/user/a b",
+    "C:/Users/user/it's",
+    "C:/Users/user/$env:TEMP",
+    "C:/Users/user/`n[1]",
+    "C:/Users/user/\u{2018}x\u{2019}",
+    "C:/Users/user/\u{e9} \u{416} \u{4e16} \u{1f600}",
+    "C:/Users/user/$(Remove-Item -Recurse C:/)",
+];
+
+fn script_of(destination: &str, archive: &str) -> String {
+    script(destination, archive)
+}
+
+#[skuld::test]
+fn the_windows_extract_command_runs_pwsh_and_names_neither_sh_nor_tar() {
+    let command = WindowsGuest
+        .extract_command("C:/Users/user/dest", "C:/ProgramData/devvm/devvm-copy-1.tar")
+        .unwrap();
+
+    assert_eq!(command.argv[0], "pwsh");
+    assert_eq!(
+        command.run_as,
+        RunAs::User,
+        "a copy extracts into the user's own directories"
+    );
+    assert!(command.cwd.is_none());
+    let script = command.argv.last().unwrap();
+    assert!(script.contains("System.Formats.Tar.TarFile"), "{script}");
+    assert!(script.contains("ExtractToDirectory"), "{script}");
+    for word in ["tar.exe", "tar -xf", "/bin/sh", "sh -c", "bash"] {
+        assert!(!script.contains(word), "`{word}` in {script}");
+    }
+}
+
+#[skuld::test]
+fn the_extraction_overwrites_and_the_archive_is_removed_whatever_the_extraction_did() {
+    let script = script_of("C:/d", "C:/a.tar");
+    let at = |needle: &str| {
+        script
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` is not in {script}"))
+    };
+    // Overwriting, as `tar -xf` does.
+    assert!(
+        script.contains("ExtractToDirectory($archive, $destination, $true)"),
+        "{script}"
+    );
+    // The destination is made first, the archive removed in a `finally`, and the script ends with the status.
+    assert!(at("CreateDirectory") < at("ExtractToDirectory"), "{script}");
+    assert!(
+        at("finally") < at("Remove-Item") && at("Remove-Item") < at("exit $status"),
+        "{script}"
+    );
+    assert!(
+        script.contains("-ErrorAction Stop"),
+        "a file that cannot be removed is an error: {script}"
+    );
+}
+
+#[skuld::test]
+fn a_hostile_destination_or_archive_path_stays_one_literal_in_the_windows_script() {
+    let plain = script_of("C:/d", "C:/a.tar");
+    for hostile in HOSTILE {
+        let script = script_of(hostile, "C:/ProgramData/devvm/devvm-copy-1.tar");
+
+        // Only the literal differs: the rest of the script is the one a harmless path gets.
+        let with_literal = script.replace(&format!("$destination = {}", literal(hostile)), "$destination = <d>");
+        let expected = plain.replace(&format!("$destination = {}", literal("C:/d")), "$destination = <d>");
+        let archive = literal("C:/ProgramData/devvm/devvm-copy-1.tar");
+        assert_eq!(
+            with_literal.replace(&archive, "<a>"),
+            expected.replace(&literal("C:/a.tar"), "<a>"),
+            "{hostile}"
+        );
+        assert!(
+            script.contains(&format!("$destination = {}", literal(hostile))),
+            "{hostile}"
+        );
+    }
+}
+
+#[skuld::test]
+fn the_scratch_directory_is_one_the_bootstrap_makes_and_the_users_sftp_can_write() {
+    assert_eq!(WindowsGuest.copy_scratch_dir(), SCRATCH_DIR);
+    // `C:\ProgramData\devvm` is made with `Users` modify by the first-logon script, and it is where the boot task and
+    // the elevated helper keep their files too.
+    assert_eq!(
+        SCRATCH_DIR.replace('/', "\\"),
+        crate::guest::windows::templates::DEVVM_DIR
+    );
+    // No environment variable: SFTP expands none.
+    assert!(!SCRATCH_DIR.contains('%') && !SCRATCH_DIR.contains('$'));
+}

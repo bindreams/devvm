@@ -35,6 +35,20 @@ pub fn unicode_home() -> Result<UnicodeHome, String> {
     Ok(UnicodeHome { path, _tmp: tmp })
 }
 
+/// A base build's context for a root that is no ISO: the directories under `home`, a build directory `home/build`, the
+/// system clock and no resources set. Set `iso` for an ISO root.
+pub fn build_ctx(home: &Path, arch: crate::Arch) -> crate::guest::BuildCtx {
+    crate::guest::BuildCtx {
+        dirs: crate::Dirs::under(home),
+        arch,
+        progress: std::sync::Arc::new(crate::exit::NullProgress),
+        clock: std::sync::Arc::new(crate::store::layers::SystemClock),
+        resources: crate::recipe::Resources::default(),
+        work: home.join("build"),
+        iso: std::sync::Mutex::default(),
+    }
+}
+
 /// The installer ISO fixture `name`, which `iso/fixtures/make_fixtures.py` makes.
 pub fn iso_fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

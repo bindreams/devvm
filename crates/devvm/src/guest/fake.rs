@@ -65,13 +65,26 @@ impl Guests for FakeGuests {
     }
 
     fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Ok(Arc::new(FakeBaseBuilder(None)))
+        Ok(Arc::new(FakeBaseBuilder(None, None)))
+    }
+}
+
+/// Guests whose base builder reports `expires` as when the base ends, as a Windows base's license read does.
+pub(crate) struct ExpiringGuests(pub SystemTime);
+
+impl Guests for ExpiringGuests {
+    fn os(&self, kind: GuestKind) -> Result<Arc<dyn GuestOs>> {
+        FakeGuests.os(kind)
+    }
+
+    fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
+        Ok(Arc::new(FakeBaseBuilder(None, Some(self.0))))
     }
 }
 
 /// Builds a root layer without an image: one file in `staging`, which the fake backend's machines sit on. Its definition
 /// hash is a constant. Built for [`ServedGuests`], it runs their `on_base` hook first.
-pub(crate) struct FakeBaseBuilder(Option<Arc<Served>>);
+pub(crate) struct FakeBaseBuilder(Option<Arc<Served>>, Option<SystemTime>);
 
 impl BaseBuilder for FakeBaseBuilder {
     fn build_base(&self, _src: &Source, _ctx: &BuildCtx, staging: &LayerDir) -> Result<LayerMeta> {
@@ -88,7 +101,7 @@ impl BaseBuilder for FakeBaseBuilder {
             generation: Generation::from_bytes([0; 16]),
             parent: None,
             created: SystemTime::UNIX_EPOCH,
-            expires: None,
+            expires: self.1,
         })
     }
 
@@ -233,6 +246,15 @@ impl GuestOs for FakeGuestOs {
             }
             GuestKind::Linux | GuestKind::Macos => LinuxGuest.setting_command(setting),
         }
+    }
+
+    /// As in a Linux guest: the test SSH server runs the script with `sh`, whatever the kind.
+    fn extract_command(&self, destination: &str, archive: &str) -> Result<Command> {
+        LinuxGuest.extract_command(destination, archive)
+    }
+
+    fn copy_scratch_dir(&self) -> &'static str {
+        LinuxGuest.copy_scratch_dir()
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
@@ -466,6 +488,6 @@ impl Guests for ServedGuests {
     }
 
     fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Ok(Arc::new(FakeBaseBuilder(Some(self.0.clone()))))
+        Ok(Arc::new(FakeBaseBuilder(Some(self.0.clone()), None)))
     }
 }

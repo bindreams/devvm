@@ -15,6 +15,7 @@ mod host;
 mod lifecycle;
 mod qmp;
 mod storage;
+mod windows;
 
 /// What the tests ask the OS about a process they did not write.
 #[cfg(windows)]

@@ -134,10 +134,9 @@ fn shell_argv_for_cmd_refuses_several_lines_naming_the_limit_and_the_way_out() {
     for script in ["echo a\necho b", "echo a\r\necho b\n", "echo a\recho b"] {
         let error = WindowsGuest.shell_argv(Some(Shell::Cmd), script).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Recipe, "{script:?}");
-        for word in ["cmd", "one line", "shell: pwsh"] {
+        // Both ways out: another shell, or a `.cmd` file copied in and run.
+        for word in ["cmd", "one line", "shell: pwsh", "copy", "`.cmd` file"] {
             assert!(error.message().contains(word), "{word}: {error}");
         }
-        // A `copy` step cannot bring in a file on this guest, so none is advised.
-        assert!(!error.message().contains("copy"), "{error}");
     }
 }
