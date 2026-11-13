@@ -224,8 +224,10 @@ enum Exit {
 struct End {
     /// How the process ended, when its status could be read.
     exit: Option<Exit>,
-    /// The host's failures, in the order they happened: the status, then the log.
+    /// The host's failures, in the order they happened: the status, then the log. An end without an exit has one.
     host: Vec<Error>,
+    /// Whether the last of `host` is a failure to read the log.
+    log_failure: bool,
 }
 
 impl End {
@@ -233,6 +235,7 @@ impl End {
         End {
             exit: Some(exit),
             host: Vec::new(),
+            log_failure: false,
         }
     }
 
@@ -241,15 +244,28 @@ impl End {
         End {
             exit: None,
             host: vec![error],
+            log_failure: false,
         }
     }
 
-    /// The wait stopped before an end was seen.
-    fn unknown() -> End {
+    /// The log could not be read, so the wait stopped before an end was seen.
+    fn unreadable(error: Error) -> End {
         End {
             exit: None,
-            host: Vec::new(),
+            host: vec![error],
+            log_failure: true,
         }
+    }
+
+    /// The log was read again after the wait. Only the latest failure to read it is kept: one that failed at the wait
+    /// stays when this read worked, and is replaced when it failed too.
+    fn log_read_again(&mut self, read: Result<()>) {
+        let Err(error) = read else { return };
+        if self.log_failure {
+            self.host.pop();
+        }
+        self.host.push(error);
+        self.log_failure = true;
     }
 }
 
@@ -273,7 +289,11 @@ enum Launched {
 /// with its own kind. The host's failures (the VM process's status, the serial log) follow a headline once each,
 /// separated by `; `, and the first is the result's source. A failing exit carries what QEMU printed.
 fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
-    let End { exit, mut host } = end;
+    let End { exit, mut host, .. } = end;
+    debug_assert!(
+        exit.is_some() || !host.is_empty(),
+        "an end with no exit carries the failure that hid it"
+    );
     let powered_off = matches!(&exit, Some(Exit::Exited(exited)) if exited.status.success());
     let account = if let Some(why) = &serial.failed {
         let mut headline = guest_failed(why);
@@ -474,8 +494,8 @@ impl<'a> Build<'a> {
     /// What a launch that has ended came to, once the log's tail is read again: a wait that failed has left markers
     /// unread, and `fail` tells WinPE's logs from the first-logon script's by the markers seen. A VM process that is
     /// gone (it exited, or the kill worked) writes no more, so its last line is read whole; one that may still be
-    /// writing gives its complete lines only. Only the latest failure to read the log is kept. [`verdict`] holds the
-    /// rule.
+    /// writing gives its complete lines only. A failure to read it at the wait stays unless this read fails too.
+    /// [`verdict`] holds the rule.
     fn conclude(
         &mut self,
         number: usize,
@@ -484,15 +504,7 @@ impl<'a> Build<'a> {
         reader: &mut LogReader,
     ) -> Result<Launched> {
         let exited = matches!(end.exit, Some(Exit::Exited(_)));
-        match reader.poll(killed.is_ok() || exited) {
-            Ok(rest) => self.observe(&rest),
-            Err(error) => end.host.push(error),
-        }
-        // A wait that stopped at a log it could not read knows no exit, and this read of the log worked.
-        if end.exit.is_none() && end.host.is_empty() {
-            end.host
-                .push(Error::new(ErrorKind::Unavailable, "the launch's end could not be read"));
-        }
+        end.log_read_again(reader.poll(killed.is_ok() || exited).map(|rest| self.observe(&rest)));
         let serial = reader.whole();
         let outcome = verdict(number, end, serial).and_then(|launched| {
             // A guest that restarted must have moved forward since the launches before.
@@ -560,8 +572,8 @@ impl<'a> Build<'a> {
     /// Waits until the machine's VM process exits, reporting the guest's progress as it writes it, and returns how it
     /// ended. The wait ends with [`Exit::Stalled`] when the guest gives no sign of life within the bound of the phase
     /// it is in: the bound ends the wait for an event that may never happen, and the error that follows names it. A
-    /// status that cannot be read ends it with that failure; a log that cannot be read, with no exit and no failure,
-    /// because [`Build::conclude`] reads the log again. The caller kills the VM.
+    /// status that cannot be read ends it with that failure, and a log that cannot be read, with that failure and no
+    /// exit; [`Build::conclude`] reads the log again. The caller kills the VM.
     fn wait(&mut self, machine: &mut dyn Machine, reader: &mut LogReader) -> End {
         loop {
             // The status is read before anything can reap the process.
@@ -570,15 +582,19 @@ impl<'a> Build<'a> {
                 Ok(Some(status)) => return End::of(Exit::Exited(status)),
                 Ok(None) => {}
             }
-            let Ok(written) = reader.poll(false) else {
-                return End::unknown();
-            };
-            self.observe(&written);
+            match reader.poll(false) {
+                Ok(written) => self.observe(&written),
+                Err(error) => return End::unreadable(error),
+            }
             if let Some(stall) = self.watch.stall(&self.builder.bounds, Instant::now()) {
                 // The process may have exited since the status was read, and an exit wins over a stall: the guest
                 // that finished as its bound passed has finished.
                 return match machine.try_wait() {
-                    Err(error) => End::failed(error),
+                    // The stall happened and the VM is killed for it: the status failure is named beside it.
+                    Err(error) => End {
+                        host: vec![error],
+                        ..End::of(Exit::Stalled(stall))
+                    },
                     Ok(Some(exited)) => End::of(Exit::Exited(exited)),
                     Ok(None) => End::of(Exit::Stalled(stall)),
                 };

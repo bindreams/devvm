@@ -564,6 +564,8 @@ enum Ending {
     FailingExit,
     Stall,
     StatusUnknown,
+    /// The log could not be read during the wait, and so no end was seen.
+    LogUnreadable,
 }
 
 const STATUS_TEXT: &str = "cannot read the VM process's status";
@@ -592,7 +594,7 @@ fn expected(
             "the guest wrote DEVVM-BASE-DONE, but the VM process of launch 1 exited with",
         )),
         (Done, Stall, _) => Err((UNAVAILABLE, "the guest reported done but did not power off within 2m")),
-        (Done, StatusUnknown, _) => Err((
+        (Done, StatusUnknown | LogUnreadable, _) => Err((
             UNAVAILABLE,
             "the guest wrote DEVVM-BASE-DONE, but the launch's end could not be read, so the disk may be incomplete",
         )),
@@ -604,6 +606,7 @@ fn expected(
             "the first-logon script made no progress for 2m; the guest was stopped",
         )),
         (Nothing, StatusUnknown, _) => Err((ErrorKind::Io, STATUS_TEXT)),
+        (Nothing, LogUnreadable, _) => Err((ErrorKind::Io, LOG_TEXT)),
     }
 }
 
@@ -615,8 +618,13 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
             Ending::FailingExit,
             Ending::Stall,
             Ending::StatusUnknown,
+            Ending::LogUnreadable,
         ] {
             for read_failed in [false, true] {
+                // The log's failure at the wait is the one read failure of its launch.
+                if matches!(ending, Ending::LogUnreadable) && read_failed {
+                    continue;
+                }
                 let row = format!("{account:?}, {ending:?}, log read failed: {read_failed}");
                 let serial = match account {
                     Account::Nothing => Serial::default(),
@@ -634,17 +642,25 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
                             output: "qemu: out of memory".to_owned(),
                         })),
                         Ending::Stall => Some(stalled()),
-                        Ending::StatusUnknown => None,
+                        Ending::StatusUnknown | Ending::LogUnreadable => None,
                     },
                     host: Vec::new(),
+                    log_failure: false,
                 };
                 let mut host_texts = Vec::new();
-                if matches!(ending, Ending::StatusUnknown) {
-                    end.host.push(Error::new(ErrorKind::Io, STATUS_TEXT));
-                    host_texts.push(STATUS_TEXT);
+                match ending {
+                    Ending::StatusUnknown => {
+                        end.host.push(Error::new(ErrorKind::Io, STATUS_TEXT));
+                        host_texts.push(STATUS_TEXT);
+                    }
+                    Ending::LogUnreadable => {
+                        end = End::unreadable(Error::new(ErrorKind::Io, LOG_TEXT));
+                        host_texts.push(LOG_TEXT);
+                    }
+                    _ => {}
                 }
                 if read_failed {
-                    end.host.push(Error::new(ErrorKind::Io, LOG_TEXT));
+                    end.log_read_again(Err(Error::new(ErrorKind::Io, LOG_TEXT)));
                     host_texts.push(LOG_TEXT);
                 }
 
@@ -664,7 +680,10 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
                         // The host's own failure is the headline, and so is the error itself, only when the guest
                         // gave no account and the end told nothing.
                         let is_the_host = matches!(account, Account::Nothing)
-                            && matches!(ending, Ending::CleanExit | Ending::StatusUnknown);
+                            && matches!(
+                                ending,
+                                Ending::CleanExit | Ending::StatusUnknown | Ending::LogUnreadable
+                            );
                         let source = std::error::Error::source(&error);
                         if host_texts.is_empty() || (is_the_host && host_texts.len() == 1) {
                             assert!(source.is_none(), "{row}");
@@ -681,4 +700,27 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
             }
         }
     }
+}
+
+// What the second read of the log does to the one that failed at the wait =============================================
+
+#[skuld::test]
+fn a_log_unreadable_at_the_wait_is_the_error_when_the_log_reads_again() {
+    let mut end = End::unreadable(Error::new(ErrorKind::Io, LOG_TEXT));
+    end.log_read_again(Ok(()));
+
+    let error = verdict(1, end, &Serial::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.message(), LOG_TEXT);
+}
+
+#[skuld::test]
+fn a_log_that_fails_again_replaces_the_failure_at_the_wait() {
+    let mut end = End::unreadable(Error::new(ErrorKind::Io, "first failure"));
+    end.log_read_again(Err(Error::new(ErrorKind::Io, "second failure")));
+
+    let error = verdict(1, end, &Serial::default()).err().unwrap();
+
+    assert_eq!(error.message(), "second failure");
 }
