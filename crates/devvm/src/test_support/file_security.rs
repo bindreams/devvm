@@ -11,11 +11,21 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, READ_CONTROL,
+    FILE_SHARE_WRITE, READ_CONTROL, SetFileAttributesW,
 };
 
 use crate::host::windows::security::{Descriptor, Owner};
 use crate::host::windows::{user, wide};
+
+/// Sets the Win32 file attributes of `path` to exactly `attributes` (`FILE_ATTRIBUTE_*`).
+pub fn set_attributes(path: &Path, attributes: u32) -> std::io::Result<()> {
+    let path = wide(path)?;
+    // SAFETY: `path` is NUL-terminated.
+    match unsafe { SetFileAttributesW(path.as_ptr(), attributes) } {
+        0 => Err(std::io::Error::last_os_error()),
+        _ => Ok(()),
+    }
+}
 
 /// Replaces the DACL of `path` with the one `sddl` describes (`D:...`), protected: nothing is inherited.
 pub fn set_protected_dacl(path: &Path, sddl: &str) {

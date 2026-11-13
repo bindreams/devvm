@@ -2,13 +2,19 @@
 //! CI Windows Test lane and the deputy's runner do). The archives are the snapshot's shape: a tar of files and links, no
 //! directory entries.
 
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::process::Output;
+
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_SYSTEM, FILE_SHARE_READ,
+};
 
 use super::extract_command;
 use crate::copy::copy_tests::{add_all, new_repo, put, take};
 use crate::guest::windows::wrap::wrap_pwsh_tests::{run, shown};
 use crate::test_groups::{Group, pwsh_wrap};
+use crate::test_support::file_security::set_attributes;
 use crate::test_support::fixtures::unicode_home;
 
 /// `path` as the user types a guest path: with `/`.
@@ -117,9 +123,8 @@ fn a_snapshot_entry_the_windows_extraction_cannot_make_ends_the_step_naming_it_a
     #[fixture(pwsh_wrap)] _group: &Group,
     #[fixture(unicode_home)] home: &Path,
 ) {
-    // The snapshot keeps a tracked symlink as a symlink entry. A token that may not make one (the guest user at Medium
-    // integrity) fails the extraction; a host that may makes the link. Either way the entry is neither skipped nor
-    // quietly turned into something else.
+    // The snapshot keeps a tracked symlink as a symlink entry. A Windows guest extracts none (the user's token may not
+    // make one), so the step ends naming it, and nothing is made for it, whatever this host's token may do.
     let archive = home.join("devvm-copy-x.tar");
     let mut builder = tar::Builder::new(std::fs::File::create(&archive).unwrap());
     let mut file = tar::Header::new_gnu();
@@ -137,17 +142,147 @@ fn a_snapshot_entry_the_windows_extraction_cannot_make_ends_the_step_naming_it_a
 
     let finished = extract(&destination, &archive);
 
-    let link = destination.join("a link.txt");
-    if finished.status.code() == Some(0) {
-        assert!(
-            std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
-            "the extraction succeeded without making the link: {}",
-            shown(&finished)
-        );
-    } else {
-        let stderr = String::from_utf8_lossy(&finished.stderr);
-        assert!(stderr.contains("a link.txt"), "{}", shown(&finished));
+    assert_ne!(finished.status.code(), Some(0), "{}", shown(&finished));
+    let stderr = String::from_utf8_lossy(&finished.stderr);
+    assert!(stderr.contains("a link.txt"), "{}", shown(&finished));
+    assert!(
+        std::fs::symlink_metadata(destination.join("a link.txt")).is_err(),
+        "nothing is made for the entry"
+    );
+    assert!(!archive.exists());
+}
+
+#[skuld::test]
+fn an_entry_outside_the_destination_ends_the_step_naming_it_and_writes_nothing_for_it(
+    #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let archive = home.join("devvm-copy-x.tar");
+    let mut builder = tar::Builder::new(std::fs::File::create(&archive).unwrap());
+    for (name, content) in [("inside.txt", &b"i"[..]), ("../escape.txt", b"e")] {
+        // The tar crate refuses a `..` through `set_path`, so the name goes into the header's bytes.
+        let mut header = tar::Header::new_gnu();
+        header.as_old_mut().name[..name.len()].copy_from_slice(name.as_bytes());
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append(&header, content).unwrap();
     }
+    builder.finish().unwrap();
+    drop(builder);
+    let destination = home.join("inside");
+
+    let finished = extract(&destination, &archive);
+
+    assert_ne!(finished.status.code(), Some(0), "{}", shown(&finished));
+    assert!(
+        String::from_utf8_lossy(&finished.stderr).contains("escape.txt"),
+        "{}",
+        shown(&finished)
+    );
+    assert!(!home.join("escape.txt").exists());
+    assert_eq!(std::fs::read(destination.join("inside.txt")).unwrap(), b"i");
+}
+
+/// The attributes a destination file can carry that make a plain overwrite fail.
+const GETS_IN_THE_WAY: u32 = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM;
+
+/// The attribute bits of `path` that are in `GETS_IN_THE_WAY`.
+fn blocking_attributes(path: &Path) -> u32 {
+    std::fs::metadata(path).unwrap().file_attributes() & GETS_IN_THE_WAY
+}
+
+#[skuld::test]
+fn a_hidden_or_system_destination_file_is_overwritten_and_comes_out_as_the_archive_says(
+    #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let archive = home.join("devvm-copy-x.tar");
+    let entries: [(&str, &[u8]); 4] = [
+        ("hidden.txt", b"new"),
+        ("system.txt", b"new"),
+        ("all.txt", b"new"),
+        ("plain.txt", b"new"),
+    ];
+    write_tar(&archive, &entries);
+    let destination = home.join("target");
+    std::fs::create_dir_all(&destination).unwrap();
+    for (name, attributes) in [
+        ("hidden.txt", FILE_ATTRIBUTE_HIDDEN),
+        ("system.txt", FILE_ATTRIBUTE_SYSTEM),
+        ("all.txt", GETS_IN_THE_WAY),
+        ("plain.txt", FILE_ATTRIBUTE_NORMAL),
+    ] {
+        let path = destination.join(name);
+        std::fs::write(&path, "old, and longer than the new one").unwrap();
+        set_attributes(&path, attributes).unwrap();
+    }
+
+    let finished = extract(&destination, &archive);
+
+    assert_eq!(finished.status.code(), Some(0), "{}", shown(&finished));
+    for (name, _) in entries {
+        let path = destination.join(name);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new", "{name}");
+        assert_eq!(blocking_attributes(&path), 0, "{name}: the archive is what the file is");
+    }
+}
+
+#[skuld::test]
+fn a_failure_on_one_entry_restores_its_file_and_leaves_the_files_after_it_as_they_were(
+    #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let archive = home.join("devvm-copy-x.tar");
+    write_tar(
+        &archive,
+        &[
+            ("first.txt", b"new"),
+            ("held.txt", b"new"),
+            ("last.txt", b"new"),
+        ],
+    );
+    let destination = home.join("target");
+    std::fs::create_dir_all(&destination).unwrap();
+    for (name, attributes) in [
+        ("first.txt", FILE_ATTRIBUTE_READONLY),
+        ("held.txt", FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN),
+        ("last.txt", FILE_ATTRIBUTE_READONLY),
+    ] {
+        let path = destination.join(name);
+        std::fs::write(&path, "old, and longer than the new one").unwrap();
+        set_attributes(&path, attributes).unwrap();
+    }
+    // Another process keeps `held.txt` open without sharing write access: the write to it fails.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(destination.join("held.txt"))
+        .unwrap();
+
+    let finished = extract(&destination, &archive);
+    drop(held);
+
+    assert_ne!(finished.status.code(), Some(0), "{}", shown(&finished));
+    assert!(
+        String::from_utf8_lossy(&finished.stderr).contains("held.txt"),
+        "{}",
+        shown(&finished)
+    );
+    let content = |name: &str| std::fs::read(destination.join(name)).unwrap();
+    assert_eq!(content("first.txt"), b"new", "an entry before the failure is written");
+    assert_eq!(content("held.txt"), b"old, and longer than the new one");
+    assert_eq!(content("last.txt"), b"old, and longer than the new one");
+    assert_eq!(
+        blocking_attributes(&destination.join("held.txt")),
+        FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN,
+        "the failed entry's file has its attributes back"
+    );
+    assert_eq!(
+        blocking_attributes(&destination.join("last.txt")),
+        FILE_ATTRIBUTE_READONLY,
+        "a file after the failure was never touched"
+    );
     assert!(!archive.exists());
 }
 

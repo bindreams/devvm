@@ -24,10 +24,13 @@ pub(super) const SCRATCH_DIR: &str = "C:/ProgramData/devvm";
 /// ends with 0 only if all of it worked. Both paths are guest paths as the user types them (`C:/x`), in the script as
 /// literals: a `-Command` script takes no arguments, so no quoting of the paths is left to the caller.
 ///
-/// The extraction overwrites files that exist, as `tar -xf` does, and a file that is read-only is cleared of the
-/// attribute first. A regular file whose entry has no owner-write bit gets the ReadOnly attribute afterwards: the
-/// archive says what `tar -xf` would make read-only. Directories stay writable. An entry the guest cannot make (a
-/// symbolic link: the user's token may not create one) ends the step with .NET's message, which names it.
+/// One `TarReader` loop writes each entry on its own, as `tar -xf` does. A file that exists is overwritten: its
+/// ReadOnly, Hidden and System attributes are cleared first (the write fails on them) and are not restored, because
+/// the archive says what the file is. A regular file whose entry has no owner-write bit gets the ReadOnly attribute
+/// afterwards; directories stay writable. If writing an entry fails, that file gets its attributes back and the step
+/// ends naming the entry; the files after it are untouched. An entry that is neither a file nor a directory (a
+/// symbolic link: the user's token may not make one) or that lies outside `destination` ends the step naming it,
+/// before anything is written for it.
 pub(super) fn extract_command(destination: &str, archive: &str) -> Result<Command> {
     Ok(Command {
         argv: WindowsGuest.shell_argv(Some(Shell::Pwsh), &script(destination, archive))?,
@@ -42,36 +45,52 @@ fn script(destination: &str, archive: &str) -> String {
         "$destination = {}\n\
          $archive = {}\n\
          $status = 0\n\
+         $cleared = [int]([System.IO.FileAttributes]::ReadOnly -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System)\n\
          try {{\n\
          \x20   [void][System.IO.Directory]::CreateDirectory($destination)\n\
-         \x20   $files = [System.Collections.Generic.List[object]]::new()\n\
+         \x20   $root = [System.IO.Path]::GetFullPath($destination).TrimEnd('\\', '/') + [System.IO.Path]::DirectorySeparatorChar\n\
          \x20   $stream = [System.IO.File]::OpenRead($archive)\n\
          \x20   try {{\n\
          \x20       $reader = [System.Formats.Tar.TarReader]::new($stream)\n\
          \x20       while ($null -ne ($entry = $reader.GetNextEntry($false))) {{\n\
-         \x20           if ($entry.EntryType -in [System.Formats.Tar.TarEntryType]::RegularFile, [System.Formats.Tar.TarEntryType]::V7RegularFile) {{\n\
-         \x20               $files.Add([pscustomobject]@{{\n\
-         \x20                   Path = [System.IO.Path]::Combine($destination, $entry.Name)\n\
-         \x20                   ReadOnly = -not $entry.Mode.HasFlag([System.IO.UnixFileMode]::UserWrite)\n\
-         \x20               }})\n\
+         \x20           $path = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($destination, $entry.Name))\n\
+         \x20           if (-not ($path + [System.IO.Path]::DirectorySeparatorChar).StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {{\n\
+         \x20               throw \"the entry $($entry.Name) lies outside the destination\"\n\
+         \x20           }}\n\
+         \x20           if ($entry.EntryType -eq [System.Formats.Tar.TarEntryType]::Directory) {{\n\
+         \x20               [void][System.IO.Directory]::CreateDirectory($path)\n\
+         \x20               continue\n\
+         \x20           }}\n\
+         \x20           if ($entry.EntryType -notin [System.Formats.Tar.TarEntryType]::RegularFile, [System.Formats.Tar.TarEntryType]::V7RegularFile) {{\n\
+         \x20               throw \"the entry $($entry.Name) is a $($entry.EntryType), which a Windows guest does not extract\"\n\
+         \x20           }}\n\
+         \x20           [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))\n\
+         \x20           $saved = $null\n\
+         \x20           try {{\n\
+         \x20               if ([System.IO.File]::Exists($path)) {{\n\
+         \x20                   $saved = [System.IO.File]::GetAttributes($path)\n\
+         \x20                   $rest = [int]$saved -band -bnot $cleared\n\
+         \x20                   if ($rest -eq 0) {{ $rest = [int][System.IO.FileAttributes]::Normal }}\n\
+         \x20                   [System.IO.File]::SetAttributes($path, [System.IO.FileAttributes]$rest)\n\
+         \x20               }}\n\
+         \x20               $entry.ExtractToFile($path, $true)\n\
+         \x20               if (-not $entry.Mode.HasFlag([System.IO.UnixFileMode]::UserWrite)) {{\n\
+         \x20                   [System.IO.File]::SetAttributes($path, [System.IO.File]::GetAttributes($path) -bor [System.IO.FileAttributes]::ReadOnly)\n\
+         \x20               }}\n\
+         \x20           }} catch {{\n\
+         \x20               $message = $_.Exception.Message\n\
+         \x20               if ($null -ne $saved) {{\n\
+         \x20                   try {{\n\
+         \x20                       [System.IO.File]::SetAttributes($path, $saved)\n\
+         \x20                   }} catch {{\n\
+         \x20                       $message += \" (its attributes could not be restored: $($_.Exception.Message))\"\n\
+         \x20                   }}\n\
+         \x20               }}\n\
+         \x20               throw \"cannot write $($entry.Name): $message\"\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }} finally {{\n\
          \x20       $stream.Dispose()\n\
-         \x20   }}\n\
-         \x20   foreach ($file in $files) {{\n\
-         \x20       if ([System.IO.File]::Exists($file.Path)) {{\n\
-         \x20           $attributes = [System.IO.File]::GetAttributes($file.Path)\n\
-         \x20           if ($attributes.HasFlag([System.IO.FileAttributes]::ReadOnly)) {{\n\
-         \x20               [System.IO.File]::SetAttributes($file.Path, $attributes -bxor [System.IO.FileAttributes]::ReadOnly)\n\
-         \x20           }}\n\
-         \x20       }}\n\
-         \x20   }}\n\
-         \x20   [System.Formats.Tar.TarFile]::ExtractToDirectory($archive, $destination, $true)\n\
-         \x20   foreach ($file in $files) {{\n\
-         \x20       if ($file.ReadOnly) {{\n\
-         \x20           [System.IO.File]::SetAttributes($file.Path, [System.IO.File]::GetAttributes($file.Path) -bor [System.IO.FileAttributes]::ReadOnly)\n\
-         \x20       }}\n\
          \x20   }}\n\
          }} catch {{\n\
          \x20   [Console]::Error.WriteLine(\"devvm: cannot extract ${{archive}} into ${{destination}}: $($_.Exception.Message)\")\n\

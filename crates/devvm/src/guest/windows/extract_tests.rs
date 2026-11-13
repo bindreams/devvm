@@ -34,8 +34,9 @@ fn the_windows_extract_command_runs_pwsh_and_names_neither_sh_nor_tar() {
     );
     assert!(command.cwd.is_none());
     let script = command.argv.last().unwrap();
-    assert!(script.contains("System.Formats.Tar.TarFile"), "{script}");
-    assert!(script.contains("ExtractToDirectory"), "{script}");
+    assert!(script.contains("System.Formats.Tar.TarReader"), "{script}");
+    assert!(script.contains("ExtractToFile"), "{script}");
+    assert!(!script.contains("ExtractToDirectory"), "{script}");
     for word in ["tar.exe", "tar -xf", "/bin/sh", "sh -c", "bash"] {
         assert!(!script.contains(word), "`{word}` in {script}");
     }
@@ -50,12 +51,9 @@ fn the_extraction_overwrites_and_the_archive_is_removed_whatever_the_extraction_
             .unwrap_or_else(|| panic!("`{needle}` is not in {script}"))
     };
     // Overwriting, as `tar -xf` does.
-    assert!(
-        script.contains("ExtractToDirectory($archive, $destination, $true)"),
-        "{script}"
-    );
+    assert!(script.contains("ExtractToFile($path, $true)"), "{script}");
     // The destination is made first, the archive removed in a `finally`, and the script ends with the status.
-    assert!(at("CreateDirectory") < at("ExtractToDirectory"), "{script}");
+    assert!(at("CreateDirectory") < at("ExtractToFile"), "{script}");
     assert!(
         at("finally") < at("Remove-Item") && at("Remove-Item") < at("exit $status"),
         "{script}"
@@ -67,20 +65,43 @@ fn the_extraction_overwrites_and_the_archive_is_removed_whatever_the_extraction_
 }
 
 #[skuld::test]
-fn read_only_files_are_cleared_before_the_extraction_and_marked_after_it() {
+fn each_entry_clears_its_own_file_before_the_write_and_marks_it_after_and_restores_it_on_a_failure() {
     let script = script_of("C:/d", "C:/a.tar");
     let at = |needle: &str| {
         script
             .find(needle)
             .unwrap_or_else(|| panic!("`{needle}` is not in {script}"))
     };
+    // One reader loop: no list of files built beforehand, nothing cleared or marked outside the entry's own turn.
+    assert!(!script.contains("$files"), "{script}");
+    assert_eq!(script.matches("-bnot $cleared").count(), 1, "{script}");
+    assert_eq!(script.matches("GetNextEntry").count(), 1, "{script}");
+    // Read-only, hidden and system are what makes the write fail.
+    assert!(
+        script.contains("[System.IO.FileAttributes]::ReadOnly -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System"),
+        "{script}"
+    );
     // An entry with no owner-write bit is the one that gets the attribute, as `tar -xf` makes the file read-only.
     assert!(script.contains("UnixFileMode]::UserWrite"), "{script}");
     assert!(
-        at("-bxor [System.IO.FileAttributes]::ReadOnly") < at("ExtractToDirectory")
-            && at("ExtractToDirectory") < at("-bor [System.IO.FileAttributes]::ReadOnly"),
+        at("GetNextEntry") < at("-bnot $cleared")
+            && at("-bnot $cleared") < at("ExtractToFile")
+            && at("ExtractToFile") < at("-bor [System.IO.FileAttributes]::ReadOnly")
+            && at("-bor [System.IO.FileAttributes]::ReadOnly") < at("SetAttributes($path, $saved)"),
         "{script}"
     );
+}
+
+#[skuld::test]
+fn an_entry_that_is_not_a_file_or_a_directory_or_lies_outside_ends_the_step_before_it_is_written() {
+    let script = script_of("C:/d", "C:/a.tar");
+    let at = |needle: &str| {
+        script
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` is not in {script}"))
+    };
+    assert!(at("lies outside the destination") < at("ExtractToFile"), "{script}");
+    assert!(at("which a Windows guest does not extract") < at("ExtractToFile"), "{script}");
 }
 
 #[skuld::test]
