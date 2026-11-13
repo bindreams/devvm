@@ -27,8 +27,9 @@ pub(super) const SCRATCH_DIR: &str = "C:/ProgramData/devvm";
 /// One `TarReader` loop writes each entry on its own, as `tar -xf` does. A file that exists is overwritten: its
 /// ReadOnly, Hidden and System attributes are cleared first (the write fails on them) and are not restored, because
 /// the archive says what the file is. A regular file whose entry has no owner-write bit gets the ReadOnly attribute
-/// afterwards; directories stay writable. If writing an entry fails, that file gets its attributes back and the step
-/// ends naming the entry; the files after it are untouched. An entry that is neither a file nor a directory (a
+/// afterwards; directories stay writable. If the write of an entry fails, that file's attributes (not its contents)
+/// are restored and the step ends naming the entry; the files after it are untouched. If only the marking fails, the
+/// file stays written, with the attributes the write needed cleared. An entry that is neither a file nor a directory (a
 /// symbolic link: the user's token may not make one) or that lies outside `destination` ends the step naming it,
 /// before anything is written for it.
 pub(super) fn extract_command(destination: &str, archive: &str) -> Result<Command> {
@@ -74,9 +75,6 @@ fn script(destination: &str, archive: &str) -> String {
          \x20                   [System.IO.File]::SetAttributes($path, [System.IO.FileAttributes]$rest)\n\
          \x20               }}\n\
          \x20               $entry.ExtractToFile($path, $true)\n\
-         \x20               if (-not $entry.Mode.HasFlag([System.IO.UnixFileMode]::UserWrite)) {{\n\
-         \x20                   [System.IO.File]::SetAttributes($path, [System.IO.File]::GetAttributes($path) -bor [System.IO.FileAttributes]::ReadOnly)\n\
-         \x20               }}\n\
          \x20           }} catch {{\n\
          \x20               $message = $_.Exception.Message\n\
          \x20               if ($null -ne $saved) {{\n\
@@ -87,6 +85,13 @@ fn script(destination: &str, archive: &str) -> String {
          \x20                   }}\n\
          \x20               }}\n\
          \x20               throw \"cannot write $($entry.Name): $message\"\n\
+         \x20           }}\n\
+         \x20           if (-not $entry.Mode.HasFlag([System.IO.UnixFileMode]::UserWrite)) {{\n\
+         \x20               try {{\n\
+         \x20                   [System.IO.File]::SetAttributes($path, [System.IO.File]::GetAttributes($path) -bor [System.IO.FileAttributes]::ReadOnly)\n\
+         \x20               }} catch {{\n\
+         \x20                   throw \"cannot mark $($entry.Name) read-only: $($_.Exception.Message)\"\n\
+         \x20               }}\n\
          \x20           }}\n\
          \x20       }}\n\
          \x20   }} finally {{\n\

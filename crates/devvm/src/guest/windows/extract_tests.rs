@@ -65,7 +65,7 @@ fn the_extraction_overwrites_and_the_archive_is_removed_whatever_the_extraction_
 }
 
 #[skuld::test]
-fn each_entry_clears_its_own_file_before_the_write_and_marks_it_after_and_restores_it_on_a_failure() {
+fn each_entry_clears_its_own_file_before_the_write_restores_it_when_the_write_fails_and_marks_it_after() {
     let script = script_of("C:/d", "C:/a.tar");
     let at = |needle: &str| {
         script
@@ -86,9 +86,13 @@ fn each_entry_clears_its_own_file_before_the_write_and_marks_it_after_and_restor
     assert!(
         at("GetNextEntry") < at("-bnot $cleared")
             && at("-bnot $cleared") < at("ExtractToFile")
-            && at("ExtractToFile") < at("-bor [System.IO.FileAttributes]::ReadOnly")
-            && at("-bor [System.IO.FileAttributes]::ReadOnly") < at("SetAttributes($path, $saved)"),
-        "{script}"
+            && at("ExtractToFile") < at("SetAttributes($path, $saved)")
+            && at("SetAttributes($path, $saved)") < at("-bor [System.IO.FileAttributes]::ReadOnly"),
+        "the attributes come back only when the write failed, never after the file is marked: {script}"
+    );
+    assert!(
+        at("cannot mark") > at("-bor [System.IO.FileAttributes]::ReadOnly"),
+        "a failed marking names the entry: {script}"
     );
 }
 
