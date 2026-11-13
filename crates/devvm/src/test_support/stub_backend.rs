@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::backend::fake::FakeStorage;
-use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
+use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineExit, MachineRecord, MachineSpec, Storage};
 use crate::{Error, ErrorKind, Result};
 
 /// What `attach` answers.
@@ -147,7 +147,7 @@ impl Machine for StubMachine {
         Ok(())
     }
 
-    fn try_wait(&self) -> Result<Option<std::process::ExitStatus>> {
+    fn try_wait(&self) -> Result<Option<MachineExit>> {
         Err(Error::new(
             ErrorKind::Internal,
             "a stub machine was found, not launched: its exit status is not this process's to read",

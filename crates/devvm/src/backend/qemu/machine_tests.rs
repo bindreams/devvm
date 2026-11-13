@@ -58,6 +58,7 @@ fn launched(
         sock.claim.clone(),
         Vec::new(),
         PathBuf::from("qemu.log"),
+        0,
         arch,
         host,
         Arc::new(MemoryProgress::default()),

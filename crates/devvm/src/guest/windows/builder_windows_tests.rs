@@ -11,8 +11,7 @@ use fatfs::{FileSystem, FsOptions};
 
 use super::Bounds;
 use super::builder_tests::{Rig, rig, text_of};
-use crate::backend::fake::{FakeBackend, GuestScript};
-use crate::backend::qemu::machine::qemu_log;
+use crate::backend::fake::{EXIT_OUTPUT, FakeBackend, GuestScript};
 use crate::backend::{MachineSpec, MediaFormat, MediaKind};
 use crate::contain::Lifetime;
 use crate::store::layers::Clock;
@@ -253,8 +252,7 @@ fn a_boot_loop_that_never_wrote_a_marker_is_found_at_the_second_launch(#[fixture
 
 #[skuld::test]
 fn an_exit_with_a_failure_status_is_an_error_naming_the_launch_and_status(#[fixture(unicode_home)] home: &Path) {
-    let crashed = Launch::crashing("DEVVM-PROGRESS=specialize\r\n")
-        .before(|spec| std::fs::write(qemu_log(&spec.dir), "qemu: fatal: out of memory\n").unwrap());
+    let crashed = Launch::crashing("DEVVM-PROGRESS=specialize\r\n");
     let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![Launch::off(""), crashed]));
     let (rig, backend) = rig(home, "single-image.iso", backend, Bounds::default());
 
@@ -266,11 +264,97 @@ fn an_exit_with_a_failure_status_is_an_error_naming_the_launch_and_status(#[fixt
     assert!(message.contains("exit code: 1"), "{message}");
     assert!(message.contains("specialize"), "the serial tail: {message}");
     assert!(
-        message.contains("qemu: fatal: out of memory"),
-        "QEMU's own log: {message}"
+        message.contains(EXIT_OUTPUT),
+        "the machine's own account of the exit: {message}"
     );
     rig.assert_names_no_build_file(&error);
     assert_eq!(backend.launches(), 2, "a crashed VM is not a Setup reboot");
+}
+
+#[skuld::test]
+fn a_failed_marker_is_the_headline_whatever_the_exit_and_the_exit_is_named_after_it(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![
+        Launch::off(""),
+        Launch::crashing("DEVVM-PROGRESS=first logon: x\r\nDEVVM-BASE-FAILED=boom\r\n"),
+    ]));
+    let (rig, backend) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(
+        message.starts_with("the Windows guest failed to build the base: boom"),
+        "{message}"
+    );
+    assert!(message.contains("launch 2"), "{message}");
+    assert!(message.contains("exit code: 1"), "{message}");
+    assert!(message.contains(EXIT_OUTPUT), "{message}");
+    rig.assert_names_no_build_file(&error);
+    assert_eq!(backend.launches(), 2);
+}
+
+#[skuld::test]
+fn a_done_marker_with_a_failing_exit_is_an_error_naming_both(#[fixture(unicode_home)] home: &Path) {
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![Launch::crashing(&format!(
+        "DEVVM-PROGRESS=first logon: x\r\n{LICENSED}\r\nDEVVM-BASE-DONE\r\n"
+    ))]));
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    let message = error.message();
+    assert!(message.contains("DEVVM-BASE-DONE"), "{message}");
+    assert!(message.contains("launch 1"), "{message}");
+    assert!(message.contains("exit code: 1"), "{message}");
+    assert!(message.contains("incomplete"), "{message}");
+    rig.assert_names_no_build_file(&error);
+}
+
+/// Puts a directory where the launch's serial log was, so that reading the log fails.
+fn serial_log_becomes_a_directory(spec: &MachineSpec) {
+    std::fs::remove_file(&spec.serial_log).unwrap();
+    std::fs::create_dir(&spec.serial_log).unwrap();
+}
+
+#[skuld::test]
+fn a_serial_log_that_cannot_be_read_while_the_guest_runs_still_gets_the_tail_and_the_winpe_logs(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let winpe = Launch::running("firmware line\r\n").before(|spec| {
+        guest_writes(&answer_disk(spec), "logs/winpe.log", b"last winpe line\r\n");
+        serial_log_becomes_a_directory(spec);
+    });
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![winpe]));
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    let message = error.message();
+    assert!(message.contains("cannot read the serial log"), "{message}");
+    assert!(message.contains("the end of the serial log"), "{message}");
+    assert!(message.contains("last winpe line"), "{message}");
+    rig.assert_names_no_build_file(&error);
+}
+
+#[skuld::test]
+fn a_serial_log_that_cannot_be_read_after_the_guest_exited_gets_the_same(#[fixture(unicode_home)] home: &Path) {
+    let winpe = Launch::off("firmware line\r\n").before(|spec| {
+        guest_writes(&answer_disk(spec), "logs/winpe.log", b"last winpe line\r\n");
+        serial_log_becomes_a_directory(spec);
+    });
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![winpe]));
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(message.contains("cannot read the serial log"), "{message}");
+    assert!(message.contains("last winpe line"), "{message}");
+    rig.assert_names_no_build_file(&error);
 }
 
 #[skuld::test]

@@ -8,7 +8,6 @@
 //! exits with a failure status ends the build.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -18,8 +17,9 @@ use super::expiry::expiry_from;
 use super::pins::VIRTIO_WIN;
 use super::templates::{self, AnswerInputs, COMPUTER_NAME, TIME_ZONE};
 use crate::access::session::humanly;
-use crate::backend::qemu::machine::qemu_log;
-use crate::backend::{Backend, DeviceProfile, LAYER_DISK, Machine, MachineSpec, Media, MediaFormat, MediaKind, Patch};
+use crate::backend::{
+    Backend, DeviceProfile, LAYER_DISK, Machine, MachineExit, MachineSpec, Media, MediaFormat, MediaKind, Patch,
+};
 use crate::contain::Lifetime;
 use crate::guest::{BaseBuilder, BuildCtx, GuestOs};
 use crate::host::{Host, is_absent};
@@ -154,8 +154,8 @@ struct Stall {
 
 /// How a launch ended.
 enum Exit {
-    /// The VM process exited by itself, with this status.
-    Exited(ExitStatus),
+    /// The VM process exited by itself, as the machine tells it.
+    Exited(MachineExit),
     /// The VM was killed because [`Stall`]'s bound passed.
     Stalled(Stall),
 }
@@ -301,47 +301,68 @@ impl<'a> Build<'a> {
         let exit = self.wait(&mut *machine, &mut reader);
         // The VM is gone, killed or exited: this removes what it left outside its directory.
         let killed = machine.kill();
+        // Every error from here on goes through `fail`, so each carries the end of this launch's serial log.
+        self.conclude(number, exit, killed, &mut reader)
+            .map_err(|error| self.fail(error, log))
+    }
+
+    /// What a launch that has ended came to: the markers it wrote and how its VM process ended, read in that order. A
+    /// `DEVVM-BASE-FAILED=` marker is the headline of an error whatever the exit, since it is the guest's own account.
+    /// `DEVVM-BASE-DONE` with a failing exit is an error too: the disk may be incomplete.
+    fn conclude(
+        &mut self,
+        number: usize,
+        exit: Result<Exit>,
+        killed: Result<()>,
+        reader: &mut LogReader,
+    ) -> Result<Launched> {
         let exit = exit?;
         killed?;
-
         let rest = reader.poll(true)?;
         self.observe(&rest);
         let serial = reader.whole();
-        match exit {
+        let exited = match exit {
             Exit::Stalled(stall) => {
-                let error = Error::new(
+                return Err(Error::new(
                     ErrorKind::Unavailable,
                     format!(
                         "{} did not finish within {}; the guest was stopped",
                         stall.awaited,
                         humanly(stall.bound)
                     ),
-                );
-                return Err(self.fail(error, log));
+                ));
             }
-            Exit::Exited(status) if !status.success() => {
-                let error = Error::new(
-                    ErrorKind::Unavailable,
-                    format!("the VM process of launch {number} exited with {status}"),
-                );
-                let error = with_log_tail(error, "QEMU's log", &qemu_log(&self.work.join(MACHINE_DIR)));
-                return Err(self.fail(error, log));
+            Exit::Exited(exited) => exited,
+        };
+        let status = exited.status;
+        let ended = format!("the VM process of launch {number} exited with {status}");
+        // A failing exit carries what QEMU printed in this launch.
+        let error = |headline: String| {
+            let error = Error::new(ErrorKind::Unavailable, headline);
+            if status.success() {
+                error
+            } else {
+                with_tail(error, "QEMU's output", &exited.output)
             }
-            Exit::Exited(_) => {}
-        }
+        };
         if let Some(why) = &serial.failed {
-            let error = Error::new(
-                ErrorKind::Unavailable,
-                format!("the Windows guest failed to build the base: {why}"),
-            );
-            return Err(self.fail(error, log));
+            let mut headline = format!("the Windows guest failed to build the base: {why}");
+            if !status.success() {
+                headline.push_str(&format!("\n{ended}"));
+            }
+            return Err(error(headline));
         }
-        if serial.done {
-            return Ok(Launched::Finished);
+        match (serial.done, status.success()) {
+            (true, true) => return Ok(Launched::Finished),
+            (true, false) => {
+                return Err(error(format!(
+                    "the guest wrote DEVVM-BASE-DONE, but {ended}, so the disk may be incomplete"
+                )));
+            }
+            (false, false) => return Err(error(ended)),
+            (false, true) => {}
         }
-        if let Err(error) = self.launches.note(serial) {
-            return Err(self.fail(error, log));
-        }
+        self.launches.note(serial)?;
         Ok(Launched::Restarted)
     }
 
@@ -479,7 +500,7 @@ impl<'a> Build<'a> {
                         "\n{} ({} bytes), last lines:\n{}",
                         file.name,
                         file.bytes.len(),
-                        last_lines(&file.bytes)
+                        last_lines(&String::from_utf8_lossy(&file.bytes))
                     )
                 })
                 .collect(),
@@ -492,11 +513,16 @@ impl<'a> Build<'a> {
 /// `error`, with the last lines of the log `what` at `path`: the build's directory, and the log with it, is gone when the
 /// error is read. A log that is missing or empty adds nothing, and one that cannot be read says so.
 fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
-    let tail = match std::fs::read(path) {
-        Ok(bytes) => last_lines(&bytes),
-        Err(e) if is_absent(&e) => String::new(),
-        Err(e) => format!("(cannot be read: {e})"),
-    };
+    match std::fs::read(path) {
+        Ok(bytes) => with_tail(error, what, &String::from_utf8_lossy(&bytes)),
+        Err(e) if is_absent(&e) => error,
+        Err(e) => with_tail(error, what, &format!("(cannot be read: {e})")),
+    }
+}
+
+/// `error`, with the last lines of `text`, which `what` names. Empty text adds nothing.
+fn with_tail(error: Error, what: &str, text: &str) -> Error {
+    let tail = last_lines(text);
     if tail.is_empty() {
         return error;
     }
@@ -504,8 +530,7 @@ fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
 }
 
 /// The last 20 lines of a log, with the line ends of a Windows file taken off.
-fn last_lines(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
+fn last_lines(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(20)..].join("\n")
 }

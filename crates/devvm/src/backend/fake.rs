@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
-    Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
-    Patch, SshEndpoint, Storage, Video, check_blank_disk_size, check_machine_spec, check_overlay, make_overlay,
+    Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineExit, MachineRecord,
+    MachineSpec, NetModel, Patch, SshEndpoint, Storage, Video, check_blank_disk_size, check_machine_spec,
+    check_overlay, make_overlay,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
@@ -79,6 +80,9 @@ pub(crate) struct FakeBackend {
 /// off, which ends the VM process as a guest's shutdown ends QEMU. The script may write the machine's serial log and
 /// its media, as a guest does, and may leave the machine running.
 pub(crate) type GuestScript = Arc<dyn Fn(usize, &MachineSpec, &PowerOff) + Send + Sync>;
+
+/// What a fake machine says of its VM process's exit: the fake VM prints nothing, so this stands in for QEMU's output.
+pub(crate) const EXIT_OUTPUT: &str = "the fake VM's own account of its exit";
 
 /// The power button of a fake machine's guest.
 pub(crate) struct PowerOff {
@@ -435,8 +439,11 @@ impl Machine for FakeMachine {
         if self.attached { Ok(()) } else { self.vm.release() }
     }
 
-    fn try_wait(&self) -> Result<Option<std::process::ExitStatus>> {
-        self.vm.try_wait()
+    fn try_wait(&self) -> Result<Option<MachineExit>> {
+        Ok(self.vm.try_wait()?.map(|status| MachineExit {
+            status,
+            output: EXIT_OUTPUT.to_owned(),
+        }))
     }
 
     /// Counts the reset: the fake guest's boot id changes when the code around it reads the count.

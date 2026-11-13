@@ -302,6 +302,14 @@ pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Resul
     })
 }
 
+/// How a VM process ended, as the backend that started it tells it.
+#[derive(Clone, Debug)]
+pub(crate) struct MachineExit {
+    pub status: std::process::ExitStatus,
+    /// What the backend knows of this launch's end: for QEMU, what that launch printed. Empty when nothing is known.
+    pub output: String,
+}
+
 pub(crate) trait Machine: Send {
     fn record(&self) -> MachineRecord;
     fn ssh_endpoints(&self) -> &[(Endpoint, SocketAddr)];
@@ -326,10 +334,10 @@ pub(crate) trait Machine: Send {
         ))
     }
 
-    /// The exit status of the VM process if it has exited, `None` while it runs: std's `Child::try_wait`. `Internal`
-    /// for a machine from `Backend::attach` or a released one, whose status this process cannot read, and for one that
-    /// is not resumed.
-    fn try_wait(&self) -> Result<Option<std::process::ExitStatus>>;
+    /// How the VM process ended if it has exited, `None` while it runs: std's `Child::try_wait`, with the backend's own
+    /// account of the exit. `Internal` for a machine from `Backend::attach` or a released one, whose status this
+    /// process cannot read, and for one that is not resumed.
+    fn try_wait(&self) -> Result<Option<MachineExit>>;
 
     /// Graceful shutdown; returns after the process has exited and its `leftovers` are deleted.
     fn shutdown(&mut self) -> Result<()>;

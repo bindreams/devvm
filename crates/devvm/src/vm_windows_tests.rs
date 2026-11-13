@@ -472,7 +472,7 @@ impl Machine for LateMachine {
         self.inner.release()
     }
 
-    fn try_wait(&self) -> crate::Result<Option<std::process::ExitStatus>> {
+    fn try_wait(&self) -> crate::Result<Option<crate::backend::MachineExit>> {
         self.inner.try_wait()
     }
 
@@ -746,7 +746,7 @@ impl Machine for SpiedMachine {
         self.inner.release()
     }
 
-    fn try_wait(&self) -> crate::Result<Option<std::process::ExitStatus>> {
+    fn try_wait(&self) -> crate::Result<Option<crate::backend::MachineExit>> {
         self.inner.try_wait()
     }
 
@@ -835,7 +835,7 @@ impl Machine for NotesOpLockMachine {
         self.inner.release()
     }
 
-    fn try_wait(&self) -> crate::Result<Option<std::process::ExitStatus>> {
+    fn try_wait(&self) -> crate::Result<Option<crate::backend::MachineExit>> {
         self.inner.try_wait()
     }
 

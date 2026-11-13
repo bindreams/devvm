@@ -9,6 +9,7 @@ use serde_json::json;
 use super::QemuMachine;
 use crate::Arch;
 use crate::ErrorKind;
+use crate::backend::fake::ask_to_crash;
 use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
 use crate::backend::{Machine, MachineRecord};
 use crate::contain::{Lifetime, VmProcess};
@@ -90,8 +91,8 @@ impl World {
         .unwrap()
     }
 
-    /// A machine this process launched and resumed, whose log is `log`.
-    fn launched(&self, log: PathBuf, host: &'static dyn host::Host) -> QemuMachine {
+    /// A machine this process launched and resumed, whose log is `log` and whose output begins at `log_from`.
+    fn launched(&self, log: PathBuf, log_from: u64, host: &'static dyn host::Host) -> QemuMachine {
         let vm = self.handle();
         let id = vm.id();
         let mut machine = QemuMachine::launched(
@@ -101,6 +102,7 @@ impl World {
             self.sock.claim.clone(),
             Vec::new(),
             log,
+            log_from,
             Arch::Amd64,
             host,
             Arc::new(MemoryProgress::default()),
@@ -354,7 +356,7 @@ fn the_log_a_launched_machine_quotes_is_the_one_it_was_given(#[fixture(unicode_h
     std::fs::create_dir_all(&elsewhere).unwrap();
     let log = elsewhere.join("qemu.log");
     std::fs::write(&log, "qemu: could not open the disk").unwrap();
-    let machine = world.launched(log, host::current());
+    let machine = world.launched(log, 0, host::current());
 
     let error = machine.exited("gone");
 
@@ -372,4 +374,74 @@ fn the_log_an_attached_machine_quotes_is_beside_the_serial_log(#[fixture(unicode
 
     assert!(error.message().contains("out of memory"), "{error}");
     world.end_qemu();
+}
+
+/// Appends `text` to the file at `path`, as a launch of QEMU appends to its log.
+fn append(path: &Path, text: &str) {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+}
+
+#[skuld::test]
+fn the_output_a_launched_machine_quotes_is_only_what_its_own_launch_printed(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home);
+    let log = home.join("qemu.log");
+    append(&log, "qemu: an earlier launch failed\n");
+    let from = std::fs::metadata(&log).unwrap().len();
+    append(&log, "qemu: this launch ran out of memory\n");
+    let machine = world.launched(log, from, host::current());
+
+    let error = machine.exited("gone");
+
+    assert!(error.message().contains("this launch ran out of memory"), "{error}");
+    assert!(!error.message().contains("an earlier launch"), "{error}");
+    world.end_qemu();
+}
+
+#[skuld::test]
+fn a_launched_machine_that_exited_gives_its_status_and_the_output_of_its_own_launch(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let World { qemu, record, sock, .. } = world(home);
+    let vm = Arc::try_unwrap(qemu)
+        .ok()
+        .expect("nothing else holds the VM")
+        .into_inner()
+        .unwrap();
+    let port = fake_vm::await_port(&vm, home);
+    let log = home.join("qemu.log");
+    append(&log, "qemu: an earlier launch failed\n");
+    let from = std::fs::metadata(&log).unwrap().len();
+    append(&log, "qemu: this launch ran out of memory\n");
+    let host = host::current();
+    let watch = host.watch_process(vm.id()).unwrap();
+    let mut machine = QemuMachine::launched(
+        vm,
+        watch,
+        record,
+        sock.claim.clone(),
+        Vec::new(),
+        log,
+        from,
+        Arch::Amd64,
+        host,
+        Arc::new(MemoryProgress::default()),
+    );
+    machine.resumed = true;
+    assert!(machine.try_wait().unwrap().is_none(), "the VM runs");
+
+    ask_to_crash(std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port))).unwrap();
+    machine.vm.wait().unwrap();
+
+    let exit = machine.try_wait().unwrap().expect("the VM has exited");
+    assert_eq!(exit.status.code(), Some(1), "{}", exit.status);
+    assert!(exit.output.contains("this launch ran out of memory"), "{}", exit.output);
+    assert!(!exit.output.contains("an earlier launch"), "{}", exit.output);
+    machine.vm.kill().unwrap();
 }
