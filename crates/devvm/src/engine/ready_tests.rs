@@ -1,14 +1,16 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use secrecy::ExposeSecret;
 
 use crate::access::keys::InstanceKeys;
+use crate::access::session::RETRY_PAUSE;
 use crate::access::{BootBound, SshTarget};
 use crate::backend::MachineRecord;
 use crate::engine::engine_tests::{EngineFixture, engine_fixture, gone_process, memory, running_machine};
-use crate::engine::ready::{boot_id_unchanged, connect_ready};
+use crate::engine::ready::{boot_id_unchanged, connect_ready, reconnect_after_reset};
 use crate::guest::GuestOs;
 use crate::instance::name::InstanceName;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
@@ -51,6 +53,83 @@ fn a_ready_guest_gives_a_session_that_runs_commands(#[fixture(unicode_home)] hom
     )
     .unwrap();
 
+    assert_eq!(session.exec_collect("echo up").unwrap().stdout, b"up\n");
+}
+
+#[skuld::test]
+fn a_connection_lost_while_waiting_for_readiness_is_reconnected_and_the_wait_goes_on(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let target = target_at(&fx, home);
+    // A guest that restarts twice during the wait: each of the first two probes ends with the connection.
+    fx.guests.drop_connections_in_readiness(2);
+    let waits = Arc::new(AtomicUsize::new(0));
+    let counted = waits.clone();
+    fx.guests.on_ready(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let session = connect_ready(
+        &fx.engine,
+        &*linux(&fx),
+        &name(),
+        &target,
+        &running_machine(home, fx.server.addr()),
+    )
+    .unwrap();
+
+    assert_eq!(waits.load(Ordering::SeqCst), 3);
+    // The session that is returned is the third connection, past its boot phase.
+    assert_eq!(session.exec_collect("echo up").unwrap().stdout, b"up\n");
+}
+
+#[skuld::test]
+fn a_connection_lost_while_waiting_for_readiness_is_followed_by_the_retry_pause_before_the_reconnect(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let target = target_at(&fx, home);
+    // A guest whose session answers with the connection lost each time, as one that restarts does.
+    fx.guests.drop_connections_in_readiness(3);
+
+    let started = Instant::now();
+    connect_ready(
+        &fx.engine,
+        &*linux(&fx),
+        &name(),
+        &target,
+        &running_machine(home, fx.server.addr()),
+    )
+    .unwrap();
+
+    // Each loss is followed by a pause: no connect-and-probe loop runs free.
+    assert!(started.elapsed() >= 3 * RETRY_PAUSE, "{:?}", started.elapsed());
+}
+
+#[skuld::test]
+fn a_boot_id_that_cannot_be_read_yet_is_asked_again_after_the_retry_pause_each_time(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let target = target_at(&fx, home);
+    // The guest was reset and boots again; its first three reads fail, as one answers 126 from session 0.
+    fx.fake.reset_counter().fetch_add(1, Ordering::SeqCst);
+    fx.guests.failing_boot_reads(3);
+
+    let started = Instant::now();
+    let session = reconnect_after_reset(
+        &fx.engine,
+        &*linux(&fx),
+        &name(),
+        &target,
+        &running_machine(home, fx.server.addr()),
+        "boot-0",
+    )
+    .unwrap();
+
+    // Each failed read is followed by a pause before the next one: no read-and-connect loop runs free.
+    assert!(started.elapsed() >= 3 * RETRY_PAUSE, "{:?}", started.elapsed());
     assert_eq!(session.exec_collect("echo up").unwrap().stdout, b"up\n");
 }
 

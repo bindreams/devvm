@@ -89,6 +89,15 @@ pub enum Setting {
     Uac(UacMode),
 }
 
+impl Setting {
+    /// The setting as a recipe names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Setting::Uac(_) => "set.uac",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Run {

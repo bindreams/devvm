@@ -5,10 +5,11 @@ use std::sync::Arc;
 use crate::access::SshSession;
 use crate::access::paths::expand_guest_path;
 use crate::backend::{DeviceProfile, DiskBus, MediaKind, NetModel, Video};
-use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SeedMedia, SeedSpec, missing};
+use crate::guest::windows::WindowsGuest;
+use crate::guest::{BaseBuilder, GuestOs, Guests, Readiness, SEED_IMAGE, SeedMedia, SeedSpec, missing};
 use crate::host::{Host, names};
 use crate::media::write_cidata_image;
-use crate::recipe::Shell;
+use crate::recipe::{Setting, Shell};
 use crate::{Command, Error, ErrorKind, GuestKind, Result, RunAs};
 
 pub(crate) mod builder;
@@ -26,22 +27,24 @@ mod linux_tests;
 #[path = "linux_flush_tests.rs"]
 mod flush_tests;
 
-/// The guests a build with the QEMU backend knows: Linux. Windows and macOS guests are not built yet.
-pub(crate) struct LinuxGuests {
+/// The guests a build with the QEMU backend knows: Linux and, as far as the host side goes, Windows (its base builder is
+/// not wired yet). macOS guests are not built yet.
+pub(crate) struct QemuGuests {
     builder: Arc<LinuxBuilder>,
 }
 
-impl LinuxGuests {
-    pub(crate) fn new(builder: Arc<LinuxBuilder>) -> LinuxGuests {
-        LinuxGuests { builder }
+impl QemuGuests {
+    pub(crate) fn new(builder: Arc<LinuxBuilder>) -> QemuGuests {
+        QemuGuests { builder }
     }
 }
 
-impl Guests for LinuxGuests {
+impl Guests for QemuGuests {
     fn os(&self, kind: GuestKind) -> Result<Arc<dyn GuestOs>> {
         match kind {
             GuestKind::Linux => Ok(Arc::new(LinuxGuest)),
-            GuestKind::Windows | GuestKind::Macos => Err(missing(kind)),
+            GuestKind::Windows => Ok(Arc::new(WindowsGuest)),
+            GuestKind::Macos => Err(missing(kind)),
         }
     }
 
@@ -55,9 +58,6 @@ impl Guests for LinuxGuests {
 
 /// The cloud image's guests: Ubuntu 24.04 with cloud-init, reached as `user` over SSH.
 pub(crate) struct LinuxGuest;
-
-/// Written next to the instance's other scratch files; its name is not part of any contract.
-const SEED_IMAGE: &str = "cidata.img";
 
 /// `sync`, then `sync -f` on the mount point of every `/dev/` line of the mounts file (`$1`, else `/proc/mounts`);
 /// exits 1 if any failed or the mounts file cannot be opened.
@@ -154,6 +154,17 @@ impl GuestOs for LinuxGuest {
             .map(|part| (*part).to_owned())
             .chain([script.to_owned()])
             .collect())
+    }
+
+    fn setting_command(&self, setting: &Setting) -> Result<Command> {
+        Err(Error::new(
+            ErrorKind::Recipe,
+            format!(
+                "a {} guest does not have the setting `{}`",
+                GuestKind::Linux.as_str(),
+                setting.name()
+            ),
+        ))
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {

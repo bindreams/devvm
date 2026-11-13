@@ -56,3 +56,21 @@ fn debug_output_of_the_seed_keys_does_not_hold_the_private_key() {
         "{shown}"
     );
 }
+
+#[skuld::test]
+fn the_fake_windows_guests_setting_is_the_real_ones_script_carried_by_a_shell_the_test_server_runs() {
+    use crate::RunAs;
+    use crate::recipe::{Setting, UacMode};
+    let command = FakeGuests
+        .os(GuestKind::Windows)
+        .unwrap()
+        .setting_command(&Setting::Uac(UacMode::AutoApprove))
+        .unwrap();
+    assert_eq!(command.run_as, RunAs::Elevated);
+    assert_eq!(command.argv[..2], ["sh", "-c"]);
+    assert!(
+        command.argv[2].contains("ConsentPromptBehaviorAdmin"),
+        "{:?}",
+        command.argv
+    );
+}

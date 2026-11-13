@@ -48,9 +48,11 @@ impl Engine {
     /// [`Engine::reap`].
     pub fn build(self: &Arc<Engine>, recipe: &Recipe, opts: &BuildOptions) -> Result<Image> {
         let flat = recipe.flatten()?;
-        refuse_set_steps(&flat)?;
         let arch = opts.arch.unwrap_or_else(Arch::host);
         let guest = self.guests.os(flat.guest)?;
+        // Before anything is built or keyed: a setting the guest does not have, or a script its shell cannot carry, is the
+        // recipe's mistake.
+        refuse_unavailable_commands(&flat, &*guest)?;
         let builder = self.guests.builder(flat.guest)?;
         self.backend()?;
         let store = self.store()?;
@@ -136,21 +138,38 @@ impl Engine {
     }
 }
 
-fn refuse_set_steps(flat: &Flattened) -> Result<()> {
-    match flat
-        .steps
-        .iter()
-        .position(|flat_step| matches!(flat_step.step, Step::Set(_)))
-    {
-        Some(index) => Err(Error::new(
-            ErrorKind::Recipe,
-            format!(
-                "step {} is `set.uac`, which a {} guest does not have",
-                index + 1,
-                flat.guest.as_str()
-            ),
-        )),
-        None => Ok(()),
+/// The first step whose guest command the guest cannot be given is an error, in the words of the guest and the step: a
+/// `set` step it cannot apply, a `copy` step whose extraction it cannot run, and a step whose command its wrapping
+/// refuses (a script its shell cannot carry, a line over the guest's limit). It is the one check of the commands the
+/// recipe holds, made before anything is built or keyed, and it builds each command as the step will run it.
+fn refuse_unavailable_commands(flat: &Flattened, guest: &dyn GuestOs) -> Result<()> {
+    for (index, flat_step) in flat.steps.iter().enumerate() {
+        step_command(guest, &flat_step.step, UNKNOWN_COPY_PATHS)
+            .and_then(|command| guest.wrap(&command))
+            .map_err(|error| in_step(error, index, flat.steps.len(), &describe(&flat_step.step)))?;
+    }
+    Ok(())
+}
+
+/// The destination and the archive of a `copy` step before it runs, which it learns from the guest's home and a random
+/// name; a command built from them is only checked.
+const UNKNOWN_COPY_PATHS: (&str, &str) = ("/", "/");
+
+/// The one guest command `step` runs, for the check and for the run. A `copy` step's paths are `(destination, archive)`.
+fn step_command(guest: &dyn GuestOs, step: &Step, copy_paths: (&str, &str)) -> Result<Command> {
+    match step {
+        Step::Run {
+            command,
+            shell,
+            run_as,
+            cwd,
+        } => Ok(Command {
+            argv: guest.shell_argv(*shell, command)?,
+            run_as: *run_as,
+            cwd: cwd.clone(),
+        }),
+        Step::Copy { .. } => extract_command(guest, copy_paths.0, copy_paths.1),
+        Step::Set(setting) => guest.setting_command(setting),
     }
 }
 
@@ -267,16 +286,9 @@ impl StepRun<'_> {
             .start(&StartOptions::default())
             .during("starting the step's guest")?;
         match step {
-            Step::Run {
-                command,
-                shell,
-                run_as,
-                cwd,
-            } => self.run_command(&vm, command, *shell, *run_as, cwd.clone())?,
-            Step::Copy { to, .. } => self.copy(&vm, to)?,
-            Step::Set(_) => {
-                return Err(Error::new(ErrorKind::Internal, "a set step reached a build")).during("running the step");
-            }
+            Step::Run { command, .. } => self.run_command(&vm, step, &format!("`{command}`"))?,
+            Step::Copy { to, .. } => self.copy(&vm, step, to)?,
+            Step::Set(setting) => self.run_command(&vm, step, &format!("`{}`", setting.name()))?,
         }
         self.flush(&vm)?;
         vm.shutdown().during("shutting the guest down")?;
@@ -289,21 +301,14 @@ impl StepRun<'_> {
         Ok(Built::default())
     }
 
-    fn run_command(
-        &self,
-        vm: &Vm,
-        script: &str,
-        shell: Option<Shell>,
-        run_as: RunAs,
-        cwd: Option<String>,
-    ) -> StepResult<()> {
-        let what = format!("`{script}`");
-        let argv = self.guest.shell_argv(shell, script).during(&what)?;
-        self.execute(vm, &Command { argv, run_as, cwd }, &what, ErrorKind::Recipe)
+    /// Runs the command of a `run` or `set` step; `what` names it in an error.
+    fn run_command(&self, vm: &Vm, step: &Step, what: &str) -> StepResult<()> {
+        let command = step_command(&**self.guest, step, UNKNOWN_COPY_PATHS).during(what)?;
+        self.execute(vm, &command, what, ErrorKind::Recipe)
     }
 
     /// Uploads the step's snapshot and extracts it into `to`.
-    fn copy(&self, vm: &Vm, to: &str) -> StepResult<()> {
+    fn copy(&self, vm: &Vm, step: &Step, to: &str) -> StepResult<()> {
         let snapshot = self
             .snapshot
             .ok_or_else(|| Error::new(ErrorKind::Internal, "a copy step has no snapshot"))
@@ -327,7 +332,7 @@ impl StepRun<'_> {
         })
         .during(format!("uploading the files of copy to {to}"))?;
         let what = format!("extracting the files of copy to {to}");
-        let command = extract_command(&**self.guest, &destination, &archive).during(&what)?;
+        let command = step_command(&**self.guest, step, (&destination, &archive)).during(&what)?;
         self.execute(vm, &command, &what, ErrorKind::Recipe)
     }
 
@@ -422,7 +427,7 @@ fn describe(step: &Step) -> String {
     match step {
         Step::Run { command, .. } => command.lines().next().unwrap_or_default().to_owned(),
         Step::Copy { to, .. } => format!("copy to {to}"),
-        Step::Set(_) => "set".to_owned(),
+        Step::Set(setting) => setting.name().to_owned(),
     }
 }
 
@@ -441,7 +446,9 @@ fn guest_destination(guest: &dyn GuestOs, expanded: &str, home: &str) -> Result<
 /// text in it, so no quoting of theirs is written here: the guest's own wrapping quotes them. The archive is outside
 /// `destination` and gone before the disk is committed, so no later layer or instance carries it.
 fn extract_command(guest: &dyn GuestOs, destination: &str, archive: &str) -> Result<Command> {
-    let mut argv = guest.shell_argv(Some(Shell::Sh), EXTRACT)?;
+    let mut argv = guest
+        .shell_argv(Some(Shell::Sh), EXTRACT)
+        .map_err(|error| error.with_context(ErrorKind::Recipe, "a copy step extracts its files with `sh`"))?;
     argv.extend(["devvm-copy".to_owned(), destination.to_owned(), archive.to_owned()]);
     Ok(Command {
         argv,

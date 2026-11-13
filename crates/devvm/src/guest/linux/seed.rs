@@ -51,18 +51,7 @@ struct HostKeys<'a> {
 /// `meta-data` and `user-data` for `spec`. A pure function of `spec`: cloud-init applies keys and host keys once per
 /// instance id, so every start of one instance must present the same id and the same keys.
 pub(super) fn seed_files(spec: &SeedSpec) -> Result<Vec<SeedFile>> {
-    for (name, empty) in [
-        ("client_public", spec.keys.client_public.is_empty()),
-        ("host_private", spec.keys.host_private.expose_secret().is_empty()),
-        ("host_public", spec.keys.host_public.is_empty()),
-    ] {
-        if empty {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                format!("the seed key `{name}` is empty, so the guest would boot without it"),
-            ));
-        }
-    }
+    spec.keys.require_present()?;
     let meta = MetaData {
         instance_id: format!("devvm-{}", spec.instance_id),
         local_hostname: &spec.hostname,

@@ -22,6 +22,7 @@ pub mod stub_backend;
 pub mod symlink;
 pub mod transport;
 pub mod unix_files;
+pub mod wrapped_programs;
 
 // `roots.rs` names `super::UNICODE_DIR`, as it does in the test binary that includes it.
 use fixtures::UNICODE_DIR;

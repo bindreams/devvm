@@ -37,8 +37,9 @@ pub(super) mod watched;
 #[path = "session_tests.rs"]
 mod session_tests;
 
-/// The pause between two connection attempts of a booting guest. It paces the loop; it never ends it.
-const RETRY_PAUSE: Duration = Duration::from_millis(200);
+/// The pause between two connection attempts of a booting guest, and between two readiness probes of a Windows one. It
+/// paces the loop; it never ends it.
+pub(crate) const RETRY_PAUSE: Duration = Duration::from_millis(200);
 
 /// Chunks of guest output the executing task may hold ahead of a slow host writer.
 const EVENT_BUFFER: usize = 16;
