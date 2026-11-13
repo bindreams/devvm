@@ -54,3 +54,33 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
   move or delete it. An ISO that a program has open for writing is refused, naming the ISO.
 - `devvm doctor` hashes every ISO a build has keyed again and fails on one that changed. One that is not found is listed
   as information: a moved ISO shows up so until a build names it at its new path.
+
+## Windows guests
+
+The guest account is `user`, a member of Administrators with UAC on, logged in automatically. Commands run as that
+user, not elevated, through ssh-broker in the user's own session, so they see its profile and registry.
+
+- **Programs.** `argv[0]` is looked up as a program on the guest's `PATH`, never as a PowerShell cmdlet or alias. A name
+  that is not found exits 127. A program's output reaches you byte for byte, and a status the guest ends with
+  (`0xC0000005`, say) is passed on in all 32 bits on a Windows host; a Unix host keeps the low byte.
+- **Shells.** A `run` step uses `pwsh` (PowerShell 7) unless it says `shell: cmd`. `sh` and `bash` do not exist in a
+  Windows guest. A `cmd` script is one line, and a line break in it is refused before the build starts: use
+  `shell: pwsh`. A `copy` step is refused before the build starts: its extraction runs `sh`.
+- **Paths.** Write guest paths with `/`: `C:/x/y`, `~/x`. `~` is the user's profile; `~\x` and `C:\x` are refused with the
+  spelling that works.
+- **`elevated: true`, `--elevated`** run at High integrity with no prompt, through a scheduled task. Each costs 2 to 6
+  seconds (5 to 7 seconds for the first in a boot). Any process of the user at Medium integrity can start that task, so
+  the guest has no separation between the user and the administrator, as a Linux guest has none with its passwordless
+  `sudo`.
+- **`set: { uac: auto-approve }`** makes an administrator's elevation prompt-free in the guest, with no reboot.
+- A command line can be at most 32,767 characters on the guest. A command whose script is longer once quoted is refused,
+  naming both lengths.
+
+Limits:
+
+- After the guest's agent stops, `devvm ssh` and `devvm cp` run in session 0 at High until the instance is restarted;
+  `devvm run` exits 126 "the command did not reach the user's session". A program that returns 126 looks the same;
+  the message on stderr tells them apart.
+- Piping large input through `devvm ssh` (system `ssh`), or into a .NET program such as Windows PowerShell 5.1, can hang
+  that session; `devvm stop` and `devvm start` recover it. `devvm run` sends no stdin.
+- Interactive `devvm ssh <name>` and `ssh -t` end with status 0 on a Windows guest; commands keep their status.

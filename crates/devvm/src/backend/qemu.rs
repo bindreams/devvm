@@ -19,7 +19,7 @@ use self::sidecar::LazyInstall;
 use self::storage::QemuStorage;
 use crate::Dirs;
 use crate::exit::Progress;
-use crate::guest::linux::{LinuxBuilder, LinuxGuests};
+use crate::guest::linux::{LinuxBuilder, QemuGuests};
 use crate::host::Host;
 use crate::store::fetch::Fetcher;
 
@@ -30,7 +30,7 @@ mod qemu_tests;
 /// The QEMU backend and the guests that go with it.
 pub(crate) struct QemuParts {
     pub backend: Arc<QemuBackend>,
-    pub guests: Arc<LinuxGuests>,
+    pub guests: Arc<QemuGuests>,
     /// The install both of them resolve from.
     pub install: Arc<LazyInstall>,
 }
@@ -57,7 +57,7 @@ pub(crate) fn qemu_parts(
             dirs.run().map(Path::to_path_buf),
             progress,
         )),
-        guests: Arc::new(LinuxGuests::new(builder)),
+        guests: Arc::new(QemuGuests::new(builder)),
         install,
     }
 }

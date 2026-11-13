@@ -4,9 +4,9 @@ use std::sync::Arc;
 use crate::backend::fake::FakeStorage;
 use crate::backend::{DeviceProfile, DiskBus, NetModel, Video};
 use crate::exit::NullProgress;
-use crate::guest::linux::{LinuxBuilder, LinuxGuest, LinuxGuests};
+use crate::guest::linux::{LinuxBuilder, LinuxGuest, QemuGuests};
 use crate::guest::{GuestOs, Guests, Readiness};
-use crate::recipe::Shell;
+use crate::recipe::{Setting, Shell, UacMode};
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::sshd::Rig;
@@ -47,13 +47,13 @@ fn virtio_devices_and_a_guest_that_reboots_inside_its_process() {
 
 // The `Guests` and `GuestOs` implementations ==========================================================================
 
-fn guests(home: &Path) -> LinuxGuests {
+fn guests(home: &Path) -> QemuGuests {
     let fetcher = Fetcher::new(
         Dirs::under(home).downloads(),
         Arc::new(HttpTransport::new().unwrap()),
         Arc::new(NullProgress),
     );
-    LinuxGuests::new(Arc::new(LinuxBuilder::new(
+    QemuGuests::new(Arc::new(LinuxBuilder::new(
         Arc::new(fetcher),
         Arc::new(FakeStorage::default()),
     )))
@@ -64,17 +64,36 @@ fn os(home: &Path) -> Arc<dyn GuestOs> {
 }
 
 #[skuld::test]
-fn linux_guests_serve_linux_and_name_the_other_guests_as_missing(#[fixture(unicode_home)] home: &Path) {
+fn the_qemu_guests_serve_linux_and_windows_and_name_the_missing_ones(#[fixture(unicode_home)] home: &Path) {
     let guests = guests(home);
     guests.os(GuestKind::Linux).unwrap();
+    guests.os(GuestKind::Windows).unwrap();
     guests.builder(GuestKind::Linux).unwrap();
-    for kind in [GuestKind::Windows, GuestKind::Macos] {
-        let errors = [guests.os(kind).err().unwrap(), guests.builder(kind).err().unwrap()];
-        for error in errors {
-            assert_eq!(error.kind(), ErrorKind::NotSupported);
-            assert!(error.message().contains(kind.as_str()), "{}", error.message());
-        }
+    // The Windows guest is served on the host side; its base builder is not wired yet.
+    let errors = [
+        guests.os(GuestKind::Macos).err().unwrap(),
+        guests.builder(GuestKind::Windows).err().unwrap(),
+        guests.builder(GuestKind::Macos).err().unwrap(),
+    ];
+    for (error, kind) in errors
+        .into_iter()
+        .zip([GuestKind::Macos, GuestKind::Windows, GuestKind::Macos])
+    {
+        assert_eq!(error.kind(), ErrorKind::NotSupported);
+        assert!(error.message().contains(kind.as_str()), "{}", error.message());
     }
+}
+
+#[skuld::test]
+fn a_linux_guest_refuses_every_setting_naming_itself_and_the_setting() {
+    let error = LinuxGuest
+        .setting_command(&Setting::Uac(UacMode::AutoApprove))
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(
+        error.message().contains("linux") && error.message().contains("set.uac"),
+        "{error}"
+    );
 }
 
 #[skuld::test]

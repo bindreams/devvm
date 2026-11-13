@@ -36,3 +36,7 @@ pub const SYMLINKS: skuld::Label;
 
 #[skuld::label]
 pub const EXFAT_VOLUME: skuld::Label;
+
+/// Selects the tests that run the Windows guest's wrapped commands in a real `pwsh`.
+#[skuld::label]
+pub const PWSH_WRAP: skuld::Label;

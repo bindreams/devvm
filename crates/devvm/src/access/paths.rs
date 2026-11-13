@@ -14,6 +14,16 @@ fn is_tilde_user(path: &str) -> bool {
 
 /// Rejects `~user...`; every other path, `~` and `~/x` included, passes.
 pub(crate) fn check_guest_path(path: &str) -> Result<()> {
+    if let Some(rest) = path.strip_prefix("~\\") {
+        // `~\x` reads as the home of a user called `\x`; what a Windows user means by it is `~/x`.
+        return Err(Error::new(
+            ErrorKind::Usage,
+            format!(
+                "{path:?} names another user's home; write ~/{} for a path in the user's own",
+                rest.replace('\\', "/")
+            ),
+        ));
+    }
     if is_tilde_user(path) {
         return Err(Error::new(
             ErrorKind::Usage,

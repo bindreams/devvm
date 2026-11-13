@@ -130,23 +130,6 @@ fn exit_7_125_255_pass_through_unchanged(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(stdout, b"devvm-error: x: y\n");
 }
 
-/// SSH carries an exit status as 32 unsigned bits and `ExitStatus::Code` holds an `i32`: the biggest that fits passes
-/// through, and one that does not is an error naming it, not a negative code.
-#[skuld::test]
-fn an_exit_status_that_does_not_fit_a_code_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
-    let rig = Rig::new(home);
-    let session = rig.connect();
-    let (status, ..) = finished(&session, "exit 2147483647");
-    assert_eq!(status, ExitStatus::Code(i32::MAX));
-    for status in [2_147_483_648_u32, u32::MAX] {
-        let error = session.exec_collect(&format!("exit {status}")).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Io, "{status}: {error}");
-        assert!(error.message().contains(&status.to_string()), "{status}: {error}");
-    }
-    // The connection is still good.
-    assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0));
-}
-
 #[skuld::test]
 fn signal_death_segv_and_kill_map_to_signal(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
