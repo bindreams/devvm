@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use crate::backend::fake::FakeBackend;
-use crate::backend::{Backend, Storage};
+use crate::backend::{Backend, Patch, Storage};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceRecord, MarkerRead, Owner, RecordRead, read_marker};
 use crate::instance::registry::{CreateSeams, NewInstance, Owned, Placement, Registry, place};
@@ -33,6 +33,14 @@ impl Storage for TestStorage {
 
     fn import_base(&self, _image: &Path, _arch: Arch, _staging: &LayerDir) -> Result<()> {
         unreachable!("the registry never imports images")
+    }
+
+    fn create_blank_disk(&self, _size: u64, _arch: Arch, _staging: &LayerDir) -> Result<()> {
+        unreachable!("the registry never makes blank disks")
+    }
+
+    fn overlay_with_patches(&self, _backing: &Path, _patches: &[Patch], _into: &Path) -> Result<()> {
+        unreachable!("the registry never makes overlays")
     }
 }
 

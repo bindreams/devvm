@@ -60,6 +60,14 @@ impl crate::backend::Storage for HoldsItsDisk {
     fn import_base(&self, _: &Path, _: crate::Arch, _: &crate::store::layers::LayerDir) -> crate::Result<()> {
         unreachable!()
     }
+
+    fn create_blank_disk(&self, _: u64, _: crate::Arch, _: &crate::store::layers::LayerDir) -> crate::Result<()> {
+        unreachable!()
+    }
+
+    fn overlay_with_patches(&self, _: &Path, _: &[crate::backend::Patch], _: &Path) -> crate::Result<()> {
+        unreachable!()
+    }
 }
 
 #[skuld::test]

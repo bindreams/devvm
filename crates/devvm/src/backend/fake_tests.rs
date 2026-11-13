@@ -1,7 +1,8 @@
 use std::path::Path;
 
-use super::{FakeBackend, FakeTarget};
+use super::{FakeBackend, FakeStorage, FakeTarget};
 use crate::backend::contract::{self, ContractTarget};
+use crate::backend::{Patch, Storage};
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{env, key, request};
 use crate::test_support::fixtures::unicode_home;
@@ -11,6 +12,50 @@ use crate::{Arch, ErrorKind};
 #[skuld::test]
 fn fake_storage_writes_only_into_staging(#[fixture(unicode_home)] home: &Path) {
     contract::storage_writes_only_into_staging(&FakeTarget::new(), home);
+}
+
+#[skuld::test]
+fn fake_storage_refuses_what_the_storage_contract_refuses(#[fixture(unicode_home)] home: &Path) {
+    contract::storage_refuses_what_its_contract_refuses(&FakeStorage::default(), home);
+}
+
+#[skuld::test]
+fn fake_storage_accepts_what_the_storage_contract_allows(#[fixture(unicode_home)] home: &Path) {
+    contract::storage_accepts_what_its_contract_allows(&FakeStorage::default(), home);
+}
+
+#[skuld::test]
+fn fake_launch_refuses_a_spec_the_machine_contract_refuses(#[fixture(unicode_home)] home: &Path) {
+    contract::a_spec_the_contract_refuses_is_refused_and_leaves_nothing(&FakeTarget::new(), home);
+}
+
+#[skuld::test]
+fn the_fake_makes_an_overlay_once_and_refuses_a_second_call_leaving_the_first_whole(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let storage = FakeStorage::default();
+    let backing = home.join("backing.iso");
+    std::fs::write(&backing, vec![0u8; 4096]).unwrap();
+    let into = home.join("overlay.qcow2");
+    let patch = |offset| {
+        [Patch {
+            offset,
+            bytes: vec![1; 512],
+        }]
+    };
+
+    storage.overlay_with_patches(&backing, &patch(0), &into).unwrap();
+    let first = std::fs::read(&into).unwrap();
+    let error = storage.overlay_with_patches(&backing, &patch(512), &into).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists, "{error}");
+    assert_eq!(std::fs::read(&into).unwrap(), first);
+    let mut left: Vec<_> = std::fs::read_dir(home)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort_unstable();
+    assert_eq!(left, ["backing.iso", "overlay.qcow2"]);
 }
 
 #[skuld::test]
