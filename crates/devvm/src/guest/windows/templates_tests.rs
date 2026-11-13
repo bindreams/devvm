@@ -2,13 +2,15 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 
 use super::{
-    AnswerInputs, DEVVM_DIR, LOG_FILES, TEMPLATES, answer_disk_files, answer_file, definition_hash, definition_hash_of,
+    AnswerInputs, DEVVM_DIR, LOG_FILES, NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, answer_file,
+    definition_hash, definition_hash_of, disk_files, probe_inputs, values,
 };
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::elevate::{self, caller_script};
 use crate::guest::windows::pins::{ALL, Pin};
 use crate::guest::windows::wrap::{BROKER_EXE, PWSH_EXE, literal};
+use crate::media::SeedFile;
 
 const PASSWORD: &str = "SENTINEL-Pw-1";
 
@@ -163,6 +165,40 @@ fn the_answer_file_logs_on_the_account_without_a_logon_count() {
     assert!(text.contains("<Name>user</Name>"));
 }
 
+#[skuld::test]
+fn the_specialize_marker_goes_to_the_com1_device_not_to_a_path_in_the_drive_root() {
+    let text = answer_file(&inputs()).unwrap();
+    assert!(text.contains(r"echo DEVVM-PROGRESS=specialize&gt;\\.\COM1"), "{text}");
+    assert!(
+        !text.contains(r"&gt;\.\COM1"),
+        "the device is written with two leading backslashes: one names a file in the root of the current drive"
+    );
+}
+
+#[skuld::test]
+fn the_driver_paths_name_the_virtio_cd_on_every_letter_in_both_passes() {
+    let text = answer_file(&inputs()).unwrap();
+    for pass in ["offlineServicing", "specialize"] {
+        let paths = section(&text, &format!("pass=\"{pass}\""), "<settings");
+        for letter in 'C'..='Z' {
+            for driver in ["viostor", "NetKVM"] {
+                let path = format!("<Path>{letter}:\\{driver}\\w11\\amd64</Path>");
+                assert!(paths.contains(&path), "{pass}: {path}");
+            }
+        }
+        let keys: Vec<&str> = paths
+            .split("wcm:keyValue=\"")
+            .skip(1)
+            .map(|rest| rest.split('"').next().unwrap())
+            .collect();
+        assert_eq!(keys.len(), 24 * 2, "{pass}");
+        let mut unique = keys.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), keys.len(), "{pass}: a key names one path");
+    }
+}
+
 // winpe.cmd ===========================================================================================================
 
 #[skuld::test]
@@ -236,6 +272,7 @@ fn the_answer_disk_holds_one_file_per_template() {
         wanted,
         [
             "Autounattend.xml",
+            "Devvm.cs",
             "boot-task.ps1",
             "bootstrap.ps1",
             "broker-config.yaml",
@@ -305,6 +342,41 @@ fn the_bootstrap_catches_and_writes_the_failed_marker_before_shutdown() {
         "done only without a failure"
     );
     assert_before(&bootstrap, "Send-Line \"DEVVM-LICENSE=", "Send-Line 'DEVVM-BASE-DONE'");
+}
+
+#[skuld::test]
+fn a_read_with_no_licensed_product_is_sent_as_null_not_thrown() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$license = Get-CimInstance", "Send-Line \"DEVVM-LICENSE=");
+    assert!(
+        !read.contains("throw") && !bootstrap.contains("no licensed Windows product"),
+        "a retail install with no key has no row, and the host decides what that means"
+    );
+    assert!(read.contains("'null'"), "{read}");
+}
+
+#[skuld::test]
+fn the_native_helper_is_compiled_once_by_the_bootstrap_and_only_loaded_by_the_scripts_that_use_it() {
+    assert!(TEMPLATES.iter().any(|(name, _)| *name == NATIVE_SOURCE));
+    let bootstrap = rendered("bootstrap.ps1");
+    assert!(bootstrap.contains(&format!("(Join-Path $PSScriptRoot {})", literal(NATIVE_SOURCE))));
+    assert!(bootstrap.contains("Add-Type -TypeDefinition") && bootstrap.contains("-OutputAssembly"));
+    assert!(bootstrap.contains(&format!("(Join-Path $scripts {})", literal(NATIVE_DLL))));
+    assert_before(&bootstrap, "-OutputAssembly", "Register-ScheduledTask");
+    for name in ["eb-runner.ps1", "boot-task.ps1"] {
+        let script = rendered(name);
+        assert!(
+            !script.contains("Add-Type -TypeDefinition"),
+            "{name} compiles at every start"
+        );
+        assert!(
+            script.contains(&format!(
+                "Add-Type -LiteralPath (Join-Path $PSScriptRoot {})",
+                literal(NATIVE_DLL)
+            )),
+            "{name}"
+        );
+    }
 }
 
 #[skuld::test]
@@ -396,46 +468,88 @@ fn the_templates_and_wrap_share_the_pwsh_and_broker_path_constants() {
 // The boot task =======================================================================================================
 
 #[skuld::test]
-fn the_boot_task_reads_back_each_seed_file_and_starts_sshd_last_after_the_agent() {
+fn the_boot_task_starts_sshd_last_after_the_agent() {
     let task = rendered("boot-task.ps1");
-    assert_before(&task, "DEVVM-SEED-WRITTEN", "ReadAllBytes($target)");
-    assert_before(&task, "ReadAllBytes($target)", "Write-Whole $bootIdFile");
+    assert_before(&task, "DEVVM-SEED-WRITTEN", "Write-Whole $bootIdFile");
     assert_before(&task, "Write-Whole $bootIdFile", "Resize-Partition");
     assert_before(&task, "Resize-Partition", "Test-AgentSocket $sid");
     assert_before(&task, "Test-AgentSocket $sid", "Start-Service -Name sshd");
     assert_eq!(task.matches("Start-Service").count(), 1);
     let after = &task[at(&task, "Start-Service -Name sshd")..];
     assert!(after.trim_end().ends_with('}') && !after.contains("Resize") && !after.contains("Send-Line \"DEVVM-SEED"));
-    assert!(task.contains("-cne"), "the comparison is exact");
+}
+
+#[skuld::test]
+fn the_boot_task_does_not_read_a_write_back_in_the_same_boot() {
+    // The page cache would answer with the bytes just written, so a torn write could not show; the next boot rewrites the
+    // seed anyway.
+    let task = rendered("boot-task.ps1");
+    assert!(!task.contains("ReadAllBytes($target)"));
+    assert!(!task.contains("-cne") && !task.contains("differs from the seed"));
 }
 
 #[skuld::test]
 fn the_boot_task_writes_a_seed_marker_after_each_rename_and_a_fresh_boot_id_before_sshd() {
     let task = rendered("boot-task.ps1");
-    // A temp file, flushed to the disk, then renamed over the target; the marker follows each file's write.
+    // A temp file, flushed to the disk, renamed over the target, and the directory flushed; the marker follows each
+    // file's write.
     assert_before(&task, "Flush($true)", "[IO.File]::Move($temp, $Target, $true)");
+    assert_before(
+        &task,
+        "[IO.File]::Move($temp, $Target, $true)",
+        "[Devvm.Disk]::FlushDirectory(",
+    );
     assert_before(&task, "Write-Whole $target", "DEVVM-SEED-WRITTEN=$name");
     assert!(task.contains("$seed = [ordered]@{") && task.contains("administrators_authorized_keys"));
-    for acl in ["'*S-1-5-18:F'", "'*S-1-5-32-544:F'"] {
-        assert!(task.contains(acl), "{acl}");
-    }
     // The boot id is random and fresh at every boot, in the file `boot_id_command` reads, readable by `Users`.
     assert!(task.contains("RandomNumberGenerator]::Fill($bytes)"));
     assert!(task.contains(&format!("$bootIdFile = {}", literal(super::super::BOOT_ID_FILE))));
-    assert!(task.contains("'*S-1-5-32-545:R'"));
+    assert!(task.contains("@('S-1-5-32-545')"));
     assert_before(&task, "Write-Whole $bootIdFile", "Start-Service");
 }
 
 #[skuld::test]
-fn the_boot_task_fails_closed_on_a_failed_read_back_boot_id_write_or_resize() {
+fn the_boot_task_creates_each_file_with_its_acl_before_any_byte_is_written() {
     let task = rendered("boot-task.ps1");
-    let body = &task[at(&task, "\ntry {")..at(&task, "} catch {")];
-    for step in [
-        "differs from the seed",
-        "Write-Whole $bootIdFile",
-        "Resize-Partition",
-        "Start-Service",
-    ] {
+    let write = section(
+        &task,
+        "function Write-Whole",
+        "
+}
+",
+    );
+    // The descriptor is given to the create call: no moment exists in which the file is readable by anyone else.
+    assert!(write.contains("[IO.FileSystemAclExtensions]::Create("), "{write}");
+    assert_before(
+        write,
+        "SetAccessRuleProtection($true, $false)",
+        "[IO.FileSystemAclExtensions]::Create(",
+    );
+    assert_before(write, "[IO.FileSystemAclExtensions]::Create(", "$stream.Write(");
+    assert_before(
+        write,
+        "[IO.File]::Delete($temp)",
+        "[IO.FileSystemAclExtensions]::Create(",
+    );
+    assert!(
+        write.contains("[IO.FileMode]::CreateNew"),
+        "a leftover file is never reused with its old ACL"
+    );
+    for sid in ["'S-1-5-18'", "'S-1-5-32-544'"] {
+        assert!(write.contains(sid), "{sid}");
+    }
+    // No write opens the file without a descriptor, and no icacls runs after the bytes are on the disk.
+    assert!(!task.contains("icacls") && !write.contains("[IO.File]::Open("));
+}
+
+#[skuld::test]
+fn the_boot_task_fails_closed_on_a_failed_boot_id_write_or_resize() {
+    let task = rendered("boot-task.ps1");
+    let body = &task[at(
+        &task, "
+try {",
+    )..at(&task, "} catch {")];
+    for step in ["Write-Whole $bootIdFile", "Resize-Partition", "Start-Service"] {
         assert!(body.contains(step), "{step} is inside the try");
     }
     let handler = &task[at(&task, "} catch {")..];
@@ -492,31 +606,80 @@ fn the_eb_runner_serves_only_the_request_named_by_its_first_argument_and_claims_
 }
 
 #[skuld::test]
-fn the_eb_runner_removes_requests_whose_caller_ended_and_ends_its_childs_tree_when_its_own_caller_ends() {
+fn the_eb_runner_removes_requests_whose_caller_ended_and_holds_no_claim() {
     let runner = rendered("eb-runner.ps1");
     // A request goes when its caller is gone (or its id now belongs to a process that started at another time) and no
-    // runner holds its claim.
-    assert!(runner.contains("StartTime.ToUniversalTime().Ticks -ne [long]$Matches[2]"));
+    // runner holds its claim; the helper answers both from one handle.
+    assert!(runner.contains("[Devvm.Caller]::Open("));
     assert!(runner.contains("(Test-Held (Join-Path $other $claimName))"));
     assert!(runner.contains("[IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')"));
-    // The runner is in a job object of its own with kill-on-close before the child starts; its caller's end ends every
-    // other process in that job.
-    assert!(runner.contains("const int KillOnJobClose = 0x2000;"));
-    assert_before(
-        &runner,
-        "[Devvm.Job]::EnterOwnJob()",
-        "[Diagnostics.Process]::Start($psi)",
-    );
-    assert!(runner.contains("WaitForExitAsync()"));
-    assert!(runner.contains("[Devvm.Job]::KillOthers()"));
-    assert!(
-        runner.contains("if (id == self) continue;"),
-        "the runner does not end itself"
-    );
     // No time bound anywhere.
-    for bound in ["-Timeout", "WaitForExit(", "Stopwatch"] {
+    for bound in ["-Timeout", "WaitForExit(", "Stopwatch", "Thread.Sleep"] {
         assert!(!runner.contains(bound), "{bound}");
+        assert!(!raw(NATIVE_SOURCE).contains(bound), "{bound}");
     }
+}
+
+#[skuld::test]
+fn the_runner_checks_its_caller_and_waits_for_it_on_one_handle_it_opened_once() {
+    let runner = rendered("eb-runner.ps1");
+    let native = raw(NATIVE_SOURCE);
+    // PowerShell looks no process up: a second lookup could name a process that reused the id.
+    for lookup in ["GetProcessById", "StartTime", "Get-Process"] {
+        assert!(!runner.contains(lookup), "{lookup}");
+        assert!(!native.contains(lookup), "{lookup}");
+    }
+    let caller = section(native, "public static Caller Open(", "public Task Exited");
+    assert_eq!(caller.matches("OpenProcess(").count(), 1, "{caller}");
+    assert_before(caller, "OpenProcess(", "GetProcessTimes(");
+    assert_before(caller, "GetProcessTimes(", "new Watch(handle)");
+    assert!(
+        caller.contains("startTicks")
+            && caller.contains("DateTime.FromFileTime(")
+            && caller.contains(".ToUniversalTime().Ticks"),
+        "the start time is compared in the ticks the caller wrote"
+    );
+    // The main path asks once and uses what it was given.
+    let main = section(&runner, "# One handle on the caller", "$finished.Wait()");
+    assert!(main.contains("$caller.Exited"), "{main}");
+}
+
+#[skuld::test]
+fn the_runner_starts_its_child_in_a_job_of_its_own_and_ends_the_tree_by_the_job_never_by_an_id() {
+    let runner = rendered("eb-runner.ps1");
+    let native = raw(NATIVE_SOURCE);
+    // The child is born suspended, put in a kill-on-close job, and only then runs: no process of its tree is outside it.
+    assert!(
+        native.contains("const uint CreateSuspended = 0x4;") && native.contains("const int KillOnJobClose = 0x2000;")
+    );
+    assert!(native.contains("CreateSuspended |"));
+    assert_before(
+        native,
+        "if (!Native.CreateProcessW(",
+        "if (!Native.AssignProcessToJobObject(job, process))",
+    );
+    assert_before(
+        native,
+        "if (!Native.AssignProcessToJobObject(job, process))",
+        "Native.ResumeThread(thread)",
+    );
+    // The tree ends with the job; no process is looked up by id to be ended, and the runner is not in the job.
+    assert!(native.contains("Native.TerminateJobObject(job"));
+    for by_id in [
+        "Kill(",
+        "KillOthers",
+        "EnterOwnJob",
+        "GetProcessById",
+        "BasicProcessIdList",
+        "TerminateProcess(",
+    ] {
+        assert!(!native.contains(by_id), "{by_id}");
+        assert!(!runner.contains(by_id), "{by_id}");
+    }
+    assert!(runner.contains("[Devvm.Child]::Start(") && runner.contains(".Terminate()"));
+    assert!(!runner.contains("Process]::Start") && !runner.contains("Add-Type -TypeDefinition"));
+    // Whatever the runner leaves behind goes with the job when the runner ends, however it ends.
+    assert!(runner.contains("$child.Dispose()"));
 }
 
 #[skuld::test]
@@ -535,16 +698,10 @@ fn the_eb_runner_writes_stdout_stderr_exit_and_done_in_that_order_and_removes_it
         runner.contains("$exitCode.ToString([Globalization.CultureInfo]::InvariantCulture)"),
         "signed decimal"
     );
-    // The child: PowerShell 7 with the file, input at end of file.
-    for argument in [
-        "'-NoProfile'",
-        "'-NonInteractive'",
-        "'-File'",
-        "$child.StandardInput.Close()",
-        "RedirectStandardInput = $true",
-    ] {
-        assert!(runner.contains(argument), "{argument}");
-    }
+    // The child: PowerShell 7 with the file, input at end of file (the helper closes the write end of its input pipe).
+    assert!(runner.contains("-NoProfile -NonInteractive -File"));
+    assert!(raw(NATIVE_SOURCE).contains("Close(ref inWrite)"));
+    assert!(runner.contains("$child.Output.CopyToAsync($out)") && runner.contains("$child.Error.CopyToAsync($err)"));
     // Then the wait for `read`, or for the caller's end, and the request goes last.
     assert_before(
         &runner,
@@ -628,34 +785,51 @@ fn the_runner_and_the_callers_names_come_from_the_same_constants() {
 
 // The definition hash =================================================================================================
 
+fn file(name: &str, text: &str) -> SeedFile {
+    SeedFile {
+        name: name.to_owned(),
+        bytes: text.as_bytes().to_vec(),
+    }
+}
+
+fn copy(files: &[SeedFile]) -> Vec<SeedFile> {
+    files
+        .iter()
+        .map(|file| SeedFile {
+            name: file.name.clone(),
+            bytes: file.bytes.clone(),
+        })
+        .collect()
+}
+
 #[skuld::test]
-fn the_definition_hash_changes_with_each_template_and_each_pin() {
+fn the_definition_hash_changes_with_each_file_and_each_pin() {
     let version = WindowsGuest.semantics_version();
-    let base = definition_hash_of(TEMPLATES, ALL, version);
-    assert_eq!(base, definition_hash_of(TEMPLATES, ALL, version), "a pure function");
+    let files = answer_disk_files(&probe_inputs()).unwrap();
+    let base = definition_hash_of(&files, ALL, version);
+    assert_eq!(base, definition_hash_of(&files, ALL, version), "a pure function");
     assert_eq!(
         base,
         definition_hash(),
-        "the builder's hash is that of the real templates and pins"
+        "the builder's hash is that of the rendered templates and the pins"
     );
 
-    for at in 0..TEMPLATES.len() {
-        let changed_text = format!("{}x", TEMPLATES[at].1);
-        let mut templates: Vec<(&str, &str)> = TEMPLATES.to_vec();
-        templates[at].1 = &changed_text;
+    for at in 0..files.len() {
+        let mut changed = copy(&files);
+        changed[at].bytes.push(b'x');
         assert_ne!(
             base,
-            definition_hash_of(&templates, ALL, version),
+            definition_hash_of(&changed, ALL, version),
             "the text of {}",
-            TEMPLATES[at].0
+            files[at].name
         );
-        let mut templates: Vec<(&str, &str)> = TEMPLATES.to_vec();
-        templates[at].0 = "renamed";
+        let mut changed = copy(&files);
+        changed[at].name = "renamed".to_owned();
         assert_ne!(
             base,
-            definition_hash_of(&templates, ALL, version),
+            definition_hash_of(&changed, ALL, version),
             "the name of {}",
-            TEMPLATES[at].0
+            files[at].name
         );
     }
     for at in 0..ALL.len() {
@@ -682,7 +856,7 @@ fn the_definition_hash_changes_with_each_template_and_each_pin() {
             pins[at] = &changed;
             assert_ne!(
                 base,
-                definition_hash_of(TEMPLATES, &pins, version),
+                definition_hash_of(&files, &pins, version),
                 "the pin {}",
                 ALL[at].what
             );
@@ -690,19 +864,31 @@ fn the_definition_hash_changes_with_each_template_and_each_pin() {
     }
     assert_ne!(
         base,
-        definition_hash_of(TEMPLATES, ALL, version + 1),
+        definition_hash_of(&files, ALL, version + 1),
         "the semantics version"
     );
-    assert_ne!(
-        base,
-        definition_hash_of(&TEMPLATES[1..], ALL, version),
-        "a template taken away"
-    );
+    assert_ne!(base, definition_hash_of(&files[1..], ALL, version), "a file taken away");
+}
+
+#[skuld::test]
+fn the_definition_hash_changes_with_every_value_the_templates_substitute_but_the_password() {
+    let version = WindowsGuest.semantics_version();
+    let probe = probe_inputs();
+    let base = definition_hash();
+    for (name, value) in values(&probe) {
+        if name == "PASSWORD" {
+            continue;
+        }
+        let mut changed = values(&probe);
+        changed.iter_mut().find(|(known, _)| *known == name).unwrap().1 = format!("{value}x");
+        let files = disk_files(TEMPLATES, &changed).unwrap();
+        assert_ne!(base, definition_hash_of(&files, ALL, version), "{name}");
+    }
 }
 
 #[skuld::test]
 fn the_definition_hash_does_not_collide_when_bytes_move_between_a_name_and_its_text() {
-    let one = [("ab", "c")];
-    let other = [("a", "bc")];
+    let one = [file("ab", "c")];
+    let other = [file("a", "bc")];
     assert_ne!(definition_hash_of(&one, &[], 1), definition_hash_of(&other, &[], 1));
 }

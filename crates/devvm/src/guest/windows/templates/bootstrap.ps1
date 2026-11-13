@@ -40,12 +40,14 @@ try {
     foreach ($name in 'lib.ps1', 'boot-task.ps1', 'eb-runner.ps1') {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $scripts -Force
     }
+    # The native helper the scripts load: compiled here, once, so that no request and no boot compiles it.
+    Add-Type -TypeDefinition (Get-Content -LiteralPath (Join-Path $PSScriptRoot @@NATIVE_SOURCE@@) -Raw) -OutputAssembly (Join-Path $scripts @@NATIVE_DLL@@)
 
-    # The license, read as numbers and identifiers; the host decides what it means.
+    # The license, read as numbers and identifiers; the host decides what it means. A system no product has a key for (a
+    # retail install nobody activated) has no row: that is a read too, and is sent as null.
     $license = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" |
         Select-Object -First 1 -Property LicenseStatus, GracePeriodRemaining, Description, LicenseFamily
-    if (-not $license) { throw 'no licensed Windows product was found' }
-    $json = $license | ConvertTo-Json -Compress
+    $json = if ($license) { $license | ConvertTo-Json -Compress } else { 'null' }
     # ASCII only: the serial channel carries no localized text.
     $json = [regex]::Replace($json, '[^\x00-\x7F]', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) '\u{0:x4}' -f [int][char]$m.Value })
     Send-Line "DEVVM-LICENSE=$json"

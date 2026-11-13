@@ -66,7 +66,6 @@ fn an_unparseable_read_is_an_error() {
     for read in [
         "",
         "DEVVM-LICENSE=",
-        "DEVVM-LICENSE=null",
         "DEVVM-LICENSE=not json",
         r#"DEVVM-LICENSE={"LicenseStatus":1}"#,
         r#"DEVVM-LICENSE={"LicenseStatus":"1","GracePeriodRemaining":5}"#,
@@ -75,8 +74,25 @@ fn an_unparseable_read_is_an_error() {
         r#"DEVVM-OTHER={"LicenseStatus":1,"GracePeriodRemaining":5}"#,
         r#"{"LicenseStatus":1,"GracePeriodRemaining":5}"#,
     ] {
-        let error = expiry_from(read, true, now()).expect_err(read);
-        assert_eq!(error.kind(), ErrorKind::Internal, "{read}");
-        assert!(error.message().contains("DEVVM-LICENSE"), "{read}: {}", error.message());
+        for evaluation in [true, false] {
+            let error = expiry_from(read, evaluation, now()).expect_err(read);
+            assert_eq!(error.kind(), ErrorKind::Internal, "{read}");
+            assert!(error.message().contains("DEVVM-LICENSE"), "{read}: {}", error.message());
+        }
     }
+}
+
+// The first-logon script sends `null` when no product has a key.
+const NO_PRODUCT: &str = "DEVVM-LICENSE=null";
+
+#[skuld::test]
+fn a_keyless_non_evaluation_install_has_no_expiry() {
+    assert_eq!(expiry_from(NO_PRODUCT, false, now()).unwrap(), None);
+}
+
+#[skuld::test]
+fn an_evaluation_edition_with_no_licensed_product_is_an_error() {
+    let error = expiry_from(NO_PRODUCT, true, now()).expect_err("an evaluation must read as licensed or expired");
+    assert_eq!(error.kind(), ErrorKind::Internal);
+    assert!(error.message().contains("DEVVM-LICENSE"), "{}", error.message());
 }

@@ -22,116 +22,21 @@ $pause = 200
 
 if ($Id -notmatch '^[0-9a-f]{32}$') { exit 2 }
 
-# The runner joins a job object of its own (kill on close) before it starts anything, so that every process of the
-# command is born in it; when the caller ends, KillOthers ends them all and leaves the runner to clean up.
-Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Threading;
+# The native helper, compiled once by the bootstrap: a caller opened by one handle, and a child started in a job of its
+# own (Devvm.cs). Ending the child's tree is ending that job.
+Add-Type -LiteralPath (Join-Path $PSScriptRoot @@NATIVE_DLL@@)
 
-namespace Devvm
-{
-    public static class Job
-    {
-        const int ExtendedLimitInformation = 9;
-        const int BasicProcessIdList = 3;
-        const int ExtendedLimitInformationSize = 144;
-        const int LimitFlagsOffset = 16;
-        const int KillOnJobClose = 0x2000;
-        const int ErrorMoreData = 234;
-
-        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-        static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, int length);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern bool QueryInformationJobObject(IntPtr job, int infoClass, IntPtr info, int length, IntPtr returned);
-
-        static IntPtr job = IntPtr.Zero;
-
-        public static void EnterOwnJob()
-        {
-            job = CreateJobObjectW(IntPtr.Zero, null);
-            if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
-            IntPtr info = Marshal.AllocHGlobal(ExtendedLimitInformationSize);
-            try
-            {
-                for (int i = 0; i < ExtendedLimitInformationSize; i++) Marshal.WriteByte(info, i, 0);
-                Marshal.WriteInt32(info, LimitFlagsOffset, KillOnJobClose);
-                if (!SetInformationJobObject(job, ExtendedLimitInformation, info, ExtendedLimitInformationSize))
-                    throw new Win32Exception(Marshal.GetLastWin32Error());
-            }
-            finally { Marshal.FreeHGlobal(info); }
-            if (!AssignProcessToJobObject(job, Process.GetCurrentProcess().Handle))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-        }
-
-        // The ids of the processes in the job: a header of two 32-bit counts, then one pointer-sized id per process.
-        static int[] Members()
-        {
-            int capacity = 64;
-            while (true)
-            {
-                int size = 8 + IntPtr.Size * capacity;
-                IntPtr buffer = Marshal.AllocHGlobal(size);
-                try
-                {
-                    bool ok = QueryInformationJobObject(job, BasicProcessIdList, buffer, size, IntPtr.Zero);
-                    int assigned = Marshal.ReadInt32(buffer, 0);
-                    if (ok)
-                    {
-                        int listed = Marshal.ReadInt32(buffer, 4);
-                        int[] ids = new int[listed];
-                        for (int i = 0; i < listed; i++) ids[i] = (int)Marshal.ReadIntPtr(buffer, 8 + IntPtr.Size * i);
-                        return ids;
-                    }
-                    if (Marshal.GetLastWin32Error() != ErrorMoreData) throw new Win32Exception(Marshal.GetLastWin32Error());
-                    capacity = Math.Max(capacity * 2, assigned + 64);
-                }
-                finally { Marshal.FreeHGlobal(buffer); }
-            }
-        }
-
-        // Ends every process in the job but the caller, until none is left: a process that started while another was
-        // being ended is in the next list.
-        public static void KillOthers()
-        {
-            int self = Environment.ProcessId;
-            while (true)
-            {
-                bool any = false;
-                foreach (int id in Members())
-                {
-                    if (id == self) continue;
-                    any = true;
-                    try { using (Process p = Process.GetProcessById(id)) p.Kill(); }
-                    catch (ArgumentException) { }
-                    catch (InvalidOperationException) { }
-                    catch (Win32Exception) { }
-                }
-                if (!any) return;
-                Thread.Sleep(10);
-            }
-        }
-    }
-}
-'@
-
-# A request's caller has ended when its process is gone or the process of that id started at another time.
+# Whether a request's caller has ended: its process is gone, or the process of that id started at another time. A caller
+# that cannot be told is not ended, so its request stays.
 function Test-CallerEnded([string]$Dir) {
     try { $text = [IO.File]::ReadAllText((Join-Path $Dir $callerName)) } catch { return $true }
     if ($text -notmatch '^\s*(\d+)\s+(\d+)\s*$') { return $true }
     try {
-        $process = [Diagnostics.Process]::GetProcessById([int]$Matches[1])
-        try { return $process.StartTime.ToUniversalTime().Ticks -ne [long]$Matches[2] } finally { $process.Dispose() }
-    } catch { return $true }
+        $caller = [Devvm.Caller]::Open([int]$Matches[1], [long]$Matches[2])
+    } catch { return $false }
+    if ($null -eq $caller) { return $true }
+    $caller.Dispose()
+    return $false
 }
 
 # A claim file that exists is held by a live runner: it is created with CreateNew and shared with no one, and the OS
@@ -165,41 +70,31 @@ $callerGone = $false
 $callerExit = $null
 $out = $null
 $err = $null
+$caller = $null
 $child = $null
 try {
     # Parsed again: the sweep above skipped it.
     $text = [IO.File]::ReadAllText((Join-Path $dir $callerName))
     if ($text -notmatch '^\s*(\d+)\s+(\d+)\s*$') { throw 'the request names no caller' }
-    $callerPid = [int]$Matches[1]
-    $callerExit = [Threading.Tasks.Task]::CompletedTask
-    if (-not (Test-CallerEnded $dir)) {
-        $caller = [Diagnostics.Process]::GetProcessById($callerPid)
-        $callerExit = $caller.WaitForExitAsync()
-    }
-    if ($callerExit.IsCompleted) {
+    # One handle on the caller: its start time is checked on it and its end is awaited on it.
+    $caller = [Devvm.Caller]::Open([int]$Matches[1], [long]$Matches[2])
+    if ($null -eq $caller) {
+        $callerExit = [Threading.Tasks.Task]::CompletedTask
         $callerGone = $true
     } else {
-        [Devvm.Job]::EnterOwnJob()
+        $callerExit = $caller.Exited
         # No buffering: the caller reads the files while they grow.
         $out = [IO.FileStream]::new((Join-Path $dir $stdoutName), 'Create', 'Write', 'Read', 1)
         $err = [IO.FileStream]::new((Join-Path $dir $stderrName), 'Create', 'Write', 'Read', 1)
-        $psi = [Diagnostics.ProcessStartInfo]::new($pwsh)
-        foreach ($argument in '-NoProfile', '-NonInteractive', '-File', (Join-Path $dir $scriptName)) { $psi.ArgumentList.Add($argument) }
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $psi.RedirectStandardInput = $true
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $child = [Diagnostics.Process]::Start($psi)
         # devvm's exec sends no input: the command's standard input is at end of file.
-        $child.StandardInput.Close()
+        $child = [Devvm.Child]::Start($pwsh, '"' + $pwsh + '" -NoProfile -NonInteractive -File "' + (Join-Path $dir $scriptName) + '"')
         $finished = [Threading.Tasks.Task]::WhenAll([Threading.Tasks.Task[]]@(
-            $child.StandardOutput.BaseStream.CopyToAsync($out),
-            $child.StandardError.BaseStream.CopyToAsync($err),
-            $child.WaitForExitAsync()))
+            $child.Output.CopyToAsync($out),
+            $child.Error.CopyToAsync($err),
+            $child.Exited))
         if ([Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]@($finished, $callerExit)) -ne 0) {
             $callerGone = $true
-            [Devvm.Job]::KillOthers()
+            $child.Terminate()
         }
         $finished.Wait()
         if (-not $callerGone) { $exitCode = $child.ExitCode }
@@ -208,9 +103,11 @@ try {
     $failure = "devvm: the elevated runner failed: $($_.Exception.Message)"
     # No caller to answer: the request goes.
     if ($null -eq $callerExit) { $callerGone = $true }
-    if ($null -ne $child) { try { [Devvm.Job]::KillOthers() } catch { } }
+    if ($null -ne $child) { try { $child.Terminate() } catch { } }
 } finally {
     foreach ($stream in $out, $err) { if ($null -ne $stream) { $stream.Dispose() } }
+    # The job goes with its handle: whatever the command left running ends with it.
+    if ($null -ne $child) { $child.Dispose() }
 }
 
 if (-not $callerGone) {
@@ -221,6 +118,7 @@ if (-not $callerGone) {
     # The caller says when it has read everything; a caller that ends first is as good. Neither wait has a time bound.
     while (-not [IO.File]::Exists((Join-Path $dir $readName)) -and -not $callerExit.IsCompleted) { Start-Sleep -Milliseconds $pause }
 }
+if ($null -ne $caller) { $caller.Dispose() }
 # The last act: the request goes. The claim is closed first, or it would keep its own directory.
 $claim.Dispose()
 try { Remove-Item -LiteralPath $dir -Recurse -Force } catch { }

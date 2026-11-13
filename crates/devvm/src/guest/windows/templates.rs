@@ -36,9 +36,15 @@ pub(super) const LOG_FILES: &[&str] = &[
     "logs/setupapi.dev.log",
 ];
 
-/// The answer disk's files, by the name they have there. The definition hash reads them in this order.
+/// The C# source of the guest's native helper (the runner's job and caller handling, a directory flush) and the assembly
+/// the bootstrap compiles it to, in the scripts directory. It is compiled once, at the base build.
+pub(super) const NATIVE_SOURCE: &str = "Devvm.cs";
+pub(super) const NATIVE_DLL: &str = "Devvm.dll";
+
+/// The answer disk's files, by the name they have there.
 pub(super) const TEMPLATES: &[(&str, &str)] = &[
     ("Autounattend.xml", include_str!("templates/Autounattend.xml")),
+    (NATIVE_SOURCE, include_str!("templates/Devvm.cs")),
     ("winpe.cmd", include_str!("templates/winpe.cmd")),
     ("lib.ps1", include_str!("templates/lib.ps1")),
     ("bootstrap.ps1", include_str!("templates/bootstrap.ps1")),
@@ -69,11 +75,15 @@ pub(super) fn answer_file(inputs: &AnswerInputs) -> Result<String> {
 
 /// Every file of the answer disk for `inputs`, ready to write to it.
 pub(super) fn answer_disk_files(inputs: &AnswerInputs) -> Result<Vec<SeedFile>> {
-    let values = values(inputs);
-    TEMPLATES
+    disk_files(TEMPLATES, &values(inputs))
+}
+
+/// The files of `templates` with `values` filled in, as they are written to the answer disk.
+pub(super) fn disk_files(templates: &[(&str, &str)], values: &[(&str, String)]) -> Result<Vec<SeedFile>> {
+    templates
         .iter()
         .map(|(name, text)| {
-            let mut text = render(name, text, &values)?;
+            let mut text = render(name, text, values)?;
             if name.ends_with(".cmd") {
                 // cmd.exe finds its labels reliably only in a file with CRLF line ends.
                 text = text.replace("\r\n", "\n").replace('\n', "\r\n");
@@ -86,25 +96,40 @@ pub(super) fn answer_disk_files(inputs: &AnswerInputs) -> Result<Vec<SeedFile>> 
         .collect()
 }
 
-/// Hash of everything that decides what the base is: every template, every pin and the guest's semantics version.
+/// What the definition hash renders the templates with. The password is a fixed stand-in (the build's is random and
+/// never stored); the rest is what a build of any ISO shares: the image and its language come from the ISO, which is
+/// part of the base's key already.
+pub(super) fn probe_inputs() -> AnswerInputs<'static> {
+    AnswerInputs {
+        password: "definition-hash-probe",
+        image_index: 1,
+        language: "en-US",
+        time_zone: TIME_ZONE,
+        computer_name: COMPUTER_NAME,
+    }
+}
+
+/// Hash of everything that decides what the base is: every file of the answer disk as a build renders it (so every
+/// constant a template substitutes is in it), every pin and the guest's semantics version.
 pub(super) fn definition_hash() -> [u8; 32] {
-    definition_hash_of(TEMPLATES, ALL, WindowsGuest.semantics_version())
+    let files = answer_disk_files(&probe_inputs()).expect("the Windows templates render (checked by a test)");
+    definition_hash_of(&files, ALL, WindowsGuest.semantics_version())
 }
 
 /// [`definition_hash`] of the given parts. Fields are length-prefixed and the lists counted, so no two definitions share
 /// a byte stream.
-pub(super) fn definition_hash_of(templates: &[(&str, &str)], pins: &[&Pin], semantics_version: u32) -> [u8; 32] {
+pub(super) fn definition_hash_of(files: &[SeedFile], pins: &[&Pin], semantics_version: u32) -> [u8; 32] {
     let mut hasher = Sha256::new();
     let mut field = |bytes: &[u8]| {
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
     };
-    field(b"devvm windows base definition 1");
+    field(b"devvm windows base definition 2");
     field(&semantics_version.to_le_bytes());
-    field(&(templates.len() as u64).to_le_bytes());
-    for (name, text) in templates {
-        field(name.as_bytes());
-        field(text.as_bytes());
+    field(&(files.len() as u64).to_le_bytes());
+    for file in files {
+        field(file.name.as_bytes());
+        field(&file.bytes);
     }
     field(&(pins.len() as u64).to_le_bytes());
     for pin in pins {
@@ -147,15 +172,34 @@ impl Quoting {
     }
 }
 
+/// The virtio-win CD's driver folders on every letter the CD can have, as the answer file's `PathAndCredentials`
+/// entries; Setup skips a path that is not there. `winpe.cmd` finds the CD by file over the same letters.
+fn driver_paths(key_prefix: &str) -> String {
+    let mut entries = Vec::new();
+    for letter in 'C'..='Z' {
+        for driver in ["viostor", "NetKVM"] {
+            let key = format!("{key_prefix}{}", entries.len() + 1);
+            entries.push(format!(
+                r#"<PathAndCredentials wcm:action="add" wcm:keyValue="{key}"><Path>{letter}:\{driver}\w11\amd64</Path></PathAndCredentials>"#
+            ));
+        }
+    }
+    entries.join("\n        ")
+}
+
 /// Every value a template can name.
-fn values(inputs: &AnswerInputs) -> Vec<(&'static str, String)> {
+pub(super) fn values(inputs: &AnswerInputs) -> Vec<(&'static str, String)> {
     let values: Vec<(&'static str, String)> = vec![
         ("PASSWORD", inputs.password.to_owned()),
         ("IMAGE_INDEX", inputs.image_index.to_string()),
         ("LANGUAGE", inputs.language.to_owned()),
         ("TIME_ZONE", inputs.time_zone.to_owned()),
         ("COMPUTER_NAME", inputs.computer_name.to_owned()),
+        ("DRIVER_PATHS_OFFLINE", driver_paths("off")),
+        ("DRIVER_PATHS_SPECIALIZE", driver_paths("os")),
         ("DEVVM_DIR", DEVVM_DIR.to_owned()),
+        ("NATIVE_SOURCE", NATIVE_SOURCE.to_owned()),
+        ("NATIVE_DLL", NATIVE_DLL.to_owned()),
         ("PWSH_EXE", PWSH_EXE.to_owned()),
         ("BROKER_EXE", BROKER_EXE.to_owned()),
         ("BOOT_ID_FILE", BOOT_ID_FILE.to_owned()),
