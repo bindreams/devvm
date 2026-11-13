@@ -8,11 +8,11 @@
 #   2. set `ltsc_sha256=` to the pin (SHA256 of the ISO fwlink 2270353 serves; case does not matter);
 #   3. optionally set `ltsc_hash=` empty to skip the check job.
 # `reuse_LTSC=` (empty) means a fresh install; `stage_LTSC=` lists the stages that boot after it.
-legs=
-ltsc_hash=1
+legs=LTSC
+ltsc_hash=
 # Microsoft's published value (Windows11IoTEnterpriseLTSC2024EvalHashValues.pdf, x64 en-us DVD9). The first download gave
-# 2cee70bd183df42b92a2e0da08cc2bb7a2a9ce3a3841955a012c0f77aeb3cb29 (run 43329256748). Undecided: unchanged here.
-ltsc_sha256=8abf91c9cd408368dc73aab3425d5e3c02dae74900742072eb5c750fc637c195
+# 2cee70bd183df42b92a2e0da08cc2bb7a2a9ce3a3841955a012c0f77aeb3cb29 (run 43329256748). Deputy 2026-11-13: pinned to what Microsoft serves; run 43333339814 got the same bytes on another runner, the file is Last-Modified 2025-02-12 and the PDF (8abf91c9...) 2024-06-21, so the PDF is stale.
+ltsc_sha256=2cee70bd183df42b92a2e0da08cc2bb7a2a9ce3a3841955a012c0f77aeb3cb29
 reuse=43227036274
 reuse_LTSC=
 stage=
