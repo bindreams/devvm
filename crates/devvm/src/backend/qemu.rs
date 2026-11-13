@@ -17,11 +17,11 @@ use std::sync::Arc;
 use self::backend::QemuBackend;
 use self::sidecar::LazyInstall;
 use self::storage::QemuStorage;
+use crate::Dirs;
 use crate::exit::Progress;
 use crate::guest::linux::{LinuxBuilder, LinuxGuests};
 use crate::host::Host;
 use crate::store::fetch::Fetcher;
-use crate::{Dirs, Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "qemu_tests.rs"]
@@ -60,17 +60,4 @@ pub(crate) fn qemu_parts(
         guests: Arc::new(LinuxGuests::new(builder)),
         install,
     }
-}
-
-/// The directory that holds `path`, which is `what`. Every path devvm gives the backend is absolute and in a directory, so
-/// a path without one is a bug in the caller, named here instead of resolved against the working directory.
-fn directory_of<'a>(path: &'a Path, what: &str) -> Result<&'a Path> {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Internal,
-                format!("{what} {} has no directory to put its files in", path.display()),
-            )
-        })
 }

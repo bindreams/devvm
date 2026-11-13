@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use super::{LaunchPaths, build_args, escape_option_value, guest_port};
 use crate::backend::fake::fake_spec;
-use crate::backend::{DeviceProfile, DiskBus, Endpoint, Firmware, MachineSpec, Media, MediaKind, NetModel};
+use crate::backend::{
+    DeviceProfile, DiskBus, Endpoint, Firmware, MachineSpec, Media, MediaFormat, MediaKind, NetModel, Video,
+};
 use crate::contain::Lifetime;
 use crate::host::Accel;
 use crate::test_support::fixtures::UNICODE_DIR;
@@ -23,6 +25,7 @@ fn spec() -> MachineSpec {
         kind: MediaKind::Cdrom,
         boot_index: None,
         readonly: true,
+        format: MediaFormat::Raw,
     }];
     spec
 }
@@ -191,18 +194,21 @@ fn media_follow_boot_index_and_the_seed_is_read_only() {
             kind: MediaKind::Disk,
             boot_index: None,
             readonly: false,
+            format: MediaFormat::Raw,
         },
         Media {
             path: PathBuf::from("isos/win.iso"),
             kind: MediaKind::Cdrom,
             boot_index: Some(1),
             readonly: true,
+            format: MediaFormat::Raw,
         },
         Media {
             path: PathBuf::from("inst/seed.img"),
             kind: MediaKind::Disk,
             boot_index: Some(2),
             readonly: true,
+            format: MediaFormat::Raw,
         },
     ];
 
@@ -241,12 +247,14 @@ fn a_disk_kind_medium_is_a_readonly_virtio_blk_and_a_cdrom_is_ide_cd() {
             kind: MediaKind::Disk,
             boot_index: None,
             readonly: true,
+            format: MediaFormat::Raw,
         },
         Media {
             path: PathBuf::from("seed.iso"),
             kind: MediaKind::Cdrom,
             boot_index: None,
             readonly: true,
+            format: MediaFormat::Raw,
         },
     ];
     let args = args(&spec, &paths());
@@ -265,6 +273,7 @@ fn device_profiles_select_buses_and_models() {
     spec.profile = DeviceProfile {
         disk: DiskBus::Sata,
         net: NetModel::E1000,
+        video: Video::None,
         no_reboot: false,
     };
     let sata = args(&spec, &paths());
@@ -327,12 +336,14 @@ fn a_comma_in_a_firmware_or_media_path_is_doubled() {
             kind: MediaKind::Cdrom,
             boot_index: None,
             readonly: true,
+            format: MediaFormat::Raw,
         },
         Media {
             path: PathBuf::from("da,ta/data.img"),
             kind: MediaKind::Disk,
             boot_index: None,
             readonly: false,
+            format: MediaFormat::Raw,
         },
     ];
     let mut paths = paths();
@@ -352,10 +363,45 @@ fn a_comma_in_a_firmware_or_media_path_is_doubled() {
 }
 
 #[skuld::test]
-fn a_cdrom_is_opened_as_raw_so_its_content_cannot_pick_the_format() {
+fn a_cdrom_is_opened_with_the_format_named_so_its_content_cannot_pick_it() {
     let args = args(&spec(), &paths());
     let drive = args.iter().find(|arg| arg.contains("media=cdrom")).unwrap();
     assert!(drive.contains(",format=raw,"), "{drive}");
+}
+
+#[skuld::test]
+fn a_qcow2_cdrom_is_opened_as_qcow2() {
+    let mut spec = spec();
+    spec.media[0].format = MediaFormat::Qcow2;
+    let args = args(&spec, &paths());
+    let drive = args.iter().find(|arg| arg.contains("media=cdrom")).unwrap();
+    assert_eq!(
+        *drive,
+        "if=none,id=m0,file=inst/seed/seed.iso,format=qcow2,media=cdrom,readonly=on"
+    );
+}
+
+#[skuld::test]
+fn every_medium_kind_names_its_format() {
+    let mut spec = spec();
+    spec.media = [MediaKind::Cdrom, MediaKind::Disk, MediaKind::UsbDisk]
+        .into_iter()
+        .enumerate()
+        .map(|(i, kind)| Media {
+            path: PathBuf::from(format!("m{i}.img")),
+            kind,
+            boot_index: None,
+            readonly: true,
+            format: MediaFormat::Qcow2,
+        })
+        .collect();
+    let args = args(&spec, &paths());
+    let drives: Vec<&str> = values_of(&args, "-drive")
+        .into_iter()
+        .filter(|d| d.starts_with("if=none,id=m"))
+        .collect();
+    assert_eq!(drives.len(), 3);
+    assert!(drives.iter().all(|drive| drive.contains(",format=qcow2")), "{drives:?}");
 }
 
 #[skuld::test]
@@ -367,6 +413,7 @@ fn the_system_disk_boots_after_the_highest_boot_index() {
         kind: MediaKind::Disk,
         boot_index: Some(i32::MAX as u32 - 1),
         readonly: true,
+        format: MediaFormat::Raw,
     }];
     let args = args(&spec, &paths());
     assert!(
@@ -384,6 +431,7 @@ fn a_boot_index_that_leaves_no_room_for_the_system_disk_is_refused_naming_the_me
             kind: MediaKind::Cdrom,
             boot_index: Some(index),
             readonly: true,
+            format: MediaFormat::Raw,
         }];
 
         let error = build_args(&spec, &paths()).unwrap_err();
@@ -493,4 +541,206 @@ fn cpus_and_memory_are_passed_through() {
     let args = args(&spec, &paths());
     assert_eq!(values_of(&args, "-smp"), ["6"]);
     assert_eq!(values_of(&args, "-m"), ["4096"]);
+}
+
+fn usb(path: &str, boot_index: Option<u32>, readonly: bool) -> Media {
+    Media {
+        path: PathBuf::from(path),
+        kind: MediaKind::UsbDisk,
+        boot_index,
+        readonly,
+        format: MediaFormat::Raw,
+    }
+}
+
+#[skuld::test]
+fn usb_media_are_removable_usb_storage_on_one_xhci_controller() {
+    let mut spec = spec();
+    spec.media = vec![usb("inst/answer.img", None, false), usb("inst/seed.img", None, true)];
+
+    let args = args(&spec, &paths());
+
+    let devices = values_of(&args, "-device");
+    assert_eq!(
+        devices.iter().filter(|device| device.starts_with("qemu-xhci")).count(),
+        1,
+        "{devices:?}"
+    );
+    assert!(devices.contains(&"qemu-xhci,id=xhci"), "{devices:?}");
+    assert!(
+        devices.contains(&"usb-storage,drive=m0,removable=on,bus=xhci.0"),
+        "{devices:?}"
+    );
+    assert!(
+        devices.contains(&"usb-storage,drive=m1,removable=on,bus=xhci.0"),
+        "{devices:?}"
+    );
+    let controller = devices
+        .iter()
+        .position(|device| *device == "qemu-xhci,id=xhci")
+        .unwrap();
+    let first_disk = devices
+        .iter()
+        .position(|device| device.starts_with("usb-storage"))
+        .unwrap();
+    assert!(
+        controller < first_disk,
+        "the bus exists before a device sits on it: {devices:?}"
+    );
+    let drives = values_of(&args, "-drive");
+    assert!(
+        drives.contains(&"if=none,id=m0,file=inst/answer.img,format=raw"),
+        "{drives:?}"
+    );
+    assert!(
+        drives.contains(&"if=none,id=m1,file=inst/seed.img,format=raw,readonly=on"),
+        "read-only only when asked: {drives:?}"
+    );
+}
+
+#[skuld::test]
+fn a_machine_without_usb_media_has_no_xhci_controller() {
+    let args = args(&spec(), &paths());
+    assert!(!args.iter().any(|arg| arg.contains("xhci")), "{args:?}");
+}
+
+#[skuld::test]
+fn a_writable_answer_disk_is_attached_without_readonly() {
+    let mut spec = spec();
+    spec.media = vec![usb("inst/answer.img", None, false)];
+
+    let args = args(&spec, &paths());
+
+    let answer: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|arg| arg.contains("answer.img"))
+        .collect();
+    assert_eq!(answer, ["if=none,id=m0,file=inst/answer.img,format=raw"]);
+}
+
+#[skuld::test]
+fn a_usb_medium_takes_its_boot_index() {
+    let mut spec = spec();
+    spec.media = vec![usb("inst/boot.img", Some(1), true)];
+    let args = args(&spec, &paths());
+    assert!(
+        values_of(&args, "-device").contains(&"usb-storage,drive=m0,removable=on,bus=xhci.0,bootindex=1"),
+        "{args:?}"
+    );
+}
+
+#[skuld::test]
+fn the_vga_profile_adds_a_vga_device_and_keeps_display_none() {
+    let mut spec = spec();
+    spec.profile.video = Video::Vga;
+
+    let args = args(&spec, &paths());
+
+    assert!(values_of(&args, "-device").contains(&"VGA"), "{args:?}");
+    assert_eq!(values_of(&args, "-display"), ["none"]);
+    let without = self::args(&self::spec(), &paths());
+    assert!(!values_of(&without, "-device").contains(&"VGA"), "{without:?}");
+}
+
+#[skuld::test]
+fn an_arm64_guest_with_a_vga_adapter_is_refused_under_every_accelerator() {
+    for accel in [Accel::Tcg, Accel::Kvm, Accel::Hvf] {
+        let mut spec = spec();
+        spec.arch = Arch::Arm64;
+        spec.accel = accel;
+        spec.profile.video = Video::Vga;
+
+        let error = build_args(&spec, &paths()).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::NotSupported, "{accel:?}: {error}");
+        assert!(error.message().contains("VGA"), "{accel:?}: {error}");
+        spec.profile.video = Video::None;
+        assert!(
+            build_args(&spec, &paths()).is_ok(),
+            "{accel:?}: the same machine without video"
+        );
+    }
+}
+
+/// The Linux guest's machine: the read-only virtio-blk seed and no video adapter.
+#[skuld::test]
+fn the_linux_profile_args_are_unchanged() {
+    let mut spec = fake_spec(
+        PathBuf::from("inst/disk.img"),
+        PathBuf::from("inst/serial.log"),
+        Lifetime::OutlivesOwner,
+    );
+    spec.accel = Accel::Whpx;
+    spec.cpus = 2;
+    spec.memory = 2048 << 20;
+    spec.media = vec![Media {
+        path: PathBuf::from("inst/cidata.img"),
+        kind: MediaKind::Disk,
+        boot_index: None,
+        readonly: true,
+        format: MediaFormat::Raw,
+    }];
+
+    let expected = [
+        "-accel",
+        "whpx",
+        "-machine",
+        "q35",
+        "-cpu",
+        "max",
+        "-smp",
+        "2",
+        "-m",
+        "2048",
+        "-display",
+        "none",
+        "-nodefaults",
+        "-no-user-config",
+        "-rtc",
+        "base=utc",
+        "-chardev",
+        "socket,id=qmp,path=tmp/q.sock,server=on,wait=off",
+        "-object",
+        "monitor-qmp,id=qmp0,chardev=qmp",
+        "-chardev",
+        "file,id=ser0,path=inst/serial.log",
+        "-serial",
+        "chardev:ser0",
+        "-drive",
+        "if=pflash,format=raw,readonly=on,file=share/edk2-x86_64-code.fd",
+        "-drive",
+        "if=pflash,format=raw,file=inst/vars.fd",
+        "-drive",
+        "if=none,id=d0,file=inst/disk.img,format=qcow2",
+        "-device",
+        "virtio-blk-pci,drive=d0,bootindex=1",
+        "-drive",
+        "if=none,id=m0,file=inst/cidata.img,format=raw,readonly=on",
+        "-device",
+        "virtio-blk-pci,drive=m0",
+        "-netdev",
+        "user,id=n0,hostfwd=tcp:127.0.0.1:0-:22",
+        "-device",
+        "virtio-net-pci,netdev=n0",
+    ];
+    assert_eq!(args(&spec, &paths()), expected);
+}
+
+/// The install media of a Windows build.
+#[skuld::test]
+fn an_install_cdrom_is_an_ide_cd_with_no_bus() {
+    let mut spec = spec();
+    spec.media = vec![Media {
+        path: PathBuf::from("inst/overlay.qcow2"),
+        kind: MediaKind::Cdrom,
+        boot_index: Some(1),
+        readonly: true,
+        format: MediaFormat::Raw,
+    }];
+    let args = args(&spec, &paths());
+    assert!(
+        values_of(&args, "-device").contains(&"ide-cd,drive=m0,bootindex=1"),
+        "{args:?}"
+    );
 }

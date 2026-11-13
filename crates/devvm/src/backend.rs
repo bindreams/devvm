@@ -11,7 +11,7 @@ use crate::contain::Lifetime;
 use crate::host::{Accel, Comparison, FileId, Hold, HoldOutcome, Host, is_absent, symlink_metadata_if_present};
 use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
-use crate::{Arch, ErrorKind, Network, Result};
+use crate::{Arch, Error, ErrorKind, Network, Result};
 
 #[cfg(test)]
 #[path = "backend_tests.rs"]
@@ -92,6 +92,210 @@ pub(crate) trait Storage: Send + Sync {
     /// Makes the downloaded disk `image` (any format the backend reads) the root layer's disk in `staging`, with the
     /// firmware variables template for `arch`. Writes only into `staging`.
     fn import_base(&self, image: &Path, arch: Arch, staging: &LayerDir) -> Result<()>;
+
+    /// Makes an empty disk of `size` bytes, the root layer's disk in `staging`, with the firmware variables template for
+    /// `arch`. A `size` the backend cannot make is `Recipe`, with nothing made. Writes only into `staging`.
+    fn create_blank_disk(&self, size: u64, arch: Arch, staging: &LayerDir) -> Result<()>;
+
+    /// Makes `into` a copy-on-write disk over `backing`, a raw image that is only read, and writes each of `patches`
+    /// into it: a read of the disk gives the patch's bytes where a patch lies and `backing`'s bytes elsewhere. Every
+    /// request [`check_overlay`] refuses is refused with nothing made. A failure after that leaves no overlay of its
+    /// own. Of several calls for one `into`, one makes it and the others fail with `AlreadyExists` ([`make_overlay`]); a
+    /// call never deletes or changes an overlay another call made. The directory of `into` is a staging directory the
+    /// caller owns: the call's temporaries (the overlay before it is published, the patch files) are made there, and a
+    /// killed call's leftovers are the caller's to clean up.
+    fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()>;
+}
+
+/// The granularity of a patch: its offset and its length are multiples of it. QEMU's raw driver takes nothing finer.
+pub(crate) const PATCH_ALIGNMENT: u64 = 512;
+
+/// Bytes to write at `offset` into a disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Patch {
+    pub offset: u64,
+    pub bytes: Vec<u8>,
+}
+
+/// The contract of [`Storage::overlay_with_patches`], for every backend to check before it makes anything:
+/// - `backing` is an absolute path: a relative one would be resolved against the overlay's directory by one tool and
+///   the working directory by another. `Internal`;
+/// - `backing` is there: `NotFound`, naming it;
+/// - every patch is non-empty, has an offset and a length that are multiples of [`PATCH_ALIGNMENT`], and lies within
+///   `backing`'s size: `Internal`, naming the patch and the rule;
+/// - `into` is not there: `AlreadyExists`.
+pub(crate) fn check_overlay(backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
+    if !backing.is_absolute() {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            format!("the backing file {} must be an absolute path", backing.display()),
+        ));
+    }
+    let size = match std::fs::metadata(backing) {
+        Ok(meta) => meta.len(),
+        Err(e) if is_absent(&e) => {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                format!("the backing file {} is not there", backing.display()),
+            ));
+        }
+        Err(e) => {
+            return Err(Error::io(
+                ErrorKind::Io,
+                format!("cannot look at the backing file {}", backing.display()),
+                e,
+            ));
+        }
+    };
+    for (n, patch) in patches.iter().enumerate() {
+        let len = patch.bytes.len() as u64;
+        let wrong = if len == 0 {
+            Some("it is empty".to_owned())
+        } else if !patch.offset.is_multiple_of(PATCH_ALIGNMENT) || !len.is_multiple_of(PATCH_ALIGNMENT) {
+            Some(format!(
+                "its offset and its length must be multiples of {PATCH_ALIGNMENT}"
+            ))
+        } else if patch.offset.checked_add(len).is_none_or(|end| end > size) {
+            Some(format!("it ends past the end of the backing file ({size} bytes)"))
+        } else {
+            None
+        };
+        if let Some(rule) = wrong {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("patch {n} (offset {}, {len} bytes): {rule}", patch.offset),
+            ));
+        }
+    }
+    if symlink_metadata_if_present(into)
+        .map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot look at the overlay {}", into.display()),
+                e,
+            )
+        })?
+        .is_some()
+    {
+        return Err(Error::new(
+            ErrorKind::AlreadyExists,
+            format!("the overlay {} is already there", into.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// The largest virtual size of a qcow2 disk: 2 PiB, the most `qemu-img create -f qcow2` makes with its default 64 KiB
+/// clusters (an L2 table maps 512 MiB, and the L1 table holds at most 4 Mi tables). Past that, `qemu-img create` fails
+/// with EFBIG. Every backend refuses a disk beyond it, as [`Storage::create_blank_disk`] says.
+pub(crate) const QCOW2_MAX_SIZE: u64 = 1 << 51;
+
+/// The size of the disk `qemu-img create` makes of a request for `size` bytes: rounded up to 512 bytes. `None` when
+/// that is more than a qcow2 disk can have ([`QCOW2_MAX_SIZE`]).
+pub(crate) fn made_size(size: u64) -> Option<u64> {
+    size.checked_next_multiple_of(512)
+        .filter(|made| *made <= QCOW2_MAX_SIZE)
+}
+
+/// The contract of [`Storage::create_blank_disk`], for every backend to check before it makes anything: `Recipe` when
+/// no qcow2 disk is `size` bytes. The caller of a blank disk names its size, not `resources.disk`.
+pub(crate) fn check_blank_disk_size(size: u64) -> Result<()> {
+    made_size(size).map(drop).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Recipe,
+            format!("a blank disk of {size} bytes is more than the {QCOW2_MAX_SIZE} bytes a qcow2 disk can have"),
+        )
+    })
+}
+
+/// The contract of [`Backend::launch`] on the spec, for every backend to check before it starts anything: `NotSupported`
+/// for an arm64 machine with a VGA adapter, whose firmware and guests have no driver for one.
+pub(crate) fn check_machine_spec(spec: &MachineSpec) -> Result<()> {
+    if spec.arch == Arch::Arm64 && spec.profile.video == Video::Vga {
+        return Err(Error::new(
+            ErrorKind::NotSupported,
+            "an arm64 machine has no VGA adapter: its firmware and guests have no driver for one",
+        ));
+    }
+    Ok(())
+}
+
+/// The directory that holds `path`, which is `what`. Every path devvm gives the backend is absolute and in a directory, so
+/// a path without one is a bug in the caller, named here instead of resolved against the working directory.
+pub(crate) fn directory_of<'a>(path: &'a Path, what: &str) -> Result<&'a Path> {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("{what} {} has no directory to put its files in", path.display()),
+            )
+        })
+}
+
+/// Makes the overlay at `into`, for every backend, under the contract of [`Storage::overlay_with_patches`]. [`check_overlay`]
+/// looks at `into` first, but another call can make it between that look and this one, so the look decides nothing:
+/// `fill` is handed a new path in the directory of `into` and that directory, writes the overlay to the path (and any
+/// temporary of its own into the directory), and the overlay goes to `into` in one step that fails with `AlreadyExists`
+/// for anything there. Only the new path is ever deleted, on every failure of `fill` or of the publish.
+///
+/// The overlay is synced before it is published, and the directory after (Unix). The file is private to the account, as
+/// a temporary file is (`0600` on Unix).
+pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Result<()>) -> Result<()> {
+    let directory = directory_of(into, "the overlay")?;
+    let staging = tempfile::Builder::new()
+        .prefix("overlay-")
+        .tempfile_in(directory)
+        .map_err(|e| {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot create a file in {} to make the overlay in", directory.display()),
+                e,
+            )
+        })?
+        // The handle is closed: `qemu-img` opens the file by name, which Windows lets a process do only once the other
+        // handles are gone.
+        .into_temp_path();
+    let left = format!("the file {}", staging.display());
+    let filled = fill(&staging, directory).and_then(|()| {
+        // The handle `fill` used is closed, and the data must be on the disk before the name is: a crash must not leave
+        // an overlay that is there and empty. Windows flushes only a handle opened for writing.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&staging)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot flush the overlay {}", staging.display()),
+                    e,
+                )
+            })
+    });
+    if let Err(e) = filled {
+        return Err(e.after_cleanup(&left, staging.close()));
+    }
+    staging.persist_noclobber(into).map_err(|failed| {
+        let tempfile::PathPersistError { error, path } = failed;
+        let refused = if error.kind() == std::io::ErrorKind::AlreadyExists {
+            Error::new(
+                ErrorKind::AlreadyExists,
+                format!("the overlay {} is already there", into.display()),
+            )
+        } else {
+            Error::io(
+                ErrorKind::Io,
+                format!("cannot move the overlay into place at {}", into.display()),
+                error,
+            )
+        };
+        refused.after_cleanup(&left, path.close())
+    })?;
+    // The overlay is in place, so a directory that cannot be flushed takes it out again: the call made nothing.
+    crate::host::current().sync_dir(directory).map_err(|e| {
+        let error = Error::io(ErrorKind::Io, format!("cannot flush {}", directory.display()), e);
+        error.after_cleanup(&format!("the overlay {}", into.display()), std::fs::remove_file(into))
+    })
 }
 
 pub(crate) trait Machine: Send {
@@ -295,12 +499,31 @@ pub(crate) struct Media {
     pub kind: MediaKind,
     pub boot_index: Option<u32>,
     pub readonly: bool,
+    /// How QEMU reads `path`. Always named on the command line, never probed from the file's content.
+    pub format: MediaFormat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MediaFormat {
+    Raw,
+    Qcow2,
+}
+
+impl MediaFormat {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            MediaFormat::Raw => "raw",
+            MediaFormat::Qcow2 => "qcow2",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MediaKind {
     Cdrom,
     Disk,
+    /// A removable USB mass-storage disk on the machine's one `qemu-xhci` controller.
+    UsbDisk,
 }
 
 #[derive(Clone, Debug)]
@@ -314,6 +537,7 @@ pub(crate) struct Firmware {
 pub(crate) struct DeviceProfile {
     pub disk: DiskBus,
     pub net: NetModel,
+    pub video: Video,
     /// Do not reboot after a guest-initiated reset (installs).
     pub no_reboot: bool,
 }
@@ -323,6 +547,13 @@ pub(crate) enum DiskBus {
     Virtio,
     Sata,
     Nvme,
+}
+
+/// The display adapter. Either way the machine has no display window (`-display none`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Video {
+    None,
+    Vga,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

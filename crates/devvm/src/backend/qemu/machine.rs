@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::args::guest_port;
-use super::directory_of;
 use super::qmp::{Qmp, QmpEndpoint, VmEnd};
-use crate::backend::{Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint};
+use crate::backend::{Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint, directory_of};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
 use crate::host::{Host, ProcessWatch};

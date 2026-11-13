@@ -9,7 +9,7 @@ use secrecy::ExposeSecret;
 
 use crate::access::SshSession;
 use crate::backend::fake::LAYER_DISK;
-use crate::backend::{DeviceProfile, DiskBus, Media, MediaKind, NetModel};
+use crate::backend::{DeviceProfile, DiskBus, Media, MediaFormat, MediaKind, NetModel, Video};
 use crate::exit::ExitStatus;
 use crate::guest::linux::LinuxGuest;
 use crate::guest::{
@@ -118,6 +118,7 @@ impl GuestOs for FakeGuestOs {
                 kind: MediaKind::Cdrom,
                 boot_index: None,
                 readonly: true,
+                format: MediaFormat::Raw,
             },
         })
     }
@@ -195,6 +196,7 @@ impl GuestOs for FakeGuestOs {
         DeviceProfile {
             disk: DiskBus::Virtio,
             net: NetModel::Virtio,
+            video: Video::None,
             no_reboot: false,
         }
     }

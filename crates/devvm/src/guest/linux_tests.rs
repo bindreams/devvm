@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::backend::fake::FakeStorage;
-use crate::backend::{DeviceProfile, DiskBus, NetModel};
+use crate::backend::{DeviceProfile, DiskBus, NetModel, Video};
 use crate::exit::NullProgress;
 use crate::guest::linux::{LinuxBuilder, LinuxGuest, LinuxGuests};
 use crate::guest::{GuestOs, Guests, Readiness};
@@ -39,6 +39,7 @@ fn virtio_devices_and_a_guest_that_reboots_inside_its_process() {
         DeviceProfile {
             disk: DiskBus::Virtio,
             net: NetModel::Virtio,
+            video: Video::None,
             no_reboot: false,
         }
     );
