@@ -170,11 +170,18 @@ fn the_answer_file_logs_on_the_account_without_a_logon_count() {
 #[skuld::test]
 fn the_specialize_marker_goes_to_the_com1_device_not_to_a_path_in_the_drive_root() {
     let text = answer_file(&inputs()).unwrap();
-    assert!(text.contains(r"echo DEVVM-PROGRESS=specialize&gt;\\.\COM1"), "{text}");
+    assert!(text.contains(r"echo DEVVM-PROGRESS=specialize)&gt;\\.\COM1"), "{text}");
     assert!(
         !text.contains(r"&gt;\.\COM1"),
         "the device is written with two leading backslashes: one names a file in the root of the current drive"
     );
+}
+
+#[skuld::test]
+fn every_serial_marker_starts_with_a_line_end_so_that_bytes_before_it_are_not_its_line() {
+    let text = answer_file(&inputs()).unwrap();
+    assert!(text.contains("(echo.&amp;echo DEVVM-PROGRESS=specialize)"), "{text}");
+    assert!(rendered("lib.ps1").contains(r#"$com.Write("`n" + $line + "`n")"#));
 }
 
 #[skuld::test]

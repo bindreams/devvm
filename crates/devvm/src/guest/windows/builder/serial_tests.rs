@@ -54,13 +54,41 @@ fn only_the_prefix_of_a_failed_marker_is_read_and_its_localized_text_is_kept_as_
 }
 
 #[skuld::test]
-fn a_marker_that_does_not_start_its_line_is_not_one() {
-    let log = "echo DEVVM-BASE-DONE\nx DEVVM-PROGRESS=nope\nDEVVM-BASE-DONE and more\nDEVVM-BASE-DONEX\n";
+fn a_marker_is_read_after_the_terminal_bytes_that_precede_it_on_its_line() {
+    let log = "\x1b[2J\x1b[0mDEVVM-PROGRESS=after a clear\r\n\
+               \x1b[?25h\x08DEVVM-LICENSE=null\r\n\
+               \x1b[0mDEVVM-BASE-FAILED=boom\r\n\
+               \x1b[0mDEVVM-BASE-DONE\r\n";
+
+    let serial = read(log.as_bytes());
+
+    assert_eq!(serial.progress, ["after a clear"]);
+    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
+    assert_eq!(serial.failed.as_deref(), Some("boom"));
+    assert!(serial.done);
+}
+
+#[skuld::test]
+fn the_first_marker_on_a_line_is_the_one_it_holds() {
+    let log = "DEVVM-BASE-FAILED=saw DEVVM-PROGRESS=x and DEVVM-BASE-DONE\n";
+
+    let serial = read(log.as_bytes());
+
+    assert_eq!(
+        serial.failed.as_deref(),
+        Some("saw DEVVM-PROGRESS=x and DEVVM-BASE-DONE")
+    );
+    assert!(serial.progress.is_empty(), "{serial:?}");
+    assert!(!serial.done);
+}
+
+#[skuld::test]
+fn the_done_marker_ends_its_line() {
+    let log = "DEVVM-BASE-DONE and more\nDEVVM-BASE-DONEX\n";
 
     let serial = read(log.as_bytes());
 
     assert!(!serial.done, "{serial:?}");
-    assert!(serial.progress.is_empty(), "{serial:?}");
 }
 
 #[skuld::test]

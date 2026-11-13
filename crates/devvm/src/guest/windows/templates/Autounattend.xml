@@ -79,7 +79,7 @@
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
           <Order>2</Order>
-          <Path>cmd.exe /c "echo DEVVM-PROGRESS=specialize&gt;\\.\COM1 &amp; exit /b 0"</Path>
+          <Path>cmd.exe /c "(echo.&amp;echo DEVVM-PROGRESS=specialize)&gt;\\.\COM1 &amp; exit /b 0"</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
     </component>
