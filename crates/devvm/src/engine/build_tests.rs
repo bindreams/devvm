@@ -84,7 +84,7 @@ pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
 /// The keys of the layers `recipe` builds, root first, when it has no `copy` step.
 pub(super) fn keys_of(recipe: &Recipe) -> Vec<LayerKey> {
     let flat = recipe.flatten().unwrap();
-    let (root, _) = root_content(&flat.root, Arch::host()).unwrap();
+    let (root, _) = root_content(&flat.root, Arch::host(), &|_| unreachable!("no ISO here")).unwrap();
     let ctx = KeyContext {
         arch: Arch::host(),
         disk: flat.resources.disk,
@@ -162,6 +162,34 @@ fn a_guest_that_cannot_start_names_the_step_and_commits_nothing(#[fixture(unicod
 }
 
 // Pure parts ==========================================================================================================
+
+#[skuld::test]
+fn an_iso_root_is_keyed_by_content(#[fixture(unicode_home)] home: &Path) {
+    use crate::iso::IsoMemo;
+    use crate::recipe::Source;
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let progress = MemoryProgress::default();
+    let (one, two, other) = (home.join("one.iso"), home.join("two.iso"), home.join("other.iso"));
+    std::fs::write(&one, b"same bytes").unwrap();
+    std::fs::write(&two, b"same bytes").unwrap();
+    std::fs::write(&other, b"other bytes").unwrap();
+    let key = |path: &Path, edition: Option<&str>| {
+        let source = Source::Iso {
+            path: path.to_owned(),
+            edition: edition.map(Into::into),
+        };
+        let (content, _) = root_content(&source, Arch::host(), &|iso| memo.sha256(&TestHost, iso, &progress)).unwrap();
+        let ctx = KeyContext {
+            arch: Arch::host(),
+            disk: None,
+            guest_semantics_version: 1,
+        };
+        crate::recipe::hash::root_key(&ctx, &content, &[0; 32])
+    };
+    assert_eq!(key(&one, None), key(&two, None), "two paths, equal bytes, one key");
+    assert_ne!(key(&one, None), key(&other, None));
+    assert_ne!(key(&one, None), key(&one, Some("Windows 11 Pro")));
+}
 
 fn linux() -> Arc<dyn GuestOs> {
     FakeGuests.os(GuestKind::Linux).unwrap()

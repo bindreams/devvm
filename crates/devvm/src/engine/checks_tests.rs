@@ -1,14 +1,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use super::{host_checks, tool_check};
+use super::{host_checks, iso_checks, tool_check};
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Check, Detail};
 use crate::engine::Engine;
 use crate::engine::engine_tests::{engine_with, memory};
 use crate::guest::fake::FakeGuests;
 use crate::host::Host;
-use crate::test_support::fixtures::unicode_home;
+use crate::iso::IsoMemo;
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, RecordingHost, TestHost};
 use crate::{Dirs, Unavailable};
 
@@ -196,4 +197,57 @@ fn the_engine_lists_the_host_checks_then_the_tools_then_the_backends(#[fixture(u
             "qemu"
         ]
     );
+}
+
+#[skuld::test]
+fn no_iso_line_exists_while_no_iso_was_keyed(#[fixture(unicode_home)] home: &Path) {
+    let memo = IsoMemo::new(&Dirs::under(home));
+    assert_eq!(iso_checks(&memo, &MemoryProgress::default()), []);
+}
+
+#[skuld::test]
+fn the_iso_line_rehashes_each_known_iso_and_names_a_changed_or_missing_one(#[fixture(unicode_home)] home: &Path) {
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let progress = MemoryProgress::default();
+    let (fine, changed, gone) = (home.join("fine.iso"), home.join("changed.iso"), home.join("gone.iso"));
+    for iso in [&fine, &changed, &gone] {
+        std::fs::write(iso, b"windows").unwrap();
+        memo.sha256(&TestHost, iso, &progress).unwrap();
+    }
+    // Same size and time, other bytes: only a rehash notices.
+    let mtime = std::fs::metadata(&changed).unwrap().modified().unwrap();
+    std::fs::write(&changed, b"windowZ").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&changed)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    std::fs::remove_file(&gone).unwrap();
+
+    let checks = iso_checks(&memo, &progress);
+    let by_path = |iso: &Path| {
+        checks
+            .iter()
+            .find(|check| check.name == format!("iso {}", iso.display()))
+            .unwrap_or_else(|| panic!("no line for {}: {checks:?}", iso.display()))
+    };
+    assert_eq!(checks.len(), 3);
+    let sha = by_path(&fine).outcome.clone().unwrap();
+    assert_eq!(sha.len(), 64, "{sha}");
+    let why = by_path(&changed).outcome.clone().unwrap_err();
+    assert!(why.contains("changed since it was keyed"), "{why}");
+    let why = by_path(&gone).outcome.clone().unwrap_err();
+    assert!(why.contains("does not exist"), "{why}");
+}
+
+#[skuld::test]
+fn an_unreadable_iso_memo_is_a_failing_line(#[fixture(unicode_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    std::fs::create_dir_all(dirs.iso_memo()).unwrap();
+    std::fs::write(dirs.iso_memo().join("junk.json"), b"[]").unwrap();
+    let checks = iso_checks(&IsoMemo::new(&dirs), &MemoryProgress::default());
+    assert_eq!(checks.len(), 1);
+    assert!(checks[0].outcome.is_err(), "{checks:?}");
+    assert!(checks[0].name.contains("junk.json"), "{checks:?}");
 }

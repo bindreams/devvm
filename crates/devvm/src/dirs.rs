@@ -99,6 +99,11 @@ impl Dirs {
         self.cache.join("downloads")
     }
 
+    /// The hashes of the Windows ISOs recipes name: one file per ISO path (`iso::IsoMemo`).
+    pub fn iso_memo(&self) -> PathBuf {
+        self.cache.join("iso-memo")
+    }
+
     /// Where unparseable records are moved instead of being deleted.
     pub fn quarantine(&self) -> PathBuf {
         self.data.join("quarantine")

@@ -36,7 +36,8 @@ fn each_from_variant_parses() {
     assert_eq!(
         parse("from: { iso: ../isos/win.iso }").source,
         Source::Iso {
-            path: dir.join("../isos/win.iso")
+            path: dir.join("../isos/win.iso"),
+            edition: None,
         }
     );
 
@@ -84,9 +85,27 @@ fn relative_from_resolves_against_the_recipe_directory(#[fixture(unicode_home)] 
     assert_eq!(
         recipe.source,
         Source::Iso {
-            path: home.join("a b").join("win.iso")
+            path: home.join("a b").join("win.iso"),
+            edition: None,
         }
     );
+}
+
+#[skuld::test]
+fn an_iso_takes_an_edition() {
+    assert_eq!(
+        parse("from: { iso: win.iso, edition: Windows 11 Pro }").source,
+        Source::Iso {
+            path: Path::new("proj").join("win.iso"),
+            edition: Some("Windows 11 Pro".to_owned()),
+        }
+    );
+    let error = parse_err("from: { iso: win.iso, edition: '  ' }");
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("`edition`"), "{error}");
+    // Only an ISO has editions.
+    let error = parse_err(&format!("from: {{ url: x, sha256: {SHA_A}, edition: Pro }}"));
+    assert_eq!(error.kind(), ErrorKind::Recipe);
 }
 
 #[skuld::test]

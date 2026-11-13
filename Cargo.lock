@@ -111,6 +111,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-lock"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0876700b0d007ad25d5508865a4259c3af9af6d296bf663a0d586d0bc3369f6f"
+dependencies = [
+ "event-listener",
+ "event-listener-strategy",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -257,6 +268,26 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
 
 [[package]]
 name = "byteorder"
@@ -668,6 +699,10 @@ dependencies = [
  "filetime",
  "futures",
  "getrandom 0.4.3",
+ "hadris-fs",
+ "hadris-iso",
+ "hadris-storage",
+ "hadris-udf",
  "hex",
  "home",
  "jiff",
@@ -676,6 +711,7 @@ dependencies = [
  "os_str_bytes",
  "percent-encoding",
  "qapi",
+ "quick-xml",
  "rand",
  "reqwest",
  "russh",
@@ -823,6 +859,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
+
+[[package]]
+name = "embedded-io-async"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
+dependencies = [
+ "embedded-io",
+]
+
+[[package]]
 name = "enum_dispatch"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -863,6 +914,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
  "parking",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "event-listener-strategy"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
+dependencies = [
+ "event-listener",
  "pin-project-lite",
 ]
 
@@ -1125,6 +1186,121 @@ dependencies = [
  "ff",
  "rand_core",
  "subtle",
+]
+
+[[package]]
+name = "hadris-fs"
+version = "3.0.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "700c97ceb27e5e99f94f18c7e450eac272246334c11799d9b3ba0d3323d16c51"
+dependencies = [
+ "async-lock",
+ "bitflags 2.13.2",
+ "hadris-io",
+ "hadris-macros",
+ "hadris-storage",
+ "libc",
+ "spin",
+]
+
+[[package]]
+name = "hadris-io"
+version = "3.0.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1564c55ee51215a301c68bb2bddd00db0d256d64acfa9574263dda5f148238ac"
+dependencies = [
+ "embedded-io",
+ "embedded-io-async",
+ "hadris-macros",
+]
+
+[[package]]
+name = "hadris-iso"
+version = "3.0.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47342f436c6550c525203c67421f431428b43062c72239bfa2912955e9fc86b7"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "hadris-fs",
+ "hadris-io",
+ "hadris-iso-raw",
+ "hadris-macros",
+ "hadris-part",
+ "hadris-storage",
+ "tracing",
+]
+
+[[package]]
+name = "hadris-iso-raw"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8236b77aea365e3bd88e36328a0ae94e74ad5291f399408293df5aa3ac2a8a5"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "hadris-fs",
+]
+
+[[package]]
+name = "hadris-macros"
+version = "3.0.0-rc.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17564167ddba078018254501b890302e721d1cb7a1b9c6059f505231e61d44ee"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
+name = "hadris-part"
+version = "3.0.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6b6558725b62c8c68192a31f41ab2fa4ebe110b1507c1e1a64628cd2b816d14"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "hadris-fs",
+ "hadris-io",
+ "hadris-macros",
+ "hadris-storage",
+ "tracing",
+]
+
+[[package]]
+name = "hadris-storage"
+version = "3.0.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60c516e00733aefd8a35453c763063b082082e41c96b9a6589327ab46e8d4632"
+dependencies = [
+ "hadris-io",
+ "hadris-macros",
+ "libc",
+]
+
+[[package]]
+name = "hadris-udf"
+version = "3.0.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e6ecdc1b7d864f249431a2bc01845dab9a54205810e87e7a2484faceb7775da"
+dependencies = [
+ "bytemuck",
+ "hadris-fs",
+ "hadris-io",
+ "hadris-iso",
+ "hadris-macros",
+ "hadris-storage",
+ "hadris-udf-raw",
+ "tracing",
+]
+
+[[package]]
+name = "hadris-udf-raw"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993bf82c88bb896828c2cca52d9bcbd8240ac812123be4662c5b32d8d2437689"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
 ]
 
 [[package]]
@@ -2248,6 +2424,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2993,6 +3178,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
+
+[[package]]
 name = "spki"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3352,7 +3543,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "pin-project-lite",
+ "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ use crate::backend::{Check, Detail};
 use crate::copy::Git;
 use crate::exit::Progress;
 use crate::host::Host;
+use crate::iso::{IsoMemo, Known};
 use crate::store::fetch::Transport;
 use crate::{Arch, Dirs, Result, Unavailable};
 
@@ -36,6 +37,7 @@ impl Engine {
         let mut checks = host_checks(self.host, &self.dirs);
         checks.push(ssh_check(self.host));
         checks.push(git_check(self.host, self.progress.as_ref()));
+        checks.extend(iso_checks(&IsoMemo::new(&self.dirs), self.progress.as_ref()));
         checks.extend(self.backend_checks(Detail::Full));
         checks
     }
@@ -96,6 +98,40 @@ fn space_check(host: &dyn Host, what: &str, dir: &Path) -> Check {
             Err(e) => Err(format!("cannot tell the free space in {}: {e}", dir.display())),
         },
     }
+}
+
+/// One line per Windows ISO a build has keyed: the ISO is hashed again, and the line fails when it is gone or is no
+/// longer the one the memo hashed. A memo that cannot be read is a failing line of its own. No line while no ISO was
+/// keyed.
+fn iso_checks(memo: &IsoMemo, progress: &dyn Progress) -> Vec<Check> {
+    let known = match memo.known() {
+        Ok(known) => known,
+        Err(e) => {
+            return vec![Check {
+                name: "iso".to_owned(),
+                outcome: Err(e.message().to_owned()),
+            }];
+        }
+    };
+    known
+        .into_iter()
+        .map(|known| match known {
+            Known::Iso { path, sha256 } => Check {
+                name: format!("iso {}", path.display()),
+                outcome: match memo.rehash(&path, progress) {
+                    Ok(now) if now == sha256 => Ok(now.to_string()),
+                    Ok(now) => Err(format!(
+                        "it changed since it was keyed (sha256 {sha256} then, {now} now); builds that name it need a new key"
+                    )),
+                    Err(e) => Err(e.message().to_owned()),
+                },
+            },
+            Known::Unreadable { file, why } => Check {
+                name: format!("iso memo {}", file.display()),
+                outcome: Err(format!("cannot be read: {why}")),
+            },
+        })
+        .collect()
 }
 
 /// `ssh -V`, run as devvm runs `ssh`.

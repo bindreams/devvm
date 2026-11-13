@@ -9,11 +9,12 @@ use super::build_dir::BuildDir;
 use crate::copy::{self, Snapshot};
 use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
+use crate::iso::IsoMemo;
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, Recipe, Shell, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
 use crate::vm::{Image, Vm};
-use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, RunAs, StartOptions, random};
+use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, RunAs, Sha256, StartOptions, random};
 
 #[cfg(test)]
 #[path = "build_tests.rs"]
@@ -51,7 +52,10 @@ impl Engine {
         let arch = opts.arch.unwrap_or_else(Arch::host);
         let guest = self.guests.os(flat.guest)?;
         let builder = self.guests.builder(flat.guest)?;
-        let (root, base) = root_content(&flat.root, arch)?;
+        let memo = IsoMemo::new(&self.dirs);
+        let (root, base) = root_content(&flat.root, arch, &|iso| {
+            memo.sha256(self.host, iso, self.progress.as_ref())
+        })?;
         self.backend()?;
         let store = self.store()?;
 
@@ -146,8 +150,13 @@ fn refuse_set_steps(flat: &Flattened) -> Result<()> {
     }
 }
 
-/// What the key of the root layer hashes, and the base in the words of an `expired-base` error.
-fn root_content(source: &Source, arch: Arch) -> Result<(RootContent, String)> {
+/// What the key of the root layer hashes, and the base in the words of an `expired-base` error. `iso_sha256` gives the
+/// content hash of an ISO.
+fn root_content(
+    source: &Source,
+    arch: Arch,
+    iso_sha256: &dyn Fn(&std::path::Path) -> Result<Sha256>,
+) -> Result<(RootContent, String)> {
     match source {
         Source::DiskImage(pins) => {
             let pin = pins.get(arch).ok_or_else(|| {
@@ -161,12 +170,12 @@ fn root_content(source: &Source, arch: Arch) -> Result<(RootContent, String)> {
         Source::Oci { reference, digest } => {
             Ok((RootContent::OciDigest(digest.clone()), format!("OCI image {reference}")))
         }
-        Source::Iso { path } => Err(Error::new(
-            ErrorKind::NotSupported,
-            format!(
-                "a layer cannot be keyed by the content of the Windows ISO {} yet",
-                path.display()
-            ),
+        Source::Iso { path, edition } => Ok((
+            RootContent::Iso {
+                sha256: iso_sha256(path)?,
+                edition: edition.clone(),
+            },
+            format!("Windows ISO {}", path.display()),
         )),
         Source::Recipe(_) | Source::Embedded(_) => Err(Error::new(
             ErrorKind::Internal,

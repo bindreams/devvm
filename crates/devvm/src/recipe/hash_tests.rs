@@ -111,6 +111,21 @@ fn oci_digest_case_does_not_change_the_key() {
 }
 
 #[skuld::test]
+fn the_edition_changes_the_layer_key() {
+    let mut chain = Chain::base();
+    let mut key = |edition: Option<&str>| {
+        chain.content = RootContent::Iso {
+            sha256: sha(1),
+            edition: edition.map(Into::into),
+        };
+        chain.root()
+    };
+    let (none, pro, home) = (key(None), key(Some("Windows 11 Pro")), key(Some("Windows 11 Home")));
+    assert!(none != pro && pro != home && none != home);
+    assert_eq!(key(Some("Windows 11 Pro")), pro);
+}
+
+#[skuld::test]
 fn every_key_input_changes_the_key() {
     let base = Chain::base();
     let mut variants: Vec<(&str, Chain)> = Vec::new();
@@ -125,6 +140,30 @@ fn every_key_input_changes_the_key() {
     });
     vary("oci digest", &|c| {
         c.content = RootContent::OciDigest("sha256:other".into())
+    });
+    vary("iso vs equal sha256", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(1),
+            edition: None,
+        }
+    });
+    vary("iso edition", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(1),
+            edition: Some("Windows 11 Pro".into()),
+        }
+    });
+    vary("iso other edition", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(1),
+            edition: Some("Windows 11 Home".into()),
+        }
+    });
+    vary("iso content", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(2),
+            edition: None,
+        }
     });
     vary("base definition", &|c| c.base_definition = [8; 32]);
     vary("arch", &|c| c.arch = Arch::Arm64);
