@@ -1,8 +1,9 @@
 # One `key=value` per line; lines starting with # are comments. The workflow reads this on every push.
 #
-# B1.3 and the visible-window baseline: stage `ptywin` (two launches: first boot, then a boot after a guest restart) on both
-# 25H2 legs, from the bases of run 43227036274 (they expire 2026-11-17T13:53Z), with ssh-broker built from main fb612cf
-# (BROKER_COMMIT in the workflow). The LTSC leg is off (its settings stay below). M-d ran in run 43346095490.
+# Release gate for the agent's console window: stage `ptywin` (two launches: first boot with the apply-started agent, then a
+# boot after a guest restart with the logon-trigger agent) on both 25H2 legs, from the bases of run 43227036274 (they expire
+# 2026-11-17T13:53Z), with ssh-broker built from main 8210081 (BROKER_COMMIT in the workflow; it has #63, FreeConsole). The pass
+# rule is in spike/winverdict.py and the driver log line DEVVM-GATE. The LTSC leg is off (its settings stay below).
 #
 # To run the LTSC leg once its pin is decided (M1, M5:lean, M9, M14 and E-B; the 25H2 legs stay off):
 #   1. set `legs=LTSC` below;

@@ -2,6 +2,8 @@
 // trigger and the stage script), compiled as a windows application so that it has no console of its own. Every second it
 // lists the top-level windows of its desktop; when the list changes it appends the list to
 // C:\ProgramData\devvm\win\windows.log: every visible window, and every window (visible or not) of a console-ish process.
+// After each sample it writes the UTC ticks of the sample's start to C:\ProgramData\devvm\win\beat.txt: what the host
+// waits on to know that the log holds everything up to a moment it has noted.
 // Whether the agent's console window shows is the question (the Windows Terminal window of run 43289660404, screen 3).
 // C# 5 only: the guest compiles it with Windows PowerShell's Add-Type.
 using System;
@@ -91,11 +93,13 @@ public static class WinWatch
         string dir = @"C:\ProgramData\devvm\win";
         Directory.CreateDirectory(dir);
         string log = Path.Combine(dir, "windows.log");
+        string beat = Path.Combine(dir, "beat.txt");
         string previous = null;
         long samples = 0;
         while (true)
         {
             samples++;
+            long cycle = DateTime.UtcNow.Ticks;
             try
             {
                 List<string> now = Sample();
@@ -114,6 +118,8 @@ public static class WinWatch
             {
                 File.AppendAllText(log, "== " + DateTime.UtcNow.ToString("o") + " ERROR " + error.Message.Replace("\n", " ") + "\n");
             }
+            try { File.WriteAllText(beat, cycle.ToString()); }
+            catch (IOException) { } // the host is reading it; the next sample writes it again
             Thread.Sleep(1000); // the sampling interval, not a wait for a condition
         }
     }

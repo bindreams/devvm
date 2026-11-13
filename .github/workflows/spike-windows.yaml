@@ -23,7 +23,7 @@ env:
   CARGO_TERM_COLOR: always
   # D: has about 220 GB free on the hosted runner; C: has about 20 GB after the downloads.
   WORK: D:/spike
-  BROKER_COMMIT: fb612cf3d05fb4dd1546fcb8750727684e528802
+  BROKER_COMMIT: 82100812787fac34a5886f59a1b34a900b4ec92f
   OPENSSH_URL: https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip
   PWSH_URL: https://github.com/PowerShell/PowerShell/releases/download/v7.7.0/PowerShell-7.7.0-win-x64.zip
   VIRTIO_URL: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302.iso

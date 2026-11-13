@@ -4,23 +4,19 @@
 # ///
 """Spike only (never merged): the host side of stage `ptywin`, run once per launch (run_qemu.py `--driver`; the launch
 number is `DEVVM_LAUNCH`). Two launches on one disk: launch 1 is the first boot (`ssh-broker apply` starts the agent),
-launch 2 the boot after a guest restart (the logon trigger starts it). Results go to `<out>/driver-<launch>.log`.
+launch 2 the boot after a guest restart (the logon trigger starts it).
 
-B1.3, an exec request with a pty never ran its command (a marker file the command writes was absent; 151 bytes of
-pseudoconsole start and teardown, status 0). Per launch, five requests, each followed by a read of its marker file:
-  nopty-pre   no pty: the control, the same marker script (known to work)
-  pty-ps      paramiko, pty, the marker script (the request of runs 43278227165 and 43289660404)
-  pty-cmd     paramiko, pty, `cmd /c "echo ran> file"` (no PowerShell in the command)
-  pty-sshexe  the stock Windows `ssh.exe -tt`, the marker script (another client)
-  nopty-post  the control again (the agent still works)
-Then, once the guest's tracer (SYSTEM) has finished a cycle after the last request, the evidence is copied out:
-`launch<N>-proc-events.txt` (every process started and ended since the boot: image, command line, parent, exit status),
-`launch<N>-broker-logs-<file>` (the user's ssh-broker logs: shim.log, agent.log), `launch<N>-sshd-<file>` (sshd's own logs
-at DEBUG3), and `launch<N>-windows.log` (the top-level windows of session 1, as they changed).
+The release gate for the agent's console window (ssh-broker#63, the agent calls FreeConsole when it alone owns its
+console). Per launch: wait until the agent serves (session 1, Medium); note the guest time; wait until the guest's
+`winwatch` (a helper in session 1) has sampled the windows after it; run one no-pty control command (the agent answers); wait
+for another sample; copy the evidence out and apply the pass rule (winverdict.py) to the window log. The rule: after the
+agent serves, no visible window of the agent's console (no CASCADIA_HOSTING_WINDOW_CLASS titled with ssh-broker, no visible
+ConsoleWindowClass, no visible window owned by those), and the control command is answered. `verdict-<N>.txt` has the
+result; the driver log line `DEVVM-GATE` says PASS or FAIL. A FAIL does not stop the run: the evidence is the point.
 
-The visible-window baseline (before ssh-broker#63): `desktop-<N>-agent-up.png` and `desktop-<N>-end.png` are the screen,
-`launch<N>-windows.log` lists the windows (from a helper in session 1), `launch<N>-terminal-facts.txt` the default
-terminal settings and what hosts the agent's console.
+Files: `launch<N>-windows.log` (the top-level windows of session 1, as they changed), `launch<N>-proc-events.txt` (every
+process started and ended since the boot), `launch<N>-broker-logs-<file>`, `launch<N>-sshd-<file>`,
+`launch<N>-terminal-facts.txt`, `desktop-<N>-agent-up.png` and `desktop-<N>-end.png` (the screen).
 
 Exit codes are run_qemu.py's: 75 relaunch, 0 done (power down).
 
@@ -28,7 +24,6 @@ Usage: ptywin_driver.py <out dir> <key dir> <port>
 """
 
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -38,6 +33,7 @@ from PIL import Image
 import m5_pty
 import paramiko_lib
 import ssh_lib
+import winverdict
 from ssh_lib import in_session, probe_until, say, ssh
 
 RELAUNCH = 75
@@ -47,6 +43,7 @@ FACTS = r"powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData
 BROKER_LOGS = r"C:\Users\user\AppData\Local\ssh-broker\logs"
 SSHD_LOGS = r"C:\Users\Public\devvm-sshd-logs"
 BEAT = r"C:\Users\Public\devvm-tracer-beat.txt"
+WIN_BEAT = r"C:\ProgramData\devvm\win\beat.txt"
 TICKS_AT_EPOCH = 621355968000000000
 
 ssh_lib.init(sys.argv[1], sys.argv[2], sys.argv[3], f"driver-{LAUNCH}.log")
@@ -91,31 +88,26 @@ def desktop(label: str) -> None:
         time.sleep(1)  # pacing between looks at the file
 
 
-def request(label: str, command: str | None, pty: bool, client: str = "paramiko") -> None:
-    """One exec request and its marker file. A failure of the request is a result, not the end of the driver."""
+def control(label: str) -> bool:
+    """One exec request without a pty that writes a marker file: the agent serves a command. A failure is a result."""
     name = f"{label}-l{LAUNCH}"
-    before = guest_ticks()
-    say(f"== request {label}: guest time {iso(before)}")
+    say(f"== control {label}: guest time {iso(guest_ticks())}")
     try:
-        if client == "paramiko":
-            m5_pty.exec_marker(name, command, pty=pty)
-        else:  # the stock Windows client
-            script = command or m5_pty.marker_script(name)
-            status, out, err = ssh(script, tty=True, bound=paramiko_lib.COMMAND_BOUND)
-            (ssh_lib.out / f"pty-exec-{name}.raw").write_bytes(out)
-            say(f"pty exec {name} (ssh.exe -tt): status={status} stdout={out[-80:]!r} ({len(out)} bytes) stderr={err[:200]!r}")
-            say(f"pty exec {name}: marker file (read without a pty): {m5_pty.read_marker(name)!r}")
-    except (subprocess.TimeoutExpired, TimeoutError, paramiko_lib.Wedged) as error:
-        say(f"pty exec {name}: no result: {type(error).__name__}: {error}")
+        status, out, err = paramiko_lib.exec_raw(m5_pty.marker_script(name), pty=False)
     except Exception as error:  # a result too: the log says what the client did
-        say(f"pty exec {name}: the client failed: {type(error).__name__}: {error}")
-    say(f"== request {label} done: guest time {iso(guest_ticks())}")
+        say(f"control {name}: the client failed: {type(error).__name__}: {error}")
+        return False
+    (ssh_lib.out / f"control-{name}.raw").write_bytes(out)
+    marker = m5_pty.read_marker(name)
+    say(f"control {name}: status={status} stdout={out[-80:]!r} stderr={err[:80]!r} marker file: {marker!r}")
+    return status == 0 and b"PTYEXEC-MARKER" in out and marker.startswith("ran pid=")
 
 
-def after_tracer(ticks: int) -> None:
-    """Waits until the guest's tracer has begun a cycle after `ticks`: everything before `ticks` is in its files."""
+def after_beat(beat_file: str, ticks: int) -> None:
+    """Waits until the guest helper that writes `beat_file` has begun a cycle after `ticks`: everything before `ticks` is in
+    its files. The wait re-checks the file."""
     while True:
-        beat = read(f"Get-Content -Raw -LiteralPath {BEAT}").strip()
+        beat = read(f"Get-Content -Raw -LiteralPath {beat_file}").strip()
         if beat.isdigit() and int(beat) > ticks:
             return
         time.sleep(1)  # pacing between looks at the beat
@@ -133,23 +125,30 @@ def collect() -> None:
 
 say("waiting for SSH, then for the agent (session 1, Medium)")
 first = probe_until("window", MEDIUM)
-say(f"agent session reached {time.time() - begin:.1f}s into the launch; agents={first.get('agents')}")
+served = guest_ticks()
+say(f"agent session reached {time.time() - begin:.1f}s into the launch; agents={first.get('agents')}; it served before guest time {iso(served)}")
 desktop("agent-up")
 code, out, err = ssh(FACTS)
 save("terminal-facts.txt", out + err)
 
-request("nopty-pre", None, pty=False)
-request("pty-ps", None, pty=True)
-cmd_marker = m5_pty.marker_path(f"pty-cmd-l{LAUNCH}")
-request("pty-cmd", f'cmd /c "echo ran> {cmd_marker}"', pty=True)
-request("pty-sshexe", None, pty=True, client="ssh.exe")
-request("nopty-post", None, pty=False)
-
+after_beat(WIN_BEAT, served)
+say("winwatch has sampled after the agent served")
+answered = control("control")
 settled = guest_ticks()
-say(f"the last request ended before guest time {iso(settled)}; waiting for the tracer's next cycle")
-after_tracer(settled)
+say(f"control answered: {answered}; it ended before guest time {iso(settled)}; waiting for the watchers' next cycles")
+after_beat(WIN_BEAT, settled)
+after_beat(BEAT, settled)
 collect()
 desktop("end")
+
+windows = (ssh_lib.out / f"launch{LAUNCH}-windows.log").read_text(encoding="utf-8", errors="replace")
+passed, report = winverdict.verdict(windows, served)
+passed = passed and answered
+report += f"\nthe agent answered a command after the window check: {answered}"
+(ssh_lib.out / f"verdict-{LAUNCH}.txt").write_text(report + "\n", encoding="utf-8")
+say(f"DEVVM-GATE launch {LAUNCH}: {'PASS' if passed else 'FAIL'}")
+for line in report.splitlines():
+    say(f"verdict: {line}")
 
 if LAUNCH == 1:
     code, _, _ = ssh("shutdown.exe /r /t 0")
