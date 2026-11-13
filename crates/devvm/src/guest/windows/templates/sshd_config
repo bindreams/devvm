@@ -1,0 +1,12 @@
+# The base's sshd. Key authentication only. The one host key is the instance's, which the boot task writes from the seed
+# at every boot before it starts sshd: the base holds no host key, and with this one `HostKey` sshd offers nothing else.
+HostKey __PROGRAMDATA__/ssh/ssh_host_ed25519_key
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile .ssh/authorized_keys
+Subsystem sftp sftp-server.exe
+
+# `user` is an administrator: sshd reads an administrator's keys from here, not from the profile.
+Match Group administrators
+       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys

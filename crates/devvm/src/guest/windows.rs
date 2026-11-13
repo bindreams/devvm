@@ -14,9 +14,12 @@ use crate::{Command, Error, ErrorKind, Result, RunAs};
 
 mod cmdquote;
 mod elevate;
+mod expiry;
 mod paths;
+mod pins;
 pub(crate) mod ready;
 mod seed;
+mod templates;
 mod wrap;
 
 #[cfg(test)]
