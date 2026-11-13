@@ -220,22 +220,34 @@ enum Exit {
     Stalled(Stall),
 }
 
-/// How a launch's VM process ended, and what the host failed to read of it.
+/// How a launch's VM process ended, and what the host failed to read of it. Built only by the constructors, which
+/// are the combinations that can happen.
 struct End {
-    /// How the process ended, when its status could be read.
+    /// How the process ended, when that is known.
     exit: Option<Exit>,
-    /// The host's failures, in the order they happened: the status, then the log. An end without an exit has one.
-    host: Vec<Error>,
-    /// Whether the last of `host` is a failure to read the log.
-    log_failure: bool,
+    /// The failure to read the process's status.
+    status: Option<Error>,
+    /// The failure to read the serial log, the latest one.
+    log: Option<Error>,
 }
 
 impl End {
-    fn of(exit: Exit) -> End {
+    /// The VM process exited by itself.
+    fn exited(exited: MachineExit) -> End {
         End {
-            exit: Some(exit),
-            host: Vec::new(),
-            log_failure: false,
+            exit: Some(Exit::Exited(exited)),
+            status: None,
+            log: None,
+        }
+    }
+
+    /// The VM was killed because `stall`'s bound passed; `status` is the failure to read its status, which could not
+    /// tell whether it had exited meanwhile.
+    fn stalled(stall: Stall, status: Option<Error>) -> End {
+        End {
+            exit: Some(Exit::Stalled(stall)),
+            status,
+            log: None,
         }
     }
 
@@ -243,8 +255,8 @@ impl End {
     fn failed(error: Error) -> End {
         End {
             exit: None,
-            host: vec![error],
-            log_failure: false,
+            status: Some(error),
+            log: None,
         }
     }
 
@@ -252,20 +264,17 @@ impl End {
     fn unreadable(error: Error) -> End {
         End {
             exit: None,
-            host: vec![error],
-            log_failure: true,
+            status: None,
+            log: Some(error),
         }
     }
 
     /// The log was read again after the wait. Only the latest failure to read it is kept: one that failed at the wait
     /// stays when this read worked, and is replaced when it failed too.
     fn log_read_again(&mut self, read: Result<()>) {
-        let Err(error) = read else { return };
-        if self.log_failure {
-            self.host.pop();
+        if let Err(error) = read {
+            self.log = Some(error);
         }
-        self.host.push(error);
-        self.log_failure = true;
     }
 }
 
@@ -285,15 +294,19 @@ enum Launched {
 /// - Without a marker of either kind, a stop or a failing exit is the headline, and a guest that powered off is
 ///   [`Launched::Restarted`], which [`Launches`] then judges.
 ///
-/// These headlines have kind [`ErrorKind::Unavailable`]. When there is none, the first of `end.host` is the headline
+/// These headlines have kind [`ErrorKind::Unavailable`]. When there is none, the first host failure is the headline
 /// with its own kind. The host's failures (the VM process's status, the serial log) follow a headline once each,
 /// separated by `; `, and the first is the result's source. A failing exit carries what QEMU printed.
+/// An end with no exit and no failure is an [`ErrorKind::Internal`] error: nothing says how the launch ended.
 fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
-    let End { exit, mut host, .. } = end;
-    debug_assert!(
-        exit.is_some() || !host.is_empty(),
-        "an end with no exit carries the failure that hid it"
-    );
+    let End { exit, status, log } = end;
+    if exit.is_none() && status.is_none() && log.is_none() {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            format!("launch {number} ended with no exit and no failure to read it"),
+        ));
+    }
+    let mut host: Vec<Error> = status.iter().chain(&log).cloned().collect();
     let powered_off = matches!(&exit, Some(Exit::Exited(exited)) if exited.status.success());
     let account = if let Some(why) = &serial.failed {
         let mut headline = guest_failed(why);
@@ -311,8 +324,8 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
                 humanly(stall.bound)
             ),
             Some(exit) if !powered_off => done_but(&ended(number, exit)),
-            Some(_) => done_but("the serial log could not be read to its end"),
-            None => done_but("the launch's end could not be read"),
+            _ if status.is_some() => done_but("the launch's end could not be read"),
+            _ => done_but("the serial log could not be read to its end"),
         })
     } else {
         exit.as_ref().filter(|_| !powered_off).map(|exit| ended(number, exit))
@@ -579,7 +592,7 @@ impl<'a> Build<'a> {
             // The status is read before anything can reap the process.
             match machine.try_wait() {
                 Err(error) => return End::failed(error),
-                Ok(Some(status)) => return End::of(Exit::Exited(status)),
+                Ok(Some(status)) => return End::exited(status),
                 Ok(None) => {}
             }
             match reader.poll(false) {
@@ -591,12 +604,9 @@ impl<'a> Build<'a> {
                 // that finished as its bound passed has finished.
                 return match machine.try_wait() {
                     // The stall happened and the VM is killed for it: the status failure is named beside it.
-                    Err(error) => End {
-                        host: vec![error],
-                        ..End::of(Exit::Stalled(stall))
-                    },
-                    Ok(Some(exited)) => End::of(Exit::Exited(exited)),
-                    Ok(None) => End::of(Exit::Stalled(stall)),
+                    Err(error) => End::stalled(stall, Some(error)),
+                    Ok(Some(exited)) => End::exited(exited),
+                    Ok(None) => End::stalled(stall, None),
                 };
             }
             std::thread::sleep(self.builder.bounds.poll);

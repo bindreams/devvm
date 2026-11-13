@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::serial::Serial;
-use super::{Bounds, End, Exit, Launched, Stall, Watch, WindowsBuilder, after_kill, verdict};
+use super::{Bounds, End, Launched, Stall, Watch, WindowsBuilder, after_kill, verdict};
 use crate::backend::MachineExit;
 use crate::backend::fake::FakeBackend;
 use crate::guest::windows::pins::VIRTIO_WIN;
@@ -475,11 +475,11 @@ fn a_kill_that_worked_leaves_the_outcome_as_it_was() {
 
 // What a launch that was stopped at its bound came to =================================================================
 
-fn stalled() -> Exit {
-    Exit::Stalled(Stall {
+fn stall() -> Stall {
+    Stall {
         awaited: "the first-logon script",
         bound: 2 * MINUTE,
-    })
+    }
 }
 
 fn wrote(failed: Option<&str>, done: bool) -> Serial {
@@ -492,7 +492,9 @@ fn wrote(failed: Option<&str>, done: bool) -> Serial {
 
 #[skuld::test]
 fn a_stall_alone_names_what_made_no_progress_and_that_the_guest_was_stopped() {
-    let error = verdict(1, End::of(stalled()), &wrote(None, false)).err().unwrap();
+    let error = verdict(1, End::stalled(stall(), None), &wrote(None, false))
+        .err()
+        .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(
@@ -503,7 +505,7 @@ fn a_stall_alone_names_what_made_no_progress_and_that_the_guest_was_stopped() {
 
 #[skuld::test]
 fn a_failed_marker_is_the_headline_of_a_stall_and_the_stall_follows() {
-    let error = verdict(1, End::of(stalled()), &wrote(Some("boom"), false))
+    let error = verdict(1, End::stalled(stall(), None), &wrote(Some("boom"), false))
         .err()
         .unwrap();
 
@@ -516,7 +518,7 @@ fn a_failed_marker_is_the_headline_of_a_stall_and_the_stall_follows() {
 
 #[skuld::test]
 fn a_failed_marker_wins_over_a_done_marker_at_a_stall() {
-    let error = verdict(1, End::of(stalled()), &wrote(Some("boom"), true))
+    let error = verdict(1, End::stalled(stall(), None), &wrote(Some("boom"), true))
         .err()
         .unwrap();
 
@@ -530,7 +532,9 @@ fn a_failed_marker_wins_over_a_done_marker_at_a_stall() {
 
 #[skuld::test]
 fn a_done_marker_at_a_stall_says_the_guest_did_not_power_off() {
-    let error = verdict(1, End::of(stalled()), &wrote(None, true)).err().unwrap();
+    let error = verdict(1, End::stalled(stall(), None), &wrote(None, true))
+        .err()
+        .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(
@@ -563,6 +567,8 @@ enum Ending {
     CleanExit,
     FailingExit,
     Stall,
+    /// The VM was stopped at its bound, and its status could not be read to tell whether it had exited.
+    StallStatusUnknown,
     StatusUnknown,
     /// The log could not be read during the wait, and so no end was seen.
     LogUnreadable,
@@ -570,6 +576,8 @@ enum Ending {
 
 const STATUS_TEXT: &str = "cannot read the VM process's status";
 const LOG_TEXT: &str = "cannot read the serial log";
+/// The failure to read the log at the wait, which a failed second read replaces.
+const LOG_WAIT_TEXT: &str = "the serial log failed during the wait";
 
 /// The result a launch must come to, as `Ok(true)` for a finished launch and `Ok(false)` for a restarted one, or the
 /// kind and the beginning of the error.
@@ -581,10 +589,11 @@ fn expected(
     use {Account::*, Ending::*};
     const UNAVAILABLE: ErrorKind = ErrorKind::Unavailable;
     const FAILED: &str = "the Windows guest failed to build the base: boom";
+    const STALLED: &str = "the first-logon script made no progress for 2m; the guest was stopped";
     match (account, ending, read_failed) {
         (Failed, ..) => Err((UNAVAILABLE, FAILED)),
         (Done, CleanExit, false) => Ok(true),
-        (Done, CleanExit, true) => Err((
+        (Done, CleanExit, true) | (Done, LogUnreadable, _) => Err((
             UNAVAILABLE,
             "the guest wrote DEVVM-BASE-DONE, but the serial log could not be read to its end, so the disk may be \
              incomplete",
@@ -593,20 +602,20 @@ fn expected(
             UNAVAILABLE,
             "the guest wrote DEVVM-BASE-DONE, but the VM process of launch 1 exited with",
         )),
-        (Done, Stall, _) => Err((UNAVAILABLE, "the guest reported done but did not power off within 2m")),
-        (Done, StatusUnknown | LogUnreadable, _) => Err((
+        (Done, Stall | StallStatusUnknown, _) => {
+            Err((UNAVAILABLE, "the guest reported done but did not power off within 2m"))
+        }
+        (Done, StatusUnknown, _) => Err((
             UNAVAILABLE,
             "the guest wrote DEVVM-BASE-DONE, but the launch's end could not be read, so the disk may be incomplete",
         )),
         (Nothing, CleanExit, false) => Ok(false),
         (Nothing, CleanExit, true) => Err((ErrorKind::Io, LOG_TEXT)),
         (Nothing, FailingExit, _) => Err((UNAVAILABLE, "the VM process of launch 1 exited with")),
-        (Nothing, Stall, _) => Err((
-            UNAVAILABLE,
-            "the first-logon script made no progress for 2m; the guest was stopped",
-        )),
+        (Nothing, Stall | StallStatusUnknown, _) => Err((UNAVAILABLE, STALLED)),
         (Nothing, StatusUnknown, _) => Err((ErrorKind::Io, STATUS_TEXT)),
-        (Nothing, LogUnreadable, _) => Err((ErrorKind::Io, LOG_TEXT)),
+        (Nothing, LogUnreadable, false) => Err((ErrorKind::Io, LOG_WAIT_TEXT)),
+        (Nothing, LogUnreadable, true) => Err((ErrorKind::Io, LOG_TEXT)),
     }
 }
 
@@ -617,48 +626,45 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
             Ending::CleanExit,
             Ending::FailingExit,
             Ending::Stall,
+            Ending::StallStatusUnknown,
             Ending::StatusUnknown,
             Ending::LogUnreadable,
         ] {
             for read_failed in [false, true] {
-                // The log's failure at the wait is the one read failure of its launch.
-                if matches!(ending, Ending::LogUnreadable) && read_failed {
-                    continue;
-                }
                 let row = format!("{account:?}, {ending:?}, log read failed: {read_failed}");
                 let serial = match account {
                     Account::Nothing => Serial::default(),
                     Account::Failed => wrote(Some("boom"), false),
                     Account::Done => wrote(None, true),
                 };
-                let mut end = End {
-                    exit: match ending {
-                        Ending::CleanExit => Some(Exit::Exited(MachineExit {
-                            status: std::process::ExitStatus::default(),
-                            output: String::new(),
-                        })),
-                        Ending::FailingExit => Some(Exit::Exited(MachineExit {
-                            status: failing_status(),
-                            output: "qemu: out of memory".to_owned(),
-                        })),
-                        Ending::Stall => Some(stalled()),
-                        Ending::StatusUnknown | Ending::LogUnreadable => None,
-                    },
-                    host: Vec::new(),
-                    log_failure: false,
-                };
+                // The failures the error must name, once each and in this order.
                 let mut host_texts = Vec::new();
-                match ending {
-                    Ending::StatusUnknown => {
-                        end.host.push(Error::new(ErrorKind::Io, STATUS_TEXT));
+                let mut end = match ending {
+                    Ending::CleanExit => End::exited(MachineExit {
+                        status: std::process::ExitStatus::default(),
+                        output: String::new(),
+                    }),
+                    Ending::FailingExit => End::exited(MachineExit {
+                        status: failing_status(),
+                        output: "qemu: out of memory".to_owned(),
+                    }),
+                    Ending::Stall => End::stalled(stall(), None),
+                    Ending::StallStatusUnknown => {
                         host_texts.push(STATUS_TEXT);
+                        End::stalled(stall(), Some(Error::new(ErrorKind::Io, STATUS_TEXT)))
+                    }
+                    Ending::StatusUnknown => {
+                        host_texts.push(STATUS_TEXT);
+                        End::failed(Error::new(ErrorKind::Io, STATUS_TEXT))
                     }
                     Ending::LogUnreadable => {
-                        end = End::unreadable(Error::new(ErrorKind::Io, LOG_TEXT));
-                        host_texts.push(LOG_TEXT);
+                        // A second failed read replaces this one.
+                        if !read_failed {
+                            host_texts.push(LOG_WAIT_TEXT);
+                        }
+                        End::unreadable(Error::new(ErrorKind::Io, LOG_WAIT_TEXT))
                     }
-                    _ => {}
-                }
+                };
                 if read_failed {
                     end.log_read_again(Err(Error::new(ErrorKind::Io, LOG_TEXT)));
                     host_texts.push(LOG_TEXT);
@@ -675,6 +681,9 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
                         assert!(error.message().starts_with(headline), "{row}: {error}");
                         for text in &host_texts {
                             assert_eq!(error.message().matches(text).count(), 1, "{row}: {text}: {error}");
+                        }
+                        if matches!(ending, Ending::LogUnreadable) && read_failed {
+                            assert!(!error.message().contains(LOG_WAIT_TEXT), "{row}: {error}");
                         }
                         assert!(!error.message().contains("as well"), "{row}: {error}");
                         // The host's own failure is the headline, and so is the error itself, only when the guest
@@ -699,6 +708,21 @@ fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and
                 }
             }
         }
+    }
+}
+
+#[skuld::test]
+fn an_end_with_no_exit_and_no_failure_is_an_internal_error_whatever_the_guest_wrote() {
+    for serial in [Serial::default(), wrote(Some("boom"), false), wrote(None, true)] {
+        let end = End {
+            exit: None,
+            status: None,
+            log: None,
+        };
+
+        let error = verdict(1, end, &serial).err().unwrap();
+
+        assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     }
 }
 
