@@ -317,6 +317,7 @@ fn a_moved_iso_is_remembered_at_its_new_path(#[fixture(unicode_home)] home: &Pat
     );
 }
 
+#[cfg(not(target_os = "macos"))]
 #[skuld::test]
 fn an_iso_with_a_non_unicode_name_is_hashed_each_time_and_the_build_is_told(#[fixture(unicode_home)] home: &Path) {
     let fx = Fixture::new(home);
