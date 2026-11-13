@@ -504,12 +504,18 @@ impl Storage for FakeStorage {
             .iter()
             .map(|patch| format!("{}+{}", patch.offset, patch.bytes.len()))
             .collect();
-        make_overlay(into, |staging| {
+        make_overlay(into, |staging, _| {
             std::fs::write(
                 staging,
                 format!("overlay of {} patches={}", backing.display(), patches.join(",")),
             )
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write the overlay {}", into.display()), e))
+            .map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot write the overlay {}", staging.display()),
+                    e,
+                )
+            })
         })
     }
 

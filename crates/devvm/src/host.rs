@@ -298,6 +298,35 @@ pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Removes the entries of `parent` whose names start with `prefix`, each with `remove` (`remove_dir_all` for directories,
+/// `remove_file` for files): the leftovers of a writer that was killed. Callers exclude every live writer of the
+/// prefix. One that cannot be removed (an antivirus holds a file of it, or `remove` does not fit it) is returned as a
+/// warning: it must not stop every later write. A directory that cannot be listed is an error.
+pub(crate) fn sweep_prefixed(
+    parent: &Path,
+    prefix: &str,
+    remove: impl Fn(&Path) -> std::io::Result<()>,
+) -> Result<Vec<String>> {
+    let io = |what: &str, path: &Path, source| {
+        crate::Error::io(
+            crate::ErrorKind::Io,
+            format!("cannot {what} {}", path.display()),
+            source,
+        )
+    };
+    let mut warnings = Vec::new();
+    for entry in std::fs::read_dir(parent).map_err(|e| io("list", parent, e))? {
+        let entry = entry.map_err(|e| io("list", parent, e))?;
+        if entry.file_name().to_string_lossy().starts_with(prefix) {
+            let path = entry.path();
+            if let Err(e) = remove(&path) {
+                warnings.push(io("remove the leftover", &path, e).message().to_owned());
+            }
+        }
+    }
+    Ok(warnings)
+}
+
 /// Removes the symlink `path`. A symlink to a directory is removed as a directory on Windows and as a file elsewhere;
 /// a junction is removed as a directory.
 pub(crate) fn remove_symlink(path: &Path) -> std::io::Result<()> {

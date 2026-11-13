@@ -197,6 +197,8 @@ fn fat_image(files: &[SeedFile], spare: u64) -> Result<Vec<u8>> {
 
 /// The size of a directory entry, and so of a slot in a directory.
 const ENTRY_SIZE: u64 = 32;
+/// The fewest clusters of a FAT16 volume; a FAT12 volume has fewer.
+const MIN_FAT16_CLUSTERS: u64 = 4085;
 
 /// The files of the FAT volume at `image` that are at `paths`, each named by its path as given. A path has parts
 /// separated by `/` (`logs/setupact.log`), none empty, `.` or `..`; a path with such a part is refused as `Internal`.
@@ -204,9 +206,12 @@ const ENTRY_SIZE: u64 = 32;
 /// `logs/setupact.log`. A path that names a directory, or runs through a file, is an error. A volume the guest left
 /// dirty is read as it is.
 ///
-/// A guest wrote the volume, so it is not trusted to be a tree: nothing here walks a directory. Every path has a fixed
-/// number of parts, so a directory that leads back to one above it costs only the parts a path names. The clusters
-/// the volume chains are checked before anything is read ([`Table::require_chains_end`]).
+/// `image` is a FAT12 volume devvm built (the same size as its boot sector says), and the guest's FAT driver wrote to it
+/// during the base build; anything else is refused ([`Table::of`]). The allocation table is checked, because a crash can
+/// tear a 12-bit slot, and nothing here walks a directory: every path has a fixed number of parts, so a directory that
+/// leads back to one above it costs only the parts a path names. The clusters the volume chains are checked before
+/// anything is read ([`Table::require_chains_end`]). Directory entries are trusted: a forged start cluster reads wrong
+/// bytes from the in-memory copy, or panics in a debug build, and this is no defence against a hostile volume.
 #[allow(dead_code, reason = "unused until the Windows base build reads back the answer disk")]
 pub(crate) fn read_files(image: &Path, paths: &[&str]) -> Result<Vec<SeedFile>> {
     refuse_unreadable_paths(paths)?;
@@ -251,12 +256,11 @@ fn refuse_unreadable_paths(paths: &[&str]) -> Result<()> {
 fn checked_volume(disk: &mut Cursor<Vec<u8>>) -> std::io::Result<FileSystem<&mut Cursor<Vec<u8>>>> {
     let table = Table::of(disk.get_ref())?;
     table.require_chains_end()?;
-    let fat_type = table.fat_type;
     disk.set_position(0);
     let fs = FileSystem::new(disk, FsOptions::new())?;
-    if fs.fat_type() != fat_type {
+    if fs.fat_type() != FatType::Fat12 {
         return Err(corrupt(format!(
-            "the boot sector says {fat_type:?}, the volume mounts as {:?}",
+            "the boot sector says FAT12, the volume mounts as {:?}",
             fs.fat_type()
         )));
     }
@@ -297,18 +301,18 @@ fn corrupt(message: String) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
 
-/// The allocation table of a FAT volume, read from its boot sector.
+/// The allocation table of a FAT12 volume, read from its boot sector.
 ///
 /// `fatfs` follows what the table says and trusts it: a chain of clusters that leads back to itself is read for ever, a
 /// value outside the volume is read from wherever it points. So the table is checked first, from the boot sector alone,
-/// with the rules `fatfs` 0.3.6 applies.
+/// with the rules `fatfs` 0.3.6 applies. Only FAT12 volumes are read ([`read_files`]), and the boot sector must count
+/// exactly the bytes of the image, so the cluster count, and everything sized by it, is bounded by the file itself.
 struct Table<'a> {
-    /// The copy of the table that `fatfs` reads: the first, or the one the boot sector names when mirroring is off.
+    /// The first copy of the table, the one `fatfs` reads.
     bytes: &'a [u8],
-    fat_type: FatType,
     /// The clusters of the volume, numbered from 2.
     clusters: usize,
-    /// The slots the copy has, whether or not they are clusters of the volume.
+    /// The slots the table has, whether or not they are clusters of the volume.
     entries: usize,
 }
 
@@ -326,13 +330,17 @@ impl<'a> Table<'a> {
             0 => field(32, 4)?,
             sectors => sectors,
         };
-        // A FAT32 volume has no 16-bit sector count of the table; there the table is longer and has flags.
-        let (per_fat, flags) = match field(22, 2)? {
-            0 => (field(36, 4)?, field(40, 2)?),
-            sectors => (sectors, 0),
-        };
+        // A FAT32 volume has no 16-bit sector count of the table.
+        let per_fat = field(22, 2)?;
         if sector == 0 || per_cluster == 0 || per_fat == 0 {
-            return Err(corrupt("the boot sector is not that of a FAT volume".to_owned()));
+            return Err(corrupt("the boot sector is not that of a FAT12 volume".to_owned()));
+        }
+        let counted = total * sector;
+        if counted != image.len() as u64 {
+            return Err(corrupt(format!(
+                "the boot sector counts {counted} bytes, the image has {}",
+                image.len()
+            )));
         }
         let first_data = reserved + fats * per_fat + (root_entries * ENTRY_SIZE).div_ceil(sector);
         let clusters = total
@@ -340,62 +348,40 @@ impl<'a> Table<'a> {
             .map(|sectors| sectors / per_cluster)
             .filter(|clusters| *clusters > 0)
             .ok_or_else(|| corrupt("the volume has no room for data".to_owned()))?;
-        let fat_type = match clusters {
-            0..4085 => FatType::Fat12,
-            4085..65525 => FatType::Fat16,
-            _ => FatType::Fat32,
-        };
-        // Bit 7 of the flags turns mirroring off; the low four bits then name the one copy in use.
-        let active = if flags & 0x80 == 0 { 0 } else { flags & 0x0F };
-        let start = (reserved + active * per_fat) * sector;
+        if clusters >= MIN_FAT16_CLUSTERS {
+            return Err(corrupt(format!(
+                "the volume has {clusters} clusters: only FAT12 volumes are read"
+            )));
+        }
+        let start = reserved * sector;
         let bytes = usize::try_from(start)
             .ok()
             .zip(usize::try_from(per_fat * sector).ok())
             .and_then(|(start, len)| image.get(start..start.checked_add(len)?))
             .ok_or_else(|| corrupt("the allocation table lies outside the image".to_owned()))?;
-        let bits = match fat_type {
-            FatType::Fat12 => 12,
-            FatType::Fat16 => 16,
-            FatType::Fat32 => 32,
-        };
         Ok(Self {
             bytes,
-            fat_type,
-            clusters: usize::try_from(clusters).map_err(|_| corrupt("the volume has too many clusters".to_owned()))?,
-            entries: bytes.len() * 8 / bits,
+            // At most 4,084: the bound above.
+            clusters: clusters as usize,
+            entries: bytes.len() * 8 / 12,
         })
     }
 
     /// The cluster that follows `index` in its chain, `None` where `fatfs` ends the chain: a free slot, a bad cluster,
     /// the end mark. A value `fatfs` would follow that is not a cluster of the volume is an error.
     fn next(&self, index: usize) -> std::io::Result<Option<usize>> {
-        let read = |at: usize, len: usize| -> std::io::Result<usize> {
-            let bytes = self
-                .bytes
-                .get(at..at + len)
-                .ok_or_else(|| corrupt(format!("cluster {index} lies beyond the allocation table")))?;
-            Ok(bytes
-                .iter()
-                .rev()
-                .fold(0, |value, byte| value << 8 | usize::from(*byte)))
+        let pair = self
+            .bytes
+            .get(index * 3 / 2..index * 3 / 2 + 2)
+            .ok_or_else(|| corrupt(format!("cluster {index} lies beyond the allocation table")))?;
+        let pair = usize::from(pair[0]) | usize::from(pair[1]) << 8;
+        let value = if index.is_multiple_of(2) {
+            pair & 0xFFF
+        } else {
+            pair >> 4
         };
-        let (value, last) = match self.fat_type {
-            FatType::Fat12 => {
-                let pair = read(index * 3 / 2, 2)?;
-                (
-                    if index.is_multiple_of(2) {
-                        pair & 0xFFF
-                    } else {
-                        pair >> 4
-                    },
-                    0xFFF,
-                )
-            }
-            FatType::Fat16 => (read(index * 2, 2)?, 0xFFFF),
-            FatType::Fat32 => (read(index * 4, 4)? & 0x0FFF_FFFF, 0x0FFF_FFFF),
-        };
-        // `last - 8` is the bad-cluster mark, `last - 7` to `last` are end marks.
-        if value == 0 || value >= last - 8 {
+        // 0xFF7 is the bad-cluster mark, 0xFF8 to 0xFFF are end marks.
+        if value == 0 || value >= 0xFF7 {
             Ok(None)
         } else if (2..self.clusters + 2).contains(&value) {
             Ok(Some(value))
@@ -412,7 +398,8 @@ impl<'a> Table<'a> {
     /// looked at; each cluster is then walked once: a cluster seen on the walk in progress is a loop, one seen on an
     /// earlier walk ends this one.
     fn require_chains_end(&self) -> std::io::Result<()> {
-        for index in 1..self.entries {
+        // Slots 0 and 1 are reserved: they hold the media byte and the flags a driver keeps, not links.
+        for index in 2..self.entries {
             self.next(index)?;
         }
 

@@ -8,9 +8,12 @@ use cosca::identity::ProcessIdRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::contain::Lifetime;
-use crate::host::{Accel, Comparison, FileId, Hold, HoldOutcome, Host, is_absent, symlink_metadata_if_present};
+use crate::host::{
+    Accel, Comparison, FileId, Hold, HoldOutcome, Host, is_absent, sweep_prefixed, symlink_metadata_if_present,
+};
 use crate::instance::record::InstanceId;
 use crate::store::layers::LayerDir;
+use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Error, ErrorKind, Network, Result};
 
 #[cfg(test)]
@@ -221,15 +224,34 @@ pub(crate) fn directory_of<'a>(path: &'a Path, what: &str) -> Result<&'a Path> {
         })
 }
 
+/// The lock file of the directory an overlay is made in. Every call of [`make_overlay`] holds it shared while it works,
+/// so a call that can take it exclusively sweeps the staging files only dead calls left.
+pub(crate) const OVERLAY_LOCK: &str = ".overlay.lock";
+const STAGING_PREFIX: &str = "overlay-";
+
 /// Makes the overlay at `into`, for every backend, so that of several calls for one `into` exactly one makes it and none
 /// touches another's file ([`Storage::overlay_with_patches`]). [`check_overlay`] looks at `into` first, but another call
-/// can make it between that look and this one, so the look decides nothing: `fill` writes the overlay to a path that
-/// is new, in the directory of `into`, and the overlay goes to `into` in one step that fails with `AlreadyExists` for
-/// anything there. Only the new path is ever deleted: on every failure of `fill` or of the publish.
-pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+/// can make it between that look and this one, so the look decides nothing: `fill` is given a path that is new, in the
+/// directory of `into`, and that directory, writes the overlay to the path, and the overlay goes to `into` in one step
+/// that fails with `AlreadyExists` for anything there. Only the new path is ever deleted: on every failure of `fill` or
+/// of the publish. Staging files a killed call left (`overlay-*` beside `into`) are removed first, when no call is at
+/// work in the directory ([`OVERLAY_LOCK`]); one that cannot be removed stays.
+///
+/// The overlay file is private to the account, as a temporary file is (`0600` on Unix); `qemu-img` would make it `0644`
+/// under the usual umask. Devvm's host is Windows, where there is no such difference.
+pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Result<()>) -> Result<()> {
     let directory = directory_of(into, "the overlay")?;
+    let mut lock = FileLock::open_in_existing_dir(&directory.join(OVERLAY_LOCK))?;
+    // A call takes the lock shared before its staging file exists and keeps it to the end, so a call that gets it
+    // exclusively finds no live staging file. It lets go before its own staging file exists, and then works shared.
+    if lock.try_lock(Mode::Exclusive)? {
+        // Best effort: a leftover that stays is no worse than before, and no call can tell the caller about it.
+        let _warnings = sweep_prefixed(directory, STAGING_PREFIX, |path| std::fs::remove_file(path))?;
+        lock.unlock()?;
+    }
+    lock.lock(Mode::Shared, "another overlay being made", &mut |_| {})?;
     let staging = tempfile::Builder::new()
-        .prefix("overlay-")
+        .prefix(STAGING_PREFIX)
         .tempfile_in(directory)
         .map_err(|e| {
             Error::io(
@@ -242,7 +264,7 @@ pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path) -> Result<()>) 
         // handles are gone.
         .into_temp_path();
     let left = format!("the file {}", staging.display());
-    if let Err(e) = fill(&staging) {
+    if let Err(e) = fill(&staging, directory) {
         return Err(e.after_cleanup(&left, staging.close()));
     }
     staging.persist_noclobber(into).map_err(|failed| {

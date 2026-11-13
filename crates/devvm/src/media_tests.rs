@@ -732,41 +732,25 @@ fn word(image: &[u8], at: usize) -> usize {
     usize::from(u16::from_le_bytes([image[at], image[at + 1]]))
 }
 
-/// Makes the table of `image`, a volume of `fat_type`, say that `cluster` is followed by `next`, in every copy of the
-/// table, or in copy `only` alone.
-fn chain_cluster_in(image: &mut [u8], fat_type: fatfs::FatType, cluster: usize, next: usize, only: Option<usize>) {
-    let (reserved, fats, sector) = (word(image, 14), usize::from(image[16]), word(image, 11));
-    let per_fat = match fat_type {
-        fatfs::FatType::Fat32 => word(image, 36) | word(image, 38) << 16,
-        _ => word(image, 22),
-    };
-    for copy in (0..fats).filter(|copy| only.is_none_or(|only| only == *copy)) {
+/// Makes the table of `image`, a FAT12 volume, say that `cluster` is followed by `next`, in every copy of the table.
+fn chain_cluster_to(image: &mut [u8], cluster: usize, next: usize) {
+    let (reserved, fats, sector, per_fat) = (
+        word(image, 14),
+        usize::from(image[16]),
+        word(image, 11),
+        word(image, 22),
+    );
+    for copy in 0..fats {
         let table = (reserved + copy * per_fat) * sector;
-        match fat_type {
-            fatfs::FatType::Fat12 => {
-                let at = table + cluster * 3 / 2;
-                let old = word(image, at);
-                let new = if cluster.is_multiple_of(2) {
-                    (old & 0xF000) | next
-                } else {
-                    (old & 0x000F) | (next << 4)
-                };
-                image[at..at + 2].copy_from_slice(&(new as u16).to_le_bytes());
-            }
-            fatfs::FatType::Fat16 => {
-                let at = table + cluster * 2;
-                image[at..at + 2].copy_from_slice(&(next as u16).to_le_bytes());
-            }
-            fatfs::FatType::Fat32 => {
-                let at = table + cluster * 4;
-                image[at..at + 4].copy_from_slice(&(next as u32).to_le_bytes());
-            }
-        }
+        let at = table + cluster * 3 / 2;
+        let old = word(image, at);
+        let new = if cluster.is_multiple_of(2) {
+            (old & 0xF000) | next
+        } else {
+            (old & 0x000F) | (next << 4)
+        };
+        image[at..at + 2].copy_from_slice(&(new as u16).to_le_bytes());
     }
-}
-
-fn chain_cluster_to(image: &mut [u8], fat_type: fatfs::FatType, cluster: usize, next: usize) {
-    chain_cluster_in(image, fat_type, cluster, next, None);
 }
 
 fn first_cluster_of(image: &[u8], entry: usize) -> usize {
@@ -814,12 +798,6 @@ fn volume_of(fat_type: fatfs::FatType, megabytes: usize) -> Vec<u8> {
     disk.into_inner()
 }
 
-const THE_THREE: [(fatfs::FatType, usize); 3] = [
-    (fatfs::FatType::Fat12, 1),
-    (fatfs::FatType::Fat16, 20),
-    (fatfs::FatType::Fat32, 40),
-];
-
 fn read_loop(home: &Path, bytes: Vec<u8>) -> crate::Result<Vec<SeedFile>> {
     let image = home.join("answer.img");
     std::fs::write(&image, bytes).unwrap();
@@ -861,7 +839,7 @@ fn a_directory_whose_clusters_loop_is_an_error_not_an_endless_read(#[fixture(uni
     let logs = first_cluster_of(&bytes, entry_at(&bytes, b"LOGS       "));
     // No entry is live and none ends the directory, so only the table can tell that the reading never ends.
     delete_every_entry_in(&mut bytes, logs);
-    chain_cluster_to(&mut bytes, fatfs::FatType::Fat12, logs, logs);
+    chain_cluster_to(&mut bytes, logs, logs);
     std::fs::write(&image, bytes).unwrap();
 
     let error = read_files(&image, &["logs/nothing.txt"]).expect_err("the directory has no end");
@@ -881,7 +859,7 @@ fn a_file_whose_clusters_loop_is_an_error_not_a_read_of_its_claimed_size(#[fixtu
     let mut bytes = volume_with(&[file("winpe.cmd", b"echo")], &[("logs/x.txt", b"x")]);
     let entry = entry_at(&bytes, b"X       TXT");
     let cluster = first_cluster_of(&bytes, entry);
-    chain_cluster_to(&mut bytes, fatfs::FatType::Fat12, cluster, cluster);
+    chain_cluster_to(&mut bytes, cluster, cluster);
     // The most a 32-bit directory entry can claim: 4 GiB less one byte.
     bytes[entry + 28..entry + 32].copy_from_slice(&u32::MAX.to_le_bytes());
     std::fs::write(&image, bytes).unwrap();
@@ -924,128 +902,113 @@ fn a_directory_with_many_entries_is_not_mistaken_for_a_loop(#[fixture(unicode_ho
     assert_eq!(names_of(&files), ["logs/f0.txt", "logs/f199.txt"]);
 }
 
-#[skuld::test]
-fn a_file_whose_clusters_loop_is_an_error_on_every_fat_type(#[fixture(unicode_home)] home: &Path) {
-    for (fat_type, megabytes) in THE_THREE {
-        let mut bytes = volume_of(fat_type, megabytes);
-        let cluster = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
-        chain_cluster_to(&mut bytes, fat_type, cluster, cluster);
-
-        let error = read_loop(home, bytes).expect_err("the file has no end");
-
-        assert!(
-            error
-                .message()
-                .contains(&format!("cluster {cluster} leads back to itself")),
-            "{fat_type:?}: {error}"
-        );
-    }
+/// A FAT12 volume holding the one-byte file `LOOP`, as the guest's own driver leaves it.
+fn loop_volume() -> Vec<u8> {
+    volume_of(fatfs::FatType::Fat12, 1)
 }
 
 #[skuld::test]
-fn a_table_value_fatfs_follows_outside_the_volume_is_refused_on_every_fat_type(#[fixture(unicode_home)] home: &Path) {
-    for (fat_type, megabytes) in THE_THREE {
-        let clusters = clusters_of(&volume_of(fat_type, megabytes));
-        // 1 is below the first cluster; `clusters + 2` is the first number past the last; the largest value fatfs
-        // still reads as a cluster number is the one before the bad-cluster mark.
-        let largest = match fat_type {
-            fatfs::FatType::Fat12 => 0xFF6,
-            fatfs::FatType::Fat16 => 0xFFF6,
-            fatfs::FatType::Fat32 => 0x0FFF_FFF6,
-        };
-        for next in [1, clusters + 2, largest] {
-            let mut bytes = volume_of(fat_type, megabytes);
-            let cluster = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
-            chain_cluster_to(&mut bytes, fat_type, cluster, next);
+fn a_table_value_fatfs_follows_outside_the_volume_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let clusters = clusters_of(&loop_volume());
+    // 1 is below the first cluster; `clusters + 2` is the first number past the last; the largest value fatfs still
+    // reads as a cluster number is the one before the bad-cluster mark.
+    for next in [1, clusters + 2, 0xFF6] {
+        let mut bytes = loop_volume();
+        let cluster = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
+        chain_cluster_to(&mut bytes, cluster, next);
 
-            let error = read_loop(home, bytes).expect_err("a chain that leaves the volume");
+        let error = read_loop(home, bytes).expect_err("a chain that leaves the volume");
 
-            assert_eq!(error.kind(), crate::ErrorKind::Io, "{fat_type:?} -> {next}: {error}");
-            assert!(
-                error.message().contains(&format!(
-                    "cluster {cluster} is followed by cluster {next}, outside the {clusters} clusters"
-                )),
-                "{fat_type:?} -> {next}: {error}"
-            );
-        }
+        assert_eq!(error.kind(), crate::ErrorKind::Io, "-> {next}: {error}");
+        assert!(
+            error.message().contains(&format!(
+                "cluster {cluster} is followed by cluster {next}, outside the {clusters} clusters"
+            )),
+            "-> {next}: {error}"
+        );
     }
 }
 
 #[skuld::test]
 fn a_chain_the_table_ends_in_any_way_fatfs_ends_it_is_not_corrupt(#[fixture(unicode_home)] home: &Path) {
-    for (fat_type, megabytes) in THE_THREE {
-        let (free, bad, end) = match fat_type {
-            fatfs::FatType::Fat12 => (0, 0xFF7, 0xFF8),
-            fatfs::FatType::Fat16 => (0, 0xFFF7, 0xFFF8),
-            fatfs::FatType::Fat32 => (0, 0x0FFF_FFF7, 0x0FFF_FFF8),
-        };
-        for next in [free, bad, end] {
-            let mut bytes = volume_of(fat_type, megabytes);
-            let cluster = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
-            chain_cluster_to(&mut bytes, fat_type, cluster, next);
+    // Free, bad cluster, end mark.
+    for next in [0, 0xFF7, 0xFF8] {
+        let mut bytes = loop_volume();
+        let cluster = first_cluster_of(&bytes, entry_at(&bytes, b"LOOP       "));
+        chain_cluster_to(&mut bytes, cluster, next);
 
-            let files = read_loop(home, bytes).unwrap_or_else(|e| panic!("{fat_type:?} -> {next:#x}: {e}"));
+        let files = read_loop(home, bytes).unwrap_or_else(|e| panic!("-> {next:#x}: {e}"));
 
-            assert_eq!(bytes_of(&files, "LOOP"), b"x", "{fat_type:?} -> {next:#x}");
-        }
+        assert_eq!(bytes_of(&files, "LOOP"), b"x", "-> {next:#x}");
     }
 }
 
 #[skuld::test]
 fn a_file_that_starts_past_the_last_cluster_and_loops_there_is_refused(#[fixture(unicode_home)] home: &Path) {
-    for (fat_type, megabytes) in [(fatfs::FatType::Fat12, 1), (fatfs::FatType::Fat16, 20)] {
-        let mut bytes = volume_of(fat_type, megabytes);
-        let clusters = clusters_of(&bytes);
-        let entry = entry_at(&bytes, b"LOOP       ");
-        let past = clusters + 3;
-        set_first_cluster(&mut bytes, entry, past);
-        chain_cluster_to(&mut bytes, fat_type, past, past);
+    let mut bytes = loop_volume();
+    let clusters = clusters_of(&bytes);
+    let entry = entry_at(&bytes, b"LOOP       ");
+    let past = clusters + 3;
+    set_first_cluster(&mut bytes, entry, past);
+    chain_cluster_to(&mut bytes, past, past);
 
-        let error = read_loop(home, bytes).expect_err("a chain that never ends, outside the volume");
+    let error = read_loop(home, bytes).expect_err("a chain that never ends, outside the volume");
 
-        assert_eq!(error.kind(), crate::ErrorKind::Io, "{fat_type:?}: {error}");
-        assert!(
-            error
-                .message()
-                .contains(&format!("cluster {past} is followed by cluster {past}")),
-            "{fat_type:?}: {error}"
-        );
-    }
-}
-
-/// FAT32 boot sector, offset 40: the flags of the table; bit 7 turns mirroring off, the low four bits name the copy in
-/// use.
-fn use_one_table_copy(image: &mut [u8], copy: u16) {
-    let flags = 0x80 | copy;
-    image[40..42].copy_from_slice(&flags.to_le_bytes());
-}
-
-#[skuld::test]
-fn the_table_copy_fatfs_reads_is_the_one_that_is_checked(#[fixture(unicode_home)] home: &Path) {
-    let fat_type = fatfs::FatType::Fat32;
-    let fresh = || {
-        let mut bytes = volume_of(fat_type, 40);
-        assert_eq!(bytes[16], 2, "two copies of the table");
-        use_one_table_copy(&mut bytes, 1);
-        bytes
-    };
-    let fixture = fresh();
-    let cluster = first_cluster_of(&fixture, entry_at(&fixture, b"LOOP       "));
-
-    // A loop in the copy in use is refused, as it would be with mirroring on.
-    let mut in_use = fresh();
-    chain_cluster_in(&mut in_use, fat_type, cluster, cluster, Some(1));
-    let error = read_loop(home, in_use).expect_err("the copy in use loops");
+    assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
     assert!(
         error
             .message()
-            .contains(&format!("cluster {cluster} leads back to itself")),
+            .contains(&format!("cluster {past} is followed by cluster {past}")),
         "{error}"
     );
+}
 
-    // A loop in the other copy is not read by fatfs, so it is no fault of the volume.
-    let mut unused = fresh();
-    chain_cluster_in(&mut unused, fat_type, cluster, cluster, Some(0));
-    let files = read_loop(home, unused).unwrap();
+#[skuld::test]
+fn a_volume_whose_second_table_slot_is_not_a_cluster_chain_is_read(#[fixture(unicode_home)] home: &Path) {
+    // Slots 0 and 1 are reserved: a guest's driver keeps flags there, which are no links.
+    let mut bytes = loop_volume();
+    let outside = 0xFF0;
+    assert!(
+        clusters_of(&bytes) + 2 < outside,
+        "the value must lie outside the volume"
+    );
+    for slot in [0, 1] {
+        chain_cluster_to(&mut bytes, slot, outside);
+    }
+
+    let files = read_loop(home, bytes).unwrap();
+
     assert_eq!(bytes_of(&files, "LOOP"), b"x");
+}
+
+#[skuld::test]
+fn a_boot_sector_that_counts_other_bytes_than_the_image_has_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let fresh = loop_volume();
+    let sectors = fresh.len() / 512;
+    // More sectors than the image holds (up to the largest a 32-bit count says), and fewer.
+    for claimed in [sectors + 1, 100_000, sectors - 1, u32::MAX as usize] {
+        let mut bytes = fresh.clone();
+        bytes[19..21].copy_from_slice(&[0, 0]);
+        bytes[32..36].copy_from_slice(&(claimed as u32).to_le_bytes());
+
+        let error = read_loop(home, bytes).expect_err("the count and the image disagree");
+
+        assert_eq!(error.kind(), crate::ErrorKind::Io, "{claimed}: {error}");
+        assert!(error.message().contains("the boot sector counts"), "{claimed}: {error}");
+    }
+    // A longer image than the boot sector says.
+    let mut bytes = fresh.clone();
+    bytes.extend_from_slice(&[0; 512]);
+    let error = read_loop(home, bytes).expect_err("the image is longer than the volume");
+    assert!(error.message().contains("the boot sector counts"), "{error}");
+}
+
+#[skuld::test]
+fn a_volume_that_is_not_fat12_is_refused(#[fixture(unicode_home)] home: &Path) {
+    for (fat_type, megabytes) in [(fatfs::FatType::Fat16, 20), (fatfs::FatType::Fat32, 40)] {
+        let error = read_loop(home, volume_of(fat_type, megabytes)).expect_err("only FAT12 images are read");
+
+        assert_eq!(error.kind(), crate::ErrorKind::Io, "{fat_type:?}: {error}");
+        assert!(error.message().contains("FAT12"), "{fat_type:?}: {error}");
+    }
 }

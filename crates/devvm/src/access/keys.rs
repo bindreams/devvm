@@ -6,7 +6,7 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::host::{Host, is_absent, symlink_metadata_if_present};
+use crate::host::{Host, is_absent, sweep_prefixed, symlink_metadata_if_present};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -54,19 +54,7 @@ fn generate_pair() -> Result<(SecretString, String)> {
 /// cannot be removed (an antivirus holds a file of it, or it is not a directory) is returned as a warning: it must not
 /// stop every later write.
 fn sweep_temporaries(parent: &Path) -> Result<Vec<String>> {
-    let io =
-        |what: &str, path: &Path, source| Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), source);
-    let mut warnings = Vec::new();
-    for entry in std::fs::read_dir(parent).map_err(|e| io("list", parent, e))? {
-        let entry = entry.map_err(|e| io("list", parent, e))?;
-        if entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
-            let path = entry.path();
-            if let Err(e) = std::fs::remove_dir_all(&path) {
-                warnings.push(io("remove the leftover", &path, e).message().to_owned());
-            }
-        }
-    }
-    Ok(warnings)
+    sweep_prefixed(parent, TEMP_PREFIX, |path| std::fs::remove_dir_all(path))
 }
 
 /// Whether a failed `remove_dir` means the directory is not an empty dead claim, so `publish_dir` is left to refuse it:

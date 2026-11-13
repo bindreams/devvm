@@ -263,8 +263,7 @@ impl Storage for QemuStorage {
     /// runs first. The overlay is made at a new path beside `into` and published by [`make_overlay`].
     fn overlay_with_patches(&self, backing: &Path, patches: &[Patch], into: &Path) -> Result<()> {
         check_overlay(backing, patches, into)?;
-        let directory = directory_of(into, "the overlay")?;
-        make_overlay(into, |staging| {
+        make_overlay(into, |staging, directory| {
             let target = escape_option_value(staging)?;
             self.qemu_img(&[
                 "create".as_ref(),
