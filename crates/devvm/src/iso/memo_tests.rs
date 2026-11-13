@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256 as Sha2};
 use super::{IsoMemo, Known, QuarantineOutcome};
 use crate::host::{Host, OtherHost};
 use crate::iso::{HeldIso, WimArch, WimImage};
-use crate::test_support::fixtures::{MemoryProgress, non_unicode_name, unicode_home};
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::{RecordingHost, TestHost};
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
@@ -321,7 +321,7 @@ fn a_moved_iso_is_remembered_at_its_new_path(#[fixture(unicode_home)] home: &Pat
 #[skuld::test]
 fn an_iso_with_a_non_unicode_name_is_hashed_each_time_and_the_build_is_told(#[fixture(unicode_home)] home: &Path) {
     let fx = Fixture::new(home);
-    let iso = home.join(non_unicode_name());
+    let iso = home.join(crate::test_support::fixtures::non_unicode_name());
     std::fs::write(&iso, b"windows").unwrap();
 
     assert_eq!(fx.sha256(&iso).unwrap(), digest(b"windows"));
