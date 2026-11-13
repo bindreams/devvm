@@ -36,6 +36,10 @@ mod serial;
 #[path = "builder_tests.rs"]
 mod builder_tests;
 
+#[cfg(all(test, windows))]
+#[path = "builder_windows_tests.rs"]
+mod builder_windows_tests;
+
 /// The directory of the build's own files below [`BuildCtx::work`].
 const WORK_DIR: &str = "windows-base";
 /// The overlay of the ISO, the answer disk and the machine's own files (QEMU's working directory and log), in it.
