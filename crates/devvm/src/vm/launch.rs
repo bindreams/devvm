@@ -7,12 +7,11 @@ use crate::access::ssh_config::SshConfigEntry;
 use crate::access::{SshSession, SshTarget};
 use crate::backend::{Endpoint, Machine, MachineRecord, MachineSpec};
 use crate::contain::Lifetime;
-use crate::engine::keys::{ensure_keys, keys_dir, target_for};
+use crate::engine::keys::{ensure_keys, keys_dir, read_record, target_for};
 use crate::engine::ready::connect_ready;
 use crate::engine::{Engine, LaunchStep};
 use crate::guest::{GuestOs, SeedKeys, SeedSpec};
 use crate::instance::dir::{InstanceDir, OpExclusive};
-use crate::instance::expiry::warn_if_expired;
 use crate::vm::{remove_leftovers, warn_for};
 use crate::{Error, ErrorKind, Result};
 
@@ -66,8 +65,7 @@ fn launch_machine(
     op: &OpExclusive,
     lifetime: Lifetime,
 ) -> Result<Option<Launched>> {
-    let record = dir.record()?;
-    warn_if_expired(engine, dir.name(), record.expires);
+    let record = read_record(engine, dir, op)?;
     let backend = engine.backend()?;
     if let Some(machine) = &record.machine {
         if backend.find(machine)?.is_some() {

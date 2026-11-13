@@ -7,9 +7,10 @@ use crate::engine::engine_tests::{
     EngineFixture, dead_machine, engine_fixture, image_of, image_with, is_there, stub_fixture, write_conf,
 };
 use crate::engine::keys::read_target;
+use crate::instance::expiry::expiry_tests::running_expiring;
 use crate::instance::record::{MarkerRead, Owner, read_marker};
 use crate::recipe::Resources;
-use crate::store::layers::layers_tests::names;
+use crate::store::layers::layers_tests::{days, names, t0};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::ops::ops_tests::{running_instance, short_bound_instance};
@@ -267,7 +268,10 @@ fn a_vm_whose_reboot_failed_connects_again_for_its_next_operation_and_keeps_that
 /// A new connection to `instance`, as a started `Vm` holds.
 fn reached(instance: &Instance) -> SshSession {
     let dir = instance.dir();
-    ops::reach(&instance.engine, dir, &dir.op_shared().unwrap()).unwrap().1
+    let record = dir.record().unwrap();
+    ops::reach(&instance.engine, dir, &record, &dir.op_shared().unwrap())
+        .unwrap()
+        .1
 }
 
 /// A `Vm` over `instance` with `session` as its connection.
@@ -384,4 +388,46 @@ fn with_sftp_holds_the_shared_op_lock_for_as_long_as_the_closure_runs(#[fixture(
         vm.instance().dir().try_op_exclusive().unwrap().is_some(),
         "the op lock is released after it"
     );
+}
+
+/// One warning per operation, none repeated within one: for a `Vm` whose cached session serves `run` and `run_to`
+/// without reaching the guest again, and for `reboot`, which does.
+#[skuld::test]
+fn a_vm_warns_once_per_operation_whether_or_not_its_session_is_cached(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let progress = memory();
+    let instance = running_expiring(&fx, home, t0() + days(20), t0() + days(30), progress.clone());
+    let vm = vm_over(reached(&instance), instance);
+    let cmd = Command::new(["echo", "x"]);
+    assert!(progress.messages().is_empty(), "{:?}", progress.messages());
+
+    vm.run(&cmd).unwrap();
+    assert_eq!(progress.messages().len(), 1, "run: {:?}", progress.messages());
+    vm.run(&cmd).unwrap();
+    assert_eq!(progress.messages().len(), 2, "run again: {:?}", progress.messages());
+    vm.run_to(&cmd, &mut Vec::new(), &mut Vec::new()).unwrap();
+    assert_eq!(progress.messages().len(), 3, "run_to: {:?}", progress.messages());
+    vm.reboot().unwrap();
+    assert_eq!(progress.messages().len(), 4, "reboot: {:?}", progress.messages());
+    for message in progress.messages() {
+        assert_eq!(message, "instance foo: the guest expired on 2027-02-04 (UTC)");
+    }
+}
+
+/// The same for an `Instance`, which connects for every operation.
+#[skuld::test]
+fn an_instance_warns_once_per_operation_that_reaches_the_guest(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let progress = memory();
+    let instance = running_expiring(&fx, home, t0() + days(20), t0() + days(30), progress.clone());
+    let cmd = Command::new(["echo", "x"]);
+
+    instance.run(&cmd).unwrap();
+    assert_eq!(progress.messages().len(), 1, "run: {:?}", progress.messages());
+    instance.run_to(&cmd, &mut Vec::new(), &mut Vec::new()).unwrap();
+    assert_eq!(progress.messages().len(), 2, "run_to: {:?}", progress.messages());
+    instance.ssh_config().unwrap();
+    assert_eq!(progress.messages().len(), 3, "ssh_config: {:?}", progress.messages());
+    instance.reboot().unwrap();
+    assert_eq!(progress.messages().len(), 4, "reboot: {:?}", progress.messages());
 }

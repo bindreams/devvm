@@ -6,20 +6,17 @@ use std::sync::Arc;
 
 use crate::access::{ExecEnd, Keepalive, SshSession};
 use crate::engine::Engine;
-use crate::engine::keys::{Running, read_target};
+use crate::engine::keys::{Running, read_record, running_of};
 use crate::engine::ready::{read_boot_id, reconnect_after_reset};
 use crate::exit::{ExitStatus, Output};
 use crate::guest::GuestOs;
 use crate::instance::dir::{InstanceDir, OpExclusive, OpHeld};
+use crate::instance::record::InstanceRecord;
 use crate::{Command, Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "ops_tests.rs"]
 pub(crate) mod ops_tests;
-
-pub(super) fn guest_of(engine: &Engine, dir: &InstanceDir) -> Result<Arc<dyn GuestOs>> {
-    engine.guests().os(dir.record()?.guest)
-}
 
 pub(super) fn run(guest: &dyn GuestOs, session: &SshSession, cmd: &Command) -> Result<Output> {
     session.exec_collect(&guest.wrap(cmd)?)
@@ -85,10 +82,15 @@ pub(super) fn copy_out(
         .copy_out(src, dest, engine.host(), guest, engine.progress().as_ref())
 }
 
-/// The machine of `dir` and a new connection to it: a single attempt, so a failure is final. (A guest that is still
-/// booting is `ready::reconnect_after_reset`'s.)
-pub(super) fn reach(engine: &Engine, dir: &InstanceDir, op: &impl OpHeld) -> Result<(Running, SshSession)> {
-    let running = read_target(engine, dir, op)?;
+/// The machine of `dir`, named by its `record` (read under `op`), and a new connection to it: a single attempt, so a
+/// failure is final. (A guest that is still booting is `ready::reconnect_after_reset`'s.)
+pub(super) fn reach(
+    engine: &Engine,
+    dir: &InstanceDir,
+    record: &InstanceRecord,
+    op: &impl OpHeld,
+) -> Result<(Running, SshSession)> {
+    let running = running_of(engine, dir, record, op)?;
     let session = SshSession::connect(
         &running.target,
         Keepalive::STANDARD,
@@ -103,8 +105,9 @@ pub(super) fn reach(engine: &Engine, dir: &InstanceDir, op: &impl OpHeld) -> Res
 /// is ready. The new boot is the one whose boot id differs from the old one's, read on a connection of its own. The
 /// caller holds the exclusive op lock. A failure after the reset leaves the machine running.
 pub(super) fn reboot(engine: &Engine, dir: &InstanceDir, op: &OpExclusive) -> Result<SshSession> {
-    let guest = guest_of(engine, dir)?;
-    let (mut running, before) = reach(engine, dir, op)?;
+    let record = read_record(engine, dir, op)?;
+    let guest = engine.guests().os(record.guest)?;
+    let (mut running, before) = reach(engine, dir, &record, op)?;
     let old_id = read_boot_id(&*guest, &before)?.into_id()?;
     running.machine.reset()?;
     // The connection to the old boot is no use to anyone now.
