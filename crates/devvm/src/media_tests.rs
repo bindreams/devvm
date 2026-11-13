@@ -964,8 +964,10 @@ fn a_file_that_starts_past_the_last_cluster_and_loops_there_is_refused(#[fixture
 }
 
 #[skuld::test]
-fn a_volume_whose_second_table_slot_is_not_a_cluster_chain_is_read(#[fixture(unicode_home)] home: &Path) {
-    // Slots 0 and 1 are reserved: a guest's driver keeps flags there, which are no links.
+fn the_reserved_table_slots_0_and_1_are_not_checked_as_links_so_a_volume_with_any_value_in_them_is_read(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // FAT12 slots 0 and 1 hold the media byte and an end mark, whose bits a driver may change: they are no links.
     let mut bytes = loop_volume();
     let outside = 0xFF0;
     assert!(

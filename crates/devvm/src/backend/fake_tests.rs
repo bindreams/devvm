@@ -2,7 +2,7 @@ use std::path::Path;
 
 use super::{FakeBackend, FakeStorage, FakeTarget};
 use crate::backend::contract::{self, ContractTarget};
-use crate::backend::{OVERLAY_LOCK, Patch, Storage};
+use crate::backend::{Patch, Storage};
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{env, key, request};
 use crate::test_support::fixtures::unicode_home;
@@ -45,7 +45,7 @@ fn the_fake_makes_an_overlay_once_and_refuses_a_second_call_leaving_the_first_wh
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     left.sort_unstable();
-    assert_eq!(left, [OVERLAY_LOCK, "backing.iso", "overlay.qcow2"]);
+    assert_eq!(left, ["backing.iso", "overlay.qcow2"]);
 }
 
 #[skuld::test]

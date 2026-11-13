@@ -5,8 +5,8 @@ use std::sync::Arc;
 use cosca::identity::{Platform, ProcessIdRecord};
 
 use crate::backend::{
-    Backend, Endpoint, FileClaim, Machine, MachineRecord, OVERLAY_LOCK, SshEndpoint, Storage, directory_of,
-    make_overlay, remove_files,
+    Backend, Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint, Storage, directory_of, make_overlay,
+    remove_files,
 };
 use crate::guest::{BaseBuilder, GuestOs, Guests};
 use crate::host::{self, FileId, HoldOutcome};
@@ -316,11 +316,7 @@ fn an_overlay_is_written_beside_its_name_and_published_whole(#[fixture(unicode_h
     .unwrap();
 
     assert_eq!(std::fs::read(&into).unwrap(), b"overlay");
-    assert_eq!(
-        names_in(home),
-        [OVERLAY_LOCK, "overlay.qcow2"],
-        "the staging file is gone"
-    );
+    assert_eq!(names_in(home), ["overlay.qcow2"], "the staging file is gone");
 }
 
 #[skuld::test]
@@ -335,7 +331,7 @@ fn an_overlay_that_fails_after_it_was_started_leaves_nothing(#[fixture(unicode_h
 
     assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
     assert_eq!(error.message(), "the patch did not go in");
-    assert_eq!(names_in(home), [OVERLAY_LOCK]);
+    assert_eq!(names_in(home), Vec::<String>::new());
 }
 
 #[skuld::test]
@@ -359,11 +355,7 @@ fn two_calls_for_one_overlay_the_first_to_publish_keeps_it_and_the_other_is_refu
         b"second",
         "the first call overwrote the second's overlay"
     );
-    assert_eq!(
-        names_in(home),
-        [OVERLAY_LOCK, "overlay.qcow2"],
-        "a staging file was left"
-    );
+    assert_eq!(names_in(home), ["overlay.qcow2"], "a staging file was left");
 }
 
 #[skuld::test]
@@ -383,38 +375,23 @@ fn a_call_that_fails_never_deletes_the_overlay_another_call_published(#[fixture(
         b"second",
         "the failed call deleted the other call's overlay"
     );
-    assert_eq!(names_in(home), [OVERLAY_LOCK, "overlay.qcow2"]);
+    assert_eq!(names_in(home), ["overlay.qcow2"]);
 }
 
 #[skuld::test]
-fn a_staging_file_a_killed_call_left_is_swept_by_the_next_call(#[fixture(unicode_home)] home: &Path) {
+fn a_call_touches_nothing_in_the_directory_but_its_own_files(#[fixture(unicode_home)] home: &Path) {
     let into = home.join("overlay.qcow2");
+    // A leftover of a killed call is the caller's to clean; a file that merely starts like a staging file is not ours.
     std::fs::write(home.join("overlay-killed"), b"half an overlay").unwrap();
-    std::fs::write(home.join("overlays.txt"), b"not a staging file").unwrap();
+    std::fs::write(home.join("patch-killed"), b"half a patch").unwrap();
 
     make_overlay(&into, |staging, _| write_to(staging, b"overlay")).unwrap();
 
-    assert_eq!(names_in(home), [OVERLAY_LOCK, "overlay.qcow2", "overlays.txt"]);
-}
-
-#[skuld::test]
-fn a_call_in_progress_keeps_its_staging_file_when_another_call_sweeps(#[fixture(unicode_home)] home: &Path) {
-    let into = home.join("overlay.qcow2");
-    let other = home.join("other.qcow2");
-
-    make_overlay(&into, |first, _| {
-        write_to(first, b"first, unfinished")?;
-        make_overlay(&other, |second, _| write_to(second, b"second")).unwrap();
-        assert!(
-            first.exists(),
-            "the other call swept the staging file of a call in progress"
-        );
-        write_to(first, b"first")
-    })
-    .unwrap();
-
-    assert_eq!(std::fs::read(&into).unwrap(), b"first");
-    assert_eq!(std::fs::read(&other).unwrap(), b"second");
+    assert_eq!(
+        names_in(home),
+        ["overlay-killed", "overlay.qcow2", "patch-killed"],
+        "the call removed a file it did not make"
+    );
 }
 
 #[skuld::test]

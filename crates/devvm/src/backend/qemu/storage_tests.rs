@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::{DISK, QemuStorage, VARS};
 use crate::ErrorKind;
-use crate::backend::{OVERLAY_LOCK, Patch, Storage};
+use crate::backend::{Patch, Storage};
 use crate::host;
 use crate::store::layers::layers_tests::{env, key, request};
 use crate::store::layers::{Built, ChainLease};
@@ -149,9 +149,5 @@ fn an_overlay_that_fails_once_its_file_was_started_leaves_nothing_behind(#[fixtu
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     left.sort_unstable();
-    assert_eq!(
-        left,
-        [OVERLAY_LOCK, "backing.iso"],
-        "the failed call left files: {error}"
-    );
+    assert_eq!(left, ["backing.iso"], "the failed call left files: {error}");
 }

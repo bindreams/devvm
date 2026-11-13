@@ -398,7 +398,8 @@ impl<'a> Table<'a> {
     /// looked at; each cluster is then walked once: a cluster seen on the walk in progress is a loop, one seen on an
     /// earlier walk ends this one.
     fn require_chains_end(&self) -> std::io::Result<()> {
-        // Slots 0 and 1 are reserved: they hold the media byte and the flags a driver keeps, not links.
+        // Slots 0 and 1 are reserved: the media byte and an end mark, not links. A directory entry that starts at
+        // cluster 1 is covered by the trusted-entries contract of `read_files`.
         for index in 2..self.entries {
             self.next(index)?;
         }
