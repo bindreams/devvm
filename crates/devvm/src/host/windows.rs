@@ -20,7 +20,7 @@ use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use super::Hold;
 use super::entry;
 use super::names::{windows_colon_path, windows_problem, windows_run_dir};
-use super::{Accel, Entry, FileId, HeldFile, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, fill_new};
+use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, fill_new};
 use crate::exit::ExitWidth;
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -310,10 +310,12 @@ impl Host for WindowsHost {
         hold::open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path) -> std::io::Result<HeldFile> {
-        let file = hold::open_held_read(path)?;
-        let final_path = final_path::of_handle(&file)?;
-        Ok(HeldFile { file, final_path })
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        hold::open_held_read(path)
+    }
+
+    fn final_path_of_open(&self, file: &File, _opened_by: &Path) -> std::io::Result<PathBuf> {
+        final_path::of_handle(file)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

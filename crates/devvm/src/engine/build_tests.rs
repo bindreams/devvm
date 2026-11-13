@@ -11,8 +11,8 @@ use crate::backend::fake::FakeBackend;
 use crate::engine::build::{Lines, extract_command, guest_destination, root_of};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
-use crate::guest::fake::{FakeBaseBuilder, FakeGuests, ServedGuests};
-use crate::guest::{BaseBuilder, GuestOs, Guests};
+use crate::guest::fake::{FakeGuests, ServedGuests};
+use crate::guest::{GuestOs, Guests};
 use crate::host::symlink_metadata_if_present;
 use crate::recipe::Recipe;
 use crate::recipe::hash::{KeyContext, LayerKey, chain_keys};
@@ -95,7 +95,7 @@ pub(super) fn keys_of(recipe: &Recipe) -> Vec<LayerKey> {
         &flat,
         &ctx,
         &root.content(),
-        &FakeBaseBuilder.definition_hash(),
+        &FakeGuests.builder(GuestKind::Linux).unwrap().definition_hash(),
         &manifests,
     )
     .unwrap()

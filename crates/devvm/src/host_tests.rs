@@ -693,7 +693,7 @@ fn a_held_read_opens_the_file_for_reading_and_another_reader_still_opens_it(#[fi
     use std::io::Read;
     let path = home.join("a");
     std::fs::write(&path, b"windows").unwrap();
-    let mut held = current().open_held_read(&path).unwrap().file;
+    let mut held = current().open_held_read(&path).unwrap();
     let mut bytes = Vec::new();
     held.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, b"windows");
@@ -702,13 +702,25 @@ fn a_held_read_opens_the_file_for_reading_and_another_reader_still_opens_it(#[fi
 }
 
 #[skuld::test]
-fn a_held_read_gives_the_path_of_the_file_it_holds(#[fixture(unicode_home)] home: &Path) {
+fn the_final_path_of_a_held_file_leads_to_that_file(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a");
     std::fs::write(&path, b"windows").unwrap();
     let held = current().open_held_read(&path).unwrap();
+    let final_path = current().final_path_of_open(&held, &path).unwrap();
     assert_eq!(
-        current().file_id(&held.final_path).unwrap(),
+        current().file_id(&final_path).unwrap(),
         current().file_id(&path).unwrap()
+    );
+}
+
+#[skuld::test]
+fn an_unsupported_host_that_cannot_tell_files_apart_gives_the_canonical_path(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a");
+    std::fs::write(&path, b"windows").unwrap();
+    let held = OtherHost.open_held_read(&path).unwrap();
+    assert_eq!(
+        OtherHost.final_path_of_open(&held, &path).unwrap(),
+        std::fs::canonicalize(&path).unwrap()
     );
 }
 

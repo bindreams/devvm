@@ -10,7 +10,7 @@ use cosca::identity::ProcessId;
 
 use super::names::{posix_problem, unix_run_dir};
 use super::{
-    Accel, Entry, FileId, HeldFile, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
+    Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
     create_new_with, look_failed, nearest_existing_dir,
 };
 use crate::exit::ExitWidth;
@@ -240,12 +240,22 @@ impl<M: FileModes> Host for M {
         hold::open_refusing_links(self, path, create)
     }
 
-    fn open_held_read(&self, path: &Path) -> std::io::Result<HeldFile> {
-        let file = File::open(path)?;
-        Ok(HeldFile {
-            file,
-            final_path: std::fs::canonicalize(path)?,
-        })
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        File::open(path)
+    }
+
+    fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
+        let canonical = std::fs::canonicalize(opened_by)?;
+        let unsupported = |e: &std::io::Error| e.kind() == std::io::ErrorKind::Unsupported;
+        match (self.file_id_of_open(file), self.file_id(&canonical)) {
+            (Ok(open), Ok(named)) if open != named => Err(std::io::Error::other(format!(
+                "{} leads to another file than the one that was opened",
+                opened_by.display()
+            ))),
+            (Err(e), _) | (_, Err(e)) if !unsupported(&e) => Err(e),
+            // Equal, or a build that cannot tell files apart, where the name is all there is.
+            _ => Ok(canonical),
+        }
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

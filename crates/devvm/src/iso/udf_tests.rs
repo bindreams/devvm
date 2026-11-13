@@ -104,3 +104,66 @@ fn bytes_that_lie_past_the_end_of_the_iso_are_refused_naming_it() {
     assert!(past.message().contains("three-images.iso"), "{past}");
     assert!(past.message().contains("outside the file"), "{past}");
 }
+
+#[skuld::test]
+fn a_file_in_several_extents_is_found_piece_by_piece_and_read_across_them() {
+    let iso = iso_fixture("install-wim-in-two-extents.iso");
+    let udf = open(&iso).unwrap();
+    let pieces = udf.pieces("/sources/install.wim").unwrap().unwrap();
+    assert!(pieces.len() > 1, "{pieces:?}");
+    assert_eq!(pieces[0].offset + pieces[0].len, pieces[1].offset);
+    // The image list lies in the second extent.
+    let mut file = udf.open_file("/sources/install.wim").unwrap().unwrap();
+    let list = crate::iso::wim::read_image_list(&mut file, "install.wim").unwrap();
+    assert_eq!(list.len(), 1, "{list:?}");
+}
+
+#[skuld::test]
+fn a_file_with_an_extent_that_was_never_written_is_refused_naming_it() {
+    let iso = iso_fixture("install-wim-with-an-unwritten-extent.iso");
+    let error = open(&iso).unwrap().pieces("/sources/install.wim").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(
+        error.message().contains("install-wim-with-an-unwritten-extent.iso"),
+        "{error}"
+    );
+    assert!(error.message().contains("sources/install.wim"), "{error}");
+    assert!(error.message().contains("never written"), "{error}");
+}
+
+#[skuld::test]
+fn a_file_with_a_gap_between_its_extents_is_refused_naming_it() {
+    let iso = iso_fixture("install-wim-with-a-hole.iso");
+    let error = open(&iso).unwrap().pieces("/sources/install.wim").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("sources/install.wim"), "{error}");
+    assert!(error.message().contains("gap"), "{error}");
+}
+
+#[skuld::test]
+fn names_are_found_whatever_their_case() {
+    let iso = iso_fixture("upper-case-names.iso");
+    let udf = open(&iso).unwrap();
+    assert!(udf.pieces("/efi/microsoft/boot/efisys.bin").unwrap().is_some());
+    assert!(udf.pieces("/efi/microsoft/boot/efisys_noprompt.bin").unwrap().is_some());
+    assert!(udf.open_file("/sources/install.wim").unwrap().is_some());
+    assert_eq!(udf.pieces("/sources/install.esd").unwrap(), None);
+    assert_eq!(udf.pieces("/sources/install.wim/inside").unwrap(), None);
+}
+
+#[skuld::test]
+fn two_names_that_differ_only_in_case_are_refused_naming_both() {
+    let iso = iso_fixture("two-install-names-of-one-spelling.iso");
+    let udf = open(&iso).unwrap();
+    let errors = [
+        udf.pieces("/sources/install.wim").unwrap_err(),
+        udf.open_file("/sources/install.wim").err().unwrap(),
+    ];
+    for error in errors {
+        assert_eq!(error.kind(), ErrorKind::Recipe);
+        assert!(
+            error.message().contains("install.wim") && error.message().contains("INSTALL.WIM"),
+            "{error}"
+        );
+    }
+}

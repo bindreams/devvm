@@ -1,13 +1,13 @@
 //! The image list of a Windows installation file (`install.wim`, `install.esd`): the XML a WIM keeps after its header.
 //!
-//! The header is read here (about 20 lines) and the XML by `quick-xml`, which reads it as a stream: memory follows what
+//! The header is read here and the XML by `quick-xml`, which reads it as a stream: memory follows what
 //! the list holds, not what the header claims. Only an XML resource stored uncompressed is read, which is how Windows
 //! writes it; a list stored compressed is refused by name.
 
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 
 use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, ErrorKind, Result};
@@ -246,21 +246,31 @@ fn parse_image_list(xml: impl BufRead, file: &str) -> Result<Vec<WimImage>> {
     let mut buffer = Vec::new();
     let mut path: Vec<String> = Vec::new();
     let mut images: Vec<Partial> = Vec::new();
+    // The start of an element, which an empty element (`<IMAGE INDEX="1"/>`) is as well as the start of a full one.
+    let open = |start: &BytesStart, path: &mut Vec<String>, images: &mut Vec<Partial>| -> Result<()> {
+        let name = start.name().as_ref().to_owned();
+        if *path == ["WIM"] && name == "IMAGE" {
+            let index = start
+                .attributes()
+                .filter_map(std::result::Result::ok)
+                .find(|attribute| attribute.key.as_ref() == "INDEX")
+                .and_then(|attribute| attribute.value.trim().parse::<u32>().ok())
+                .ok_or_else(|| bad("an IMAGE has no numeric INDEX".to_owned()))?;
+            images.push(Partial::new(index));
+        }
+        path.push(name);
+        Ok(())
+    };
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer).map_err(unreadable)? {
-            Event::Start(start) => {
-                let name = start.name().as_ref().to_owned();
-                if path == ["WIM"] && name == "IMAGE" {
-                    let index = start
-                        .attributes()
-                        .filter_map(std::result::Result::ok)
-                        .find(|attribute| attribute.key.as_ref() == "INDEX")
-                        .and_then(|attribute| attribute.value.trim().parse::<u32>().ok())
-                        .ok_or_else(|| bad("an IMAGE has no numeric INDEX".to_owned()))?;
-                    images.push(Partial::new(index));
+            Event::Start(start) => open(&start, &mut path, &mut images)?,
+            Event::Empty(start) => {
+                open(&start, &mut path, &mut images)?;
+                path.pop();
+                if path.is_empty() {
+                    break;
                 }
-                path.push(name);
             }
             Event::End(_) => {
                 path.pop();
@@ -288,7 +298,8 @@ fn parse_image_list(xml: impl BufRead, file: &str) -> Result<Vec<WimImage>> {
                 };
                 add_text(&mut images, &path, &resolved);
             }
-            Event::Eof => break,
+            Event::Eof if path.is_empty() => break,
+            Event::Eof => return Err(bad(format!("it ends inside <{}>", path.join("><")))),
             _ => {}
         }
     }

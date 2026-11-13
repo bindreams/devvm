@@ -44,8 +44,7 @@ pub(super) enum Platform {
 }
 
 /// An ISO file, read through its UDF tree. The file is opened by the caller and everything is read through that one
-/// handle, so what is read is the file the caller looked at, whatever later takes its path. The UDF tree is mounted
-/// once.
+/// handle. The UDF tree is mounted once.
 pub(super) struct Udf<'a> {
     iso: &'a Path,
     file: std::fs::File,
@@ -77,9 +76,62 @@ impl<'a> Udf<'a> {
         })
     }
 
-    /// Where the bytes of the file `path` (`/`-separated, from the root) lie in the ISO, in file order; `None` when
-    /// the tree has no such file. A file may lie in several pieces.
+    /// `path` (`/`-separated, from the root) spelled as the tree spells it: UDF names are exact-case, and the case of
+    /// the names an installer ISO needs differs between ISOs. `None` when the tree has no such file; an error when two
+    /// names in it match a component and differ only in case.
+    fn spelled(&self, path: &str) -> Result<Option<String>> {
+        let mut spelled = String::new();
+        for component in path.split('/').filter(|component| !component.is_empty()) {
+            let look_up = || format!("look up {path} in");
+            let dir = self
+                .volume
+                .read_dir(if spelled.is_empty() { "/" } else { &spelled })
+                .map(Some)
+                .or_else(|e| match e.kind() {
+                    hadris_fs::ErrorKind::NotFound | hadris_fs::ErrorKind::NotADirectory => Ok(None),
+                    _ => Err(unreadable(self.iso, &look_up(), &e)),
+                })?;
+            let Some(dir) = dir else { return Ok(None) };
+            let mut matching = Vec::new();
+            for entry in dir {
+                let entry = entry.map_err(|e| unreadable(self.iso, &look_up(), &e))?;
+                if entry.name().as_bytes().eq_ignore_ascii_case(component.as_bytes()) {
+                    matching.push(String::from_utf8_lossy(entry.name().as_bytes()).into_owned());
+                }
+            }
+            match &matching[..] {
+                [] => return Ok(None),
+                [name] => {
+                    spelled.push('/');
+                    spelled.push_str(name);
+                }
+                several => {
+                    return Err(Error::new(
+                        ErrorKind::Recipe,
+                        format!(
+                            "{} has {} in the same directory, which differ only in case, so devvm cannot tell which is {}",
+                            self.iso.display(),
+                            several
+                                .iter()
+                                .map(|name| format!("`{name}`"))
+                                .collect::<Vec<_>>()
+                                .join(" and "),
+                            path.trim_start_matches('/')
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(Some(spelled))
+    }
+
+    /// Where the bytes of the file `path` lie in the ISO, in file order; `None` when the tree has no such file. A file
+    /// may lie in several pieces. A file with a part that was never written or has no storage (a gap) is refused: its
+    /// bytes are not in the ISO where the pieces say.
     pub(super) fn pieces(&self, path: &str) -> Result<Option<Vec<Piece>>> {
+        let Some(path) = self.spelled(path)? else {
+            return Ok(None);
+        };
         let mut udf = self
             .volume
             .lock()
@@ -89,17 +141,37 @@ impl<'a> Udf<'a> {
             Err(e) if e.kind() == hadris_fs::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(unreadable(self.iso, &format!("look up {path} in"), &e)),
         };
+        let refused = |why: &str| {
+            Error::new(
+                ErrorKind::Recipe,
+                format!(
+                    "{} is not a Windows installer ISO: {} {why}",
+                    self.iso.display(),
+                    path.trim_start_matches('/')
+                ),
+            )
+        };
         let mut found = Vec::new();
         let mut buffer = [Extent::new(0, 0); 16];
         let mut from = 0;
+        let mut stored = 0;
         loop {
             let count = udf
                 .extents(node, from, &mut buffer)
                 .map_err(|e| unreadable(self.iso, &format!("read where {path} is stored in"), &e))?;
-            found.extend(buffer[..count].iter().map(|extent| Piece {
-                offset: extent.offset(),
-                len: extent.len(),
-            }));
+            for extent in &buffer[..count] {
+                if extent.is_unwritten() {
+                    return Err(refused("has a part that was never written"));
+                }
+                if extent.file_offset() != stored {
+                    return Err(refused("has a gap between its parts"));
+                }
+                stored += extent.len();
+                found.push(Piece {
+                    offset: extent.offset(),
+                    len: extent.len(),
+                });
+            }
             match buffer[..count].last() {
                 Some(last) if count == buffer.len() => from = last.file_offset() + last.len(),
                 _ => return Ok(Some(found)),
@@ -109,7 +181,10 @@ impl<'a> Udf<'a> {
 
     /// The file `path`, readable and seekable across all its pieces; `None` when the tree has no such file.
     pub(super) fn open_file(&self, path: &str) -> Result<Option<File<UdfFs<FileDevice>>>> {
-        match self.volume.open(path, OpenOptions::new().read()) {
+        let Some(path) = self.spelled(path)? else {
+            return Ok(None);
+        };
+        match self.volume.open(&path, OpenOptions::new().read()) {
             Ok(file) => Ok(Some(file)),
             Err(e) if e.kind() == hadris_fs::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(unreadable(self.iso, &format!("open {path} in"), &e)),

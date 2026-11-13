@@ -59,14 +59,6 @@ use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
 
-/// A file opened by [`Host::open_held_read`], and the path that leads to that file.
-#[derive(Debug)]
-pub(crate) struct HeldFile {
-    pub file: File,
-    /// The file's path with no link in it.
-    pub final_path: PathBuf,
-}
-
 /// How a hypervisor is reached on this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Accel {
@@ -255,13 +247,16 @@ pub(crate) trait Host: Send + Sync {
     /// open for writing, or locked against readers, is `ResourceBusy`, "open for writing". A host that cannot deny
     /// those (everything but Windows) opens it as `File::open` does.
     ///
-    /// The held file comes with its final path, which has no link in it: a program that opens the file by name opens
-    /// this file, where the name `path` can be pointed elsewhere by re-making a junction or a symlink in it
-    /// (Windows: `GetFinalPathNameByHandle`; elsewhere the canonical path, taken after the open).
-    ///
     /// A build holds its Windows ISO this way from the moment it keys the layer until the guest's disk has its own
     /// read-only handle: QEMU opens the ISO read-only with the default sharing, which this mode allows.
-    fn open_held_read(&self, path: &Path) -> std::io::Result<HeldFile>;
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File>;
+
+    /// The path of `file`, opened by [`Host::open_held_read`] at `opened_by`, with no link in it: a program that opens
+    /// the file by name opens this file, where `opened_by` can be pointed elsewhere by re-making a junction or a
+    /// symlink in it. Windows reads it from the handle (`GetFinalPathNameByHandle`), which fails on a volume that has
+    /// no DOS path. Elsewhere it is the canonical path of `opened_by`, refused unless it leads to `file` still;
+    /// `Unsupported` where a build cannot tell files apart.
+    fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf>;
 
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
     /// `path` is `InvalidInput`, "is a link": it is not opened through.

@@ -505,19 +505,27 @@ fn a_copy_step_whose_upload_fails_names_the_step_and_the_upload_and_commits_noth
 }
 
 #[skuld::test]
-fn the_iso_is_held_until_the_root_layer_is_built_and_not_while_a_step_runs(#[fixture(unicode_home)] home: &Path) {
+fn the_iso_is_held_while_the_root_layer_is_built_and_not_while_a_step_runs(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let iso = home.join("win.iso");
     std::fs::copy(iso_fixture("single-image.iso"), &iso).unwrap();
-    // Each step's guest is waited for once, before the step runs: say whether the ISO could be written then.
-    let writable = Arc::new(Mutex::new(Vec::new()));
-    let (seen, probed) = (writable.clone(), iso.clone());
-    fx.guests.on_ready(move || {
-        let open = OpenOptions::new().write(true).open(&probed);
-        seen.lock().unwrap().push(open.is_ok());
-    });
+    // Say whether the ISO could be written when the root layer is built, and when each step's guest is waited for.
+    let probe = |log: &Arc<Mutex<Vec<bool>>>| {
+        let (log, iso) = (log.clone(), iso.clone());
+        move || {
+            log.lock()
+                .unwrap()
+                .push(OpenOptions::new().write(true).open(&iso).is_ok())
+        }
+    };
+    let (base, steps) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+    fx.guests.on_base(probe(&base));
+    fx.guests.on_ready(probe(&steps));
     let recipe = Recipe::parse(
-        "from: { iso: win.iso }\nsteps:\n  - run: echo one\n",
+        "from: { iso: win.iso }
+steps:
+  - run: echo one
+",
         &home.join("r.devvm.yaml"),
     )
     .unwrap();
@@ -525,7 +533,12 @@ fn the_iso_is_held_until_the_root_layer_is_built_and_not_while_a_step_runs(#[fix
     fx.engine.build(&recipe, &BuildOptions::default()).unwrap();
 
     assert_eq!(
-        *writable.lock().unwrap(),
+        *base.lock().unwrap(),
+        [false],
+        "the ISO was not held while the root layer was built"
+    );
+    assert_eq!(
+        *steps.lock().unwrap(),
         [true],
         "the ISO was still held while the step ran"
     );

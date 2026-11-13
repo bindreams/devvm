@@ -4,6 +4,7 @@ use std::sync::Arc;
 use super::{host_checks, iso_check, iso_checks, tool_check};
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Check, Detail};
+use crate::copy::heap_tests::sha256_of;
 use crate::engine::Engine;
 use crate::engine::engine_tests::{engine_with, memory};
 use crate::guest::fake::FakeGuests;
@@ -232,8 +233,10 @@ fn the_iso_line_rehashes_each_known_iso_and_names_a_changed_one(#[fixture(unicod
 
     let checks = iso_checks(&memo, &TestHost, &progress);
     assert_eq!(checks.len(), 2);
-    let sha = iso_line(&checks, &fine).outcome.clone().unwrap();
-    assert_eq!(sha.len(), 64, "{sha}");
+    assert_eq!(
+        iso_line(&checks, &fine).outcome.clone().unwrap(),
+        sha256_of(&fine).to_string()
+    );
     let why = iso_line(&checks, &changed).outcome.clone().unwrap_err();
     assert!(why.contains("changed since it was keyed"), "{why}");
 }
@@ -247,8 +250,7 @@ fn iso_line<'a>(checks: &'a [Check], iso: &Path) -> &'a Check {
 
 #[skuld::test]
 fn an_iso_that_is_gone_is_information_with_the_remedy_not_a_failure(#[fixture(unicode_home)] home: &Path) {
-    // The README says an ISO may be moved or renamed: doctor cannot tell that from a deletion, and the memo of the old
-    // path must not fail it for ever.
+    // A moved ISO looks like a deleted one: its old memo must not fail doctor.
     let memo = IsoMemo::new(&Dirs::under(home));
     let gone = home.join("gone.iso");
     keyed(&memo, &gone, "single-image.iso");
@@ -302,6 +304,6 @@ fn a_memo_that_turns_out_valid_under_the_lock_is_an_ordinary_iso_line(#[fixture(
     };
     let check = iso_check(&memo, &TestHost, stale, &MemoryProgress::default()).expect("a line for the ISO");
     assert_eq!(check.name, format!("iso {}", iso.display()));
-    assert_eq!(check.outcome.unwrap().len(), 64);
+    assert_eq!(check.outcome.unwrap(), sha256_of(&iso).to_string());
     assert!(file.exists(), "a good memo is never moved");
 }

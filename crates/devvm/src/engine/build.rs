@@ -87,7 +87,7 @@ impl Engine {
                 .map(|meta| Built::from_meta(&meta))
         })?;
         // The ISO of an ISO root is held until here: the root layer is found or built, and no step reads the ISO. The
-        // Windows builder (W4b) reads it from `root` rather than by its path, and keeps it held until the guest's disk
+        // Windows builder reads it from `root` rather than by its path, and keeps it held until the guest's disk
         // has opened it.
         drop(root);
         for (index, key) in keys[1..].iter().enumerate() {

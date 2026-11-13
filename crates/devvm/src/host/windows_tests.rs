@@ -412,8 +412,6 @@ fn remove_tree_deletes_a_junction_at_the_root_and_leaves_its_target(#[fixture(un
     assert!(target.join("kept").is_file());
 }
 
-// A held read ---------------------------------------------------------------------------------------------------------
-
 #[skuld::test]
 fn a_file_held_for_reading_cannot_be_written_deleted_or_renamed_onto_or_away(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.iso");

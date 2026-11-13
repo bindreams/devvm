@@ -3,6 +3,7 @@ use std::path::Path;
 
 use super::{IsoMemo, key_iso, read_install_iso};
 use crate::host::Host;
+use crate::iso::Known;
 use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::{Dirs, ErrorKind};
@@ -123,15 +124,36 @@ fn the_final_path_of_a_held_iso_still_leads_to_it_after_a_junction_in_its_path_i
     junction::create(&other, &link).unwrap();
 
     let held = TestHost.file_id(&real.join("win.iso")).unwrap();
-    assert_eq!(TestHost.file_id(install.iso.final_path()).unwrap(), held);
+    let final_path = install.iso.final_path(&TestHost).unwrap();
+    assert_eq!(TestHost.file_id(&final_path).unwrap(), held);
     assert_ne!(
         TestHost.file_id(&link.join("win.iso")).unwrap(),
         held,
         "the name the ISO was opened by leads to another file now"
     );
+    assert!(!final_path.starts_with(&link), "{}", final_path.display());
+}
+
+#[skuld::test]
+fn an_iso_replaced_and_then_reached_by_another_spelling_of_its_path_leaves_one_memo(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let real = home.join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::copy(iso_fixture("single-image.iso"), real.join("win.iso")).unwrap();
+    junction::create(&real, home.join("alias")).unwrap();
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let progress = MemoryProgress::default();
+    let old = key_iso(&TestHost, &memo, &real.join("win.iso"), None, &progress).unwrap();
+    drop(old);
+
+    std::fs::copy(iso_fixture("install-esd.iso"), real.join("new.iso")).unwrap();
+    std::fs::rename(real.join("new.iso"), real.join("win.iso")).unwrap();
+    let new = key_iso(&TestHost, &memo, &home.join("alias").join("win.iso"), None, &progress).unwrap();
+
+    let known = memo.known().unwrap();
     assert!(
-        !install.iso.final_path().starts_with(&link),
-        "{}",
-        install.iso.final_path().display()
+        matches!(&known[..], [Known::Iso { sha256, .. }] if *sha256 == new.sha256),
+        "the replaced ISO's memo is gone: {known:?}"
     );
 }

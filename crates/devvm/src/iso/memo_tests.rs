@@ -7,7 +7,7 @@ use super::{IsoMemo, Known, QuarantineOutcome};
 use crate::host::{Host, OtherHost};
 use crate::iso::{HeldIso, WimArch, WimImage};
 use crate::test_support::fixtures::{MemoryProgress, non_unicode_name, unicode_home};
-use crate::test_support::host::TestHost;
+use crate::test_support::host::{RecordingHost, TestHost};
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
 fn digest(bytes: &[u8]) -> Sha256 {
@@ -163,7 +163,7 @@ fn any_one_of_the_three_changing_rehashes(#[fixture(unicode_home)] home: &Path) 
     assert_eq!(fx.sha256(&iso).unwrap(), digest(b"first"));
     assert_eq!(hashings(&fx.progress), 2, "mtime");
 
-    // The size alone: same mtime as before, one byte more.
+    // The size alone.
     std::fs::write(&iso, b"first!").unwrap();
     crate::host::current().set_mtime(&iso, 1_700_000_001).unwrap();
     assert_eq!(fx.sha256(&iso).unwrap(), digest(b"first!"));
@@ -318,24 +318,83 @@ fn a_moved_iso_is_remembered_at_its_new_path(#[fixture(unicode_home)] home: &Pat
 }
 
 #[skuld::test]
-fn an_iso_with_a_non_unicode_name_is_remembered_by_its_file_id(#[fixture(unicode_home)] home: &Path) {
+fn an_iso_with_a_non_unicode_name_is_hashed_each_time_and_the_build_is_told(#[fixture(unicode_home)] home: &Path) {
     let fx = Fixture::new(home);
     let iso = home.join(non_unicode_name());
     std::fs::write(&iso, b"windows").unwrap();
 
     assert_eq!(fx.sha256(&iso).unwrap(), digest(b"windows"));
     assert_eq!(fx.sha256(&iso).unwrap(), digest(b"windows"));
-    assert_eq!(
-        (hashings(&fx.progress), fx.reads.get()),
-        (1, 1),
-        "the second call is a hit"
+    assert_eq!((hashings(&fx.progress), fx.reads.get()), (2, 2));
+    assert_eq!(fx.memo.known().unwrap(), []);
+    assert!(
+        fx.progress
+            .messages()
+            .iter()
+            .any(|message| message.contains("not remembered") && message.contains("not Unicode")),
+        "{:?}",
+        fx.progress.messages()
     );
-    let known = fx.memo.known().unwrap();
-    let [Known::Iso { path, sha256 }] = &known[..] else {
-        panic!("{known:?}");
-    };
-    assert_eq!(*sha256, digest(b"windows"));
-    assert!(path.to_string_lossy().contains('\u{FFFD}'), "{}", path.display());
+}
+
+#[skuld::test]
+fn an_iso_whose_final_path_cannot_be_found_is_used_and_not_remembered(#[fixture(unicode_home)] home: &Path) {
+    let fx = Fixture::new(home);
+    let iso = iso_with(home, "a.iso", b"windows");
+    let host = RecordingHost::new();
+    host.fail_final_path();
+
+    assert_eq!(fx.sha256_via(&host, &iso).unwrap(), digest(b"windows"));
+    assert_eq!(fx.memo.known().unwrap(), []);
+    assert!(
+        fx.progress
+            .messages()
+            .iter()
+            .any(|message| message.contains("not remembered") && message.contains("no DOS path")),
+        "{:?}",
+        fx.progress.messages()
+    );
+}
+
+#[skuld::test]
+fn a_memo_that_cannot_be_written_is_reported_and_the_iso_is_used(#[fixture(unicode_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let fx = Fixture::new(home);
+    let iso = iso_with(home, "a.iso", b"windows");
+    std::fs::create_dir_all(dirs.iso_memo().join(".lock")).unwrap();
+
+    assert_eq!(fx.sha256(&iso).unwrap(), digest(b"windows"));
+    assert_eq!(fx.memo.known().unwrap(), []);
+    assert!(
+        fx.progress
+            .messages()
+            .iter()
+            .any(|message| message.contains("not remembered") && message.contains(".lock")),
+        "{:?}",
+        fx.progress.messages()
+    );
+}
+
+#[skuld::test]
+fn an_iso_that_changes_while_it_is_read_is_refused_and_not_remembered(#[fixture(unicode_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let fx = Fixture::new(home);
+    let iso = iso_with(home, "a.iso", b"windows");
+    // A host that cannot hold: nothing stops the write.
+    let error = fx
+        .memo
+        .open(&OtherHost, &iso, &fx.progress, &|_| {
+            std::fs::write(&iso, b"windows, changed").unwrap();
+            Ok(only_image())
+        })
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert!(
+        error.message().contains("a.iso") && error.message().contains("changed while"),
+        "{error}"
+    );
+    assert!(!dirs.iso_memo().exists());
 }
 
 #[skuld::test]

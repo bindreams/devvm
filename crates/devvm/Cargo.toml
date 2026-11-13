@@ -47,7 +47,7 @@ tar = "0.4.46"
 fatfs = { version = "=0.3.6", default-features = false, features = ["std", "alloc"] }
 
 # A Windows ISO's UDF tree, its El Torito catalog and its image list (`iso/`). The hadris crates are release candidates of
-# one version (about 12 small crates in all): a breaking rc is possible, so the pin is exact and a human re-checks it
+# one version: a breaking rc is possible, so the pin is exact and a human re-checks it
 # before a bump (Renovate does not automerge it).
 hadris-udf = "=3.0.0-rc.3"
 hadris-fs = { version = "=3.0.0-rc.3", features = ["std", "sync"] }

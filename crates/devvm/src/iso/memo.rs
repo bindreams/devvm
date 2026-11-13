@@ -4,19 +4,17 @@
 //! One small file per ISO, in the cache directory, holds the hash, the image list and what the ISO looked like when
 //! they were read: its size, modification time and file id. The ISO is named by its file id (volume and file number),
 //! so every spelling of one file shares one memo: another case, a junction, a symlink, a short name. A volume without
-//! file ids (exFAT, FAT32) names it by its canonical path instead, which resolves links and case, and tells two ISOs
+//! file ids (exFAT, FAT32) names it by its final path instead, which resolves links and case, and tells two ISOs
 //! apart by size and time alone: a file replaced in place by one of the same size and time there is taken for the old
 //! one. The hash and the list are reused while the ISO's identity is unchanged; any change reads the ISO again. A memo
 //! is a cache: one that cannot be read is moved to quarantine and made again. The ISO itself is never copied or kept;
 //! recipes keep it at their path.
 //!
-//! A memo also keeps the path its ISO was last seen at, for `devvm doctor`: a build that finds the ISO elsewhere
-//! updates it, and a memo written for a path removes the other memos of that path (an ISO replaced there by another
-//! file), so `devvm doctor` never meets the replaced one.
-//!
-//! A writer holds the directory's `.lock` exclusively while it publishes, prunes and sweeps the temporary files a
-//! crashed writer left; whoever moves a memo to quarantine holds it exclusively too. So none of them meets another's
-//! file.
+//! A memo also keeps the path its ISO was last seen at, for `devvm doctor`, and the held file's final path, which has
+//! no link in it. A build that finds the ISO elsewhere updates them, and a memo written for a final path removes the
+//! other memos of that path (an ISO replaced there by another file), so `devvm doctor` never meets the replaced one.
+//! An ISO whose paths are not Unicode, or whose final path cannot be found, is not remembered: it is read again each
+//! build, and the build says so.
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
@@ -52,16 +50,20 @@ struct Identity {
 
 /// How a memo names its ISO.
 struct Names {
-    /// What the memo file's name is made from: the file id, or the canonical path where there is none.
+    /// What the memo file's name is made from: the file id, or the final path where there is none.
     key: String,
-    /// The ISO's absolute path as it was given, for `devvm doctor`; a name that is not Unicode is shown with U+FFFD.
+    /// The ISO's absolute path as it was given, for `devvm doctor`.
     path: String,
+    /// The held file's path with no link in it ([`HeldIso::final_path`]): what tells a memo's ISO from the file that
+    /// replaced it at the same place, whichever way the path is spelled.
+    final_path: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Entry {
     key: String,
     path: String,
+    final_path: String,
     identity: Identity,
     sha256: Sha256,
     images: Vec<WimImage>,
@@ -85,7 +87,7 @@ pub(crate) struct HashedIso {
 /// What a memo file turned out to be.
 enum Slot {
     Absent,
-    Entry(Entry),
+    Entry(Box<Entry>),
     Junk,
 }
 
@@ -134,22 +136,23 @@ impl IsoMemo {
     ) -> Result<HashedIso> {
         let held = HeldIso::open(host, iso)?;
         let identity = identity_of(host, held.file(), iso)?;
-        let names = names_of(&identity, iso)?;
+        let names = names_of(host, &identity, &held, progress);
         if let Some(names) = &names
             && let Some(entry) = self.read(&names.key, progress)?
             && entry.identity == identity
         {
             let (sha256, images) = (entry.sha256, entry.images.clone());
-            if entry.path != names.path {
+            if entry.path != names.path || entry.final_path != names.final_path {
                 // The ISO was moved: the memo names where it is now.
-                self.write(
+                self.remember(
                     host,
                     &Entry {
                         path: names.path.clone(),
+                        final_path: names.final_path.clone(),
                         ..entry
                     },
                     progress,
-                )?;
+                );
             }
             return Ok(HashedIso {
                 iso: held,
@@ -159,15 +162,22 @@ impl IsoMemo {
         }
         let images = read_images(&held)?;
         let sha256 = hash_held(&held, identity.size, progress)?;
-        if let Some(Names { key, path }) = names {
+        if identity_of(host, held.file(), iso)? != identity {
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!("{} changed while it was read", iso.display()),
+            ));
+        }
+        if let Some(Names { key, path, final_path }) = names {
             let entry = Entry {
                 key,
                 path,
+                final_path,
                 identity,
                 sha256,
                 images: images.clone(),
             };
-            self.write(host, &entry, progress)?;
+            self.remember(host, &entry, progress);
         }
         Ok(HashedIso {
             iso: held,
@@ -225,7 +235,7 @@ impl IsoMemo {
         let accepts = |entry: &Entry| entry.key == key;
         match look(&file, &accepts)? {
             Slot::Absent => Ok(None),
-            Slot::Entry(entry) => Ok(Some(entry)),
+            Slot::Entry(entry) => Ok(Some(*entry)),
             Slot::Junk => Ok(match self.quarantine_unless_valid(&file, &accepts, progress)? {
                 Handled::Valid(entry) => Some(entry),
                 Handled::Moved(_) | Handled::Gone => None,
@@ -260,7 +270,7 @@ impl IsoMemo {
         })?;
         Ok(match look(file, accepts)? {
             Slot::Absent => Handled::Gone,
-            Slot::Entry(entry) => Handled::Valid(entry),
+            Slot::Entry(entry) => Handled::Valid(*entry),
             Slot::Junk => match quarantine_file(&self.quarantine, "iso-memo", file, progress)? {
                 Some(target) => Handled::Moved(target),
                 None => Handled::Gone,
@@ -268,8 +278,15 @@ impl IsoMemo {
         })
     }
 
-    /// Publishes `entry` by rename, so a reader sees the whole file or none, and removes the other memos of its path:
-    /// the ISOs that were there before. The temporary files a writer that died left are removed first.
+    /// [`IsoMemo::write`], where a failure is reported: the memo is a cache, and the ISO is used without it.
+    fn remember(&self, host: &dyn Host, entry: &Entry, progress: &dyn Progress) {
+        if let Err(e) = self.write(host, entry, progress) {
+            progress.message(&format!("{}: not remembered, {}", entry.path, e.message()));
+        }
+    }
+
+    /// Publishes `entry` by rename, so a reader sees the whole file or none, and removes the other memos of its final
+    /// path: the ISOs that were there before. The temporary files a writer that died left are removed first.
     fn write(&self, host: &dyn Host, entry: &Entry, progress: &dyn Progress) -> Result<()> {
         let mut lock = self.lock()?;
         lock.lock(Mode::Exclusive, "another devvm process using the ISO memos", &mut |m| {
@@ -294,7 +311,7 @@ impl IsoMemo {
             let other = self.dir.join(name);
             name.ends_with(".json")
                 && other != file
-                && read_entry_file(&other).is_ok_and(|other| other.path == entry.path)
+                && read_entry_file(&other).is_ok_and(|other| other.final_path == entry.final_path)
         };
         report(sweep(&self.dir, &replaced, &remove_if_present));
         Ok(())
@@ -307,30 +324,32 @@ fn look(file: &Path, accepts: &dyn Fn(&Entry) -> bool) -> Result<Slot> {
         Err(e) if is_absent(&e) => Slot::Absent,
         Err(e) => return Err(io(file, "read", e)),
         Ok(bytes) => match serde_json::from_slice::<Entry>(&bytes) {
-            Ok(entry) if accepts(&entry) => Slot::Entry(entry),
+            Ok(entry) if accepts(&entry) => Slot::Entry(Box::new(entry)),
             _ => Slot::Junk,
         },
     })
 }
 
-/// How a memo names the ISO at `iso`, whose identity is `identity`: by file id, or by canonical path where the file
-/// system has none. `None` when that canonical path is not Unicode, which a key cannot hold: the ISO is not remembered.
-fn names_of(identity: &Identity, iso: &Path) -> Result<Option<Names>> {
-    let absolute = std::path::absolute(iso).map_err(|e| io(iso, "resolve", e))?;
-    let key = match identity.file_id {
-        Some(id) => format!("id:{:x}:{:x}", id.volume, id.file),
-        None => {
-            let canonical = std::fs::canonicalize(iso).map_err(|e| io(iso, "resolve", e))?;
-            match canonical.to_str() {
-                Some(text) => format!("path:{text}"),
-                None => return Ok(None),
-            }
-        }
+/// How a memo names the ISO `held`, whose identity is `identity`: by file id, or by final path where the file system has
+/// none. `None`, with the reason said through `progress`, when it cannot be named: the ISO is not remembered.
+fn names_of(host: &dyn Host, identity: &Identity, held: &HeldIso, progress: &dyn Progress) -> Option<Names> {
+    let named = || -> std::result::Result<Names, String> {
+        let not_unicode = || "its path is not Unicode".to_owned();
+        let absolute = std::path::absolute(held.path()).map_err(|e| format!("cannot resolve its path: {e}"))?;
+        let final_path = held.final_path(host).map_err(|e| e.to_string())?;
+        let (path, final_path) = (
+            absolute.to_str().ok_or_else(not_unicode)?.to_owned(),
+            final_path.to_str().ok_or_else(not_unicode)?.to_owned(),
+        );
+        let key = match identity.file_id {
+            Some(id) => format!("id:{:x}:{:x}", id.volume, id.file),
+            None => format!("path:{final_path}"),
+        };
+        Ok(Names { key, path, final_path })
     };
-    Ok(Some(Names {
-        key,
-        path: absolute.to_string_lossy().into_owned(),
-    }))
+    named()
+        .inspect_err(|why| progress.message(&format!("{}: not remembered, {why}", held.path().display())))
+        .ok()
 }
 
 fn sort_key(known: &Known) -> &Path {

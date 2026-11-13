@@ -137,7 +137,7 @@ fn an_odd_xml_resource_size_is_its_own_error() {
     let error = read_image_list(&mut Cursor::new(wim.clone()), "install.wim").unwrap_err();
     assert!(error.message().contains("odd"), "{error}");
     assert!(!error.message().contains("outside the file"), "{error}");
-    // The size is checked against the file first, as before.
+    // The size is checked against the file before the XML is read.
     wim[72..80].copy_from_slice(&((1u64 << 40) | 1).to_le_bytes());
     let error = read_image_list(&mut Cursor::new(wim), "install.wim").unwrap_err();
     assert!(error.message().contains("outside the file"), "{error}");
@@ -246,4 +246,36 @@ fn the_architecture_codes_are_named() {
     assert_eq!(WimArch::from_code(9), WimArch::X64);
     assert_eq!(WimArch::from_code(12).describe(), "arm64 (ARCH 12)");
     assert_eq!(WimArch::from_code(77).describe(), "an unknown architecture (ARCH 77)");
+}
+
+#[skuld::test]
+fn an_image_list_that_ends_inside_an_element_is_refused() {
+    let cut = "<WIM><IMAGE INDEX=\"1\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><LANGUAGES><DEFAULT>en-US</DEFAULT>";
+    let error = parse_image_list(cut.as_bytes(), "install.wim").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(
+        error.message().contains("install.wim") && error.message().contains("ends"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn an_image_written_as_an_empty_element_is_refused_naming_it() {
+    let list = "<WIM><IMAGE INDEX=\"2\"/></WIM>";
+    let error = parse_image_list(list.as_bytes(), "install.wim").unwrap_err();
+    assert!(
+        error.message().contains("image 2 of install.wim has no NAME"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn a_field_written_as_an_empty_element_is_missing() {
+    let list = "<WIM><IMAGE INDEX=\"1\"><NAME/><WINDOWS><ARCH>9</ARCH><LANGUAGES><DEFAULT>en-US</DEFAULT></LANGUAGES>\
+                </WINDOWS></IMAGE></WIM>";
+    let error = parse_image_list(list.as_bytes(), "install.wim").unwrap_err();
+    assert!(
+        error.message().contains("image 1 of install.wim has no NAME"),
+        "{error}"
+    );
 }
