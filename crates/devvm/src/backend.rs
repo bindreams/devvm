@@ -319,6 +319,9 @@ pub(crate) trait Machine: Send {
     /// Lets a frozen machine run and returns once its endpoints are known: `ssh_endpoints()` and the `ssh` of
     /// `record()` are valid only from then on. `record()` is valid before, apart from the endpoints. `Internal` on a
     /// machine from `Backend::attach`.
+    ///
+    /// Returning completes a command that the VM's main loop serves, with or without forwards, so every drive of the
+    /// spec is open by then: a caller may release what only the opening needed (an ISO held against writes).
     fn resume(&mut self) -> Result<()>;
 
     /// Disarms the containment of a resumed machine: it now outlives this process. `Ok` on a machine from

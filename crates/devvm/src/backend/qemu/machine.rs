@@ -262,7 +262,8 @@ impl Machine for QemuMachine {
     }
 
     /// Lets QEMU run, waits for its control socket (the greeting proves QEMU finished initialising, so the forwards are
-    /// bound) and reads the ports it chose. Fails with the contents of `qemu.log` when the process exits first.
+    /// bound) and reads the ports it chose. Fails with the contents of `qemu.log` when the process exits first. The
+    /// `info usernet` read is made with no forwards too: it is the main-loop command [`Machine::resume`] promises.
     fn resume(&mut self) -> Result<()> {
         if self.attached {
             return Err(Error::new(
