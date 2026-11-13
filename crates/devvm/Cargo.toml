@@ -46,6 +46,16 @@ tar = "0.4.46"
 # does not automerge it).
 fatfs = { version = "=0.3.6", default-features = false, features = ["std", "alloc"] }
 
+# A Windows ISO's UDF tree, its El Torito catalog and its image list (`iso/`). The hadris crates are release candidates of
+# one version: a breaking rc is possible, so the pin is exact and a human re-checks it
+# before a bump (Renovate does not automerge it).
+hadris-udf = "=3.0.0-rc.3"
+hadris-fs = { version = "=3.0.0-rc.3", features = ["std", "sync"] }
+hadris-storage = { version = "=3.0.0-rc.3", features = ["std"] }
+hadris-iso = "=3.0.0-rc.3"
+# The one XML crate: the image list of `install.wim` (`iso/wim.rs`) and the escaping of `Autounattend.xml`.
+quick-xml = "0.42"
+
 [dev-dependencies]
 skuld = { workspace = true }
 # Virtual time for the boot-gate test (`access/session_tests.rs`).

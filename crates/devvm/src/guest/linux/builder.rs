@@ -116,6 +116,6 @@ fn describe(source: &Source) -> String {
         Source::Embedded(name) => format!("the embedded recipe {name}"),
         Source::DiskImage(_) => "a disk image".to_owned(),
         Source::Oci { reference, .. } => format!("the OCI image {reference}"),
-        Source::Iso { path } => format!("a Windows ISO ({})", path.display()),
+        Source::Iso { path, .. } => format!("a Windows ISO ({})", path.display()),
     }
 }

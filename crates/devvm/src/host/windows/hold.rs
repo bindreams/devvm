@@ -231,6 +231,24 @@ pub(super) fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File>
     Ok(file)
 }
 
+/// [`Host::open_held_read`](crate::host::Host::open_held_read): read access and share mode `FILE_SHARE_READ`, so no other
+/// open can write the file, delete it or rename it, whichever handle does. A file that someone has open for writing, or
+/// refuses readers, is `ERROR_SHARING_VIOLATION`.
+pub(super) fn open_held_read(path: &Path) -> std::io::Result<File> {
+    open(path, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, 0, None).map_err(|failure| {
+        if failure.is_sharing_violation() {
+            return std::io::Error::new(
+                std::io::ErrorKind::ResourceBusy,
+                format!(
+                    "another program has it open for writing, or does not let others read it ({})",
+                    failure.error
+                ),
+            );
+        }
+        failure.into()
+    })
+}
+
 /// Holds the file at `path` if nobody else does. A link at the name is refused. A file that is held
 /// (`ERROR_SHARING_VIOLATION`) is `Busy`: somebody else has it, and it is not absent.
 pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {

@@ -160,7 +160,8 @@ fn guest_kind_follows_the_root(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(
         flat.root,
         Source::Iso {
-            path: home.join("win.iso")
+            path: home.join("win.iso"),
+            edition: None,
         }
     );
 
