@@ -1130,25 +1130,10 @@ fn a_host_that_cannot_tell_free_space_says_so(#[fixture(unicode_home)] home: &Pa
 #[skuld::test]
 fn read_from_returns_the_bytes_of_a_file_from_an_offset_on(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("log");
-    std::fs::write(
-        &path,
-        b"first
-second
-",
-    )
-    .unwrap();
+    std::fs::write(&path, b"first\nsecond\n").unwrap();
 
-    assert_eq!(
-        super::read_from(&path, 6).unwrap(),
-        b"second
-"
-    );
-    assert_eq!(
-        super::read_from(&path, 0).unwrap(),
-        b"first
-second
-"
-    );
+    assert_eq!(super::read_from(&path, 6).unwrap(), b"second\n");
+    assert_eq!(super::read_from(&path, 0).unwrap(), b"first\nsecond\n");
 }
 
 #[skuld::test]

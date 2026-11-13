@@ -474,10 +474,7 @@ fn a_copy_step_passes_the_upfront_check_on_a_windows_guest(#[fixture(unicode_hom
     let dirs = Dirs::under(home);
     let engine = engine_with(dirs.clone(), &TestHost, None, qemu_guests(home), memory());
     let recipe = Recipe::parse(
-        "from: { iso: missing.iso }
-steps:
-  - copy: { from: git-tracked, to: C:/x }
-",
+        "from: { iso: missing.iso }\nsteps:\n  - copy: { from: git-tracked, to: C:/x }\n",
         &home.join("r.devvm.yaml"),
     )
     .unwrap();
@@ -505,9 +502,7 @@ fn build_with_a_base_that_ends(home: &Path, expires: std::time::SystemTime) -> c
     );
     let recipe = Recipe::parse(
         &format!(
-            "from: {{ iso: {} }}
-steps: []
-",
+            "from: {{ iso: {} }}\nsteps: []\n",
             serde_json::to_string(iso.to_str().unwrap()).unwrap()
         ),
         &home.join("r.devvm.yaml"),

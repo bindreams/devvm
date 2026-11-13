@@ -306,16 +306,13 @@ fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
     let quiet = super::with_qemu_output(exited(), "");
     assert_eq!(
         quiet.message(),
-        "the VM process of launch 2 exited with exit code: 1
-QEMU printed nothing"
+        "the VM process of launch 2 exited with exit code: 1\nQEMU printed nothing"
     );
     assert_eq!(quiet.kind(), ErrorKind::Unavailable);
 
     let loud = super::with_qemu_output(exited(), "qemu: out of memory");
     assert_eq!(
         loud.message(),
-        "the VM process of launch 2 exited with exit code: 1
-the end of QEMU's output:
-qemu: out of memory"
+        "the VM process of launch 2 exited with exit code: 1\nthe end of QEMU's output:\nqemu: out of memory"
     );
 }
