@@ -306,7 +306,8 @@ pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Resul
 #[derive(Clone, Debug)]
 pub(crate) struct MachineExit {
     pub status: std::process::ExitStatus,
-    /// What the backend knows of this launch's end: for QEMU, what that launch printed. Empty when nothing is known.
+    /// What the backend knows of why this launch failed: for QEMU, what that launch printed. Empty when the VM exited
+    /// successfully or nothing is known; a caller reads it for a failing status.
     pub output: String,
 }
 

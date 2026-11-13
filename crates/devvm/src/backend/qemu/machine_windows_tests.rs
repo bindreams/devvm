@@ -9,7 +9,7 @@ use serde_json::json;
 use super::QemuMachine;
 use crate::Arch;
 use crate::ErrorKind;
-use crate::backend::fake::ask_to_crash;
+use crate::backend::fake::{ask_to_crash, ask_to_exit};
 use crate::backend::qemu::qmp::qmp_tests::{Log, Server, Session, serve};
 use crate::backend::{Machine, MachineRecord};
 use crate::contain::{Lifetime, VmProcess};
@@ -404,10 +404,9 @@ fn the_output_a_launched_machine_quotes_is_only_what_its_own_launch_printed(#[fi
     world.end_qemu();
 }
 
-#[skuld::test]
-fn a_launched_machine_that_exited_gives_its_status_and_the_output_of_its_own_launch(
-    #[fixture(unicode_home)] home: &Path,
-) {
+/// A launched, resumed machine whose VM runs, whose log is `log` and whose output begins at `from`, and the fake VM's
+/// port.
+fn running_machine(home: &Path, log: PathBuf, from: u64) -> (QemuMachine, std::net::SocketAddr) {
     let World { qemu, record, sock, .. } = world(home);
     let vm = Arc::try_unwrap(qemu)
         .ok()
@@ -415,10 +414,6 @@ fn a_launched_machine_that_exited_gives_its_status_and_the_output_of_its_own_lau
         .into_inner()
         .unwrap();
     let port = fake_vm::await_port(&vm, home);
-    let log = home.join("qemu.log");
-    append(&log, "qemu: an earlier launch failed\n");
-    let from = std::fs::metadata(&log).unwrap().len();
-    append(&log, "qemu: this launch ran out of memory\n");
     let host = host::current();
     let watch = host.watch_process(vm.id()).unwrap();
     let mut machine = QemuMachine::launched(
@@ -435,13 +430,60 @@ fn a_launched_machine_that_exited_gives_its_status_and_the_output_of_its_own_lau
     );
     machine.resumed = true;
     assert!(machine.try_wait().unwrap().is_none(), "the VM runs");
+    (
+        machine,
+        std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+    )
+}
 
-    ask_to_crash(std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port))).unwrap();
+#[skuld::test]
+fn a_launched_machine_that_exited_gives_its_status_and_the_output_of_its_own_launch(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let log = home.join("qemu.log");
+    append(&log, "qemu: an earlier launch failed\n");
+    let from = std::fs::metadata(&log).unwrap().len();
+    append(&log, "qemu: this launch ran out of memory\n");
+    let (mut machine, addr) = running_machine(home, log, from);
+
+    ask_to_crash(addr).unwrap();
     machine.vm.wait().unwrap();
 
     let exit = machine.try_wait().unwrap().expect("the VM has exited");
     assert_eq!(exit.status.code(), Some(1), "{}", exit.status);
     assert!(exit.output.contains("this launch ran out of memory"), "{}", exit.output);
     assert!(!exit.output.contains("an earlier launch"), "{}", exit.output);
+    machine.vm.kill().unwrap();
+}
+
+#[skuld::test]
+fn a_failing_exit_of_a_launch_that_printed_nothing_has_empty_output(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("qemu.log");
+    append(&log, "qemu: an earlier launch failed\n");
+    let from = std::fs::metadata(&log).unwrap().len();
+    let (mut machine, addr) = running_machine(home, log, from);
+
+    ask_to_crash(addr).unwrap();
+    machine.vm.wait().unwrap();
+
+    let exit = machine.try_wait().unwrap().expect("the VM has exited");
+    assert_eq!(exit.status.code(), Some(1), "{}", exit.status);
+    assert_eq!(exit.output, "", "nothing is known, so nothing is quoted");
+    machine.vm.kill().unwrap();
+}
+
+#[skuld::test]
+fn a_successful_exit_reads_no_log(#[fixture(unicode_home)] home: &Path) {
+    // The log is a directory, which cannot be read: a read would show in the output.
+    let log = home.join("qemu.log");
+    std::fs::create_dir(&log).unwrap();
+    let (mut machine, addr) = running_machine(home, log, 0);
+
+    ask_to_exit(addr).unwrap();
+    machine.vm.wait().unwrap();
+
+    let exit = machine.try_wait().unwrap().expect("the VM has exited");
+    assert!(exit.status.success(), "{}", exit.status);
+    assert_eq!(exit.output, "");
     machine.vm.kill().unwrap();
 }

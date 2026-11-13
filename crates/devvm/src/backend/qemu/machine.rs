@@ -3,6 +3,7 @@
 //! QEMU's output goes to `qemu.log` in the instance directory. The file is quoted in errors when the process has exited
 //! and is never parsed: a healthy guest reset writes WHPX error lines to it.
 
+use std::io::{Read, Seek, SeekFrom};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,6 +34,22 @@ const NO_REBOOT_REFUSAL: &str = "cannot reset the VM: it runs with -no-reboot, u
 /// What QEMU wrote to its standard output and error: `qemu.log` in the instance directory.
 pub(super) fn qemu_log(dir: &Path) -> PathBuf {
     dir.join("qemu.log")
+}
+
+/// The text `log` holds from byte `from` on, trimmed: one launch's output, since every launch in a directory appends to
+/// the file. Only that part is read. A `from` past the end of the file (it was truncated) reads the whole file.
+fn printed_since(log: &Path, from: u64) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(log)?;
+    let from = if from <= file.metadata()?.len() { from } else { 0 };
+    file.seek(SeekFrom::Start(from))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
+}
+
+/// The note that stands for a log that could not be read.
+fn unreadable_log(e: &std::io::Error) -> String {
+    format!("(it could not be read: {e})")
 }
 
 pub(super) struct QemuMachine {
@@ -148,23 +165,13 @@ impl QemuMachine {
         self.exited(error.message())
     }
 
-    /// What QEMU printed in this launch, which `qemu.log` holds from `log_from` on: its text, or a note in brackets
-    /// when it printed nothing or the file cannot be read.
+    /// What QEMU printed in this launch, for an error: its text, or a note in brackets when it printed nothing or the
+    /// file cannot be read.
     fn output(&self) -> String {
-        let output = match std::fs::read(&self.log) {
-            Ok(bytes) => {
-                let mine = usize::try_from(self.log_from)
-                    .ok()
-                    .and_then(|from| bytes.get(from..))
-                    .unwrap_or(&bytes);
-                String::from_utf8_lossy(mine).trim().to_owned()
-            }
-            Err(e) => return format!("(it could not be read: {e})"),
-        };
-        if output.is_empty() {
-            "(it printed nothing)".to_owned()
-        } else {
-            output
+        match printed_since(&self.log, self.log_from) {
+            Ok(text) if text.is_empty() => "(it printed nothing)".to_owned(),
+            Ok(text) => text,
+            Err(e) => unreadable_log(&e),
         }
     }
 
@@ -292,15 +299,18 @@ impl Machine for QemuMachine {
         if self.attached { Ok(()) } else { self.vm.release() }
     }
 
-    /// The status with what QEMU printed in this launch: the account of why it ended.
+    /// The status, with what QEMU printed in this launch when it failed: the account of why it ended. The log is read
+    /// only then, and is empty in the output when QEMU printed nothing.
     fn try_wait(&self) -> Result<Option<MachineExit>> {
         let Some(status) = self.vm.try_wait()? else {
             return Ok(None);
         };
-        Ok(Some(MachineExit {
-            status,
-            output: self.output(),
-        }))
+        let output = if status.success() {
+            String::new()
+        } else {
+            printed_since(&self.log, self.log_from).unwrap_or_else(|e| unreadable_log(&e))
+        };
+        Ok(Some(MachineExit { status, output }))
     }
 
     /// Resets the guest inside this QEMU. Nothing is sent to the VM for a refusal: a machine launched with `-no-reboot`
