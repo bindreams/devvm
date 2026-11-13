@@ -236,11 +236,7 @@ fn a_failure_on_one_entry_restores_its_file_and_leaves_the_files_after_it_as_the
     let archive = home.join("devvm-copy-x.tar");
     write_tar(
         &archive,
-        &[
-            ("first.txt", b"new"),
-            ("held.txt", b"new"),
-            ("last.txt", b"new"),
-        ],
+        &[("first.txt", b"new"), ("held.txt", b"new"), ("last.txt", b"new")],
     );
     let destination = home.join("target");
     std::fs::create_dir_all(&destination).unwrap();

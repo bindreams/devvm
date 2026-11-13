@@ -101,7 +101,10 @@ fn an_entry_that_is_not_a_file_or_a_directory_or_lies_outside_ends_the_step_befo
             .unwrap_or_else(|| panic!("`{needle}` is not in {script}"))
     };
     assert!(at("lies outside the destination") < at("ExtractToFile"), "{script}");
-    assert!(at("which a Windows guest does not extract") < at("ExtractToFile"), "{script}");
+    assert!(
+        at("which a Windows guest does not extract") < at("ExtractToFile"),
+        "{script}"
+    );
 }
 
 #[skuld::test]

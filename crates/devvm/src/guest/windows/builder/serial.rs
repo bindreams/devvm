@@ -62,12 +62,15 @@ impl Serial {
     }
 }
 
-/// A launch's serial log, read as the guest writes it: each read takes only the bytes written since the one before, so
-/// a long build does not read its log again for every poll.
+/// A launch's serial log, read as the guest writes it: each poll reads only the bytes past the ones it has, so a long
+/// build does not read its log again for every poll, and a line the guest is still writing is kept in memory until its
+/// line end comes.
 pub(super) struct LogReader {
     path: PathBuf,
-    /// How many bytes are taken in: those up to the last line end, until the log is complete.
-    offset: u64,
+    /// How many bytes of the file are taken in, the unfinished last line included.
+    read: u64,
+    /// The bytes after the last line end seen: a line the guest is still writing.
+    unfinished: Vec<u8>,
     whole: Serial,
 }
 
@@ -75,23 +78,30 @@ impl LogReader {
     pub(super) fn new(path: &Path) -> LogReader {
         LogReader {
             path: path.to_owned(),
-            offset: 0,
+            read: 0,
+            unfinished: Vec::new(),
             whole: Serial::default(),
         }
     }
 
     /// Takes in what the guest wrote since the last call and returns the markers of that part alone. A line the guest
     /// is still writing waits for its line end, unless the log is `complete` (the guest is gone): then a last line
-    /// without one is read too. A log QEMU has not made yet is empty.
+    /// without one is read too. A log QEMU has not made yet is empty. An error does not name the log's path: the
+    /// build's directory is gone when it is read.
     pub(super) fn poll(&mut self, complete: bool) -> Result<Serial> {
         let new = self.read_new()?;
+        self.read += new.len() as u64;
+        self.unfinished.extend_from_slice(&new);
         let used = if complete {
-            new.len()
+            self.unfinished.len()
         } else {
-            new.iter().rposition(|byte| *byte == b'\n').map_or(0, |end| end + 1)
+            self.unfinished
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |end| end + 1)
         };
-        self.offset += used as u64;
-        let part = read(&new[..used]);
+        let part = read(&self.unfinished[..used]);
+        self.unfinished.drain(..used);
         self.whole.append(&part);
         Ok(part)
     }
@@ -102,19 +112,13 @@ impl LogReader {
     }
 
     fn read_new(&self) -> Result<Vec<u8>> {
-        let fail = |e| {
-            Error::io(
-                ErrorKind::Io,
-                format!("cannot read the serial log {}", self.path.display()),
-                e,
-            )
-        };
+        let fail = |e| Error::io(ErrorKind::Io, "cannot read the serial log", e);
         let mut file = match std::fs::File::open(&self.path) {
             Ok(file) => file,
             Err(e) if is_absent(&e) => return Ok(Vec::new()),
             Err(e) => return Err(fail(e)),
         };
-        file.seek(SeekFrom::Start(self.offset)).map_err(fail)?;
+        file.seek(SeekFrom::Start(self.read)).map_err(fail)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).map_err(fail)?;
         Ok(bytes)

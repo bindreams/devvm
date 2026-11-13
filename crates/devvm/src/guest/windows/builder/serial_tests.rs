@@ -238,3 +238,45 @@ DEVVM-BASE-FAILED=boom
     assert_eq!(whole.failed.as_deref(), Some("boom"));
     assert!(!whole.done);
 }
+
+#[skuld::test]
+fn a_line_that_takes_several_polls_to_finish_is_read_once_and_each_poll_reads_only_past_the_bytes_it_has(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let log = home.join("serial.log");
+    let mut reader = LogReader::new(&log);
+    let length = |path: &Path| std::fs::metadata(path).unwrap().len();
+
+    append(&log, b"DEVVM-PROGRESS=spec");
+    let first = reader.poll(false).unwrap();
+    assert_eq!(
+        reader.read,
+        length(&log),
+        "the unfinished line is taken in, not left to be read again"
+    );
+    append(&log, b"ial");
+    let second = reader.poll(false).unwrap();
+    assert_eq!(reader.read, length(&log));
+    append(&log, b"ize\r\n");
+    let third = reader.poll(false).unwrap();
+
+    assert_eq!(first, Serial::default());
+    assert_eq!(second, Serial::default());
+    assert_eq!(third.progress, ["specialize"]);
+    assert_eq!(reader.read, length(&log));
+    assert_eq!(reader.poll(false).unwrap(), Serial::default());
+}
+
+#[skuld::test]
+fn a_log_that_cannot_be_read_is_an_error_that_does_not_name_its_path(#[fixture(unicode_home)] home: &Path) {
+    // A directory where the log should be: opening or reading it fails on every host.
+    let log = home.join("a-directory-not-a-log");
+    std::fs::create_dir(&log).unwrap();
+    let mut reader = LogReader::new(&log);
+
+    let error = reader.poll(false).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert!(!error.message().contains("a-directory-not-a-log"), "{error}");
+    assert!(error.message().contains("serial log"), "{error}");
+}
