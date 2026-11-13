@@ -9,12 +9,12 @@ use super::build_dir::BuildDir;
 use crate::copy::{self, Snapshot};
 use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
-use crate::iso::IsoMemo;
+use crate::iso::{IsoMemo, IsoRoot, key_iso};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, Recipe, Shell, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
 use crate::vm::{Image, Vm};
-use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, RunAs, Sha256, StartOptions, random};
+use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, RunAs, StartOptions, random};
 
 #[cfg(test)]
 #[path = "build_tests.rs"]
@@ -52,12 +52,12 @@ impl Engine {
         let arch = opts.arch.unwrap_or_else(Arch::host);
         let guest = self.guests.os(flat.guest)?;
         let builder = self.guests.builder(flat.guest)?;
-        let memo = IsoMemo::new(&self.dirs);
-        let (root, base) = root_content(&flat.root, arch, &|iso| {
-            memo.sha256(self.host, iso, self.progress.as_ref())
-        })?;
         self.backend()?;
         let store = self.store()?;
+        let memo = IsoMemo::new(&self.dirs);
+        let (root, base) = root_content(&flat.root, arch, &|iso, edition| {
+            key_iso(self.host, &memo, iso, edition, self.progress.as_ref())
+        })?;
 
         let build_dir = BuildDir::create(self)?;
         let snapshots = self.snapshots(&flat, build_dir.path())?;
@@ -150,12 +150,12 @@ fn refuse_set_steps(flat: &Flattened) -> Result<()> {
     }
 }
 
-/// What the key of the root layer hashes, and the base in the words of an `expired-base` error. `iso_sha256` gives the
-/// content hash of an ISO.
+/// What the key of the root layer hashes, and the base in the words of an `expired-base` error. `iso_root` gives the
+/// content hash of an ISO and the image an edition selects in it.
 fn root_content(
     source: &Source,
     arch: Arch,
-    iso_sha256: &dyn Fn(&std::path::Path) -> Result<Sha256>,
+    iso_root: &dyn Fn(&std::path::Path, Option<&str>) -> Result<IsoRoot>,
 ) -> Result<(RootContent, String)> {
     match source {
         Source::DiskImage(pins) => {
@@ -170,13 +170,17 @@ fn root_content(
         Source::Oci { reference, digest } => {
             Ok((RootContent::OciDigest(digest.clone()), format!("OCI image {reference}")))
         }
-        Source::Iso { path, edition } => Ok((
-            RootContent::Iso {
-                sha256: iso_sha256(path)?,
-                edition: edition.clone(),
-            },
-            format!("Windows ISO {}", path.display()),
-        )),
+        Source::Iso { path, edition } => {
+            let IsoRoot { sha256, image } = iso_root(path, edition.as_deref())?;
+            Ok((
+                RootContent::Iso {
+                    sha256,
+                    image_index: image.index,
+                    image_name: image.name,
+                },
+                format!("Windows ISO {}", path.display()),
+            ))
+        }
         Source::Recipe(_) | Source::Embedded(_) => Err(Error::new(
             ErrorKind::Internal,
             "a flattened recipe starts from a disk image, an OCI image or an ISO",

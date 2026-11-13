@@ -111,18 +111,21 @@ fn oci_digest_case_does_not_change_the_key() {
 }
 
 #[skuld::test]
-fn the_edition_changes_the_layer_key() {
+fn the_image_selected_changes_the_layer_key() {
     let mut chain = Chain::base();
-    let mut key = |edition: Option<&str>| {
+    let mut key = |index: u32, name: &str| {
         chain.content = RootContent::Iso {
             sha256: sha(1),
-            edition: edition.map(Into::into),
+            image_index: index,
+            image_name: name.into(),
         };
         chain.root()
     };
-    let (none, pro, home) = (key(None), key(Some("Windows 11 Pro")), key(Some("Windows 11 Home")));
-    assert!(none != pro && pro != home && none != home);
-    assert_eq!(key(Some("Windows 11 Pro")), pro);
+    let (pro, home) = (key(1, "Windows 11 Pro"), key(2, "Windows 11 Home"));
+    assert_ne!(pro, home);
+    assert_ne!(key(1, "Windows 11 Pro"), key(2, "Windows 11 Pro"), "the index");
+    assert_ne!(key(1, "Windows 11 Pro"), key(1, "Windows 11 Home"), "the name");
+    assert_eq!(key(1, "Windows 11 Pro"), pro);
 }
 
 #[skuld::test]
@@ -144,25 +147,29 @@ fn every_key_input_changes_the_key() {
     vary("iso vs equal sha256", &|c| {
         c.content = RootContent::Iso {
             sha256: sha(1),
-            edition: None,
+            image_index: 1,
+            image_name: "Windows 11 Pro".into(),
         }
     });
-    vary("iso edition", &|c| {
+    vary("iso image index", &|c| {
         c.content = RootContent::Iso {
             sha256: sha(1),
-            edition: Some("Windows 11 Pro".into()),
+            image_index: 2,
+            image_name: "Windows 11 Pro".into(),
         }
     });
-    vary("iso other edition", &|c| {
+    vary("iso image name", &|c| {
         c.content = RootContent::Iso {
             sha256: sha(1),
-            edition: Some("Windows 11 Home".into()),
+            image_index: 1,
+            image_name: "Windows 11 Home".into(),
         }
     });
     vary("iso content", &|c| {
         c.content = RootContent::Iso {
             sha256: sha(2),
-            edition: None,
+            image_index: 1,
+            image_name: "Windows 11 Pro".into(),
         }
     });
     vary("base definition", &|c| c.base_definition = [8; 32]);

@@ -1,17 +1,23 @@
 use std::path::{Path, PathBuf};
 
 use super::udf::udf_tests::{fixture_iso, image, read_at};
-use super::{BootPatch, InstallIso, IsoMemo, WimArch, WimImage, read_install_iso, select_image};
+use super::{BootPatch, InstallIso, IsoMemo, WimArch, WimImage, key_iso, read_install_iso, select_image};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
 /// A copy of the fixture ISO `name` in `home` (under a name with a space, Cyrillic and a surrogate pair), keyed.
 fn keyed(home: &Path, name: &str) -> (PathBuf, IsoMemo, Sha256) {
+    keyed_after(home, name, |_| {})
+}
+
+/// `keyed`, with `edit` changing the copy before it is keyed.
+fn keyed_after(home: &Path, name: &str, edit: impl FnOnce(&Path)) -> (PathBuf, IsoMemo, Sha256) {
     let iso = home.join(format!(
         "{name} \u{43f}\u{440}\u{43e}\u{431}\u{435}\u{43b} \u{1f600}.iso"
     ));
     std::fs::copy(fixture_iso(name), &iso).unwrap();
+    edit(&iso);
     let memo = IsoMemo::new(&Dirs::under(home));
     let hash = memo.sha256(&TestHost, &iso, &MemoryProgress::default()).unwrap();
     (iso, memo, hash)
@@ -33,7 +39,7 @@ fn image_of(index: u32, name: &str, arch: WimArch) -> WimImage {
     }
 }
 
-// The boot patch ====================================================================================================
+// The boot patch ======================================================================================================
 
 #[skuld::test]
 fn the_boot_catalog_extent_ends_up_holding_the_no_prompt_image_bytes(#[fixture(unicode_home)] home: &Path) {
@@ -74,6 +80,42 @@ fn an_iso_without_a_no_prompt_boot_image_is_refused_naming_the_file(#[fixture(un
         error.message().contains("efi/microsoft/boot/efisys_noprompt.bin"),
         "{error}"
     );
+}
+
+#[skuld::test]
+fn a_uefi_boot_image_that_is_not_efisys_bin_is_refused_naming_the_block(#[fixture(unicode_home)] home: &Path) {
+    let offset = read(home, "single-image.iso", None).1.unwrap().boot_patches[0].offset;
+    let (iso, memo, hash) = keyed_after(home, "single-image.iso", |iso| {
+        let mut bytes = std::fs::read(iso).unwrap();
+        bytes[offset as usize..offset as usize + 8192].fill(0xaa);
+        std::fs::write(iso, bytes).unwrap();
+    });
+    let error = read_install_iso(&TestHost, &memo, &iso, hash, None, &MemoryProgress::default()).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(error.message().contains("is not efisys.bin"), "{error}");
+    assert!(error.message().contains(&format!("block {}", offset / 2048)), "{error}");
+    assert!(error.message().contains("efisys_noprompt.bin"), "{error}");
+}
+
+#[skuld::test]
+fn an_iso_is_keyed_by_its_hash_and_the_image_an_edition_selects(#[fixture(unicode_home)] home: &Path) {
+    let (iso, memo, hash) = keyed(home, "three-images.iso");
+    let progress = MemoryProgress::default();
+    let root = key_iso(
+        &TestHost,
+        &memo,
+        &iso,
+        Some("Windows 11 IoT Enterprise LTSC 2024"),
+        &progress,
+    )
+    .unwrap();
+    assert_eq!(root.sha256, hash);
+    assert_eq!(
+        (root.image.index, root.image.name.as_str()),
+        (2, "Windows 11 IoT Enterprise LTSC 2024")
+    );
+    let error = key_iso(&TestHost, &memo, &iso, None, &progress).unwrap_err();
+    assert!(error.message().contains("several editions"), "{error}");
 }
 
 #[skuld::test]
@@ -122,7 +164,7 @@ fn the_iso_changing_after_it_was_keyed_fails_naming_it(#[fixture(unicode_home)] 
     assert!(error.message().contains(&*iso.display().to_string()), "{error}");
 }
 
-// install.esd ===========================================================================================================
+// install.esd =========================================================================================================
 
 #[skuld::test]
 fn an_iso_with_install_esd_lists_its_images_like_one_with_install_wim(#[fixture(unicode_home)] home: &Path) {
@@ -148,7 +190,7 @@ fn an_iso_with_neither_install_wim_nor_install_esd_is_refused_naming_both(#[fixt
     assert!(error.message().contains("sources/install.esd"), "{error}");
 }
 
-// Editions ==========================================================================================================
+// Editions ============================================================================================================
 
 #[skuld::test]
 fn a_multi_image_iso_without_edition_is_refused_listing_the_names(#[fixture(unicode_home)] home: &Path) {

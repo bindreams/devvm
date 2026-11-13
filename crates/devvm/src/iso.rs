@@ -3,7 +3,6 @@
 //!
 //! The ISO stays where the recipe says; devvm never copies it. A build reads it through its UDF tree.
 
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::exit::Progress;
@@ -14,7 +13,7 @@ mod memo;
 mod udf;
 mod wim;
 
-pub(crate) use memo::{IsoMemo, Known};
+pub(crate) use memo::{HashedIso, IsoMemo, Known};
 pub(crate) use wim::{WimArch, WimImage};
 
 use udf::{BootEntry, Piece, Platform, SECTOR, Udf};
@@ -47,9 +46,36 @@ pub(crate) struct InstallIso {
     pub boot_patches: Vec<BootPatch>,
 }
 
+/// What a layer key is made from, of an ISO.
+#[derive(Debug)]
+pub(crate) struct IsoRoot {
+    /// The SHA-256 of the ISO's content.
+    pub sha256: Sha256,
+    /// The image the recipe's `edition` selects: what the build installs, so what the key says.
+    pub image: WimImage,
+}
+
+/// The content hash of the installer ISO at `iso` and the image `edition` selects in it (refusing one that is not x64).
+/// The ISO is opened once and read through that handle.
+pub(crate) fn key_iso(
+    host: &dyn Host,
+    memo: &IsoMemo,
+    iso: &Path,
+    edition: Option<&str>,
+    progress: &dyn Progress,
+) -> Result<IsoRoot> {
+    let HashedIso { file, sha256 } = memo.open(host, iso, progress)?;
+    let udf = Udf::open(iso, file)?;
+    let image = select_image(&read_images(&udf, iso)?, edition)?.clone();
+    Ok(IsoRoot { sha256, image })
+}
+
 /// Reads the installer ISO at `iso`, which the layer key was made from (`key_hash`, as [`IsoMemo::sha256`] gave it):
 /// fails, naming the ISO, when it is no longer that file. Selects the image `edition` names, refuses an image that is
 /// not x64, and reads the no-prompt boot image and where the boot catalog loads its UEFI image. Nothing is written.
+///
+/// The ISO is opened once, and everything is read through that handle: what is read is the file that was checked, even
+/// if something else takes the path meanwhile.
 pub(crate) fn read_install_iso(
     host: &dyn Host,
     memo: &IsoMemo,
@@ -58,10 +84,8 @@ pub(crate) fn read_install_iso(
     edition: Option<&str>,
     progress: &dyn Progress,
 ) -> Result<InstallIso> {
-    memo.check_unchanged(host, iso, key_hash, progress)?;
-    let udf = Udf::open(iso)?;
-    let images = read_images(&udf, iso)?;
-    let image = select_image(&images, edition)?.clone();
+    let udf = Udf::open(iso, memo.open_keyed(host, iso, key_hash, progress)?)?;
+    let image = select_image(&read_images(&udf, iso)?, edition)?.clone();
     let boot_patches = vec![no_prompt_patch(&udf, iso)?];
     Ok(InstallIso { image, boot_patches })
 }
@@ -143,7 +167,8 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
     Ok(chosen)
 }
 
-/// The patch that puts the no-prompt boot image where the UEFI entry of the boot catalog loads its image.
+/// The patch that puts the no-prompt boot image where the UEFI entry of the boot catalog loads its image. The image
+/// the catalog loads is a copy of `efisys.bin`; it is replaced only when it is that.
 fn no_prompt_patch(udf: &Udf<'_>, iso: &Path) -> Result<BootPatch> {
     let find = |path: &str| {
         udf.pieces(path)?.ok_or_else(|| {
@@ -178,9 +203,25 @@ fn no_prompt_patch(udf: &Udf<'_>, iso: &Path) -> Result<BootPatch> {
             format!("the boot catalog of {} has no bootable UEFI entry", iso.display()),
         )
     })?;
-    Ok(BootPatch {
+    let loaded = Piece {
         offset: u64::from(entry.load_block) * SECTOR,
-        bytes: read_pieces(iso, &no_prompt)?,
+        len: prompting_size,
+    };
+    if udf.read_pieces(&[loaded])? != udf.read_pieces(&prompting)? {
+        return Err(Error::new(
+            ErrorKind::Recipe,
+            format!(
+                "the UEFI boot image of {} (block {}) is not {}, so {} cannot stand in for it",
+                iso.display(),
+                entry.load_block,
+                file_name(PROMPTING_IMAGE),
+                file_name(NO_PROMPT_IMAGE)
+            ),
+        ));
+    }
+    Ok(BootPatch {
+        offset: loaded.offset,
+        bytes: udf.read_pieces(&no_prompt)?,
     })
 }
 
@@ -194,16 +235,7 @@ fn total(pieces: &[Piece]) -> u64 {
     pieces.iter().map(|piece| piece.len).sum()
 }
 
-/// The bytes of `pieces` of the file `iso`, one after the other.
-fn read_pieces(iso: &Path, pieces: &[Piece]) -> Result<Vec<u8>> {
-    let fail = |e| Error::io(ErrorKind::Io, format!("cannot read {}", iso.display()), e);
-    let mut file = std::fs::File::open(iso).map_err(fail)?;
-    let mut bytes = Vec::with_capacity(total(pieces) as usize);
-    for piece in pieces {
-        file.seek(SeekFrom::Start(piece.offset)).map_err(fail)?;
-        let start = bytes.len();
-        bytes.resize(start + piece.len as usize, 0);
-        file.read_exact(&mut bytes[start..]).map_err(fail)?;
-    }
-    Ok(bytes)
+/// The last part of the `/`-separated `path`.
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }

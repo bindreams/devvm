@@ -32,7 +32,7 @@
 
 mod copy;
 mod guest;
-mod local;
+pub(crate) mod local;
 mod plan;
 mod remote;
 mod typed;

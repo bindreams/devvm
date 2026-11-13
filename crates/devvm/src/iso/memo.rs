@@ -1,9 +1,13 @@
 //! The hash of an ISO, remembered: a Windows ISO is gigabytes, and a layer key needs its SHA-256 on every build.
 //!
-//! One small file per ISO path, in the cache directory, holds the hash and what the ISO looked like when it was hashed:
-//! its size, modification time and file id. The hash is reused while all of those, and the path, are unchanged; any one
-//! of them changing hashes the ISO again. A memo is a cache: one that cannot be read is moved to quarantine and made
-//! again. The ISO itself is never copied or kept; recipes keep it at their path.
+//! One small file per ISO path (made absolute and lexically normal, so spellings of one path share it), in the cache
+//! directory, holds the hash and what the ISO looked like when it was hashed: its size, modification time and file id.
+//! The hash is reused while all of those, and the path, are unchanged; any one of them changing hashes the ISO again.
+//! A memo is a cache: one that cannot be read is moved to quarantine and made again. The ISO itself is never copied or
+//! kept; recipes keep it at their path.
+//!
+//! Writers hold the directory's `.lock` shared while they publish; whoever moves a memo to quarantine or sweeps the
+//! temporary files a crashed writer left holds it exclusively, so neither can meet a live writer's file.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -11,9 +15,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256 as Sha2};
 
+use crate::access::sftp::local::lexically_normal;
 use crate::exit::Progress;
 use crate::host::{FileId, Host, is_absent};
 use crate::store::fetch::hash_reader;
+use crate::store::layers::quarantine_file;
+use crate::store::lock::{FileLock, Mode};
 use crate::{Dirs, Error, ErrorKind, Result, Sha256, random};
 
 #[cfg(test)]
@@ -47,6 +54,26 @@ pub(crate) enum Known {
     Unreadable { file: PathBuf, why: String },
 }
 
+/// An ISO opened, and its SHA-256: the hash is of this file, not of whatever the path leads to later.
+pub(crate) struct HashedIso {
+    pub file: File,
+    pub sha256: Sha256,
+}
+
+/// What a memo file turned out to be.
+enum Slot {
+    Absent,
+    Entry(Entry),
+    Junk,
+}
+
+/// What `quarantine_unless_valid` did with a memo file.
+enum QuarantineOutcome {
+    Valid(Entry),
+    Moved(PathBuf),
+    Gone,
+}
+
 /// The remembered hashes of ISOs.
 pub(crate) struct IsoMemo {
     dir: PathBuf,
@@ -61,16 +88,26 @@ impl IsoMemo {
         }
     }
 
-    /// The SHA-256 of the ISO at `iso`: the remembered one while the ISO is unchanged, else a fresh one, which is
-    /// remembered. The ISO is read once and its identity is taken before and after; an ISO that changed while it was
-    /// being hashed is an error, so a hash is never of two versions.
+    /// The SHA-256 of the ISO at `iso`; see [`IsoMemo::open`].
     pub(crate) fn sha256(&self, host: &dyn Host, iso: &Path, progress: &dyn Progress) -> Result<Sha256> {
+        Ok(self.open(host, iso, progress)?.sha256)
+    }
+
+    /// Opens the ISO at `iso` and gives it with its SHA-256: the remembered one while the ISO is unchanged, else a
+    /// fresh one, which is remembered. The ISO is read once and its identity is taken before and after; an ISO that
+    /// changed while it was being hashed is an error, so a hash is never of two versions.
+    pub(crate) fn open(&self, host: &dyn Host, iso: &Path, progress: &dyn Progress) -> Result<HashedIso> {
         let file = open(iso)?;
         let identity = identity_of(host, &file, iso)?;
-        if let Some(entry) = self.read(iso, progress)?
+        let named = named(iso)?;
+        if let Some(text) = &named
+            && let Some(entry) = self.read(text, progress)?
             && entry.identity == identity
         {
-            return Ok(entry.sha256);
+            return Ok(HashedIso {
+                file,
+                sha256: entry.sha256,
+            });
         }
         let sha256 = hash_open(
             file.try_clone().map_err(|e| io(iso, "read", e))?,
@@ -87,37 +124,26 @@ impl IsoMemo {
                 ),
             ));
         }
-        if let Some(text) = iso.to_str() {
-            let entry = Entry {
-                path: text.to_owned(),
-                identity,
-                sha256,
-            };
-            self.write(host, &entry)?;
+        if let Some(path) = named {
+            self.write(host, &Entry { path, identity, sha256 }, progress)?;
         }
-        Ok(sha256)
+        Ok(HashedIso { file, sha256 })
     }
 
-    /// Succeeds when the ISO at `iso` is still the one `keyed` is the hash of: what a layer key was made from. A path
-    /// that is not Unicode has no memo (a memo names its ISO as text), so the ISO is hashed again.
-    pub(crate) fn check_unchanged(
+    /// The ISO at `iso` opened, when it is still the one `keyed` is the hash of: what a layer key was made from. Its
+    /// hash comes from the memo while the ISO's identity matches it, and from reading the ISO otherwise (a touched,
+    /// moved-back or memo-less ISO that holds the keyed bytes is still the keyed one). The caller reads through the
+    /// file given, never through `iso` again.
+    pub(crate) fn open_keyed(
         &self,
         host: &dyn Host,
         iso: &Path,
         keyed: Sha256,
         progress: &dyn Progress,
-    ) -> Result<()> {
-        let file = open(iso)?;
-        let unchanged = match iso.to_str() {
-            Some(_) => {
-                let identity = identity_of(host, &file, iso)?;
-                self.read(iso, progress)?
-                    .is_some_and(|entry| entry.sha256 == keyed && entry.identity == identity)
-            }
-            None => self.rehash(iso, progress)? == keyed,
-        };
-        if unchanged {
-            return Ok(());
+    ) -> Result<File> {
+        let HashedIso { file, sha256 } = self.open(host, iso, progress)?;
+        if sha256 == keyed {
+            return Ok(file);
         }
         Err(Error::new(
             ErrorKind::Io,
@@ -166,43 +192,68 @@ impl IsoMemo {
         self.dir.join(format!("{}.json", hex::encode(&digest[..16])))
     }
 
-    /// The memo of `iso`, or `None` when it has none. A memo that cannot be read is moved to quarantine and counts as
-    /// none.
-    fn read(&self, iso: &Path, progress: &dyn Progress) -> Result<Option<Entry>> {
-        let Some(text) = iso.to_str() else { return Ok(None) };
-        let file = self.file_of(text);
-        match std::fs::read(&file) {
-            Err(e) if is_absent(&e) => return Ok(None),
-            Err(e) => return Err(io(&file, "read", e)),
-            Ok(bytes) => {
-                if let Ok(entry) = serde_json::from_slice::<Entry>(&bytes)
-                    && entry.path == text
-                {
-                    return Ok(Some(entry));
-                }
-            }
-        }
-        self.quarantine(&file, progress)?;
-        Ok(None)
+    fn lock(&self) -> Result<FileLock> {
+        FileLock::open(&self.dir.join(".lock"))
     }
 
-    fn quarantine(&self, file: &Path, progress: &dyn Progress) -> Result<()> {
-        std::fs::create_dir_all(&self.quarantine).map_err(|e| io(&self.quarantine, "make", e))?;
-        let target = self
-            .quarantine
-            .join(format!("iso-memo-{}.json", hex::encode(random::bytes::<8>())));
-        std::fs::rename(file, &target).map_err(|e| io(file, "move to quarantine", e))?;
-        progress.message(&format!(
-            "moved the unreadable {} to {}",
-            file.display(),
-            target.display()
-        ));
-        Ok(())
+    /// The memo of the ISO at `text`, or `None` when it has none. A memo that cannot be read is moved to quarantine
+    /// and counts as none.
+    fn read(&self, text: &str, progress: &dyn Progress) -> Result<Option<Entry>> {
+        let file = self.file_of(text);
+        let accepts = |entry: &Entry| entry.path == text;
+        match look(&file, &accepts)? {
+            Slot::Absent => Ok(None),
+            Slot::Entry(entry) => Ok(Some(entry)),
+            Slot::Junk => Ok(match self.quarantine_unless_valid(&file, &accepts, progress)? {
+                QuarantineOutcome::Valid(entry) => Some(entry),
+                QuarantineOutcome::Moved(_) | QuarantineOutcome::Gone => None,
+            }),
+        }
+    }
+
+    /// Moves the memo `file` that cannot be read to quarantine, and says where it went; `None` when `file` is a memo
+    /// after all, or is not there.
+    pub(crate) fn quarantine_unreadable(&self, file: &Path, progress: &dyn Progress) -> Result<Option<PathBuf>> {
+        Ok(match self.quarantine_unless_valid(file, &|_| true, progress)? {
+            QuarantineOutcome::Moved(target) => Some(target),
+            QuarantineOutcome::Valid(_) | QuarantineOutcome::Gone => None,
+        })
+    }
+
+    /// Moves `file` to quarantine unless it is a memo `accepts`. The look that decides is taken with the directory's
+    /// lock held exclusively, which no writer holds while it publishes: a memo a writer has just made is never moved,
+    /// and one another process already moved is `Gone`.
+    fn quarantine_unless_valid(
+        &self,
+        file: &Path,
+        accepts: &dyn Fn(&Entry) -> bool,
+        progress: &dyn Progress,
+    ) -> Result<QuarantineOutcome> {
+        let mut lock = self.lock()?;
+        lock.lock(Mode::Exclusive, "another devvm process writing an ISO memo", &mut |m| {
+            progress.message(m)
+        })?;
+        Ok(match look(file, accepts)? {
+            Slot::Absent => QuarantineOutcome::Gone,
+            Slot::Entry(entry) => QuarantineOutcome::Valid(entry),
+            Slot::Junk => match quarantine_file(&self.quarantine, "iso-memo", file, progress)? {
+                Some(target) => QuarantineOutcome::Moved(target),
+                None => QuarantineOutcome::Gone,
+            },
+        })
     }
 
     /// Publishes `entry` by rename, so a reader sees the whole file or none and two writers of one ISO cannot tear it.
-    fn write(&self, host: &dyn Host, entry: &Entry) -> Result<()> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| io(&self.dir, "make", e))?;
+    /// The temporary files a writer that died left are removed first, when no writer is live.
+    fn write(&self, host: &dyn Host, entry: &Entry, progress: &dyn Progress) -> Result<()> {
+        let mut lock = self.lock()?;
+        if lock.try_lock(Mode::Exclusive)? {
+            self.sweep_leftovers(progress);
+            lock.unlock()?;
+        }
+        lock.lock(Mode::Shared, "another devvm process clearing ISO memos", &mut |m| {
+            progress.message(m)
+        })?;
         let file = self.file_of(&entry.path);
         let temp = file.with_extension(format!("{}.tmp", hex::encode(random::bytes::<8>())));
         let bytes = serde_json::to_vec_pretty(entry).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
@@ -214,6 +265,51 @@ impl IsoMemo {
                     .after_cleanup(&temp.display().to_string(), cleanup)
             })
     }
+
+    /// Removes the `*.tmp` files of `dir`: what a writer that died between making its file and publishing it left. The
+    /// caller holds the lock exclusively, and a live writer holds it shared, so every such file is dead.
+    fn sweep_leftovers(&self, progress: &dyn Progress) {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                progress.message(&format!("cannot list {} for leftovers: {e}", self.dir.display()));
+                return;
+            }
+        };
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(e) => {
+                    progress.message(&format!("cannot list an entry of {}: {e}", self.dir.display()));
+                    continue;
+                }
+            };
+            if path.extension().is_some_and(|extension| extension == "tmp")
+                && let Err(e) = crate::host::remove_if_present(&path)
+            {
+                progress.message(&format!("cannot remove leftover {}: {e}", path.display()));
+            }
+        }
+    }
+}
+
+/// What the memo file `file` holds: nothing, an entry `accepts`, or something else.
+fn look(file: &Path, accepts: &dyn Fn(&Entry) -> bool) -> Result<Slot> {
+    Ok(match std::fs::read(file) {
+        Err(e) if is_absent(&e) => Slot::Absent,
+        Err(e) => return Err(io(file, "read", e)),
+        Ok(bytes) => match serde_json::from_slice::<Entry>(&bytes) {
+            Ok(entry) if accepts(&entry) => Slot::Entry(entry),
+            _ => Slot::Junk,
+        },
+    })
+}
+
+/// `iso` as a memo names it: absolute and lexically normal, so one path in different spellings has one memo. `None`
+/// when it is not Unicode, which a memo cannot name.
+fn named(iso: &Path) -> Result<Option<String>> {
+    let absolute = std::path::absolute(iso).map_err(|e| io(iso, "resolve", e))?;
+    Ok(lexically_normal(&absolute).to_str().map(str::to_owned))
 }
 
 fn sort_key(known: &Known) -> &Path {

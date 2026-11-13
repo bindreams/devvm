@@ -14,7 +14,7 @@ use crate::exit::Progress;
 use crate::host::Host;
 use crate::iso::{IsoMemo, Known};
 use crate::store::fetch::Transport;
-use crate::{Arch, Dirs, Result, Unavailable};
+use crate::{Arch, Dirs, ErrorKind, Result, Unavailable};
 
 #[cfg(test)]
 #[path = "checks_tests.rs"]
@@ -100,9 +100,9 @@ fn space_check(host: &dyn Host, what: &str, dir: &Path) -> Check {
     }
 }
 
-/// One line per Windows ISO a build has keyed: the ISO is hashed again, and the line fails when it is gone or is no
-/// longer the one the memo hashed. A memo that cannot be read is a failing line of its own. No line while no ISO was
-/// keyed.
+/// One line per Windows ISO a build has keyed: the ISO is hashed again, and the line fails when it is no longer the one
+/// the memo hashed. An ISO that is not there is information: it may have been moved, which a rebuild does not mind. A
+/// memo that cannot be read is moved to quarantine and said so once.
 fn iso_checks(memo: &IsoMemo, progress: &dyn Progress) -> Vec<Check> {
     let known = match memo.known() {
         Ok(known) => known,
@@ -115,21 +115,34 @@ fn iso_checks(memo: &IsoMemo, progress: &dyn Progress) -> Vec<Check> {
     };
     known
         .into_iter()
-        .map(|known| match known {
-            Known::Iso { path, sha256 } => Check {
+        .filter_map(|known| match known {
+            Known::Iso { path, sha256 } => Some(Check {
                 name: format!("iso {}", path.display()),
                 outcome: match memo.rehash(&path, progress) {
                     Ok(now) if now == sha256 => Ok(now.to_string()),
                     Ok(now) => Err(format!(
                         "it changed since it was keyed (sha256 {sha256} then, {now} now); builds that name it need a new key"
                     )),
+                    Err(e) if e.kind() == ErrorKind::NotFound => {
+                        Ok("not found; a build that names it hashes it again where it is".to_owned())
+                    }
                     Err(e) => Err(e.message().to_owned()),
                 },
-            },
-            Known::Unreadable { file, why } => Check {
-                name: format!("iso memo {}", file.display()),
-                outcome: Err(format!("cannot be read: {why}")),
-            },
+            }),
+            Known::Unreadable { file, .. } => {
+                let name = format!("iso memo {}", file.display());
+                match memo.quarantine_unreadable(&file, progress) {
+                    Ok(Some(target)) => Some(Check {
+                        name,
+                        outcome: Ok(format!("moved to quarantine: {}", target.display())),
+                    }),
+                    Ok(None) => None,
+                    Err(e) => Some(Check {
+                        name,
+                        outcome: Err(e.message().to_owned()),
+                    }),
+                }
+            }
         })
         .collect()
 }

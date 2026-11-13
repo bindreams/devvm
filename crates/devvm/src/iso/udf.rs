@@ -2,6 +2,7 @@
 //! of its El Torito boot catalog. The ISO is only read, never mounted by the OS and never copied.
 
 use std::fmt::Debug;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use hadris_fs::sync::{File, FileSystem, Volume};
@@ -42,39 +43,47 @@ pub(super) enum Platform {
     Other,
 }
 
-/// An ISO file, read through its UDF tree.
+/// An ISO file, read through its UDF tree. The file is opened by the caller and everything is read through that one
+/// handle, so what is read is the file the caller looked at, whatever later takes its path. The UDF tree is mounted
+/// once.
 pub(super) struct Udf<'a> {
     iso: &'a Path,
+    file: std::fs::File,
+    volume: Volume<UdfFs<FileDevice>>,
 }
 
 impl<'a> Udf<'a> {
-    /// Checks that `iso` has a UDF tree, which every Windows installer ISO has (and which is all some of them have).
-    pub(super) fn open(iso: &'a Path) -> Result<Udf<'a>> {
-        let udf = Udf { iso };
-        udf.mount()?;
-        Ok(udf)
-    }
-
-    fn mount(&self) -> Result<UdfFs<FileDevice>> {
-        let device = FileDevice::open(self.iso).map_err(|e| unreadable(self.iso, "open", &e))?;
-        UdfFs::mount(device, MountOptions::new()).map_err(|e| {
+    /// Mounts the UDF tree of `file`, the open `iso`, which every Windows installer ISO has (and which is all some of
+    /// them have).
+    pub(super) fn open(iso: &'a Path, file: std::fs::File) -> Result<Udf<'a>> {
+        let device = FileDevice::new(file.try_clone().map_err(|e| unreadable(iso, "open", &e))?)
+            .map_err(|e| unreadable(iso, "open", &e))?;
+        let fs = UdfFs::mount(device, MountOptions::new()).map_err(|e| {
             if e.kind() == hadris_fs::ErrorKind::NotRecognized {
                 return Error::new(
                     ErrorKind::Recipe,
                     format!(
                         "{} is not a Windows installer ISO: it has no UDF file system",
-                        self.iso.display()
+                        iso.display()
                     ),
                 );
             }
-            unreadable(self.iso, "read the UDF file system of", &e)
+            unreadable(iso, "read the UDF file system of", &e)
+        })?;
+        Ok(Udf {
+            iso,
+            file,
+            volume: Volume::new(fs),
         })
     }
 
     /// Where the bytes of the file `path` (`/`-separated, from the root) lie in the ISO, in file order; `None` when
     /// the tree has no such file. A file may lie in several pieces.
     pub(super) fn pieces(&self, path: &str) -> Result<Option<Vec<Piece>>> {
-        let mut udf = self.mount()?;
+        let mut udf = self
+            .volume
+            .lock()
+            .map_err(|e| unreadable(self.iso, &format!("look up {path} in"), &e))?;
         let node = match udf.resolve(path.as_bytes(), Resolve::Lexical) {
             Ok(node) => node,
             Err(e) if e.kind() == hadris_fs::ErrorKind::NotFound => return Ok(None),
@@ -100,17 +109,43 @@ impl<'a> Udf<'a> {
 
     /// The file `path`, readable and seekable across all its pieces; `None` when the tree has no such file.
     pub(super) fn open_file(&self, path: &str) -> Result<Option<File<UdfFs<FileDevice>>>> {
-        let volume = Volume::new(self.mount()?);
-        match volume.open(path, OpenOptions::new().read()) {
+        match self.volume.open(path, OpenOptions::new().read()) {
             Ok(file) => Ok(Some(file)),
             Err(e) if e.kind() == hadris_fs::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(unreadable(self.iso, &format!("open {path} in"), &e)),
         }
     }
 
+    /// The bytes of `pieces`, one after the other.
+    pub(super) fn read_pieces(&self, pieces: &[Piece]) -> Result<Vec<u8>> {
+        let fail = |e| unreadable(self.iso, "read", &e);
+        let length = self.file.metadata().map_err(fail)?.len();
+        let mut file = &self.file;
+        let mut bytes = Vec::new();
+        for piece in pieces {
+            if piece.offset.checked_add(piece.len).is_none_or(|end| end > length) {
+                return Err(Error::new(
+                    ErrorKind::Recipe,
+                    format!(
+                        "{} is not a Windows installer ISO: {} bytes at {} lie outside the file",
+                        self.iso.display(),
+                        piece.len,
+                        piece.offset
+                    ),
+                ));
+            }
+            file.seek(SeekFrom::Start(piece.offset)).map_err(fail)?;
+            let start = bytes.len();
+            bytes.resize(start + piece.len as usize, 0);
+            file.read_exact(&mut bytes[start..]).map_err(fail)?;
+        }
+        Ok(bytes)
+    }
+
     /// The entries of the El Torito boot catalog, in catalog order; none when the ISO has no boot catalog.
     pub(super) fn boot_entries(&self) -> Result<Vec<BootEntry>> {
-        let device = FileDevice::open(self.iso).map_err(|e| unreadable(self.iso, "open", &e))?;
+        let device = FileDevice::new(self.file.try_clone().map_err(|e| unreadable(self.iso, "open", &e))?)
+            .map_err(|e| unreadable(self.iso, "open", &e))?;
         let mut iso = IsoFs::mount(device, MountOptions::new())
             .map_err(|e| unreadable(self.iso, "read the ISO 9660 file system of", &e))?;
         let mut buffer = [0u8; SECTOR as usize];

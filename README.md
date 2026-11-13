@@ -50,4 +50,5 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
 - x64 images only. The install language is the image's default language.
 - Keep the ISO at the recipe's path. devvm never copies it, and a rebuild before the base expires reads it again.
   The layer is keyed by the ISO's content, so moving or renaming it does not rebuild.
-- `devvm doctor` hashes every ISO a build has keyed again and names one that changed or is gone.
+- `devvm doctor` hashes every ISO a build has keyed again and fails on one that changed. One that is not found is listed
+  as information: a moved ISO shows up so, and a build that names its new path hashes it again.

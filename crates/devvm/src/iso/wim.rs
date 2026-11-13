@@ -1,9 +1,10 @@
 //! The image list of a Windows installation file (`install.wim`, `install.esd`): the XML a WIM keeps after its header.
 //!
-//! The header is read here (about 20 lines) and the XML by `quick-xml`. Only an XML resource stored uncompressed is
-//! read, which is how Windows writes it; a list stored compressed is refused by name.
+//! The header is read here (about 20 lines) and the XML by `quick-xml`, which reads it as a stream: memory follows what
+//! the list holds, not what the header claims. Only an XML resource stored uncompressed is read, which is how Windows
+//! writes it; a list stored compressed is refused by name.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -109,41 +110,144 @@ pub(crate) fn read_image_list(reader: &mut (impl Read + Seek), file: &str) -> Re
             ),
         ));
     }
-    if offset.checked_add(size).is_none_or(|end| end > length) || size % 2 != 0 {
+    if offset.checked_add(size).is_none_or(|end| end > length) {
         return Err(not_a_wim(file, "its XML resource lies outside the file"));
+    }
+    if size % 2 != 0 {
+        return Err(not_a_wim(
+            file,
+            "its XML resource has an odd size, which UTF-16 text cannot have",
+        ));
     }
     reader
         .seek(SeekFrom::Start(offset))
         .map_err(|e| io("the image list", e))?;
-    let mut bytes = vec![0u8; size as usize];
-    reader.read_exact(&mut bytes).map_err(|e| io("the image list", e))?;
-    let units: Vec<u16> = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| u16::from_le_bytes(*pair))
-        .collect();
-    let xml = String::from_utf16(&units).map_err(|_| not_a_wim(file, "its image list is not UTF-16"))?;
-    parse_image_list(xml.strip_prefix('\u{feff}').unwrap_or(&xml), file)
+    parse_image_list(BufReader::new(Utf16Le::new(reader.take(size))), file)
+}
+
+/// The text of a UTF-16LE stream, as UTF-8. A stream that is not whole UTF-16 text (an unpaired surrogate, or a half
+/// unit at the end) is an `InvalidData` error holding [`NotUtf16`]; a leading byte order mark is dropped.
+struct Utf16Le<R> {
+    inner: R,
+    /// A byte read that is the first of a unit whose second has not been read.
+    half: Option<u8>,
+    /// A high surrogate read whose low surrogate has not been read.
+    high: Option<u16>,
+    /// The UTF-8 of what was decoded; `sent` of it has been read out.
+    text: Vec<u8>,
+    sent: usize,
+    started: bool,
+}
+
+/// What `Utf16Le` fails with.
+#[derive(Debug)]
+struct NotUtf16;
+
+impl std::fmt::Display for NotUtf16 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("not UTF-16")
+    }
+}
+
+impl std::error::Error for NotUtf16 {}
+
+impl<R: Read> Utf16Le<R> {
+    fn new(inner: R) -> Utf16Le<R> {
+        Utf16Le {
+            inner,
+            half: None,
+            high: None,
+            text: Vec::new(),
+            sent: 0,
+            started: false,
+        }
+    }
+
+    /// Reads one chunk of the source and decodes it into `text`; `false` at the end of the source.
+    fn fill(&mut self) -> std::io::Result<bool> {
+        let bad = || std::io::Error::new(std::io::ErrorKind::InvalidData, NotUtf16);
+        let mut raw = [0u8; 8 << 10];
+        let count = self.inner.read(&mut raw)?;
+        if count == 0 {
+            return if self.half.is_some() || self.high.is_some() {
+                Err(bad())
+            } else {
+                Ok(false)
+            };
+        }
+        let bytes: Vec<u8> = self
+            .half
+            .take()
+            .into_iter()
+            .chain(raw[..count].iter().copied())
+            .collect();
+        let (pairs, rest) = bytes.as_chunks::<2>();
+        self.half = rest.first().copied();
+        let mut units: Vec<u16> = self
+            .high
+            .take()
+            .into_iter()
+            .chain(pairs.iter().map(|pair| u16::from_le_bytes(*pair)))
+            .collect();
+        if let Some(&last) = units.last()
+            && (0xd800..0xdc00).contains(&last)
+        {
+            // Its low surrogate is in the next chunk.
+            self.high = units.pop();
+        }
+        self.text.clear();
+        self.sent = 0;
+        for c in char::decode_utf16(units) {
+            let c = c.map_err(|_| bad())?;
+            if c != '\u{feff}' || self.started {
+                self.text.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
+            }
+            self.started = true;
+        }
+        Ok(true)
+    }
+}
+
+impl<R: Read> Read for Utf16Le<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.sent == self.text.len() {
+            if !self.fill()? {
+                return Ok(0);
+            }
+        }
+        let count = buf.len().min(self.text.len() - self.sent);
+        buf[..count].copy_from_slice(&self.text[self.sent..self.sent + count]);
+        self.sent += count;
+        Ok(count)
+    }
 }
 
 fn not_a_wim(file: &str, why: &str) -> Error {
     Error::new(ErrorKind::Recipe, format!("{file} is not a Windows image file: {why}"))
 }
 
-/// The images `xml`, the text of a WIM's image list, describes.
-fn parse_image_list(xml: &str, file: &str) -> Result<Vec<WimImage>> {
+/// The images `xml`, the UTF-8 text of a WIM's image list, describes.
+fn parse_image_list(xml: impl BufRead, file: &str) -> Result<Vec<WimImage>> {
     let bad = |why: String| {
         Error::new(
             ErrorKind::Recipe,
             format!("the image list of {file} is unreadable: {why}"),
         )
     };
-    let mut reader = Reader::from_str(xml);
+    let unreadable = |e: quick_xml::Error| match e {
+        quick_xml::Error::Io(io) if io.get_ref().is_some_and(|inner| inner.is::<NotUtf16>()) => {
+            not_a_wim(file, "its image list is not UTF-16")
+        }
+        quick_xml::Error::Io(io) => Error::new(ErrorKind::Io, format!("cannot read the image list of {file}: {io}")),
+        other => bad(other.to_string()),
+    };
+    let mut reader = Reader::from_reader(xml);
+    let mut buffer = Vec::new();
     let mut path: Vec<String> = Vec::new();
     let mut images: Vec<Partial> = Vec::new();
     loop {
-        match reader.read_event().map_err(|e| bad(e.to_string()))? {
+        buffer.clear();
+        match reader.read_event_into(&mut buffer).map_err(unreadable)? {
             Event::Start(start) => {
                 let name = start.name().as_ref().to_owned();
                 if path == ["WIM"] && name == "IMAGE" {
@@ -159,6 +263,10 @@ fn parse_image_list(xml: &str, file: &str) -> Result<Vec<WimImage>> {
             }
             Event::End(_) => {
                 path.pop();
+                if path.is_empty() {
+                    // The list ends with its root element; whatever the resource holds after it is not read.
+                    break;
+                }
             }
             Event::Text(text) => {
                 let text = text.xml10_content();
