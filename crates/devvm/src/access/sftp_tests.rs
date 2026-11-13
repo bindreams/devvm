@@ -2404,6 +2404,41 @@ fn a_guest_write_failure_names_the_guest_not_the_host_file(#[fixture(unicode_hom
     }
 }
 
+/// A Windows guest refuses to remove or move a file while a handle on it is open: the failed upload's temporary file is
+/// removed only because the handle was closed before the removal was asked for.
+#[skuld::test(requires = [scripted_server])]
+fn a_failed_upload_waits_for_the_guest_handle_before_removing_its_temp(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.windows_open_files = true);
+    std::fs::create_dir(env.root().join("full")).unwrap();
+    env.rig.sshd.fail_data_in("/full");
+    for (i, size) in [4096usize, 4 << 20].into_iter().enumerate() {
+        let src = env.host_file(&format!("src{i}.txt"), &vec![1u8; size]);
+        let error = env.copy_in(&src, &format!("/full/x{i}.txt")).unwrap_err();
+        assert!(error.message().contains("No space left on device"), "{size}: {error}");
+        assert!(
+            !error.message().contains("cleaning up failed"),
+            "{size}: the temporary file could not be removed: {error}"
+        );
+        assert!(
+            tree(&env.root().join("full")).is_empty(),
+            "{size}: the partial file was removed"
+        );
+    }
+}
+
+/// An upload that works is renamed into place after its handle is closed, so a guest that refuses to move an open file
+/// takes it.
+#[skuld::test(requires = [scripted_server])]
+fn an_upload_is_moved_into_place_after_its_handle_is_closed(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::with(home, |options| options.windows_open_files = true);
+    let src = env.host_file("src.txt", b"payload");
+    env.copy_in(&src, "/dest.txt").unwrap();
+    // Over an existing file, which is the `posix-rename` path.
+    let again = env.host_file("again.txt", b"newer");
+    env.copy_in(&again, "/dest.txt").unwrap();
+    assert_eq!(std::fs::read(env.root().join("dest.txt")).unwrap(), b"newer");
+}
+
 #[skuld::test(requires = [scripted_server])]
 fn a_guest_read_failure_names_the_guest_not_the_host_file(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);

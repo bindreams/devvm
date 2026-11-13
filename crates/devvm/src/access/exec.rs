@@ -176,17 +176,10 @@ async fn pump(
                 Event::Lost(lost)
             }
             ChannelMsg::ExitStatus { exit_status } => {
-                let Ok(code) = i32::try_from(exit_status) else {
-                    let _ = channel.close().await;
-                    return Err(Error::new(
-                        ErrorKind::Io,
-                        format!(
-                            "the server sent the exit status {exit_status} of {awaiting}, which is over {}",
-                            i32::MAX
-                        ),
-                    ));
-                };
-                *status = Some(ExitStatus::Code(code));
+                // SSH carries the status as 32 unsigned bits; a Windows status such as 0xC0000005 is the same bits as
+                // the negative code the guest's own tools report. How many bits a status has is the guest's contract: a
+                // Linux server's is 0..=255, and this does not check it.
+                *status = Some(ExitStatus::Code(exit_status as i32));
                 continue;
             }
             ChannelMsg::ExitSignal {

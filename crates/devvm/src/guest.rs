@@ -3,14 +3,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, Media};
 use crate::exit::Progress;
 use crate::host::Host;
 use crate::instance::record::InstanceId;
-use crate::recipe::{Shell, Source};
+use crate::recipe::{Setting, Shell, Source};
 use crate::store::layers::{LayerDir, LayerMeta};
 use crate::{Arch, Command, Dirs, Error, ErrorKind, GuestKind, Result};
 
@@ -21,6 +21,10 @@ mod guest_tests;
 #[cfg(test)]
 pub(crate) mod fake;
 pub(crate) mod linux;
+pub(crate) mod windows;
+
+/// Written next to the instance's other scratch files; its name is not part of any contract.
+pub(crate) const SEED_IMAGE: &str = "cidata.img";
 
 pub(crate) trait GuestOs: Send + Sync {
     /// The per-instance first-boot media (account, keys, hostname). It holds the guest's private key, so `host` writes
@@ -49,11 +53,16 @@ pub(crate) trait GuestOs: Send + Sync {
     fn semantics_version(&self) -> u32;
     fn device_profile(&self) -> DeviceProfile;
     /// Blocks until the guest's boot has finished. An unfinished or failed boot is an error; a boot that finished
-    /// with recoverable problems is [`Readiness::Degraded`], for the caller to report.
+    /// with recoverable problems is [`Readiness::Degraded`], for the caller to report. A `connection-lost` error is the
+    /// caller's to retry on a new connection while the VM lives and the boot bound has not passed: a guest may restart
+    /// during its boot.
     fn wait_ready(&self, ssh: &SshSession) -> Result<Readiness>;
     /// The command line that runs `script` in `shell` (`None`: the guest's default), for a recipe `run` step. A shell
     /// the guest does not have is a `recipe` error.
     fn shell_argv(&self, shell: Option<Shell>, script: &str) -> Result<Vec<String>>;
+    /// The command that applies `setting`, run as a recipe step does (elevated if it says so). A guest that does not
+    /// have the setting says so with a `recipe` error naming it and the guest.
+    fn setting_command(&self, setting: &Setting) -> Result<Command>;
     /// Why `name`, a file name taken from the host, cannot be one file name in a guest directory (a Windows guest
     /// refuses `a?b` and device names); `None` when it can.
     fn file_name_problem(&self, name: &str) -> Option<String>;
@@ -69,7 +78,7 @@ pub(crate) fn posix_root(path: &str) -> (String, &str) {
 
 /// [`GuestOs::split_root`] for a Windows guest: `C:` (with or without `/` after it) and `//server/share` are roots,
 /// otherwise as [`posix_root`]. `C:a` is relative to the current directory of drive `C:`, which a path cannot name:
-/// it is refused.
+/// it is refused, as is a UNC path with a server and no share, which a guest reads as a path on its current drive.
 pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
     let mut letters = path.chars();
     if let (Some(letter), Some(':')) = (letters.next(), letters.next())
@@ -88,13 +97,17 @@ pub(crate) fn windows_root(path: &str) -> Result<(String, &str)> {
             ));
         }
     }
-    if let Some(unc) = path.strip_prefix("//")
-        && let Some((server, after_server)) = unc.split_once('/')
-        && !server.is_empty()
-    {
-        let after_server = after_server.trim_start_matches('/');
-        let (share, rest) = after_server.split_once('/').unwrap_or((after_server, ""));
-        if !share.is_empty() {
+    if let Some(unc) = path.strip_prefix("//") {
+        let (server, after_server) = unc.split_once('/').unwrap_or((unc, ""));
+        if !server.is_empty() {
+            let after_server = after_server.trim_start_matches('/');
+            let (share, rest) = after_server.split_once('/').unwrap_or((after_server, ""));
+            if share.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Usage,
+                    format!("the guest path {path} has a server and no share; a UNC path needs //{server}/share"),
+                ));
+            }
             return Ok((format!("//{server}/{share}/"), rest.trim_start_matches('/')));
         }
     }
@@ -140,6 +153,26 @@ pub(crate) struct SeedKeys {
     /// The guest's SSH host key pair.
     pub host_private: SecretString,
     pub host_public: String,
+}
+
+impl SeedKeys {
+    /// An error (kind `internal`) naming the first key that is empty: a seed without it would boot a guest nobody can
+    /// log in to, or one with no host key.
+    pub(crate) fn require_present(&self) -> Result<()> {
+        for (name, empty) in [
+            ("client_public", self.client_public.is_empty()),
+            ("host_private", self.host_private.expose_secret().is_empty()),
+            ("host_public", self.host_public.is_empty()),
+        ] {
+            if empty {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    format!("the seed key `{name}` is empty, so the guest would boot without it"),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct SeedMedia {

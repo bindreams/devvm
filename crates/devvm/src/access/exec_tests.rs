@@ -7,7 +7,7 @@ use futures::FutureExt;
 use super::{Event, run_exec};
 use crate::ErrorKind;
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
-use crate::exit::NullProgress;
+use crate::exit::{ExitStatus, ExitWidth, NullProgress, Report, status_json};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::sshd::Rig;
 
@@ -71,4 +71,35 @@ fn a_vm_exit_ends_an_exec_whose_close_has_no_room_in_the_session_queue(#[fixture
     let error = end.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("VM process exited"), "{error}");
+}
+
+/// SSH carries an exit status as 32 unsigned bits, and `ExitStatus::Code` holds the same 32 bits as an `i32`: a
+/// Windows status such as `0xC0000005` is the negative code it is on the Windows host.
+#[skuld::test]
+fn a_wire_status_above_i32_max_is_the_same_32_bits_as_a_negative_code(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    for (wire, code) in [
+        (0xC000_0005u32, -1_073_741_819),
+        (0xFFFF_FFFF, -1),
+        (0x8000_0000, i32::MIN),
+        (0x7FFF_FFFF, i32::MAX),
+        (7, 7),
+    ] {
+        let output = session.exec_collect(&format!("exit {wire}")).unwrap();
+        assert_eq!(output.status, ExitStatus::Code(code), "{wire:#x}");
+    }
+    // The connection is still good.
+    assert_eq!(session.exec_collect("exit 0").unwrap().status, ExitStatus::Code(0));
+}
+
+#[skuld::test]
+fn the_status_file_carries_it_signed(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let status = rig.connect().exec_collect("exit 3221225477").unwrap().status;
+    assert_eq!(
+        status_json(&Report::Guest(&status)),
+        r#"{"guest":{"code":-1073741819}}"#
+    );
+    assert_eq!(ExitWidth::Full32.exit_code(&status), -1_073_741_819);
 }

@@ -22,6 +22,7 @@
 //! | `echo ...` | prints the rest of the line, exits 0 |
 //! | `sh -c <script>`, `bash -c <script>` | runs `<script>` as the command if it is one of these, else exits 0 (a shell) |
 //! | `cloud-init status --wait --format json` | prints [`SshdOptions::cloud_init`]'s text, exits with its code |
+//! | a command holding [`READY_PROBE`] | answers from [`SshdOptions::ready_probes`], one reply per probe, the last one for every probe after it |
 //! | `read-stdin` | waits for the client to send EOF, then prints `stdin ended` and exits 0 |
 //! | `stall-on-data` | the connection stops reading and writing once the client sends data on this channel (see [`TestSshd::wait_for_held_request`]) |
 //!
@@ -92,11 +93,38 @@ pub struct SshdOptions {
     pub no_times: bool,
     /// Answer a directory listing this many entries at a time; `None` answers it in one reply.
     pub readdir_batch: Option<usize>,
+    /// Refuse `remove`, `rename` and `posix-rename@openssh.com` of a file while a handle on it is open, as a Windows
+    /// guest does.
+    pub windows_open_files: bool,
     /// Refuse `posix-rename@openssh.com`, as a server that is not OpenSSH does.
     pub no_posix_rename: bool,
     /// The exit code and stdout of `cloud-init status --wait --format json`; `None` leaves the command unknown.
     pub cloud_init: Option<(u32, String)>,
+    /// What the probe of a Windows guest's `wait_ready` (a command that holds [`READY_PROBE`]) answers, one reply for
+    /// each probe in turn and the last one for every probe after it. Empty leaves the command unknown.
+    pub ready_probes: Vec<ProbeReply>,
 }
+
+/// What the server answers a probe of a Windows guest.
+#[derive(Clone)]
+pub struct ProbeReply {
+    pub status: u32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl ProbeReply {
+    pub fn new(status: u32, stdout: &str, stderr: &str) -> ProbeReply {
+        ProbeReply {
+            status,
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+        }
+    }
+}
+
+/// The text of a Windows guest's readiness probe that selects its replies.
+use crate::guest::windows::ready::READY_PROBE;
 
 struct Trusted {
     host: PrivateKey,
@@ -119,6 +147,8 @@ pub(crate) struct State {
     started_notify: Notify,
     /// How many commands dispatched to `script` have returned.
     returned: AtomicUsize,
+    /// How many probes ([`READY_PROBE`]) the server has answered.
+    probes: AtomicUsize,
     /// Whether a command dispatched to `script` panicked.
     script_panicked: AtomicBool,
     returned_notify: Notify,
@@ -128,6 +158,8 @@ pub(crate) struct State {
     pub(crate) modes: Mutex<HashMap<String, u32>>,
     pub(crate) read_only_dirs: Mutex<HashSet<String>>,
     pub(crate) failing_data: Mutex<HashSet<String>>,
+    /// How many handles are open on each file path, while [`SshdOptions::windows_open_files`] is set.
+    pub(crate) open_files: Mutex<HashMap<String, usize>>,
     pub(crate) phantoms: Mutex<HashSet<String>>,
     pub(crate) unlookable: Mutex<HashMap<String, StatusCode>>,
     pub(crate) listed_again: Mutex<HashSet<String>>,
@@ -193,6 +225,7 @@ impl TestSshd {
             commands: Mutex::default(),
             started_notify: Notify::new(),
             returned: AtomicUsize::new(0),
+            probes: AtomicUsize::new(0),
             script_panicked: AtomicBool::new(false),
             returned_notify: Notify::new(),
             root,
@@ -200,6 +233,7 @@ impl TestSshd {
             modes: Mutex::default(),
             read_only_dirs: Mutex::default(),
             failing_data: Mutex::default(),
+            open_files: Mutex::default(),
             phantoms: Mutex::default(),
             unlookable: Mutex::default(),
             listed_again: Mutex::default(),
@@ -729,6 +763,16 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
         },
         _ => (command, None),
     };
+    if command.contains(READY_PROBE) && !state.options.ready_probes.is_empty() {
+        let replies = &state.options.ready_probes;
+        let reply = &replies[state.probes.fetch_add(1, Ordering::SeqCst).min(replies.len() - 1)];
+        let _ = handle.data(channel, reply.stdout.clone().into_bytes()).await;
+        let _ = handle
+            .extended_data(channel, 1, reply.stderr.clone().into_bytes())
+            .await;
+        finish(&handle, channel, reply.status).await;
+        return;
+    }
     let words: Vec<&str> = command.split_whitespace().collect();
     if let ["cloud-init", "status", "--wait", "--format", "json"] = words.as_slice()
         && let Some((code, reply)) = &state.options.cloud_init
