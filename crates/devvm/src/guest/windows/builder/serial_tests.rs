@@ -127,14 +127,53 @@ fn an_escape_and_one_character_is_dropped_wherever_it_stands() {
 }
 
 #[skuld::test]
-fn a_marker_is_read_after_whitespace_as_well_as_control() {
-    let log = " \t DEVVM-PROGRESS=indented\r\n\x1b[0m  DEVVM-LICENSE=null\r\n\u{a0}DEVVM-BASE-DONE\r\n";
+fn an_escape_sequence_that_another_escape_breaks_off_ends_there() {
+    // `ESC [ 1 ; ESC [ 0 m`: the second escape begins a sequence of its own, whose final byte is `m`.
+    let serial = read(b"\x1b[1;\x1b[0mDEVVM-PROGRESS=a\r\n\x1b[\x1b]0;t\x07DEVVM-LICENSE=null\r\n");
+
+    assert_eq!(serial.progress, ["a"]);
+    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
+}
+
+#[skuld::test]
+fn a_marker_is_read_after_a_string_sequence_of_any_kind() {
+    // DCS (`P`), SOS (`X`), PM (`^`) and APC (`_`) hold text up to `ESC \`.
+    let log = "\x1bPq#0;2;0;0;0\x1b\\DEVVM-PROGRESS=dcs\r\n\x1bXsos text\x1b\\DEVVM-LICENSE=null\r\n\
+               \x1b^private\x1b\\\x1b_application\x1b\\DEVVM-BASE-DONE\r\n";
 
     let serial = read(log.as_bytes());
 
-    assert_eq!(serial.progress, ["indented"]);
+    assert_eq!(serial.progress, ["dcs"]);
     assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
     assert!(serial.done, "{serial:?}");
+}
+
+#[skuld::test]
+fn text_a_string_sequence_holds_is_not_a_marker() {
+    let serial = read(b"\x1bPDEVVM-PROGRESS=inside\x1b\\\r\n\x1b_DEVVM-BASE-DONE\x1b\\\r\n");
+
+    assert!(serial.progress.is_empty(), "{serial:?}");
+    assert!(!serial.done, "{serial:?}");
+}
+
+#[skuld::test]
+fn a_marker_is_read_after_an_escape_that_selects_the_control_set() {
+    // `ESC SP F` is an escape, an intermediate byte and a final byte.
+    let serial = read(b"\x1b FDEVVM-PROGRESS=a\r\n");
+
+    assert_eq!(serial.progress, ["a"]);
+}
+
+#[skuld::test]
+fn indented_text_is_not_a_marker() {
+    let log = " DEVVM-PROGRESS=indented\r\n\t DEVVM-LICENSE=null\r\n\x1b[0m  DEVVM-BASE-DONE\r\n\u{a0}DEVVM-BASE-FAILED=x\r\n";
+
+    let serial = read(log.as_bytes());
+
+    assert!(serial.progress.is_empty(), "{serial:?}");
+    assert_eq!(serial.license, None);
+    assert_eq!(serial.failed, None);
+    assert!(!serial.done, "{serial:?}");
 }
 
 #[skuld::test]
