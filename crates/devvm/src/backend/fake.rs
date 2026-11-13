@@ -73,6 +73,7 @@ pub(crate) struct FakeBackend {
     shutdown_fails: bool,
     launch_fails: bool,
     try_wait_fails: bool,
+    kill_fails: bool,
     guest: Option<GuestScript>,
 }
 
@@ -142,6 +143,7 @@ impl FakeBackend {
             shutdown_fails: false,
             launch_fails: false,
             try_wait_fails: false,
+            kill_fails: false,
             guest: None,
         }
     }
@@ -161,6 +163,13 @@ impl FakeBackend {
     /// A backend whose machines cannot say whether their VM process has exited: `try_wait` fails.
     pub(crate) fn with_failing_try_wait(mut self) -> FakeBackend {
         self.try_wait_fails = true;
+        self
+    }
+
+    /// A backend whose machines cannot be killed: `kill` ends the VM and fails, as a `kill` does that cannot say the VM
+    /// is gone.
+    pub(crate) fn with_failing_kill(mut self) -> FakeBackend {
+        self.kill_fails = true;
         self
     }
 
@@ -339,6 +348,7 @@ impl Backend for FakeBackend {
             ssh_endpoint: self.ssh_endpoint,
             shutdown_fails: self.shutdown_fails,
             try_wait_fails: self.try_wait_fails,
+            kill_fails: self.kill_fails,
             guest: self.guest.clone().map(|script| (script, index, spec.clone())),
         }))
     }
@@ -364,6 +374,7 @@ impl Backend for FakeBackend {
             ssh_endpoint: self.ssh_endpoint,
             shutdown_fails: self.shutdown_fails,
             try_wait_fails: self.try_wait_fails,
+            kill_fails: self.kill_fails,
             guest: None,
         }))
     }
@@ -407,6 +418,8 @@ struct FakeMachine {
     shutdown_fails: bool,
     /// See [`FakeBackend::with_failing_try_wait`].
     try_wait_fails: bool,
+    /// See [`FakeBackend::with_failing_kill`].
+    kill_fails: bool,
     /// See [`FakeBackend::with_guest`]: the script, the launch's number and its spec.
     guest: Option<(GuestScript, usize, MachineSpec)>,
 }
@@ -460,6 +473,7 @@ impl Machine for FakeMachine {
             ));
         }
         Ok(self.vm.try_wait()?.map(|status| MachineExit {
+            output: if status.success() { String::new() } else { EXIT_OUTPUT.to_owned() },
             status,
         }))
     }
@@ -472,7 +486,6 @@ impl Machine for FakeMachine {
                 "a fake machine that has not run cannot be reset",
             ));
         }
-            output: if status.success() { String::new() } else { EXIT_OUTPUT.to_owned() },
         self.resets.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -492,7 +505,11 @@ impl Machine for FakeMachine {
 
     fn kill(&mut self) -> Result<()> {
         self.vm.kill()?;
-        self.remove_leftovers()
+        self.remove_leftovers()?;
+        if self.kill_fails {
+            return Err(Error::new(ErrorKind::Io, "the fake machine's kill fails"));
+        }
+        Ok(())
     }
 }
 

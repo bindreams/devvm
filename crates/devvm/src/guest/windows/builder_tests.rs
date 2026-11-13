@@ -293,3 +293,24 @@ fn the_bootstrap_writes_the_marker_that_starts_the_first_logon_phase() {
         "the builder tells the first-logon phase by this phase name"
     );
 }
+
+#[skuld::test]
+fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
+    let exited = || crate::Error::new(ErrorKind::Unavailable, "the VM process of launch 2 exited with exit code: 1");
+
+    let quiet = super::with_qemu_output(exited(), "");
+    assert_eq!(
+        quiet.message(),
+        "the VM process of launch 2 exited with exit code: 1
+QEMU printed nothing"
+    );
+    assert_eq!(quiet.kind(), ErrorKind::Unavailable);
+
+    let loud = super::with_qemu_output(exited(), "qemu: out of memory");
+    assert_eq!(
+        loud.message(),
+        "the VM process of launch 2 exited with exit code: 1
+the end of QEMU's output:
+qemu: out of memory"
+    );
+}

@@ -301,6 +301,46 @@ fn a_wait_that_fails_still_reads_the_markers_the_guest_wrote_before_it_names_the
 }
 
 #[skuld::test]
+fn a_vm_that_could_not_be_killed_may_still_write_so_only_its_complete_lines_are_read(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let logon = Launch::off("DEVVM-PROGRESS=first logon: whole
+DEVVM-PROGRESS=first logon: half");
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![logon]))
+        .with_failing_kill();
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    assert!(error.message().contains("the fake machine's kill fails"), "{error}");
+    let progress = rig.progress().join("
+");
+    assert!(progress.contains("first logon: whole"), "{progress}");
+    assert!(
+        !progress.contains("first logon: half"),
+        "a line the VM may still be writing is not a marker: {progress}"
+    );
+}
+
+#[skuld::test]
+fn a_wait_and_a_kill_that_both_fail_are_both_named(#[fixture(unicode_home)] home: &Path) {
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![Launch::running("DEVVM-PROGRESS=first logon: x
+")]))
+        .with_failing_try_wait()
+        .with_failing_kill();
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    let message = error.message();
+    assert!(message.contains("cannot read the VM process's status"), "{message}");
+    assert!(message.contains("the fake machine's kill fails"), "{message}");
+    assert!(message.contains("may still run"), "the VM may still be running: {message}");
+}
+
+#[skuld::test]
 fn a_failed_marker_is_the_headline_whatever_the_exit_and_the_exit_is_named_after_it(
     #[fixture(unicode_home)] home: &Path,
 ) {

@@ -317,13 +317,19 @@ impl<'a> Build<'a> {
         reader: &mut LogReader,
     ) -> Result<Launched> {
         // The log's tail is read first: a wait that failed has left markers unread, and `fail` tells WinPE's logs from
-        // the first-logon script's by the markers seen.
-        let rest = reader.poll(true);
+        // the first-logon script's by the markers seen. A VM that could not be killed may still be writing, so only
+        // its complete lines are read.
+        let rest = reader.poll(killed.is_ok());
         if let Ok(rest) = &rest {
             self.observe(rest);
         }
-        let exit = exit?;
-        killed?;
+        let exit = match (exit, killed) {
+            (Ok(exit), Ok(())) => exit,
+            (Ok(_), Err(kill)) => return Err(kill),
+            (Err(wait), kill) => {
+                return Err(wait.after_cleanup("a VM process that may still run", kill));
+            }
+        };
         rest?;
         let serial = reader.whole();
         let exited = match exit {
@@ -347,7 +353,7 @@ impl<'a> Build<'a> {
             if status.success() {
                 error
             } else {
-                with_tail(error, "QEMU's output", &exited.output)
+                with_qemu_output(error, &exited.output)
             }
         };
         if let Some(why) = &serial.failed {
@@ -523,6 +529,16 @@ fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
         Err(e) if is_absent(&e) => error,
         Err(e) => with_tail(error, what, &format!("(cannot be read: {e})")),
     }
+}
+
+/// `error` of a launch whose VM process failed, with the last lines of what QEMU printed in it, or the note that it
+/// printed nothing.
+fn with_qemu_output(error: Error, output: &str) -> Error {
+    if output.trim().is_empty() {
+        return Error::new(error.kind(), format!("{}
+QEMU printed nothing", error.message()));
+    }
+    with_tail(error, "QEMU's output", output)
 }
 
 /// `error`, with the last lines of `text`, which `what` names. Empty text adds nothing.
