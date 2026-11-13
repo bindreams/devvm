@@ -172,8 +172,12 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
     if media.iter().any(|medium| medium.kind == MediaKind::UsbDisk) {
         args.pair("-device", XHCI);
     }
+    let mut cdroms = 0;
     for (index, medium) in media.iter().enumerate() {
-        medium_args(&mut args, index, medium)?;
+        medium_args(&mut args, index, medium, cdroms)?;
+        if medium.kind == MediaKind::Cdrom {
+            cdroms += 1;
+        }
     }
 
     // User-mode network with loopback forwards on ephemeral ports.
@@ -236,8 +240,12 @@ fn system_disk_device(bus: DiskBus, boot_index: u32, args: &mut Args) -> String 
 /// The one USB controller every [`MediaKind::UsbDisk`] sits on.
 const XHCI: &str = "qemu-xhci,id=xhci";
 
-/// `Cdrom` is `ide-cd` with no `bus=`; `Disk` is virtio-blk; `UsbDisk` is removable `usb-storage` on [`XHCI`].
-fn medium_args(args: &mut Args, index: usize, medium: &Media) -> Result<()> {
+/// q35's built-in AHCI controller is the bus `ide`: [`AHCI_PORTS`] ports, one unit each.
+const AHCI_PORTS: usize = 6;
+
+/// `Cdrom` is `ide-cd` on the AHCI port after the `cdroms` before it; `Disk` is virtio-blk; `UsbDisk` is removable
+/// `usb-storage` on [`XHCI`].
+fn medium_args(args: &mut Args, index: usize, medium: &Media, cdroms: usize) -> Result<()> {
     let file = escape_option_value(&medium.path)?;
     let readonly = if medium.readonly { ",readonly=on" } else { "" };
     let boot = medium
@@ -245,10 +253,23 @@ fn medium_args(args: &mut Args, index: usize, medium: &Media) -> Result<()> {
         .map_or_else(String::new, |boot_index| format!(",bootindex={boot_index}"));
     let format = medium.format.name();
     let (drive, device) = match medium.kind {
-        MediaKind::Cdrom => (
-            format!("if=none,id=m{index},file={file},format={format},media=cdrom{readonly}"),
-            format!("ide-cd,drive=m{index}{boot}"),
-        ),
+        MediaKind::Cdrom => {
+            let port = cdroms;
+            if port >= AHCI_PORTS {
+                return Err(Error::new(
+                    ErrorKind::Usage,
+                    format!(
+                        "{} is CD-ROM number {}: the machine's AHCI controller has {AHCI_PORTS} ports, one CD-ROM each, so at most six CD-ROMs can be attached",
+                        medium.path.display(),
+                        port + 1
+                    ),
+                ));
+            }
+            (
+                format!("if=none,id=m{index},file={file},format={format},media=cdrom{readonly}"),
+                format!("ide-cd,drive=m{index},bus=ide.{port}{boot}"),
+            )
+        }
         MediaKind::Disk => (
             format!("if=none,id=m{index},file={file},format={format}{readonly}"),
             format!("virtio-blk-pci,drive=m{index}{boot}"),

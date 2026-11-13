@@ -96,7 +96,7 @@ fn expected_args(spec: &MachineSpec, paths: &LaunchPaths, accel: &str, machine: 
             "-drive",
             format!("if=none,id=m0,file={seed},format=raw,media=cdrom,readonly=on"),
         ),
-        ("-device", "ide-cd,drive=m0".to_owned()),
+        ("-device", "ide-cd,drive=m0,bus=ide.0".to_owned()),
         ("-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:0-:22".to_owned()),
         ("-device", "virtio-net-pci,netdev=n0".to_owned()),
     ] {
@@ -228,7 +228,7 @@ fn media_follow_boot_index_and_the_seed_is_read_only() {
         ],
         "boot order first; a medium with no boot index last"
     );
-    assert!(args.contains(&"ide-cd,drive=m0,bootindex=1".to_owned()));
+    assert!(args.contains(&"ide-cd,drive=m0,bus=ide.0,bootindex=1".to_owned()));
     assert!(args.contains(&"virtio-blk-pci,drive=m1,bootindex=2".to_owned()));
     assert!(args.contains(&"virtio-blk-pci,drive=m2".to_owned()));
     // The system disk comes after every medium that wants to boot.
@@ -239,7 +239,7 @@ fn media_follow_boot_index_and_the_seed_is_read_only() {
 }
 
 #[skuld::test]
-fn a_disk_kind_medium_is_a_readonly_virtio_blk_and_a_cdrom_is_ide_cd() {
+fn a_disk_kind_medium_is_a_readonly_virtio_blk_and_a_cdrom_is_ide_cd_on_the_first_ahci_port() {
     let mut spec = spec();
     spec.media = vec![
         Media {
@@ -264,7 +264,7 @@ fn a_disk_kind_medium_is_a_readonly_virtio_blk_and_a_cdrom_is_ide_cd() {
     );
     assert!(args.contains(&"virtio-blk-pci,drive=m0".to_owned()));
     assert!(args.contains(&"if=none,id=m1,file=seed.iso,format=raw,media=cdrom,readonly=on".to_owned()));
-    assert!(args.contains(&"ide-cd,drive=m1".to_owned()));
+    assert!(args.contains(&"ide-cd,drive=m1,bus=ide.0".to_owned()));
 }
 
 #[skuld::test]
@@ -729,7 +729,7 @@ fn the_linux_profile_args_are_unchanged() {
 
 /// The install media of a Windows build.
 #[skuld::test]
-fn an_install_cdrom_is_an_ide_cd_with_no_bus() {
+fn an_install_cdrom_is_an_ide_cd_on_an_ahci_port() {
     let mut spec = spec();
     spec.media = vec![Media {
         path: PathBuf::from("inst/overlay.qcow2"),
@@ -740,7 +740,78 @@ fn an_install_cdrom_is_an_ide_cd_with_no_bus() {
     }];
     let args = args(&spec, &paths());
     assert!(
-        values_of(&args, "-device").contains(&"ide-cd,drive=m0,bootindex=1"),
+        values_of(&args, "-device").contains(&"ide-cd,drive=m0,bus=ide.0,bootindex=1"),
         "{args:?}"
     );
+}
+
+fn cdroms(count: usize) -> Vec<Media> {
+    (0..count)
+        .map(|i| Media {
+            path: PathBuf::from(format!("cd{i}.iso")),
+            kind: MediaKind::Cdrom,
+            boot_index: None,
+            readonly: true,
+            format: MediaFormat::Raw,
+        })
+        .collect()
+}
+
+/// q35's built-in AHCI controller is the bus `ide`, with one unit on each of its six ports.
+#[skuld::test]
+fn each_cdrom_gets_its_own_ahci_port_in_order() {
+    let mut spec = spec();
+    spec.media = cdroms(2);
+    spec.media.insert(
+        1,
+        Media {
+            path: PathBuf::from("data.img"),
+            kind: MediaKind::Disk,
+            boot_index: None,
+            readonly: false,
+            format: MediaFormat::Raw,
+        },
+    );
+    spec.media.push(Media {
+        path: PathBuf::from("boot.iso"),
+        kind: MediaKind::Cdrom,
+        boot_index: Some(1),
+        readonly: true,
+        format: MediaFormat::Raw,
+    });
+
+    let args = args(&spec, &paths());
+
+    // Boot order first, so `boot.iso` is m0 and takes port 0; the other CD-ROMs follow in their order.
+    let devices: Vec<&str> = values_of(&args, "-device")
+        .into_iter()
+        .filter(|device| device.starts_with("ide-cd"))
+        .collect();
+    assert_eq!(
+        devices,
+        [
+            "ide-cd,drive=m0,bus=ide.0,bootindex=1",
+            "ide-cd,drive=m1,bus=ide.1",
+            "ide-cd,drive=m3,bus=ide.2",
+        ]
+    );
+}
+
+#[skuld::test]
+fn six_cdroms_fill_the_six_ahci_ports_and_a_seventh_is_refused() {
+    let mut spec = spec();
+    spec.media = cdroms(6);
+    let args = args(&spec, &paths());
+    let buses: Vec<String> = values_of(&args, "-device")
+        .into_iter()
+        .filter_map(|device| device.split(',').find_map(|part| part.strip_prefix("bus=ide.")))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(buses, ["0", "1", "2", "3", "4", "5"]);
+
+    spec.media = cdroms(7);
+    let error = build_args(&spec, &paths()).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
+    assert!(error.message().contains("six"), "{error}");
+    assert!(error.message().contains("cd6.iso"), "{error}");
 }
