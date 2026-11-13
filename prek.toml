@@ -74,7 +74,8 @@ rev = "e8b4e28241a9ae8296ba6e4a491b5da4eda73283" # frozen: 3.11.1
 hooks = [
   # Rust gets `cargo fmt`; markdown gets prettier; both have stronger opinions than .editorconfig and conflict on
   # trailing whitespace, so exclude them.
-  { id = "editorconfig-checker", exclude_types = ["rust", "markdown"] },
+  # The image-list fixtures are UTF-16LE with no final newline, as Windows writes them (`crates/devvm/src/iso/fixtures`).
+  { id = "editorconfig-checker", exclude_types = ["rust", "markdown"], exclude = '^crates/devvm/src/iso/fixtures/wim-.*\.xml$' },
 ]
 
 [[repos]]

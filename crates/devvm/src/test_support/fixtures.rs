@@ -35,6 +35,13 @@ pub fn unicode_home() -> Result<UnicodeHome, String> {
     Ok(UnicodeHome { path, _tmp: tmp })
 }
 
+/// The installer ISO fixture `name`, which `iso/fixtures/make_fixtures.py` makes.
+pub fn iso_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/iso/fixtures")
+        .join(name)
+}
+
 /// The name `bad<invalid>name`, where `<invalid>` is a byte (Unix) or an unpaired surrogate (Windows) that no Unicode
 /// text holds, so `to_string_lossy` turns it into U+FFFD. macOS file systems refuse such a name.
 pub fn non_unicode_name() -> std::ffi::OsString {

@@ -64,16 +64,21 @@ impl Guests for FakeGuests {
     }
 
     fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        Ok(Arc::new(FakeBaseBuilder))
+        Ok(Arc::new(FakeBaseBuilder(None)))
     }
 }
 
 /// Builds a root layer without an image: one file in `staging`, which the fake backend's machines sit on. Its definition
-/// hash is a constant.
-pub(crate) struct FakeBaseBuilder;
+/// hash is a constant. Built for [`ServedGuests`], it runs their `on_base` hook first.
+pub(crate) struct FakeBaseBuilder(Option<Arc<Served>>);
 
 impl BaseBuilder for FakeBaseBuilder {
     fn build_base(&self, _src: &Source, _ctx: &BuildCtx, staging: &LayerDir) -> Result<LayerMeta> {
+        if let Some(served) = &self.0
+            && let Some(hook) = served.on_base.lock().unwrap().as_ref()
+        {
+            hook();
+        }
         let disk = staging.path().join(LAYER_DISK);
         std::fs::write(&disk, b"base disk")
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot write {}", disk.display()), e))?;
@@ -242,6 +247,7 @@ struct Served {
     ready_command: Mutex<String>,
     degraded: Mutex<Option<String>>,
     on_ready: Mutex<Option<Box<dyn Fn() + Send>>>,
+    on_base: Mutex<Option<Box<dyn Fn() + Send>>>,
     /// The resets that start a new boot, if the guests follow any.
     resets: Mutex<Option<Arc<AtomicUsize>>>,
     /// How many boot id reads after a reset fail, before the stale ones.
@@ -272,6 +278,7 @@ impl ServedGuests {
             ready_command: Mutex::new("echo ready".to_owned()),
             degraded: Mutex::default(),
             on_ready: Mutex::default(),
+            on_base: Mutex::default(),
             resets: Mutex::default(),
             failing_boot_reads: Mutex::default(),
             stale_boot_reads: Mutex::default(),
@@ -329,6 +336,11 @@ impl ServedGuests {
     /// Runs `hook` at the start of every `wait_ready`, before it talks to the guest.
     pub(crate) fn on_ready(&self, hook: impl Fn() + Send + 'static) {
         *self.0.on_ready.lock().unwrap() = Some(Box::new(hook));
+    }
+
+    /// Runs `hook` at the start of every root layer's build.
+    pub(crate) fn on_base(&self, hook: impl Fn() + Send + 'static) {
+        *self.0.on_base.lock().unwrap() = Some(Box::new(hook));
     }
 
     /// Every seed the guests were asked for, in order.
@@ -420,7 +432,7 @@ impl Guests for ServedGuests {
         }))
     }
 
-    fn builder(&self, kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
-        FakeGuests.builder(kind)
+    fn builder(&self, _kind: GuestKind) -> Result<Arc<dyn BaseBuilder>> {
+        Ok(Arc::new(FakeBaseBuilder(Some(self.0.clone()))))
     }
 }

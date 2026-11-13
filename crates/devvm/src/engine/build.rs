@@ -9,6 +9,7 @@ use super::build_dir::BuildDir;
 use crate::copy::{self, Snapshot};
 use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
+use crate::iso::{IsoMemo, IsoRoot, key_iso};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, Recipe, Shell, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
@@ -51,9 +52,12 @@ impl Engine {
         let arch = opts.arch.unwrap_or_else(Arch::host);
         let guest = self.guests.os(flat.guest)?;
         let builder = self.guests.builder(flat.guest)?;
-        let (root, base) = root_content(&flat.root, arch)?;
         self.backend()?;
         let store = self.store()?;
+        let memo = IsoMemo::new(&self.dirs);
+        let (root, base) = root_of(&flat.root, arch, &|iso, edition| {
+            key_iso(self.host, &memo, iso, edition, self.progress.as_ref())
+        })?;
 
         let build_dir = BuildDir::create(self)?;
         let snapshots = self.snapshots(&flat, build_dir.path())?;
@@ -66,7 +70,7 @@ impl Engine {
             disk: flat.resources.disk,
             guest_semantics_version: guest.semantics_version(),
         };
-        let keys = chain_keys(&flat, &ctx, &root, &builder.definition_hash(), &manifests)?;
+        let keys = chain_keys(&flat, &ctx, &root.content(), &builder.definition_hash(), &manifests)?;
 
         let build_ctx = BuildCtx {
             dirs: self.dirs.clone(),
@@ -82,6 +86,10 @@ impl Engine {
                 .build_base(&flat.root, &build_ctx, staging.dir)
                 .map(|meta| Built::from_meta(&meta))
         })?;
+        // The ISO of an ISO root is held until here: the root layer is found or built, and no step reads the ISO. The
+        // Windows builder reads it from `root` rather than by its path, and keeps it held until the guest's disk
+        // has opened it.
+        drop(root);
         for (index, key) in keys[1..].iter().enumerate() {
             let step = StepRun {
                 engine: self,
@@ -146,8 +154,35 @@ fn refuse_set_steps(flat: &Flattened) -> Result<()> {
     }
 }
 
-/// What the key of the root layer hashes, and the base in the words of an `expired-base` error.
-fn root_content(source: &Source, arch: Arch) -> Result<(RootContent, String)> {
+/// What the root layer of a build is made from.
+enum BuildRoot {
+    /// A disk image or an OCI image, which the key hashes as it is.
+    Pinned(RootContent),
+    /// A Windows ISO, held, with what a key is made from.
+    Iso(IsoRoot),
+}
+
+impl BuildRoot {
+    /// What the key of the root layer hashes.
+    fn content(&self) -> RootContent {
+        match self {
+            BuildRoot::Pinned(content) => content.clone(),
+            BuildRoot::Iso(root) => RootContent::Iso {
+                sha256: root.sha256,
+                image_index: root.image.index,
+                image_name: root.image.name.clone(),
+            },
+        }
+    }
+}
+
+/// The root of a build, and the base in the words of an `expired-base` error. `iso_root` gives the content hash of an
+/// ISO and the image an edition selects in it, with the ISO held.
+fn root_of(
+    source: &Source,
+    arch: Arch,
+    iso_root: &dyn Fn(&std::path::Path, Option<&str>) -> Result<IsoRoot>,
+) -> Result<(BuildRoot, String)> {
     match source {
         Source::DiskImage(pins) => {
             let pin = pins.get(arch).ok_or_else(|| {
@@ -156,17 +191,18 @@ fn root_content(source: &Source, arch: Arch) -> Result<(RootContent, String)> {
                     format!("the disk image has no pin for {}", arch.as_str()),
                 )
             })?;
-            Ok((RootContent::Sha256(pin.sha256), format!("disk image {}", pin.url)))
+            Ok((
+                BuildRoot::Pinned(RootContent::Sha256(pin.sha256)),
+                format!("disk image {}", pin.url),
+            ))
         }
-        Source::Oci { reference, digest } => {
-            Ok((RootContent::OciDigest(digest.clone()), format!("OCI image {reference}")))
-        }
-        Source::Iso { path } => Err(Error::new(
-            ErrorKind::NotSupported,
-            format!(
-                "a layer cannot be keyed by the content of the Windows ISO {} yet",
-                path.display()
-            ),
+        Source::Oci { reference, digest } => Ok((
+            BuildRoot::Pinned(RootContent::OciDigest(digest.clone())),
+            format!("OCI image {reference}"),
+        )),
+        Source::Iso { path, edition } => Ok((
+            BuildRoot::Iso(iso_root(path, edition.as_deref())?),
+            format!("Windows ISO {}", path.display()),
         )),
         Source::Recipe(_) | Source::Embedded(_) => Err(Error::new(
             ErrorKind::Internal,

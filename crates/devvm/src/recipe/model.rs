@@ -50,9 +50,15 @@ pub enum Source {
         reference: String,
         digest: String,
     },
-    /// A Windows installer ISO; the path is already resolved against the declaring file's directory.
+    /// A Windows installer ISO; the path is already resolved against the declaring file's directory. `edition` is the
+    /// `NAME` of the image to install, which an ISO with one image does not need.
+    ///
+    /// The ISO is read where the recipe says, never copied: keep it at that path, because a rebuild before the base
+    /// expires reads it again. A layer is keyed by the ISO's content, so the same bytes at another path are the same
+    /// layer. x64 images only; an image of another architecture is refused.
     Iso {
         path: PathBuf,
+        edition: Option<String>,
     },
 }
 

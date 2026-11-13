@@ -81,6 +81,13 @@ pub enum RootContent {
     Sha256(Sha256),
     /// An OCI image digest; hashed in lowercase, so case variants share a key.
     OciDigest(String),
+    /// A Windows ISO: the sha256 of its content and the image installed from it (its index in the ISO and its name), so
+    /// two editions of one ISO are two roots, and an `edition` omitted and one that names the only image are one.
+    Iso {
+        sha256: Sha256,
+        image_index: u32,
+        image_name: String,
+    },
 }
 
 // Framing =============================================================================================================
@@ -215,6 +222,11 @@ pub(crate) fn root_key_with(
     match content {
         RootContent::Sha256(sha) => framer.tag(1).bytes(sha.as_bytes()),
         RootContent::OciDigest(digest) => framer.tag(2).str(&digest.to_ascii_lowercase()),
+        RootContent::Iso {
+            sha256,
+            image_index,
+            image_name,
+        } => framer.tag(3).bytes(sha256.as_bytes()).u32(*image_index).str(image_name),
     };
     framer.bytes(base_definition);
     framer.finish()

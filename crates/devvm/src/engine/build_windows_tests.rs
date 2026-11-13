@@ -1,7 +1,9 @@
 //! `Engine::build` over the fake backend, with machines that launch: a fake machine is a frozen process, which only
 //! Windows can spawn. The `copy` tests run `git`.
 
+use std::fs::OpenOptions;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use super::build_tests::{
     Fixture, assert_a_failed_phase_commits_nothing, fixture, keys_of, no_instance_or_build_is_left, ran, recipe,
@@ -12,8 +14,9 @@ use crate::copy::copy_tests::{add_all, new_repo, put};
 use crate::engine::ListFilter;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
+use crate::recipe::Recipe;
 use crate::recipe::hash::LayerKey;
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::{BuildOptions, ErrorKind, GuestKind, Image};
 
@@ -499,4 +502,44 @@ fn a_copy_step_whose_upload_fails_names_the_step_and_the_upload_and_commits_noth
     );
     assert!(extractions(&fx).is_empty(), "the extraction ran after a failed upload");
     no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn the_iso_is_held_while_the_root_layer_is_built_and_not_while_a_step_runs(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let iso = home.join("win.iso");
+    std::fs::copy(iso_fixture("single-image.iso"), &iso).unwrap();
+    // Say whether the ISO could be written when the root layer is built, and when each step's guest is waited for.
+    let probe = |log: &Arc<Mutex<Vec<bool>>>| {
+        let (log, iso) = (log.clone(), iso.clone());
+        move || {
+            log.lock()
+                .unwrap()
+                .push(OpenOptions::new().write(true).open(&iso).is_ok())
+        }
+    };
+    let (base, steps) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+    fx.guests.on_base(probe(&base));
+    fx.guests.on_ready(probe(&steps));
+    let recipe = Recipe::parse(
+        "from: { iso: win.iso }
+steps:
+  - run: echo one
+",
+        &home.join("r.devvm.yaml"),
+    )
+    .unwrap();
+
+    fx.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    assert_eq!(
+        *base.lock().unwrap(),
+        [false],
+        "the ISO was not held while the root layer was built"
+    );
+    assert_eq!(
+        *steps.lock().unwrap(),
+        [true],
+        "the ISO was still held while the step ran"
+    );
 }

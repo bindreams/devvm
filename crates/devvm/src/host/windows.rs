@@ -26,6 +26,7 @@ use crate::{Arch, Error, ErrorKind, Result};
 
 mod create_file;
 mod file_id;
+mod final_path;
 mod hold;
 mod link;
 mod private_file;
@@ -307,6 +308,14 @@ impl Host for WindowsHost {
 
     fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
         hold::open_lock_file(path, create)
+    }
+
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        hold::open_held_read(path)
+    }
+
+    fn final_path_of_open(&self, file: &File, _opened_by: &Path) -> std::io::Result<PathBuf> {
+        final_path::of_handle(file)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

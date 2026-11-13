@@ -50,25 +50,6 @@ fn generate_pair() -> Result<(SecretString, String)> {
     Ok((private.to_string().into(), public))
 }
 
-/// Removes the `.keys-*` directories in `parent`: every writer holds the lock, so none of them is in use. One that
-/// cannot be removed (an antivirus holds a file of it, or it is not a directory) is returned as a warning: it must not
-/// stop every later write.
-fn sweep_temporaries(parent: &Path) -> Result<Vec<String>> {
-    let io =
-        |what: &str, path: &Path, source| Error::io(ErrorKind::Io, format!("cannot {what} {}", path.display()), source);
-    let mut warnings = Vec::new();
-    for entry in std::fs::read_dir(parent).map_err(|e| io("list", parent, e))? {
-        let entry = entry.map_err(|e| io("list", parent, e))?;
-        if entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
-            let path = entry.path();
-            if let Err(e) = std::fs::remove_dir_all(&path) {
-                warnings.push(io("remove the leftover", &path, e).message().to_owned());
-            }
-        }
-    }
-    Ok(warnings)
-}
-
 /// Whether a failed `remove_dir` means the directory is not an empty dead claim, so `publish_dir` is left to refuse it:
 /// the name is gone or below a file ([`is_absent`]), or has something in it. POSIX lets `rmdir` of a non-empty
 /// directory fail with `EEXIST` (`AlreadyExists`) as well as `ENOTEMPTY`.
@@ -142,7 +123,9 @@ impl InstanceKeys {
         std::fs::create_dir_all(parent).map_err(|e| io("create", parent, e))?;
         let mut lock = FileLock::open(&parent.join(LOCK))?;
         lock.lock(Mode::Exclusive, "the instance keys", &mut |_| {})?;
-        let mut warnings = sweep_temporaries(parent)?;
+        let mut warnings = crate::host::sweep(parent, &|name| name.starts_with(TEMP_PREFIX), &|path| {
+            std::fs::remove_dir_all(path)
+        })?;
         clear_dead_claim(dir)?;
         let temp = tempfile::Builder::new()
             .prefix(TEMP_PREFIX)

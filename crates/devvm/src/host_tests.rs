@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::other::OtherHost;
+use super::OtherHost;
 use super::{Comparison, FileId, HoldOutcome, Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
@@ -686,6 +686,117 @@ fn file_id_of_an_open_file_stays_when_its_name_leads_to_another_file(#[fixture(u
     std::fs::write(&path, b"").unwrap();
     assert_eq!(current().file_id_of_open(&file).unwrap(), before);
     assert_ne!(current().file_id(&path).unwrap(), before);
+}
+
+#[skuld::test]
+fn a_held_read_opens_the_file_for_reading_and_another_reader_still_opens_it(#[fixture(unicode_home)] home: &Path) {
+    use std::io::Read;
+    let path = home.join("a");
+    std::fs::write(&path, b"windows").unwrap();
+    let mut held = current().open_held_read(&path).unwrap();
+    let mut bytes = Vec::new();
+    held.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"windows");
+    // What QEMU does with the ISO: an ordinary read-only open.
+    assert_eq!(std::fs::read(&path).unwrap(), b"windows");
+}
+
+#[skuld::test]
+fn the_final_path_of_a_held_file_leads_to_that_file(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a");
+    std::fs::write(&path, b"windows").unwrap();
+    let held = current().open_held_read(&path).unwrap();
+    let final_path = current().final_path_of_open(&held, &path).unwrap();
+    assert_eq!(
+        current().file_id(&final_path).unwrap(),
+        current().file_id(&path).unwrap()
+    );
+}
+
+#[skuld::test]
+fn an_unsupported_host_that_cannot_tell_files_apart_gives_the_canonical_path(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a");
+    std::fs::write(&path, b"windows").unwrap();
+    let held = OtherHost.open_held_read(&path).unwrap();
+    assert_eq!(
+        OtherHost.final_path_of_open(&held, &path).unwrap(),
+        std::fs::canonicalize(&path).unwrap()
+    );
+}
+
+#[skuld::test]
+fn a_held_read_of_a_missing_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = current().open_held_read(&home.join("gone")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+}
+
+#[skuld::test]
+fn a_sweep_removes_what_it_is_told_is_a_leftover_and_nothing_else(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("a.tmp"), b"half").unwrap();
+    std::fs::create_dir(home.join("b.tmp")).unwrap();
+    std::fs::write(home.join("b.tmp").join("inside"), b"half").unwrap();
+    std::fs::write(home.join("keep.json"), b"{}").unwrap();
+
+    let warnings = super::sweep(home, &|name| name.ends_with(".tmp"), &super::remove_tree).unwrap();
+    assert_eq!(warnings, Vec::<String>::new());
+    let mut left: Vec<_> = std::fs::read_dir(home)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    left.sort();
+    assert!(left.iter().any(|name| name == "keep.json"));
+    assert!(
+        !left.iter().any(|name| name.to_string_lossy().ends_with(".tmp")),
+        "{left:?}"
+    );
+}
+
+#[skuld::test]
+fn a_leftover_a_sweep_cannot_remove_is_a_warning_naming_it_and_the_rest_still_go(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("stuck.tmp"), b"x").unwrap();
+    std::fs::write(home.join("other.tmp"), b"x").unwrap();
+    let refuse = |path: &Path| {
+        if path.ends_with("stuck.tmp") {
+            return Err(std::io::Error::other("held by a scanner"));
+        }
+        std::fs::remove_file(path)
+    };
+    let warnings = super::sweep(home, &|name| name.ends_with(".tmp"), &refuse).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("stuck.tmp") && warnings[0].contains("held by a scanner"),
+        "{warnings:?}"
+    );
+    assert!(home.join("stuck.tmp").exists());
+    assert!(!home.join("other.tmp").exists());
+}
+
+#[skuld::test]
+fn an_entry_a_sweep_cannot_read_is_a_warning_and_the_entries_after_it_are_still_swept(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    std::fs::write(home.join("before.tmp"), b"x").unwrap();
+    std::fs::write(home.join("after.tmp"), b"x").unwrap();
+    let listing = vec![
+        Ok(home.join("before.tmp")),
+        Err(std::io::Error::other("the listing broke")),
+        Ok(home.join("after.tmp")),
+    ];
+    let warnings = super::sweep_listed(home, listing, &|name| name.ends_with(".tmp"), &super::remove_tree);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("the listing broke") && warnings[0].contains(&*home.to_string_lossy()),
+        "{warnings:?}"
+    );
+    assert!(!home.join("before.tmp").exists());
+    assert!(!home.join("after.tmp").exists());
+}
+
+#[skuld::test]
+fn a_sweep_of_a_directory_that_cannot_be_listed_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let missing = home.join("missing");
+    let error = super::sweep(&missing, &|_| true, &super::remove_tree).unwrap_err();
+    assert!(error.message().contains("missing"), "{error}");
 }
 
 #[skuld::test]

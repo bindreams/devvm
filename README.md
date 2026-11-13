@@ -36,3 +36,21 @@ failed, or prints an error and exits 125 if it cannot find devvm's directories. 
 downloaded on first use.
 
 `devvm --help` lists the commands.
+
+## Windows ISOs
+
+A recipe starts a Windows guest from an installer ISO you downloaded:
+
+```yaml
+from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
+```
+
+- `edition` is the image's name in the ISO's `install.wim` (or `install.esd`). An ISO with one image does not need it;
+  with several, the error lists their names.
+- x64 images only. The install language is the image's default language.
+- Keep the ISO at the recipe's path. devvm never copies it, and a rebuild before the base expires reads it again.
+  The layer is keyed by the ISO's content, so moving or renaming it does not rebuild.
+- On Windows, a build holds the ISO open while it makes the base layer: other programs can read it, but cannot change,
+  move or delete it. An ISO that a program has open for writing is refused, naming the ISO.
+- `devvm doctor` hashes every ISO a build has keyed again and fails on one that changed. One that is not found is listed
+  as information: a moved ISO shows up so until a build names it at its new path.

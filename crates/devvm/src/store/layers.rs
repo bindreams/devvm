@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime};
 use crate::exit::Progress;
 use crate::recipe::hash::LayerKey;
 use crate::store::lock::{FileLock, Mode};
+use crate::store::quarantine::{quarantine_file, quarantine_path};
 use crate::{Dirs, Error, ErrorKind, Result};
 
 mod gc;
@@ -159,30 +160,12 @@ impl LayerStore {
 
     /// A fresh, not yet existing path under the quarantine root; its parent exists.
     fn quarantine_path(&self, label: &str) -> Result<PathBuf> {
-        std::fs::create_dir_all(&self.quarantine)
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", self.quarantine.display()), e))?;
-        Ok(self.quarantine.join(format!("{label}-{}", Generation::random())))
+        quarantine_path(&self.quarantine, label)
     }
 
     /// Moves an unreadable `current` file to quarantine. Never deletes it.
     fn quarantine_current(&self, key: &LayerKey, current: &Path) -> Result<()> {
-        let dir = self.quarantine_path(&format!("{key}-current"))?;
-        std::fs::create_dir(&dir)
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", dir.display()), e))?;
-        let target = dir.join("current");
-        std::fs::rename(current, &target).map_err(|e| {
-            Error::io(
-                ErrorKind::Io,
-                format!("cannot move {} to {}", current.display(), target.display()),
-                e,
-            )
-        })?;
-        self.progress.message(&format!(
-            "moved the unreadable {} to {}",
-            current.display(),
-            target.display()
-        ));
-        Ok(())
+        quarantine_file(&self.quarantine, &format!("{key}-current"), current, &*self.progress).map(|_| ())
     }
 
     /// Moves a generation whose record is unreadable to quarantine, unless someone holds a lease on it: then the

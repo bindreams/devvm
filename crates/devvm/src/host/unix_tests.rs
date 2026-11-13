@@ -227,3 +227,17 @@ fn holding_an_existing_name_that_is_a_symlink_opens_nothing_through_it(#[fixture
     let file = std::fs::File::open(&victim).unwrap();
     file.try_lock().expect("nobody holds the victim");
 }
+
+#[skuld::test]
+fn the_final_path_of_a_held_file_is_refused_when_its_name_now_leads_to_another_file(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let path = home.join("a.iso");
+    std::fs::write(&path, b"windows").unwrap();
+    let held = UnixHost.open_held_read(&path).unwrap();
+    std::fs::write(home.join("b.iso"), b"somewhere else").unwrap();
+    std::fs::rename(home.join("b.iso"), &path).unwrap();
+
+    let error = UnixHost.final_path_of_open(&held, &path).unwrap_err();
+    assert!(error.to_string().contains("a.iso"), "{error}");
+}

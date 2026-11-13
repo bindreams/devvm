@@ -146,6 +146,14 @@ impl Host for TestHost {
         host::current().open_lock_file(path, create)
     }
 
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        host::current().open_held_read(path)
+    }
+
+    fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
+        host::current().final_path_of_open(file, opened_by)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         host::current().hold_existing(path)
     }
@@ -292,6 +300,14 @@ impl Host for NoAccelHost {
         TestHost.open_lock_file(path, create)
     }
 
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        TestHost.open_held_read(path)
+    }
+
+    fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
+        TestHost.final_path_of_open(file, opened_by)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         TestHost.hold_existing(path)
     }
@@ -322,6 +338,8 @@ pub struct RecordingHost {
     remove_runtime_dirs: AtomicBool,
     /// Every `file_id` fails: a test that needs the identity of a held file to come from the hold, not from its name.
     fail_file_id: AtomicBool,
+    /// Every `final_path_of_open` fails, as on a volume that has no DOS path.
+    fail_final_path: AtomicBool,
     /// The paths given to `hold_new`, in call order, failed calls included.
     holds_made: Mutex<Vec<PathBuf>>,
     directory_calls: Mutex<Vec<DirectoryCall>>,
@@ -406,6 +424,11 @@ impl RecordingHost {
     /// Makes every `file_id` fail.
     pub fn fail_file_id(&self) {
         self.fail_file_id.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes every `final_path_of_open` fail.
+    pub fn fail_final_path(&self) {
+        self.fail_final_path.store(true, Ordering::SeqCst);
     }
 
     /// The paths given to `hold_new`, in call order.
@@ -623,6 +646,17 @@ impl Host for RecordingHost {
         TestHost.open_lock_file(path, create)
     }
 
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        TestHost.open_held_read(path)
+    }
+
+    fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
+        if self.fail_final_path.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("the volume has no DOS path"));
+        }
+        TestHost.final_path_of_open(file, opened_by)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         TestHost.hold_existing(path)
     }
@@ -770,6 +804,14 @@ impl Host for NoGuestReset {
 
     fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
         host::current().open_lock_file(path, create)
+    }
+
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        host::current().open_held_read(path)
+    }
+
+    fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
+        host::current().final_path_of_open(file, opened_by)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

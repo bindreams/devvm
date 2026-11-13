@@ -81,6 +81,7 @@ struct RawOci {
 #[serde(deny_unknown_fields)]
 struct RawIso {
     iso: PathBuf,
+    edition: Option<String>,
 }
 
 /// `from:`: a string, or one of four mappings told apart by their keys.
@@ -176,9 +177,15 @@ fn source(raw: RawFrom, dir: &Path, origin: &Path) -> Result<Source> {
     Ok(match raw {
         RawFrom::Name(name) if name.ends_with(SUFFIX) => Source::Recipe(dir.join(name)),
         RawFrom::Name(name) => Source::Embedded(name),
-        RawFrom::Iso(iso) => Source::Iso {
-            path: dir.join(iso.iso),
-        },
+        RawFrom::Iso(iso) => {
+            if iso.edition.as_deref().is_some_and(|edition| edition.trim().is_empty()) {
+                return Err(invalid(origin, "`edition` must name an image, not be empty"));
+            }
+            Source::Iso {
+                path: dir.join(iso.iso),
+                edition: iso.edition,
+            }
+        }
         RawFrom::Oci(oci) => {
             let parsed = oci
                 .digest
