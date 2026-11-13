@@ -240,6 +240,10 @@ impl<M: FileModes> Host for M {
         hold::open_refusing_links(self, path, create)
     }
 
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        File::open(path)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         hold::existing(self, path)
     }

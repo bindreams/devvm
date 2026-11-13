@@ -50,7 +50,7 @@ pub(super) fn without_trailing_separator(path: &Path) -> PathBuf {
 /// before a `..` is not followed. A `..` at a root stays at the root; one with nothing before it stays; no segment left
 /// is `.`. This is how a destination like `new/.` or `a/../b` is created exactly as it reads, before any directory is
 /// made.
-pub(crate) fn lexically_normal(path: &Path) -> PathBuf {
+pub(super) fn lexically_normal(path: &Path) -> PathBuf {
     let mut parts: Vec<Component> = Vec::new();
     for part in path.components() {
         match part {

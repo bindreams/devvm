@@ -84,7 +84,7 @@ pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
 /// The keys of the layers `recipe` builds, root first, when it has no `copy` step.
 pub(super) fn keys_of(recipe: &Recipe) -> Vec<LayerKey> {
     let flat = recipe.flatten().unwrap();
-    let (root, _) = root_content(&flat.root, Arch::host(), &|_, _| unreachable!("no ISO here")).unwrap();
+    let (root, _, _) = root_content(&flat.root, Arch::host(), &|_, _| unreachable!("no ISO here")).unwrap();
     let ctx = KeyContext {
         arch: Arch::host(),
         disk: flat.resources.disk,
@@ -170,11 +170,7 @@ fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home
     use crate::recipe::hash::root_key;
     let memo = IsoMemo::new(&Dirs::under(home));
     let progress = MemoryProgress::default();
-    let fixture = |name: &str| {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/iso/fixtures")
-            .join(name)
-    };
+    let fixture = crate::test_support::fixtures::iso_fixture;
     let (one, two, three) = (home.join("one.iso"), home.join("two.iso"), home.join("three.iso"));
     std::fs::copy(fixture("single-image.iso"), &one).unwrap();
     std::fs::copy(fixture("single-image.iso"), &two).unwrap();
@@ -184,7 +180,7 @@ fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home
             path: path.to_owned(),
             edition: edition.map(Into::into),
         };
-        let (content, _) = root_content(&source, Arch::host(), &|iso, edition| {
+        let (content, _, _) = root_content(&source, Arch::host(), &|iso, edition| {
             key_iso(&TestHost, &memo, iso, edition, &progress)
         })
         .unwrap();

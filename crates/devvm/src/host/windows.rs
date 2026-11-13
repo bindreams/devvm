@@ -309,6 +309,10 @@ impl Host for WindowsHost {
         hold::open_lock_file(path, create)
     }
 
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        hold::open_held_read(path)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         hold::existing(path)
     }

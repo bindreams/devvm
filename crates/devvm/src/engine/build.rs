@@ -55,7 +55,9 @@ impl Engine {
         self.backend()?;
         let store = self.store()?;
         let memo = IsoMemo::new(&self.dirs);
-        let (root, base) = root_content(&flat.root, arch, &|iso, edition| {
+        // The ISO of an ISO root stays held until the build ends. The Windows builder (W4b) reads it from this root
+        // rather than by its path, and keeps it held until the guest's disk has opened it.
+        let (root, base, _iso) = root_content(&flat.root, arch, &|iso, edition| {
             key_iso(self.host, &memo, iso, edition, self.progress.as_ref())
         })?;
 
@@ -150,13 +152,13 @@ fn refuse_set_steps(flat: &Flattened) -> Result<()> {
     }
 }
 
-/// What the key of the root layer hashes, and the base in the words of an `expired-base` error. `iso_root` gives the
-/// content hash of an ISO and the image an edition selects in it.
+/// What the key of the root layer hashes, the base in the words of an `expired-base` error, and the held ISO of an ISO
+/// root. `iso_root` gives the content hash of an ISO and the image an edition selects in it, with the ISO held.
 fn root_content(
     source: &Source,
     arch: Arch,
     iso_root: &dyn Fn(&std::path::Path, Option<&str>) -> Result<IsoRoot>,
-) -> Result<(RootContent, String)> {
+) -> Result<(RootContent, String, Option<IsoRoot>)> {
     match source {
         Source::DiskImage(pins) => {
             let pin = pins.get(arch).ok_or_else(|| {
@@ -165,20 +167,23 @@ fn root_content(
                     format!("the disk image has no pin for {}", arch.as_str()),
                 )
             })?;
-            Ok((RootContent::Sha256(pin.sha256), format!("disk image {}", pin.url)))
+            Ok((RootContent::Sha256(pin.sha256), format!("disk image {}", pin.url), None))
         }
-        Source::Oci { reference, digest } => {
-            Ok((RootContent::OciDigest(digest.clone()), format!("OCI image {reference}")))
-        }
+        Source::Oci { reference, digest } => Ok((
+            RootContent::OciDigest(digest.clone()),
+            format!("OCI image {reference}"),
+            None,
+        )),
         Source::Iso { path, edition } => {
-            let IsoRoot { sha256, image } = iso_root(path, edition.as_deref())?;
+            let root = iso_root(path, edition.as_deref())?;
             Ok((
                 RootContent::Iso {
-                    sha256,
-                    image_index: image.index,
-                    image_name: image.name,
+                    sha256: root.sha256,
+                    image_index: root.image.index,
+                    image_name: root.image.name.clone(),
                 },
                 format!("Windows ISO {}", path.display()),
+                Some(root),
             ))
         }
         Source::Recipe(_) | Source::Embedded(_) => Err(Error::new(

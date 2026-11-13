@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, ErrorKind, Result};
 
@@ -25,7 +26,7 @@ const XML_ENTRY: usize = 72;
 const RESOURCE_COMPRESSED: u8 = 0x04;
 
 /// The architecture an image is for, as its `ARCH` element says (the `PROCESSOR_ARCHITECTURE_*` values).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum WimArch {
     X86,
     Arm,
@@ -62,7 +63,7 @@ impl WimArch {
 }
 
 /// One image of an installation file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WimImage {
     /// The image's number in the file, from 1.
     pub index: u32,

@@ -1,19 +1,21 @@
 //! Windows installer ISOs as the root of a recipe: the hash a layer key is made from, the image a build installs, and
 //! the one change an install needs in the ISO's boot image.
 //!
-//! The ISO stays where the recipe says; devvm never copies it. A build reads it through its UDF tree.
+//! The ISO stays where the recipe says; devvm never copies it. A build holds it open from keying to the end
+//! ([`HeldIso`]) and reads it through its UDF tree.
 
-use std::path::Path;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
-use crate::host::Host;
+use crate::host::{Host, is_absent};
 use crate::{Error, ErrorKind, Result, Sha256};
 
 mod memo;
 mod udf;
 mod wim;
 
-pub(crate) use memo::{HashedIso, IsoMemo, Known};
+pub(crate) use memo::{HashedIso, IsoMemo, Known, QuarantineOutcome};
 pub(crate) use wim::{WimArch, WimImage};
 
 use udf::{BootEntry, Piece, Platform, SECTOR, Udf};
@@ -36,9 +38,55 @@ pub(crate) struct BootPatch {
     pub bytes: Vec<u8>,
 }
 
+/// An installer ISO, open and held: while this lives, no other program can write the ISO, delete it, rename it or
+/// rename another file onto its name ([`Host::open_held_read`]), so the file read through it is the file that was
+/// hashed, keyed and looked at, whatever happens to its path. Anything else that reads the ISO, QEMU included, opens
+/// it read-only as usual.
+///
+/// The cursor is not meant to be relied on: read through `try_clone`d handles that seek first, as [`Udf`] does.
+#[derive(Debug)]
+pub(crate) struct HeldIso {
+    path: PathBuf,
+    file: File,
+}
+
+impl HeldIso {
+    /// Opens and holds the ISO at `path`; a missing one is `NotFound`, and one that another program is writing is an
+    /// error naming the ISO and why.
+    pub(crate) fn open(host: &dyn Host, path: &Path) -> Result<HeldIso> {
+        let file = host.open_held_read(path).map_err(|e| {
+            if is_absent(&e) {
+                Error::new(
+                    ErrorKind::NotFound,
+                    format!("the ISO {} does not exist", path.display()),
+                )
+                .with_source(e)
+            } else {
+                Error::io(ErrorKind::Io, format!("cannot open {}", path.display()), e)
+            }
+        })?;
+        Ok(HeldIso {
+            path: path.to_owned(),
+            file,
+        })
+    }
+
+    /// The path the ISO was opened by, for messages.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn file(&self) -> &File {
+        &self.file
+    }
+}
+
 /// What a build reads from an ISO.
 #[derive(Debug)]
 pub(crate) struct InstallIso {
+    /// The ISO, still held. The build keeps it until the guest's disk has opened the ISO itself (QEMU opens it read-only
+    /// by its path, which the hold allows): reopening it by path before then reads whatever took the path.
+    pub iso: HeldIso,
     /// The image the recipe's `edition` selected (the only one when the ISO has one).
     pub image: WimImage,
     /// Writing these over the ISO makes it boot the installer without a key press: the no-prompt UEFI boot image goes
@@ -46,17 +94,19 @@ pub(crate) struct InstallIso {
     pub boot_patches: Vec<BootPatch>,
 }
 
-/// What a layer key is made from, of an ISO.
+/// What a layer key is made from, of an ISO, and the ISO held.
 #[derive(Debug)]
 pub(crate) struct IsoRoot {
     /// The SHA-256 of the ISO's content.
     pub sha256: Sha256,
     /// The image the recipe's `edition` selects: what the build installs, so what the key says.
     pub image: WimImage,
+    iso: HeldIso,
 }
 
-/// The content hash of the installer ISO at `iso` and the image `edition` selects in it (refusing one that is not x64).
-/// The ISO is opened once and read through that handle.
+/// The content hash of the installer ISO at `iso` and the image `edition` selects in it (refusing one that is not x64),
+/// with the ISO held. A hash and an image list the memo has for the ISO are used while the ISO is unchanged; otherwise
+/// the ISO is read once, and the memo remembers both.
 pub(crate) fn key_iso(
     host: &dyn Host,
     memo: &IsoMemo,
@@ -64,34 +114,38 @@ pub(crate) fn key_iso(
     edition: Option<&str>,
     progress: &dyn Progress,
 ) -> Result<IsoRoot> {
-    let HashedIso { file, sha256 } = memo.open(host, iso, progress)?;
-    let udf = Udf::open(iso, file)?;
-    let image = select_image(&read_images(&udf, iso)?, edition)?.clone();
-    Ok(IsoRoot { sha256, image })
+    let HashedIso { iso, sha256, images } = memo.open(host, iso, progress, &read_images)?;
+    let image = select_image(&images, edition)?.clone();
+    Ok(IsoRoot { sha256, image, iso })
 }
 
-/// Reads the installer ISO at `iso`, which the layer key was made from (`key_hash`, as [`IsoMemo::sha256`] gave it):
-/// fails, naming the ISO, when it is no longer that file. Selects the image `edition` names, refuses an image that is
-/// not x64, and reads the no-prompt boot image and where the boot catalog loads its UEFI image. Nothing is written.
-///
-/// The ISO is opened once, and everything is read through that handle: what is read is the file that was checked, even
-/// if something else takes the path meanwhile.
-pub(crate) fn read_install_iso(
-    host: &dyn Host,
-    memo: &IsoMemo,
-    iso: &Path,
-    key_hash: Sha256,
-    edition: Option<&str>,
-    progress: &dyn Progress,
-) -> Result<InstallIso> {
-    let udf = Udf::open(iso, memo.open_keyed(host, iso, key_hash, progress)?)?;
-    let image = select_image(&read_images(&udf, iso)?, edition)?.clone();
-    let boot_patches = vec![no_prompt_patch(&udf, iso)?];
-    Ok(InstallIso { image, boot_patches })
+/// What the build installs from the ISO that `root` keyed: the no-prompt boot image and where the boot catalog loads its
+/// UEFI image. Nothing is written. Everything is read through the handle `root` holds, and `InstallIso` carries it on.
+pub(crate) fn read_install_iso(root: IsoRoot) -> Result<InstallIso> {
+    let IsoRoot { image, iso, .. } = root;
+    let boot_patches = vec![no_prompt_patch(&mount(&iso)?, iso.path())?];
+    Ok(InstallIso {
+        iso,
+        image,
+        boot_patches,
+    })
+}
+
+/// The UDF tree of `iso`, read through its handle.
+fn mount(iso: &HeldIso) -> Result<Udf<'_>> {
+    let file = iso.file().try_clone().map_err(|e| {
+        Error::io(
+            ErrorKind::Io,
+            format!("cannot open {} again to read it", iso.path().display()),
+            e,
+        )
+    })?;
+    Udf::open(iso.path(), file)
 }
 
 /// The images of the ISO's installation file, `install.wim` or else `install.esd`.
-fn read_images(udf: &Udf<'_>, iso: &Path) -> Result<Vec<WimImage>> {
+fn read_images(held: &HeldIso) -> Result<Vec<WimImage>> {
+    let (udf, iso) = (mount(held)?, held.path());
     for name in INSTALL_FILES {
         if let Some(mut file) = udf.open_file(&format!("/sources/{name}"))? {
             return wim::read_image_list(&mut file, name);

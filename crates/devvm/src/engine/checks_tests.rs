@@ -1,15 +1,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use super::{host_checks, iso_checks, tool_check};
+use super::{host_checks, iso_check, iso_checks, tool_check};
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Check, Detail};
 use crate::engine::Engine;
 use crate::engine::engine_tests::{engine_with, memory};
 use crate::guest::fake::FakeGuests;
 use crate::host::Host;
-use crate::iso::IsoMemo;
-use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::iso::{IsoMemo, Known, key_iso};
+use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, RecordingHost, TestHost};
 use crate::{Dirs, Unavailable};
 
@@ -202,7 +202,13 @@ fn the_engine_lists_the_host_checks_then_the_tools_then_the_backends(#[fixture(u
 #[skuld::test]
 fn no_iso_line_exists_while_no_iso_was_keyed(#[fixture(unicode_home)] home: &Path) {
     let memo = IsoMemo::new(&Dirs::under(home));
-    assert_eq!(iso_checks(&memo, &MemoryProgress::default()), []);
+    assert_eq!(iso_checks(&memo, &TestHost, &MemoryProgress::default()), []);
+}
+
+/// A copy of the fixture ISO `name` at `iso`, keyed into `memo`.
+fn keyed(memo: &IsoMemo, iso: &Path, name: &str) {
+    std::fs::copy(iso_fixture(name), iso).unwrap();
+    key_iso(&TestHost, memo, iso, None, &MemoryProgress::default()).unwrap();
 }
 
 #[skuld::test]
@@ -210,13 +216,13 @@ fn the_iso_line_rehashes_each_known_iso_and_names_a_changed_one(#[fixture(unicod
     let memo = IsoMemo::new(&Dirs::under(home));
     let progress = MemoryProgress::default();
     let (fine, changed) = (home.join("fine.iso"), home.join("changed.iso"));
-    for iso in [&fine, &changed] {
-        std::fs::write(iso, b"windows").unwrap();
-        memo.sha256(&TestHost, iso, &progress).unwrap();
-    }
+    keyed(&memo, &fine, "single-image.iso");
+    keyed(&memo, &changed, "single-image.iso");
     // Same size and time, other bytes: only a rehash notices.
     let mtime = std::fs::metadata(&changed).unwrap().modified().unwrap();
-    std::fs::write(&changed, b"windowZ").unwrap();
+    let mut bytes = std::fs::read(&changed).unwrap();
+    *bytes.last_mut().unwrap() ^= 0xff;
+    std::fs::write(&changed, bytes).unwrap();
     std::fs::File::options()
         .write(true)
         .open(&changed)
@@ -224,7 +230,7 @@ fn the_iso_line_rehashes_each_known_iso_and_names_a_changed_one(#[fixture(unicod
         .set_modified(mtime)
         .unwrap();
 
-    let checks = iso_checks(&memo, &progress);
+    let checks = iso_checks(&memo, &TestHost, &progress);
     assert_eq!(checks.len(), 2);
     let sha = iso_line(&checks, &fine).outcome.clone().unwrap();
     assert_eq!(sha.len(), 64, "{sha}");
@@ -244,32 +250,58 @@ fn an_iso_that_is_gone_is_information_with_the_remedy_not_a_failure(#[fixture(un
     // The README says an ISO may be moved or renamed: doctor cannot tell that from a deletion, and the memo of the old
     // path must not fail it for ever.
     let memo = IsoMemo::new(&Dirs::under(home));
-    let progress = MemoryProgress::default();
     let gone = home.join("gone.iso");
-    std::fs::write(&gone, b"windows").unwrap();
-    memo.sha256(&TestHost, &gone, &progress).unwrap();
+    keyed(&memo, &gone, "single-image.iso");
     std::fs::remove_file(&gone).unwrap();
 
-    let checks = iso_checks(&memo, &progress);
+    let checks = iso_checks(&memo, &TestHost, &MemoryProgress::default());
     let note = iso_line(&checks, &gone).outcome.clone().unwrap();
     assert!(note.contains("not found"), "{note}");
     assert!(note.contains("hashes it again"), "{note}");
 }
 
 #[skuld::test]
-fn an_unreadable_iso_memo_is_quarantined_once_and_then_no_longer_listed(#[fixture(unicode_home)] home: &Path) {
+fn an_unreadable_iso_memo_is_quarantined_once_and_the_line_says_why(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     std::fs::create_dir_all(dirs.iso_memo()).unwrap();
     std::fs::write(dirs.iso_memo().join("junk.json"), b"[]").unwrap();
     let memo = IsoMemo::new(&dirs);
     let progress = MemoryProgress::default();
 
-    let checks = iso_checks(&memo, &progress);
+    let checks = iso_checks(&memo, &TestHost, &progress);
     assert_eq!(checks.len(), 1);
     let note = checks[0].outcome.clone().unwrap();
     assert!(note.contains("quarantine"), "{note}");
+    assert!(note.contains("it is not a memo"), "the line names the reason: {note}");
     assert!(checks[0].name.contains("junk.json"), "{checks:?}");
     assert!(!dirs.iso_memo().join("junk.json").exists());
 
-    assert_eq!(iso_checks(&memo, &progress), [], "the next run has nothing to say");
+    assert_eq!(
+        iso_checks(&memo, &TestHost, &progress),
+        [],
+        "the next run has nothing to say"
+    );
+}
+
+#[skuld::test]
+fn a_memo_that_turns_out_valid_under_the_lock_is_an_ordinary_iso_line(#[fixture(unicode_home)] home: &Path) {
+    // `known` listed the file as unreadable; another process wrote a good memo there before it was moved.
+    let dirs = Dirs::under(home);
+    let memo = IsoMemo::new(&dirs);
+    let iso = home.join("win.iso");
+    keyed(&memo, &iso, "single-image.iso");
+    let file = std::fs::read_dir(dirs.iso_memo())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .unwrap();
+
+    let stale = Known::Unreadable {
+        file: file.clone(),
+        why: "it is not a memo: torn".to_owned(),
+    };
+    let check = iso_check(&memo, &TestHost, stale, &MemoryProgress::default()).expect("a line for the ISO");
+    assert_eq!(check.name, format!("iso {}", iso.display()));
+    assert_eq!(check.outcome.unwrap().len(), 64);
+    assert!(file.exists(), "a good memo is never moved");
 }

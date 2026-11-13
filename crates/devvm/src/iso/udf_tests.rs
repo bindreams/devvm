@@ -1,18 +1,12 @@
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{Platform, SECTOR, Udf};
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{iso_fixture, unicode_home};
 use crate::{ErrorKind, Result};
 
 fn open(iso: &Path) -> Result<Udf<'_>> {
     Udf::open(iso, std::fs::File::open(iso).unwrap())
-}
-
-pub(crate) fn fixture_iso(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/iso/fixtures")
-        .join(name)
 }
 
 /// The bytes `make_fixtures.py`'s `image(seed, size)` writes.
@@ -30,7 +24,7 @@ pub(crate) fn read_at(iso: &Path, offset: u64, len: u64) -> Vec<u8> {
 
 #[skuld::test]
 fn a_file_of_the_udf_tree_is_found_where_its_bytes_are() {
-    let iso = fixture_iso("three-images.iso");
+    let iso = iso_fixture("three-images.iso");
     let udf = open(&iso).unwrap();
     let pieces = udf.pieces("/efi/microsoft/boot/efisys.bin").unwrap().unwrap();
     assert_eq!(pieces.len(), 1);
@@ -42,7 +36,7 @@ fn a_file_of_the_udf_tree_is_found_where_its_bytes_are() {
 
 #[skuld::test]
 fn a_path_the_tree_does_not_have_is_none() {
-    let udf_iso = fixture_iso("three-images.iso");
+    let udf_iso = iso_fixture("three-images.iso");
     let udf = open(&udf_iso).unwrap();
     assert_eq!(udf.pieces("/sources/install.esd").unwrap(), None);
     assert!(udf.open_file("/sources/install.esd").unwrap().is_none());
@@ -50,7 +44,7 @@ fn a_path_the_tree_does_not_have_is_none() {
 
 #[skuld::test]
 fn a_file_is_read_through_its_handle() {
-    let iso = fixture_iso("three-images.iso");
+    let iso = iso_fixture("three-images.iso");
     let udf = open(&iso).unwrap();
     let mut file = udf.open_file("/sources/install.wim").unwrap().unwrap();
     let mut tag = [0u8; 8];
@@ -61,7 +55,7 @@ fn a_file_is_read_through_its_handle() {
 
 #[skuld::test]
 fn the_boot_catalog_lists_the_bios_and_the_efi_image_that_the_firmware_loads() {
-    let iso = fixture_iso("three-images.iso");
+    let iso = iso_fixture("three-images.iso");
     let entries = open(&iso).unwrap().boot_entries().unwrap();
     let platforms: Vec<Platform> = entries.iter().map(|entry| entry.platform).collect();
     assert_eq!(platforms, [Platform::Bios, Platform::Efi]);
@@ -84,7 +78,7 @@ fn a_file_that_is_not_an_iso_is_refused_naming_it(#[fixture(unicode_home)] home:
 #[skuld::test]
 fn the_tree_is_read_through_the_handle_it_was_opened_with_not_the_path(#[fixture(unicode_home)] home: &Path) {
     let iso = home.join("kept.iso");
-    std::fs::copy(fixture_iso("three-images.iso"), &iso).unwrap();
+    std::fs::copy(iso_fixture("three-images.iso"), &iso).unwrap();
     let udf = open(&iso).unwrap();
     // Another file takes the ISO's path.
     std::fs::write(home.join("other.iso"), vec![9u8; 700_000]).unwrap();
@@ -98,7 +92,7 @@ fn the_tree_is_read_through_the_handle_it_was_opened_with_not_the_path(#[fixture
 
 #[skuld::test]
 fn bytes_that_lie_past_the_end_of_the_iso_are_refused_naming_it() {
-    let iso = fixture_iso("three-images.iso");
+    let iso = iso_fixture("three-images.iso");
     let udf = open(&iso).unwrap();
     let past = udf
         .read_pieces(&[super::Piece {

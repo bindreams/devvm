@@ -146,6 +146,10 @@ impl Host for TestHost {
         host::current().open_lock_file(path, create)
     }
 
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        host::current().open_held_read(path)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         host::current().hold_existing(path)
     }
@@ -290,6 +294,10 @@ impl Host for NoAccelHost {
 
     fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
         TestHost.open_lock_file(path, create)
+    }
+
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        TestHost.open_held_read(path)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
@@ -623,6 +631,10 @@ impl Host for RecordingHost {
         TestHost.open_lock_file(path, create)
     }
 
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        TestHost.open_held_read(path)
+    }
+
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {
         TestHost.hold_existing(path)
     }
@@ -770,6 +782,10 @@ impl Host for NoGuestReset {
 
     fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File> {
         host::current().open_lock_file(path, create)
+    }
+
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+        host::current().open_held_read(path)
     }
 
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome> {

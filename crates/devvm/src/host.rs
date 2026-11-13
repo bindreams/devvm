@@ -29,7 +29,7 @@ pub(crate) mod names;
         reason = "the host on neither Unix nor Windows; the tests use it everywhere"
     )
 )]
-mod other;
+pub(crate) mod other;
 #[cfg(unix)]
 mod unix;
 mod unsupported;
@@ -239,6 +239,16 @@ pub(crate) trait Host: Send + Sync {
     /// the name first, so a link made between the look and the open is followed there.
     fn open_lock_file(&self, path: &Path, create: bool) -> std::io::Result<File>;
 
+    /// Opens the file `path` for reading and keeps it as it is for as long as the handle lives: nobody can open it for
+    /// writing, delete it, rename it or rename another file onto its name, while any number of readers still can
+    /// (Windows: share mode `FILE_SHARE_READ` only). A link at `path` is followed. A file that another program has
+    /// open for writing, or locked against readers, is `ResourceBusy`, "open for writing". A host that cannot deny
+    /// those (everything but Windows) opens it as `File::open` does.
+    ///
+    /// A build holds its Windows ISO this way from the moment it keys the layer until the guest's disk has its own
+    /// read-only handle: QEMU opens the ISO read-only with the default sharing, which this mode allows.
+    fn open_held_read(&self, path: &Path) -> std::io::Result<File>;
+
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
     /// `path` is `InvalidInput`, "is a link": it is not opened through.
     fn hold_existing(&self, path: &Path) -> std::io::Result<HoldOutcome>;
@@ -296,6 +306,35 @@ pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
         Some(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
         Some(_) => std::fs::remove_file(path),
     }
+}
+
+/// Removes the entries of `dir` that `is_leftover` accepts by name, each with `remove`: what a writer that died left
+/// beside its files. The caller holds the lock every writer of `dir` takes, so none of them is in use. An entry that
+/// cannot be removed (an antivirus holds it) is a warning naming it, not an error: it must not stop every later write.
+/// A `dir` that cannot be listed is the error.
+pub(crate) fn sweep(
+    dir: &Path,
+    is_leftover: &dyn Fn(&str) -> bool,
+    remove: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> Result<Vec<String>> {
+    let io = |what: &str, path: &Path, source| {
+        crate::Error::io(
+            crate::ErrorKind::Io,
+            format!("cannot {what} {}", path.display()),
+            source,
+        )
+    };
+    let mut warnings = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| io("list", dir, e))? {
+        let entry = entry.map_err(|e| io("list", dir, e))?;
+        if is_leftover(&entry.file_name().to_string_lossy()) {
+            let path = entry.path();
+            if let Err(e) = remove(&path) {
+                warnings.push(io("remove the leftover", &path, e).message().to_owned());
+            }
+        }
+    }
+    Ok(warnings)
 }
 
 /// Removes the symlink `path`. A symlink to a directory is removed as a directory on Windows and as a file elsewhere;

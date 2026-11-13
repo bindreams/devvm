@@ -689,6 +689,73 @@ fn file_id_of_an_open_file_stays_when_its_name_leads_to_another_file(#[fixture(u
 }
 
 #[skuld::test]
+fn a_held_read_opens_the_file_for_reading_and_another_reader_still_opens_it(#[fixture(unicode_home)] home: &Path) {
+    use std::io::Read;
+    let path = home.join("a");
+    std::fs::write(&path, b"windows").unwrap();
+    let mut held = current().open_held_read(&path).unwrap();
+    let mut bytes = Vec::new();
+    held.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"windows");
+    // What QEMU does with the ISO: an ordinary read-only open.
+    assert_eq!(std::fs::read(&path).unwrap(), b"windows");
+}
+
+#[skuld::test]
+fn a_held_read_of_a_missing_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = current().open_held_read(&home.join("gone")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+}
+
+#[skuld::test]
+fn a_sweep_removes_what_it_is_told_is_a_leftover_and_nothing_else(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("a.tmp"), b"half").unwrap();
+    std::fs::create_dir(home.join("b.tmp")).unwrap();
+    std::fs::write(home.join("b.tmp").join("inside"), b"half").unwrap();
+    std::fs::write(home.join("keep.json"), b"{}").unwrap();
+
+    let warnings = super::sweep(home, &|name| name.ends_with(".tmp"), &super::remove_tree).unwrap();
+    assert_eq!(warnings, Vec::<String>::new());
+    let mut left: Vec<_> = std::fs::read_dir(home)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    left.sort();
+    assert!(left.iter().any(|name| name == "keep.json"));
+    assert!(
+        !left.iter().any(|name| name.to_string_lossy().ends_with(".tmp")),
+        "{left:?}"
+    );
+}
+
+#[skuld::test]
+fn a_leftover_a_sweep_cannot_remove_is_a_warning_naming_it_and_the_rest_still_go(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("stuck.tmp"), b"x").unwrap();
+    std::fs::write(home.join("other.tmp"), b"x").unwrap();
+    let refuse = |path: &Path| {
+        if path.ends_with("stuck.tmp") {
+            return Err(std::io::Error::other("held by a scanner"));
+        }
+        std::fs::remove_file(path)
+    };
+    let warnings = super::sweep(home, &|name| name.ends_with(".tmp"), &refuse).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("stuck.tmp") && warnings[0].contains("held by a scanner"),
+        "{warnings:?}"
+    );
+    assert!(home.join("stuck.tmp").exists());
+    assert!(!home.join("other.tmp").exists());
+}
+
+#[skuld::test]
+fn a_sweep_of_a_directory_that_cannot_be_listed_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
+    let missing = home.join("missing");
+    let error = super::sweep(&missing, &|_| true, &super::remove_tree).unwrap_err();
+    assert!(error.message().contains("missing"), "{error}");
+}
+
+#[skuld::test]
 fn the_volume_of_the_test_home_takes_locks(#[fixture(unicode_home)] home: &Path) {
     let file = std::fs::File::create(home.join("a")).unwrap();
     assert!(current().volume_has_posix_unlink_rename(&file).unwrap());

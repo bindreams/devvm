@@ -99,7 +99,7 @@ impl Dirs {
         self.cache.join("downloads")
     }
 
-    /// The hashes of the Windows ISOs recipes name: one file per ISO path (`iso::IsoMemo`).
+    /// The hashes of the Windows ISOs recipes name: one file per ISO file (`iso::IsoMemo`).
     pub fn iso_memo(&self) -> PathBuf {
         self.cache.join("iso-memo")
     }
