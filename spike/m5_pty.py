@@ -71,17 +71,35 @@ def exec_with_pty() -> None:
         say(f"pty exec {label}: status={status} stdout={out[-80:]!r} ({len(out)} bytes) stderr={err[:80]!r}")
     # Did the command run at all? The pseudoconsole's output holds none of it (151 bytes, run 43278227165): a file the
     # command writes answers that, read back by an exec request without a pty.
-    marker = r"C:\Users\Public\pty-exec-ran.txt"
-    script = (
-        f"Set-Content -LiteralPath '{marker}' -Value ('ran pid=' + $PID + ' session=' + "
+    exec_marker("marker", pty=True)
+
+
+def marker_path(label: str) -> str:
+    return rf"C:\Users\Public\pty-exec-{label}.txt"
+
+
+def marker_script(label: str) -> str:
+    return (
+        f"Set-Content -LiteralPath '{marker_path(label)}' -Value ('ran pid=' + $PID + ' session=' + "
         "[Diagnostics.Process]::GetCurrentProcess().SessionId + ' interactive=' + [Environment]::UserInteractive); "
         "Write-Output 'PTYEXEC-MARKER'"
     )
-    status, out, err = paramiko_lib.exec_raw(script, pty=True)
-    (ssh_lib.out / "pty-exec-marker.raw").write_bytes(out)
-    say(f"pty exec marker: status={status} stdout={out[-80:]!r} ({len(out)} bytes) stderr={err[:80]!r}")
-    status, out, err = paramiko_lib.exec_raw(f"if (Test-Path '{marker}') {{ Get-Content -Raw '{marker}' }} else {{ 'marker file absent' }}")
-    say(f"pty exec marker file (read without a pty): {out.decode('utf-8', errors='replace').strip()!r}")
+
+
+def read_marker(label: str) -> str:
+    """The marker file of `label`, read by an exec request without a pty, or `marker file absent`."""
+    path = marker_path(label)
+    _, out, _ = paramiko_lib.exec_raw(f"if (Test-Path '{path}') {{ Get-Content -Raw '{path}' }} else {{ 'marker file absent' }}")
+    return out.decode("utf-8", errors="replace").strip()
+
+
+def exec_marker(label: str, command: str | None = None, pty: bool = True) -> None:
+    """Runs `command` (default: `marker_script(label)`, which writes `marker_path(label)`) as an exec request, then reads
+    the file back. The raw output is `pty-exec-<label>.raw`."""
+    status, out, err = paramiko_lib.exec_raw(command or marker_script(label), pty=pty)
+    (ssh_lib.out / f"pty-exec-{label}.raw").write_bytes(out)
+    say(f"pty exec {label} (pty={pty}): status={status} stdout={out[-80:]!r} ({len(out)} bytes) stderr={err[:80]!r}")
+    say(f"pty exec {label}: marker file (read without a pty): {read_marker(label)!r}")
 
 
 def measure() -> None:

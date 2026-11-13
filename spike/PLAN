@@ -1,8 +1,8 @@
 # One `key=value` per line; lines starting with # are comments. The workflow reads this on every push.
 #
-# M-d (plan 9.4): stage `wedge:b2b.hkdef` (default host keys: the control, where the listener wedge is expected) and
-# `wedge:b2b.hk1` (sshd_config's one ed25519 `HostKey`) on both 25H2 legs, from the bases of run 43227036274 (they expire
-# 2026-11-17). The LTSC leg is off (its settings stay below).
+# B1.3 and the visible-window baseline: stage `ptywin` (two launches: first boot, then a boot after a guest restart) on both
+# 25H2 legs, from the bases of run 43227036274 (they expire 2026-11-17T13:53Z), with ssh-broker built from main fb612cf
+# (BROKER_COMMIT in the workflow). The LTSC leg is off (its settings stay below). M-d ran in run 43346095490.
 #
 # To run the LTSC leg once its pin is decided (M1, M5:lean, M9, M14 and E-B; the 25H2 legs stay off):
 #   1. set `legs=LTSC` below;
@@ -16,7 +16,7 @@ ltsc_hash=
 ltsc_sha256=2cee70bd183df42b92a2e0da08cc2bb7a2a9ce3a3841955a012c0f77aeb3cb29
 reuse=43227036274
 reuse_LTSC=
-stage=wedge:b2b.hkdef,wedge:b2b.hk1
+stage=ptywin
 stage_LTSC=m5:lean,restart:eb
 m12b=
 cpu=max

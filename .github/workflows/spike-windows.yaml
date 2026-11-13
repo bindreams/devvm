@@ -23,7 +23,7 @@ env:
   CARGO_TERM_COLOR: always
   # D: has about 220 GB free on the hosted runner; C: has about 20 GB after the downloads.
   WORK: D:/spike
-  BROKER_COMMIT: 9ba824829cb9f0f22a9f97ddc939a5b82434621d
+  BROKER_COMMIT: fb612cf3d05fb4dd1546fcb8750727684e528802
   OPENSSH_URL: https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip
   PWSH_URL: https://github.com/PowerShell/PowerShell/releases/download/v7.7.0/PowerShell-7.7.0-win-x64.zip
   VIRTIO_URL: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302.iso
@@ -206,8 +206,9 @@ jobs:
           set -euxo pipefail
           git clone https://github.com/bindreams/ssh-broker.git broker-src
           git -C broker-src checkout "$BROKER_COMMIT"
-          # A clean Windows has no VC++ redistributable: link the CRT statically.
-          (cd broker-src && RUSTFLAGS="-C target-feature=+crt-static" cargo build --release)
+          # main links the CRT statically itself (.cargo/config.toml, ssh-broker#62), so a clean Windows needs no VC++
+          # redistributable; no RUSTFLAGS here, which would replace that setting.
+          (cd broker-src && cargo build --release)
           mkdir -p broker-out
           find broker-src/target/release -maxdepth 1 -type f -name '*.exe' -exec cp {} broker-out/ \;
           (cd broker-out && sha256sum ./*.exe | tee sha256.txt)

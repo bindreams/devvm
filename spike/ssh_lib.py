@@ -37,13 +37,16 @@ def say(text: str) -> None:
     _log.write(f"[{time.time() - _begin:8.1f}s] {text}\n")
 
 
-def ssh(command: str, known_hosts: str = "known_hosts", stdin: bytes | None = None) -> tuple[int, bytes, bytes]:
+def ssh(command: str, known_hosts: str = "known_hosts", stdin: bytes | None = None, tty: bool = False,
+        bound: float | None = None) -> tuple[int, bytes, bytes]:
+    """`tty` forces a pty (`-tt`). `bound` ends a command that may never end (the caller's failure bound for an external
+    event); `subprocess.TimeoutExpired` then names it."""
     args = [
         SSH, "-p", port, "-i", (keys / "client").as_posix(), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={(keys / known_hosts).as_posix()}", "-o", "ConnectTimeout=10",
-        "user@127.0.0.1", command,
+        *(["-tt"] if tty else []), "user@127.0.0.1", command,
     ]  # fmt: skip
-    done = subprocess.run(args, input=stdin if stdin is not None else b"", capture_output=True)
+    done = subprocess.run(args, input=stdin if stdin is not None else b"", capture_output=True, timeout=bound)
     return done.returncode, done.stdout, done.stderr
 
 
