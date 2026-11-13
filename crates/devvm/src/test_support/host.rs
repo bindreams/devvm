@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
-use crate::host::{self, Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, names};
+use crate::host::{
+    self, Accel, Entry, FileId, HeldFile, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, names,
+};
 use crate::{Arch, Result};
 
 /// Reports TCG as the accelerator and delegates everything else to the real host, so the real `detach` is the one the
@@ -146,7 +148,7 @@ impl Host for TestHost {
         host::current().open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+    fn open_held_read(&self, path: &Path) -> std::io::Result<HeldFile> {
         host::current().open_held_read(path)
     }
 
@@ -296,7 +298,7 @@ impl Host for NoAccelHost {
         TestHost.open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+    fn open_held_read(&self, path: &Path) -> std::io::Result<HeldFile> {
         TestHost.open_held_read(path)
     }
 
@@ -631,7 +633,7 @@ impl Host for RecordingHost {
         TestHost.open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+    fn open_held_read(&self, path: &Path) -> std::io::Result<HeldFile> {
         TestHost.open_held_read(path)
     }
 
@@ -784,7 +786,7 @@ impl Host for NoGuestReset {
         host::current().open_lock_file(path, create)
     }
 
-    fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
+    fn open_held_read(&self, path: &Path) -> std::io::Result<HeldFile> {
         host::current().open_held_read(path)
     }
 

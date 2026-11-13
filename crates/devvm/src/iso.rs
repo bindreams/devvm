@@ -1,14 +1,15 @@
 //! Windows installer ISOs as the root of a recipe: the hash a layer key is made from, the image a build installs, and
 //! the one change an install needs in the ISO's boot image.
 //!
-//! The ISO stays where the recipe says; devvm never copies it. A build holds it open from keying to the end
-//! ([`HeldIso`]) and reads it through its UDF tree.
+//! The ISO stays where the recipe says; devvm never copies it. A build holds it open from keying until its root layer
+//! is found or built ([`HeldIso`]) and reads it through its UDF tree. The hold is a Windows host's: devvm's host is
+//! Windows, and no other host denies other programs the file.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
-use crate::host::{Host, is_absent};
+use crate::host::{HeldFile, Host, is_absent};
 use crate::{Error, ErrorKind, Result, Sha256};
 
 mod memo;
@@ -38,15 +39,16 @@ pub(crate) struct BootPatch {
     pub bytes: Vec<u8>,
 }
 
-/// An installer ISO, open and held: while this lives, no other program can write the ISO, delete it, rename it or
-/// rename another file onto its name ([`Host::open_held_read`]), so the file read through it is the file that was
-/// hashed, keyed and looked at, whatever happens to its path. Anything else that reads the ISO, QEMU included, opens
-/// it read-only as usual.
+/// An installer ISO, open and held: on a Windows host, while this lives, no other program can write the ISO, delete it,
+/// rename it or rename another file onto its name ([`Host::open_held_read`]), so the file read through it is the file
+/// that was hashed, keyed and looked at, whatever happens to its path. Anything else that reads the ISO, QEMU included,
+/// opens it read-only as usual. Other hosts open it as any read.
 ///
 /// The cursor is not meant to be relied on: read through `try_clone`d handles that seek first, as [`Udf`] does.
 #[derive(Debug)]
 pub(crate) struct HeldIso {
     path: PathBuf,
+    final_path: PathBuf,
     file: File,
 }
 
@@ -54,7 +56,7 @@ impl HeldIso {
     /// Opens and holds the ISO at `path`; a missing one is `NotFound`, and one that another program is writing is an
     /// error naming the ISO and why.
     pub(crate) fn open(host: &dyn Host, path: &Path) -> Result<HeldIso> {
-        let file = host.open_held_read(path).map_err(|e| {
+        let HeldFile { file, final_path } = host.open_held_read(path).map_err(|e| {
             if is_absent(&e) {
                 Error::new(
                     ErrorKind::NotFound,
@@ -67,6 +69,7 @@ impl HeldIso {
         })?;
         Ok(HeldIso {
             path: path.to_owned(),
+            final_path,
             file,
         })
     }
@@ -74,6 +77,13 @@ impl HeldIso {
     /// The path the ISO was opened by, for messages.
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The path of the held file with no link in it, for a program that opens the ISO by name (QEMU): the name the ISO
+    /// was opened by can be pointed at another file while the hold lasts, by re-making a junction or a symlink in it,
+    /// and this path cannot.
+    pub(crate) fn final_path(&self) -> &Path {
+        &self.final_path
     }
 
     pub(crate) fn file(&self) -> &File {
@@ -84,8 +94,9 @@ impl HeldIso {
 /// What a build reads from an ISO.
 #[derive(Debug)]
 pub(crate) struct InstallIso {
-    /// The ISO, still held. The build keeps it until the guest's disk has opened the ISO itself (QEMU opens it read-only
-    /// by its path, which the hold allows): reopening it by path before then reads whatever took the path.
+    /// The ISO, still held. The build keeps it until the guest's disk has opened the ISO itself: W4b gives QEMU
+    /// [`HeldIso::final_path`], which no re-made link can point elsewhere, and QEMU opens it read-only, which the hold
+    /// allows. Reopening the ISO by the recipe's path reads whatever the path leads to by then.
     pub iso: HeldIso,
     /// The image the recipe's `edition` selected (the only one when the ISO has one).
     pub image: WimImage,

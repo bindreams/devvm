@@ -1,16 +1,11 @@
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use std::path::Path;
 
 use super::{WimArch, WimImage, parse_image_list, read_image_list};
 use crate::ErrorKind;
+use crate::test_support::fixtures::iso_fixture;
 
 fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/iso/fixtures")
-            .join(name),
-    )
-    .unwrap()
+    std::fs::read(iso_fixture(name)).unwrap()
 }
 
 /// A WIM that is a 208-byte header and `xml`; `flags` is the flag byte of the XML resource.

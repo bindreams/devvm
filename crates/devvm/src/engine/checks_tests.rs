@@ -257,7 +257,7 @@ fn an_iso_that_is_gone_is_information_with_the_remedy_not_a_failure(#[fixture(un
     let checks = iso_checks(&memo, &TestHost, &MemoryProgress::default());
     let note = iso_line(&checks, &gone).outcome.clone().unwrap();
     assert!(note.contains("not found"), "{note}");
-    assert!(note.contains("hashes it again"), "{note}");
+    assert!(note.contains("a build that names it where it is now"), "{note}");
 }
 
 #[skuld::test]

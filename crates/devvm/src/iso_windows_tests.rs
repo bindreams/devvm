@@ -2,6 +2,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 
 use super::{IsoMemo, key_iso, read_install_iso};
+use crate::host::Host;
 use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::{Dirs, ErrorKind};
@@ -93,4 +94,44 @@ fn spellings_that_differ_in_case_or_by_a_junction_are_one_iso_with_one_memo(#[fi
         .filter(|message| message.starts_with("hashing ") && message.contains(": 0 of "))
         .count();
     assert_eq!(hashings, 1);
+}
+
+#[skuld::test]
+fn the_final_path_of_a_held_iso_still_leads_to_it_after_a_junction_in_its_path_is_pointed_elsewhere(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let (real, other) = (home.join("real"), home.join("other"));
+    std::fs::create_dir(&real).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    std::fs::copy(iso_fixture("single-image.iso"), real.join("win.iso")).unwrap();
+    std::fs::copy(iso_fixture("three-images.iso"), other.join("win.iso")).unwrap();
+    let link = home.join("link");
+    junction::create(&real, &link).unwrap();
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let root = key_iso(
+        &TestHost,
+        &memo,
+        &link.join("win.iso"),
+        None,
+        &MemoryProgress::default(),
+    )
+    .unwrap();
+    let install = read_install_iso(root).unwrap();
+
+    junction::delete(&link).unwrap();
+    std::fs::remove_dir(&link).unwrap();
+    junction::create(&other, &link).unwrap();
+
+    let held = TestHost.file_id(&real.join("win.iso")).unwrap();
+    assert_eq!(TestHost.file_id(install.iso.final_path()).unwrap(), held);
+    assert_ne!(
+        TestHost.file_id(&link.join("win.iso")).unwrap(),
+        held,
+        "the name the ISO was opened by leads to another file now"
+    );
+    assert!(
+        !install.iso.final_path().starts_with(&link),
+        "{}",
+        install.iso.final_path().display()
+    );
 }

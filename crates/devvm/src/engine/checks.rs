@@ -152,7 +152,7 @@ fn iso_line(memo: &IsoMemo, host: &dyn Host, path: &Path, sha256: Sha256, progre
                 "it changed since it was keyed (sha256 {sha256} then, {now} now); builds that name it need a new key"
             )),
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                Ok("not found; a build that names it hashes it again where it is".to_owned())
+                Ok("not found; a build that names it where it is now uses it from there".to_owned())
             }
             Err(e) => Err(e.message().to_owned()),
         },

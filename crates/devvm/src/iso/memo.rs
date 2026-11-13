@@ -10,8 +10,13 @@
 //! is a cache: one that cannot be read is moved to quarantine and made again. The ISO itself is never copied or kept;
 //! recipes keep it at their path.
 //!
-//! Writers hold the directory's `.lock` shared while they publish; whoever moves a memo to quarantine or sweeps the
-//! temporary files a crashed writer left holds it exclusively, so neither can meet a live writer's file.
+//! A memo also keeps the path its ISO was last seen at, for `devvm doctor`: a build that finds the ISO elsewhere
+//! updates it, and a memo written for a path removes the other memos of that path (an ISO replaced there by another
+//! file), so `devvm doctor` never meets the replaced one.
+//!
+//! A writer holds the directory's `.lock` exclusively while it publishes, prunes and sweeps the temporary files a
+//! crashed writer left; whoever moves a memo to quarantine holds it exclusively too. So none of them meets another's
+//! file.
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
@@ -49,11 +54,11 @@ struct Identity {
 struct Names {
     /// What the memo file's name is made from: the file id, or the canonical path where there is none.
     key: String,
-    /// The ISO's absolute path as it was given, for `devvm doctor`.
+    /// The ISO's absolute path as it was given, for `devvm doctor`; a name that is not Unicode is shown with U+FFFD.
     path: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Entry {
     key: String,
     path: String,
@@ -134,10 +139,22 @@ impl IsoMemo {
             && let Some(entry) = self.read(&names.key, progress)?
             && entry.identity == identity
         {
+            let (sha256, images) = (entry.sha256, entry.images.clone());
+            if entry.path != names.path {
+                // The ISO was moved: the memo names where it is now.
+                self.write(
+                    host,
+                    &Entry {
+                        path: names.path.clone(),
+                        ..entry
+                    },
+                    progress,
+                )?;
+            }
             return Ok(HashedIso {
                 iso: held,
-                sha256: entry.sha256,
-                images: entry.images,
+                sha256,
+                images,
             });
         }
         let images = read_images(&held)?;
@@ -251,20 +268,18 @@ impl IsoMemo {
         })
     }
 
-    /// Publishes `entry` by rename, so a reader sees the whole file or none and two writers of one ISO cannot tear it.
-    /// The temporary files a writer that died left are removed first, when no writer is live.
+    /// Publishes `entry` by rename, so a reader sees the whole file or none, and removes the other memos of its path:
+    /// the ISOs that were there before. The temporary files a writer that died left are removed first.
     fn write(&self, host: &dyn Host, entry: &Entry, progress: &dyn Progress) -> Result<()> {
         let mut lock = self.lock()?;
-        if lock.try_lock(Mode::Exclusive)? {
-            match sweep(&self.dir, &|name| name.ends_with(".tmp"), &remove_if_present) {
-                Ok(warnings) => warnings.iter().for_each(|warning| progress.message(warning)),
-                Err(e) => progress.message(e.message()),
-            }
-            lock.unlock()?;
-        }
-        lock.lock(Mode::Shared, "another devvm process clearing ISO memos", &mut |m| {
+        lock.lock(Mode::Exclusive, "another devvm process using the ISO memos", &mut |m| {
             progress.message(m)
         })?;
+        let report = |swept: Result<Vec<String>>| match swept {
+            Ok(warnings) => warnings.iter().for_each(|warning| progress.message(warning)),
+            Err(e) => progress.message(e.message()),
+        };
+        report(sweep(&self.dir, &|name| name.ends_with(".tmp"), &remove_if_present));
         let file = self.file_of(&entry.key);
         let temp = file.with_extension(format!("{}.tmp", hex::encode(random::bytes::<8>())));
         let bytes = serde_json::to_vec_pretty(entry).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
@@ -274,7 +289,15 @@ impl IsoMemo {
                 let cleanup = remove_if_present(&temp);
                 Error::write(&file, e, "free some space and run again")
                     .after_cleanup(&temp.display().to_string(), cleanup)
-            })
+            })?;
+        let replaced = |name: &str| {
+            let other = self.dir.join(name);
+            name.ends_with(".json")
+                && other != file
+                && read_entry_file(&other).is_ok_and(|other| other.path == entry.path)
+        };
+        report(sweep(&self.dir, &replaced, &remove_if_present));
+        Ok(())
     }
 }
 
@@ -291,12 +314,9 @@ fn look(file: &Path, accepts: &dyn Fn(&Entry) -> bool) -> Result<Slot> {
 }
 
 /// How a memo names the ISO at `iso`, whose identity is `identity`: by file id, or by canonical path where the file
-/// system has none. `None` when a name is not Unicode, which a memo cannot hold: that ISO is not remembered.
+/// system has none. `None` when that canonical path is not Unicode, which a key cannot hold: the ISO is not remembered.
 fn names_of(identity: &Identity, iso: &Path) -> Result<Option<Names>> {
     let absolute = std::path::absolute(iso).map_err(|e| io(iso, "resolve", e))?;
-    let Some(path) = absolute.to_str() else {
-        return Ok(None);
-    };
     let key = match identity.file_id {
         Some(id) => format!("id:{:x}:{:x}", id.volume, id.file),
         None => {
@@ -309,7 +329,7 @@ fn names_of(identity: &Identity, iso: &Path) -> Result<Option<Names>> {
     };
     Ok(Some(Names {
         key,
-        path: path.to_owned(),
+        path: absolute.to_string_lossy().into_owned(),
     }))
 }
 

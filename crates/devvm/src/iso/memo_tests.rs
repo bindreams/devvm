@@ -4,10 +4,9 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::{IsoMemo, Known, QuarantineOutcome};
-use crate::host::Host;
-use crate::host::other::OtherHost;
+use crate::host::{Host, OtherHost};
 use crate::iso::{HeldIso, WimArch, WimImage};
-use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::fixtures::{MemoryProgress, non_unicode_name, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
@@ -277,6 +276,66 @@ fn a_volume_without_file_ids_keys_the_memo_by_the_canonical_path_and_never_share
         assert_eq!(fx.sha256_via(&OtherHost, &spelling).unwrap(), digest(b"windows 1"));
     }
     assert_eq!(hashings(&fx.progress), 2);
+}
+
+#[skuld::test]
+fn an_iso_replaced_at_its_path_leaves_one_memo_which_is_the_new_content(#[fixture(unicode_home)] home: &Path) {
+    let dirs = Dirs::under(home);
+    let fx = Fixture::new(home);
+    let iso = iso_with(home, "a.iso", b"windows");
+    fx.sha256(&iso).unwrap();
+    let replacement = iso_with(home, "new.iso", b"windows, newer");
+    std::fs::rename(&replacement, &iso).unwrap();
+
+    assert_eq!(fx.sha256(&iso).unwrap(), digest(b"windows, newer"));
+    assert_eq!(
+        fx.memo.known().unwrap(),
+        [Known::Iso {
+            path: iso,
+            sha256: digest(b"windows, newer")
+        }]
+    );
+    assert_eq!(memo_files(&dirs).len(), 1);
+}
+
+#[skuld::test]
+fn a_moved_iso_is_remembered_at_its_new_path(#[fixture(unicode_home)] home: &Path) {
+    let fx = Fixture::new(home);
+    let before = iso_with(home, "before.iso", b"windows");
+    fx.sha256(&before).unwrap();
+    let after = home.join("after.iso");
+    std::fs::rename(&before, &after).unwrap();
+
+    assert_eq!(fx.sha256(&after).unwrap(), digest(b"windows"));
+    assert_eq!(hashings(&fx.progress), 1, "the move is a hit");
+    assert_eq!(
+        fx.memo.known().unwrap(),
+        [Known::Iso {
+            path: after,
+            sha256: digest(b"windows")
+        }]
+    );
+}
+
+#[skuld::test]
+fn an_iso_with_a_non_unicode_name_is_remembered_by_its_file_id(#[fixture(unicode_home)] home: &Path) {
+    let fx = Fixture::new(home);
+    let iso = home.join(non_unicode_name());
+    std::fs::write(&iso, b"windows").unwrap();
+
+    assert_eq!(fx.sha256(&iso).unwrap(), digest(b"windows"));
+    assert_eq!(fx.sha256(&iso).unwrap(), digest(b"windows"));
+    assert_eq!(
+        (hashings(&fx.progress), fx.reads.get()),
+        (1, 1),
+        "the second call is a hit"
+    );
+    let known = fx.memo.known().unwrap();
+    let [Known::Iso { path, sha256 }] = &known[..] else {
+        panic!("{known:?}");
+    };
+    assert_eq!(*sha256, digest(b"windows"));
+    assert!(path.to_string_lossy().contains('\u{FFFD}'), "{}", path.display());
 }
 
 #[skuld::test]

@@ -29,7 +29,7 @@ pub(crate) mod names;
         reason = "the host on neither Unix nor Windows; the tests use it everywhere"
     )
 )]
-pub(crate) mod other;
+mod other;
 #[cfg(unix)]
 mod unix;
 mod unsupported;
@@ -52,10 +52,20 @@ pub(crate) use watch::{Link, ProcessWatch};
 
 #[cfg(not(any(unix, windows)))]
 use other::OtherHost as Current;
+#[cfg(test)]
+pub(crate) use other::OtherHost;
 #[cfg(unix)]
 use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
+
+/// A file opened by [`Host::open_held_read`], and the path that leads to that file.
+#[derive(Debug)]
+pub(crate) struct HeldFile {
+    pub file: File,
+    /// The file's path with no link in it.
+    pub final_path: PathBuf,
+}
 
 /// How a hypervisor is reached on this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,9 +255,13 @@ pub(crate) trait Host: Send + Sync {
     /// open for writing, or locked against readers, is `ResourceBusy`, "open for writing". A host that cannot deny
     /// those (everything but Windows) opens it as `File::open` does.
     ///
+    /// The held file comes with its final path, which has no link in it: a program that opens the file by name opens
+    /// this file, where the name `path` can be pointed elsewhere by re-making a junction or a symlink in it
+    /// (Windows: `GetFinalPathNameByHandle`; elsewhere the canonical path, taken after the open).
+    ///
     /// A build holds its Windows ISO this way from the moment it keys the layer until the guest's disk has its own
     /// read-only handle: QEMU opens the ISO read-only with the default sharing, which this mode allows.
-    fn open_held_read(&self, path: &Path) -> std::io::Result<File>;
+    fn open_held_read(&self, path: &Path) -> std::io::Result<HeldFile>;
 
     /// Holds the existing file `path` if nobody else does. It never waits and never creates the file, and a link at
     /// `path` is `InvalidInput`, "is a link": it is not opened through.
@@ -310,31 +324,52 @@ pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
 
 /// Removes the entries of `dir` that `is_leftover` accepts by name, each with `remove`: what a writer that died left
 /// beside its files. The caller holds the lock every writer of `dir` takes, so none of them is in use. An entry that
-/// cannot be removed (an antivirus holds it) is a warning naming it, not an error: it must not stop every later write.
-/// A `dir` that cannot be listed is the error.
+/// cannot be read or removed (an antivirus holds it) is a warning naming it, not an error: it must not stop every
+/// later write. A `dir` that cannot be listed at all is the error.
 pub(crate) fn sweep(
     dir: &Path,
     is_leftover: &dyn Fn(&str) -> bool,
     remove: &dyn Fn(&Path) -> std::io::Result<()>,
 ) -> Result<Vec<String>> {
-    let io = |what: &str, path: &Path, source| {
-        crate::Error::io(
-            crate::ErrorKind::Io,
-            format!("cannot {what} {}", path.display()),
-            source,
-        )
-    };
+    let listing = std::fs::read_dir(dir).map_err(|e| sweep_error("list", dir, e))?;
+    Ok(sweep_listed(
+        dir,
+        listing.map(|entry| entry.map(|entry| entry.path())),
+        is_leftover,
+        remove,
+    ))
+}
+
+/// [`sweep`] over the entries of `dir` as listed.
+fn sweep_listed(
+    dir: &Path,
+    listing: impl IntoIterator<Item = std::io::Result<PathBuf>>,
+    is_leftover: &dyn Fn(&str) -> bool,
+    remove: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> Vec<String> {
     let mut warnings = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| io("list", dir, e))? {
-        let entry = entry.map_err(|e| io("list", dir, e))?;
-        if is_leftover(&entry.file_name().to_string_lossy()) {
-            let path = entry.path();
-            if let Err(e) = remove(&path) {
-                warnings.push(io("remove the leftover", &path, e).message().to_owned());
+    for entry in listing {
+        match entry {
+            Ok(path) => {
+                let leftover = path
+                    .file_name()
+                    .is_some_and(|name| is_leftover(&name.to_string_lossy()));
+                if leftover && let Err(e) = remove(&path) {
+                    warnings.push(sweep_error("remove the leftover", &path, e).message().to_owned());
+                }
             }
+            Err(e) => warnings.push(sweep_error("read an entry of", dir, e).message().to_owned()),
         }
     }
-    Ok(warnings)
+    warnings
+}
+
+fn sweep_error(what: &str, path: &Path, source: std::io::Error) -> crate::Error {
+    crate::Error::io(
+        crate::ErrorKind::Io,
+        format!("cannot {what} {}", path.display()),
+        source,
+    )
 }
 
 /// Removes the symlink `path`. A symlink to a directory is removed as a directory on Windows and as a file elsewhere;

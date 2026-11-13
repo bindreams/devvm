@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::access::keys::InstanceKeys;
 use crate::backend::Backend;
 use crate::backend::fake::FakeBackend;
-use crate::engine::build::{Lines, extract_command, guest_destination, root_content};
+use crate::engine::build::{Lines, extract_command, guest_destination, root_of};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
 use crate::guest::fake::{FakeBaseBuilder, FakeGuests, ServedGuests};
@@ -84,14 +84,21 @@ pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
 /// The keys of the layers `recipe` builds, root first, when it has no `copy` step.
 pub(super) fn keys_of(recipe: &Recipe) -> Vec<LayerKey> {
     let flat = recipe.flatten().unwrap();
-    let (root, _, _) = root_content(&flat.root, Arch::host(), &|_, _| unreachable!("no ISO here")).unwrap();
+    let (root, _) = root_of(&flat.root, Arch::host(), &|_, _| unreachable!("no ISO here")).unwrap();
     let ctx = KeyContext {
         arch: Arch::host(),
         disk: flat.resources.disk,
         guest_semantics_version: FakeGuests.os(GuestKind::Linux).unwrap().semantics_version(),
     };
     let manifests = vec![None; flat.steps.len()];
-    chain_keys(&flat, &ctx, &root, &FakeBaseBuilder.definition_hash(), &manifests).unwrap()
+    chain_keys(
+        &flat,
+        &ctx,
+        &root.content(),
+        &FakeBaseBuilder.definition_hash(),
+        &manifests,
+    )
+    .unwrap()
 }
 
 /// The commands the server was given that a recipe step ran, in order: the guest's `bash -c` of a `run` step.
@@ -180,7 +187,7 @@ fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home
             path: path.to_owned(),
             edition: edition.map(Into::into),
         };
-        let (content, _, _) = root_content(&source, Arch::host(), &|iso, edition| {
+        let (root, _) = root_of(&source, Arch::host(), &|iso, edition| {
             key_iso(&TestHost, &memo, iso, edition, &progress)
         })
         .unwrap();
@@ -189,7 +196,7 @@ fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home
             disk: None,
             guest_semantics_version: 1,
         };
-        root_key(&ctx, &content, &[0; 32])
+        root_key(&ctx, &root.content(), &[0; 32])
     };
     let (only, first, second) = (
         "Windows 11 Enterprise Evaluation",

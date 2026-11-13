@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::other::OtherHost;
+use super::OtherHost;
 use super::{Comparison, FileId, HoldOutcome, Host, current, host_exit_width};
 use crate::Arch;
 use crate::exit::ExitWidth;
@@ -693,12 +693,23 @@ fn a_held_read_opens_the_file_for_reading_and_another_reader_still_opens_it(#[fi
     use std::io::Read;
     let path = home.join("a");
     std::fs::write(&path, b"windows").unwrap();
-    let mut held = current().open_held_read(&path).unwrap();
+    let mut held = current().open_held_read(&path).unwrap().file;
     let mut bytes = Vec::new();
     held.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, b"windows");
     // What QEMU does with the ISO: an ordinary read-only open.
     assert_eq!(std::fs::read(&path).unwrap(), b"windows");
+}
+
+#[skuld::test]
+fn a_held_read_gives_the_path_of_the_file_it_holds(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("a");
+    std::fs::write(&path, b"windows").unwrap();
+    let held = current().open_held_read(&path).unwrap();
+    assert_eq!(
+        current().file_id(&held.final_path).unwrap(),
+        current().file_id(&path).unwrap()
+    );
 }
 
 #[skuld::test]
@@ -746,6 +757,27 @@ fn a_leftover_a_sweep_cannot_remove_is_a_warning_naming_it_and_the_rest_still_go
     );
     assert!(home.join("stuck.tmp").exists());
     assert!(!home.join("other.tmp").exists());
+}
+
+#[skuld::test]
+fn an_entry_a_sweep_cannot_read_is_a_warning_and_the_entries_after_it_are_still_swept(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    std::fs::write(home.join("before.tmp"), b"x").unwrap();
+    std::fs::write(home.join("after.tmp"), b"x").unwrap();
+    let listing = vec![
+        Ok(home.join("before.tmp")),
+        Err(std::io::Error::other("the listing broke")),
+        Ok(home.join("after.tmp")),
+    ];
+    let warnings = super::sweep_listed(home, listing, &|name| name.ends_with(".tmp"), &super::remove_tree);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("the listing broke") && warnings[0].contains(&*home.to_string_lossy()),
+        "{warnings:?}"
+    );
+    assert!(!home.join("before.tmp").exists());
+    assert!(!home.join("after.tmp").exists());
 }
 
 #[skuld::test]

@@ -55,9 +55,7 @@ impl Engine {
         self.backend()?;
         let store = self.store()?;
         let memo = IsoMemo::new(&self.dirs);
-        // The ISO of an ISO root stays held until the build ends. The Windows builder (W4b) reads it from this root
-        // rather than by its path, and keeps it held until the guest's disk has opened it.
-        let (root, base, _iso) = root_content(&flat.root, arch, &|iso, edition| {
+        let (root, base) = root_of(&flat.root, arch, &|iso, edition| {
             key_iso(self.host, &memo, iso, edition, self.progress.as_ref())
         })?;
 
@@ -72,7 +70,7 @@ impl Engine {
             disk: flat.resources.disk,
             guest_semantics_version: guest.semantics_version(),
         };
-        let keys = chain_keys(&flat, &ctx, &root, &builder.definition_hash(), &manifests)?;
+        let keys = chain_keys(&flat, &ctx, &root.content(), &builder.definition_hash(), &manifests)?;
 
         let build_ctx = BuildCtx {
             dirs: self.dirs.clone(),
@@ -88,6 +86,10 @@ impl Engine {
                 .build_base(&flat.root, &build_ctx, staging.dir)
                 .map(|meta| Built::from_meta(&meta))
         })?;
+        // The ISO of an ISO root is held until here: the root layer is found or built, and no step reads the ISO. The
+        // Windows builder (W4b) reads it from `root` rather than by its path, and keeps it held until the guest's disk
+        // has opened it.
+        drop(root);
         for (index, key) in keys[1..].iter().enumerate() {
             let step = StepRun {
                 engine: self,
@@ -152,13 +154,35 @@ fn refuse_set_steps(flat: &Flattened) -> Result<()> {
     }
 }
 
-/// What the key of the root layer hashes, the base in the words of an `expired-base` error, and the held ISO of an ISO
-/// root. `iso_root` gives the content hash of an ISO and the image an edition selects in it, with the ISO held.
-fn root_content(
+/// What the root layer of a build is made from.
+enum BuildRoot {
+    /// A disk image or an OCI image, which the key hashes as it is.
+    Pinned(RootContent),
+    /// A Windows ISO, held, with what a key is made from.
+    Iso(IsoRoot),
+}
+
+impl BuildRoot {
+    /// What the key of the root layer hashes.
+    fn content(&self) -> RootContent {
+        match self {
+            BuildRoot::Pinned(content) => content.clone(),
+            BuildRoot::Iso(root) => RootContent::Iso {
+                sha256: root.sha256,
+                image_index: root.image.index,
+                image_name: root.image.name.clone(),
+            },
+        }
+    }
+}
+
+/// The root of a build, and the base in the words of an `expired-base` error. `iso_root` gives the content hash of an
+/// ISO and the image an edition selects in it, with the ISO held.
+fn root_of(
     source: &Source,
     arch: Arch,
     iso_root: &dyn Fn(&std::path::Path, Option<&str>) -> Result<IsoRoot>,
-) -> Result<(RootContent, String, Option<IsoRoot>)> {
+) -> Result<(BuildRoot, String)> {
     match source {
         Source::DiskImage(pins) => {
             let pin = pins.get(arch).ok_or_else(|| {
@@ -167,25 +191,19 @@ fn root_content(
                     format!("the disk image has no pin for {}", arch.as_str()),
                 )
             })?;
-            Ok((RootContent::Sha256(pin.sha256), format!("disk image {}", pin.url), None))
-        }
-        Source::Oci { reference, digest } => Ok((
-            RootContent::OciDigest(digest.clone()),
-            format!("OCI image {reference}"),
-            None,
-        )),
-        Source::Iso { path, edition } => {
-            let root = iso_root(path, edition.as_deref())?;
             Ok((
-                RootContent::Iso {
-                    sha256: root.sha256,
-                    image_index: root.image.index,
-                    image_name: root.image.name.clone(),
-                },
-                format!("Windows ISO {}", path.display()),
-                Some(root),
+                BuildRoot::Pinned(RootContent::Sha256(pin.sha256)),
+                format!("disk image {}", pin.url),
             ))
         }
+        Source::Oci { reference, digest } => Ok((
+            BuildRoot::Pinned(RootContent::OciDigest(digest.clone())),
+            format!("OCI image {reference}"),
+        )),
+        Source::Iso { path, edition } => Ok((
+            BuildRoot::Iso(iso_root(path, edition.as_deref())?),
+            format!("Windows ISO {}", path.display()),
+        )),
         Source::Recipe(_) | Source::Embedded(_) => Err(Error::new(
             ErrorKind::Internal,
             "a flattened recipe starts from a disk image, an OCI image or an ISO",
