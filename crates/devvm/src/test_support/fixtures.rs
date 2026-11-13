@@ -134,7 +134,10 @@ impl MemoryProgress {
     }
 
     pub fn messages(&self) -> Vec<String> {
-        self.lines.lock().unwrap().clone()
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -143,7 +146,10 @@ impl crate::exit::Progress for MemoryProgress {
         if self.echo {
             crate::exit::StderrProgress.message(text);
         }
-        self.lines.lock().unwrap().push(text.to_owned());
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(text.to_owned());
     }
 }
 
