@@ -42,8 +42,10 @@ fn instance_expiring(fx: &EngineFixture, home: &Path, expires: Option<SystemTime
         .unwrap();
 }
 
-/// The messages of one call of each kind that the warning belongs to, in the order `start`, `run`, `run_to`, `ls`.
-fn messages_of_each_call(engine: &Arc<Engine>, progress: &MemoryProgress) -> [Vec<String>; 4] {
+/// The messages of one call of each kind that reaches the guest, or lists, named by the call: `start`, `run`, `run_to`,
+/// `ssh_config`, `copy_in`, `copy_out`, `reboot` and `ls`. The instance is stopped and the engine has no backend, so
+/// each call fails, and the messages are those said on the way.
+fn messages_of_each_call(engine: &Arc<Engine>, progress: &MemoryProgress) -> Vec<(&'static str, Vec<String>)> {
     let instance = Instance::open_in(engine, "foo").unwrap();
     let mut seen = 0;
     let mut since = |progress: &MemoryProgress| {
@@ -52,32 +54,59 @@ fn messages_of_each_call(engine: &Arc<Engine>, progress: &MemoryProgress) -> [Ve
         seen = all.len();
         new
     };
-    let start = instance.start().unwrap_err();
-    assert_eq!(start.kind(), ErrorKind::NotSupported);
-    let started = since(progress);
-    let run = instance.run(&Command::new(["true"])).unwrap_err();
-    assert_eq!(run.kind(), ErrorKind::Unavailable);
-    let ran = since(progress);
-    let run_to = instance
-        .run_to(&Command::new(["true"]), &mut Vec::new(), &mut Vec::new())
-        .unwrap_err();
-    assert_eq!(run_to.kind(), ErrorKind::Unavailable);
-    let ran_to = since(progress);
+    let mut calls = Vec::new();
+    let mut record = |call, kind: ErrorKind, expected: ErrorKind, progress: &MemoryProgress| {
+        assert_eq!(kind, expected, "{call}");
+        calls.push((call, since(progress)));
+    };
+    let cmd = Command::new(["true"]);
+    let kind = instance.start().unwrap_err().kind();
+    record("start", kind, ErrorKind::NotSupported, progress);
+    let kind = instance.run(&cmd).unwrap_err().kind();
+    record("run", kind, ErrorKind::Unavailable, progress);
+    let kind = instance
+        .run_to(&cmd, &mut Vec::new(), &mut Vec::new())
+        .unwrap_err()
+        .kind();
+    record("run_to", kind, ErrorKind::Unavailable, progress);
+    let kind = instance.ssh_config().unwrap_err().kind();
+    record("ssh_config", kind, ErrorKind::Unavailable, progress);
+    let kind = instance.copy_in(Path::new("src"), "dest").unwrap_err().kind();
+    record("copy_in", kind, ErrorKind::Unavailable, progress);
+    let kind = instance.copy_out("src", Path::new("dest")).unwrap_err().kind();
+    record("copy_out", kind, ErrorKind::Unavailable, progress);
+    let kind = instance.reboot().unwrap_err().kind();
+    record("reboot", kind, ErrorKind::Unavailable, progress);
     engine.list(ListFilter::All).unwrap();
-    [started, ran, ran_to, since(progress)]
+    calls.push(("ls", since(progress)));
+    calls
+}
+
+/// What every call of `messages_of_each_call` says when nothing is expired.
+fn silent() -> Vec<(&'static str, Vec<String>)> {
+    [
+        "start",
+        "run",
+        "run_to",
+        "ssh_config",
+        "copy_in",
+        "copy_out",
+        "reboot",
+        "ls",
+    ]
+    .into_iter()
+    .map(|call| (call, Vec::new()))
+    .collect()
 }
 
 #[skuld::test]
-fn start_run_and_ls_warn_once_when_the_stored_expiry_is_past(#[fixture(unicode_home)] home: &Path) {
+fn every_call_that_reaches_the_guest_warns_once_when_the_stored_expiry_is_past(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     instance_expiring(&fx, home, Some(t0() + days(20)));
     let progress = memory();
     let engine = engine_at(&fx, t0() + days(30), progress.clone());
 
-    for (call, messages) in ["start", "run", "run_to", "ls"]
-        .iter()
-        .zip(messages_of_each_call(&engine, &progress))
-    {
+    for (call, messages) in messages_of_each_call(&engine, &progress) {
         assert_eq!(messages.len(), 1, "{call}: {messages:?}");
         assert!(
             messages[0].starts_with("instance foo: the guest expired on "),
@@ -93,10 +122,7 @@ fn no_warning_without_an_expiry(#[fixture(unicode_home)] home: &Path) {
     let progress = memory();
     let engine = engine_at(&fx, t0() + days(3650), progress.clone());
 
-    assert_eq!(
-        messages_of_each_call(&engine, &progress),
-        [vec![], vec![], vec![], vec![]] as [Vec<String>; 4]
-    );
+    assert_eq!(messages_of_each_call(&engine, &progress), silent());
 }
 
 #[skuld::test]
@@ -106,10 +132,7 @@ fn no_warning_while_the_stored_expiry_is_ahead(#[fixture(unicode_home)] home: &P
     let progress = memory();
     let engine = engine_at(&fx, t0() + days(19), progress.clone());
 
-    assert_eq!(
-        messages_of_each_call(&engine, &progress),
-        [vec![], vec![], vec![], vec![]] as [Vec<String>; 4]
-    );
+    assert_eq!(messages_of_each_call(&engine, &progress), silent());
 }
 
 #[skuld::test]
@@ -121,7 +144,10 @@ fn a_warning_is_one_terse_progress_line_naming_the_date(#[fixture(unicode_home)]
     let engine = engine_at(&fx, t0() + days(23), progress.clone());
 
     Instance::open_in(&engine, "foo").unwrap().start().unwrap_err();
-    assert_eq!(progress.messages(), ["instance foo: the guest expired on 2027-02-04"]);
+    assert_eq!(
+        progress.messages(),
+        ["instance foo: the guest expired on 2027-02-04 (UTC)"]
+    );
 }
 
 #[skuld::test]
@@ -132,5 +158,8 @@ fn an_expiry_that_is_now_is_past(#[fixture(unicode_home)] home: &Path) {
     let engine = engine_at(&fx, t0() + days(20), progress.clone());
 
     engine.list(ListFilter::All).unwrap();
-    assert_eq!(progress.messages(), ["instance foo: the guest expired on 2027-02-04"]);
+    assert_eq!(
+        progress.messages(),
+        ["instance foo: the guest expired on 2027-02-04 (UTC)"]
+    );
 }

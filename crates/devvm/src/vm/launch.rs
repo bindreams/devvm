@@ -12,6 +12,7 @@ use crate::engine::ready::connect_ready;
 use crate::engine::{Engine, LaunchStep};
 use crate::guest::{GuestOs, SeedKeys, SeedSpec};
 use crate::instance::dir::{InstanceDir, OpExclusive};
+use crate::instance::expiry::warn_if_expired;
 use crate::vm::{remove_leftovers, warn_for};
 use crate::{Error, ErrorKind, Result};
 
@@ -65,8 +66,9 @@ fn launch_machine(
     op: &OpExclusive,
     lifetime: Lifetime,
 ) -> Result<Option<Launched>> {
-    let backend = engine.backend()?;
     let record = dir.record()?;
+    warn_if_expired(engine, dir.name(), record.expires);
+    let backend = engine.backend()?;
     if let Some(machine) = &record.machine {
         if backend.find(machine)?.is_some() {
             return Ok(None);

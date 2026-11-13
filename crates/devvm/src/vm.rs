@@ -13,7 +13,6 @@ use crate::engine::keys::read_target;
 use crate::exit::{ExitStatus, Output};
 use crate::guest::GuestOs;
 use crate::instance::dir::{InstanceDir, OpShared};
-use crate::instance::expiry::warn_if_expired;
 use crate::instance::name::InstanceName;
 use crate::instance::registry::Owned;
 use crate::store::fetch::LazyHttp;
@@ -124,7 +123,6 @@ impl Instance {
     pub fn start(&self) -> Result<()> {
         let dir = self.dir();
         let op = dir.op_exclusive()?;
-        self.warn_if_expired()?;
         let Some(Started { mut machine, .. }) = launch::launch(&self.engine, dir, &op, Lifetime::OutlivesOwner)? else {
             return Ok(());
         };
@@ -200,13 +198,6 @@ impl Instance {
 }
 
 impl Instance {
-    /// Warns on the progress channel when the guest's stored expiry is past.
-    fn warn_if_expired(&self) -> Result<()> {
-        let dir = self.dir();
-        warn_if_expired(&self.engine, dir.name(), dir.record()?.expires);
-        Ok(())
-    }
-
     /// The guest of this instance and a new connection to it, with the shared op lock that keeps `stop`, `remove` and
     /// `reboot` from ending the machine under the caller.
     fn reached(&self) -> Result<(Arc<dyn GuestOs>, SshSession, OpShared)> {
@@ -223,7 +214,6 @@ impl Instance {
     /// the status stands. A writer that fails is an `io` error, and the guest command is stopped, unless the command had
     /// already ended: the error then names its status.
     pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
-        self.warn_if_expired()?;
         let (guest, session, _op) = self.reached()?;
         ops::run_to(&self.engine, &*guest, &session, cmd, out, err)
     }
@@ -231,7 +221,6 @@ impl Instance {
 
 impl Guest for Instance {
     fn run(&self, cmd: &Command) -> Result<Output> {
-        self.warn_if_expired()?;
         let (guest, session, _op) = self.reached()?;
         ops::run(&*guest, &session, cmd)
     }

@@ -8,6 +8,7 @@ use crate::backend::{Endpoint, Machine, MachineRecord};
 use crate::engine::Engine;
 use crate::host::Host;
 use crate::instance::dir::{InstanceDir, OpExclusive, OpHeld};
+use crate::instance::expiry::warn_if_expired;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceRecord;
 use crate::{Error, ErrorKind, Result};
@@ -81,8 +82,10 @@ pub(crate) struct Running {
 
 /// The machine `dir` has now, built from its record, the backend and the key files: the op lock keeps the starter from
 /// rewriting any of them. A recorded machine that the backend does not find is not running: the record is stale.
+/// Says on the progress channel when the instance's guest has expired.
 pub(crate) fn read_target(engine: &Engine, dir: &InstanceDir, _op: &impl OpHeld) -> Result<Running> {
     let record = dir.record()?;
+    warn_if_expired(engine, dir.name(), record.expires);
     // A stopped instance may be one that never started, and has no keys.
     let Some(machine) = &record.machine else {
         return Err(not_running(&record));
