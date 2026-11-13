@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::serial::Serial;
-use super::{Bounds, Exit, Stall, Watch, WindowsBuilder, after_kill, verdict, with_guest_account};
+use super::{Bounds, Exit, Stall, Watch, WindowsBuilder, after_kill, verdict};
 use crate::backend::fake::FakeBackend;
 use crate::guest::windows::pins::VIRTIO_WIN;
 use crate::guest::windows::templates;
@@ -491,7 +491,7 @@ fn wrote(failed: Option<&str>, done: bool) -> Serial {
 
 #[skuld::test]
 fn a_stall_alone_names_what_made_no_progress_and_that_the_guest_was_stopped() {
-    let error = verdict(1, stalled(), &wrote(None, false)).err().unwrap();
+    let error = verdict(1, Ok(stalled()), Ok(()), &wrote(None, false)).err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(
@@ -502,7 +502,9 @@ fn a_stall_alone_names_what_made_no_progress_and_that_the_guest_was_stopped() {
 
 #[skuld::test]
 fn a_failed_marker_is_the_headline_of_a_stall_and_the_stall_follows() {
-    let error = verdict(1, stalled(), &wrote(Some("boom"), false)).err().unwrap();
+    let error = verdict(1, Ok(stalled()), Ok(()), &wrote(Some("boom"), false))
+        .err()
+        .unwrap();
 
     assert_eq!(
         error.message(),
@@ -513,7 +515,9 @@ fn a_failed_marker_is_the_headline_of_a_stall_and_the_stall_follows() {
 
 #[skuld::test]
 fn a_failed_marker_wins_over_a_done_marker_at_a_stall() {
-    let error = verdict(1, stalled(), &wrote(Some("boom"), true)).err().unwrap();
+    let error = verdict(1, Ok(stalled()), Ok(()), &wrote(Some("boom"), true))
+        .err()
+        .unwrap();
 
     assert!(
         error
@@ -525,7 +529,7 @@ fn a_failed_marker_wins_over_a_done_marker_at_a_stall() {
 
 #[skuld::test]
 fn a_done_marker_at_a_stall_says_the_guest_did_not_power_off() {
-    let error = verdict(1, stalled(), &wrote(None, true)).err().unwrap();
+    let error = verdict(1, Ok(stalled()), Ok(()), &wrote(None, true)).err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(
@@ -534,31 +538,40 @@ fn a_done_marker_at_a_stall_says_the_guest_did_not_power_off() {
     );
 }
 
-// What a launch came to when its end could not be read ================================================================
+// What a launch came to when its end or its log could not be read =====================================================
+
+fn unread_end() -> Result<Exit> {
+    Err(Error::new(ErrorKind::Io, "cannot read the VM process's status"))
+}
+
+fn unread_log() -> Result<()> {
+    Err(Error::new(ErrorKind::Io, "cannot read the serial log"))
+}
 
 #[skuld::test]
 fn a_failed_marker_held_stays_the_headline_when_the_launchs_end_could_not_be_read() {
-    let error = with_guest_account(
-        Error::new(ErrorKind::Io, "cannot read the serial log"),
-        &wrote(Some("boom"), false),
-    );
+    let error = verdict(1, unread_end(), Ok(()), &wrote(Some("boom"), false))
+        .err()
+        .unwrap();
 
-    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(error.kind(), ErrorKind::Io, "the host's failure keeps its own kind");
     assert!(
         error
             .message()
             .starts_with("the Windows guest failed to build the base: boom"),
         "{error}"
     );
-    assert!(error.message().contains("cannot read the serial log"), "{error}");
+    assert!(
+        error.message().contains("cannot read the VM process's status"),
+        "{error}"
+    );
 }
 
 #[skuld::test]
 fn a_failed_marker_wins_over_a_done_marker_when_the_launchs_end_could_not_be_read() {
-    let error = with_guest_account(
-        Error::new(ErrorKind::Io, "cannot read the VM process's status"),
-        &wrote(Some("boom"), true),
-    );
+    let error = verdict(1, unread_end(), Ok(()), &wrote(Some("boom"), true))
+        .err()
+        .unwrap();
 
     assert!(
         error
@@ -570,12 +583,9 @@ fn a_failed_marker_wins_over_a_done_marker_when_the_launchs_end_could_not_be_rea
 
 #[skuld::test]
 fn a_done_marker_held_says_the_disk_may_be_incomplete_when_the_launchs_end_could_not_be_read() {
-    let error = with_guest_account(
-        Error::new(ErrorKind::Io, "cannot read the VM process's status"),
-        &wrote(None, true),
-    );
+    let error = verdict(1, unread_end(), Ok(()), &wrote(None, true)).err().unwrap();
 
-    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(error.kind(), ErrorKind::Io);
     assert!(
         error.message().starts_with("the guest wrote DEVVM-BASE-DONE"),
         "{error}"
@@ -588,12 +598,68 @@ fn a_done_marker_held_says_the_disk_may_be_incomplete_when_the_launchs_end_could
 }
 
 #[skuld::test]
-fn an_end_that_could_not_be_read_stays_the_error_when_the_guest_wrote_no_account() {
-    let error = with_guest_account(
-        Error::new(ErrorKind::Io, "cannot read the serial log"),
-        &Serial::default(),
-    );
+fn a_done_marker_held_says_the_disk_may_be_incomplete_when_the_log_could_not_be_read_to_its_end() {
+    let error = verdict(1, Ok(stalled()), unread_log(), &wrote(None, true))
+        .err()
+        .unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Io);
-    assert_eq!(error.message(), "cannot read the serial log");
+    assert!(
+        error
+            .message()
+            .starts_with("the guest reported done but did not power off within 2m"),
+        "{error}"
+    );
+    assert!(error.message().contains("cannot read the serial log"), "{error}");
+}
+
+#[skuld::test]
+fn an_end_or_log_that_could_not_be_read_is_the_error_when_the_guest_wrote_no_account() {
+    let end = verdict(1, unread_end(), Ok(()), &Serial::default()).err().unwrap();
+    let log = verdict(1, Ok(stalled()), unread_log(), &Serial::default())
+        .err()
+        .unwrap();
+
+    assert_eq!(end.kind(), ErrorKind::Io);
+    assert_eq!(end.message(), "cannot read the VM process's status");
+    assert_eq!(log.kind(), ErrorKind::Io);
+    assert!(
+        log.message()
+            .starts_with("the first-logon script made no progress for 2m; the guest was stopped"),
+        "the end that was read is not dropped: {log}"
+    );
+    assert!(log.message().contains("cannot read the serial log"), "{log}");
+}
+
+#[skuld::test]
+fn a_failed_marker_is_the_headline_and_the_end_follows_when_the_log_could_not_be_read_to_its_end() {
+    let error = verdict(1, Ok(stalled()), unread_log(), &wrote(Some("boom"), false))
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(
+        error.message(),
+        "the Windows guest failed to build the base: boom\nthe first-logon script made no progress for 2m; the guest \
+         was stopped; io: cannot read the serial log as well"
+    );
+}
+
+#[skuld::test]
+fn an_end_and_a_log_that_could_neither_be_read_are_each_named_once() {
+    let error = verdict(1, unread_end(), unread_log(), &Serial::default())
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(
+        error.message().matches("cannot read the VM process's status").count(),
+        1,
+        "{error}"
+    );
+    assert_eq!(
+        error.message().matches("cannot read the serial log").count(),
+        1,
+        "{error}"
+    );
 }

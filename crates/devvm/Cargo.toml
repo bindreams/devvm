@@ -55,8 +55,6 @@ hadris-storage = { version = "=3.0.0-rc.3", features = ["std"] }
 hadris-iso = "=3.0.0-rc.3"
 # The one XML crate: the image list of `install.wim` (`iso/wim.rs`) and the escaping of `Autounattend.xml`.
 quick-xml = "0.42"
-# The terminal control in the base build's serial log (`guest/windows/builder/serial.rs`).
-strip-ansi-escapes = "0.2.1"
 
 [dev-dependencies]
 skuld = { workspace = true }

@@ -31,19 +31,20 @@ pub(super) struct Serial {
     pub done: bool,
 }
 
-/// The markers of `log`. A line ends in `\n`, `\r` or both, and it holds a marker when it starts with a marker's prefix
-/// once the terminal's control is taken out of it ([`without_control`]): text before the prefix, or a prefix in the
-/// middle of a line, is no marker. `DEVVM-BASE-DONE` is a marker only when nothing follows it. Bytes that are not UTF-8
-/// are read as the replacement character.
+/// The markers of `log`. A line ends in `\n`, `\r` or both, and it holds a marker when, with the whitespace at its end
+/// removed, it starts with a marker's prefix: text before the prefix, or a prefix in the middle of a line, is no marker.
+/// The guest writes a line end before every marker, so a marker starts its line whatever the firmware wrote before it.
+/// `DEVVM-BASE-DONE` is a marker only when nothing follows it. Bytes that are not UTF-8 are read as the replacement
+/// character.
 pub(super) fn read(log: &[u8]) -> Serial {
     let text = String::from_utf8_lossy(log);
     let mut serial = Serial::default();
     for line in text.split(LINE_ENDS) {
-        let line = without_control(line);
+        let line = line.trim_end();
         if let Some(phase) = line.strip_prefix(PROGRESS) {
             serial.progress.push(phase.trim().to_owned());
         } else if line.starts_with(LICENSE) {
-            serial.license = Some(line);
+            serial.license = Some(line.to_owned());
         } else if let Some(why) = line.strip_prefix(FAILED) {
             serial.failed = Some(why.trim().to_owned());
         } else if line == DONE {
@@ -55,14 +56,6 @@ pub(super) fn read(log: &[u8]) -> Serial {
 
 /// The characters that end a line of the serial log.
 const LINE_ENDS: [char; 2] = ['\n', '\r'];
-
-/// `line` as the terminal's own control leaves it out: every escape sequence (CSI, OSC, DCS, SOS, PM, APC and the
-/// shorter ones) and every control character is dropped wherever it stands, and the whitespace at its end. A sequence
-/// the line ends in the middle of is dropped to the end of the line. Whitespace at its start stays: indented text is
-/// not a marker.
-fn without_control(line: &str) -> String {
-    strip_ansi_escapes::strip_str(line).trim_end().to_owned()
-}
 
 impl Serial {
     /// Adds what a later part of the same log says: its phases follow, and its license and failure replace earlier

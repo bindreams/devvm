@@ -220,6 +220,14 @@ enum Exit {
     Stalled(Stall),
 }
 
+/// A wait that failed.
+enum WaitFailure {
+    /// The VM process's status could not be read.
+    Status(Error),
+    /// The serial log could not be read: a read of its tail would meet the same failure.
+    Log(Error),
+}
+
 /// How a launch ended, once its markers are read.
 enum Launched {
     /// The guest wrote `DEVVM-BASE-DONE` and powered off.
@@ -228,62 +236,76 @@ enum Launched {
     Restarted,
 }
 
-/// What a launch came to, from how it ended and the markers it wrote; [`Launched::Restarted`] is a guest that powered
-/// off with neither marker, which [`Launches`] then judges. The guest's own account comes first: a `DEVVM-BASE-FAILED=`
-/// marker is the headline of an error whatever the end, and the stop or exit is named after it. `DEVVM-BASE-DONE` with
-/// a stop or a failing exit is an error too: the disk may be incomplete.
-fn verdict(number: usize, exit: Exit, serial: &Serial) -> Result<Launched> {
-    let ended = match &exit {
+/// What a launch came to. The rule for all of it lives here: the guest's own account comes first, then the end.
+///
+/// - A `DEVVM-BASE-FAILED=` marker is the headline of an error whatever the end; the stop or the exit is named after it.
+/// - `DEVVM-BASE-DONE` with a stop, a failing exit or an unread end or log is an error too: the disk may be incomplete.
+/// - Without a marker of either kind, a stop or a failing exit is the error, and a guest that powered off is
+///   [`Launched::Restarted`], which [`Launches`] then judges.
+///
+/// `end` is how the VM process ended and `read` whether the log was read to its end. A failure of either is the host's,
+/// not the guest's: it is named after the guest's account and gives the result its own [`ErrorKind`], and without an
+/// account it is the error alone.
+fn verdict(number: usize, end: Result<Exit>, read: Result<()>, serial: &Serial) -> Result<Launched> {
+    let (exit, wait) = match end {
+        Ok(exit) => (Some(exit), None),
+        Err(wait) => (None, Some(wait)),
+    };
+    let host = match (wait, read.err()) {
+        (Some(wait), Some(read)) => Some(wait.together_with(read)),
+        (wait, read) => wait.or(read),
+    };
+    let powered_off = matches!(&exit, Some(Exit::Exited(exited)) if exited.status.success());
+    let account = if let Some(why) = &serial.failed {
+        let mut headline = guest_failed(why);
+        if let Some(exit) = exit.as_ref().filter(|_| !powered_off) {
+            headline.push_str(&format!("\n{}", ended(number, exit)));
+        }
+        Some(headline)
+    } else if serial.done {
+        if powered_off && host.is_none() {
+            return Ok(Launched::Finished);
+        }
+        Some(match &exit {
+            Some(Exit::Stalled(stall)) => format!(
+                "the guest reported done but did not power off within {}",
+                humanly(stall.bound)
+            ),
+            Some(exit) if !powered_off => done_but(&ended(number, exit)),
+            Some(_) => done_but("the serial log could not be read to its end"),
+            None => done_but("the launch's end could not be read"),
+        })
+    } else {
+        exit.as_ref().filter(|_| !powered_off).map(|exit| ended(number, exit))
+    };
+    match (account, host) {
+        (None, None) => Ok(Launched::Restarted),
+        (None, Some(host)) => Err(host),
+        (Some(account), host) => {
+            let kind = host.as_ref().map_or(ErrorKind::Unavailable, Error::kind);
+            let mut error = Error::new(kind, account);
+            if let Some(host) = host {
+                error = error.together_with(host);
+            }
+            // A failing exit carries what QEMU printed in this launch.
+            Err(match &exit {
+                Some(Exit::Exited(exited)) if !exited.status.success() => with_qemu_output(error, &exited.output),
+                _ => error,
+            })
+        }
+    }
+}
+
+/// How a launch ended, in a sentence.
+fn ended(number: usize, exit: &Exit) -> String {
+    match exit {
         Exit::Stalled(stall) => format!(
             "{} made no progress for {}; the guest was stopped",
             stall.awaited,
             humanly(stall.bound)
         ),
         Exit::Exited(exited) => format!("the VM process of launch {number} exited with {}", exited.status),
-    };
-    let powered_off = matches!(&exit, Exit::Exited(exited) if exited.status.success());
-    // A failing exit carries what QEMU printed in this launch.
-    let error = |headline: String| {
-        let error = Error::new(ErrorKind::Unavailable, headline);
-        match &exit {
-            Exit::Exited(exited) if !exited.status.success() => with_qemu_output(error, &exited.output),
-            _ => error,
-        }
-    };
-    if let Some(why) = &serial.failed {
-        let mut headline = guest_failed(why);
-        if !powered_off {
-            headline.push_str(&format!("\n{ended}"));
-        }
-        return Err(error(headline));
     }
-    if serial.done {
-        return match &exit {
-            Exit::Stalled(stall) => Err(error(format!(
-                "the guest reported done but did not power off within {}",
-                humanly(stall.bound)
-            ))),
-            Exit::Exited(_) if powered_off => Ok(Launched::Finished),
-            Exit::Exited(_) => Err(error(done_but(&ended))),
-        };
-    }
-    if !powered_off {
-        return Err(error(ended));
-    }
-    Ok(Launched::Restarted)
-}
-
-/// What a launch came to when its end could not be read (the wait or the read of the log's tail failed): `error`, after
-/// the guest's account as far as it was seen. The rule is [`verdict`]'s.
-fn with_guest_account(error: Error, serial: &Serial) -> Error {
-    let account = if let Some(why) = &serial.failed {
-        guest_failed(why)
-    } else if serial.done {
-        done_but("the launch's end could not be read")
-    } else {
-        return error;
-    };
-    Error::new(ErrorKind::Unavailable, account).together_with(error)
 }
 
 fn guest_failed(why: &str) -> String {
@@ -426,40 +448,39 @@ impl<'a> Build<'a> {
     }
 
     /// What a launch that has ended came to: the markers it wrote and how its VM process ended, read in that order.
-    /// [`verdict`] holds the rule; a launch whose end could not be read gets the guest's account as far as it was seen.
+    /// [`verdict`] holds the rule.
     fn conclude(
         &mut self,
         number: usize,
-        exit: Result<Exit>,
+        end: std::result::Result<Exit, WaitFailure>,
         killed: Result<()>,
         reader: &mut LogReader,
     ) -> Result<Launched> {
-        // The log's tail is read first: a wait that failed has left markers unread, and `fail` tells WinPE's logs from
-        // the first-logon script's by the markers seen. A VM process that is gone (it exited, or the kill worked)
-        // writes no more, so its last line is read whole; one that may still be writing gives its complete lines only.
-        let exited = matches!(exit, Ok(Exit::Exited(_)));
-        let rest = reader.poll(killed.is_ok() || exited);
-        if let Ok(rest) = &rest {
-            self.observe(rest);
-        }
-        let outcome = match (exit, rest) {
-            (Ok(exit), Ok(_)) => self.judge(number, exit, reader),
-            (Ok(_), Err(read)) => Err(with_guest_account(read, reader.whole())),
-            (Err(wait), Ok(_)) => Err(with_guest_account(wait, reader.whole())),
-            (Err(wait), Err(read)) => Err(with_guest_account(wait.together_with(read), reader.whole())),
+        let (end, read) = match end {
+            // The wait's own read of the log failed: reading it again would name the same failure twice.
+            Err(WaitFailure::Log(error)) => (Err(error), Ok(())),
+            end => {
+                // The log's tail is read first: a wait that failed has left markers unread, and `fail` tells WinPE's
+                // logs from the first-logon script's by the markers seen. A VM process that is gone (it exited, or the
+                // kill worked) writes no more, so its last line is read whole; one that may still be writing gives its
+                // complete lines only.
+                let exited = matches!(end, Ok(Exit::Exited(_)));
+                let read = reader.poll(killed.is_ok() || exited).map(|rest| self.observe(&rest));
+                let end = end.map_err(|failure| match failure {
+                    WaitFailure::Status(error) | WaitFailure::Log(error) => error,
+                });
+                (end, read)
+            }
         };
-        after_kill(outcome, killed)
-    }
-
-    /// What a launch came to, from how it ended and the markers it wrote. A guest that restarted must have moved
-    /// forward since the launches before.
-    fn judge(&mut self, number: usize, exit: Exit, reader: &LogReader) -> Result<Launched> {
         let serial = reader.whole();
-        let launched = verdict(number, exit, serial)?;
-        if let Launched::Restarted = launched {
-            self.launches.note(serial)?;
-        }
-        Ok(launched)
+        let outcome = verdict(number, end, read, serial).and_then(|launched| {
+            // A guest that restarted must have moved forward since the launches before.
+            if let Launched::Restarted = launched {
+                self.launches.note(serial)?;
+            }
+            Ok(launched)
+        });
+        after_kill(outcome, killed)
     }
 
     /// `error` of a launch whose serial log is `log`, with the end of that log and, while no marker has been written,
@@ -519,18 +540,18 @@ impl<'a> Build<'a> {
     /// exited. The wait ends with [`Exit::Stalled`] when the guest gives no sign of life within the bound of the phase
     /// it is in: the bound ends the wait for an event that may never happen, and the error that follows names it. The
     /// caller kills the VM.
-    fn wait(&mut self, machine: &mut dyn Machine, reader: &mut LogReader) -> Result<Exit> {
+    fn wait(&mut self, machine: &mut dyn Machine, reader: &mut LogReader) -> std::result::Result<Exit, WaitFailure> {
         loop {
             // The status is read before anything can reap the process.
-            if let Some(status) = machine.try_wait()? {
+            if let Some(status) = machine.try_wait().map_err(WaitFailure::Status)? {
                 return Ok(Exit::Exited(status));
             }
-            let written = reader.poll(false)?;
+            let written = reader.poll(false).map_err(WaitFailure::Log)?;
             self.observe(&written);
             if let Some(stall) = self.watch.stall(&self.builder.bounds, Instant::now()) {
                 // The process may have exited since the status was read, and an exit wins over a stall: the guest
                 // that finished as its bound passed has finished.
-                return Ok(match machine.try_wait()? {
+                return Ok(match machine.try_wait().map_err(WaitFailure::Status)? {
                     Some(exited) => Exit::Exited(exited),
                     None => Exit::Stalled(stall),
                 });

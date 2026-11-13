@@ -538,7 +538,11 @@ fn a_serial_log_that_cannot_be_read_while_the_guest_runs_still_gets_the_tail_and
 
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     let message = error.message();
-    assert!(message.contains("cannot read the serial log"), "{message}");
+    assert_eq!(
+        message.matches("cannot read the serial log").count(),
+        1,
+        "the wait's failed read is not read again: {message}"
+    );
     assert!(message.contains("the end of the serial log"), "{message}");
     assert!(message.contains("last winpe line"), "{message}");
     rig.assert_names_no_build_file(&error);

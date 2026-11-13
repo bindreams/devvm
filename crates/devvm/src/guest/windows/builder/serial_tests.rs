@@ -54,117 +54,6 @@ fn only_the_prefix_of_a_failed_marker_is_read_and_its_localized_text_is_kept_as_
 }
 
 #[skuld::test]
-fn a_marker_is_read_after_the_terminal_control_before_it() {
-    let log = "\x1b[2J\x1b[0mDEVVM-PROGRESS=after a clear\r\n\
-               \x1b[?25h\x08DEVVM-LICENSE=null\r\n\
-               \x1b[0mDEVVM-BASE-FAILED=boom\r\n\
-               \x1bcDEVVM-BASE-DONE\r\n";
-
-    let serial = read(log.as_bytes());
-
-    assert_eq!(serial.progress, ["after a clear"]);
-    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
-    assert_eq!(serial.failed.as_deref(), Some("boom"));
-    assert!(serial.done);
-}
-
-#[skuld::test]
-fn a_marker_is_read_through_the_terminal_control_after_it() {
-    let log = "\x1b[0mDEVVM-PROGRESS=a \x1b[K\r\n\
-               DEVVM-LICENSE=null\x1b[0m\r\n\
-               \x1b[0mDEVVM-BASE-DONE \x1b[K\r\n";
-
-    let serial = read(log.as_bytes());
-
-    assert_eq!(serial.progress, ["a"]);
-    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
-    assert!(serial.done, "{serial:?}");
-}
-
-#[skuld::test]
-fn a_marker_is_read_after_an_escape_with_intermediate_bytes() {
-    // `ESC ( B` selects a character set; `ESC # 8` fills the screen: an escape, bytes 0x20 to 0x2F, one final byte.
-    let log = "\x1b(BDEVVM-PROGRESS=charset\r\n\x1b#8DEVVM-LICENSE=null\r\n\x1b(0\x1b(BDEVVM-BASE-DONE\r\n";
-
-    let serial = read(log.as_bytes());
-
-    assert_eq!(serial.progress, ["charset"]);
-    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
-    assert!(serial.done, "{serial:?}");
-}
-
-#[skuld::test]
-fn a_marker_is_read_after_an_operating_system_command_that_ends_in_bel_or_in_st() {
-    let log = "\x1b]0;a title\x07DEVVM-PROGRESS=bel\r\n\x1b]2;another\x1b\\DEVVM-LICENSE=null\r\n\
-               \x1b]0;x\x07\x1b]0;y\x1b\\DEVVM-BASE-DONE\r\n";
-
-    let serial = read(log.as_bytes());
-
-    assert_eq!(serial.progress, ["bel"]);
-    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
-    assert!(serial.done, "{serial:?}");
-}
-
-#[skuld::test]
-fn an_operating_system_command_that_an_escape_cuts_short_ends_there() {
-    let serial = read(b"\x1b]0;a title\x1b[0mDEVVM-PROGRESS=after\r\n");
-
-    assert_eq!(serial.progress, ["after"]);
-}
-
-#[skuld::test]
-fn an_operating_system_command_that_never_ends_hides_the_rest_of_its_line_only() {
-    let serial = read(b"\x1b]0;DEVVM-PROGRESS=inside\r\nDEVVM-PROGRESS=next line\r\n");
-
-    assert_eq!(serial.progress, ["next line"]);
-}
-
-#[skuld::test]
-fn an_escape_and_one_character_is_dropped_wherever_it_stands() {
-    let serial = read(b"\x1b7\x1b8DEVVM-PROGRESS=a\x1bM \r\n");
-
-    assert_eq!(serial.progress, ["a"]);
-}
-
-#[skuld::test]
-fn an_escape_sequence_that_another_escape_breaks_off_ends_there() {
-    // `ESC [ 1 ; ESC [ 0 m`: the second escape begins a sequence of its own, whose final byte is `m`.
-    let serial = read(b"\x1b[1;\x1b[0mDEVVM-PROGRESS=a\r\n\x1b[\x1b]0;t\x07DEVVM-LICENSE=null\r\n");
-
-    assert_eq!(serial.progress, ["a"]);
-    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
-}
-
-#[skuld::test]
-fn a_marker_is_read_after_a_string_sequence_of_any_kind() {
-    // DCS (`P`), SOS (`X`), PM (`^`) and APC (`_`) hold text up to `ESC \`.
-    let log = "\x1bPq#0;2;0;0;0\x1b\\DEVVM-PROGRESS=dcs\r\n\x1bXsos text\x1b\\DEVVM-LICENSE=null\r\n\
-               \x1b^private\x1b\\\x1b_application\x1b\\DEVVM-BASE-DONE\r\n";
-
-    let serial = read(log.as_bytes());
-
-    assert_eq!(serial.progress, ["dcs"]);
-    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=null"));
-    assert!(serial.done, "{serial:?}");
-}
-
-#[skuld::test]
-fn text_a_string_sequence_holds_is_not_a_marker() {
-    let serial = read(b"\x1bPDEVVM-PROGRESS=inside\x1b\\\r\n\x1b_DEVVM-BASE-DONE\x1b\\\r\n");
-
-    assert!(serial.progress.is_empty(), "{serial:?}");
-    assert!(!serial.done, "{serial:?}");
-}
-
-#[skuld::test]
-fn a_marker_is_read_after_an_escape_that_selects_the_control_set() {
-    // `ESC SP F` is an escape, an intermediate byte and a final byte.
-    let serial = read(b"\x1b FDEVVM-PROGRESS=a\r\n");
-
-    assert_eq!(serial.progress, ["a"]);
-}
-
-#[skuld::test]
 fn indented_text_is_not_a_marker() {
     let log = " DEVVM-PROGRESS=indented\r\n\t DEVVM-LICENSE=null\r\n\x1b[0m  DEVVM-BASE-DONE\r\n\u{a0}DEVVM-BASE-FAILED=x\r\n";
 
@@ -215,10 +104,31 @@ fn a_line_that_a_carriage_return_ends_holds_its_marker() {
 }
 
 #[skuld::test]
-fn an_escape_sequence_that_never_ends_hides_nothing_before_it() {
-    let serial = read(b"DEVVM-PROGRESS=a\n\x1b[0\x1b");
+fn a_marker_is_read_after_firmware_text_that_had_no_line_end_of_its_own() {
+    // The guest writes a line end before every marker, so firmware text without one ends where ours begins.
+    let log = "BdsDxe: starting\x1b[0m\r\nDEVVM-PROGRESS=a\r\nboot menu \x1b[2J\nDEVVM-BASE-DONE\r\n";
+
+    let serial = read(log.as_bytes());
 
     assert_eq!(serial.progress, ["a"]);
+    assert!(serial.done, "{serial:?}");
+}
+
+#[skuld::test]
+fn control_characters_inside_a_marker_are_kept_and_the_whitespace_at_its_end_is_not() {
+    let serial = read(b"DEVVM-PROGRESS=a\tb \t\r\nDEVVM-LICENSE=x\ty \x1b[K\r\nDEVVM-BASE-DONE \t\r\n");
+
+    assert_eq!(serial.progress, ["a\tb"]);
+    assert_eq!(serial.license.as_deref(), Some("DEVVM-LICENSE=x\ty \x1b[K"));
+    assert!(serial.done, "{serial:?}");
+}
+
+#[skuld::test]
+fn a_line_that_starts_with_terminal_control_is_not_a_marker() {
+    let serial = read(b"\x1b[0mDEVVM-PROGRESS=a\r\n\x1b\xc3\xa9DEVVM-BASE-DONE\r\n");
+
+    assert!(serial.progress.is_empty(), "{serial:?}");
+    assert!(!serial.done, "{serial:?}");
 }
 
 #[skuld::test]
