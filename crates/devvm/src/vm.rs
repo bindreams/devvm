@@ -9,7 +9,7 @@ use crate::access::SshSession;
 use crate::backend::MachineRecord;
 use crate::contain::Lifetime;
 use crate::engine::Engine;
-use crate::engine::keys::read_target;
+use crate::engine::keys::{read_record, read_target};
 use crate::exit::{ExitStatus, Output};
 use crate::guest::GuestOs;
 use crate::instance::dir::{InstanceDir, OpShared};
@@ -203,8 +203,9 @@ impl Instance {
     fn reached(&self) -> Result<(Arc<dyn GuestOs>, SshSession, OpShared)> {
         let dir = self.dir();
         let op = dir.op_shared()?;
-        let guest = ops::guest_of(&self.engine, dir)?;
-        let (_, session) = ops::reach(&self.engine, dir, &op)?;
+        let record = read_record(&self.engine, dir, &op)?;
+        let guest = self.engine.guests().os(record.guest)?;
+        let (_, session) = ops::reach(&self.engine, dir, &record, &op)?;
         Ok((guest, session, op))
     }
 
