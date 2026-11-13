@@ -535,8 +535,14 @@ fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
 /// printed nothing.
 fn with_qemu_output(error: Error, output: &str) -> Error {
     if output.trim().is_empty() {
-        return Error::new(error.kind(), format!("{}
-QEMU printed nothing", error.message()));
+        return Error::new(
+            error.kind(),
+            format!(
+                "{}
+QEMU printed nothing",
+                error.message()
+            ),
+        );
     }
     with_tail(error, "QEMU's output", output)
 }

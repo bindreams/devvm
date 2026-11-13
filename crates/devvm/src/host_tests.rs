@@ -1130,15 +1130,25 @@ fn a_host_that_cannot_tell_free_space_says_so(#[fixture(unicode_home)] home: &Pa
 #[skuld::test]
 fn read_from_returns_the_bytes_of_a_file_from_an_offset_on(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("log");
-    std::fs::write(&path, b"first
+    std::fs::write(
+        &path,
+        b"first
 second
-").unwrap();
+",
+    )
+    .unwrap();
 
-    assert_eq!(super::read_from(&path, 6).unwrap(), b"second
-");
-    assert_eq!(super::read_from(&path, 0).unwrap(), b"first
+    assert_eq!(
+        super::read_from(&path, 6).unwrap(),
+        b"second
+"
+    );
+    assert_eq!(
+        super::read_from(&path, 0).unwrap(),
+        b"first
 second
-");
+"
+    );
 }
 
 #[skuld::test]
@@ -1147,7 +1157,11 @@ fn read_from_an_offset_at_or_past_the_end_reads_nothing(#[fixture(unicode_home)]
     std::fs::write(&path, b"abc").unwrap();
 
     assert_eq!(super::read_from(&path, 3).unwrap(), b"");
-    assert_eq!(super::read_from(&path, 4).unwrap(), b"", "a file that was cut short has nothing past its end");
+    assert_eq!(
+        super::read_from(&path, 4).unwrap(),
+        b"",
+        "a file that was cut short has nothing past its end"
+    );
 }
 
 #[skuld::test]

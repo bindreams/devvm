@@ -296,7 +296,12 @@ fn the_bootstrap_writes_the_marker_that_starts_the_first_logon_phase() {
 
 #[skuld::test]
 fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
-    let exited = || crate::Error::new(ErrorKind::Unavailable, "the VM process of launch 2 exited with exit code: 1");
+    let exited = || {
+        crate::Error::new(
+            ErrorKind::Unavailable,
+            "the VM process of launch 2 exited with exit code: 1",
+        )
+    };
 
     let quiet = super::with_qemu_output(exited(), "");
     assert_eq!(

@@ -473,7 +473,11 @@ impl Machine for FakeMachine {
             ));
         }
         Ok(self.vm.try_wait()?.map(|status| MachineExit {
-            output: if status.success() { String::new() } else { EXIT_OUTPUT.to_owned() },
+            output: if status.success() {
+                String::new()
+            } else {
+                EXIT_OUTPUT.to_owned()
+            },
             status,
         }))
     }
