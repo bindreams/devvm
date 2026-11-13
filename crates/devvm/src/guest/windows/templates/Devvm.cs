@@ -111,6 +111,9 @@ namespace Devvm
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool TerminateJobObject(IntPtr job, uint exitCode);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr attributes, uint disposition,
             uint flags, IntPtr template);
@@ -227,6 +230,7 @@ namespace Devvm
         IntPtr job;
         IntPtr process;
         IntPtr thread;
+        bool inJob;
         Watch watch;
 
         // The child's standard output and error, as the pipes it writes to. Its standard input is at end of file.
@@ -303,6 +307,7 @@ namespace Devvm
                 thread = created.Thread;
                 // Suspended until it is in the job: nothing it starts can be outside.
                 if (!Native.AssignProcessToJobObject(job, process)) throw Native.Fail("AssignProcessToJobObject");
+                inJob = true;
                 watch = new Watch(process);
                 if (Native.ResumeThread(thread) == 0xFFFFFFFF) throw Native.Fail("ResumeThread");
 
@@ -351,13 +356,14 @@ namespace Devvm
             if (!Native.TerminateJobObject(job, 1)) throw Native.Fail("TerminateJobObject");
         }
 
-        // Closing the job ends whatever is still in it.
+        // Closing the job ends whatever is still in it. A child that never got into it is ended by its own handle.
         public void Dispose()
         {
             if (watch != null) watch.Dispose();
             watch = null;
             if (Output != null) Output.Dispose();
             if (Error != null) Error.Dispose();
+            if (process != IntPtr.Zero && !inJob) Native.TerminateProcess(process, 1);
             Native.Close(ref thread);
             Native.Close(ref process);
             Native.Close(ref job);

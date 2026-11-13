@@ -4,7 +4,7 @@
 $script:DevvmLog = Join-Path @@DEVVM_DIR@@ 'log.txt'
 
 # Created by whichever process comes first, so it grants Everyone access: a SYSTEM process's mutex is otherwise closed to
-# `user`. Windows PowerShell has the constructor that takes a security descriptor, PowerShell 7 the MutexAcl helper.
+# `user`.
 function Get-SerialMutex {
     $created = $false
     $security = New-Object System.Security.AccessControl.MutexSecurity

@@ -2,9 +2,11 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 
 use super::{
-    AnswerInputs, DEVVM_DIR, LOG_FILES, NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, answer_file,
-    definition_hash, definition_hash_of, disk_files, probe_inputs, values,
+    ANSWER_FILE, AnswerInputs, DEVVM_DIR, DRIVE_LETTERS, DRIVE_LOGS, NATIVE_DLL, NATIVE_SOURCE, TEMPLATES,
+    WINPE_FAILED, answer_disk_files, answer_file, definition_hash, definition_hash_of, disk_files, log_files,
+    probe_inputs, render, template, values,
 };
+use crate::ErrorKind;
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::elevate::{self, caller_script};
@@ -14,7 +16,7 @@ use crate::media::SeedFile;
 
 const PASSWORD: &str = "SENTINEL-Pw-1";
 
-fn inputs() -> AnswerInputs<'static> {
+pub(super) fn inputs() -> AnswerInputs<'static> {
     AnswerInputs {
         password: PASSWORD,
         image_index: 2,
@@ -180,7 +182,7 @@ fn the_driver_paths_name_the_virtio_cd_on_every_letter_in_both_passes() {
     let text = answer_file(&inputs()).unwrap();
     for pass in ["offlineServicing", "specialize"] {
         let paths = section(&text, &format!("pass=\"{pass}\""), "<settings");
-        for letter in 'C'..='Z' {
+        for letter in DRIVE_LETTERS.chars() {
             for driver in ["viostor", "NetKVM"] {
                 let path = format!("<Path>{letter}:\\{driver}\\w11\\amd64</Path>");
                 assert!(paths.contains(&path), "{pass}: {path}");
@@ -191,7 +193,7 @@ fn the_driver_paths_name_the_virtio_cd_on_every_letter_in_both_passes() {
             .skip(1)
             .map(|rest| rest.split('"').next().unwrap())
             .collect();
-        assert_eq!(keys.len(), 24 * 2, "{pass}");
+        assert_eq!(keys.len(), DRIVE_LETTERS.len() * 2, "{pass}");
         let mut unique = keys.clone();
         unique.sort_unstable();
         unique.dedup();
@@ -234,11 +236,87 @@ fn winpe_cmd_is_written_with_crlf_and_names_the_logs_the_host_reads() {
         "a bare line feed breaks cmd's labels"
     );
     assert!(winpe.contains("\r\n"));
-    // Named files only: each log the host asks for is one the script copies, and the main log goes to the same folder.
+    // Named files only: the main log goes to the folder the host reads.
     assert!(winpe.contains(r"logs\winpe.log"));
-    for name in LOG_FILES {
-        let name = name.rsplit('/').next().unwrap();
-        assert!(winpe.contains(name), "{name}");
+    assert!(log_files().contains(&"logs/winpe.log".to_owned()));
+}
+
+#[skuld::test]
+fn every_drive_has_its_own_log_names_so_that_no_copy_overwrites_another() {
+    let winpe = rendered("winpe.cmd");
+    // The copy goes to `<letter>-<name>`: WinPE's own setupapi.dev.log (on X:) and the installed image's (on C:) are two
+    // files, and the host can read both.
+    for log in DRIVE_LOGS {
+        assert!(winpe.contains(&format!(" %1-{log}\r\n")), "{log}");
+        assert!(
+            !winpe.contains(&format!(" {log}\r\n")),
+            "{log} is copied to a name that every drive shares"
+        );
+    }
+    let names = log_files();
+    let mut unique = names.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), names.len());
+    for letter in std::iter::once('X').chain(DRIVE_LETTERS.chars()) {
+        for log in DRIVE_LOGS {
+            let name = format!("logs/{letter}-{log}");
+            assert!(names.contains(&name), "{name}");
+        }
+    }
+    assert_eq!(names.len(), 1 + (1 + DRIVE_LETTERS.len()) * DRIVE_LOGS.len());
+}
+
+#[skuld::test]
+fn winpe_cmd_stops_with_a_named_marker_when_drvload_or_diskpart_fails() {
+    let winpe = rendered("winpe.cmd");
+    let lines: Vec<&str> = winpe.lines().collect();
+    let next_after = |prefix: &str| {
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no `{prefix}` in:\n{winpe}"));
+        lines[at + 1]
+    };
+    // The status, never drvload's or diskpart's text (it is localized).
+    assert_eq!(next_after("drvload %VIRTIO%"), "if errorlevel 1 goto drvloadfailed");
+    assert_eq!(
+        next_after(r"diskpart /s %W%\devvm-part.txt"),
+        "if errorlevel 1 goto partitionfailed"
+    );
+    assert_before(&winpe, "if errorlevel 1 goto partitionfailed", "winpe.cmd done");
+    for (label, what) in [
+        (":drvloadfailed", "drvload"),
+        (":partitionfailed", "diskpart"),
+        (":novirtio", "no virtio CD"),
+    ] {
+        let body = section(&winpe, label, "exit /b");
+        assert!(body.contains(&format!("{WINPE_FAILED}={what}")), "{label}: {body}");
+        assert!(body.contains(r#">> "%LOG%""#), "{label} logs where the host reads");
+        assert!(
+            winpe[at(&winpe, label) + body.len()..].starts_with("exit /b 1"),
+            "{label} ends the script with a failure"
+        );
+    }
+}
+
+#[skuld::test]
+fn one_drive_letter_constant_fills_every_list_of_letters() {
+    assert!(!DRIVE_LETTERS.contains('X'), "X is WinPE's own drive");
+    assert!(DRIVE_LETTERS.chars().all(|letter| letter.is_ascii_uppercase()));
+    assert!(DRIVE_LETTERS.starts_with('C'), "A and B are floppies");
+    let spaced = DRIVE_LETTERS.chars().map(String::from).collect::<Vec<_>>().join(" ");
+    let winpe = rendered("winpe.cmd");
+    assert!(winpe.contains(&format!("for %%d in ({spaced}) do if exist %%d:\\viostor")));
+    assert!(winpe.contains(&format!("for %%d in (X {spaced}) do call :drive %%d")));
+    assert!(
+        answer_file(&inputs())
+            .unwrap()
+            .contains(&format!("for %d in ({spaced}) do @if exist"))
+    );
+    // No template holds a list of its own.
+    for (name, text) in TEMPLATES {
+        assert!(!text.contains("C D E F"), "{name}");
     }
 }
 
@@ -317,6 +395,28 @@ fn the_bootstrap_sets_password_never_expires_and_no_logon_count() {
     assert!(!bootstrap.contains("(Get-LocalUser -Name 'user').PasswordNeverExpires"));
     assert!(bootstrap.contains("Remove-ItemProperty -Path $winlogon -Name AutoLogonCount"));
     assert!(!bootstrap.contains("Set-ItemProperty -Path $winlogon -Name AutoLogonCount"));
+}
+
+#[skuld::test]
+fn every_powercfg_call_is_followed_by_a_check_of_its_status() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let lines: Vec<&str> = bootstrap.lines().collect();
+    let calls: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at].trim_start().starts_with("powercfg.exe"))
+        .collect();
+    assert_eq!(
+        calls.len(),
+        5,
+        "hibernation, standby, monitor, power button, activation"
+    );
+    for at in calls {
+        // A failed native command does not stop the script by itself.
+        assert!(
+            lines[at + 1].trim_start().starts_with("Assert-Exit 'powercfg"),
+            "{} is not checked",
+            lines[at]
+        );
+    }
 }
 
 #[skuld::test]
@@ -449,6 +549,21 @@ fn the_bootstrap_puts_the_pwsh_directory_on_the_machine_path() {
     assert!(bootstrap.contains("SetEnvironmentVariable('Path', \"$machinePath;$pwshDir\", 'Machine')"));
     // Before the broker starts the agent that the commands run under.
     assert_before(&bootstrap, "SetEnvironmentVariable", "ssh-broker.exe\" apply");
+}
+
+#[skuld::test]
+fn the_broker_config_is_yaml_whose_shell_is_the_pwsh_constant_even_when_the_path_holds_a_quote() {
+    let config: yaml_serde::Value = yaml_serde::from_str(&rendered("broker-config.yaml")).unwrap();
+    assert_eq!(config["shell"]["start"][0].as_str(), Some(PWSH_EXE));
+    assert_eq!(config["shell"]["append"]["with-command"][0].as_str(), Some("-c"));
+    assert_eq!(config["shell"]["escaping"].as_str(), Some("msvc"));
+
+    let hostile = r"C:\it's: a #path\pwsh.exe";
+    let mut changed = values(&inputs());
+    changed.iter_mut().find(|(name, _)| *name == "PWSH_EXE").unwrap().1 = hostile.to_owned();
+    let files = disk_files(&[("broker-config.yaml", raw("broker-config.yaml"))], &changed).unwrap();
+    let config: yaml_serde::Value = yaml_serde::from_slice(&files[0].bytes).unwrap();
+    assert_eq!(config["shell"]["start"][0].as_str(), Some(hostile));
 }
 
 #[skuld::test]
@@ -621,6 +736,48 @@ fn the_eb_runner_removes_requests_whose_caller_ended_and_holds_no_claim() {
 }
 
 #[skuld::test]
+fn only_a_caller_file_that_is_not_there_ends_its_request() {
+    let runner = rendered("eb-runner.ps1");
+    let ended = section(&runner, "function Test-CallerEnded", "# A claim file");
+    // A read that fails for any other reason (a sharing violation, access denied) says nothing about the caller: its
+    // request stays.
+    assert!(
+        ended.contains(
+            "catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return $true } catch { return $false }"
+        ),
+        "{ended}"
+    );
+    assert_before(
+        ended,
+        "[IO.File]::ReadAllText(",
+        "catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException]",
+    );
+}
+
+#[skuld::test]
+fn only_a_missing_directory_or_an_existing_claim_means_the_request_is_not_this_runners() {
+    let runner = rendered("eb-runner.ps1");
+    let claiming = section(&runner, "$claim = $null", "if ($null -eq $claim)");
+    assert!(
+        claiming.contains("catch [IO.DirectoryNotFoundException] { }"),
+        "{claiming}"
+    );
+    // An existing claim is a sharing violation (32) or, for CreateNew, a file that exists (80).
+    assert!(
+        claiming.contains("catch [IO.IOException] {") && claiming.contains("-notin 32, 80"),
+        "{claiming}"
+    );
+    // Any other I/O error is answered on stderr with a failure status, and the request is left for the caller.
+    assert!(claiming.contains("[Console]::Error.WriteLine("), "{claiming}");
+    assert!(claiming.contains("exit 1"), "{claiming}");
+    assert_before(claiming, "-notin 32, 80", "[Console]::Error.WriteLine(");
+    assert!(
+        !claiming.contains("catch [IO.IOException] { }"),
+        "an I/O error is never swallowed"
+    );
+}
+
+#[skuld::test]
 fn the_runner_checks_its_caller_and_waits_for_it_on_one_handle_it_opened_once() {
     let runner = rendered("eb-runner.ps1");
     let native = raw(NATIVE_SOURCE);
@@ -671,15 +828,41 @@ fn the_runner_starts_its_child_in_a_job_of_its_own_and_ends_the_tree_by_the_job_
         "EnterOwnJob",
         "GetProcessById",
         "BasicProcessIdList",
-        "TerminateProcess(",
     ] {
         assert!(!native.contains(by_id), "{by_id}");
         assert!(!runner.contains(by_id), "{by_id}");
     }
+    assert!(
+        !runner.contains("TerminateProcess("),
+        "the runner ends nothing but through the helper"
+    );
     assert!(runner.contains("[Devvm.Child]::Start(") && runner.contains(".Terminate()"));
     assert!(!runner.contains("Process]::Start") && !runner.contains("Add-Type -TypeDefinition"));
     // Whatever the runner leaves behind goes with the job when the runner ends, however it ends.
     assert!(runner.contains("$child.Dispose()"));
+}
+
+#[skuld::test]
+fn a_child_that_never_reached_its_job_is_terminated_by_its_handle_when_creating_it_fails() {
+    let native = raw(NATIVE_SOURCE);
+    // Closing the job ends a process that is in it; a process that is not yet in it is ended by its own handle, which
+    // the helper holds from CreateProcess on.
+    assert!(native.contains("static extern bool TerminateProcess(IntPtr process, uint exitCode);"));
+    assert_before(
+        native,
+        "if (!Native.AssignProcessToJobObject(job, process))",
+        "inJob = true;",
+    );
+    assert_before(native, "inJob = true;", "watch = new Watch(process);");
+    let dispose = section(native, "public sealed class Child", "public sealed class Disk");
+    let dispose = &dispose[at(dispose, "// Closing the job ends whatever is still in it.")..];
+    assert!(dispose.contains("if (process != IntPtr.Zero && !inJob) Native.TerminateProcess(process, 1);"));
+    assert_before(
+        dispose,
+        "Native.TerminateProcess(process, 1)",
+        "Native.Close(ref process)",
+    );
+    assert_before(dispose, "Native.TerminateProcess(process, 1)", "Native.Close(ref job)");
 }
 
 #[skuld::test]
@@ -781,6 +964,57 @@ fn the_runner_and_the_callers_names_come_from_the_same_constants() {
         assert!(!text.contains("ProgramData\\devvm"), "{name}");
         assert!(!text.contains("devvm-eb"), "{name}");
     }
+}
+
+// Rendering ===========================================================================================================
+
+#[skuld::test]
+fn a_value_is_quoted_for_the_kind_of_file_it_lands_in_and_never_scanned_for_placeholders() {
+    // A quote of every kind, a placeholder, an XML special and U+2018 (which PowerShell reads as a quote).
+    let hostile = "it's @@X@@ & <b> \u{2018}";
+    for (file, rendered) in [
+        ("t.xml", "it&apos;s @@X@@ &amp; &lt;b&gt; \u{2018}"),
+        ("t.ps1", "'it''s @@X@@ & <b> \u{2018}\u{2018}'"),
+        ("t.yaml", "'it''s @@X@@ & <b> \u{2018}'"),
+        ("t.cmd", hostile),
+        ("t", hostile),
+    ] {
+        let out = render(file, "[@@V@@]", &[("V", hostile.to_owned())]).unwrap();
+        assert_eq!(out, format!("[{rendered}]"), "{file}");
+    }
+}
+
+#[skuld::test]
+fn a_bang_placeholder_is_filled_verbatim_in_every_kind_of_file() {
+    for file in ["t.xml", "t.ps1", "t.yaml", "t.cmd"] {
+        let out = render(file, "[@@!V@@]", &[("V", "<a href='x'>".to_owned())]).unwrap();
+        assert_eq!(out, "[<a href='x'>]", "{file}");
+    }
+}
+
+#[skuld::test]
+fn a_placeholder_without_a_value_or_without_its_end_is_an_internal_error_naming_the_template() {
+    for (text, what) in [
+        ("a @@NOPE@@ b", "NOPE"),
+        ("a @@!NOPE@@ b", "NOPE"),
+        ("a @@V@@ b @@ c", "never closed"),
+        ("@@", "never closed"),
+    ] {
+        let error = render("t.ps1", text, &[("V", "v".to_owned())]).expect_err(text);
+        assert_eq!(error.kind(), ErrorKind::Internal, "{text}");
+        assert!(error.message().contains("t.ps1"), "{text}: {}", error.message());
+        assert!(error.message().contains(what), "{text}: {}", error.message());
+    }
+}
+
+#[skuld::test]
+fn the_answer_file_is_the_template_of_that_name_wherever_it_is_listed() {
+    assert_eq!(ANSWER_FILE, "Autounattend.xml");
+    assert_eq!(template(ANSWER_FILE).unwrap(), raw(ANSWER_FILE));
+    assert_eq!(answer_file(&inputs()).unwrap(), rendered(ANSWER_FILE));
+    let error = template("no-such-template").expect_err("no such template");
+    assert_eq!(error.kind(), ErrorKind::Internal);
+    assert!(error.message().contains("no-such-template"), "{}", error.message());
 }
 
 // The definition hash =================================================================================================
@@ -891,4 +1125,18 @@ fn the_definition_hash_does_not_collide_when_bytes_move_between_a_name_and_its_t
     let one = [file("ab", "c")];
     let other = [file("a", "bc")];
     assert_ne!(definition_hash_of(&one, &[], 1), definition_hash_of(&other, &[], 1));
+}
+
+#[skuld::test]
+fn the_definition_hash_of_known_parts_is_pinned() {
+    // Counts and fields in this order: a change to the layout is a change to every Windows base's key.
+    let pin = Pin {
+        what: "w",
+        url: "u",
+        sha256: "h",
+    };
+    assert_eq!(
+        hex::encode(definition_hash_of(&[file("a", "b")], &[&pin], 1)),
+        "424819f97ec7616b1476d1808e28db4c24f6df7d530231f4e7c667205060b63b"
+    );
 }

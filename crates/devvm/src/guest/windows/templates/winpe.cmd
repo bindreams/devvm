@@ -11,9 +11,6 @@ rem Nothing is found by drive letter (WinPE can give the answer disk C:) and no 
 rem meaning (it is localized). In `list disk` output the rows after the dashed line are `<word> <number> ...`;
 rem `detail disk` on each number is searched for the volume label CIDATA (data, not language): that disk is the answer
 rem disk, the first other one is the system disk. Only cmd built-ins are used for parsing: findstr is absent from WinPE.
-rem
-rem Replay on a developer PC (never runs diskpart): set DEVVM_REPLAY to a folder holding list.txt and detail-<N>.txt,
-rem set W to a scratch folder and run `winpe.cmd --replay`; it prints `disk chosen: [N]`.
 if not defined W set W=X:
 if "%~1"=="--replay" goto replay
 if "%~1"=="--logcopy" goto logcopy
@@ -23,11 +20,12 @@ echo winpe.cmd begins> "%LOG%"
 start "" /b cmd /c call "%~f0" --logcopy "%~dp0" >nul 2>&1
 ver>> "%LOG%"
 set VIRTIO=
-for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if exist %%d:\viostor\w11\amd64\viostor.inf set VIRTIO=%%d:
+for %%d in (@@!DRIVE_LETTERS@@) do if exist %%d:\viostor\w11\amd64\viostor.inf set VIRTIO=%%d:
 echo virtio CD: [%VIRTIO%]>> "%LOG%"
 if "%VIRTIO%"=="" goto novirtio
 echo -- drvload>> "%LOG%"
 drvload %VIRTIO%\viostor\w11\amd64\viostor.inf>> "%LOG%" 2>&1
+if errorlevel 1 goto drvloadfailed
 set TRIES=0
 :scan
 set /a TRIES+=1
@@ -66,10 +64,18 @@ echo create partition primary>> %W%\devvm-part.txt
 echo format quick fs=ntfs label=Windows>> %W%\devvm-part.txt
 echo list partition>> %W%\devvm-part.txt
 diskpart /s %W%\devvm-part.txt>> "%LOG%" 2>&1
+if errorlevel 1 goto partitionfailed
 echo winpe.cmd done>> "%LOG%"
 exit /b 0
 :novirtio
 echo no virtio CD found; no disk chosen>> "%LOG%"
+echo @@!WINPE_FAILED@@=no virtio CD>> "%LOG%"
+exit /b 1
+:drvloadfailed
+echo @@!WINPE_FAILED@@=drvload>> "%LOG%"
+exit /b 1
+:partitionfailed
+echo @@!WINPE_FAILED@@=diskpart>> "%LOG%"
 exit /b 1
 
 :replay
@@ -124,18 +130,19 @@ exit /b 0
 
 :logcopy
 rem Started detached by the main part: copies Setup's logs to <answer disk>\logs on every pass, so they survive a Setup
-rem that stops at an error dialog (the host reads only the answer disk afterwards). Runs until the VM stops. Named files
-rem only, a failed copy is ignored: a full disk loses a log, never the build.
+rem that stops at an error dialog (the host reads only the answer disk afterwards). Each is copied as <letter>-<name>:
+rem WinPE's setupapi.dev.log and the installed image's are two files. Runs until the VM stops. Named files only, a
+rem failed copy is ignored: a full disk loses a log, never the build.
 set "DEST=%~2logs"
 :pass
-for %%d in (X C D E F G H I J K L M N O P Q R S T U V W Y Z) do call :drive %%d
+for %%d in (X @@!DRIVE_LETTERS@@) do call :drive %%d
 ping -n 31 127.0.0.1 >nul
 goto pass
 
 :drive
-call :copylog "%1:\$WINDOWS.~BT\Sources\Panther\setupact.log" setupact.log
-call :copylog "%1:\$WINDOWS.~BT\Sources\Panther\setuperr.log" setuperr.log
-call :copylog "%1:\Windows\INF\setupapi.dev.log" setupapi.dev.log
+call :copylog "%1:\$WINDOWS.~BT\Sources\Panther\setupact.log" %1-setupact.log
+call :copylog "%1:\$WINDOWS.~BT\Sources\Panther\setuperr.log" %1-setuperr.log
+call :copylog "%1:\Windows\INF\setupapi.dev.log" %1-setupapi.dev.log
 exit /b 0
 
 :copylog

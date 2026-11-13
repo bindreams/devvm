@@ -1,7 +1,6 @@
 # The boot task: PowerShell 7 as SYSTEM, at every boot. It applies the instance's seed (the CIDATA disk), makes C: as large
-# as the disk, and starts sshd last, once the agent of ssh-broker answers. sshd is a Manual service, so nothing is served
-# before this ends well: a step that fails writes DEVVM-BOOT-FAILED and leaves sshd stopped (fail closed), and the host's
-# boot bound then ends the wait. Stopping and starting the instance tries again.
+# as the disk, and starts sshd last, once the agent of ssh-broker answers. sshd is a Manual service, so a failed step
+# leaves it stopped (fail closed).
 $ErrorActionPreference = 'Stop'
 @@!UTF8_OUTPUT@@
 . (Join-Path $PSScriptRoot 'lib.ps1')

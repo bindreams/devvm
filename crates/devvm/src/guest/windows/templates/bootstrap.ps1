@@ -68,10 +68,15 @@ try {
 
     # No sleep, hibernation (which also ends Fast Startup), lock screen or update restarts; the power button shuts down.
     powercfg.exe /h off
+    Assert-Exit 'powercfg /h off'
     powercfg.exe /change standby-timeout-ac 0
+    Assert-Exit 'powercfg standby-timeout'
     powercfg.exe /change monitor-timeout-ac 0
+    Assert-Exit 'powercfg monitor-timeout'
     powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_BUTTONS PBUTTONACTION 3
+    Assert-Exit 'powercfg PBUTTONACTION'
     powercfg.exe /setactive SCHEME_CURRENT
+    Assert-Exit 'powercfg /setactive'
     New-Item -Force -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization' | Out-Null
     Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization' -Name NoLockScreen -Value 1 -Type DWord
     New-Item -Force -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' | Out-Null

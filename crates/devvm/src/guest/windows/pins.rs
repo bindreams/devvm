@@ -38,7 +38,7 @@ pub(super) const VIRTIO_WIN: Pin = Pin {
     sha256: "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d",
 };
 
-/// Win32-OpenSSH. No build of ours (owner, 2026-11-13); the sshd pin is a Preview release because no other is current.
+/// Win32-OpenSSH. No build of ours; the sshd pin is a Preview release because no other is current.
 pub(super) const OPENSSH: Pin = Pin {
     what: "Win32-OpenSSH 10.4.0.0p1-Preview",
     url: "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip",

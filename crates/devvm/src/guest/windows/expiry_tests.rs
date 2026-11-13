@@ -3,11 +3,12 @@ use std::time::{Duration, SystemTime};
 use super::expiry_from;
 use crate::ErrorKind;
 
-// Captured serial lines (`.tmp/claude/u5/fixtures/m9/`, run 43333774008). The spike's marker was `DEVVM-M9-LICENSE`; the
-// product's is `DEVVM-LICENSE`, the rest of the line is as captured.
+// Captured serial lines. The product's marker is `DEVVM-LICENSE`; the rest of each line is as captured.
 const EN_US: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), EnterpriseEval edition","Description":"Windows(R) Operating System, TIMEBASED_EVAL channel","LicenseStatus":1,"GracePeriodRemaining":129600,"LicenseFamily":"EnterpriseEval","ProductKeyChannel":"Retail:TB:Eval","PartialProductKey":"YG9R6"}"#;
-// The de-DE install prints the same text: every field that is read is a number or an identifier.
-const DE_DE: &str = EN_US;
+// The de-DE install's capture: Windows reports these WMI strings in English whatever the language.
+const DE_DE: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), EnterpriseEval edition","Description":"Windows(R) Operating System, TIMEBASED_EVAL channel","LicenseStatus":1,"GracePeriodRemaining":129600,"LicenseFamily":"EnterpriseEval","ProductKeyChannel":"Retail:TB:Eval","PartialProductKey":"YG9R6"}"#;
+// Synthesized: Name and Description in German with non-ASCII letters, escaped as the first-logon script escapes them.
+const LOCALIZED_TEXT: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), Enterprise-Testversion","Description":"Windows(R)-Betriebssystem, TIMEBASED_EVAL-Kanal f\u00fcr Testversionen","LicenseStatus":1,"GracePeriodRemaining":129600,"LicenseFamily":"EnterpriseEval","ProductKeyChannel":"Retail:TB:Eval","PartialProductKey":"YG9R6"}"#;
 const LTSC_EVAL: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), IoTEnterpriseSEval edition","Description":"Windows(R) Operating System, TIMEBASED_EVAL channel","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"IoTEnterpriseSEval","ProductKeyChannel":"Retail:TB:Eval","PartialProductKey":"M4K7D"} @639301258508628226"#;
 // Synthesized from the documented values (LicenseStatus 5 is "Notification"; a volume edition without a key): no capture
 // of an unactivated non-evaluation guest exists until the owner's LTSC first run.
@@ -26,11 +27,15 @@ fn an_evaluation_guest_expires_grace_minutes_from_now() {
 }
 
 #[skuld::test]
-fn a_localized_evaluation_guest_expires_the_same_way() {
-    assert_eq!(
-        expiry_from(DE_DE, true, now()).unwrap(),
-        expiry_from(EN_US, true, now()).unwrap()
-    );
+fn a_localized_evaluation_guest_expires_grace_minutes_from_now() {
+    // Absolute: a read compared with another read could not fail when both are wrong the same way.
+    for read in [DE_DE, LOCALIZED_TEXT] {
+        assert_eq!(
+            expiry_from(read, true, now()).unwrap(),
+            Some(now() + Duration::from_secs(129_600 * 60)),
+            "{read}"
+        );
+    }
 }
 
 #[skuld::test]

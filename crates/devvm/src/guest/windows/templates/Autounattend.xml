@@ -46,7 +46,7 @@
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
           <Order>6</Order>
-          <Path>cmd.exe /c "for %d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do @if exist %d:\winpe.cmd call %d:\winpe.cmd"</Path>
+          <Path>cmd.exe /c "for %d in (@@!DRIVE_LETTERS@@) do @if exist %d:\winpe.cmd call %d:\winpe.cmd"</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
       <UserData>

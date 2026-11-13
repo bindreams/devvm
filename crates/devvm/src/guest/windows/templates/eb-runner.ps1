@@ -17,7 +17,7 @@ $doneName = @@EB_DONE@@
 $readName = @@EB_READ@@
 $pwsh = @@PWSH_EXE@@
 $utf8 = [Text.UTF8Encoding]::new($false)
-# Paces a wait for a file; it never ends one.
+# Poll interval (ms).
 $pause = 200
 
 if ($Id -notmatch '^[0-9a-f]{32}$') { exit 2 }
@@ -27,9 +27,10 @@ if ($Id -notmatch '^[0-9a-f]{32}$') { exit 2 }
 Add-Type -LiteralPath (Join-Path $PSScriptRoot @@NATIVE_DLL@@)
 
 # Whether a request's caller has ended: its process is gone, or the process of that id started at another time. A caller
-# that cannot be told is not ended, so its request stays.
+# that cannot be told is not ended, so its request stays: only a caller file that is not there says the request is gone.
 function Test-CallerEnded([string]$Dir) {
-    try { $text = [IO.File]::ReadAllText((Join-Path $Dir $callerName)) } catch { return $true }
+    try { $text = [IO.File]::ReadAllText((Join-Path $Dir $callerName)) }
+    catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return $true } catch { return $false }
     if ($text -notmatch '^\s*(\d+)\s+(\d+)\s*$') { return $true }
     try {
         $caller = [Devvm.Caller]::Open([int]$Matches[1], [long]$Matches[2])
@@ -59,9 +60,17 @@ foreach ($other in [IO.Directory]::GetDirectories($root)) {
 
 $dir = Join-Path $root $Id
 # This start's own request: served by whoever creates its claim. A request without a directory is withdrawn or swept; one
-# with a claim is a runner's.
+# with a claim is a runner's (a sharing violation, 32, or for CreateNew a file that exists, 80). Any other I/O error says
+# nothing about whose it is: it is answered on stderr, and the request stays for its caller.
 $claim = $null
-try { $claim = [IO.File]::Open((Join-Path $dir $claimName), 'CreateNew', 'Write', 'None') } catch [IO.IOException] { }
+try { $claim = [IO.File]::Open((Join-Path $dir $claimName), 'CreateNew', 'Write', 'None') }
+catch [IO.DirectoryNotFoundException] { }
+catch [IO.IOException] {
+    if (($_.Exception.HResult -band 0xFFFF) -notin 32, 80) {
+        [Console]::Error.WriteLine("devvm: the elevated runner could not claim its request: $($_.Exception.Message)")
+        exit 1
+    }
+}
 if ($null -eq $claim) { exit 0 }
 
 $exitCode = 126

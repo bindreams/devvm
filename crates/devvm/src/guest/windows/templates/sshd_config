@@ -8,7 +8,6 @@ AuthorizedKeysFile .ssh/authorized_keys
 Subsystem sftp sftp-server.exe
 
 # `user` is an administrator: sshd reads an administrator's keys from here, not from the profile. The group name is
-# English and still matches on a localized install: measured on de-DE (spike runs 43238781421 onward), where key
-# authentication through this file succeeded.
+# English and still matches on a localized install (measured on de-DE).
 Match Group administrators
        AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys
