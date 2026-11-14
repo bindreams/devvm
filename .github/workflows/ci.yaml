@@ -242,7 +242,8 @@ jobs:
           "- ISO: $final, $size bytes, sha256 ``$hash``" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Test
-        run: cargo test -p devvm --lib --locked
+        # --nocapture: the base build's progress lines (the guest's markers and license read) land in the log on a pass too.
+        run: cargo test -p devvm --lib --locked -- --nocapture
         env:
           # A hosted runner is a throwaway sandbox, with WHPX.
           DEVVM_TEST_VM: "1"

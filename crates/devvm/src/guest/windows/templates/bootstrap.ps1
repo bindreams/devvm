@@ -61,6 +61,8 @@ try {
         Send-Line ("DEVVM-PROGRESS=diag {0}: {1} sppsvc={2} up={3} {4} {5}" -f $tag, (Get-Date).ToUniversalTime().ToString('o'), $svc, $net, $l, $s)
     }
     Send-Diag 'first-logon'
+    Get-CimInstance SoftwareLicensingService | Invoke-CimMethod -MethodName RefreshLicenseStatus | Out-Null
+    Send-Diag 'after-refresh'
 
     # The account: an administrator (by SID, never by the group's localized name) whose password never expires.
     $member = Get-LocalGroupMember -SID S-1-5-32-544 | Where-Object { $_.Name -like '*\user' }
