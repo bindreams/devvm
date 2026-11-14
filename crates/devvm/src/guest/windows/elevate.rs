@@ -111,27 +111,28 @@ function Withdraw-Request {
         throw
     }
 }
-# Whether the instance this caller started is queued or running, which is the only way it is going to run the command.
-# Its own state: the task runs other requests' instances at the same time. No instance, or a finished one that answers
-# `SCHED_E_TASK_NOT_RUNNING` (0x8004130B) instead of a state, is not running. Any other failure is thrown, unless a
-# runner has claimed the request meanwhile: then the claim is what the loop goes on with. `$instanceState` is the last
-# state seen.
-$instanceState = 'not started'
-function Test-Running($instance) {
-    if ($null -eq $instance) { return $false }
-    try { $instance.Refresh(); $state = [int]$instance.State }
+# The state of the instance this caller started, as text: its own state, because the task runs other requests'
+# instances at the same time. `not started` is no instance, and `not running` an ended one that answers
+# `SCHED_E_TASK_NOT_RUNNING` (0x8004130B) instead of a state. `$null` is a state that cannot be read, and only while a
+# runner has claimed the request: the claim is then what the loop goes on with. Otherwise it is thrown. A getter that
+# failed reads as `$null` in PowerShell, so the raw value is checked before it becomes a number.
+function Get-InstanceState($instance) {
+    if ($null -eq $instance) { return 'not started' }
+    try { $instance.Refresh(); $raw = $instance.State }
     catch {
         for ($e = $_.Exception; $e; $e = $e.InnerException) {
-            if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) {
-                $script:instanceState = 'not running'
-                return $false
-            }
+            if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) { return 'not running' }
         }
-        if ([IO.File]::Exists($claim)) { return $true }
+        if ([IO.File]::Exists($claim)) { return $null }
         throw
     }
-    $script:instanceState = if ($state -ge 0 -and $state -lt $states.Count) { $states[$state] } else { "$state" }
-    return $state -eq 2 -or $state -eq 4
+    if ($null -eq $raw) {
+        if ([IO.File]::Exists($claim)) { return $null }
+        throw 'the state of the instance could not be read'
+    }
+    $state = [int]$raw
+    if ($state -ge 0 -and $state -lt $states.Count) { return $states[$state] }
+    return "$state"
 }
 $code = 126
 $message = $null
@@ -166,11 +167,14 @@ try {
             break
         }
         if ($claimed -and -not $held) { $message = 'the elevated runner ended without a result'; $abandoned = $true; break }
-        if (-not $claimed -and -not (Test-Running $instance)) {
-            if (-not (Withdraw-Request)) { Start-Sleep -Milliseconds {PAUSE}; continue }
-            $message = "the elevated helper did not run the command (instance state: $instanceState)"
-            $abandoned = $true
-            break
+        if (-not $claimed) {
+            $instanceState = Get-InstanceState $instance
+            if ($null -ne $instanceState -and $instanceState -ne 'queued' -and $instanceState -ne 'running') {
+                if (-not (Withdraw-Request)) { Start-Sleep -Milliseconds {PAUSE}; continue }
+                $message = "the elevated helper did not run the command (instance state: $instanceState)"
+                $abandoned = $true
+                break
+            }
         }
         Start-Sleep -Milliseconds {PAUSE}
     }

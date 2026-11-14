@@ -357,6 +357,13 @@ fn windows_an_elevated_command_whose_runner_dies_ends_with_an_error_not_a_wait(
     assert_eq!(pending(&*up), "0", "the caller removes a request whose runner died");
 }
 
+/// The result of a scoped thread. A panic in it goes on in the test with its own message, not as an opaque `Any`.
+fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    thread
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
 /// The runner's script and the name it has while it is hidden.
 const RUNNER: &str = r"C:\Program Files\devvm\eb-runner.ps1";
 const RUNNER_HIDDEN: &str = "eb-runner.ps1.hidden";
@@ -402,14 +409,14 @@ fn windows_a_runner_that_dies_before_its_claim_ends_its_caller_while_another_run
         if hider.is_finished() {
             panic!(
                 "the command that hides the runner script ended before it did: {:?}",
-                hider.join().unwrap()
+                joined(hider)
             );
         }
         let victim = ran(&*up, "the command whose runner cannot start", &victim);
         // The other command's runner still runs while the first caller has its answer.
         let still_running = !hider.is_finished();
         drop(release);
-        (hider.join().unwrap(), (victim, still_running))
+        (joined(hider), (victim, still_running))
     });
     let (victim, still_running) = victim;
     let victim = victim.unwrap();

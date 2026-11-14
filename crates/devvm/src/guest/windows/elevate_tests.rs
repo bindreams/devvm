@@ -84,7 +84,7 @@ fn a_helper_that_is_not_going_to_run_the_command_is_told_by_the_instance_the_sta
     let wait = at(&text, "while (-not $message)");
     assert!(started < wait, "{text}");
     let refusal = at(&text, "the elevated helper did not run the command");
-    let check = at(&text, "-not (Test-Running $instance)");
+    let check = at(&text, "= Get-InstanceState $instance");
     assert!(wait < check && check < refusal, "{text}");
 }
 

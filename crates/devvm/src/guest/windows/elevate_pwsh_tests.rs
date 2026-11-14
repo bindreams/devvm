@@ -283,6 +283,47 @@ throw 'boom'"
     assert_eq!(output.stdout, b"out", "{}", shown(&output));
 }
 
+/// The state of the instance is `$null`: PowerShell answers that for a getter that failed, and `[int]$null` is `unknown`,
+/// which is not a state the instance has.
+const UNREADABLE_STATE: &str = "$null";
+
+#[skuld::test]
+fn an_instance_whose_state_cannot_be_read_is_the_126_message_and_withdraws_the_request(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let output = caller(&root, "", UNREADABLE_STATE);
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    let message = stderr(&output);
+    assert!(
+        message.contains("devvm: the elevated helper failed: ") && message.contains("state of the instance"),
+        "{}",
+        shown(&output)
+    );
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
+}
+
+#[skuld::test]
+fn an_instance_whose_state_cannot_be_read_while_a_runner_claims_the_request_goes_on_with_the_runner(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let output = caller(
+        &root,
+        "",
+        &format!(
+            "{SERVE}
+{UNREADABLE_STATE}"
+        ),
+    );
+
+    assert_eq!(output.status.code(), Some(7), "{}", shown(&output));
+    assert_eq!(output.stdout, b"out", "{}", shown(&output));
+}
+
 #[skuld::test]
 fn a_start_that_returns_no_instance_is_a_helper_that_did_not_run_the_command(
     #[fixture(unicode_home)] home: &Path,
