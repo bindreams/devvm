@@ -7,14 +7,14 @@ use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use devvm::{ExitStatus, host_exit_width};
 use serde_json::Value;
 
-use cases::{Case, Ended, ExecTarget, Observed};
-use test_groups::{Group, vm_group};
+use cases::{Case, Ended, ExecTarget, Observed, Os};
+use test_groups::{Group, WINDOWS_ISO_VAR, vm_group, windows_guest};
 use test_harness::{GUEST, VM};
 
 #[path = "../../devvm/src/test_groups/shared.rs"]
@@ -149,18 +149,26 @@ fn cli_guests(#[fixture(cli_env)] env: &CliEnv) -> Result<Cli, String> {
 struct Instance {
     cli: Cli,
     name: String,
+    /// The OS of its guest, which the exec table takes its programs from.
+    os: Os,
 }
 
 impl Instance {
     /// `devvm up ubuntu-24.04 --name <name> <flags>`, which prints the name.
     fn up(cli: &Cli, name: &str, flags: &[&str]) -> Result<Instance, String> {
-        let mut args = vec!["up", "ubuntu-24.04", "--name", name];
+        Instance::up_from(cli, "ubuntu-24.04", Os::Linux, name, flags)
+    }
+
+    /// `devvm up <reference> --name <name> <flags>`, for a guest of `os`.
+    fn up_from(cli: &Cli, reference: &str, os: Os, name: &str, flags: &[&str]) -> Result<Instance, String> {
+        let mut args = vec!["up", reference, "--name", name];
         args.extend(flags);
         let output = cli.devvm(&args);
         // Made, or half made: either way `rm` removes it.
         let instance = Instance {
             cli: cli.clone(),
             name: name.to_owned(),
+            os,
         };
         if !output.status.success() || output.stdout != format!("{name}\n").as_bytes() {
             return Err(format!(
@@ -210,6 +218,46 @@ fn shared_instance(#[fixture(cli_guests)] cli: &Cli) -> Result<Instance, String>
     Instance::up(cli, "cli-shared", &["--cpus", "1", "--memory", "1GiB"])
 }
 
+/// An instance of a Windows guest built from the ISO `DEVVM_WINDOWS_ISO` names, which stays up for the process. It builds
+/// its own base: this binary's stores are not the lib's.
+#[skuld::fixture(scope = process, serial = GUEST, labels = [GUEST])]
+fn windows_instance(
+    #[fixture(cli_guests)] cli: &Cli,
+    #[fixture(windows_guest)] _group: &Group,
+) -> Result<Instance, String> {
+    // A failed build is not tried again by every later test: skuld runs a fixture's setup again after it fails, and each
+    // attempt is a full Windows install.
+    static FAILED: OnceLock<String> = OnceLock::new();
+    if let Some(error) = FAILED.get() {
+        return Err(format!("the first attempt of this process failed: {error}"));
+    }
+    windows_up(cli).inspect_err(|error| {
+        let _ = FAILED.set(error.clone());
+    })
+}
+
+fn windows_up(cli: &Cli) -> Result<Instance, String> {
+    let iso = std::env::var_os(WINDOWS_ISO_VAR).ok_or_else(|| format!("{WINDOWS_ISO_VAR} is not set"))?;
+    let iso = serde_json::to_string(iso.to_str().ok_or("a UTF-8 ISO path")?).map_err(|e| e.to_string())?;
+    let recipe = cli.project.join("windows.devvm.yaml");
+    std::fs::write(
+        &recipe,
+        format!(
+            "from: {{ iso: {iso} }}
+steps: []
+"
+        ),
+    )
+    .map_err(|e| format!("cannot write {}: {e}", recipe.display()))?;
+    Instance::up_from(
+        cli,
+        "windows.devvm.yaml",
+        Os::Windows,
+        "cli-windows",
+        &["--cpus", "2", "--memory", "4GiB"],
+    )
+}
+
 // The exec suite ======================================================================================================
 
 /// Runs a case with `devvm ssh <name> -- <argv>`, and reads how it ended from the status file and the exit code, which
@@ -219,6 +267,10 @@ struct ThroughSsh<'a>(&'a Instance);
 static STATUS_FILES: AtomicUsize = AtomicUsize::new(0);
 
 impl ExecTarget for ThroughSsh<'_> {
+    fn os(&self) -> Os {
+        self.0.os
+    }
+
     fn run(&self, case: &Case) -> Observed {
         assert!(case.cwd.is_none(), "devvm has no flag for a working directory");
         let status_file = self
@@ -300,6 +352,30 @@ fn cli_argv_round_trips_hostile_arguments(#[fixture(shared_instance)] instance: 
 
 #[skuld::test]
 fn cli_elevated_runs_as_root(#[fixture(shared_instance)] instance: &Instance) {
+    cases::elevated_runs_as_root(&ThroughSsh(instance));
+}
+
+// The same table against a Windows guest.
+
+#[skuld::test]
+fn cli_windows_exit_codes_7_125_255_and_ntstatus(#[fixture(windows_instance)] instance: &Instance) {
+    cases::exit_7_125_255(&ThroughSsh(instance));
+}
+
+#[skuld::test]
+fn cli_windows_a_guest_printing_devvm_error_and_exiting_125_is_a_guest_status(
+    #[fixture(windows_instance)] instance: &Instance,
+) {
+    cases::a_guest_printing_devvm_error_and_exiting_125_is_a_guest_status(&ThroughSsh(instance));
+}
+
+#[skuld::test]
+fn cli_windows_argv_round_trips_hostile_arguments(#[fixture(windows_instance)] instance: &Instance) {
+    cases::argv_round_trips_hostile_arguments(&ThroughSsh(instance));
+}
+
+#[skuld::test]
+fn cli_windows_elevated_runs_at_high_integrity(#[fixture(windows_instance)] instance: &Instance) {
     cases::elevated_runs_as_root(&ThroughSsh(instance));
 }
 

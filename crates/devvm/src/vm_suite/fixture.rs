@@ -8,8 +8,9 @@
 use std::ffi::OsString;
 use std::ops::Deref;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::backend::MachineRecord;
 use crate::backend::qemu::qemu_parts;
@@ -66,20 +67,40 @@ impl Roots {
     }
 }
 
-/// Counts the machines launched through an engine.
+/// Counts the machines launched through an engine, and tells a test that asks which ones have resumed.
 #[derive(Default)]
-pub(super) struct Launches(AtomicUsize);
+pub(super) struct Launches {
+    spawned: AtomicUsize,
+    watcher: Mutex<Option<Sender<MachineRecord>>>,
+}
 
 impl Launches {
     pub(super) fn count(&self) -> usize {
-        self.0.load(Ordering::SeqCst)
+        self.spawned.load(Ordering::SeqCst)
+    }
+
+    /// The records of the machines that resume from now on, as each resumes: the guest is not yet awaited then. Another
+    /// call replaces the channel.
+    pub(super) fn resumed(&self) -> Receiver<MachineRecord> {
+        let (sender, receiver) = mpsc::channel();
+        *self.watcher.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
+        receiver
     }
 }
 
 impl LaunchHooks for Launches {
-    fn reached(&self, step: LaunchStep, _machine: &MachineRecord) {
-        if step == LaunchStep::Spawned {
-            self.0.fetch_add(1, Ordering::SeqCst);
+    fn reached(&self, step: LaunchStep, machine: &MachineRecord) {
+        match step {
+            LaunchStep::Spawned => {
+                self.spawned.fetch_add(1, Ordering::SeqCst);
+            }
+            LaunchStep::Resumed => {
+                if let Some(sender) = &*self.watcher.lock().unwrap_or_else(PoisonError::into_inner) {
+                    // A test that stopped listening wants no more.
+                    let _ = sender.send(machine.clone());
+                }
+            }
+            LaunchStep::Recorded => {}
         }
     }
 }
@@ -247,6 +268,11 @@ pub(super) struct Up(Option<Instance>);
 impl Up {
     pub(super) fn new(image: &Image, name: &str, opts: &StartOptions) -> Result<Up, Error> {
         image.up(name, opts).map(|instance| Up(Some(instance)))
+    }
+
+    /// An instance that is made and not started.
+    pub(super) fn created(image: &Image, name: &str, opts: &StartOptions) -> Result<Up, Error> {
+        image.create(name, opts).map(|instance| Up(Some(instance)))
     }
 
     /// Removes the instance now, and reports how that went.

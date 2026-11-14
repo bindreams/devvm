@@ -204,9 +204,11 @@ jobs:
     needs: windows-changes
     if: needs.windows-changes.outputs.changed == 'true'
     runs-on: windows-latest
-    # Windows Setup took 22 to 40 minutes and the first logon 4 on a hosted runner, with about 12 minutes of downloads
-    # before; the suites that follow set this again.
-    timeout-minutes: 180
+    # Two Windows bases are built (the library's tests and the executable's each keep their own stores): Windows Setup took
+    # 22 to 40 minutes and the first logon 4 on a hosted runner, with about 12 minutes of downloads before each. The suites
+    # boot about twenty instances of their own, one at a time, besides the shared one. The first full run sets this again;
+    # a hosted job ends at 360.
+    timeout-minutes: 345
     env:
       SKULD_LABELS: windows_guest
     steps:
@@ -246,6 +248,16 @@ jobs:
         run: cargo test -p devvm --lib --locked -- --nocapture
         env:
           # A hosted runner is a throwaway sandbox, with WHPX.
+          DEVVM_TEST_VM: "1"
+          DEVVM_TEST_VM_CONSENT: "1"
+          DEVVM_TEST_WINDOWS_GUEST: "1"
+          DEVVM_WINDOWS_ISO: D:\windows.iso
+
+      # The same group through the real `devvm` executable: the exec table through `devvm ssh`. It builds a base of its own.
+      - name: Test the devvm executable
+        if: ${{ !cancelled() }}
+        run: cargo test -p devvm-cli --locked --test vm_cli -- --nocapture
+        env:
           DEVVM_TEST_VM: "1"
           DEVVM_TEST_VM_CONSENT: "1"
           DEVVM_TEST_WINDOWS_GUEST: "1"
