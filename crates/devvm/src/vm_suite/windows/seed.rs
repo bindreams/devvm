@@ -12,6 +12,7 @@ use super::session::ssh_remote;
 use super::{PACE, SharedWindowsGuest, WindowsBase, shared_windows_guest, windows_base, windows_options};
 use crate::engine::Engine;
 use crate::engine::keys::{read_record, running_of};
+use crate::engine::ready::connect_ready;
 use crate::host::{self, is_absent, read_from};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
@@ -81,6 +82,16 @@ fn pinned(engine: &Arc<Engine>, up: &Up) -> (SocketAddr, String) {
     let running = running_of(engine, dir, &record, &op).unwrap();
     let fields: Vec<&str> = running.target.host_public.split_whitespace().take(2).collect();
     (running.target.addr, fields.join(" "))
+}
+
+/// Waits as the start does until the guest of the running instance `up` has booted and answers with the pinned key.
+fn await_ready(engine: &Arc<Engine>, up: &Up) {
+    let dir = up.dir();
+    let op = dir.op_shared().unwrap();
+    let record = read_record(engine, dir, &op).unwrap();
+    let running = running_of(engine, dir, &record, &op).unwrap();
+    let guest = engine.guests().os(record.guest).unwrap();
+    connect_ready(engine, &*guest, dir.name(), &running.target, &running.record).unwrap();
 }
 
 /// The one key `up`'s sshd offers, which is the one devvm pins.
@@ -157,35 +168,53 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
     let resumed = base.launches.resumed();
     let backend = base.engine.backend().unwrap();
 
-    let reset = std::thread::scope(|scope| {
+    let (reset, started) = std::thread::scope(|scope| {
         let start = scope.spawn(|| up.start());
         let mut reset = false;
-        // The machine's record, once it runs; the start may end first, in a failure the join reports.
+        // The machine's record, once it runs. A start that ended before it was looked at is read after it ended, so a
+        // record sent before the end is found; the start may end in a failure the join reports.
         let record = loop {
+            let ended = start.is_finished();
             match resumed.try_recv() {
                 Ok(record) => break Some(record),
-                Err(TryRecvError::Empty) if !start.is_finished() => std::thread::sleep(PACE),
-                // A record sent after the start ended is never used.
+                Err(TryRecvError::Empty) if !ended => std::thread::sleep(PACE),
                 Err(_) => break None,
             }
         };
         if let Some(record) = record {
-            while !start.is_finished() {
+            // The reset follows the marker whether or not the start has returned; the marker is read after the start's
+            // end is, so a start that ended after the marker was written still finds it.
+            loop {
+                let ended = start.is_finished();
                 if serial_has(&record.serial_log, "DEVVM-SEED-WRITTEN=ssh_host_ed25519_key") {
                     backend.attach(&record).unwrap().reset().unwrap();
                     reset = true;
                     break;
                 }
+                if ended {
+                    break;
+                }
                 std::thread::sleep(PACE);
             }
         }
-        start.join().unwrap().unwrap();
-        reset
+        (reset, start.join().unwrap())
     });
+    assert!(
+        reset,
+        "the boot task did not write the host key; the start: {started:?}"
+    );
+
+    // The start returned before the reset, or failed in the boot the reset interrupted, which killed the machine.
+    match started {
+        Ok(()) => await_ready(&base.engine, &up),
+        Err(e) => {
+            eprintln!("the start ended with {e}");
+            up.start().unwrap();
+        }
+    }
 
     step("checking the host key after the reset");
-    assert!(reset, "the guest was ready before the boot task wrote the host key");
-    // The start waited for a guest that accepts the pinned key; sshd offers it alone.
+    // sshd offers the pinned key alone.
     the_one_key(&base.engine, &up);
 }
 
