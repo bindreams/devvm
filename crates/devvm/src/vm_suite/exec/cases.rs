@@ -88,9 +88,10 @@ const ARGV_SCRIPT: &str = r"C:\ProgramData\devvm\argv-echo.ps1";
 
 /// A script that prints each argument it gets as raw UTF-8 bytes followed by a NUL: the Windows table's `printf '%s\0'`.
 /// It reads the arguments from the process's command line, after `-File <script>`: `$args` is PowerShell's binding of
-/// them, which drops a `--%`.
+/// them, which drops a `--%`. A command line with no `-File` fails the script instead of searching past its end.
 const ARGV_ECHO: &str = "$all = [Environment]::GetCommandLineArgs(); $at = 0; \
-    while ($all[$at] -ine '-File') { $at++ }; $out = [Console]::OpenStandardOutput(); \
+    while ($at -lt $all.Length -and $all[$at] -ine '-File') { $at++ }; \
+    if ($at -ge $all.Length) { throw 'the command line has no -File' }; $out = [Console]::OpenStandardOutput(); \
     for ($i = $at + 2; $i -lt $all.Length; $i++) { \
     $b = [Text.Encoding]::UTF8.GetBytes($all[$i]); $out.Write($b, 0, $b.Length); $out.WriteByte(0) }; $out.Flush()";
 

@@ -259,10 +259,13 @@ impl Drop for Child<'_> {
             return;
         }
         // What the guest shows of the chain from the connection to the child, for the log of a child that stayed.
-        let chain = "Get-CimInstance Win32_Process -Filter \"Name = 'pwsh.exe' OR Name = 'ssh-broker.exe' OR Name = 'sshd.exe'\" | \
-                     ForEach-Object { \"$($_.ProcessId) <- $($_.ParentProcessId) $($_.Name) $(([string]$_.CommandLine).Substring(0, [Math]::Min(100, ([string]$_.CommandLine).Length)))\" }; \
-                     Get-ChildItem -LiteralPath C:/ProgramData/devvm/eb | ForEach-Object { \"request $($_.Name)\" }";
-        match ran(self.guest, "a look at the processes", &pwsh(RunAs::User, chain)) {
+        // It runs elevated: the command lines of sshd's and the broker's processes are not the user's to read.
+        let chain = format!(
+            "Get-CimInstance Win32_Process -Filter \"Name = 'pwsh.exe' OR Name = 'ssh-broker.exe' OR Name = 'sshd.exe'\" | \
+             ForEach-Object {{ \"$($_.ProcessId) <- $($_.ParentProcessId) $($_.Name) $(([string]$_.CommandLine).Substring(0, [Math]::Min(100, ([string]$_.CommandLine).Length)))\" }}; \
+             Get-ChildItem -LiteralPath '{REQUESTS}' -Force | ForEach-Object {{ \"request $($_.Name)\" }}"
+        );
+        match ran(self.guest, "a look at the processes", &pwsh(RunAs::Elevated, &chain)) {
             Ok(seen) => eprintln!("the guest, with child {} unended:\n{}", self.pid, seen.stdout_lossy()),
             Err(error) => eprintln!("cannot look at the guest's processes: {error}"),
         }
@@ -286,7 +289,7 @@ const CHILD_PREFIX: &str =
     "[Console]::Out.WriteLine(\"$PID $((Get-Process -Id $PID).StartTime.ToFileTimeUtc())\"); [Console]::Out.Flush(); ";
 
 #[skuld::test]
-fn windows_an_elevated_child_ends_when_the_client_goes_away(
+fn windows_an_elevated_child_that_writes_ends_when_the_client_goes_away(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
     // A child that writes a line every 100 ms: a reader that went away can end it by what it writes.

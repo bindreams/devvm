@@ -23,6 +23,8 @@ struct Offer {
     algorithms: Vec<String>,
     /// `<type> <base64>`.
     key: String,
+    /// What `ssh -vv` printed, for the message of an offer that parsed to nothing.
+    log: String,
 }
 
 /// The server's line of `ssh -vv`'s two `host key algorithms:` lines (the client's comes first, then the server's after
@@ -50,8 +52,6 @@ fn offer_of(addr: SocketAddr) -> Offer {
         // Relative to the directory above, so no path needs quoting.
         .args(["-o", "UserKnownHostsFile=known_hosts"])
         .args(["-o", "GlobalKnownHostsFile=known_hosts"])
-        // A connection that the guest does not answer yet is no answer.
-        .args(["-o", "ConnectTimeout=10"])
         .args(["-p", &addr.port().to_string(), &addr.ip().to_string()])
         .stdin(Stdio::null());
     host::current().quiet(&mut command);
@@ -69,6 +69,7 @@ fn offer_of(addr: SocketAddr) -> Offer {
     Offer {
         algorithms: server_algorithms(&log),
         key,
+        log: log.into_owned(),
     }
 }
 
@@ -87,7 +88,20 @@ fn the_one_key(engine: &Arc<Engine>, up: &Up) -> String {
     let (addr, pinned) = pinned(engine, up);
     let offer = offer_of(addr);
     let pinned_type = pinned.split_whitespace().next().unwrap().to_owned();
-    assert_eq!(offer.algorithms, [pinned_type], "the host key algorithms {addr} offers");
+    let log = if offer.algorithms.is_empty() {
+        format!(
+            "; no algorithms were read from:
+{}",
+            offer.log
+        )
+    } else {
+        String::new()
+    };
+    assert_eq!(
+        offer.algorithms,
+        [pinned_type],
+        "the host key algorithms {addr} offers{log}"
+    );
     assert_eq!(offer.key, pinned, "the key {addr} presents");
     pinned
 }

@@ -11,14 +11,15 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::bounds::TERMINAL_BOUND;
 use super::{
-    SharedWindowsGuest, WindowsBase, printed, ran, shared_windows_guest, windows_base, windows_iso, windows_options,
+    SharedWindowsGuest, WindowsBase, printed, pwsh, ran, shared_windows_guest, windows_base, windows_iso,
+    windows_options,
 };
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{awaiting, step};
-use crate::{Command, ExitStatus};
+use crate::{Command, ExitStatus, RunAs};
 
 // The account =========================================================================================================
 
@@ -62,8 +63,11 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
     let size: u64 = printed(&*up, "[IO.DriveInfo]::new('C').TotalSize")
         .parse()
         .expect("a size in bytes");
-    // What the guest says of the disk's layout, for a C: that did not grow.
-    let layout = || printed(&*up, LAYOUT);
+    // What the guest says of the disk's layout, for a C: that did not grow: the look is not allowed to fail the message.
+    let layout = || match ran(&*up, "a look at the disk", &pwsh(RunAs::Elevated, LAYOUT)) {
+        Ok(output) => format!("{}{}", output.stdout_lossy(), output.stderr_lossy()),
+        Err(error) => format!("the look at the disk failed: {error}"),
+    };
     assert!(
         size > 70 << 30,
         "C: is {size} bytes, not the 72 GiB disk's; the guest says:\n{}",
@@ -167,9 +171,6 @@ impl Drop for Client {
     }
 }
 
-/// The prompt of the guest's PowerShell in the user's home.
-const PROMPT: &str = r"PS C:\Users\user> ";
-
 /// An interactive session through the system `ssh -tt`: a command typed into it runs and prints, and a Ctrl-C byte ends a
 /// running command. The input stays open until the last marker has come back, then the shell exits and the input closes:
 /// a terminal session whose input ends first may end without running anything (the stated limit), and the status of an
@@ -228,10 +229,11 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
         .write_all(b"'run-' + 'ning'; while ($true) { Start-Sleep -Milliseconds 100 }\r")
         .unwrap();
     await_output("run-ning", 1, "the loop started");
-    // Ctrl-C ends the loop, and the shell prints its third prompt (after the start and the first command). Input typed
-    // before that is discarded with the interrupt, so the next command waits for the prompt.
+    // Ctrl-C ends the loop. What the terminal repaints after it is ConPTY's, so no prompt text is matched: a command
+    // typed after the interrupt prints a marker, which only the shell that took the interrupt and read the line prints.
     input.write_all(&[0x03]).unwrap();
-    await_output(PROMPT, 3, "Ctrl-C ended the loop");
+    input.write_all(b"'ready-' + 'after-ctrl-c'\r").unwrap();
+    await_output("ready-after-ctrl-c", 1, "Ctrl-C ended the loop");
     input.write_all(b"'af-' + 'ter'\r").unwrap();
     await_output("af-ter", 1, "the command after Ctrl-C ran");
 
