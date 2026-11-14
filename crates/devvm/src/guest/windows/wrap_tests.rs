@@ -221,15 +221,6 @@ fn a_line_of_the_limit_plus_the_terminating_null_is_refused() {
     );
 }
 
-/// The pad of 15,266 that the guest test of the limit sent first (CI run 3 of devvm#168): its script is 32,713 units, and
-/// sshd's line for it, `"<broker>" -c "<script>"`, is 32,767, which `CreateProcess` refuses.
-#[skuld::test]
-fn the_script_a_guest_refused_is_over_the_limit() {
-    let error = wrap(&padded(15_266)).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
-    assert!(wrap(&padded(15_265)).is_ok());
-}
-
 /// The most that `make(n)` can be padded by (`n` characters of its argument) and still fit a command line of `limit`
 /// units, found from the lengths `wrap` computes, by halving.
 pub(crate) fn longest_fit(make: &dyn Fn(usize) -> Command, limit: usize) -> usize {

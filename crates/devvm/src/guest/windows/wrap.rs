@@ -1,6 +1,6 @@
 //! Turning a `Command` into the PowerShell script ssh-broker's agent runs for the guest account.
 //!
-//! sshd hands the string to ssh-broker (`<broker> -c "<script>"`), which starts `pwsh.exe -c <script>` in the user's
+//! sshd hands the string to ssh-broker (`"<broker>" -c "<script>"`), which starts `pwsh.exe -c <script>` in the user's
 //! session. The script, in this order:
 //!
 //! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High;
@@ -29,7 +29,7 @@ pub(crate) mod wrap_tests;
 #[path = "wrap_pwsh_tests.rs"]
 pub(super) mod wrap_pwsh_tests;
 
-/// Where ssh-broker is installed, whose `-c "<script>"` is the line sshd builds.
+/// Where ssh-broker is installed; sshd builds the line `"<broker>" -c "<script>"`.
 pub(crate) const BROKER_EXE: &str = r"C:\ProgramData\ssh-broker\ssh-broker.exe";
 /// The PowerShell 7 the broker starts for the script (`config.yaml`'s `shell.start`).
 pub(super) const PWSH_EXE: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";

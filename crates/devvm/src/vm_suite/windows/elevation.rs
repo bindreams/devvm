@@ -279,9 +279,10 @@ impl Drop for Child<'_> {
     }
 }
 
-// The command prints its process id and start time, then runs `body` in a loop until it is ended. It has no bound of its
-// own: a bound that ended it would be the one thing that makes the process go, and the test asserts that devvm does.
-// When devvm does not end it, the wait for the process to end fails the test, and the test ends the child by its id.
+// The command prints its process id and start time, then loops until it is ended. It has no bound of its
+// own: a bound that ended it would be the one thing that makes the process go. devvm ends nothing; the child ends on its
+// own failed write once the channel is closed. When it does not, the wait for the process to end fails the test, and the
+// test ends the child by its id.
 const CHILD_PREFIX: &str =
     "[Console]::Out.WriteLine(\"$PID $((Get-Process -Id $PID).StartTime.ToFileTimeUtc())\"); [Console]::Out.Flush(); ";
 
@@ -290,13 +291,7 @@ fn windows_an_elevated_child_that_writes_ends_when_the_client_goes_away(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
     // A child that writes a line every 100 ms: a reader that went away can end it by what it writes.
-    child_ends_when_the_client_goes_away(
-        guest,
-        "while ($true) { Start-Sleep -Milliseconds 100; [Console]::Out.WriteLine('more'); [Console]::Out.Flush() }",
-    );
-}
-
-fn child_ends_when_the_client_goes_away(guest: &SharedWindowsGuest, body: &str) {
+    let body = "while ($true) { Start-Sleep -Milliseconds 100; [Console]::Out.WriteLine('more'); [Console]::Out.Flush() }";
     let command = pwsh(RunAs::Elevated, &format!("{CHILD_PREFIX}{body}"));
     let mut leaver = Leaver { seen: Vec::new() };
 

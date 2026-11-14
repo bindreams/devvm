@@ -374,14 +374,14 @@ fn cli_windows_elevated_runs_at_high_integrity(#[fixture(windows_instance)] inst
     cases::elevated_runs_as_root(&ThroughSsh(instance));
 }
 
-/// A reader that goes away stops the command that writes to it: devvm ends the guest command, exits 125 with an `io`
-/// error, and does not wait for a status that may never come. The guest's `yes` then ends by its own failed write
-/// (SIGPIPE), which the last step waits for.
+/// A reader that goes away is not waited for: devvm closes the channel, exits 125 with an `io` error, and does not wait
+/// for a status that may never come. The guest's `yes` ends on its own failed write (SIGPIPE), which the last step waits
+/// for.
 ///
 /// It runs `devvm ssh` on an instance, not `devvm run`: the VM of a `run` is destroyed with it, so there would be no
 /// guest left to look at.
 #[skuld::test]
-fn cli_run_into_a_closed_reader_stops_the_guest_command_and_exits_125_without_hanging(
+fn cli_run_into_a_closed_reader_closes_the_channel_and_exits_125_without_hanging(
     #[fixture(shared_instance)] instance: &Instance,
 ) {
     let stderr_file = instance.cli.scratch("closed-reader.stderr");

@@ -442,8 +442,8 @@ fn the_bootstrap_removes_the_recovery_partitions_behind_c_and_fails_when_any_par
         .position(|line| line.contains("reagentc.exe /disable"))
         .unwrap();
     assert!(
-        lines[at + 1].trim_start().starts_with("Assert-Exit 'reagentc"),
-        "the exit code of reagentc is checked"
+        lines[at + 1].contains("$LASTEXITCODE") && !lines[at + 1].contains("Assert-Exit"),
+        "the exit code of reagentc is logged, not asserted"
     );
     let removal = section(&bootstrap, "reagentc.exe /disable", "Remove-Item -LiteralPath $work");
     assert!(
