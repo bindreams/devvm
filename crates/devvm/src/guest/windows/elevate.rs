@@ -111,18 +111,27 @@ function Withdraw-Request {
         throw
     }
 }
-# Whether the instance this caller started is still queued or running. Its own state: the task runs other requests'
-# instances at the same time. A finished instance may answer `SCHED_E_TASK_NOT_RUNNING` (0x8004130B) instead of a state;
-# any other failure is thrown.
+# Whether the instance this caller started is queued or running, which is the only way it is going to run the command.
+# Its own state: the task runs other requests' instances at the same time. No instance, or a finished one that answers
+# `SCHED_E_TASK_NOT_RUNNING` (0x8004130B) instead of a state, is not running. Any other failure is thrown, unless a
+# runner has claimed the request meanwhile: then the claim is what the loop goes on with. `$instanceState` is the last
+# state seen.
+$instanceState = 'not started'
 function Test-Running($instance) {
+    if ($null -eq $instance) { return $false }
     try { $instance.Refresh(); $state = [int]$instance.State }
     catch {
         for ($e = $_.Exception; $e; $e = $e.InnerException) {
-            if ($e -is [Runtime.InteropServices.COMException] -and ($e.HResult -band 0xFFFF) -eq 0x130B) { return $false }
+            if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) {
+                $script:instanceState = 'not running'
+                return $false
+            }
         }
+        if ([IO.File]::Exists($claim)) { return $true }
         throw
     }
-    return $state -ne 1 -and $state -ne 3
+    $script:instanceState = if ($state -ge 0 -and $state -lt $states.Count) { $states[$state] } else { "$state" }
+    return $state -eq 2 -or $state -eq 4
 }
 $code = 126
 $message = $null
@@ -159,7 +168,7 @@ try {
         if ($claimed -and -not $held) { $message = 'the elevated runner ended without a result'; $abandoned = $true; break }
         if (-not $claimed -and -not (Test-Running $instance)) {
             if (-not (Withdraw-Request)) { Start-Sleep -Milliseconds {PAUSE}; continue }
-            $message = "the elevated helper did not run the command (task state: $($states[[int]$task.State]))"
+            $message = "the elevated helper did not run the command (instance state: $instanceState)"
             $abandoned = $true
             break
         }

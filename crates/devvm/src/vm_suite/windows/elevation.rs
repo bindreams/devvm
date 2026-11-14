@@ -398,6 +398,13 @@ fn windows_a_runner_that_dies_before_its_claim_ends_its_caller_while_another_run
         until("the runner script hidden", || {
             printed(&*up, &format!("Test-Path -LiteralPath {}", flag("hidden"))) == "True" || hider.is_finished()
         });
+        // It ends by itself only if it failed before hiding the script: it waits for the release flag.
+        if hider.is_finished() {
+            panic!(
+                "the command that hides the runner script ended before it did: {:?}",
+                hider.join().unwrap()
+            );
+        }
         let victim = ran(&*up, "the command whose runner cannot start", &victim);
         // The other command's runner still runs while the first caller has its answer.
         let still_running = !hider.is_finished();

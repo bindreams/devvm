@@ -12,20 +12,19 @@ use crate::test_groups::{Group, pwsh_wrap};
 use crate::test_support::fixtures::unicode_home;
 
 /// `caller_script` with the scheduled task and the requests' root replaced. `run` is the body of the task's `Run` (it
-/// has the request's id as `$id` and the root as `$root`); it starts the instance whose `State` is read by the body
-/// `state`. The task also has another request's instance running: `GetInstances` shows it, and nothing in the caller
-/// may take it for its own.
-fn standin(root: &Path, run: &str, state: &str) -> String {
+/// has the request's id as `$id` and the root as `$root`); it starts the instance whose `Refresh` runs the body
+/// `refresh` and whose `State` is read by the body `state`. A body that must fail is a `Refresh` body: PowerShell
+/// swallows an error thrown in the getter of a script property. The task's own `State` is running, as it is while
+/// another request's instance runs: nothing in the caller may take it for its instance's.
+fn standin(root: &Path, run: &str, refresh: &str, state: &str) -> String {
     let text = caller_script("inner");
     let task = format!(
         "$started = New-Object psobject
 Add-Member -InputObject $started -MemberType ScriptProperty -Name State -Value {{ {state} }}
-Add-Member -InputObject $started -MemberType ScriptMethod -Name Refresh -Value {{ }}
-$foreign = New-Object psobject -Property @{{ State = 4 }}
+Add-Member -InputObject $started -MemberType ScriptMethod -Name Refresh -Value {{ {refresh} }}
 $task = New-Object psobject -Property @{{ State = 4 }}
 Add-Member -InputObject $task -MemberType ScriptMethod -Name Run -Value {{ param($id) {run}
-$started }}
-Add-Member -InputObject $task -MemberType ScriptMethod -Name GetInstances -Value {{ param($flags) ,@($foreign) }}"
+$started }}"
     );
     let mut text = text;
     // A replacement that finds nothing would leave the real task and root in use: it is a failure.
@@ -48,7 +47,11 @@ Add-Member -InputObject $task -MemberType ScriptMethod -Name GetInstances -Value
 }
 
 fn caller(root: &Path, run_body: &str, state: &str) -> Output {
-    run(&standin(root, run_body, state), "none", None)
+    caller_with_refresh(root, run_body, "", state)
+}
+
+fn caller_with_refresh(root: &Path, run_body: &str, refresh: &str, state: &str) -> Output {
+    run(&standin(root, run_body, refresh, state), "none", None)
 }
 
 /// The names in `root`: the requests, and the unpublished ones that end in `.tmp`.
@@ -150,15 +153,16 @@ fn a_helper_that_never_runs_the_command_is_126_and_the_request_is_withdrawn(
     let output = caller(&root, "", ENDED);
 
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    // The state of the instance, not the task's, which is running another request's instance.
     assert!(
-        stderr(&output).contains("devvm: the elevated helper did not run the command"),
+        stderr(&output).contains("devvm: the elevated helper did not run the command (instance state: ready)"),
         "{}",
         shown(&output)
     );
     assert!(requests(&root).is_empty(), "{:?}", requests(&root));
 }
 
-/// The instance's state is an error: the one a finished instance may answer, which says it ended.
+/// The instance's refresh is an error: the one a finished instance may answer, which says it ended.
 const NOT_RUNNING: &str =
     "throw [Runtime.InteropServices.COMException]::new('There is no running instance', [int]0x8004130B)";
 
@@ -168,11 +172,11 @@ fn an_instance_that_answers_not_running_is_an_instance_that_ended(
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    let output = caller(&root, "", NOT_RUNNING);
+    let output = caller_with_refresh(&root, "", NOT_RUNNING, ENDED);
 
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(
-        stderr(&output).contains("devvm: the elevated helper did not run the command"),
+        stderr(&output).contains("devvm: the elevated helper did not run the command (instance state: not running)"),
         "{}",
         shown(&output)
     );
@@ -180,12 +184,12 @@ fn an_instance_that_answers_not_running_is_an_instance_that_ended(
 }
 
 #[skuld::test]
-fn a_state_that_cannot_be_read_is_the_126_message_and_withdraws_the_request(
+fn an_instance_that_cannot_be_read_is_the_126_message_and_withdraws_the_request(
     #[fixture(unicode_home)] home: &Path,
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    let output = caller(&root, "", "throw 'boom'");
+    let output = caller_with_refresh(&root, "", "throw 'boom'", ENDED);
 
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     let message = stderr(&output);
@@ -197,19 +201,125 @@ fn a_state_that_cannot_be_read_is_the_126_message_and_withdraws_the_request(
     assert!(requests(&root).is_empty(), "{:?}", requests(&root));
 }
 
+/// A state body that answers `first` on its first read and `later` on every read after it: the instance changes while
+/// the caller waits.
+fn first_then(first: &str, later: &str) -> String {
+    format!(
+        "$global:reads = 1 + [int]$global:reads
+if ($global:reads -eq 1) {{ {first} }} else {{ {later} }}"
+    )
+}
+
 #[skuld::test]
 fn an_instance_that_still_runs_is_waited_for_until_its_runner_answers(
     #[fixture(unicode_home)] home: &Path,
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    // The first look at the instance finds it running and the runner starting to answer: the caller goes on, and its
-    // next look at the files finds the answer. A caller that took the instance for ended would withdraw the request.
-    let state = format!("{SERVE}\n4");
-    let output = caller(&root, "", &state);
+    // The first look at the instance finds it running and no claim made: a caller that took that for ended would
+    // withdraw the request. The runner answers at a later look.
+    let output = caller(
+        &root,
+        "",
+        &first_then(
+            "4",
+            &format!(
+                "{SERVE}
+4"
+            ),
+        ),
+    );
 
     assert_eq!(output.status.code(), Some(7), "{}", shown(&output));
     assert_eq!(output.stdout, b"out", "{}", shown(&output));
+}
+
+#[skuld::test]
+fn an_instance_in_a_state_that_is_neither_queued_nor_running_has_ended(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    // `unknown` (0) is not running. A caller that waited on it would be served at the next look and answer 7.
+    let output = caller(
+        &root,
+        "",
+        &first_then(
+            "0",
+            &format!(
+                "{SERVE}
+4"
+            ),
+        ),
+    );
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    assert!(
+        stderr(&output).contains("devvm: the elevated helper did not run the command (instance state: unknown)"),
+        "{}",
+        shown(&output)
+    );
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
+}
+
+#[skuld::test]
+fn an_instance_that_cannot_be_read_while_a_runner_claims_the_request_goes_on_with_the_runner(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    // The runner claims and answers between the caller's look at the claim and its look at the instance, which fails.
+    let output = caller_with_refresh(
+        &root,
+        "",
+        &format!(
+            "{SERVE}
+throw 'boom'"
+        ),
+        ENDED,
+    );
+
+    assert_eq!(output.status.code(), Some(7), "{}", shown(&output));
+    assert_eq!(output.stdout, b"out", "{}", shown(&output));
+}
+
+#[skuld::test]
+fn a_start_that_returns_no_instance_is_a_helper_that_did_not_run_the_command(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let output = caller(&root, "return $null", ENDED);
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    assert!(
+        stderr(&output).contains("devvm: the elevated helper did not run the command (instance state: not started)"),
+        "{}",
+        shown(&output)
+    );
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
+}
+
+#[skuld::test]
+fn an_error_of_another_facility_with_the_code_of_not_running_is_a_failure(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let output = caller_with_refresh(
+        &root,
+        "",
+        "throw [Runtime.InteropServices.COMException]::new('Not the task scheduler', [int]0x8007130B)",
+        ENDED,
+    );
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    assert!(
+        stderr(&output).contains("devvm: the elevated helper failed: "),
+        "{}",
+        shown(&output)
+    );
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
 }
 
 #[skuld::test]
