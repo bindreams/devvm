@@ -14,12 +14,12 @@ use super::{
     SharedWindowsGuest, WindowsBase, printed, pwsh, ran, shared_windows_guest, windows_base, windows_iso,
     windows_options,
 };
+use crate::RunAs;
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{awaiting, step};
-use crate::{Command, ExitStatus, RunAs};
 
 // The account =========================================================================================================
 
@@ -171,12 +171,9 @@ impl Drop for Client {
     }
 }
 
-/// An interactive session through the system `ssh -tt`: a command typed into it runs and prints, and a Ctrl-C byte ends a
-/// running command. The session's first command numbers its prompts, and each step is typed once the prompt before it
-/// has been printed: a console discards the keys typed while a command is being cancelled, so what follows the Ctrl-C is
-/// typed at the prompt, as a user does. The input stays open until the last prompt has come back, then the shell exits
-/// and the input closes: a terminal session whose input ends first may end without running anything (the stated
-/// limit), and the status of an interactive session is 0 whatever happened (another), so the test asserts neither.
+/// An interactive session through the system `ssh -tt`: a typed command runs and prints, and Ctrl-C ends a running one.
+/// Each step is typed after the prompt before it, since a console drops keys typed during a cancel. The input closes only
+/// after the last prompt (README limits), and the status is not asserted.
 ///
 /// `devvm ssh <name>` itself passes no `-tt`; this is the system client's, with the generated configuration.
 #[skuld::test]
@@ -297,25 +294,19 @@ const NO_WINDOW: [&str; 8] = [
 
 #[skuld::test]
 fn windows_the_agent_has_no_visible_window(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
-    // Programs of each kind have run in the agent's session by now; the ones of this test run first.
-    for argv in [
-        ["cmd", "/d", "/c", "ver"],
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command"],
-    ] {
-        let mut argv: Vec<&str> = argv.to_vec();
-        if argv[0] == "pwsh" {
-            argv.push("1");
-        }
-        let seen = ran(
-            &guest.vm,
-            &format!("{} in the agent's session", argv[0]),
-            &Command::new(argv),
-        )
-        .unwrap();
-        assert_eq!(seen.status, ExitStatus::Code(0), "{}", seen.stderr_lossy());
-    }
-
-    let owners = printed(&guest.vm, VISIBLE_WINDOWS);
+    // Each listing runs while its program does: pwsh lists the windows itself, and cmd is the parent of the pwsh that
+    // does. A window that closes with its program is gone from a later listing.
+    let file = "C:/ProgramData/devvm/visible-windows.ps1";
+    let by_cmd = printed(
+        &guest.vm,
+        &format!(
+            "$script = {{ {VISIBLE_WINDOWS} }}; Set-Content -LiteralPath {file} -Value $script.ToString(); \
+             cmd /d /c \"pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {file}\"; \
+             Remove-Item -LiteralPath {file}"
+        ),
+    );
+    let by_pwsh = printed(&guest.vm, VISIBLE_WINDOWS);
+    let owners = [by_pwsh, by_cmd].join("\n");
 
     let shown: Vec<&str> = owners
         .lines()
