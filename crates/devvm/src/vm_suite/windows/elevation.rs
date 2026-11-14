@@ -313,7 +313,7 @@ fn windows_an_elevated_child_that_writes_ends_when_the_client_goes_away(
         started,
         ended: false,
     };
-    // The README's error for a reader that went away: an I/O error, and no status.
+    // `run_to`'s error for a reader that went away (vm/ops.rs): an I/O error, and no status.
     assert_eq!(result.as_ref().map_err(Error::kind), Err(ErrorKind::Io), "{result:?}");
     step("waiting for the process to end");
     until("the command's process ending", || {

@@ -168,9 +168,8 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
     let resumed = base.launches.resumed();
     let backend = base.engine.backend().unwrap();
 
-    let (reset, started) = std::thread::scope(|scope| {
+    let (record, during, started) = std::thread::scope(|scope| {
         let start = scope.spawn(|| up.start());
-        let mut reset = false;
         // The machine's record, once it runs. A start that ended before it was looked at is read after it ended, so a
         // record sent before the end is found; the start may end in a failure the join reports.
         let record = loop {
@@ -181,14 +180,18 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
                 Err(_) => break None,
             }
         };
-        if let Some(record) = record {
-            // The reset follows the marker whether or not the start has returned; the marker is read after the start's
-            // end is, so a start that ended after the marker was written still finds it.
+        // Whether the reset came while the start ran. The marker is read after the start's end is, so a start that ended
+        // after the marker was written still finds it; that reset waits for the start's outcome, so a failed start is
+        // reported instead of a reset of a machine it killed.
+        let mut during = None;
+        if let Some(record) = &record {
             loop {
                 let ended = start.is_finished();
                 if serial_has(&record.serial_log, "DEVVM-SEED-WRITTEN=ssh_host_ed25519_key") {
-                    backend.attach(&record).unwrap().reset().unwrap();
-                    reset = true;
+                    if !ended {
+                        backend.attach(record).unwrap().reset().unwrap();
+                    }
+                    during = Some(!ended);
                     break;
                 }
                 if ended {
@@ -197,21 +200,18 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
                 std::thread::sleep(PACE);
             }
         }
-        (reset, start.join().unwrap())
+        (record, during, start.join().unwrap())
     });
-    assert!(
-        reset,
-        "the boot task did not write the host key; the start: {started:?}"
-    );
-
-    // The start returned before the reset, or failed in the boot the reset interrupted, which killed the machine.
-    match started {
-        Ok(()) => await_ready(&base.engine, &up),
-        Err(e) => {
-            eprintln!("the start ended with {e}");
-            up.start().unwrap();
-        }
+    let Some(during) = during else {
+        panic!("the boot task did not write the host key; the start: {started:?}");
+    };
+    // A start survives a reset during boot: the engine's wait does not end when the guest restarts.
+    started.unwrap_or_else(|e| panic!("the start failed (reset during it: {during}): {e}"));
+    if !during {
+        backend.attach(&record.unwrap()).unwrap().reset().unwrap();
     }
+    // The start may have seen the guest ready just before the reset; either way the guest is waited for again.
+    await_ready(&base.engine, &up);
 
     step("checking the host key after the reset");
     // sshd offers the pinned key alone.

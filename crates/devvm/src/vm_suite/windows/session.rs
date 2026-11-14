@@ -112,8 +112,8 @@ fn probes() -> [(&'static str, String); 2] {
 
 /// Starts an instance while probing it through `ssh` from the moment it is launched, with raw commands and wrapped ones.
 /// A probe the guest answers must be answered in session 1 at Medium, or the test fails; the probing ends with the start,
-/// and the number of probes answered before it is printed. The window is observed, not proven closed: the proof is the order of the boot task's steps (sshd starts only
-/// once the agent accepts a connection), which the template tests pin.
+/// and the number of probes answered before it is printed. The window is observed, not proven closed: the proof is the
+/// order of the boot task's steps (sshd starts only once the agent accepts a connection), which the template tests pin.
 #[skuld::test]
 fn windows_no_command_is_answered_from_session_0_while_booting(#[fixture(windows_base)] base: &WindowsBase) {
     let _watch = awaiting("the instance starting while probed", BOOT_BOUND);

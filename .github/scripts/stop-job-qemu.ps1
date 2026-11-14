@@ -5,9 +5,13 @@ $cache = 'D:\devvm-tmp\'
 Get-CimInstance Win32_Process -Filter "Name LIKE 'qemu-system-%'" |
     Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($cache, [StringComparison]::OrdinalIgnoreCase) } |
     ForEach-Object {
-        # The listing holds no handle, so its id may be another process's by now: the path is read again from a handle,
-        # and the same handle is ended and waited for.
+        # The listing holds no handle, so its id may be another process's by now. Reading Handle opens one that the object
+        # keeps for its later calls, and the id is not reused while it is open: the path is checked, and the process
+        # ended and waited for, through that handle.
         $process = Get-Process -Id $_.ProcessId -ErrorAction Ignore
+        if ($process) {
+            try { $null = $process.Handle } catch { return }
+        }
         if (-not $process -or -not $process.Path -or -not $process.Path.StartsWith($cache, [StringComparison]::OrdinalIgnoreCase)) {
             return
         }

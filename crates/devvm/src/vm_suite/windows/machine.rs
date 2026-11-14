@@ -300,9 +300,9 @@ fn windows_the_agent_has_no_visible_window(#[fixture(shared_windows_guest)] gues
     let by_cmd = printed(
         &guest.vm,
         &format!(
-            "$script = {{ {VISIBLE_WINDOWS} }}; Set-Content -LiteralPath {file} -Value $script.ToString(); \
-             cmd /d /c \"pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {file}\"; \
-             Remove-Item -LiteralPath {file}"
+            "$ErrorActionPreference = 'Stop'; $script = {{ {VISIBLE_WINDOWS} }}; Set-Content -LiteralPath {file} -Value $script.ToString(); \
+             cmd /d /c \"pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {file}\"; $listed = $LASTEXITCODE; \
+             Remove-Item -LiteralPath {file}; exit $listed"
         ),
     );
     let by_pwsh = printed(&guest.vm, VISIBLE_WINDOWS);
