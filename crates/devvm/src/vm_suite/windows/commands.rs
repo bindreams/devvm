@@ -111,19 +111,7 @@ fn windows_a_pwsh_argv_and_the_default_shell_step_resolve_pwsh_by_name(
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(windows_iso)] iso: &Path,
 ) {
-    // An argv that names `pwsh` finds it on the machine's PATH.
-    let by_name = guest
-        .vm
-        .run(&Command::new([
-            "pwsh",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$PSVersionTable.PSVersion.Major",
-        ]))
-        .unwrap();
-    assert_eq!(by_name.status, ExitStatus::Code(0), "{}", by_name.stderr_lossy());
-    assert_eq!(by_name.stdout_lossy().trim(), "7");
+    // That an argv naming `pwsh` runs it is `pwsh_resolves_by_name_in_the_built_base`'s; this is the PATH it finds it on.
     assert_eq!(
         printed(
             &guest.vm,
