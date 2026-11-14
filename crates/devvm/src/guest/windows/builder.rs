@@ -301,10 +301,11 @@ enum Launched {
 fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
     let End { exit, status, log } = end;
     if exit.is_none() && status.is_none() && log.is_none() {
-        return Err(Error::new(
-            ErrorKind::Internal,
-            format!("launch {number} ended with no exit and no failure to read it"),
-        ));
+        let mut message = format!("launch {number} ended with no exit and no failure to read it");
+        if let Some(why) = &serial.failed {
+            message = format!("{}; {message}", guest_failed(why));
+        }
+        return Err(Error::new(ErrorKind::Internal, message));
     }
     let mut host: Vec<Error> = status.iter().chain(&log).cloned().collect();
     let powered_off = matches!(&exit, Some(Exit::Exited(exited)) if exited.status.success());
@@ -324,8 +325,8 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
                 humanly(stall.bound)
             ),
             Some(exit) if !powered_off => done_but(&ended(number, exit)),
-            _ if status.is_some() => done_but("the launch's end could not be read"),
-            _ => done_but("the serial log could not be read to its end"),
+            None => done_but("the launch's end could not be read"),
+            Some(_) => done_but("the serial log could not be read to its end"),
         })
     } else {
         exit.as_ref().filter(|_| !powered_off).map(|exit| ended(number, exit))

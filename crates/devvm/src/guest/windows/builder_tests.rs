@@ -593,7 +593,7 @@ fn expected(
     match (account, ending, read_failed) {
         (Failed, ..) => Err((UNAVAILABLE, FAILED)),
         (Done, CleanExit, false) => Ok(true),
-        (Done, CleanExit, true) | (Done, LogUnreadable, _) => Err((
+        (Done, CleanExit, true) => Err((
             UNAVAILABLE,
             "the guest wrote DEVVM-BASE-DONE, but the serial log could not be read to its end, so the disk may be \
              incomplete",
@@ -605,7 +605,7 @@ fn expected(
         (Done, Stall | StallStatusUnknown, _) => {
             Err((UNAVAILABLE, "the guest reported done but did not power off within 2m"))
         }
-        (Done, StatusUnknown, _) => Err((
+        (Done, StatusUnknown | LogUnreadable, _) => Err((
             UNAVAILABLE,
             "the guest wrote DEVVM-BASE-DONE, but the launch's end could not be read, so the disk may be incomplete",
         )),
@@ -723,6 +723,14 @@ fn an_end_with_no_exit_and_no_failure_is_an_internal_error_whatever_the_guest_wr
         let error = verdict(1, end, &serial).err().unwrap();
 
         assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+        if serial.failed.is_some() {
+            assert!(
+                error
+                    .message()
+                    .starts_with("the Windows guest failed to build the base: boom"),
+                "{error}"
+            );
+        }
     }
 }
 
