@@ -49,7 +49,7 @@ pub(super) fn restart(engine: &Arc<Engine>, up: &Up, kind: Restart) {
     }
 }
 
-/// What ssh-broker prints, with status 255, when its agent ends before it answers a command (its README documents it).
+/// What ssh-broker prints, with status 255, when its agent ends before it answers a command.
 const AGENT_ENDED: &str = "the agent ended before it answered";
 
 /// The guest restarts itself, and the wait is the one that follows a reset: it ends when the guest says another boot id

@@ -125,8 +125,7 @@ fn script_unchecked(cmd: &Command) -> Result<String> {
 
 /// The lengths in UTF-16 units of the two command lines `script` goes through: `"<broker>" -c <script>` that sshd builds
 /// (`w32-doexec.c` puts the shell in quotes) and `"<pwsh>" -c <script>` that the broker builds, each with the script as
-/// one argument in `CommandLineToArgvW` quoting, which is how both quote it (`escaping: msvc`; sshd's own escaping is
-/// measured by the guest tests).
+/// one argument in `CommandLineToArgvW` quoting, which is how both quote it (`escaping: msvc`).
 fn command_line_lengths(script: &str) -> (usize, usize) {
     let units: Vec<u16> = script.encode_utf16().collect();
     let quoted = cosca::quote::windows::join_wide(&[&units]).len();

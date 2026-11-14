@@ -3,8 +3,7 @@
 //!
 //! What a test awaits in the guest (a command's answer, a flag file, a process that ends, a boot) may never happen. Each
 //! bound is the failure bound surfaced to the person watching the run: its expiry ends the run with a message that names
-//! what did not happen, and is never taken as a fact about the guest. Each is sized well above the longest measured case
-//! of its kind.
+//! what did not happen, and is never taken as a fact about the guest.
 
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;

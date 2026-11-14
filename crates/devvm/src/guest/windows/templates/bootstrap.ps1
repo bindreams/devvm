@@ -123,17 +123,15 @@ try {
     Register-ScheduledTask -TaskName @@EB_TASK@@ -Action $helperAction -Settings $helperSettings `
         -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel Highest) | Out-Null
 
-    # Setup shrinks C: and adds a Recovery partition behind it, even where winpe.cmd left no room for one. A partition
-    # behind C: stops the boot task from growing C: into a larger instance disk, so the base has no Windows Recovery
-    # Environment and nothing follows C:. The Storage cmdlets are used: diskpart's text is localized. The exit code of
-    # reagentc is logged, not asserted: the check below, that no partition follows C:, is the gate.
+    # Setup adds a Recovery partition behind C:, which stops the boot task growing C: into a larger instance disk, so
+    # remove it. Storage cmdlets, not diskpart: its text is localized. reagentc's exit code is logged only; the
+    # no-partition-after-C: check is the gate.
     reagentc.exe /disable
     Send-Line "DEVVM-PROGRESS=reagentc /disable exited $LASTEXITCODE"
     $system = Get-Partition -DriveLetter C
     $recoveryType = '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}'
     Get-Partition -DiskNumber $system.DiskNumber | Where-Object { $_.Offset -gt $system.Offset -and $_.GptType -eq $recoveryType } |
         Remove-Partition -Confirm:$false
-    # Another layout (an ISO nobody has installed) would leave every instance a small C:.
     $behind = @(Get-Partition -DiskNumber $system.DiskNumber | Where-Object { $_.Offset -gt $system.Offset })
     if ($behind.Count -gt 0) {
         throw "a partition follows C:: $(($behind | ForEach-Object { "type $($_.GptType), $($_.Size) bytes" }) -join '; ')"

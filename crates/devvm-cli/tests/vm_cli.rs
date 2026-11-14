@@ -350,8 +350,6 @@ fn cli_elevated_runs_as_root(#[fixture(shared_instance)] instance: &Instance) {
     cases::elevated_runs_as_root(&ThroughSsh(instance));
 }
 
-// The same table against a Windows guest.
-
 #[skuld::test]
 fn cli_windows_exit_codes_7_125_255_and_ntstatus(#[fixture(windows_instance)] instance: &Instance) {
     cases::exit_7_125_255(&ThroughSsh(instance));

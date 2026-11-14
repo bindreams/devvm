@@ -4,10 +4,6 @@
 //! `vm-windows` job turns on. The base is built once per test process, and one instance of it is started for the tests
 //! that only look at what a command does in the guest; a test that stops, kills, disables, resets or restarts something
 //! boots an instance of its own. All of them run alone among the tests that boot a guest (`GUEST`).
-//!
-//! The submodules hold the suites by what they look at: the user's session (`session`), the exec table (`commands`),
-//! elevation (`elevation`), the instance's identity (`seed`), restarts (`boots`) and the machine's own state, which is
-//! the account, the disk, the expiry, the terminal and the windows (`machine`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -160,11 +156,10 @@ pub(super) fn ran(guest: &dyn Guest, what: &str, command: &Command) -> Result<Ou
     guest.run(command)
 }
 
-/// The pause between two looks at a condition a wait re-checks. It paces the wait; it never ends it.
+/// The pause between two looks at a condition.
 pub(super) const PACE: Duration = Duration::from_millis(200);
 
-/// Waits until `condition` holds. A condition that does not hold within [`STATE_BOUND`] fails the test with `what` did
-/// not happen; the bound only ends the wait.
+/// Waits until `condition` holds; fails the test naming `what` if it does not within [`STATE_BOUND`].
 pub(super) fn until(what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + STATE_BOUND;
     while !condition() {

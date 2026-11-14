@@ -203,7 +203,7 @@ pub(crate) fn padded(n: usize) -> Command {
 }
 
 /// `CreateProcess` takes 32,767 units of command line including the terminating NUL, so a line of 32,767 units is
-/// refused: a guest's sshd refused the script whose longer line was exactly that (the guest test of the limit).
+/// refused.
 #[skuld::test]
 fn a_line_of_the_limit_plus_the_terminating_null_is_refused() {
     let longer = |n: usize| {
@@ -243,8 +243,7 @@ fn the_lines_of_a_small_script_are_counted_by_hand() {
     // `a "b" c\d\` is 10 units. It has a space, so it is one quoted argument (2 units); each of its two quotes gets a
     // backslash (2) and its last backslash is doubled before the closing quote (1): 15 units. The broker line is
     // `C:\ProgramData\ssh-broker\ssh-broker.exe` (40) and ` -c `; the PowerShell line is
-    // `C:\Program Files\PowerShell\7\pwsh.exe` (38) and ` -c `. Each line quotes its program (two units): sshd's
-    // `w32-doexec.c` wraps the shell in quotes, and ssh-broker's escaping is `msvc`.
+    // `C:\Program Files\PowerShell\7\pwsh.exe` (38) and ` -c `. Each line quotes its program (two units).
     assert_eq!(
         command_line_lengths(r#"a "b" c\d\"#),
         (40 + 2 + 4 + 15, 38 + 2 + 4 + 15)

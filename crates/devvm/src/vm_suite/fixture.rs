@@ -96,7 +96,6 @@ impl LaunchHooks for Launches {
             }
             LaunchStep::Resumed => {
                 if let Some(sender) = &*self.watcher.lock().unwrap_or_else(PoisonError::into_inner) {
-                    // A test that stopped listening wants no more.
                     let _ = sender.send(machine.clone());
                 }
             }
