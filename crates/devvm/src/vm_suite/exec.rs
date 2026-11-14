@@ -2,21 +2,27 @@
 //! which `devvm-cli/tests/vm_cli.rs` runs through the `devvm` executable.
 
 use super::fixture::{SharedGuest, shared_guest};
+use super::waits::{answer_to, named};
 use crate::{Command, ExitStatus, Guest, RunAs, Vm};
-use cases::{Case, Ended, ExecTarget, Observed};
+use cases::{Case, Ended, ExecTarget, Observed, Os};
 
-mod cases;
+pub(super) mod cases;
 
-/// Runs a case with `Vm::run`.
-struct InGuest<'a>(&'a Vm);
+/// Runs a case with `Vm::run` in a guest of `os`.
+pub(super) struct InGuest<'a>(pub &'a Vm, pub Os);
 
 impl ExecTarget for InGuest<'_> {
+    fn os(&self) -> Os {
+        self.1
+    }
+
     fn run(&self, case: &Case) -> Observed {
         let command = Command {
             argv: case.argv.clone(),
             run_as: if case.elevated { RunAs::Elevated } else { RunAs::User },
             cwd: case.cwd.clone(),
         };
+        let _watch = answer_to(&named(&case.argv));
         let output = self
             .0
             .run(&command)
@@ -37,35 +43,35 @@ impl ExecTarget for InGuest<'_> {
 
 #[skuld::test]
 fn exit_7_125_255(#[fixture(shared_guest)] guest: &SharedGuest) {
-    cases::exit_7_125_255(&InGuest(&guest.vm));
+    cases::exit_7_125_255(&InGuest(&guest.vm, Os::Linux));
 }
 
 #[skuld::test]
 fn a_guest_printing_devvm_error_and_exiting_125_is_a_guest_status(#[fixture(shared_guest)] guest: &SharedGuest) {
-    cases::a_guest_printing_devvm_error_and_exiting_125_is_a_guest_status(&InGuest(&guest.vm));
+    cases::a_guest_printing_devvm_error_and_exiting_125_is_a_guest_status(&InGuest(&guest.vm, Os::Linux));
 }
 
 #[skuld::test]
 fn kill_minus_segv_dollar_dollar_exits_139(#[fixture(shared_guest)] guest: &SharedGuest) {
-    cases::kill_minus_segv_dollar_dollar_exits_139(&InGuest(&guest.vm));
+    cases::kill_minus_segv_dollar_dollar_exits_139(&InGuest(&guest.vm, Os::Linux));
 }
 
 #[skuld::test]
 fn argv_round_trips_hostile_arguments(#[fixture(shared_guest)] guest: &SharedGuest) {
-    cases::argv_round_trips_hostile_arguments(&InGuest(&guest.vm));
+    cases::argv_round_trips_hostile_arguments(&InGuest(&guest.vm, Os::Linux));
 }
 
 #[skuld::test]
 fn cwd_is_honored(#[fixture(shared_guest)] guest: &SharedGuest) {
-    cases::cwd_is_honored(&InGuest(&guest.vm));
+    cases::cwd_is_honored(&InGuest(&guest.vm, Os::Linux));
 }
 
 #[skuld::test]
 fn elevated_cwd_is_honored(#[fixture(shared_guest)] guest: &SharedGuest) {
-    cases::elevated_cwd_is_honored(&InGuest(&guest.vm));
+    cases::elevated_cwd_is_honored(&InGuest(&guest.vm, Os::Linux));
 }
 
 #[skuld::test]
 fn elevated_runs_as_root(#[fixture(shared_guest)] guest: &SharedGuest) {
-    cases::elevated_runs_as_root(&InGuest(&guest.vm));
+    cases::elevated_runs_as_root(&InGuest(&guest.vm, Os::Linux));
 }

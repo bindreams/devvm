@@ -8,8 +8,8 @@
 use std::path::Path;
 use std::process::{Command as Process, Output, Stdio};
 
-use super::wrap;
 use super::wrap_tests::longest_fit;
+use super::{LINE_LIMIT, wrap};
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::recipe::Shell;
@@ -390,7 +390,7 @@ fn a_pwsh_step_whose_first_statement_must_come_first_runs_and_keeps_its_status(#
 fn a_line_at_the_limit_runs_and_one_over_is_refused(#[fixture(pwsh_wrap)] _group: &Group) {
     let exe = test_binary();
     let pad = |n: usize| Command::new([exe.clone(), "x".repeat(n)]);
-    let low = longest_fit(&pad);
+    let low = longest_fit(&pad, LINE_LIMIT);
     let output = run(&wrap(&pad(low)).unwrap(), "wrap-argv", None);
     assert_eq!(
         echoed(&output),

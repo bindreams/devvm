@@ -1,6 +1,6 @@
 //! Turning a `Command` into the PowerShell script ssh-broker's agent runs for the guest account.
 //!
-//! sshd hands the string to ssh-broker (`<broker> -c "<script>"`), which starts `pwsh.exe -c <script>` in the user's
+//! sshd hands the string to ssh-broker (`"<broker>" -c "<script>"`), which starts `pwsh.exe -c <script>` in the user's
 //! session. The script, in this order:
 //!
 //! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High;
@@ -23,19 +23,19 @@ use crate::{Command, Error, ErrorKind, Result, RunAs};
 
 #[cfg(test)]
 #[path = "wrap_tests.rs"]
-mod wrap_tests;
+pub(crate) mod wrap_tests;
 
 #[cfg(all(test, windows))]
 #[path = "wrap_pwsh_tests.rs"]
 pub(super) mod wrap_pwsh_tests;
 
-/// Where ssh-broker is installed, whose `-c "<script>"` is the line sshd builds.
+/// Where ssh-broker is installed; sshd builds the line `"<broker>" -c "<script>"`.
 pub(crate) const BROKER_EXE: &str = r"C:\ProgramData\ssh-broker\ssh-broker.exe";
 /// The PowerShell 7 the broker starts for the script (`config.yaml`'s `shell.start`).
 pub(super) const PWSH_EXE: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 
-/// The longest command line `CreateProcess` takes, in UTF-16 units.
-pub(super) const LINE_LIMIT: usize = 32_767;
+/// The longest command line `CreateProcess` takes, in UTF-16 units: its 32,767 include the terminating NUL.
+pub(crate) const LINE_LIMIT: usize = 32_766;
 
 /// What a command prints in session 0, with status 126.
 pub(super) const NOT_IN_SESSION: &str = "the command did not reach the user's session";
@@ -123,14 +123,14 @@ fn script_unchecked(cmd: &Command) -> Result<String> {
     })
 }
 
-/// The lengths in UTF-16 units of the two command lines `script` goes through: `<broker> -c <script>` that sshd builds
-/// and `"<pwsh>" -c <script>` that the broker builds, each with the script as one argument in `CommandLineToArgvW`
-/// quoting, which is how both quote it (`escaping: msvc`; sshd's own escaping is measured by the guest tests).
+/// The lengths in UTF-16 units of the two command lines `script` goes through: `"<broker>" -c <script>` that sshd builds
+/// (`w32-doexec.c` puts the shell in quotes) and `"<pwsh>" -c <script>` that the broker builds, each with the script as
+/// one argument in `CommandLineToArgvW` quoting, which is how both quote it (`escaping: msvc`).
 fn command_line_lengths(script: &str) -> (usize, usize) {
     let units: Vec<u16> = script.encode_utf16().collect();
     let quoted = cosca::quote::windows::join_wide(&[&units]).len();
-    let prefix = |program: &str, quote: bool| program.encode_utf16().count() + if quote { 2 } else { 0 } + " -c ".len();
-    (prefix(BROKER_EXE, false) + quoted, prefix(PWSH_EXE, true) + quoted)
+    let prefix = |program: &str| program.encode_utf16().count() + 2 + " -c ".len();
+    (prefix(BROKER_EXE) + quoted, prefix(PWSH_EXE) + quoted)
 }
 
 fn user_script(cmd: &Command) -> Result<String> {

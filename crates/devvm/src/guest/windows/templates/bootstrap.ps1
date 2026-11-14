@@ -123,6 +123,20 @@ try {
     Register-ScheduledTask -TaskName @@EB_TASK@@ -Action $helperAction -Settings $helperSettings `
         -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel Highest) | Out-Null
 
+    # Setup adds a Recovery partition behind C:, which stops the boot task growing C: into a larger instance disk, so
+    # remove it. Storage cmdlets, not diskpart: its text is localized. reagentc's exit code is logged only; the
+    # no-partition-after-C: check is the gate.
+    reagentc.exe /disable
+    Send-Line "DEVVM-PROGRESS=reagentc /disable exited $LASTEXITCODE"
+    $system = Get-Partition -DriveLetter C
+    $recoveryType = '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}'
+    Get-Partition -DiskNumber $system.DiskNumber | Where-Object { $_.Offset -gt $system.Offset -and $_.GptType -eq $recoveryType } |
+        Remove-Partition -Confirm:$false
+    $behind = @(Get-Partition -DiskNumber $system.DiskNumber | Where-Object { $_.Offset -gt $system.Offset })
+    if ($behind.Count -gt 0) {
+        throw "a partition follows C:: $(($behind | ForEach-Object { "type $($_.GptType), $($_.Size) bytes" }) -join '; ')"
+    }
+
     # The license, read as numbers and identifiers; the host decides what it means. A system no product has a key for (a
     # retail install nobody activated) has no row: that is a read too, and is sent as null.
     # A fresh evaluation reads "grace time expired" (0xC004F009) until Windows activates it, which it does online

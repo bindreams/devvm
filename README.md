@@ -59,6 +59,7 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
 
 The guest account is `user`, a member of Administrators with UAC on, logged in automatically. Commands run as that
 user, not elevated, through ssh-broker in the user's own session, so they see its profile and registry.
+The base has no Windows Recovery Environment.
 
 - **Programs.** `argv[0]` is looked up as a program on the guest's `PATH`, never as a PowerShell cmdlet or alias. A name
   that is not found exits 127. A program's output reaches you byte for byte, and a status the guest ends with
@@ -78,7 +79,7 @@ user, not elevated, through ssh-broker in the user's own session, so they see it
   the guest has no separation between the user and the administrator, as a Linux guest has none with its passwordless
   `sudo`.
 - **`set: { uac: auto-approve }`** makes an administrator's elevation prompt-free in the guest, with no reboot.
-- A command line can be at most 32,767 characters on the guest. A command whose script is longer once quoted is refused,
+- A command line can be at most 32,766 characters on the guest. A command whose script is longer once quoted is refused,
   naming both lengths.
 
 Limits:
@@ -92,3 +93,6 @@ Limits:
 - On a Windows guest, a session that asks for a terminal (`ssh -t`/`-tt`) while its input is not a terminal (`</dev/null`,
   a pipe that ends, or a library that sends end-of-input) may end with status 0 without running the command. Drop `-t`,
   or keep the input open.
+- devvm does not end a guest command whose client went away (a killed `devvm`, a closed reader). The command finds out
+  when it next writes, as a command run by ssh without a terminal does. A command that writes nothing keeps running
+  until it ends or the instance stops (`devvm stop`).
