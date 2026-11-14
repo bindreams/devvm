@@ -72,6 +72,8 @@ impl Roots {
 pub(super) struct Launches {
     spawned: AtomicUsize,
     watcher: Mutex<Option<Sender<MachineRecord>>>,
+    /// What the next resume waits on before the guest is awaited: a send or the sender's drop releases it.
+    hold: Mutex<Option<Receiver<()>>>,
 }
 
 impl Launches {
@@ -86,6 +88,14 @@ impl Launches {
         *self.watcher.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
         receiver
     }
+
+    /// [`Launches::resumed`], and the next machine that resumes waits, before its guest is awaited, until the returned
+    /// sender sends or is dropped. A test that panics drops it, so the start goes on.
+    pub(super) fn resumed_held(&self) -> (Receiver<MachineRecord>, Sender<()>) {
+        let (release, hold) = mpsc::channel();
+        *self.hold.lock().unwrap_or_else(PoisonError::into_inner) = Some(hold);
+        (self.resumed(), release)
+    }
 }
 
 impl LaunchHooks for Launches {
@@ -97,6 +107,10 @@ impl LaunchHooks for Launches {
             LaunchStep::Resumed => {
                 if let Some(sender) = &*self.watcher.lock().unwrap_or_else(PoisonError::into_inner) {
                     let _ = sender.send(machine.clone());
+                }
+                let hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(hold) = hold {
+                    let _ = hold.recv();
                 }
             }
             LaunchStep::Recorded => {}
