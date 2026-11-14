@@ -52,14 +52,20 @@ fn restart_in_place(engine: &Arc<Engine>, instance: &Instance) {
     let old = boot_id(instance);
     let restart = Command::new(["shutdown", "/r", "/f", "/t", "0"]);
     match instance.run(&restart) {
-        Ok(output) => assert_eq!(
-            output.status,
-            ExitStatus::Code(0),
-            "shutdown /r: {}",
-            output.stderr_lossy()
-        ),
-        // The guest goes down under the command.
-        Err(e) if e.kind() == ErrorKind::ConnectionLost => {}
+        Ok(output) => {
+            assert_eq!(
+                output.status,
+                ExitStatus::Code(0),
+                "shutdown /r: {}",
+                output.stderr_lossy()
+            );
+            // The status stands when the guest goes down after it: the loss says so, and any other loss is a failure.
+            if let Some(loss) = output.loss {
+                assert_eq!(loss.kind(), ErrorKind::ConnectionLost, "shutdown /r: {loss}");
+            }
+        }
+        // The guest goes down under the command: the connection drops, or the channel closes before a status.
+        Err(e) if matches!(e.kind(), ErrorKind::ConnectionLost | ErrorKind::NoExitStatus) => {}
         Err(e) => panic!("cannot restart the guest in place: {e}"),
     }
     let dir = instance.dir();
