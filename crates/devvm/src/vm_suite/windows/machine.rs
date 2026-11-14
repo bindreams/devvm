@@ -172,9 +172,11 @@ impl Drop for Client {
 }
 
 /// An interactive session through the system `ssh -tt`: a command typed into it runs and prints, and a Ctrl-C byte ends a
-/// running command. The input stays open until the last marker has come back, then the shell exits and the input closes:
-/// a terminal session whose input ends first may end without running anything (the stated limit), and the status of an
-/// interactive session is 0 whatever happened (another), so the test asserts neither.
+/// running command. The session's first command numbers its prompts, and each step is typed once the prompt before it
+/// has been printed: a console discards the keys typed while a command is being cancelled, so what follows the Ctrl-C is
+/// typed at the prompt, as a user does. The input stays open until the last prompt has come back, then the shell exits
+/// and the input closes: a terminal session whose input ends first may end without running anything (the stated
+/// limit), and the status of an interactive session is 0 whatever happened (another), so the test asserts neither.
 ///
 /// `devvm ssh <name>` itself passes no `-tt`; this is the system client's, with the generated configuration.
 #[skuld::test]
@@ -197,13 +199,14 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     let mut input = ssh.0.stdin.take().expect("a piped stdin");
     let output = output_of(ssh.0.stdout.take().expect("a piped stdout"));
     let mut seen = String::new();
-    // Waits for `times` of `needle` in what the terminal printed, which `after` makes happen. The commands print it
-    // joined, and the terminal's echo of what was typed has it in pieces, so only a command that ran can satisfy it. A
+    // Waits for `needle` in what the terminal printed, which `after` makes happen. A needle is text that only a command
+    // that ran or a prompt that was printed produces, never the terminal's echo of what was typed: the commands print
+    // their marker joined, and the prompt definition is typed as `"p$(...)-ready> "`, which has no `p1-ready`. A
     // terminal that has not printed it within [`TERMINAL_BOUND`] of the call fails the test, however much else it printed.
-    let mut await_output = |needle: &str, times: usize, after: &str| {
+    let mut await_output = |needle: &str, after: &str| {
         step(&format!("awaiting {needle:?} in the terminal, after {after}"));
         let deadline = Instant::now() + TERMINAL_BOUND;
-        while seen.matches(needle).count() < times {
+        while !seen.contains(needle) {
             // A terminal that keeps printing never times out a receive, so the deadline is checked before each one.
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -220,22 +223,30 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
             }
         }
     };
+    // The prompt the session prints for the `n`th time after its first command. The session's own first prompt is
+    // printed before the function exists, so the numbering starts with the prompt that follows the first command.
+    let prompt = |n: usize| format!("p{n}-ready>");
 
-    input.write_all(b"Write-Output ('devvm-' + 'marker')\r").unwrap();
-    await_output("devvm-marker", 1, "the typed command ran");
+    input
+        .write_all(
+            b"$global:devvmPrompt = 0; function prompt { $global:devvmPrompt++; \"p$($global:devvmPrompt)-ready> \" }; \
+              Write-Output ('devvm-' + 'marker')\r",
+        )
+        .unwrap();
+    await_output("devvm-marker", "the typed command ran");
+    await_output(&prompt(1), "the first command ended");
 
-    // The loop has no bound: only the Ctrl-C ends it, and a Ctrl-C that does not fails the wait for the next marker.
+    // The loop has no bound: only the Ctrl-C ends it, and a Ctrl-C that does not fails the wait for the next prompt.
     input
         .write_all(b"'run-' + 'ning'; while ($true) { Start-Sleep -Milliseconds 100 }\r")
         .unwrap();
-    await_output("run-ning", 1, "the loop started");
-    // Ctrl-C ends the loop. What the terminal repaints after it is ConPTY's, so no prompt text is matched: a command
-    // typed after the interrupt prints a marker, which only the shell that took the interrupt and read the line prints.
+    await_output("run-ning", "the loop started");
+    // Ctrl-C ends the loop, and the prompt that follows is the second. Keys typed before it are dropped.
     input.write_all(&[0x03]).unwrap();
-    input.write_all(b"'ready-' + 'after-ctrl-c'\r").unwrap();
-    await_output("ready-after-ctrl-c", 1, "Ctrl-C ended the loop");
+    await_output(&prompt(2), "Ctrl-C ended the loop");
     input.write_all(b"'af-' + 'ter'\r").unwrap();
-    await_output("af-ter", 1, "the command after Ctrl-C ran");
+    await_output("af-ter", "the command after Ctrl-C ran");
+    await_output(&prompt(3), "the command after Ctrl-C ended");
 
     input.write_all(b"exit\r").unwrap();
     drop(input);
