@@ -191,7 +191,12 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
         step(&format!("awaiting {needle:?} in the terminal, after {after}"));
         let deadline = Instant::now() + TERMINAL_BOUND;
         while !seen.contains(needle) {
-            match output.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            // A terminal that keeps printing never times out a receive, so the deadline is checked before each one.
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                panic!("ssh did not print {needle:?} within {TERMINAL_BOUND:?}, after {after}; it printed {seen:?}");
+            }
+            match output.recv_timeout(left) {
                 Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
                 Err(RecvTimeoutError::Timeout) => {
                     panic!("ssh did not print {needle:?} within {TERMINAL_BOUND:?}, after {after}; it printed {seen:?}")

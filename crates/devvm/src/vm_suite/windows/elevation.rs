@@ -47,6 +47,19 @@ fn release(guest: &dyn Guest, name: &str) {
     }
 }
 
+/// Removes the flags `names` and checks that none is left. A flag that stays from an earlier run would end the wait that
+/// the test asserts on: the test fails here instead of passing on a product that does not do what it checks.
+fn clear(guest: &dyn Guest, names: &[&str]) {
+    let paths = names.iter().map(|name| flag(name)).collect::<Vec<_>>().join(", ");
+    let left = printed(
+        guest,
+        &format!(
+            "Remove-Item -LiteralPath {paths} -ErrorAction Ignore; (Test-Path -LiteralPath {paths}) -contains $true"
+        ),
+    );
+    assert_eq!(left, "False", "cannot remove the flags {names:?} of an earlier run");
+}
+
 /// Makes the flag `name` when dropped, so the command that waits for it ends with the test, whether the test passed or
 /// failed.
 struct Releases<'a> {
@@ -80,21 +93,15 @@ fn rendezvous(own: &str, code: i32) -> Command {
 fn windows_two_elevated_commands_at_once_each_get_their_own_output_and_status(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    printed(
-        &guest.vm,
-        &format!(
-            "Remove-Item -LiteralPath {}, {}, {} -ErrorAction Ignore",
-            flag("a"),
-            flag("b"),
-            flag(BOTH_RUNNING)
-        ),
-    );
+    clear(&guest.vm, &["a", "b", BOTH_RUNNING]);
     let (a, b) = (rendezvous("a", 3), rendezvous("b", 5));
 
     step("running the two commands");
     // Each command makes its flag and waits. The host sees both flags, which only two commands running at once make, and
-    // then lets them end. A product that runs them one after the other fails the wait for the second flag. The guard makes
-    // the last flag on every path, so the commands end either way.
+    // then lets them end. A product that runs them one after the other fails the wait for the second flag. The wait also
+    // ends when a command has ended, so that its error is the failure. The guard makes the last flag on every path, so
+    // the commands end either way.
+    let mut at_once = false;
     let (a, b) = std::thread::scope(|scope| {
         let a = scope.spawn(|| ran(&guest.vm, "the elevated command a", &a));
         let b = scope.spawn(|| ran(&guest.vm, "the elevated command b", &b));
@@ -103,19 +110,21 @@ fn windows_two_elevated_commands_at_once_each_get_their_own_output_and_status(
             name: BOTH_RUNNING,
         };
         until("both elevated commands running at once", || {
-            printed(
+            at_once = printed(
                 &guest.vm,
                 &format!(
                     "(Test-Path -LiteralPath {}) -and (Test-Path -LiteralPath {})",
                     flag("a"),
                     flag("b")
                 ),
-            ) == "True"
+            ) == "True";
+            at_once || a.is_finished() || b.is_finished()
         });
         drop(go);
         (a.join().unwrap(), b.join().unwrap())
     });
     let (a, b) = (a.unwrap(), b.unwrap());
+    assert!(at_once, "a command ended before both ran at once");
 
     for (name, seen, code) in [("a", a, 3), ("b", b, 5)] {
         assert_eq!(seen.status, ExitStatus::Code(code), "{name}: {}", seen.stderr_lossy());
@@ -163,10 +172,7 @@ impl Write for Watch {
 fn windows_an_elevated_command_streams_its_output_as_it_runs(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    printed(
-        &guest.vm,
-        &format!("Remove-Item -LiteralPath {} -ErrorAction Ignore", flag("go")),
-    );
+    clear(&guest.vm, &["go"]);
     // The command ends only once the host has the first line: the host makes the flag then, and on every other path too.
     // A product that does not stream never shows the host the first line: the wait for it ends at its bound, the flag is
     // made, and the test fails.
@@ -238,10 +244,12 @@ impl Write for Leaver {
 }
 
 /// The elevated child the host started, ended by its process id when the test fails before the host has seen it end:
-/// nothing is left running on the shared guest.
+/// nothing is left running on the shared guest. The id is only the child's while the process that has it started at
+/// `started` (the file time the child printed); a process that has the id by now is not ended.
 struct Child<'a> {
     guest: &'a dyn Guest,
     pid: &'a str,
+    started: &'a str,
     ended: bool,
 }
 
@@ -250,7 +258,13 @@ impl Drop for Child<'_> {
         if self.ended {
             return;
         }
-        let script = format!("Stop-Process -Id {} -Force -ErrorAction Ignore", self.pid);
+        let script = format!(
+            "$child = Get-Process -Id {pid} -ErrorAction Ignore; \
+             if ($child -and $child.StartTime.ToFileTimeUtc() -eq {started}) \
+             {{ Stop-Process -Id {pid} -Force -ErrorAction Ignore }}",
+            pid = self.pid,
+            started = self.started
+        );
         if let Err(error) = ran(self.guest, "stopping the child", &pwsh(RunAs::Elevated, &script)) {
             eprintln!("cannot stop process {}: {error}", self.pid);
         }
@@ -261,28 +275,32 @@ impl Drop for Child<'_> {
 fn windows_an_elevated_child_ends_when_the_client_goes_away(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    // The command prints its process id, then runs until it is ended. It has no bound of its own: a bound that ended it
-    // would be the one thing that makes the process go, and the test asserts that devvm does. When devvm does not end
-    // it, the wait below for the process to end fails the test, and the test ends the child by its id.
+    // The command prints its process id and start time, then runs until it is ended. It has no bound of its own: a bound
+    // that ended it would be the one thing that makes the process go, and the test asserts that devvm does. When devvm
+    // does not end it, the wait below for the process to end fails the test, and the test ends the child by its id.
     let command = pwsh(
         RunAs::Elevated,
-        "[Console]::Out.WriteLine($PID); [Console]::Out.Flush(); while ($true) { Start-Sleep -Milliseconds 100 }",
+        "[Console]::Out.WriteLine(\"$PID $((Get-Process -Id $PID).StartTime.ToFileTimeUtc())\"); [Console]::Out.Flush(); while ($true) { Start-Sleep -Milliseconds 100 }",
     );
     let mut leaver = Leaver { seen: Vec::new() };
 
-    let guard = answer_to("the elevated child that prints its process id and loops");
+    let guard = answer_to("the elevated child that prints its process id and start time and loops");
     // devvm ends the command when its output has nowhere to go; the status that never comes is the guest's.
     let result = guest.vm.run_to(&command, &mut leaver, &mut io::sink());
     drop(guard);
 
-    let pid = String::from_utf8_lossy(&leaver.seen).trim().to_owned();
+    let printed_by_child = String::from_utf8_lossy(&leaver.seen).trim().to_owned();
+    let (pid, started) = printed_by_child.split_once(' ').unwrap_or_default();
     assert!(
-        pid.chars().all(|c| c.is_ascii_digit()) && !pid.is_empty(),
-        "{pid:?} {result:?}"
+        [pid, started]
+            .iter()
+            .all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())),
+        "{printed_by_child:?} {result:?}"
     );
     let mut child = Child {
         guest: &guest.vm,
-        pid: &pid,
+        pid,
+        started,
         ended: false,
     };
     step("waiting for the process to end");

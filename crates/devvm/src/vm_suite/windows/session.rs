@@ -55,12 +55,11 @@ fn answered(guest: &dyn Guest, what: &str, command: &Command) -> Output {
             Err(e) if e.kind() == ErrorKind::ConnectionLost => {
                 assert!(
                     Instant::now() < deadline,
-                    "cannot run {:?}: the connection did not hold within {STATE_BOUND:?}: {e}",
-                    command.argv
+                    "cannot run {what}: the connection did not hold within {STATE_BOUND:?}: {e}"
                 );
                 std::thread::sleep(PACE);
             }
-            Err(e) => panic!("cannot run {:?}: {e}", command.argv),
+            Err(e) => panic!("cannot run {what}: {e}"),
         }
     }
 }
