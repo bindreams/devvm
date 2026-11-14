@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 
 use super::session::ssh_remote;
+use super::shared::{ANSWER_BOUND, BOOT_BOUND, step, watch};
 use super::{PACE, SharedWindowsGuest, WindowsBase, shared_windows_guest, windows_base, windows_options};
 use crate::engine::Engine;
 use crate::engine::keys::{read_record, running_of};
@@ -16,6 +17,7 @@ use crate::vm_suite::fixture::Up;
 
 /// What `ssh-keyscan` of the instance's forwarded port says its sshd offers, as `<type> <base64>` for each key.
 fn offered_keys(addr: SocketAddr) -> Vec<String> {
+    let _watch = watch(format!("ssh-keyscan of {addr}"), ANSWER_BOUND);
     let mut command = std::process::Command::new("ssh-keyscan");
     command
         .args(["-p", &addr.port().to_string(), &addr.ip().to_string()])
@@ -57,9 +59,11 @@ fn the_one_key(engine: &Arc<Engine>, up: &Up) -> String {
 
 #[skuld::test]
 fn windows_two_instances_have_different_host_keys(#[fixture(windows_base)] base: &WindowsBase) {
+    step("booting the first instance");
     let first = Up::new(&base.image, "w-keys-one", &windows_options()).unwrap();
     let one = the_one_key(&base.engine, &first);
     // One guest at a time: two of Windows' size would load a hosted runner.
+    step("stopping it and booting the second");
     first.stop().unwrap();
     let second = Up::new(&base.image, "w-keys-two", &windows_options()).unwrap();
     let two = the_one_key(&base.engine, &second);
@@ -69,9 +73,11 @@ fn windows_two_instances_have_different_host_keys(#[fixture(windows_base)] base:
 
 #[skuld::test]
 fn windows_a_stopped_instance_keeps_its_host_key(#[fixture(windows_base)] base: &WindowsBase) {
+    step("booting an instance");
     let up = Up::new(&base.image, "w-keeps-key", &windows_options()).unwrap();
     let key = the_one_key(&base.engine, &up);
 
+    step("stopping and starting it");
     up.stop().unwrap();
     up.start().unwrap();
 
@@ -96,6 +102,9 @@ fn serial_has(log: &Path, marker: &str) -> bool {
 fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
     #[fixture(windows_base)] base: &WindowsBase,
 ) {
+    step("starting an instance and resetting it at the seed write");
+    // The loops below end with the start, which the engine's boot bound ends; this ends a start that stops for good.
+    let _watch = watch("the instance starting and resetting", BOOT_BOUND);
     let up = Up::created(&base.image, "w-hard-reset", &windows_options()).unwrap();
     let resumed = base.launches.resumed();
     let backend = base.engine.backend().unwrap();
@@ -126,6 +135,7 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
         reset
     });
 
+    step("checking the host key after the reset");
     assert!(reset, "the guest was ready before the boot task wrote the host key");
     // The start waited for a guest that accepts the pinned key; sshd offers it alone.
     the_one_key(&base.engine, &up);

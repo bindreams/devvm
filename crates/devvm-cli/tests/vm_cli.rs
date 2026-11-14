@@ -43,8 +43,12 @@ use roots::XdgRoots;
 #[path = "../../devvm/src/vm_suite/exec/cases.rs"]
 mod cases;
 #[path = "../../devvm/src/vm_suite/windows/shared.rs"]
+#[allow(
+    dead_code,
+    reason = "the bounds and helpers of the lib's Windows suites that this binary does not use"
+)]
 mod windows_shared;
-use windows_shared::{first_try, recipe_text};
+use windows_shared::{ANSWER_BOUND, first_try, named, recipe_text, step, watch};
 
 skuld::default_labels!(VM);
 
@@ -234,6 +238,7 @@ fn windows_instance(
 
 fn windows_up(cli: &Cli) -> Result<Instance, String> {
     let iso = std::env::var_os(WINDOWS_ISO_VAR).ok_or_else(|| format!("{WINDOWS_ISO_VAR} is not set"))?;
+    step("devvm up builds the Windows base and boots an instance");
     let recipe = cli.project.join("windows.devvm.yaml");
     std::fs::write(&recipe, recipe_text(Path::new(&iso), &[])?)
         .map_err(|e| format!("cannot write {}: {e}", recipe.display()))?;
@@ -272,7 +277,11 @@ impl ExecTarget for ThroughSsh<'_> {
         }
         args.push("--");
         args.extend(case.argv.iter().map(String::as_str));
-        let output = self.0.cli.devvm(&args);
+        step(&format!("devvm ssh {}", named(&case.argv)));
+        let output = {
+            let _watch = watch(format!("devvm ssh {}", named(&case.argv)), ANSWER_BOUND);
+            self.0.cli.devvm(&args)
+        };
 
         let report: Value = serde_json::from_slice(&std::fs::read(&status_file).unwrap_or_else(|e| {
             panic!(

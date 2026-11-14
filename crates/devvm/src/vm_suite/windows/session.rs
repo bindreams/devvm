@@ -3,8 +3,10 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Instant;
 
-use super::{FACTS, PACE, SharedWindowsGuest, WindowsBase, facts, printed, pwsh, user_facts, windows_options};
+use super::shared::{ANSWER_BOUND, BOOT_BOUND, STATE_BOUND, step, watch};
+use super::{FACTS, PACE, SharedWindowsGuest, WindowsBase, facts, printed, pwsh, ran, user_facts, windows_options};
 use super::{shared_windows_guest, windows_base, windows_iso, windows_recipe};
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
@@ -43,12 +45,17 @@ fn windows_elevated_run_is_high_integrity_without_uac_auto_approve(
 const STOP_AGENT: &str = r#"Get-CimInstance Win32_Process -Filter "Name = 'ssh-broker.exe'" | Where-Object { $_.CommandLine -match 'ssh-broker\.exe"?\s+agent(\s|$)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"#;
 
 /// Runs `command` until the connection to the guest holds: the one that served the command before it is still closing.
+/// A connection that does not hold within [`STATE_BOUND`] fails the test with the loss.
 fn answered(guest: &dyn Guest, command: &Command) -> Output {
+    let deadline = Instant::now() + STATE_BOUND;
     loop {
-        match guest.run(command) {
+        match ran(guest, command) {
             Ok(output) => return output,
-            Err(e) if e.kind() == ErrorKind::ConnectionLost => std::thread::sleep(PACE),
-            Err(e) => panic!("cannot run {:?}: {e}", command.argv),
+            Err(e) if e.kind() == ErrorKind::ConnectionLost && Instant::now() < deadline => std::thread::sleep(PACE),
+            Err(e) => panic!(
+                "cannot run {:?} (the connection did not hold within {STATE_BOUND:?}): {e}",
+                command.argv
+            ),
         }
     }
 }
@@ -57,13 +64,16 @@ fn answered(guest: &dyn Guest, command: &Command) -> Output {
 fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of_running_in_session_0(
     #[fixture(windows_base)] base: &WindowsBase,
 ) {
+    step("booting an instance");
     let up = Up::new(&base.image, "w-agent-stopped", &windows_options()).unwrap();
     assert_eq!(facts(&*up, RunAs::User), user_facts());
 
+    step("stopping the agent");
     // The agent that serves this command ends with it: the connection is lost, or the command ends with a status that
     // is not its own. Either is the end of the agent.
-    let _ = up.run(&pwsh(RunAs::User, STOP_AGENT));
+    let _ = ran(&*up, &pwsh(RunAs::User, STOP_AGENT));
 
+    step("running a command after the agent stopped");
     let seen = answered(&*up, &Command::new(["whoami"]));
     // The documented limit: the command runs nowhere, and says so. 126 is a guest status like any other.
     assert_eq!(seen.status, ExitStatus::Code(126), "{}", seen.stderr_lossy());
@@ -80,6 +90,7 @@ fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of
 
 /// What a plain `ssh` of the generated `config` gets from `name` for the command `remote`.
 pub(super) fn ssh_remote(config: &Path, name: &str, remote: &str) -> std::process::Output {
+    let _watch = watch(format!("ssh to {name}"), ANSWER_BOUND);
     let mut command = std::process::Command::new("ssh");
     command
         .arg("-F")
@@ -119,6 +130,8 @@ fn probes() -> [(&'static str, String); 2] {
 /// once the agent accepts a connection), which the template tests pin.
 #[skuld::test]
 fn windows_no_command_is_answered_from_session_0_while_booting(#[fixture(windows_base)] base: &WindowsBase) {
+    step("starting an instance and probing it");
+    let _watch = watch("the instance starting while probed", BOOT_BOUND);
     let up = Up::created(&base.image, "w-boot-window", &windows_options()).unwrap();
     let config = base.engine.ssh_configs().config();
     let name = up.name().to_owned();
@@ -137,6 +150,7 @@ fn windows_no_command_is_answered_from_session_0_while_booting(#[fixture(windows
         start.join().unwrap().unwrap();
     });
 
+    step("probing the started instance");
     // The probes themselves work: once the guest is up, each is answered in session 1 at Medium.
     for (kind, remote) in probes() {
         let output = ssh_remote(&config, &name, &remote);
@@ -173,11 +187,14 @@ fn windows_uac_auto_approve_lets_a_runas_child_reach_high_integrity_without_a_pr
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(windows_iso)] iso: &Path,
 ) {
+    step("building the base with the policy set");
     // One step boots a guest of the base and sets the policy, elevated.
     let recipe = windows_recipe(&base.roots.dirs.state, iso, &["set: { uac: auto-approve }"]);
     let image = base.engine.build(&recipe, &BuildOptions::default()).unwrap();
+    step("booting an instance of it");
     let up = Up::new(&image, "w-uac", &windows_options()).unwrap();
 
+    step("running the runas child");
     let printed = printed(&*up, &runas_script());
 
     let lines: Vec<&str> = printed.lines().map(str::trim).collect();

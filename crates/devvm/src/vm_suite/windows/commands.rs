@@ -3,9 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
+use super::shared::{ANSWER_BOUND, step, watch};
 use super::windows_recipe;
 use super::{
-    SharedWindowsGuest, WindowsBase, printed, shared_windows_guest, windows_base, windows_iso, windows_options,
+    SharedWindowsGuest, WindowsBase, printed, ran, shared_windows_guest, windows_base, windows_iso, windows_options,
 };
 use crate::access::sftp::sftp_tests::tree;
 use crate::guest::GuestOs;
@@ -61,6 +62,9 @@ fn windows_cp_files_and_directories_both_ways_with_drive_paths(
     let file = home.join("one.txt");
     std::fs::write(&file, b"one").unwrap();
 
+    // The copies are sftp transfers, which ends only with the guest's answer.
+    let _watch = watch("the copies of the cp test", ANSWER_BOUND);
+    step("copying in");
     // A drive path with forward slashes, the spelling `cp` takes, for a tree and for a file.
     guest.vm.copy_in(&pack, "C:/ProgramData/devvm/cp-pack").unwrap();
     guest.vm.copy_in(&file, "C:/ProgramData/devvm/cp-one.txt").unwrap();
@@ -82,6 +86,7 @@ fn windows_cp_files_and_directories_both_ways_with_drive_paths(
         "nestedone"
     );
 
+    step("copying out");
     guest
         .vm
         .copy_out("C:/ProgramData/devvm/cp-pack", &home.join("back"))
@@ -129,7 +134,9 @@ fn windows_the_machine_path_names_pwsh_7_and_the_default_shell_step_runs_it(
             "run: 'Set-Content -LiteralPath C:/ProgramData/devvm/default-shell.txt -Value $PSVersionTable.PSVersion.Major'",
         ],
     );
+    step("building the base with the step");
     let image = base.engine.build(&recipe, &BuildOptions::default()).unwrap();
+    step("booting an instance of it");
     let up = Up::new(&image, "w-default-shell", &windows_options()).unwrap();
     assert_eq!(
         printed(&*up, "Get-Content -LiteralPath C:/ProgramData/devvm/default-shell.txt"),
@@ -174,7 +181,7 @@ fn windows_a_script_at_the_computed_limit_runs_and_one_over_is_refused_before_se
         }
     }
 
-    let at_the_limit = guest.vm.run(&padded(fits)).unwrap();
+    let at_the_limit = ran(&guest.vm, &padded(fits)).unwrap();
     assert_eq!(
         at_the_limit.status,
         ExitStatus::Code(0),
@@ -183,6 +190,6 @@ fn windows_a_script_at_the_computed_limit_runs_and_one_over_is_refused_before_se
     );
     assert_eq!(at_the_limit.stdout_lossy().trim(), "ok", "a pad of {fits}");
 
-    let error = guest.vm.run(&padded(over)).unwrap_err();
+    let error = ran(&guest.vm, &padded(over)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Usage, "a pad of {over}: {error}");
 }

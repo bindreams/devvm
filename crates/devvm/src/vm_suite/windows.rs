@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::fixture::{Launches, Roots, engine_reporting_to, run_ok_as};
 use crate::backend::qemu::sidecar::QemuInstall;
@@ -25,7 +25,7 @@ use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir};
-use crate::{BuildOptions, Command, ExitStatus, Guest, Image, RunAs, StartOptions, Vm};
+use crate::{BuildOptions, Command, Error, ExitStatus, Guest, Image, Output, RunAs, StartOptions, Vm};
 
 mod boots;
 mod commands;
@@ -33,9 +33,9 @@ mod elevation;
 mod machine;
 mod seed;
 mod session;
-mod shared;
+pub(super) mod shared;
 
-use shared::{first_try, recipe_text};
+use shared::{ANSWER_BOUND, STATE_BOUND, first_try, named, recipe_text, step, watch};
 
 /// The Windows base of this test process, with the engine that built it and what it reported.
 pub(super) struct WindowsBase {
@@ -117,6 +117,7 @@ pub(super) struct SharedWindowsGuest {
 pub(super) fn shared_windows_guest(#[fixture(windows_base)] base: &WindowsBase) -> Result<SharedWindowsGuest, String> {
     static FAILED: OnceLock<String> = OnceLock::new();
     first_try(&FAILED, || {
+        step("booting the shared instance");
         let vm = base
             .image
             .start(&windows_options())
@@ -145,18 +146,43 @@ pub(super) fn printed(guest: &dyn Guest, script: &str) -> String {
 pub(super) fn printed_as(guest: &dyn Guest, run_as: RunAs, script: &str) -> String {
     let command = pwsh(run_as, script);
     let argv: Vec<&str> = command.argv.iter().map(String::as_str).collect();
+    let _watch = watch(format!("the guest's answer to {}", named(&command.argv)), ANSWER_BOUND);
     run_ok_as(guest, run_as, &argv).trim().to_owned()
+}
+
+/// Runs `command` in `guest`, which must answer within [`ANSWER_BOUND`].
+pub(super) fn ran(guest: &dyn Guest, command: &Command) -> Result<Output, Error> {
+    let _watch = watch(format!("the guest's answer to {}", named(&command.argv)), ANSWER_BOUND);
+    guest.run(command)
 }
 
 /// The pause between two looks at a condition a wait re-checks. It paces the wait; it never ends it.
 pub(super) const PACE: Duration = Duration::from_millis(200);
 
-/// Waits until `condition` holds. It has no bound: what it awaits is the product doing what the test asserts, and a
-/// product that does not leaves the job to its own timeout.
-pub(super) fn until(mut condition: impl FnMut() -> bool) {
+/// Waits until `condition` holds. A condition that does not hold within [`STATE_BOUND`] fails the test with `what` did
+/// not happen; the bound only ends the wait.
+pub(super) fn until(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + STATE_BOUND;
     while !condition() {
+        assert!(
+            Instant::now() < deadline,
+            "{what} did not happen within {STATE_BOUND:?}"
+        );
         std::thread::sleep(PACE);
     }
+}
+
+/// PowerShell that waits in the guest until `condition` holds. After [`STATE_BOUND`] it prints that `what` did not
+/// happen and ends the command with status 124, so a command that runs it ends on its own. `$false` is a wait that only
+/// the bound ends.
+pub(super) fn guest_until(what: &str, condition: &str) -> String {
+    let seconds = STATE_BOUND.as_secs();
+    format!(
+        "$deadline = (Get-Date).AddSeconds({seconds}); \
+         while (-not ({condition})) {{ \
+         if ((Get-Date) -gt $deadline) {{ [Console]::Error.WriteLine('devvm test: {what} did not happen'); exit 124 }}; \
+         Start-Sleep -Milliseconds 100 }}"
+    )
 }
 
 /// The integrity level SID of a Medium token and of a High one.
@@ -259,7 +285,7 @@ fn a_flush_through_the_broker_succeeds_with_data_to_flush(#[fixture(shared_windo
         "[IO.File]::WriteAllBytes('C:/ProgramData/devvm/flush-test.bin', (New-Object byte[] 67108864))",
     );
 
-    let output = guest.vm.run(&WindowsGuest.flush_command()).unwrap();
+    let output = ran(&guest.vm, &WindowsGuest.flush_command()).unwrap();
 
     assert_eq!(output.status, ExitStatus::Code(0), "{}", output.stderr_lossy());
 }
@@ -320,7 +346,7 @@ fn the_boot_task_waits_for_the_agent_socket_and_the_agent_survives_a_silent_conn
 
 #[skuld::test]
 fn ssh_broker_verify_passes_on_the_clean_guest(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
-    let output = guest.vm.run(&Command::new([BROKER_EXE, "verify"])).unwrap();
+    let output = ran(&guest.vm, &Command::new([BROKER_EXE, "verify"])).unwrap();
 
     assert_eq!(
         output.status,

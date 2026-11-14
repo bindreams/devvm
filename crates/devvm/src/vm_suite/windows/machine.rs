@@ -6,17 +6,19 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, SystemTime};
 
+use super::shared::{TERMINAL_BOUND, step, watch};
 use super::{
-    SharedWindowsGuest, WindowsBase, printed, shared_windows_guest, windows_base, windows_iso, windows_options,
+    SharedWindowsGuest, WindowsBase, guest_until, printed, ran, shared_windows_guest, windows_base, windows_iso,
+    windows_options,
 };
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
-use crate::{Command, ExitStatus, Guest};
+use crate::{Command, ExitStatus};
 
 // The account =========================================================================================================
 
@@ -37,6 +39,7 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
 ) {
+    step("making an instance and growing its disk");
     let up = Up::created(&base.image, "w-big-disk", &windows_options()).unwrap();
     // The base's disk is 64 GiB; this instance's is 72.
     let disk = up.dir().disk();
@@ -49,6 +52,7 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
     ];
     qemu_img(install, &args);
 
+    step("starting it");
     up.start().unwrap();
 
     // The boot task extends C: before it starts sshd, so the start returns after it.
@@ -171,12 +175,19 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     let output = output_of(ssh.stdout.take().expect("a piped stdout"));
     let mut seen = String::new();
     // Waits for `needle` in what the terminal printed. The commands print it joined, and the terminal's echo of what was
-    // typed has it in pieces, so only a command that ran can satisfy it.
+    // typed has it in pieces, so only a command that ran can satisfy it. A terminal that prints nothing for
+    // [`TERMINAL_BOUND`] fails the test.
     let mut await_output = |needle: &str| {
+        step(&format!("awaiting {needle:?} in the terminal"));
         while !seen.contains(needle) {
-            match output.recv() {
+            match output.recv_timeout(TERMINAL_BOUND) {
                 Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
-                Err(_) => panic!("ssh ended before it printed {needle:?}; it printed {seen:?}"),
+                Err(RecvTimeoutError::Timeout) => panic!(
+                    "ssh printed nothing within {TERMINAL_BOUND:?} while the test awaited {needle:?}; it printed {seen:?}"
+                ),
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("ssh ended before it printed {needle:?}; it printed {seen:?}")
+                }
             }
         }
     };
@@ -184,8 +195,10 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     input.write_all(b"Write-Output ('devvm-' + 'marker')\r").unwrap();
     await_output("devvm-marker");
 
+    // The loop ends at its own bound if the Ctrl-C does not end it.
+    let hold = guest_until("Ctrl-C ending the loop", "$false");
     input
-        .write_all(b"'run-' + 'ning'; while ($true) { Start-Sleep -Milliseconds 100 }\r")
+        .write_all(format!("'run-' + 'ning'; {hold}\r").as_bytes())
         .unwrap();
     await_output("run-ning");
     // Ctrl-C ends the loop, and the shell takes the next command.
@@ -195,6 +208,7 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
 
     input.write_all(b"exit\r").unwrap();
     drop(input);
+    let _watch = watch("the interactive ssh ending", TERMINAL_BOUND);
     ssh.wait().unwrap();
 }
 
@@ -249,7 +263,7 @@ fn windows_the_agent_has_no_visible_window(#[fixture(shared_windows_guest)] gues
         if argv[0] == "pwsh" {
             argv.push("1");
         }
-        let seen = guest.vm.run(&Command::new(argv)).unwrap();
+        let seen = ran(&guest.vm, &Command::new(argv)).unwrap();
         assert_eq!(seen.status, ExitStatus::Code(0), "{}", seen.stderr_lossy());
     }
 
