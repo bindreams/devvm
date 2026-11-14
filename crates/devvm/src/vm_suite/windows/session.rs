@@ -3,9 +3,8 @@
 
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Instant;
 
-use super::bounds::{BOOT_BOUND, STATE_BOUND};
+use super::bounds::BOOT_BOUND;
 use super::{FACTS, PACE, SharedWindowsGuest, WindowsBase, facts, printed, pwsh, ran, user_facts, windows_options};
 use super::{shared_windows_guest, windows_base, windows_iso, windows_recipe};
 use crate::guest::GuestOs;
@@ -13,7 +12,7 @@ use crate::guest::windows::WindowsGuest;
 use crate::host;
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
-use crate::{BuildOptions, Command, ErrorKind, ExitStatus, Guest, Output, RunAs};
+use crate::{BuildOptions, Command, ExitStatus, RunAs};
 
 #[skuld::test]
 fn windows_run_is_medium_integrity_in_session_1(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
@@ -45,25 +44,6 @@ fn windows_elevated_run_is_high_integrity_without_uac_auto_approve(
 /// -c ...` that sshd runs for each command.
 const STOP_AGENT: &str = r#"Get-CimInstance Win32_Process -Filter "Name = 'ssh-broker.exe'" | Where-Object { $_.CommandLine -match 'ssh-broker\.exe"?\s+agent(\s|$)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"#;
 
-/// Runs `command` until the connection to the guest holds: the one that served the command before it is still closing.
-/// A connection that does not hold within [`STATE_BOUND`] fails the test with the loss; any other error fails it at once.
-fn answered(guest: &dyn Guest, what: &str, command: &Command) -> Output {
-    let deadline = Instant::now() + STATE_BOUND;
-    loop {
-        match ran(guest, what, command) {
-            Ok(output) => return output,
-            Err(e) if e.kind() == ErrorKind::ConnectionLost => {
-                assert!(
-                    Instant::now() < deadline,
-                    "cannot run {what}: the connection did not hold within {STATE_BOUND:?}: {e}"
-                );
-                std::thread::sleep(PACE);
-            }
-            Err(e) => panic!("cannot run {what}: {e}"),
-        }
-    }
-}
-
 #[skuld::test]
 fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of_running_in_session_0(
     #[fixture(windows_base)] base: &WindowsBase,
@@ -78,8 +58,10 @@ fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of
     let _ = ran(&*up, "the command that stops the agent", &pwsh(RunAs::User, STOP_AGENT));
 
     step("running a command after the agent stopped");
-    let seen = answered(&*up, "whoami after the agent stopped", &Command::new(["whoami"]));
-    // The documented limit: the command runs nowhere, and says so. 126 is a guest status like any other.
+    // The first command after the agent stopped is asserted as it comes, with no retry: a lost connection fails the test.
+    let seen = ran(&*up, "whoami after the agent stopped", &Command::new(["whoami"]))
+        .unwrap_or_else(|e| panic!("cannot run whoami after the agent stopped: {e}"));
+    // README limit: the command does not run and says so (126).
     assert_eq!(seen.status, ExitStatus::Code(126), "{}", seen.stderr_lossy());
     assert_eq!(seen.stdout_lossy(), "", "a command printed output in session 0");
     assert!(
@@ -129,8 +111,8 @@ fn probes() -> [(&'static str, String); 2] {
 }
 
 /// Starts an instance while probing it through `ssh` from the moment it is launched, with raw commands and wrapped ones.
-/// A probe the guest answers must be answered in session 1 at Medium, or the test fails; the probing ends at the first
-/// answer. The window is observed, not proven closed: the proof is the order of the boot task's steps (sshd starts only
+/// A probe the guest answers must be answered in session 1 at Medium, or the test fails; the probing ends with the start,
+/// and the number of probes answered before it is printed. The window is observed, not proven closed: the proof is the order of the boot task's steps (sshd starts only
 /// once the agent accepts a connection), which the template tests pin.
 #[skuld::test]
 fn windows_no_command_is_answered_from_session_0_while_booting(#[fixture(windows_base)] base: &WindowsBase) {
@@ -141,16 +123,18 @@ fn windows_no_command_is_answered_from_session_0_while_booting(#[fixture(windows
 
     std::thread::scope(|scope| {
         let start = scope.spawn(|| up.start());
-        'probing: while !start.is_finished() {
+        let mut answered = 0_usize;
+        while !start.is_finished() {
             for (kind, remote) in probes() {
                 if let Some(line) = answer(&ssh_remote(&config, &name, &remote)) {
                     assert_eq!(line, user_facts(), "{kind} was answered while the guest booted");
-                    break 'probing;
+                    answered += 1;
                 }
             }
             std::thread::sleep(PACE);
         }
         start.join().unwrap().unwrap();
+        eprintln!("{answered} probes were answered before the start returned");
     });
 
     step("probing the started instance");
