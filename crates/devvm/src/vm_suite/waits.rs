@@ -41,16 +41,21 @@ pub fn awaiting(what: impl Into<String>, bound: Duration) -> Watchdog {
     Watchdog { _done: done }
 }
 
-/// [`awaiting`] the guest's answer to the command `argv`, within [`ANSWER_BOUND`].
-pub fn answer_to(argv: &[String]) -> Watchdog {
-    awaiting(format!("the guest's answer to {}", named(argv)), ANSWER_BOUND)
+/// [`awaiting`] the guest's answer to `what`, within [`ANSWER_BOUND`]. `what` names the step: a command's argv when that
+/// is short and says what runs ([`named`]), the caller's own label where the argv is a PowerShell wrapper.
+pub fn answer_to(what: &str) -> Watchdog {
+    awaiting(format!("the guest's answer to {what}"), ANSWER_BOUND)
 }
 
 /// `argv` as a message names it: the whole line, cut at 160 characters.
-fn named(argv: &[String]) -> String {
-    let line = format!("{argv:?}");
+pub fn named(argv: &[String]) -> String {
+    cut(&format!("{argv:?}"))
+}
+
+/// `line` cut at 160 characters.
+pub fn cut(line: &str) -> String {
     match line.char_indices().nth(160) {
         Some((end, _)) => format!("{}...", &line[..end]),
-        None => line,
+        None => line.to_owned(),
     }
 }

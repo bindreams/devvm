@@ -187,7 +187,12 @@ fn windows_a_script_at_the_computed_limit_runs_and_one_over_is_refused_before_se
         }
     }
 
-    let at_the_limit = ran(&guest.vm, &padded(fits)).unwrap();
+    let at_the_limit = ran(
+        &guest.vm,
+        &format!("the script at the limit, a pad of {fits}"),
+        &padded(fits),
+    )
+    .unwrap();
     assert_eq!(
         at_the_limit.status,
         ExitStatus::Code(0),
@@ -196,6 +201,11 @@ fn windows_a_script_at_the_computed_limit_runs_and_one_over_is_refused_before_se
     );
     assert_eq!(at_the_limit.stdout_lossy().trim(), "ok", "a pad of {fits}");
 
-    let error = ran(&guest.vm, &padded(over)).unwrap_err();
+    let error = ran(
+        &guest.vm,
+        &format!("the script over the limit, a pad of {over}"),
+        &padded(over),
+    )
+    .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Usage, "a pad of {over}: {error}");
 }

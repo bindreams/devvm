@@ -7,9 +7,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 
 use super::bounds::STATE_BOUND;
 use super::windows_options;
-use super::{
-    SharedWindowsGuest, WindowsBase, guest_until, printed, pwsh, ran, shared_windows_guest, until, windows_base,
-};
+use super::{SharedWindowsGuest, WindowsBase, printed, pwsh, ran, shared_windows_guest, until, windows_base};
 use crate::guest::windows::elevate::TASK;
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{answer_to, step};
@@ -26,36 +24,56 @@ fn pending(guest: &dyn Guest) -> String {
     )
 }
 
-/// An elevated command that makes its own flag file and waits for the other's: both are running at the same time, or
-/// neither ends (the host's bound on the answer fails the test).
-fn rendezvous(own: &str, other: &str, code: i32) -> Command {
-    let wait = guest_until(
-        &format!("the flag {other}.flag"),
-        &format!("Test-Path -LiteralPath C:/ProgramData/devvm/{other}.flag"),
-    );
-    pwsh(
-        RunAs::Elevated,
-        &format!(
-            "Set-Content -LiteralPath C:/ProgramData/devvm/{own}.flag -Value x; {wait}; \
-             Write-Output 'out {own}'; [Console]::Error.WriteLine('err {own}'); exit {code}"
-        ),
+/// The flag file `name` in the guest.
+fn flag(name: &str) -> String {
+    format!("C:/ProgramData/devvm/{name}.flag")
+}
+
+/// PowerShell that waits in the guest until the flag `name` exists. It has no bound: the host makes the flag, on every
+/// path of its test, so nothing waits for ever and no wait of the guest's decides what the host asserts.
+fn wait_for_flag(name: &str) -> String {
+    format!(
+        "while (-not (Test-Path -LiteralPath {})) {{ Start-Sleep -Milliseconds 100 }}",
+        flag(name)
     )
 }
 
-/// Makes the flag file `name` from outside the command that waits for it, so that command goes on. The rendezvous
-/// calls it for its own flag whatever its run returned, so the other side never waits for a command that did not
-/// make it; making a flag that exists again is harmless. The result is only printed; a guest that cannot make the
-/// file has failed the command it serves too.
+/// Makes the flag file `name` from outside the command that waits for it, so that command goes on. The result is only
+/// printed; a guest that cannot make the file has failed the command it serves too.
 fn release(guest: &dyn Guest, name: &str) {
-    if let Err(error) = ran(
-        guest,
-        &pwsh(
-            RunAs::User,
-            &format!("Set-Content -LiteralPath C:/ProgramData/devvm/{name}.flag -Value x"),
-        ),
-    ) {
+    let script = format!("Set-Content -LiteralPath {} -Value x", flag(name));
+    if let Err(error) = ran(guest, &format!("making {name}.flag"), &pwsh(RunAs::User, &script)) {
         eprintln!("cannot release {name}.flag: {error}");
     }
+}
+
+/// Makes the flag `name` when dropped, so the command that waits for it ends with the test, whether the test passed or
+/// failed.
+struct Releases<'a> {
+    guest: &'a dyn Guest,
+    name: &'static str,
+}
+
+impl Drop for Releases<'_> {
+    fn drop(&mut self) {
+        release(self.guest, self.name);
+    }
+}
+
+/// The flag the two commands of the test below wait for.
+const BOTH_RUNNING: &str = "both-running";
+
+/// An elevated command that makes its own flag file, then waits for [`BOTH_RUNNING`].
+fn rendezvous(own: &str, code: i32) -> Command {
+    pwsh(
+        RunAs::Elevated,
+        &format!(
+            "Set-Content -LiteralPath {} -Value x; {}; \
+             Write-Output 'out {own}'; [Console]::Error.WriteLine('err {own}'); exit {code}",
+            flag(own),
+            wait_for_flag(BOTH_RUNNING)
+        ),
+    )
 }
 
 #[skuld::test]
@@ -64,22 +82,37 @@ fn windows_two_elevated_commands_at_once_each_get_their_own_output_and_status(
 ) {
     printed(
         &guest.vm,
-        "Remove-Item -LiteralPath C:/ProgramData/devvm/a.flag, C:/ProgramData/devvm/b.flag -ErrorAction Ignore",
+        &format!(
+            "Remove-Item -LiteralPath {}, {}, {} -ErrorAction Ignore",
+            flag("a"),
+            flag("b"),
+            flag(BOTH_RUNNING)
+        ),
     );
-    let (a, b) = (rendezvous("a", "b", 3), rendezvous("b", "a", 5));
+    let (a, b) = (rendezvous("a", 3), rendezvous("b", 5));
 
     step("running the two commands");
+    // Each command makes its flag and waits. The host sees both flags, which only two commands running at once make, and
+    // then lets them end. A product that runs them one after the other fails the wait for the second flag. The guard makes
+    // the last flag on every path, so the commands end either way.
     let (a, b) = std::thread::scope(|scope| {
-        let a = scope.spawn(|| {
-            let seen = ran(&guest.vm, &a);
-            release(&guest.vm, "a");
-            seen
+        let a = scope.spawn(|| ran(&guest.vm, "the elevated command a", &a));
+        let b = scope.spawn(|| ran(&guest.vm, "the elevated command b", &b));
+        let go = Releases {
+            guest: &guest.vm,
+            name: BOTH_RUNNING,
+        };
+        until("both elevated commands running at once", || {
+            printed(
+                &guest.vm,
+                &format!(
+                    "(Test-Path -LiteralPath {}) -and (Test-Path -LiteralPath {})",
+                    flag("a"),
+                    flag("b")
+                ),
+            ) == "True"
         });
-        let b = scope.spawn(|| {
-            let seen = ran(&guest.vm, &b);
-            release(&guest.vm, "b");
-            seen
-        });
+        drop(go);
         (a.join().unwrap(), b.join().unwrap())
     });
     let (a, b) = (a.unwrap(), b.unwrap());
@@ -95,7 +128,12 @@ fn windows_two_elevated_commands_at_once_each_get_their_own_output_and_status(
     }
     printed(
         &guest.vm,
-        "Remove-Item -LiteralPath C:/ProgramData/devvm/a.flag, C:/ProgramData/devvm/b.flag",
+        &format!(
+            "Remove-Item -LiteralPath {}, {}, {}",
+            flag("a"),
+            flag("b"),
+            flag(BOTH_RUNNING)
+        ),
     );
 }
 
@@ -127,14 +165,12 @@ fn windows_an_elevated_command_streams_its_output_as_it_runs(
 ) {
     printed(
         &guest.vm,
-        "Remove-Item -LiteralPath C:/ProgramData/devvm/go.flag -ErrorAction Ignore",
+        &format!("Remove-Item -LiteralPath {} -ErrorAction Ignore", flag("go")),
     );
-    // The command ends only once the host has the first line: the host makes the flag then. A product that does not
-    // stream never shows the host the first line: the wait for it ends at its bound, and the test fails.
-    let wait = guest_until(
-        "the flag go.flag",
-        "Test-Path -LiteralPath C:/ProgramData/devvm/go.flag",
-    );
+    // The command ends only once the host has the first line: the host makes the flag then, and on every other path too.
+    // A product that does not stream never shows the host the first line: the wait for it ends at its bound, the flag is
+    // made, and the test fails.
+    let wait = wait_for_flag("go");
     let command = pwsh(
         RunAs::Elevated,
         &format!(
@@ -143,7 +179,7 @@ fn windows_an_elevated_command_streams_its_output_as_it_runs(
     );
     let (sender, first) = mpsc::channel();
 
-    let _guard = answer_to(&command.argv);
+    let _guard = answer_to("the elevated command that streams");
 
     let ((status, seen), heard) = std::thread::scope(|scope| {
         let run = scope.spawn(|| {
@@ -156,8 +192,12 @@ fn windows_an_elevated_command_streams_its_output_as_it_runs(
         });
         // The first line comes while the command still runs. When the run fails first, the sender is dropped and the
         // flag is made all the same, so a command that did start does not wait for it for ever.
+        let go = Releases {
+            guest: &guest.vm,
+            name: "go",
+        };
         let heard = first.recv_timeout(STATE_BOUND);
-        release(&guest.vm, "go");
+        drop(go);
         (run.join().unwrap(), heard)
     });
     assert_ne!(
@@ -175,7 +215,7 @@ fn windows_an_elevated_command_streams_its_output_as_it_runs(
         ["first", "second"],
         "the output reached the host while the command ran"
     );
-    printed(&guest.vm, "Remove-Item -LiteralPath C:/ProgramData/devvm/go.flag");
+    printed(&guest.vm, &format!("Remove-Item -LiteralPath {}", flag("go")));
 }
 
 /// Fails its write once the first line is whole, as a reader that went away does.
@@ -197,20 +237,40 @@ impl Write for Leaver {
     }
 }
 
+/// The elevated child the host started, ended by its process id when the test fails before the host has seen it end:
+/// nothing is left running on the shared guest.
+struct Child<'a> {
+    guest: &'a dyn Guest,
+    pid: &'a str,
+    ended: bool,
+}
+
+impl Drop for Child<'_> {
+    fn drop(&mut self) {
+        if self.ended {
+            return;
+        }
+        let script = format!("Stop-Process -Id {} -Force -ErrorAction Ignore", self.pid);
+        if let Err(error) = ran(self.guest, "stopping the child", &pwsh(RunAs::Elevated, &script)) {
+            eprintln!("cannot stop process {}: {error}", self.pid);
+        }
+    }
+}
+
 #[skuld::test]
 fn windows_an_elevated_child_ends_when_the_client_goes_away(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
     // The command prints its process id, then runs until it is ended. It has no bound of its own: a bound that ended it
     // would be the one thing that makes the process go, and the test asserts that devvm does. When devvm does not end
-    // it, the wait below for the process to end fails the test, and the instance's teardown ends the child.
+    // it, the wait below for the process to end fails the test, and the test ends the child by its id.
     let command = pwsh(
         RunAs::Elevated,
         "[Console]::Out.WriteLine($PID); [Console]::Out.Flush(); while ($true) { Start-Sleep -Milliseconds 100 }",
     );
     let mut leaver = Leaver { seen: Vec::new() };
 
-    let guard = answer_to(&command.argv);
+    let guard = answer_to("the elevated child that prints its process id and loops");
     // devvm ends the command when its output has nowhere to go; the status that never comes is the guest's.
     let result = guest.vm.run_to(&command, &mut leaver, &mut io::sink());
     drop(guard);
@@ -220,6 +280,11 @@ fn windows_an_elevated_child_ends_when_the_client_goes_away(
         pid.chars().all(|c| c.is_ascii_digit()) && !pid.is_empty(),
         "{pid:?} {result:?}"
     );
+    let mut child = Child {
+        guest: &guest.vm,
+        pid: &pid,
+        ended: false,
+    };
     step("waiting for the process to end");
     until("the command's process ending", || {
         printed(
@@ -227,6 +292,7 @@ fn windows_an_elevated_child_ends_when_the_client_goes_away(
             &format!("if (Get-Process -Id {pid} -ErrorAction Ignore) {{ 'running' }} else {{ 'gone' }}"),
         ) == "gone"
     });
+    child.ended = true;
     // The runner removes the request of a caller that ended.
     until("the runner removing the request", || pending(&guest.vm) == "0");
 }
@@ -239,13 +305,15 @@ fn windows_an_elevated_command_whose_runner_dies_ends_with_an_error_not_a_wait(
 ) {
     step("booting an instance");
     let up = Up::new(&base.image, "w-runner-dies", &windows_options()).unwrap();
-    // The command ends the runner that serves it: the process that started `eb-runner.ps1`, never itself.
+    // The command ends the runner that serves it: the process that started `eb-runner.ps1`, never itself. It then loops
+    // with no bound, so only devvm can end the caller's wait: a guest-side sleep that ran out would end the test's wait
+    // for it.
     let command = pwsh(
         RunAs::Elevated,
-        r#"Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'eb-runner\.ps1' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep -Seconds 60"#,
+        r#"Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'eb-runner\.ps1' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; while ($true) { Start-Sleep -Milliseconds 100 }"#,
     );
 
-    let seen = ran(&*up, &command).unwrap();
+    let seen = ran(&*up, "the command that ends its runner", &command).unwrap();
 
     // The claim file is released by the OS when its runner dies, and `done` never came: the caller says so.
     assert_eq!(seen.status, ExitStatus::Code(126), "{}", seen.stderr_lossy());
@@ -288,7 +356,12 @@ fn windows_an_elevated_request_the_task_never_runs_ends_with_an_error_not_a_wait
         step(&format!("booting an instance, then the helper {}", change.what));
         let up = Up::new(&base.image, &format!("w-task-{}", change.what), &windows_options()).unwrap();
         // The last request the task serves.
-        let done = ran(&*up, &pwsh(RunAs::Elevated, &change.script)).unwrap();
+        let done = ran(
+            &*up,
+            &format!("the command that has the helper {}", change.what),
+            &pwsh(RunAs::Elevated, &change.script),
+        )
+        .unwrap();
         assert_eq!(
             done.status,
             ExitStatus::Code(0),
@@ -299,6 +372,7 @@ fn windows_an_elevated_request_the_task_never_runs_ends_with_an_error_not_a_wait
 
         let seen = ran(
             &*up,
+            &format!("a command with the helper {}", change.what),
             &pwsh(
                 RunAs::Elevated,
                 "Set-Content -LiteralPath C:/ProgramData/devvm/ran.txt -Value x",

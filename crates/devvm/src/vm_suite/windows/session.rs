@@ -47,10 +47,10 @@ const STOP_AGENT: &str = r#"Get-CimInstance Win32_Process -Filter "Name = 'ssh-b
 
 /// Runs `command` until the connection to the guest holds: the one that served the command before it is still closing.
 /// A connection that does not hold within [`STATE_BOUND`] fails the test with the loss; any other error fails it at once.
-fn answered(guest: &dyn Guest, command: &Command) -> Output {
+fn answered(guest: &dyn Guest, what: &str, command: &Command) -> Output {
     let deadline = Instant::now() + STATE_BOUND;
     loop {
-        match ran(guest, command) {
+        match ran(guest, what, command) {
             Ok(output) => return output,
             Err(e) if e.kind() == ErrorKind::ConnectionLost => {
                 assert!(
@@ -76,10 +76,10 @@ fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of
     step("stopping the agent");
     // The agent that serves this command ends with it: the connection is lost, or the command ends with a status that
     // is not its own. Either is the end of the agent.
-    let _ = ran(&*up, &pwsh(RunAs::User, STOP_AGENT));
+    let _ = ran(&*up, "the command that stops the agent", &pwsh(RunAs::User, STOP_AGENT));
 
     step("running a command after the agent stopped");
-    let seen = answered(&*up, &Command::new(["whoami"]));
+    let seen = answered(&*up, "whoami after the agent stopped", &Command::new(["whoami"]));
     // The documented limit: the command runs nowhere, and says so. 126 is a guest status like any other.
     assert_eq!(seen.status, ExitStatus::Code(126), "{}", seen.stderr_lossy());
     assert_eq!(seen.stdout_lossy(), "", "a command printed output in session 0");

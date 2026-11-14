@@ -29,7 +29,7 @@ pub(super) const RESTARTS: [Restart; 3] = [Restart::StopStart, Restart::InPlace,
 
 /// The guest's boot id, which the boot task writes anew at every boot.
 pub(super) fn boot_id(guest: &dyn Guest) -> String {
-    let output = ran(guest, &WindowsGuest.boot_id_command()).unwrap();
+    let output = ran(guest, "the boot id", &WindowsGuest.boot_id_command()).unwrap();
     assert_eq!(output.status, ExitStatus::Code(0), "{}", output.stderr_lossy());
     let id = output.stdout_lossy().trim().to_owned();
     assert!(!id.is_empty(), "the guest has no boot id");
@@ -54,7 +54,7 @@ pub(super) fn restart(engine: &Arc<Engine>, up: &Up, kind: Restart) {
 fn restart_in_place(engine: &Arc<Engine>, instance: &Instance) {
     let old = boot_id(instance);
     let restart = Command::new(["shutdown", "/r", "/f", "/t", "0"]);
-    match ran(instance, &restart) {
+    match ran(instance, "shutdown /r", &restart) {
         Ok(output) => {
             assert_eq!(
                 output.status,

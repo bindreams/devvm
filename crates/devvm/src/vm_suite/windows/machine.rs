@@ -7,12 +7,11 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::bounds::TERMINAL_BOUND;
 use super::{
-    SharedWindowsGuest, WindowsBase, guest_until, printed, ran, shared_windows_guest, windows_base, windows_iso,
-    windows_options,
+    SharedWindowsGuest, WindowsBase, printed, ran, shared_windows_guest, windows_base, windows_iso, windows_options,
 };
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
@@ -149,6 +148,16 @@ fn output_of(stdout: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
     receiver
 }
 
+/// The `ssh` client of a test, ended when the test is: a test that fails leaves no session running on the guest.
+struct Client(std::process::Child);
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// An interactive session through the system `ssh -tt`: a command typed into it runs and prints, and a Ctrl-C byte ends a
 /// running command. The input stays open until the last marker has come back, then the shell exits and the input closes:
 /// a terminal session whose input ends first may end without running anything (the stated limit), and the status of an
@@ -171,21 +180,22 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     host::current().quiet(&mut command);
-    let mut ssh = command.spawn().unwrap_or_else(|e| panic!("cannot run ssh: {e}"));
-    let mut input = ssh.stdin.take().expect("a piped stdin");
-    let output = output_of(ssh.stdout.take().expect("a piped stdout"));
+    let mut ssh = Client(command.spawn().unwrap_or_else(|e| panic!("cannot run ssh: {e}")));
+    let mut input = ssh.0.stdin.take().expect("a piped stdin");
+    let output = output_of(ssh.0.stdout.take().expect("a piped stdout"));
     let mut seen = String::new();
     // Waits for `needle` in what the terminal printed, which `after` makes happen. The commands print it joined, and the
     // terminal's echo of what was typed has it in pieces, so only a command that ran can satisfy it. A terminal that
-    // prints nothing for [`TERMINAL_BOUND`] fails the test.
+    // has not printed `needle` within [`TERMINAL_BOUND`] of the call fails the test, however much else it printed.
     let mut await_output = |needle: &str, after: &str| {
         step(&format!("awaiting {needle:?} in the terminal, after {after}"));
+        let deadline = Instant::now() + TERMINAL_BOUND;
         while !seen.contains(needle) {
-            match output.recv_timeout(TERMINAL_BOUND) {
+            match output.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
-                Err(RecvTimeoutError::Timeout) => panic!(
-                    "ssh printed nothing within {TERMINAL_BOUND:?} while the test awaited {needle:?}, after {after}; it printed {seen:?}"
-                ),
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("ssh did not print {needle:?} within {TERMINAL_BOUND:?}, after {after}; it printed {seen:?}")
+                }
                 Err(RecvTimeoutError::Disconnected) => {
                     panic!("ssh ended before it printed {needle:?}, after {after}; it printed {seen:?}")
                 }
@@ -196,10 +206,9 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     input.write_all(b"Write-Output ('devvm-' + 'marker')\r").unwrap();
     await_output("devvm-marker", "the typed command ran");
 
-    // The loop's own bound is longer than [`TERMINAL_BOUND`], so a Ctrl-C that does not end it fails the test first.
-    let hold = guest_until("Ctrl-C ending the loop", "$false");
+    // The loop has no bound: only the Ctrl-C ends it, and a Ctrl-C that does not fails the wait for the next marker.
     input
-        .write_all(format!("'run-' + 'ning'; {hold}\r").as_bytes())
+        .write_all(b"'run-' + 'ning'; while ($true) { Start-Sleep -Milliseconds 100 }\r")
         .unwrap();
     await_output("run-ning", "the loop started");
     // Ctrl-C ends the loop, and the shell takes the next command.
@@ -210,7 +219,7 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     input.write_all(b"exit\r").unwrap();
     drop(input);
     let _watch = awaiting("the interactive ssh ending", TERMINAL_BOUND);
-    ssh.wait().unwrap();
+    ssh.0.wait().unwrap();
 }
 
 // The desktop =========================================================================================================
@@ -264,7 +273,12 @@ fn windows_the_agent_has_no_visible_window(#[fixture(shared_windows_guest)] gues
         if argv[0] == "pwsh" {
             argv.push("1");
         }
-        let seen = ran(&guest.vm, &Command::new(argv)).unwrap();
+        let seen = ran(
+            &guest.vm,
+            &format!("{} in the agent's session", argv[0]),
+            &Command::new(argv),
+        )
+        .unwrap();
         assert_eq!(seen.status, ExitStatus::Code(0), "{}", seen.stderr_lossy());
     }
 

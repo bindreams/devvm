@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::fixture::{Launches, Roots, engine_reporting_to, run_ok_as};
-use super::waits::{answer_to, step};
+use super::waits::{answer_to, cut, step};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::engine::Engine;
 use crate::guest::GuestOs;
@@ -37,7 +37,7 @@ mod seed;
 mod session;
 mod shared;
 
-use bounds::{GUEST_BOUND, STATE_BOUND};
+use bounds::STATE_BOUND;
 use shared::{first_try, recipe_text};
 
 /// The Windows base of this test process, with the engine that built it and what it reported.
@@ -149,13 +149,14 @@ pub(super) fn printed(guest: &dyn Guest, script: &str) -> String {
 pub(super) fn printed_as(guest: &dyn Guest, run_as: RunAs, script: &str) -> String {
     let command = pwsh(run_as, script);
     let argv: Vec<&str> = command.argv.iter().map(String::as_str).collect();
-    let _watch = answer_to(&command.argv);
+    let _watch = answer_to(&cut(&format!("{script:?}")));
     run_ok_as(guest, run_as, &argv).trim().to_owned()
 }
 
-/// Runs `command` in `guest`, which must answer within [`ANSWER_BOUND`](super::waits::ANSWER_BOUND).
-pub(super) fn ran(guest: &dyn Guest, command: &Command) -> Result<Output, Error> {
-    let _watch = answer_to(&command.argv);
+/// Runs `command` in `guest`, which must answer within [`ANSWER_BOUND`](super::waits::ANSWER_BOUND). `what` names the
+/// command in the log and in the failure: the argv of a `pwsh` command is the wrapper, not the step.
+pub(super) fn ran(guest: &dyn Guest, what: &str, command: &Command) -> Result<Output, Error> {
+    let _watch = answer_to(what);
     guest.run(command)
 }
 
@@ -173,21 +174,6 @@ pub(super) fn until(what: &str, mut condition: impl FnMut() -> bool) {
         );
         std::thread::sleep(PACE);
     }
-}
-
-/// PowerShell that waits in the guest until `condition` holds. After [`GUEST_BOUND`], which is longer than every host
-/// bound that waits on the effect, it prints that `what` did not happen and ends the wait, not the command or the shell
-/// that runs it: the host fails the test long before, and a bound never decides what the host asserts. `$false` is a
-/// wait that only the bound ends.
-pub(super) fn guest_until(what: &str, condition: &str) -> String {
-    let seconds = GUEST_BOUND.as_secs();
-    let what = what.replace('\'', "''");
-    format!(
-        "$deadline = (Get-Date).AddSeconds({seconds}); \
-         while (-not ({condition})) {{ \
-         if ((Get-Date) -gt $deadline) {{ [Console]::Error.WriteLine('devvm test: {what} did not happen'); break }}; \
-         Start-Sleep -Milliseconds 100 }}"
-    )
 }
 
 /// The integrity level SID of a Medium token and of a High one.
@@ -290,7 +276,7 @@ fn a_flush_through_the_broker_succeeds_with_data_to_flush(#[fixture(shared_windo
         "[IO.File]::WriteAllBytes('C:/ProgramData/devvm/flush-test.bin', (New-Object byte[] 67108864))",
     );
 
-    let output = ran(&guest.vm, &WindowsGuest.flush_command()).unwrap();
+    let output = ran(&guest.vm, "the flush through the broker", &WindowsGuest.flush_command()).unwrap();
 
     assert_eq!(output.status, ExitStatus::Code(0), "{}", output.stderr_lossy());
 }
@@ -351,7 +337,7 @@ fn the_boot_task_waits_for_the_agent_socket_and_the_agent_survives_a_silent_conn
 
 #[skuld::test]
 fn ssh_broker_verify_passes_on_the_clean_guest(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
-    let output = ran(&guest.vm, &Command::new([BROKER_EXE, "verify"])).unwrap();
+    let output = ran(&guest.vm, "ssh-broker verify", &Command::new([BROKER_EXE, "verify"])).unwrap();
 
     assert_eq!(
         output.status,

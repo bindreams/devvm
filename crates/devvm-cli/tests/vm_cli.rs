@@ -47,7 +47,7 @@ mod windows_shared;
 use windows_shared::{first_try, recipe_text};
 #[path = "../../devvm/src/vm_suite/waits.rs"]
 mod waits;
-use waits::{answer_to, step};
+use waits::{answer_to, named, step};
 
 skuld::default_labels!(VM);
 
@@ -277,7 +277,7 @@ impl ExecTarget for ThroughSsh<'_> {
         args.push("--");
         args.extend(case.argv.iter().map(String::as_str));
         let output = {
-            let _watch = answer_to(&case.argv);
+            let _watch = answer_to(&format!("devvm ssh {}", named(&case.argv)));
             self.0.cli.devvm(&args)
         };
 
