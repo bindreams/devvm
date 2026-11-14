@@ -33,7 +33,9 @@
 //! The caller's wait ends from file state alone, with no time bound: a held claim is a live runner; a released claim
 //! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
 //! longer queued or running is a helper that is not going to run the command (the caller claims the request itself, so
-//! no runner can take it afterwards). Another request's instance does not count: the task runs them in parallel.
+//! no runner can take it afterwards). An instance whose state cannot be read is the same: the caller withdraws the
+//! request, and the wait goes on if a runner holds the claim. Another request's instance does not count: the task runs
+//! them in parallel.
 
 use super::wrap::{literal, session_check};
 
@@ -49,15 +51,15 @@ mod elevate_pwsh_tests;
 pub(crate) const ROOT: &str = r"C:\ProgramData\devvm\eb";
 /// The scheduled task that runs a request: `user`, highest privileges, `MultipleInstances Parallel`.
 pub(crate) const TASK: &str = "devvm-eb";
-pub(super) const SCRIPT: &str = "script.ps1";
-pub(super) const CALLER: &str = "caller";
-pub(super) const CLAIM: &str = "claim";
+pub(crate) const SCRIPT: &str = "script.ps1";
+pub(crate) const CALLER: &str = "caller";
+pub(crate) const CLAIM: &str = "claim";
 pub(super) const STDOUT: &str = "stdout";
 pub(super) const STDERR: &str = "stderr";
 pub(super) const EXIT: &str = "exit";
-pub(super) const DONE: &str = "done";
+pub(crate) const DONE: &str = "done";
 /// Written by the caller when it has read everything the runner wrote: the runner may remove the request.
-pub(super) const READ: &str = "read";
+pub(crate) const READ: &str = "read";
 
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
 const PAUSE_MILLISECONDS: u32 = 200;
@@ -111,24 +113,29 @@ function Withdraw-Request {
         throw
     }
 }
+# `SCHED_E_TASK_NOT_RUNNING` (0x8004130B), which an ended instance answers instead of a state, anywhere in the chain.
+function Test-NotRunning($failure) {
+    for ($e = $failure; $e; $e = $e.InnerException) {
+        if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) { return $true }
+    }
+    return $false
+}
 # The state of the instance this caller started, as text: its own state, because the task runs other requests'
-# instances at the same time. `not started` is no instance, and `not running` an ended one that answers
-# `SCHED_E_TASK_NOT_RUNNING` (0x8004130B) instead of a state. `$null` is a state that cannot be read, and only while a
-# runner has claimed the request: the claim is then what the loop goes on with. Otherwise it is thrown. A getter that
-# failed reads as `$null` in PowerShell, so the raw value is checked before it becomes a number.
+# instances at the same time. `not started` is no instance, and `not running` an ended one (see Test-NotRunning). A
+# state that cannot be read is the exception that says why, never a state. A getter that failed reads as `$null` in
+# PowerShell and leaves its error in `$Error`, so the raw value is checked before it becomes a number, and the error
+# is looked at.
 function Get-InstanceState($instance) {
     if ($null -eq $instance) { return 'not started' }
-    try { $instance.Refresh(); $raw = $instance.State }
+    try { $instance.Refresh(); $Error.Clear(); $raw = $instance.State }
     catch {
-        for ($e = $_.Exception; $e; $e = $e.InnerException) {
-            if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) { return 'not running' }
-        }
-        if ([IO.File]::Exists($claim)) { return $null }
-        throw
+        if (Test-NotRunning $_.Exception) { return 'not running' }
+        return $_.Exception
     }
     if ($null -eq $raw) {
-        if ([IO.File]::Exists($claim)) { return $null }
-        throw 'the state of the instance could not be read'
+        foreach ($record in $Error) { if (Test-NotRunning $record.Exception) { return 'not running' } }
+        if ($Error.Count -gt 0) { return $Error[0].Exception }
+        return [InvalidOperationException]::new('the state was empty')
     }
     $state = [int]$raw
     if ($state -ge 0 -and $state -lt $states.Count) { return $states[$state] }
@@ -169,9 +176,12 @@ try {
         if ($claimed -and -not $held) { $message = 'the elevated runner ended without a result'; $abandoned = $true; break }
         if (-not $claimed) {
             $instanceState = Get-InstanceState $instance
-            if ($null -ne $instanceState -and $instanceState -ne 'queued' -and $instanceState -ne 'running') {
+            $unreadable = $instanceState -is [Exception]
+            if ($unreadable -or ($instanceState -ne 'queued' -and $instanceState -ne 'running')) {
+                # A runner that claimed since the look serves the request: the wait goes on.
                 if (-not (Withdraw-Request)) { Start-Sleep -Milliseconds {PAUSE}; continue }
-                $message = "the elevated helper did not run the command (instance state: $instanceState)"
+                $message = if ($unreadable) { "the elevated helper failed: the state of the instance could not be read: $($instanceState.Message)" }
+                else { "the elevated helper did not run the command (instance state: $instanceState)" }
                 $abandoned = $true
                 break
             }

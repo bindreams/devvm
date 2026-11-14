@@ -6,13 +6,15 @@
 use std::io::{self, Write};
 
 use super::{SharedWindowsGuest, pwsh, shared_windows_guest};
-use crate::guest::windows::elevate::{ROOT, TASK};
+use crate::guest::windows::elevate::{CALLER, CLAIM, DONE, READ, ROOT, SCRIPT, TASK};
 use crate::vm_suite::waits::{answer_to, step};
 use crate::{ExitStatus, RunAs};
 
 /// The guest side. `$live` is set before it: a request that a runner serves, or an id that no request has (the runner
-/// exits without claiming). The loop is tight, has no pause and no count: it ends when the instance does, and the
-/// host's [`answer_to`] bound ends a run in which it never does. The times are for reading the log, not for deciding.
+/// exits without claiming). The loop is tight, has no pause and no count: it ends when the instance does (its state is
+/// ready or disabled, or its `InstanceGuid` is no longer among the task's instances), and the host's [`answer_to`] bound
+/// ends a run in which it never does. A `Refresh` that throws is recorded, and the loop goes on. The times are for
+/// reading the log, not for deciding.
 const MEASUREMENT: &str = r#"$ErrorActionPreference = 'Stop'
 $service = New-Object -ComObject 'Schedule.Service'
 $service.Connect()
@@ -28,15 +30,16 @@ function Chain($e) {
     }
     $parts -join ' <- '
 }
-# One look: Refresh, then the raw State (the error it leaves when it reads as $null), then the task's instance count.
+# One look: Refresh (a throw is recorded, not an end), then the raw State (the error it leaves when it reads as $null),
+# then the task's instances. Why says what ended the instance, and is $null while it has not ended.
 function Look {
     $refresh = 'no instance'
     $state = 'no instance'
     $raw = $null
-    $ended = $false
+    $why = $null
     if ($null -ne $instance) {
         $refresh = 'ok'
-        try { $instance.Refresh() } catch { $refresh = 'threw ' + (Chain $_.Exception); $ended = $true }
+        try { $instance.Refresh() } catch { $refresh = 'threw ' + (Chain $_.Exception) }
         $ErrorActionPreference = 'Continue'
         $Error.Clear()
         try {
@@ -44,38 +47,48 @@ function Look {
             $state = if ($null -eq $raw) { '$null' } else { "$raw ($($raw.GetType().Name))" }
             if ($null -eq $raw -and $Error.Count -gt 0) { $state += ' after the error ' + (Chain $Error[0].Exception) }
         } catch { $state = 'threw ' + (Chain $_.Exception) }
-        if ($raw -in 1, 3) { $ended = $true }
+        if ($raw -in 1, 3) { $why = "state $raw" }
     }
-    try { $count = "$($task.GetInstances(0).Count)" } catch { $count = 'threw ' + (Chain $_.Exception) }
-    if ($null -eq $instance -and $count -eq '0') { $ended = $true }
-    $files = 'request=' + [IO.Directory]::Exists($dir) + ' claim=' + [IO.File]::Exists("$dir\claim") + ' done=' + [IO.File]::Exists("$dir\done")
-    [pscustomobject]@{ Key = "Refresh: $refresh; State: $state; GetInstances(0).Count: $count; $files"; Ended = $ended }
+    $listed = 'unknown'
+    try {
+        $guids = @($task.GetInstances(0) | ForEach-Object { $_.InstanceGuid })
+        $instances = "$($guids.Count) [$($guids -join ', ')]"
+        if ($null -ne $guid) { $listed = [string]($guids -contains $guid) }
+        if ($listed -eq 'False' -and -not $why) { $why = 'InstanceGuid no longer among the instances' }
+        if ($guids.Count -eq 0 -and -not $why) { $why = 'no instances' }
+    } catch { $instances = 'threw ' + (Chain $_.Exception) }
+    $files = 'request=' + [IO.Directory]::Exists($dir) + ' claim=' + [IO.File]::Exists("$dir\{CLAIM}") + ' done=' + [IO.File]::Exists("$dir\{DONE}")
+    [pscustomobject]@{ Key = "Refresh: $refresh; State: $state; GetInstances(0): $instances; listed: $listed; $files"; Why = $why }
 }
 if ($live) {
     $self = [Diagnostics.Process]::GetCurrentProcess()
     $building = "$dir.tmp"
     [void][IO.Directory]::CreateDirectory($building)
-    [IO.File]::WriteAllText("$building\script.ps1", 'exit 0', $utf8)
-    [IO.File]::WriteAllText("$building\caller", "$($self.Id) $($self.StartTime.ToUniversalTime().Ticks)", $utf8)
+    [IO.File]::WriteAllText("$building\{SCRIPT}", 'exit 0', $utf8)
+    [IO.File]::WriteAllText("$building\{CALLER}","$($self.Id) $($self.StartTime.ToUniversalTime().Ticks)", $utf8)
     [IO.Directory]::Move($building, $dir)
 }
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $instance = $task.Run($id)
 $returned = if ($null -eq $instance) { 'null' } else { $instance.GetType().FullName }
-"{0,6} ms  Run($id) returned $returned; live=$live" -f $clock.ElapsedMilliseconds
+$guid = $null
+if ($null -ne $instance) {
+    try { $guid = "$($instance.InstanceGuid)" } catch { $guid = $null; $returned += ' (InstanceGuid threw ' + (Chain $_.Exception) + ')' }
+}
+"{0,6} ms  Run($id) returned $returned; InstanceGuid=$guid; live=$live" -f $clock.ElapsedMilliseconds
 $last = $null
 $wrote = $false
 do {
     $look = Look
     if ($look.Key -ne $last) { '{0,6} ms  {1}' -f $clock.ElapsedMilliseconds, $look.Key; $last = $look.Key }
     # The runner waits for the caller's word that it read the answer: the instance runs until then.
-    if ($live -and -not $wrote -and [IO.File]::Exists("$dir\done")) {
-        [IO.File]::WriteAllText("$dir\read", '', $utf8)
+    if ($live -and -not $wrote -and [IO.File]::Exists("$dir\{DONE}")) {
+        [IO.File]::WriteAllText("$dir\{READ}",'', $utf8)
         $wrote = $true
         '{0,6} ms  the caller wrote read' -f $clock.ElapsedMilliseconds
     }
-} until ($look.Ended)
-'{0,6} ms  ended; request directory exists={1}' -f $clock.ElapsedMilliseconds, [IO.Directory]::Exists($dir)
+} until ($look.Why)
+'{0,6} ms  ended by {1}; request directory exists={2}' -f $clock.ElapsedMilliseconds, $look.Why, [IO.Directory]::Exists($dir)
 exit 0"#;
 
 /// Prints each complete line it is written as an `M:` line of the log, as it comes: a measurement that never ends still
@@ -135,7 +148,17 @@ fn windows_the_helper_instance_is_measured_from_the_start_to_its_end(
     ] {
         step(&format!("measuring {phase}"));
         eprintln!("M: {phase}");
-        let script = MEASUREMENT.replace("{TASK}", TASK).replace("{ROOT}", ROOT);
+        let script = [
+            ("{TASK}", TASK),
+            ("{ROOT}", ROOT),
+            ("{SCRIPT}", SCRIPT),
+            ("{CALLER}", CALLER),
+            ("{CLAIM}", CLAIM),
+            ("{DONE}", DONE),
+            ("{READ}", READ),
+        ]
+        .into_iter()
+        .fold(MEASUREMENT.to_owned(), |text, (from, to)| text.replace(from, to));
         let command = pwsh(RunAs::User, &format!("$live = ${live}\n{script}"));
         let (mut out, mut err) = (Lines::new("M: "), Lines::new("M: stderr: "));
 
@@ -152,9 +175,7 @@ fn windows_the_helper_instance_is_measured_from_the_start_to_its_end(
             err.all
         );
         assert!(
-            out.all
-                .iter()
-                .any(|line| line.contains("ended; request directory exists")),
+            out.all.iter().any(|line| line.contains("ended by ")),
             "{phase}: the instance did not end: {:?}",
             out.all
         );
