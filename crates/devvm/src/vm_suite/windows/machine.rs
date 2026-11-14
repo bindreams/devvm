@@ -255,7 +255,8 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
 // The desktop =========================================================================================================
 
 /// The names of the programs that own a visible top-level window on the desktop the script runs on.
-const VISIBLE_WINDOWS: &str = r#"Add-Type -TypeDefinition @'
+const VISIBLE_WINDOWS: &str = r#"$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -300,7 +301,7 @@ fn windows_the_agent_has_no_visible_window(#[fixture(shared_windows_guest)] gues
     let by_cmd = printed(
         &guest.vm,
         &format!(
-            "$ErrorActionPreference = 'Stop'; $script = {{ $ErrorActionPreference = 'Stop'; {VISIBLE_WINDOWS} }}; Set-Content -LiteralPath {file} -Value $script.ToString(); \
+            "$ErrorActionPreference = 'Stop'; $script = {{ {VISIBLE_WINDOWS} }}; Set-Content -LiteralPath {file} -Value $script.ToString(); \
              cmd /d /c \"pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {file}\"; $listed = $LASTEXITCODE; \
              Remove-Item -LiteralPath {file}; exit $listed"
         ),

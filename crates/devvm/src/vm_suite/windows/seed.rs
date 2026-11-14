@@ -5,7 +5,6 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::mpsc::TryRecvError;
 
 use super::bounds::BOOT_BOUND;
 use super::session::ssh_remote;
@@ -144,9 +143,9 @@ fn windows_a_stopped_instance_keeps_its_host_key(#[fixture(windows_base)] base: 
     assert_eq!(the_one_key(&base.engine, &up), key);
 }
 
-/// The serial log holds a whole line `marker`, as the boot task writes it.
-fn serial_has(log: &Path, marker: &str) -> bool {
-    match read_from(log, 0) {
+/// The serial log holds, past byte `from`, a whole line `marker`, as the boot task writes it.
+fn serial_has(log: &Path, from: u64, marker: &str) -> bool {
+    match read_from(log, from) {
         Ok(bytes) => String::from_utf8_lossy(&bytes)
             .split(['\n', '\r'])
             .any(|line| line.trim_end() == marker),
@@ -156,58 +155,37 @@ fn serial_has(log: &Path, marker: &str) -> bool {
 }
 
 /// QEMU resets the guest as soon as the boot task has written the host key, a real condition read from the serial log:
-/// the cached writes of the seed are at their most at risk then. The boot task writes the seed again at the next boot,
-/// and sshd offers only the seeded ed25519 key.
+/// the cached writes of the seed are at their most at risk then. The boot task writes the seed at every boot, so the
+/// reset comes in the boot after a first reset of a ready instance, while no start is waiting on the guest. sshd then
+/// offers only the seeded ed25519 key.
 #[skuld::test]
 fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
     #[fixture(windows_base)] base: &WindowsBase,
 ) {
-    // The loops below end with the start, which the engine's boot bound ends; this ends a start that stops for good.
-    let _watch = awaiting("the instance starting and resetting at the seed write", BOOT_BOUND);
     let up = Up::created(&base.image, "w-hard-reset", &windows_options()).unwrap();
     let resumed = base.launches.resumed();
+    step("booting an instance");
+    up.start().unwrap();
+    // The hook sends the record before the start returns.
+    let record = resumed.try_recv().expect("the start resumed a machine");
     let backend = base.engine.backend().unwrap();
 
-    let (reset, started) = std::thread::scope(|scope| {
-        let start = scope.spawn(|| up.start());
-        // The machine's record, once it runs. A start that ended before it was looked at is read after it ended, so a
-        // record sent before the end is found; the start may end in a failure the join reports.
-        let record = loop {
-            let ended = start.is_finished();
-            match resumed.try_recv() {
-                Ok(record) => break Some(record),
-                Err(TryRecvError::Empty) if !ended => std::thread::sleep(PACE),
-                Err(_) => break None,
-            }
-        };
-        // The reset, while the start runs. A failed reset is reported with the start's outcome, which names the cause
-        // when the start killed the machine itself.
-        let mut reset = None;
-        if let Some(record) = &record {
-            while !start.is_finished() {
-                if serial_has(&record.serial_log, "DEVVM-SEED-WRITTEN=ssh_host_ed25519_key") {
-                    reset = Some(backend.attach(record).and_then(|mut machine| machine.reset()));
-                    break;
-                }
-                std::thread::sleep(PACE);
-            }
+    // The marker of the boot that follows: the log of the one before ends here.
+    let from = std::fs::metadata(&record.serial_log).unwrap().len();
+    step("resetting it");
+    backend.attach(&record).unwrap().reset().unwrap();
+    {
+        let _watch = awaiting("the boot task writing the host key after the reset", BOOT_BOUND);
+        while !serial_has(&record.serial_log, from, "DEVVM-SEED-WRITTEN=ssh_host_ed25519_key") {
+            std::thread::sleep(PACE);
         }
-        (reset, start.join().unwrap())
-    });
-    // Between the seed write and readiness the boot task waits for the user's logon and the agent, so a start that
-    // ended before the marker was seen did not get the reset this test is for.
-    let Some(reset) = reset else {
-        panic!(
-            "the start ended before the host had seen the host key written and reset the guest; the start: {started:?}"
-        );
-    };
-    if let Err(e) = reset {
-        panic!("the reset at the seed write failed: {e}; the start: {started:?}");
     }
-    // A start survives a reset during boot: the engine's wait does not end when the guest restarts.
-    started.unwrap_or_else(|e| panic!("the start failed after the reset during it: {e}"));
-    // The start may have seen the guest ready just before the reset.
-    await_ready(&base.engine, &up);
+    step("resetting it at the seed write");
+    backend.attach(&record).unwrap().reset().unwrap();
+    {
+        let _watch = awaiting("the instance answering after the reset at the seed write", BOOT_BOUND);
+        await_ready(&base.engine, &up);
+    }
 
     step("checking the host key after the reset");
     // sshd offers the pinned key alone.
