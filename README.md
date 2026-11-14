@@ -78,7 +78,7 @@ user, not elevated, through ssh-broker in the user's own session, so they see it
   the guest has no separation between the user and the administrator, as a Linux guest has none with its passwordless
   `sudo`.
 - **`set: { uac: auto-approve }`** makes an administrator's elevation prompt-free in the guest, with no reboot.
-- A command line can be at most 32,767 characters on the guest. A command whose script is longer once quoted is refused,
+- A command line can be at most 32,766 characters on the guest. A command whose script is longer once quoted is refused,
   naming both lengths.
 
 Limits:
