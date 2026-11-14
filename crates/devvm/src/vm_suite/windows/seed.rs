@@ -108,9 +108,8 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
             match resumed.try_recv() {
                 Ok(record) => break Some(record),
                 Err(TryRecvError::Empty) if !start.is_finished() => std::thread::sleep(PACE),
-                // The start has ended; a record sent between the two looks is in the channel now.
-                Err(TryRecvError::Empty) => break resumed.try_recv().ok(),
-                Err(TryRecvError::Disconnected) => break None,
+                // A record sent after the start ended is never used.
+                Err(_) => break None,
             }
         };
         if let Some(record) = record {
