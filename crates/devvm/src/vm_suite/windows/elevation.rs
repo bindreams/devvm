@@ -35,6 +35,16 @@ fn rendezvous(own: &str, other: &str, code: i32) -> Command {
     )
 }
 
+/// Makes the flag file `name` from outside the command that waits for it, so that command ends. A caller that has
+/// finished or failed calls this for its own flag: the other side then never waits for a command that is not there. The
+/// result is not looked at; a guest that cannot make the file has failed the command it serves too.
+fn release(guest: &dyn Guest, name: &str) {
+    let _ = guest.run(&pwsh(
+        RunAs::User,
+        &format!("Set-Content -LiteralPath C:/ProgramData/devvm/{name}.flag -Value x"),
+    ));
+}
+
 #[skuld::test]
 fn windows_two_elevated_commands_at_once_each_get_their_own_output_and_status(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
@@ -46,10 +56,19 @@ fn windows_two_elevated_commands_at_once_each_get_their_own_output_and_status(
     let (a, b) = (rendezvous("a", "b", 3), rendezvous("b", "a", 5));
 
     let (a, b) = std::thread::scope(|scope| {
-        let a = scope.spawn(|| guest.vm.run(&a));
-        let b = scope.spawn(|| guest.vm.run(&b));
-        (a.join().unwrap().unwrap(), b.join().unwrap().unwrap())
+        let a = scope.spawn(|| {
+            let seen = guest.vm.run(&a);
+            release(&guest.vm, "a");
+            seen
+        });
+        let b = scope.spawn(|| {
+            let seen = guest.vm.run(&b);
+            release(&guest.vm, "b");
+            seen
+        });
+        (a.join().unwrap(), b.join().unwrap())
     });
+    let (a, b) = (a.unwrap(), b.unwrap());
 
     for (name, seen, code) in [("a", a, 3), ("b", b, 5)] {
         assert_eq!(seen.status, ExitStatus::Code(code), "{name}: {}", seen.stderr_lossy());
@@ -96,16 +115,12 @@ fn windows_an_elevated_command_streams_its_output_as_it_runs(
         &guest.vm,
         "Remove-Item -LiteralPath C:/ProgramData/devvm/go.flag -ErrorAction Ignore",
     );
-    // The command ends only once the host has the first line: the host creates the flag then. The guest's wait has a
-    // bound, for a product that does not stream: nothing then tells the host about the first line, and the command
-    // ends by itself with a status that fails the test.
+    // The command ends only once the host has the first line: the host makes the flag then. The wait has no bound; a
+    // product that does not stream never shows the host the first line, and the job's own timeout ends the test.
     let command = pwsh(
         RunAs::Elevated,
         "[Console]::Out.WriteLine('first'); [Console]::Out.Flush(); \
-         $watch = [Diagnostics.Stopwatch]::StartNew(); \
-         while (-not (Test-Path -LiteralPath C:/ProgramData/devvm/go.flag)) { \
-             if ($watch.Elapsed.TotalSeconds -gt 300) { [Console]::Out.WriteLine('gave up'); exit 9 }; \
-             Start-Sleep -Milliseconds 100 }; \
+         while (-not (Test-Path -LiteralPath C:/ProgramData/devvm/go.flag)) { Start-Sleep -Milliseconds 100 }; \
          [Console]::Out.WriteLine('second')",
     );
     let (sender, first) = mpsc::channel();
@@ -116,18 +131,16 @@ fn windows_an_elevated_command_streams_its_output_as_it_runs(
                 seen: Vec::new(),
                 first: Some(sender),
             };
-            let status = guest.vm.run_to(&command, &mut watch, &mut io::sink()).unwrap();
+            let status = guest.vm.run_to(&command, &mut watch, &mut io::sink());
             (status, watch.seen)
         });
-        // The first line comes while the command still runs; if the command ends without it, the sender is dropped.
-        if first.recv().is_ok() {
-            printed(
-                &guest.vm,
-                "Set-Content -LiteralPath C:/ProgramData/devvm/go.flag -Value x",
-            );
-        }
+        // The first line comes while the command still runs. When the run fails first, the sender is dropped and the
+        // flag is made all the same, so a command that did start does not wait for it for ever.
+        let _ = first.recv();
+        release(&guest.vm, "go");
         run.join().unwrap()
     });
+    let status = status.unwrap();
 
     let text = String::from_utf8_lossy(&seen);
     assert_eq!(status, ExitStatus::Code(0), "{text}");
