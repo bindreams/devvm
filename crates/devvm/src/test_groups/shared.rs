@@ -99,6 +99,32 @@ test_group!(
     env = "DEVVM_TEST_VM",
     consent = "boots QEMU under the host's hypervisor and downloads the pinned QEMU build"
 );
+
+/// Names the Windows installer ISO the `windows_guest` group's tests build their base from.
+pub(crate) const WINDOWS_ISO_VAR: &str = "DEVVM_WINDOWS_ISO";
+
+// Builds a Windows guest from an ISO (about 15 minutes) and boots it. It is on unless `DEVVM_TEST_WINDOWS_GUEST=0`, and
+// then fails the tests naming the ISO variable where that is not set; only the `vm-windows` job gives one. The tests also
+// need the `vm` group's QEMU, so they ask for that group's consent. The lib's tests and `devvm-cli`'s `vm_cli` both join
+// it.
+test_group!(
+    WINDOWS_GUEST => windows_guest,
+    env = "DEVVM_TEST_WINDOWS_GUEST",
+    precondition = host_has_a_windows_iso
+);
+
+fn host_has_a_windows_iso(opt_out: &str) -> Result<(), String> {
+    match std::env::var_os(WINDOWS_ISO_VAR) {
+        None => Err(format!(
+            "the group needs {WINDOWS_ISO_VAR} to name a Windows installer ISO to build the guest from; {opt_out}"
+        )),
+        Some(iso) if !std::path::Path::new(&iso).is_file() => Err(format!(
+            "{WINDOWS_ISO_VAR} names {}, which is not a file; {opt_out}",
+            std::path::Path::new(&iso).display()
+        )),
+        Some(_) => Ok(()),
+    }
+}
 // Windows only uses it: the test attaches a virtual disk with diskpart, which needs an elevated token.
 test_group!(
     EXFAT_VOLUME => exfat_volume,

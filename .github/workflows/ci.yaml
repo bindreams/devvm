@@ -204,9 +204,11 @@ jobs:
     needs: windows-changes
     if: needs.windows-changes.outputs.changed == 'true'
     runs-on: windows-latest
-    # Windows Setup took 22 to 40 minutes and the first logon 4 on a hosted runner, with about 12 minutes of downloads
-    # before; the suites that follow set this again.
-    timeout-minutes: 180
+    # Two Windows bases are built (the library's tests and the executable's each keep their own stores): Windows Setup took
+    # 22 to 40 minutes and the first logon 4 on a hosted runner, with about 12 minutes of downloads before each. The suites
+    # boot about twenty instances of their own, one at a time, besides the shared one. The first full run sets this again;
+    # a hosted job ends at 360.
+    timeout-minutes: 345
     env:
       SKULD_LABELS: windows_guest
     steps:
@@ -242,6 +244,10 @@ jobs:
           "- ISO: $final, $size bytes, sha256 ``$hash``" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Test
+        # A step that hangs ends at its own limit, so the next step and the serial-log upload still run. The limits sum to
+        # less than the job's: this one covers a Windows base build and about twenty boots, the next one a base build and
+        # the exec table.
+        timeout-minutes: 170
         # --nocapture: the base build's progress lines (the guest's markers and license read) land in the log on a pass too.
         run: cargo test -p devvm --lib --locked -- --nocapture
         env:
@@ -250,6 +256,29 @@ jobs:
           DEVVM_TEST_VM_CONSENT: "1"
           DEVVM_TEST_WINDOWS_GUEST: "1"
           DEVVM_WINDOWS_ISO: D:\windows.iso
+
+      # A test process that ended at a watchdog or at the step's limit leaves its machines running. They run from the
+      # sidecar in the tests' cache below D:\devvm-tmp, which nothing else on the runner uses.
+      - name: Stop the machines the library tests left
+        if: always()
+        shell: pwsh
+        run: .github/scripts/stop-job-qemu.ps1
+
+      # The same group through the real `devvm` executable: the exec table through `devvm ssh`. It builds a base of its own.
+      - name: Test the devvm executable
+        if: ${{ !cancelled() }}
+        timeout-minutes: 120
+        run: cargo test -p devvm-cli --locked --test vm_cli -- --nocapture
+        env:
+          DEVVM_TEST_VM: "1"
+          DEVVM_TEST_VM_CONSENT: "1"
+          DEVVM_TEST_WINDOWS_GUEST: "1"
+          DEVVM_WINDOWS_ISO: D:\windows.iso
+
+      - name: Stop the machines the executable tests left
+        if: always()
+        shell: pwsh
+        run: .github/scripts/stop-job-qemu.ps1
 
       - name: Free space
         if: always()

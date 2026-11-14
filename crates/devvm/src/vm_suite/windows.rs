@@ -2,37 +2,60 @@
 //!
 //! Every test here joins the `windows_guest` group (`SKULD_LABELS=windows_guest` selects them), which only the
 //! `vm-windows` job turns on. The base is built once per test process, and one instance of it is started for the tests
-//! that only look at what a command does in the guest. Both run alone among the tests that boot a guest (`GUEST`).
+//! that only look at what a command does in the guest; a test that stops, kills, disables, resets or restarts something
+//! boots an instance of its own. All of them run alone among the tests that boot a guest (`GUEST`).
+//!
+//! The submodules hold the suites by what they look at: the user's session (`session`), the exec table (`commands`),
+//! elevation (`elevation`), the instance's identity (`seed`), restarts (`boots`) and the machine's own state, which is
+//! the account, the disk, the expiry, the terminal and the windows (`machine`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
-use super::fixture::{Launches, Roots, engine_reporting_to, run_ok, run_ok_as};
+use super::fixture::{Launches, Roots, engine_reporting_to, run_ok_as};
+use super::waits::{answer_to, cut, step};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::engine::Engine;
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::elevate::TASK;
 use crate::guest::windows::wrap::BROKER_EXE;
-use crate::recipe::Recipe;
+use crate::recipe::{Recipe, Shell};
 use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir};
-use crate::{BuildOptions, Command, ExitStatus, Guest, Image, RunAs, StartOptions, Vm};
+use crate::{BuildOptions, Command, Error, ExitStatus, Guest, Image, Output, RunAs, StartOptions, Vm};
+
+mod boots;
+mod bounds;
+mod commands;
+mod elevation;
+mod machine;
+mod seed;
+mod session;
+mod shared;
+
+use bounds::STATE_BOUND;
+use shared::{first_try, recipe_text};
 
 /// The Windows base of this test process, with the engine that built it and what it reported.
 pub(super) struct WindowsBase {
     pub engine: Arc<Engine>,
     pub image: Image,
     pub progress: Arc<MemoryProgress>,
-    recipe: Recipe,
-    _roots: Roots,
+    /// When the build reported the license read its base's expiry comes from: taken as the build returns, so a later
+    /// build through `engine` cannot move it.
+    pub license_read_at: SystemTime,
+    /// The machines this base's engine launched.
+    pub launches: Arc<Launches>,
+    pub recipe: Recipe,
+    pub roots: Roots,
 }
 
 /// The installer ISO the group's tests build from.
-#[skuld::fixture(scope = process)]
+#[skuld::fixture(scope = process, deref)]
 pub(super) fn windows_iso(#[fixture(windows_guest)] _group: &Group) -> Result<PathBuf, String> {
     std::env::var_os(WINDOWS_ISO_VAR)
         .map(PathBuf::from)
@@ -41,16 +64,8 @@ pub(super) fn windows_iso(#[fixture(windows_guest)] _group: &Group) -> Result<Pa
 
 /// A recipe file `dir/r.devvm.yaml` that installs Windows from `iso` and runs `steps`, each one step's YAML.
 pub(super) fn windows_recipe(dir: &Path, iso: &Path, steps: &[&str]) -> Recipe {
-    let iso = serde_json::to_string(iso.to_str().expect("a UTF-8 ISO path")).unwrap();
-    let steps = if steps.is_empty() {
-        "steps: []\n".to_owned()
-    } else {
-        format!(
-            "steps:\n{}",
-            steps.iter().map(|step| format!("  - {step}\n")).collect::<String>()
-        )
-    };
-    Recipe::parse(&format!("from: {{ iso: {iso} }}\n{steps}"), &dir.join("r.devvm.yaml")).unwrap()
+    let text = recipe_text(iso, steps).expect("a recipe for a UTF-8 ISO path");
+    Recipe::parse(&text, &dir.join("r.devvm.yaml")).unwrap()
 }
 
 /// What a test that boots the Windows guest asks for: Windows 11 wants 4 GiB.
@@ -65,33 +80,34 @@ pub(super) fn windows_options() -> StartOptions {
 #[skuld::fixture(scope = process, serial = GUEST, labels = [crate::test_harness::GUEST])]
 pub(super) fn windows_base(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
-    #[fixture(windows_iso)] iso: &PathBuf,
+    #[fixture(windows_iso)] iso: &Path,
 ) -> Result<WindowsBase, String> {
-    // A failed build is not tried again by every later test: skuld runs a fixture's setup again after it fails, and
-    // each attempt is a full Windows install.
     static FAILED: OnceLock<String> = OnceLock::new();
-    if let Some(error) = FAILED.get() {
-        return Err(format!("the first build of this process failed: {error}"));
-    }
-    build_windows_base(install, iso).inspect_err(|error| {
-        let _ = FAILED.set(error.clone());
-    })
+    first_try(&FAILED, || build_windows_base(install, iso))
 }
 
 fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsBase, String> {
     let roots = Roots::new(Some(&socket_dir()))?;
     let progress = Arc::new(MemoryProgress::echoing());
-    let engine = engine_reporting_to(&roots.dirs, install, Arc::new(Launches::default()), progress.clone());
+    let launches = Arc::new(Launches::default());
+    let engine = engine_reporting_to(&roots.dirs, install, launches.clone(), progress.clone());
     let recipe = windows_recipe(&roots.dirs.state, iso, &[]);
     let image = engine
         .build(&recipe, &BuildOptions::default())
         .map_err(|e| format!("cannot build the Windows base from {}: {e}", iso.display()))?;
+    let (license_read_at, _) = progress
+        .messages_at()
+        .into_iter()
+        .rfind(|(_, line)| line.starts_with("Windows base: license status"))
+        .ok_or("the build reported no license read")?;
     Ok(WindowsBase {
         engine,
         image,
         progress,
+        license_read_at,
+        launches,
         recipe,
-        _roots: roots,
+        roots,
     })
 }
 
@@ -102,18 +118,85 @@ pub(super) struct SharedWindowsGuest {
 
 #[skuld::fixture(scope = process, serial = GUEST, labels = [crate::test_harness::GUEST])]
 pub(super) fn shared_windows_guest(#[fixture(windows_base)] base: &WindowsBase) -> Result<SharedWindowsGuest, String> {
-    let vm = base
-        .image
-        .start(&windows_options())
-        .map_err(|e| format!("cannot start the Windows guest: {e}"))?;
-    Ok(SharedWindowsGuest { vm })
+    static FAILED: OnceLock<String> = OnceLock::new();
+    first_try(&FAILED, || {
+        step("booting the shared instance");
+        let vm = base
+            .image
+            .start(&windows_options())
+            .map_err(|e| format!("cannot start the Windows guest: {e}"))?;
+        Ok(SharedWindowsGuest { vm })
+    })
+}
+
+/// `script` as the command a `shell: pwsh` step would run: UTF-8 output, and a script block of its own.
+pub(super) fn pwsh(run_as: RunAs, script: &str) -> Command {
+    Command {
+        argv: WindowsGuest
+            .shell_argv(Some(Shell::Pwsh), script)
+            .expect("PowerShell is a shell of a Windows guest"),
+        run_as,
+        cwd: None,
+    }
 }
 
 /// What `script` prints in the guest, as the user, trimmed.
-fn printed(guest: &SharedWindowsGuest, script: &str) -> String {
-    let mut argv = vec!["pwsh", "-NoProfile", "-NonInteractive", "-Command"];
-    argv.push(script);
-    run_ok(&guest.vm, &argv).trim().to_owned()
+pub(super) fn printed(guest: &dyn Guest, script: &str) -> String {
+    printed_as(guest, RunAs::User, script)
+}
+
+/// [`printed`] with the privilege `run_as`.
+pub(super) fn printed_as(guest: &dyn Guest, run_as: RunAs, script: &str) -> String {
+    let command = pwsh(run_as, script);
+    let argv: Vec<&str> = command.argv.iter().map(String::as_str).collect();
+    let _watch = answer_to(&cut(&format!("{script:?}")));
+    run_ok_as(guest, run_as, &argv).trim().to_owned()
+}
+
+/// Runs `command` in `guest`, which must answer within [`ANSWER_BOUND`](super::waits::ANSWER_BOUND). `what` names the
+/// command in the log and in the failure: the argv of a `pwsh` command is the wrapper, not the step.
+pub(super) fn ran(guest: &dyn Guest, what: &str, command: &Command) -> Result<Output, Error> {
+    let _watch = answer_to(what);
+    guest.run(command)
+}
+
+/// The pause between two looks at a condition a wait re-checks. It paces the wait; it never ends it.
+pub(super) const PACE: Duration = Duration::from_millis(200);
+
+/// Waits until `condition` holds. A condition that does not hold within [`STATE_BOUND`] fails the test with `what` did
+/// not happen; the bound only ends the wait.
+pub(super) fn until(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + STATE_BOUND;
+    while !condition() {
+        assert!(
+            Instant::now() < deadline,
+            "{what} did not happen within {STATE_BOUND:?}"
+        );
+        std::thread::sleep(PACE);
+    }
+}
+
+/// The integrity level SID of a Medium token and of a High one.
+pub(super) const MEDIUM: &str = "S-1-16-8192";
+pub(super) const HIGH: &str = "S-1-16-12288";
+
+/// Prints `session=<id> integrity=<SID>` of the process that runs it. The SID is read from `whoami /groups`, which
+/// prints it whatever the guest's language.
+pub(super) const FACTS: &str = r#"$integrity = (whoami /groups | Select-String -Pattern 'S-1-16-\d+').Matches.Value; "session=$([Diagnostics.Process]::GetCurrentProcess().SessionId) integrity=$integrity""#;
+
+/// The session and the integrity level a command of the guest runs in.
+pub(super) fn facts(guest: &dyn Guest, run_as: RunAs) -> String {
+    printed_as(guest, run_as, FACTS)
+}
+
+/// What [`facts`] says of a user's command: in session 1, at Medium integrity.
+pub(super) fn user_facts() -> String {
+    format!("session=1 integrity={MEDIUM}")
+}
+
+/// What [`facts`] says of an elevated command.
+pub(super) fn elevated_facts() -> String {
+    format!("session=1 integrity={HIGH}")
 }
 
 const DAY: Duration = Duration::from_secs(24 * 3600);
@@ -183,17 +266,17 @@ fn the_answer_disk_logs_fit_the_spare_room(#[fixture(windows_base)] base: &Windo
 
 #[skuld::test]
 fn pwsh_resolves_by_name_in_the_built_base(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
-    assert_eq!(printed(guest, "$PSVersionTable.PSVersion.Major"), "7");
+    assert_eq!(printed(&guest.vm, "$PSVersionTable.PSVersion.Major"), "7");
 }
 
 #[skuld::test]
 fn a_flush_through_the_broker_succeeds_with_data_to_flush(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
     printed(
-        guest,
+        &guest.vm,
         "[IO.File]::WriteAllBytes('C:/ProgramData/devvm/flush-test.bin', (New-Object byte[] 67108864))",
     );
 
-    let output = guest.vm.run(&WindowsGuest.flush_command()).unwrap();
+    let output = ran(&guest.vm, "the flush through the broker", &WindowsGuest.flush_command()).unwrap();
 
     assert_eq!(output.status, ExitStatus::Code(0), "{}", output.stderr_lossy());
 }
@@ -204,7 +287,7 @@ fn a_medium_process_reads_the_helper_tasks_state_starts_it_with_an_argument_and_
 ) {
     // The user's own process reads the task: `3` is ready, with no instance running.
     let state = printed(
-        guest,
+        &guest.vm,
         &format!(
             "$service = New-Object -ComObject 'Schedule.Service'; $service.Connect(); \
              [int]$service.GetFolder('\\').GetTask('{TASK}').State"
@@ -216,7 +299,7 @@ fn a_medium_process_reads_the_helper_tasks_state_starts_it_with_an_argument_and_
     // would make some of these fail with "the elevated helper did not run the command".
     let admin = "[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)";
     assert_eq!(
-        printed(guest, admin),
+        printed(&guest.vm, admin),
         "False",
         "an administrator's Medium token does not have the group"
     );
@@ -243,18 +326,18 @@ fn the_boot_task_waits_for_the_agent_socket_and_the_agent_survives_a_silent_conn
     let silent = "$socket = [Net.Sockets.Socket]::new('Unix', 'Stream', 'Unspecified'); \
                   $socket.Connect([Net.Sockets.UnixDomainSocketEndPoint]::new((Join-Path $env:LOCALAPPDATA 'ssh-broker\\agent.sock'))); \
                   $socket.Close(); 'connected'";
-    assert_eq!(printed(guest, silent), "connected");
+    assert_eq!(printed(&guest.vm, silent), "connected");
 
     assert_eq!(
-        printed(guest, "[Diagnostics.Process]::GetCurrentProcess().SessionId"),
+        printed(&guest.vm, "[Diagnostics.Process]::GetCurrentProcess().SessionId"),
         "1"
     );
-    assert_eq!(printed(guest, silent), "connected", "the agent still accepts");
+    assert_eq!(printed(&guest.vm, silent), "connected", "the agent still accepts");
 }
 
 #[skuld::test]
 fn ssh_broker_verify_passes_on_the_clean_guest(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
-    let output = guest.vm.run(&Command::new([BROKER_EXE, "verify"])).unwrap();
+    let output = ran(&guest.vm, "ssh-broker verify", &Command::new([BROKER_EXE, "verify"])).unwrap();
 
     assert_eq!(
         output.status,

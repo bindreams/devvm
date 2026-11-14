@@ -34,8 +34,8 @@ pub(crate) const BROKER_EXE: &str = r"C:\ProgramData\ssh-broker\ssh-broker.exe";
 /// The PowerShell 7 the broker starts for the script (`config.yaml`'s `shell.start`).
 pub(super) const PWSH_EXE: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 
-/// The longest command line `CreateProcess` takes, in UTF-16 units.
-pub(super) const LINE_LIMIT: usize = 32_767;
+/// The longest command line `CreateProcess` takes, in UTF-16 units: its 32,767 include the terminating NUL.
+pub(super) const LINE_LIMIT: usize = 32_766;
 
 /// What a command prints in session 0, with status 126.
 pub(super) const NOT_IN_SESSION: &str = "the command did not reach the user's session";

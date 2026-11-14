@@ -196,6 +196,33 @@ fn wrap_refuses_an_empty_argv_a_nul_and_an_oversize_line() {
     }
 }
 
+/// `CreateProcess` takes 32,767 units of command line including the terminating NUL, so a line of 32,767 units is
+/// refused: a guest's sshd refused the script whose longer line was exactly that (the guest test of the limit).
+#[skuld::test]
+fn a_line_of_the_limit_plus_the_terminating_null_is_refused() {
+    let padded = |n: usize| {
+        let text = format!("'ok' # {}", "a".repeat(n));
+        command(&["pwsh", "-NoProfile", "-NonInteractive", "-Command", &text])
+    };
+    let longer = |n: usize| {
+        let (sshd, broker) = command_line_lengths(&super::script_unchecked(&padded(n)).unwrap());
+        sshd.max(broker)
+    };
+    let (mut low, mut high) = (0, 40_000);
+    while low + 1 < high {
+        let middle = (low + high) / 2;
+        if longer(middle) <= 32_767 {
+            low = middle
+        } else {
+            high = middle
+        }
+    }
+    assert_eq!(longer(low), 32_767, "a pad of {low} makes a line of 32,767 units");
+    let error = wrap(&padded(low)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
+    assert!(wrap(&padded(low - 1)).is_ok(), "a line of 32,765 units is taken");
+}
+
 /// The most that `make(n)` can be padded by (`n` characters of its argument) and still fit both command lines, found
 /// from the lengths `wrap` computes, one character at a time.
 pub(super) fn longest_fit(make: &dyn Fn(usize) -> Command) -> usize {
