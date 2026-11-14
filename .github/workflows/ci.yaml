@@ -262,10 +262,7 @@ jobs:
       - name: Stop the machines the library tests left
         if: always()
         shell: pwsh
-        run: |
-          Get-CimInstance Win32_Process -Filter "Name LIKE 'qemu-system-%'" |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('D:\devvm-tmp\', [StringComparison]::OrdinalIgnoreCase) } |
-            ForEach-Object { "stopping $($_.ProcessId): $($_.ExecutablePath)"; Stop-Process -Id $_.ProcessId -Force }
+        run: .github/scripts/stop-job-qemu.ps1
 
       # The same group through the real `devvm` executable: the exec table through `devvm ssh`. It builds a base of its own.
       - name: Test the devvm executable
@@ -281,10 +278,7 @@ jobs:
       - name: Stop the machines the executable tests left
         if: always()
         shell: pwsh
-        run: |
-          Get-CimInstance Win32_Process -Filter "Name LIKE 'qemu-system-%'" |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('D:\devvm-tmp\', [StringComparison]::OrdinalIgnoreCase) } |
-            ForEach-Object { "stopping $($_.ProcessId): $($_.ExecutablePath)"; Stop-Process -Id $_.ProcessId -Force }
+        run: .github/scripts/stop-job-qemu.ps1
 
       - name: Free space
         if: always()
