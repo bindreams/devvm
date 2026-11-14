@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use self::serial::{Launches, LogReader, Serial};
 use super::WindowsGuest;
-use super::expiry::expiry_from;
+use super::expiry::{describe, expiry_from};
 use super::pins::VIRTIO_WIN;
 use super::templates::{self, AnswerInputs, COMPUTER_NAME, TIME_ZONE};
 use crate::access::session::humanly;
@@ -297,7 +297,8 @@ enum Launched {
 /// These headlines have kind [`ErrorKind::Unavailable`]. When there is none, the first host failure is the headline
 /// with its own kind. The host's failures (the VM process's status, the serial log) follow a headline once each,
 /// separated by `; `, and the first is the result's source. A failing exit carries what QEMU printed.
-/// An end with no exit and no failure is an [`ErrorKind::Internal`] error: nothing says how the launch ended.
+/// An end with no exit and no failure is an [`ErrorKind::Internal`] error: nothing says how the launch ended. It keeps
+/// the guest's `DEVVM-BASE-FAILED=` account in its message when the log holds one.
 fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
     let End { exit, status, log } = end;
     if exit.is_none() && status.is_none() && log.is_none() {
@@ -478,10 +479,7 @@ impl<'a> Build<'a> {
                 &log,
             ));
         };
-        expiry_from(read, evaluation, *read_at).map_err(|error| {
-            let kind = error.kind();
-            error.with_context(kind, "the Windows base's license read")
-        })
+        expiry_from(read, evaluation, *read_at)
     }
 
     /// One launch of the machine, until its VM process exits.
@@ -614,15 +612,18 @@ impl<'a> Build<'a> {
         }
     }
 
-    /// Takes in what the guest wrote: reports each marker and the license read, which restarts the clock of the bound and moves to the
-    /// first-logon phase when its script starts, and keeps the last license read.
+    /// Takes in what the guest wrote: reports each marker and the license read in plain words, and keeps the last
+    /// license read. Any of it restarts the clock of the bound, and only a progress marker moves the phase: the
+    /// first-logon script's first one starts that phase.
     fn observe(&mut self, written: &Serial) {
         for phase in &written.progress {
             self.ctx.progress.message(&format!("Windows base: {phase}"));
         }
         self.watch.observe(written, Instant::now());
         if let Some(license) = &written.license {
-            self.ctx.progress.message(&format!("Windows base: {license}"));
+            self.ctx
+                .progress
+                .message(&format!("Windows base: {}", describe(license)));
             self.license = Some((license.clone(), self.ctx.clock.now()));
         }
     }

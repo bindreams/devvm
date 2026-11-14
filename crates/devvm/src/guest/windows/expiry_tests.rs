@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-use super::expiry_from;
+use super::{describe, expiry_from};
 use crate::ErrorKind;
 
 // Captured serial lines. The product's marker is `DEVVM-LICENSE`; the rest of each line is as captured.
@@ -9,6 +9,9 @@ const EN_US: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), EnterpriseEval edition
 const DE_DE: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), EnterpriseEval edition","Description":"Windows(R) Operating System, TIMEBASED_EVAL channel","LicenseStatus":1,"GracePeriodRemaining":129600,"LicenseFamily":"EnterpriseEval","ProductKeyChannel":"Retail:TB:Eval","PartialProductKey":"YG9R6"}"#;
 // Synthesized: Name and Description in German with non-ASCII letters, escaped as the first-logon script escapes them.
 const LOCALIZED_TEXT: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), Enterprise-Testversion","Description":"Windows(R)-Betriebssystem, TIMEBASED_EVAL-Kanal f\u00fcr Testversionen","LicenseStatus":1,"GracePeriodRemaining":129600,"LicenseFamily":"EnterpriseEval","ProductKeyChannel":"Retail:TB:Eval","PartialProductKey":"YG9R6"}"#;
+// Measured without the activation the bootstrap now makes first (vm-windows run 43545384836 read 5/0 before Windows
+// activated the evaluation, 1/129600 a minute later): whether the LTSC evaluation stays unlicensed after a successful
+// activation is not measured.
 const LTSC_EVAL: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), IoTEnterpriseSEval edition","Description":"Windows(R) Operating System, TIMEBASED_EVAL channel","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"IoTEnterpriseSEval","ProductKeyChannel":"Retail:TB:Eval","PartialProductKey":"M4K7D"} @639301258508628226"#;
 // Synthesized from the documented values (LicenseStatus 5 is "Notification"; a volume edition without a key): no capture
 // of an unactivated non-evaluation guest exists until the owner's LTSC first run.
@@ -39,8 +42,66 @@ fn a_localized_evaluation_guest_expires_grace_minutes_from_now() {
 }
 
 #[skuld::test]
-fn an_evaluation_guest_that_is_not_licensed_is_born_expired() {
+fn an_evaluation_guest_that_is_not_licensed_and_made_no_activation_is_expired_now() {
     assert_eq!(expiry_from(LTSC_EVAL, true, now()).unwrap(), Some(now()));
+}
+
+// What the first-logon script sends after `Activate`: an evaluation that stays unlicensed after a successful activation
+// is born expired.
+const ACTIVATED_STILL_UNLICENSED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","Activation":"activated"}"#;
+const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","Activation":"failed: The Software Licensing Service reported that the computer could not be activated. 0xC004F074"}"#;
+
+#[skuld::test]
+fn an_evaluation_that_stays_unlicensed_after_a_successful_activation_is_born_expired() {
+    assert_eq!(
+        expiry_from(ACTIVATED_STILL_UNLICENSED, true, now()).unwrap(),
+        Some(now())
+    );
+}
+
+#[skuld::test]
+fn a_failed_activation_of_an_evaluation_is_unavailable_and_names_the_failure_and_the_network() {
+    let error = expiry_from(ACTIVATION_FAILED, true, now()).expect_err("a failed activation is not an expiry");
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    let failure = "The Software Licensing Service reported that the computer could not be activated. 0xC004F074";
+    assert_eq!(
+        error.message(),
+        format!(
+            "Windows could not activate the evaluation ({failure}); the build needs the network, and a later build tries again"
+        )
+    );
+}
+
+#[skuld::test]
+fn a_licensed_read_is_not_held_back_by_an_activation_field() {
+    let read = r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":129600,"Description":"d","LicenseFamily":"e","Activation":"activated"}"#;
+    assert_eq!(
+        expiry_from(read, true, now()).unwrap(),
+        Some(now() + Duration::from_secs(129_600 * 60))
+    );
+}
+
+#[skuld::test]
+fn an_activation_that_is_neither_activated_nor_failed_is_an_error() {
+    let read = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"e","Activation":"maybe"}"#;
+    let error = expiry_from(read, true, now()).expect_err(read);
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(error.message().contains("maybe"), "{error}");
+}
+
+#[skuld::test]
+fn a_license_is_described_in_plain_words() {
+    assert_eq!(describe(EN_US), "license status 1, 129600 minutes of grace");
+    assert_eq!(
+        describe(ACTIVATED_STILL_UNLICENSED),
+        "license status 5, 0 minutes of grace, activation activated"
+    );
+    assert_eq!(
+        describe(ACTIVATION_FAILED),
+        "license status 5, 0 minutes of grace, activation failed: The Software Licensing Service reported that the computer could not be activated. 0xC004F074"
+    );
+    assert_eq!(describe(NO_PRODUCT), "no licensed product");
+    assert_eq!(describe("DEVVM-LICENSE=not json"), "license cannot be read");
 }
 
 #[skuld::test]

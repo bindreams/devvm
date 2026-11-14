@@ -43,6 +43,9 @@ const LICENSED: &str = r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":1,"Gr
 const BORN_EXPIRED: &str =
     r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"EnterpriseEval"}"#;
 
+// An evaluation whose activation failed, as the first-logon script prints it.
+const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"EnterpriseEval","Activation":"failed: no network"}"#;
+
 /// What the guest does to its media before it powers off.
 type Before = Box<dyn Fn(&MachineSpec) + Send + Sync>;
 
@@ -639,6 +642,24 @@ fn a_guest_whose_evaluation_is_not_licensed_ends_the_build_as_expired_base(#[fix
 }
 
 #[skuld::test]
+fn an_evaluation_whose_activation_failed_ends_the_build_unavailable_naming_the_failure(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![finished(ACTIVATION_FAILED)]));
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    let error = rig.build(None).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(
+        error
+            .message()
+            .starts_with("Windows could not activate the evaluation (no network); "),
+        "{error}"
+    );
+}
+
+#[skuld::test]
 fn a_base_with_less_than_ten_days_of_grace_is_expired_base_naming_the_date(#[fixture(unicode_home)] home: &Path) {
     let nine_days = LICENSED.replace("129600", &(9 * 24 * 60).to_string());
     let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![finished(&nine_days)]));
@@ -743,11 +764,15 @@ fn progress_markers_are_echoed_as_progress_lines(#[fixture(unicode_home)] home: 
         "specialize",
         "first logon: x",
         "installing OpenSSH",
-        "\"GracePeriodRemaining\":129600",
+        "Windows base: license status 1, 129600 minutes of grace",
     ] {
         let echoed = lines.iter().filter(|line| line.contains(phase)).count();
         assert_eq!(echoed, 1, "{phase} once in {lines:?}");
     }
+    assert!(
+        !lines.iter().any(|line| line.contains("DEVVM-LICENSE")),
+        "the marker line is not echoed: {lines:?}"
+    );
 }
 
 #[skuld::test]
