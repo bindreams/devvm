@@ -52,8 +52,8 @@ echo scans needed: %TRIES% >> "%LOG%"
 echo -- disks after>> "%LOG%"
 type %W%\devvm-list.out>> "%LOG%"
 echo disk chosen: [%DISK%]>> "%LOG%"
-rem EFI, MSR and one Windows partition to the end of the disk. No recovery partition: it would sit behind C: and
-rem stop the boot task from extending C: into a larger disk.
+rem EFI, MSR and one Windows partition to the end of the disk. Setup still shrinks C: and adds a Recovery partition
+rem behind it; the bootstrap removes that one.
 echo select disk %DISK% > %W%\devvm-part.txt
 echo clean>> %W%\devvm-part.txt
 echo convert gpt>> %W%\devvm-part.txt

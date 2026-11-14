@@ -73,8 +73,8 @@ try {
     [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
     Write-Whole $bootIdFile ([Text.Encoding]::ASCII.GetBytes([Convert]::ToHexString($bytes).ToLowerInvariant())) @('S-1-5-32-545')
 
-    # C: as large as the disk. No partition follows it (the base has no recovery partition), so it can grow; a C: that is
-    # as large as the disk needs nothing.
+    # C: as large as the disk. No partition follows it (the bootstrap removes the Recovery partition Setup adds), so it
+    # can grow; a C: that is as large as the disk needs nothing.
     $largest = (Get-PartitionSupportedSize -DriveLetter C).SizeMax
     if ($largest - (Get-Partition -DriveLetter C).Size -ge 1MB) { Resize-Partition -DriveLetter C -Size $largest }
 

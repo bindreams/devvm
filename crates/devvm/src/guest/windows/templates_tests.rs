@@ -148,9 +148,7 @@ fn the_answer_file_names_no_disk_id_and_no_windowspe_driver_paths_and_offline_se
 }
 
 #[skuld::test]
-fn the_answer_file_has_no_recovery_partition_and_the_windows_partition_extends() {
-    let text = answer_file(&inputs()).unwrap().to_lowercase();
-    assert!(!text.contains("recovery"), "Setup would add one behind C:");
+fn the_windows_partition_of_winpe_cmd_takes_the_rest_of_the_disk() {
     let winpe = commands(&rendered("winpe.cmd"));
     let layout: Vec<&str> = winpe.lines().filter(|line| line.contains("create partition")).collect();
     assert_eq!(layout.len(), 3, "{layout:?}");
@@ -158,11 +156,6 @@ fn the_answer_file_has_no_recovery_partition_and_the_windows_partition_extends()
     assert!(
         layout[2].starts_with("echo create partition primary>>") && !layout[2].contains("size"),
         "the Windows partition takes the rest of the disk"
-    );
-    let lower = winpe.to_lowercase();
-    assert!(
-        !lower.contains("recovery") && !lower.contains("de94bba4"),
-        "no recovery partition"
     );
 }
 
@@ -438,6 +431,44 @@ fn the_bootstrap_resets_the_openssh_acl_after_install() {
     let bootstrap = rendered("bootstrap.ps1");
     assert_before(&bootstrap, "install-sshd.ps1", "icacls.exe $sshd /reset /T");
     assert_before(&bootstrap, "Move-Item", "install-sshd.ps1");
+}
+
+#[skuld::test]
+fn the_bootstrap_removes_the_recovery_partitions_behind_c_and_fails_when_any_partition_still_follows_it() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let lines: Vec<&str> = bootstrap.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.contains("reagentc.exe /disable"))
+        .unwrap();
+    assert!(
+        lines[at + 1].trim_start().starts_with("Assert-Exit 'reagentc"),
+        "the exit code of reagentc is checked"
+    );
+    let removal = section(&bootstrap, "reagentc.exe /disable", "Remove-Item -LiteralPath $work");
+    assert!(
+        removal.contains("{de94bba4-06d1-4d40-a16a-bfd50179d6ac}"),
+        "the partition type of Recovery"
+    );
+    assert!(
+        removal.contains("Get-Partition")
+            && removal.contains("Remove-Partition")
+            && removal.contains("-Confirm:$false"),
+        "the Storage cmdlets, never diskpart's localized text"
+    );
+    assert!(!removal.contains("diskpart"));
+    // The partitions that are left behind C: fail the build, naming the type and the size.
+    let check = section(
+        removal, "throw", "
+",
+    );
+    assert!(check.contains("GptType") && check.contains("Size"), "{check}");
+    assert_before(&bootstrap, "ssh-broker.exe\" apply", "reagentc.exe /disable");
+    assert_before(&bootstrap, "reagentc.exe /disable", "Send-Line \"DEVVM-LICENSE=");
+    assert!(
+        !bootstrap.contains("Resize-Partition"),
+        "the boot task's resize is the one copy that claims the space"
+    );
 }
 
 #[skuld::test]
