@@ -375,8 +375,8 @@ fn cli_windows_elevated_runs_at_high_integrity(#[fixture(windows_instance)] inst
 }
 
 /// A reader that goes away stops the command that writes to it: devvm ends the guest command, exits 125 with an `io`
-/// error, and does not wait for a status that may never come. The guest's `yes` then ends by its own SIGPIPE or SIGHUP,
-/// which the last step waits for.
+/// error, and does not wait for a status that may never come. The guest's `yes` then ends by its own failed write
+/// (SIGPIPE), which the last step waits for.
 ///
 /// It runs `devvm ssh` on an instance, not `devvm run`: the VM of a `run` is destroyed with it, so there would be no
 /// guest left to look at.

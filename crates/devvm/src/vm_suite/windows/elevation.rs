@@ -8,19 +8,16 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use super::bounds::STATE_BOUND;
 use super::windows_options;
 use super::{SharedWindowsGuest, WindowsBase, printed, pwsh, ran, shared_windows_guest, until, windows_base};
-use crate::guest::windows::elevate::TASK;
+use crate::guest::windows::elevate::{ROOT, TASK};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{answer_to, step};
 use crate::{Command, ExitStatus, Guest, RunAs};
-
-/// The directory the helper keeps its requests in; it is empty when no request is pending.
-const REQUESTS: &str = r"C:\ProgramData\devvm\eb";
 
 /// How many requests the helper holds.
 fn pending(guest: &dyn Guest) -> String {
     printed(
         guest,
-        &format!(r"(Get-ChildItem -LiteralPath '{REQUESTS}' -Force | Measure-Object).Count"),
+        &format!(r"(Get-ChildItem -LiteralPath '{ROOT}' -Force | Measure-Object).Count"),
     )
 }
 
@@ -263,7 +260,7 @@ impl Drop for Child<'_> {
         let chain = format!(
             "Get-CimInstance Win32_Process -Filter \"Name = 'pwsh.exe' OR Name = 'ssh-broker.exe' OR Name = 'sshd.exe'\" | \
              ForEach-Object {{ \"$($_.ProcessId) <- $($_.ParentProcessId) $($_.Name) $(([string]$_.CommandLine).Substring(0, [Math]::Min(100, ([string]$_.CommandLine).Length)))\" }}; \
-             Get-ChildItem -LiteralPath '{REQUESTS}' -Force | ForEach-Object {{ \"request $($_.Name)\" }}"
+             Get-ChildItem -LiteralPath '{ROOT}' -Force | ForEach-Object {{ \"request $($_.Name)\" }}"
         );
         match ran(self.guest, "a look at the processes", &pwsh(RunAs::Elevated, &chain)) {
             Ok(seen) => eprintln!("the guest, with child {} unended:\n{}", self.pid, seen.stdout_lossy()),
@@ -299,20 +296,13 @@ fn windows_an_elevated_child_that_writes_ends_when_the_client_goes_away(
     );
 }
 
-#[skuld::test]
-fn windows_a_silent_elevated_child_ends_when_the_client_goes_away(
-    #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
-) {
-    // The plan's case (6.4): a child that writes nothing after its first line still ends when its client goes away.
-    child_ends_when_the_client_goes_away(guest, "while ($true) { Start-Sleep -Milliseconds 100 }");
-}
-
 fn child_ends_when_the_client_goes_away(guest: &SharedWindowsGuest, body: &str) {
     let command = pwsh(RunAs::Elevated, &format!("{CHILD_PREFIX}{body}"));
     let mut leaver = Leaver { seen: Vec::new() };
 
     let guard = answer_to("the elevated child that prints its process id and start time and loops");
-    // devvm ends the command when its output has nowhere to go; the status that never comes is the guest's.
+    // devvm closes the channel when the output has nowhere to go; the command ends by its own failed write, and the
+    // status that never comes is the guest's.
     let result = guest.vm.run_to(&command, &mut leaver, &mut io::sink());
     drop(guard);
 

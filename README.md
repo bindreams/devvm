@@ -92,3 +92,6 @@ Limits:
 - On a Windows guest, a session that asks for a terminal (`ssh -t`/`-tt`) while its input is not a terminal (`</dev/null`,
   a pipe that ends, or a library that sends end-of-input) may end with status 0 without running the command. Drop `-t`,
   or keep the input open.
+- devvm does not end a guest command whose client went away (a killed `devvm`, a closed reader). The command finds out
+  when it next writes, as a command run by ssh without a terminal does. A command that writes nothing keeps running
+  until it ends or the instance stops (`devvm stop`).

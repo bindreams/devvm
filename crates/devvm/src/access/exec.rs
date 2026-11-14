@@ -24,8 +24,8 @@ pub(crate) enum ExecEnd {
     /// The status stands: the error that follows an exit status does not take it back.
     FinishedWithLoss { status: ExitStatus, lost: Error },
     /// The host side of the output closed. The channel was closed, so the guest process loses its output pipe and
-    /// ends by its own SIGPIPE or SIGHUP; devvm does not wait for a status that may never come. The caller decides what
-    /// that means.
+    /// ends by its own failed write (SIGPIPE); devvm does not wait for a status that may never come. The caller decides
+    /// what that means.
     HostOutputClosed {
         /// The failed write or flush.
         error: std::io::Error,
