@@ -45,24 +45,28 @@ try {
 
     # The license, read as numbers and identifiers; the host decides what it means. A system no product has a key for (a
     # retail install nobody activated) has no row: that is a read too, and is sent as null.
-    $license = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" |
-        Select-Object -First 1 -Property LicenseStatus, GracePeriodRemaining, Description, LicenseFamily
-    $json = if ($license) { $license | ConvertTo-Json -Compress } else { 'null' }
+    # A fresh evaluation install reads "grace time expired" (0xC004F009) until Windows activates it, which it does online
+    # shortly after the first logon. Activating it here, synchronously, makes the read the evaluation's own state; a
+    # failed activation (no network, or an evaluation that has really ended) is sent with the read.
+    $filter = "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'"
+    $product = Get-CimInstance SoftwareLicensingProduct -Filter $filter | Select-Object -First 1
+    $activation = $null
+    if ($product -and $product.LicenseStatus -ne 1 -and $product.ProductKeyChannel -like '*:TB:Eval') {
+        try {
+            $product | Invoke-CimMethod -MethodName Activate -ErrorAction Stop | Out-Null
+            $activation = 'activated'
+        } catch {
+            $activation = 'failed: 0x{0:X8} {1}' -f $_.Exception.HResult, $_.Exception.Message
+        }
+        $product = Get-CimInstance SoftwareLicensingProduct -Filter $filter | Select-Object -First 1
+    }
+    $json = if ($product) {
+        $product | Select-Object -Property LicenseStatus, GracePeriodRemaining, Description, LicenseFamily, @{ n = 'Activation'; e = { $activation } } |
+            ConvertTo-Json -Compress
+    } else { 'null' }
     # ASCII only: the serial channel carries no localized text.
     $json = [regex]::Replace($json, '[^\x00-\x7F]', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) '\u{0:x4}' -f [int][char]$m.Value })
     Send-Line "DEVVM-LICENSE=$json"
-    # TEMPORARY DIAGNOSTIC (deputy, devvm#167): the licence state at first logon and at the end. Reverted after one run.
-    function Send-Diag([string]$tag) {
-        $l = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" |
-            Select-Object LicenseStatus, GracePeriodRemaining, LicenseStatusReason, EvaluationEndDate | ConvertTo-Json -Compress
-        $s = (cscript.exe //nologo C:\Windows\System32\slmgr.vbs /dlv) -join ' | '
-        $svc = (Get-Service sppsvc).Status
-        $net = (Get-NetAdapter | Where-Object Status -eq 'Up' | Measure-Object).Count
-        Send-Line ("DEVVM-PROGRESS=diag {0}: {1} sppsvc={2} up={3} {4} {5}" -f $tag, (Get-Date).ToUniversalTime().ToString('o'), $svc, $net, $l, $s)
-    }
-    Send-Diag 'first-logon'
-    Get-CimInstance SoftwareLicensingService | Invoke-CimMethod -MethodName RefreshLicenseStatus | Out-Null
-    Send-Diag 'after-refresh'
 
     # The account: an administrator (by SID, never by the group's localized name) whose password never expires.
     $member = Get-LocalGroupMember -SID S-1-5-32-544 | Where-Object { $_.Name -like '*\user' }
@@ -144,7 +148,6 @@ try {
     Register-ScheduledTask -TaskName @@EB_TASK@@ -Action $helperAction -Settings $helperSettings `
         -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel Highest) | Out-Null
 
-    Send-Diag 'end'
     Remove-Item -LiteralPath $work -Recurse -Force
     Write-VolumeCache -DriveLetter C
 } catch {

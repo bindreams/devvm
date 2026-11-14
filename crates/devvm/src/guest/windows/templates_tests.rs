@@ -454,12 +454,29 @@ fn the_bootstrap_catches_and_writes_the_failed_marker_before_shutdown() {
 #[skuld::test]
 fn a_read_with_no_licensed_product_is_sent_as_null_not_thrown() {
     let bootstrap = rendered("bootstrap.ps1");
-    let read = section(&bootstrap, "$license = Get-CimInstance", "Send-Line \"DEVVM-LICENSE=");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
     assert!(
         !read.contains("throw") && !bootstrap.contains("no licensed Windows product"),
         "a retail install with no key has no row, and the host decides what that means"
     );
     assert!(read.contains("'null'"), "{read}");
+}
+
+// A fresh evaluation reads "grace time expired" until Windows activates it (vm-windows run 43545384836: 5/0 at first
+// logon, 1/129600 a minute later), so the read follows a synchronous activation whose failure is sent, never thrown.
+#[skuld::test]
+fn an_evaluation_that_is_not_licensed_is_activated_before_its_license_is_read() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    assert_before(read, "-MethodName Activate", "ConvertTo-Json");
+    assert!(
+        read.contains("-like '*:TB:Eval'"),
+        "only an evaluation is activated: {read}"
+    );
+    assert!(
+        read.contains("} catch {") && read.contains("'Activation'"),
+        "a failed activation is sent: {read}"
+    );
 }
 
 #[skuld::test]
