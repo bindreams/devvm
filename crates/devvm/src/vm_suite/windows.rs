@@ -5,7 +5,7 @@
 //! that only look at what a command does in the guest. Both run alone among the tests that boot a guest (`GUEST`).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use super::fixture::{Launches, Roots, engine_reporting_to, run_ok, run_ok_as};
@@ -67,6 +67,18 @@ pub(super) fn windows_base(
     #[fixture(qemu_sidecar)] install: &Arc<QemuInstall>,
     #[fixture(windows_iso)] iso: &PathBuf,
 ) -> Result<WindowsBase, String> {
+    // A failed build is not tried again by every later test: skuld runs a fixture's setup again after it fails, and
+    // each attempt is a full Windows install.
+    static FAILED: OnceLock<String> = OnceLock::new();
+    if let Some(error) = FAILED.get() {
+        return Err(format!("the first build of this process failed: {error}"));
+    }
+    build_windows_base(install, iso).inspect_err(|error| {
+        let _ = FAILED.set(error.clone());
+    })
+}
+
+fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsBase, String> {
     let roots = Roots::new(Some(&socket_dir()))?;
     let progress = Arc::new(MemoryProgress::echoing());
     let engine = engine_reporting_to(&roots.dirs, install, Arc::new(Launches::default()), progress.clone());
