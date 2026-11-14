@@ -168,7 +168,7 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
     let resumed = base.launches.resumed();
     let backend = base.engine.backend().unwrap();
 
-    let (record, during, started) = std::thread::scope(|scope| {
+    let (reset, started) = std::thread::scope(|scope| {
         let start = scope.spawn(|| up.start());
         // The machine's record, once it runs. A start that ended before it was looked at is read after it ended, so a
         // record sent before the end is found; the start may end in a failure the join reports.
@@ -180,37 +180,33 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
                 Err(_) => break None,
             }
         };
-        // Whether the reset came while the start ran. The marker is read after the start's end is, so a start that ended
-        // after the marker was written still finds it; that reset waits for the start's outcome, so a failed start is
-        // reported instead of a reset of a machine it killed.
-        let mut during = None;
+        // The reset, while the start runs. A failed reset is reported with the start's outcome, which names the cause
+        // when the start killed the machine itself.
+        let mut reset = None;
         if let Some(record) = &record {
-            loop {
-                let ended = start.is_finished();
+            while !start.is_finished() {
                 if serial_has(&record.serial_log, "DEVVM-SEED-WRITTEN=ssh_host_ed25519_key") {
-                    if !ended {
-                        backend.attach(record).unwrap().reset().unwrap();
-                    }
-                    during = Some(!ended);
-                    break;
-                }
-                if ended {
+                    reset = Some(backend.attach(record).and_then(|mut machine| machine.reset()));
                     break;
                 }
                 std::thread::sleep(PACE);
             }
         }
-        (record, during, start.join().unwrap())
+        (reset, start.join().unwrap())
     });
-    let Some(during) = during else {
-        panic!("the boot task did not write the host key; the start: {started:?}");
+    // Between the seed write and readiness the boot task waits for the user's logon and the agent, so a start that
+    // ended before the marker was seen did not get the reset this test is for.
+    let Some(reset) = reset else {
+        panic!(
+            "the start ended before the host had seen the host key written and reset the guest; the start: {started:?}"
+        );
     };
-    // A start survives a reset during boot: the engine's wait does not end when the guest restarts.
-    started.unwrap_or_else(|e| panic!("the start failed (reset during it: {during}): {e}"));
-    if !during {
-        backend.attach(&record.unwrap()).unwrap().reset().unwrap();
+    if let Err(e) = reset {
+        panic!("the reset at the seed write failed: {e}; the start: {started:?}");
     }
-    // The start may have seen the guest ready just before the reset; either way the guest is waited for again.
+    // A start survives a reset during boot: the engine's wait does not end when the guest restarts.
+    started.unwrap_or_else(|e| panic!("the start failed after the reset during it: {e}"));
+    // The start may have seen the guest ready just before the reset.
     await_ready(&base.engine, &up);
 
     step("checking the host key after the reset");
