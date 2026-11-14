@@ -531,7 +531,7 @@ fn a_base_born_within_ten_days_is_expired_base_naming_date_and_iso(#[fixture(uni
 }
 
 #[skuld::test]
-fn an_evaluation_base_born_expired_is_expired_base(#[fixture(unicode_home)] home: &Path) {
+fn a_base_that_ends_now_is_expired_base(#[fixture(unicode_home)] home: &Path) {
     let error = build_with_a_base_that_ends(home, std::time::SystemTime::now());
 
     assert_eq!(error.kind(), ErrorKind::ExpiredBase, "{error}");

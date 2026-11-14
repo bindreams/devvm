@@ -40,11 +40,11 @@ impl Rig {
 
 // A license read whose grace is 90 days, as an evaluation Windows prints it.
 const LICENSED: &str = r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":1,"GracePeriodRemaining":129600,"LicenseFamily":"EnterpriseEval"}"#;
-const BORN_EXPIRED: &str =
+const UNLICENSED: &str =
     r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"EnterpriseEval"}"#;
 
 // An evaluation whose activation failed, as the first-logon script prints it.
-const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"EnterpriseEval","Activation":"failed: no network"}"#;
+const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"EnterpriseEval","Activation":{"Outcome":"failed","Message":"no network","NativeErrorCode":"Failed","StatusCode":1}}"#;
 
 /// What the guest does to its media before it powers off.
 type Before = Box<dyn Fn(&MachineSpec) + Send + Sync>;
@@ -612,6 +612,11 @@ fn an_unreadable_license_marker_fails_the_build(#[fixture(unicode_home)] home: &
 
     let error = rig.build(None).unwrap_err();
 
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(
+        error.message().starts_with("the Windows base's license read: "),
+        "{error}"
+    );
     assert!(error.message().contains("DEVVM-LICENSE=not json"), "{error}");
     rig.assert_names_no_build_file(&error);
 }
@@ -632,17 +637,25 @@ fn the_license_marker_becomes_layer_meta_expires(#[fixture(unicode_home)] home: 
 }
 
 #[skuld::test]
-fn a_guest_whose_evaluation_is_not_licensed_ends_the_build_as_expired_base(#[fixture(unicode_home)] home: &Path) {
-    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![finished(BORN_EXPIRED)]));
+fn a_guest_whose_evaluation_is_not_licensed_ends_the_build_unavailable_naming_the_status(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![finished(UNLICENSED)]));
     let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
 
     let error = rig.build(None).unwrap_err();
 
-    assert_eq!(error.kind(), ErrorKind::ExpiredBase, "{error}");
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(
+        error
+            .message()
+            .starts_with("Windows did not license the evaluation: no activation was tried; status 5"),
+        "{error}"
+    );
 }
 
 #[skuld::test]
-fn an_evaluation_whose_activation_failed_ends_the_build_unavailable_naming_the_failure(
+fn an_evaluation_whose_activation_failed_ends_the_build_unavailable_naming_the_failure_and_the_serial_log(
     #[fixture(unicode_home)] home: &Path,
 ) {
     let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![finished(ACTIVATION_FAILED)]));
@@ -652,11 +665,13 @@ fn an_evaluation_whose_activation_failed_ends_the_build_unavailable_naming_the_f
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(
-        error
-            .message()
-            .starts_with("Windows could not activate the evaluation (no network); "),
+        error.message().starts_with(
+            "Windows did not license the evaluation: activation failed: no network (native error code Failed, status code 1); status 5"
+        ),
         "{error}"
     );
+    assert!(error.message().contains("the end of the serial log"), "{error}");
+    assert!(error.message().contains("DEVVM-BASE-DONE"), "{error}");
 }
 
 #[skuld::test]

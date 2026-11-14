@@ -225,6 +225,27 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
 }
 
 #[skuld::test]
+fn the_bootstrap_is_told_whether_the_chosen_image_is_an_evaluation(#[fixture(unicode_home)] home: &Path) {
+    // `single-image.iso` holds an evaluation edition, `three-images.iso` volume editions.
+    for (iso, edition, evaluation) in [
+        ("single-image.iso", None, "$true"),
+        ("three-images.iso", Some("Windows 11 Enterprise LTSC 2024"), "$false"),
+    ] {
+        let rig = rig_without_a_machine(home, iso);
+
+        rig.build(edition).unwrap_err();
+
+        let files = read_files(&rig.work().join("answer.img"), &["bootstrap.ps1"]).unwrap();
+        let bootstrap = String::from_utf8(files[0].bytes.clone()).unwrap();
+        assert!(
+            bootstrap.contains(&format!("if ({evaluation} -and $product")),
+            "{iso}: {bootstrap}"
+        );
+        let _ = std::fs::remove_dir_all(rig.work());
+    }
+}
+
+#[skuld::test]
 fn the_virtio_win_iso_is_the_pinned_download_and_a_cached_one_is_not_fetched_again(
     #[fixture(unicode_home)] home: &Path,
 ) {

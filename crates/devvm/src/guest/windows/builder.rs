@@ -126,7 +126,7 @@ impl BaseBuilder for WindowsBuilder {
             .ok_or_else(|| Error::new(ErrorKind::Internal, "the build has no held ISO to install Windows from"))?;
         let evaluation = root.image.is_evaluation();
         let install = read_install_iso(root)?;
-        let expires = Build::prepare(self, ctx, staging, &install)?.run(install, evaluation)?;
+        let expires = Build::prepare(self, ctx, staging, &install, evaluation)?.run(install)?;
         // The store owns the key, the generation and the creation time; it reads only the expiry from what a base
         // builder returns.
         Ok(LayerMeta {
@@ -389,6 +389,8 @@ struct Build<'a> {
     launches: Launches,
     /// The last `DEVVM-LICENSE=` line and when it was observed: the license's grace counts from the read.
     license: Option<(String, SystemTime)>,
+    /// The image is an evaluation edition: the guest activates an unlicensed one, and an unlicensed one ends the build.
+    evaluation: bool,
     watch: Watch,
 }
 
@@ -399,6 +401,7 @@ impl<'a> Build<'a> {
         ctx: &'a BuildCtx,
         staging: &LayerDir,
         install: &InstallIso,
+        evaluation: bool,
     ) -> Result<Build<'a>> {
         let work = ctx.work.join(WORK_DIR);
         let machine_dir = work.join(MACHINE_DIR);
@@ -432,6 +435,7 @@ impl<'a> Build<'a> {
             language: &install.image.language,
             time_zone: TIME_ZONE,
             computer_name: COMPUTER_NAME,
+            evaluation,
         })?;
         let answer = write_cidata_image(
             builder.host,
@@ -451,12 +455,13 @@ impl<'a> Build<'a> {
             overlay,
             launches: Launches::default(),
             license: None,
+            evaluation,
             watch: Watch::new(Instant::now()),
         })
     }
 
     /// Launches the guest until it has finished, and returns when the base ends.
-    fn run(mut self, install: InstallIso, evaluation: bool) -> Result<Option<SystemTime>> {
+    fn run(mut self, install: InstallIso) -> Result<Option<SystemTime>> {
         // The ISO is held until QEMU has opened it, which the first `resume` returning says.
         let mut held = Some(install.iso);
         let mut number = 0;
@@ -479,7 +484,11 @@ impl<'a> Build<'a> {
                 &log,
             ));
         };
-        expiry_from(read, evaluation, *read_at)
+        expiry_from(read, self.evaluation, *read_at).map_err(|error| match error.kind() {
+            // The evaluation that Windows did not license: the serial log may say more than the account does.
+            ErrorKind::Unavailable => with_log_tail(error, "the serial log", &log),
+            kind => error.with_context(kind, "the Windows base's license read"),
+        })
     }
 
     /// One launch of the machine, until its VM process exits.

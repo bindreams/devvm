@@ -23,6 +23,7 @@ pub(super) fn inputs() -> AnswerInputs<'static> {
         language: "de-DE",
         time_zone: "UTC",
         computer_name: "DEVVM",
+        evaluation: true,
     }
 }
 
@@ -37,7 +38,12 @@ fn raw(name: &str) -> &'static str {
 
 /// The text of a file of the answer disk.
 fn rendered(name: &str) -> String {
-    let files = answer_disk_files(&inputs()).unwrap();
+    rendered_with(name, &inputs())
+}
+
+/// [`rendered`] for other inputs.
+fn rendered_with(name: &str, inputs: &AnswerInputs) -> String {
+    let files = answer_disk_files(inputs).unwrap();
     let file = files
         .iter()
         .find(|file| file.name == name)
@@ -90,6 +96,7 @@ fn the_answer_file_renders_deterministically_and_escapes_xml() {
         language: "x<y",
         time_zone: "t&z",
         computer_name: "n\"m",
+        evaluation: false,
     };
     let text = answer_file(&hostile).unwrap();
     assert_eq!(
@@ -463,16 +470,12 @@ fn a_read_with_no_licensed_product_is_sent_as_null_not_thrown() {
 }
 
 // A fresh evaluation reads "grace time expired" until Windows activates it (vm-windows run 43545384836: 5/0 at first
-// logon, 1/129600 a minute later), so the read follows a synchronous activation whose failure is sent, never thrown.
+// logon, 1/129600 a minute later), so the read follows a synchronous activation whose account is sent, never thrown.
 #[skuld::test]
 fn an_evaluation_that_is_not_licensed_is_activated_before_its_license_is_read() {
     let bootstrap = rendered("bootstrap.ps1");
     let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
     assert_before(read, "-MethodName Activate", "ConvertTo-Json");
-    assert!(
-        read.contains("-like '*:TB:Eval'"),
-        "only an evaluation is activated: {read}"
-    );
     assert!(
         read.contains("} catch {") && read.contains("n = 'Activation'"),
         "a failed activation is sent: {read}"
@@ -480,14 +483,51 @@ fn an_evaluation_that_is_not_licensed_is_activated_before_its_license_is_read() 
 }
 
 #[skuld::test]
-fn a_failed_activation_is_sent_with_its_message_not_a_generic_hresult() {
+fn the_host_says_whether_the_image_is_an_evaluation_and_the_guest_asks_nothing_else() {
+    for evaluation in [true, false] {
+        let bootstrap = rendered_with("bootstrap.ps1", &AnswerInputs { evaluation, ..inputs() });
+        let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+        let value = if evaluation { "$true" } else { "$false" };
+        assert!(
+            read.contains(&format!(
+                "if ({value} -and $product -and $product.LicenseStatus -ne 1) {{"
+            )),
+            "{evaluation}: {read}"
+        );
+        assert!(
+            !bootstrap.contains("ProductKeyChannel") && !bootstrap.contains("TB:Eval"),
+            "the guest does not judge the image itself"
+        );
+    }
+}
+
+#[skuld::test]
+fn the_license_is_read_after_the_installs_and_the_tasks_and_before_the_work_directory_goes() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let tasks = "-Principal (New-ScheduledTaskPrincipal -UserId 'user'";
+    assert_before(&bootstrap, "ssh-broker.exe\" apply", "$filter = ");
+    assert_before(&bootstrap, tasks, "$filter = ");
+    assert_before(&bootstrap, "$filter = ", "Remove-Item -LiteralPath $work");
+    assert_before(&bootstrap, "Send-Line \"DEVVM-LICENSE=", "Send-Line 'DEVVM-BASE-DONE'");
+}
+
+#[skuld::test]
+fn a_failed_activation_is_sent_trimmed_with_its_codes_not_a_generic_hresult() {
     let bootstrap = rendered("bootstrap.ps1");
     let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
     let catch = section(read, "} catch {", "$product = Get-CimInstance");
-    assert!(catch.contains("$_.Exception.Message"), "{catch}");
+    assert!(catch.contains("$exception.Message.Trim()"), "{catch}");
+    assert!(
+        catch.contains("NativeErrorCode") && catch.contains("StatusCode"),
+        "the CIM exception's codes are sent: {catch}"
+    );
     assert!(
         !catch.contains("HResult"),
         "a CimException's HResult is a generic .NET code: {catch}"
+    );
+    assert!(
+        !read.contains("'failed: "),
+        "the account is structured, not a prefixed string: {read}"
     );
 }
 
@@ -502,7 +542,7 @@ fn the_activation_is_announced_before_it_is_called_and_only_when_it_is_called() 
     );
     assert_before(
         read,
-        "-like '*:TB:Eval'",
+        "$product.LicenseStatus -ne 1",
         "Send-Line 'DEVVM-PROGRESS=activating Windows'",
     );
     assert_eq!(read.matches("activating Windows").count(), 1, "{read}");
