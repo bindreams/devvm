@@ -133,13 +133,14 @@ fn windows_a_stopped_instance_keeps_its_host_key(#[fixture(windows_base)] base: 
     assert_eq!(the_one_key(&base.engine, &up), key);
 }
 
-/// The serial log holds a whole line `marker`, as the boot task writes it.
-fn serial_has(log: &Path, marker: &str) -> bool {
+/// The whole lines of the serial log so far.
+fn serial_lines(log: &Path) -> Vec<String> {
     match read_from(log, 0) {
         Ok(bytes) => String::from_utf8_lossy(&bytes)
             .split(['\n', '\r'])
-            .any(|line| line.trim_end() == marker),
-        Err(e) if is_absent(&e) => false,
+            .map(|line| line.trim_end().to_owned())
+            .collect(),
+        Err(e) if is_absent(&e) => Vec::new(),
         Err(e) => panic!("cannot read {}: {e}", log.display()),
     }
 }
@@ -154,36 +155,52 @@ fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
     #[fixture(windows_base)] base: &WindowsBase,
 ) {
     let up = Up::created(&base.image, "w-hard-reset", &windows_options()).unwrap();
-    let (resumed, release) = base.launches.resumed_held();
+    let held = base.launches.hold_resumed();
     let backend = base.engine.backend().unwrap();
 
     step("booting an instance and resetting it at the seed write");
     let (reset, started) = std::thread::scope(|scope| {
         let start = scope.spawn(|| up.start());
+        let watch = awaiting(
+            "the machine resuming and the boot task writing the host key",
+            BOOT_BOUND,
+        );
         // The machine's record, once it runs. A start that ended before it was looked at is read after it ended, so a
         // record sent before the end is found; a start that ends without one has failed, and the join reports it.
         let record = loop {
             let ended = start.is_finished();
-            match resumed.try_recv() {
+            match held.records.try_recv() {
                 Ok(record) => break Some(record),
                 Err(TryRecvError::Empty) if !ended => std::thread::sleep(PACE),
                 Err(_) => break None,
             }
         };
-        // The start waits on `release` here, so nothing but the guest moves until the reset.
+        // The start waits on `held` here, so nothing but the guest moves until the reset.
         let reset = record.map(|record| {
-            let _watch = awaiting("the boot task writing the host key", BOOT_BOUND);
-            while !serial_has(&record.serial_log, "DEVVM-SEED-WRITTEN=ssh_host_ed25519_key") {
+            loop {
+                let lines = serial_lines(&record.serial_log);
+                if lines
+                    .iter()
+                    .any(|line| line == "DEVVM-SEED-WRITTEN=ssh_host_ed25519_key")
+                {
+                    break backend
+                        .attach(&record)
+                        .and_then(|mut machine| machine.reset())
+                        .map_err(|e| e.to_string());
+                }
+                if let Some(failed) = lines.iter().find(|line| line.starts_with("DEVVM-BOOT-FAILED=")) {
+                    break Err(format!("the boot task failed before it wrote the host key: {failed}"));
+                }
                 std::thread::sleep(PACE);
             }
-            backend.attach(&record).and_then(|mut machine| machine.reset())
         });
-        drop(release);
+        drop(watch);
+        drop(held);
         (reset, start.join().unwrap())
     });
     match reset {
         None => panic!("the start resumed no machine: {started:?}"),
-        Some(Err(e)) => panic!("the reset at the seed write failed: {e}; the start: {started:?}"),
+        Some(Err(e)) => panic!("no reset at the seed write: {e}; the start: {started:?}"),
         Some(Ok(())) => {}
     }
     started.unwrap_or_else(|e| panic!("the start after the reset failed: {e}"));

@@ -72,7 +72,7 @@ impl Roots {
 pub(super) struct Launches {
     spawned: AtomicUsize,
     watcher: Mutex<Option<Sender<MachineRecord>>>,
-    /// What the next resume waits on before the guest is awaited: a send or the sender's drop releases it.
+    /// What the next resume waits on before the guest is awaited: the drop of [`Held`] releases it.
     hold: Mutex<Option<Receiver<()>>>,
 }
 
@@ -81,20 +81,37 @@ impl Launches {
         self.spawned.load(Ordering::SeqCst)
     }
 
-    /// The records of the machines that resume from now on, as each resumes: the guest is not yet awaited then. Another
-    /// call replaces the channel.
-    pub(super) fn resumed(&self) -> Receiver<MachineRecord> {
-        let (sender, receiver) = mpsc::channel();
-        *self.watcher.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
-        receiver
-    }
-
-    /// [`Launches::resumed`], and the next machine that resumes waits, before its guest is awaited, until the returned
-    /// sender sends or is dropped. A test that panics drops it, so the start goes on.
-    pub(super) fn resumed_held(&self) -> (Receiver<MachineRecord>, Sender<()>) {
+    /// The records of the machines that resume while the returned value lives, as each resumes. The first of them waits,
+    /// before its guest is awaited, until the value is dropped; the drop also takes back a hold no resume took.
+    pub(super) fn hold_resumed(&self) -> Held<'_> {
+        let (sender, records) = mpsc::channel();
         let (release, hold) = mpsc::channel();
+        *self.watcher.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
         *self.hold.lock().unwrap_or_else(PoisonError::into_inner) = Some(hold);
-        (self.resumed(), release)
+        Held {
+            launches: self,
+            records,
+            _release: release,
+        }
+    }
+}
+
+/// See [`Launches::hold_resumed`].
+pub(super) struct Held<'a> {
+    launches: &'a Launches,
+    pub(super) records: Receiver<MachineRecord>,
+    /// Its drop releases a resume that waits.
+    _release: Sender<()>,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.launches.hold.lock().unwrap_or_else(PoisonError::into_inner).take();
+        self.launches
+            .watcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
     }
 }
 
