@@ -34,6 +34,9 @@ fn windows_the_account_password_never_expires(#[fixture(shared_windows_guest)] g
 
 // The disk ============================================================================================================
 
+/// The disk of C: and its partitions, in bytes, and how far Windows says C: can grow.
+const LAYOUT: &str = r#"$c = Get-Partition -DriveLetter C; "disk $((Get-Disk -Number $c.DiskNumber).Size)"; Get-Partition -DiskNumber $c.DiskNumber | ForEach-Object { "partition $($_.PartitionNumber) $($_.Type) offset $($_.Offset) size $($_.Size)" }; "C: can grow to $((Get-PartitionSupportedSize -DriveLetter C).SizeMax)""#;
+
 #[skuld::test]
 fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
     #[fixture(windows_base)] base: &WindowsBase,
@@ -59,7 +62,13 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
     let size: u64 = printed(&*up, "[IO.DriveInfo]::new('C').TotalSize")
         .parse()
         .expect("a size in bytes");
-    assert!(size > 70 << 30, "C: is {size} bytes, not the 72 GiB disk's");
+    // What the guest says of the disk's layout, for a C: that did not grow.
+    let layout = || printed(&*up, LAYOUT);
+    assert!(
+        size > 70 << 30,
+        "C: is {size} bytes, not the 72 GiB disk's; the guest says:\n{}",
+        layout()
+    );
     assert!(size <= 72 << 30, "C: is {size} bytes, more than the disk");
 }
 
@@ -158,6 +167,9 @@ impl Drop for Client {
     }
 }
 
+/// The prompt of the guest's PowerShell in the user's home.
+const PROMPT: &str = r"PS C:\Users\user> ";
+
 /// An interactive session through the system `ssh -tt`: a command typed into it runs and prints, and a Ctrl-C byte ends a
 /// running command. The input stays open until the last marker has come back, then the shell exits and the input closes:
 /// a terminal session whose input ends first may end without running anything (the stated limit), and the status of an
@@ -184,13 +196,13 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     let mut input = ssh.0.stdin.take().expect("a piped stdin");
     let output = output_of(ssh.0.stdout.take().expect("a piped stdout"));
     let mut seen = String::new();
-    // Waits for `needle` in what the terminal printed, which `after` makes happen. The commands print it joined, and the
-    // terminal's echo of what was typed has it in pieces, so only a command that ran can satisfy it. A terminal that
-    // has not printed `needle` within [`TERMINAL_BOUND`] of the call fails the test, however much else it printed.
-    let mut await_output = |needle: &str, after: &str| {
+    // Waits for `times` of `needle` in what the terminal printed, which `after` makes happen. The commands print it
+    // joined, and the terminal's echo of what was typed has it in pieces, so only a command that ran can satisfy it. A
+    // terminal that has not printed it within [`TERMINAL_BOUND`] of the call fails the test, however much else it printed.
+    let mut await_output = |needle: &str, times: usize, after: &str| {
         step(&format!("awaiting {needle:?} in the terminal, after {after}"));
         let deadline = Instant::now() + TERMINAL_BOUND;
-        while !seen.contains(needle) {
+        while seen.matches(needle).count() < times {
             // A terminal that keeps printing never times out a receive, so the deadline is checked before each one.
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -209,17 +221,19 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     };
 
     input.write_all(b"Write-Output ('devvm-' + 'marker')\r").unwrap();
-    await_output("devvm-marker", "the typed command ran");
+    await_output("devvm-marker", 1, "the typed command ran");
 
     // The loop has no bound: only the Ctrl-C ends it, and a Ctrl-C that does not fails the wait for the next marker.
     input
         .write_all(b"'run-' + 'ning'; while ($true) { Start-Sleep -Milliseconds 100 }\r")
         .unwrap();
-    await_output("run-ning", "the loop started");
-    // Ctrl-C ends the loop, and the shell takes the next command.
+    await_output("run-ning", 1, "the loop started");
+    // Ctrl-C ends the loop, and the shell prints its third prompt (after the start and the first command). Input typed
+    // before that is discarded with the interrupt, so the next command waits for the prompt.
     input.write_all(&[0x03]).unwrap();
+    await_output(PROMPT, 3, "Ctrl-C ended the loop");
     input.write_all(b"'af-' + 'ter'\r").unwrap();
-    await_output("af-ter", "Ctrl-C ended the loop");
+    await_output("af-ter", 1, "the command after Ctrl-C ran");
 
     input.write_all(b"exit\r").unwrap();
     drop(input);

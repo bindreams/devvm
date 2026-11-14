@@ -192,7 +192,7 @@ fn windows_a_script_at_the_computed_limit_runs_and_one_over_is_refused_before_se
         &format!("the script at the limit, a pad of {fits}"),
         &padded(fits),
     )
-    .unwrap();
+    .unwrap_or_else(|e| panic!("a pad of {fits} did not run: {e}"));
     assert_eq!(
         at_the_limit.status,
         ExitStatus::Code(0),

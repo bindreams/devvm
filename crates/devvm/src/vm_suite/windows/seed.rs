@@ -16,25 +16,60 @@ use crate::host::{self, is_absent, read_from};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
 
-/// What `ssh-keyscan` of the instance's forwarded port says its sshd offers, as `<type> <base64>` for each key.
-fn offered_keys(addr: SocketAddr) -> Vec<String> {
-    let _watch = awaiting(format!("ssh-keyscan of {addr}"), ANSWER_BOUND);
-    let mut command = std::process::Command::new("ssh-keyscan");
+/// What a plain `ssh` to the instance's forwarded port learns of its sshd: the host key algorithms its key exchange
+/// offers, and the key it presents. `ssh-keyscan` does not do this: the Windows build of it cannot negotiate a key
+/// exchange with a current sshd and prints no key.
+struct Offer {
+    algorithms: Vec<String>,
+    /// `<type> <base64>`.
+    key: String,
+}
+
+/// The server's line of `ssh -vv`'s two `host key algorithms:` lines (the client's comes first, then the server's after
+/// `peer server KEXINIT proposal`).
+fn server_algorithms(log: &str) -> Vec<String> {
+    log.lines()
+        .skip_while(|line| !line.contains("peer server KEXINIT proposal"))
+        .find_map(|line| line.split_once("host key algorithms: "))
+        .map(|(_, list)| list.trim().split(',').map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// `ssh` to `addr` with no configuration and a `known_hosts` of its own, which records the key the server presents; the
+/// login itself is refused, which is all the key exchange needs.
+fn offer_of(addr: SocketAddr) -> Offer {
+    let _watch = awaiting(format!("ssh to {addr} for its host key"), ANSWER_BOUND);
+    let dir = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new("ssh");
     command
+        .current_dir(dir.path())
+        .args(["-vv", "-F", "none"])
+        .args(["-o", "BatchMode=yes"])
+        .args(["-o", "PreferredAuthentications=none"])
+        .args(["-o", "StrictHostKeyChecking=accept-new"])
+        // Relative to the directory above, so no path needs quoting.
+        .args(["-o", "UserKnownHostsFile=known_hosts"])
+        .args(["-o", "GlobalKnownHostsFile=known_hosts"])
+        // A connection that the guest does not answer yet is no answer.
+        .args(["-o", "ConnectTimeout=10"])
         .args(["-p", &addr.port().to_string(), &addr.ip().to_string()])
         .stdin(Stdio::null());
     host::current().quiet(&mut command);
-    let output = command
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run ssh-keyscan: {e}"));
-    String::from_utf8_lossy(&output.stdout)
+    let output = command.output().unwrap_or_else(|e| panic!("cannot run ssh: {e}"));
+    let log = String::from_utf8_lossy(&output.stderr);
+    let known = std::fs::read_to_string(dir.path().join("known_hosts"))
+        .unwrap_or_else(|e| panic!("ssh to {addr} recorded no host key ({e}): {} {log}", output.status));
+    let key = known
         .lines()
-        .filter(|line| !line.starts_with('#'))
-        .filter_map(|line| {
+        .find_map(|line| {
             let fields: Vec<&str> = line.split_whitespace().collect();
             (fields.len() >= 3).then(|| format!("{} {}", fields[1], fields[2]))
         })
-        .collect()
+        .unwrap_or_else(|| panic!("ssh to {addr} recorded no host key: {known:?} {log}"));
+    Offer {
+        algorithms: server_algorithms(&log),
+        key,
+    }
 }
 
 /// Where the running instance `up` is reached, and the host key devvm pins for it as `<type> <base64>`.
@@ -50,11 +85,10 @@ fn pinned(engine: &Arc<Engine>, up: &Up) -> (SocketAddr, String) {
 /// The one key `up`'s sshd offers, which is the one devvm pins.
 fn the_one_key(engine: &Arc<Engine>, up: &Up) -> String {
     let (addr, pinned) = pinned(engine, up);
-    assert_eq!(
-        offered_keys(addr),
-        std::slice::from_ref(&pinned),
-        "the keys {addr} offers"
-    );
+    let offer = offer_of(addr);
+    let pinned_type = pinned.split_whitespace().next().unwrap().to_owned();
+    assert_eq!(offer.algorithms, [pinned_type], "the host key algorithms {addr} offers");
+    assert_eq!(offer.key, pinned, "the key {addr} presents");
     pinned
 }
 

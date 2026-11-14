@@ -258,6 +258,14 @@ impl Drop for Child<'_> {
         if self.ended {
             return;
         }
+        // What the guest shows of the chain from the connection to the child, for the log of a child that stayed.
+        let chain = "Get-CimInstance Win32_Process -Filter \"Name = 'pwsh.exe' OR Name = 'ssh-broker.exe' OR Name = 'sshd.exe'\" | \
+                     ForEach-Object { \"$($_.ProcessId) <- $($_.ParentProcessId) $($_.Name) $(([string]$_.CommandLine).Substring(0, [Math]::Min(100, ([string]$_.CommandLine).Length)))\" }; \
+                     Get-ChildItem -LiteralPath C:/ProgramData/devvm/eb | ForEach-Object { \"request $($_.Name)\" }";
+        match ran(self.guest, "a look at the processes", &pwsh(RunAs::User, chain)) {
+            Ok(seen) => eprintln!("the guest, with child {} unended:\n{}", self.pid, seen.stdout_lossy()),
+            Err(error) => eprintln!("cannot look at the guest's processes: {error}"),
+        }
         let script = format!(
             "$child = Get-Process -Id {pid} -ErrorAction Ignore; \
              if ($child -and $child.StartTime.ToFileTimeUtc() -eq {started}) \
@@ -275,12 +283,14 @@ impl Drop for Child<'_> {
 fn windows_an_elevated_child_ends_when_the_client_goes_away(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    // The command prints its process id and start time, then runs until it is ended. It has no bound of its own: a bound
-    // that ended it would be the one thing that makes the process go, and the test asserts that devvm does. When devvm
-    // does not end it, the wait below for the process to end fails the test, and the test ends the child by its id.
+    // The command prints its process id and start time, then a line every 100 ms until it is ended: a reader that went
+    // away ends a command by what it writes to it, as a command that has written nothing since cannot know. It has no
+    // bound of its own: a bound that ended it would be the one thing that makes the process go, and the test asserts that
+    // devvm does. When devvm does not end it, the wait below for the process to end fails the test, and the test ends
+    // the child by its id.
     let command = pwsh(
         RunAs::Elevated,
-        "[Console]::Out.WriteLine(\"$PID $((Get-Process -Id $PID).StartTime.ToFileTimeUtc())\"); [Console]::Out.Flush(); while ($true) { Start-Sleep -Milliseconds 100 }",
+        "[Console]::Out.WriteLine(\"$PID $((Get-Process -Id $PID).StartTime.ToFileTimeUtc())\"); [Console]::Out.Flush(); while ($true) { Start-Sleep -Milliseconds 100; [Console]::Out.WriteLine('more'); [Console]::Out.Flush() }",
     );
     let mut leaver = Leaver { seen: Vec::new() };
 
@@ -289,7 +299,13 @@ fn windows_an_elevated_child_ends_when_the_client_goes_away(
     let result = guest.vm.run_to(&command, &mut leaver, &mut io::sink());
     drop(guard);
 
-    let printed_by_child = String::from_utf8_lossy(&leaver.seen).trim().to_owned();
+    // What came with the first line may hold the next ones.
+    let printed_by_child = String::from_utf8_lossy(&leaver.seen)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
     let (pid, started) = printed_by_child.split_once(' ').unwrap_or_default();
     assert!(
         [pid, started]

@@ -49,12 +49,17 @@ pub(super) fn restart(engine: &Arc<Engine>, up: &Up, kind: Restart) {
     }
 }
 
+/// What ssh-broker prints, with status 255, when its agent ends before it answers a command (its README documents it).
+const AGENT_ENDED: &str = "the agent ended before it answered";
+
 /// The guest restarts itself, and the wait is the one that follows a reset: it ends when the guest says another boot id
 /// and is ready in the user's session.
 fn restart_in_place(engine: &Arc<Engine>, instance: &Instance) {
     let old = boot_id(instance);
     let restart = Command::new(["shutdown", "/r", "/f", "/t", "0"]);
     match ran(instance, "shutdown /r", &restart) {
+        // The agent goes down under the command and ssh-broker says so with 255: the guest is going down.
+        Ok(output) if output.status == ExitStatus::Code(255) && output.stderr_lossy().contains(AGENT_ENDED) => {}
         Ok(output) => {
             assert_eq!(
                 output.status,
