@@ -106,7 +106,7 @@ fn windows_cp_files_and_directories_both_ways_with_drive_paths(
 // pwsh ================================================================================================================
 
 #[skuld::test]
-fn windows_a_pwsh_argv_and_the_default_shell_step_resolve_pwsh_by_name(
+fn windows_the_machine_path_and_the_default_shell_step_find_pwsh_7(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(windows_iso)] iso: &Path,
