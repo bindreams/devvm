@@ -563,6 +563,11 @@ fn an_activation_that_returns_nonzero_is_a_failure_carrying_the_return_value() {
         call.contains(".ReturnValue") && call.contains("$returned -eq 0") && call.contains("'failed'"),
         "a non-zero ReturnValue is not a success: {call}"
     );
+    assert_before(call, "if ($null -eq $returned)", "$outcome = 'succeeded'");
+    assert!(
+        section(call, "if ($null -eq $returned)", "} elseif").contains("'failed'"),
+        "a missing ReturnValue is not a success: {call}"
+    );
 }
 
 #[skuld::test]

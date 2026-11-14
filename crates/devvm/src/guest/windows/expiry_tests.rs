@@ -55,7 +55,7 @@ fn an_unlicensed_evaluation_is_unavailable_and_names_its_status() {
 // failed activation is captured.
 const ACTIVATION_SUCCEEDED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","ActivationOutcome":"succeeded","ActivationMessage":null,"ActivationNativeErrorCode":null,"ActivationStatusCode":null,"ActivationReturnValue":null}"#;
 const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","ActivationOutcome":"failed","ActivationMessage":"The Software Licensing Service reported that the computer could not be activated. 0xC004F074","ActivationNativeErrorCode":"Failed","ActivationStatusCode":1,"ActivationReturnValue":null}"#;
-const ACTIVATION_RETURNED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","ActivationOutcome":"failed","ActivationMessage":"Activate returned 3221549172","ActivationNativeErrorCode":null,"ActivationStatusCode":null,"ActivationReturnValue":3221549172}"#;
+const ACTIVATION_RETURNED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","ActivationOutcome":"failed","ActivationMessage":null,"ActivationNativeErrorCode":null,"ActivationStatusCode":null,"ActivationReturnValue":3221549172}"#;
 
 #[skuld::test]
 fn an_unlicensed_evaluation_names_the_code_the_guest_sent() {
@@ -73,7 +73,7 @@ fn an_unlicensed_evaluation_names_the_return_value_of_an_activation_that_returne
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert_eq!(
         error.message(),
-        "Windows did not license the evaluation: activation failed: Activate returned 3221549172 (return value 3221549172); status 5"
+        "Windows did not license the evaluation: activation failed (return value 3221549172); status 5"
     );
 }
 

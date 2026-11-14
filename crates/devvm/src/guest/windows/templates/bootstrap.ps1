@@ -135,11 +135,14 @@ try {
         Send-Line 'DEVVM-PROGRESS=activating Windows'
         try {
             $returned = ($product | Invoke-CimMethod -MethodName Activate -ErrorAction Stop).ReturnValue
-            if ($null -eq $returned -or $returned -eq 0) {
+            if ($null -eq $returned) {
+                $outcome = 'failed'
+                $message = 'Activate gave no return value'
+            } elseif ($returned -eq 0) {
                 $outcome = 'succeeded'
+                $returned = $null
             } else {
                 $outcome = 'failed'
-                $message = "Activate returned $returned"
                 $returned = [int64]$returned
             }
         } catch {
