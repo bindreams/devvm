@@ -8,13 +8,14 @@ use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_INFO,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
-    SetFileAttributesW, SetFileInformationByHandle,
+    SetFileInformationByHandle,
 };
 
 use super::super::wide;
 use super::super::windows_tests::{long_dir, with_nul};
 use crate::host::{claim_of_deleting_name, current, deleting_name};
 use crate::test_groups::{Group, symlinks};
+use crate::test_support::file_security::set_attributes;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
 
@@ -291,15 +292,6 @@ fn removing_a_deleting_name_with_a_nul_in_it_is_invalid_input_and_deletes_nothin
 
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
     assert!(path.exists());
-}
-
-fn set_attributes(path: &Path, attributes: u32) -> std::io::Result<()> {
-    let path = wide(path)?;
-    // SAFETY: `path` is NUL-terminated.
-    match unsafe { SetFileAttributesW(path.as_ptr(), attributes) } {
-        0 => Err(std::io::Error::last_os_error()),
-        _ => Ok(()),
-    }
 }
 
 /// Removes the read-only file at `path` as a deleting name. The attribute is cleared, its error ignored, before the

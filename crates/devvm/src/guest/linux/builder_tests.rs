@@ -6,16 +6,16 @@ use sha2::{Digest, Sha256 as Sha2};
 use super::{LinuxBuilder, definition_hash_of, probe_spec};
 use crate::backend::fake::FakeStorage;
 use crate::exit::NullProgress;
+use crate::guest::BaseBuilder;
 use crate::guest::GuestOs;
 use crate::guest::linux::LinuxGuest;
 use crate::guest::linux::seed::seed_files;
-use crate::guest::{BaseBuilder, BuildCtx};
 use crate::media::SeedFile;
 use crate::recipe::{PerArch, Pin, Source};
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{env, key, request};
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{build_ctx, unicode_home};
 use crate::test_support::http::TestServer;
 use crate::test_support::transport::RefusingTransport;
 use crate::{Arch, Dirs, ErrorKind, Sha256};
@@ -40,14 +40,6 @@ fn builder(home: &Path) -> LinuxBuilder {
     LinuxBuilder::new(Arc::new(fetcher), Arc::new(FakeStorage::default()))
 }
 
-fn ctx(home: &Path, arch: Arch) -> BuildCtx {
-    BuildCtx {
-        dirs: Dirs::under(home),
-        arch,
-        progress: Arc::new(NullProgress),
-    }
-}
-
 /// The names in `dir`, sorted.
 fn names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
@@ -63,7 +55,7 @@ fn build_base_places_disk_and_vars_in_staging_and_nowhere_else(#[fixture(unicode
     let data = image(1);
     let server = TestServer::start(data.clone(), "\"v1\"");
     let source = Source::DiskImage(PerArch::any(pin_for(&server, &data)));
-    let (builder, context) = (builder(home), ctx(home, Arch::Amd64));
+    let (builder, context) = (builder(home), build_ctx(home, Arch::Amd64));
     let env = env(home);
 
     let layer = env
@@ -106,7 +98,7 @@ fn each_arch_fetches_only_its_own_pin(#[fixture(unicode_home)] home: &Path) {
         (Arch::Amd64, &amd64, &amd64_server, &arm64_server),
     ] {
         let (own_before, other_before) = (own.requests().len(), other.requests().len());
-        let context = ctx(home, arch);
+        let context = build_ctx(home, arch);
         let layer = env
             .store
             .build(&request(key(arch as u8 + 10)), None, |staging| {
@@ -140,7 +132,7 @@ fn the_embedded_ubuntu_pin_for_the_other_arch_is_used_for_arch_arm64(#[fixture(u
     let env = env(home);
 
     for arch in [Arch::Arm64, Arch::Amd64] {
-        let context = ctx(home, arch);
+        let context = build_ctx(home, arch);
         let source = Source::DiskImage(pins.clone());
         let error = env
             .store
@@ -167,7 +159,7 @@ fn a_recipe_with_no_pin_for_the_arch_names_it(#[fixture(unicode_home)] home: &Pa
         amd64: Some(pin_for(&server, &data)),
         arm64: None,
     });
-    let (builder, env, context) = (builder(home), env(home), ctx(home, Arch::Arm64));
+    let (builder, env, context) = (builder(home), env(home), build_ctx(home, Arch::Arm64));
 
     let error = env
         .store
@@ -182,7 +174,7 @@ fn a_recipe_with_no_pin_for_the_arch_names_it(#[fixture(unicode_home)] home: &Pa
 
 #[skuld::test]
 fn a_non_disk_source_is_not_supported_naming_it(#[fixture(unicode_home)] home: &Path) {
-    let (builder, env, context) = (builder(home), env(home), ctx(home, Arch::Amd64));
+    let (builder, env, context) = (builder(home), env(home), build_ctx(home, Arch::Amd64));
     let sources = [
         (
             Source::Iso {
@@ -219,7 +211,7 @@ fn a_checksum_mismatch_is_a_checksum_error_and_publishes_no_layer(#[fixture(unic
     let data = image(1);
     let server = TestServer::start(image(9), "\"v1\"");
     let source = Source::DiskImage(PerArch::any(pin_for(&server, &data)));
-    let (builder, env, context) = (builder(home), env(home), ctx(home, Arch::Amd64));
+    let (builder, env, context) = (builder(home), env(home), build_ctx(home, Arch::Amd64));
 
     let error = env
         .store

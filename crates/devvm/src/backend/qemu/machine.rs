@@ -9,10 +9,12 @@ use std::sync::Arc;
 
 use super::args::guest_port;
 use super::qmp::{Qmp, QmpEndpoint, VmEnd};
-use crate::backend::{Endpoint, FileClaim, Machine, MachineRecord, SshEndpoint, directory_of};
+use crate::backend::{
+    Endpoint, FileClaim, Machine, MachineExit, MachineRecord, PRINTED_NOTHING, SshEndpoint, directory_of,
+};
 use crate::contain::VmProcess;
 use crate::exit::Progress;
-use crate::host::{Host, ProcessWatch};
+use crate::host::{Host, ProcessWatch, read_from};
 use crate::{Arch, Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -35,6 +37,17 @@ pub(super) fn qemu_log(dir: &Path) -> PathBuf {
     dir.join("qemu.log")
 }
 
+/// The text `log` holds from byte `from` on, trimmed: one launch's output, since every launch in a directory appends to
+/// the file. Only that part is read ([`read_from`]).
+fn printed_since(log: &Path, from: u64) -> std::io::Result<String> {
+    Ok(String::from_utf8_lossy(&read_from(log, from)?).trim().to_owned())
+}
+
+/// The note that stands for a log that could not be read.
+fn unreadable_log(e: &std::io::Error) -> String {
+    format!("(it could not be read: {e})")
+}
+
 pub(super) struct QemuMachine {
     vm: VmProcess,
     record: MachineRecord,
@@ -48,6 +61,9 @@ pub(super) struct QemuMachine {
     process: Arc<dyn ProcessWatch>,
     /// Where QEMU's output goes: `launch` was given the directory, `attach` has only the record's serial log.
     log: PathBuf,
+    /// Where this launch's output begins in `log`, which every launch in a directory appends to: `launch` knows it, and
+    /// an attached machine does not, so it starts at 0.
+    log_from: u64,
     /// What the guest is, for the host to say whether it can reset one; `None` for a machine found with `attach`, which
     /// asks QEMU.
     arch: Option<Arch>,
@@ -72,6 +88,7 @@ impl QemuMachine {
         claim: FileClaim,
         forwards: Vec<Endpoint>,
         log: PathBuf,
+        log_from: u64,
         arch: Arch,
         host: &'static dyn Host,
         progress: Arc<dyn Progress>,
@@ -80,6 +97,7 @@ impl QemuMachine {
             endpoint: QmpEndpoint::from_record(&record.qmp),
             process,
             log,
+            log_from,
             arch: Some(arch),
             vm,
             record,
@@ -107,6 +125,7 @@ impl QemuMachine {
             endpoint: QmpEndpoint::from_record(&record.qmp),
             process,
             log,
+            log_from: 0,
             arch: None,
             ssh: record.ssh.iter().map(|e| (e.endpoint, e.addr)).collect(),
             forwards: record.ssh.iter().map(|e| e.endpoint).collect(),
@@ -142,22 +161,24 @@ impl QemuMachine {
         self.exited(error.message())
     }
 
-    /// The error for a QEMU process that exited while devvm was using it, quoting `qemu.log`.
+    /// What QEMU printed in this launch, for an error: its text, or a note in brackets when it printed nothing or the
+    /// file cannot be read.
+    fn output(&self) -> String {
+        match printed_since(&self.log, self.log_from) {
+            Ok(text) if text.is_empty() => PRINTED_NOTHING.to_owned(),
+            Ok(text) => text,
+            Err(e) => unreadable_log(&e),
+        }
+    }
+
+    /// The error for a QEMU process that exited while devvm was using it, quoting what it printed in this launch.
     fn exited(&self, what: &str) -> Error {
-        let log = &self.log;
-        let output = std::fs::read(log)
-            .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
-            .unwrap_or_else(|e| format!("({} could not be read: {e})", log.display()));
-        let output = if output.is_empty() {
-            "(it printed nothing)".to_owned()
-        } else {
-            output
-        };
         Error::new(
             ErrorKind::ConnectionLost,
             format!(
-                "QEMU exited: {what}; its output ({}):\n{output}\nthe serial log is {}",
-                log.display(),
+                "QEMU exited: {what}; its output ({}):\n{}\nthe serial log is {}",
+                self.log.display(),
+                self.output(),
                 self.record.serial_log.display()
             ),
         )
@@ -243,7 +264,8 @@ impl Machine for QemuMachine {
     }
 
     /// Lets QEMU run, waits for its control socket (the greeting proves QEMU finished initialising, so the forwards are
-    /// bound) and reads the ports it chose. Fails with the contents of `qemu.log` when the process exits first.
+    /// bound) and reads the ports it chose. Fails with the contents of `qemu.log` when the process exits first. The
+    /// `info usernet` read is made with no forwards too: it is the main-loop command [`Machine::resume`] promises.
     fn resume(&mut self) -> Result<()> {
         if self.attached {
             return Err(Error::new(
@@ -272,6 +294,20 @@ impl Machine for QemuMachine {
 
     fn release(&mut self) -> Result<()> {
         if self.attached { Ok(()) } else { self.vm.release() }
+    }
+
+    /// The status, with what QEMU printed in this launch when it failed: the account of why it ended. The log is read
+    /// only then, and is empty in the output when QEMU printed nothing.
+    fn try_wait(&self) -> Result<Option<MachineExit>> {
+        let Some(status) = self.vm.try_wait()? else {
+            return Ok(None);
+        };
+        let output = if status.success() {
+            String::new()
+        } else {
+            printed_since(&self.log, self.log_from).unwrap_or_else(|e| unreadable_log(&e))
+        };
+        Ok(Some(MachineExit { status, output }))
     }
 
     /// Resets the guest inside this QEMU. Nothing is sent to the VM for a refusal: a machine launched with `-no-reboot`

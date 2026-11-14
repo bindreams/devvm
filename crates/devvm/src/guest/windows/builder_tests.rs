@@ -1,0 +1,779 @@
+//! `WindowsBuilder::build_base` over the fake backend, for what the build makes before its first launch. The tests with
+//! machines that launch need a frozen spawn, which only Windows has, and run in `builder_windows_tests.rs`.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use super::serial::Serial;
+use super::{Bounds, End, Launched, Stall, Watch, WindowsBuilder, after_kill, verdict};
+use crate::backend::MachineExit;
+use crate::backend::fake::FakeBackend;
+use crate::guest::windows::pins::VIRTIO_WIN;
+use crate::guest::windows::templates;
+use crate::guest::{BaseBuilder, BuildCtx};
+use crate::iso::{IsoMemo, key_iso};
+use crate::media::read_files;
+use crate::recipe::Source;
+use crate::store::fetch::Fetcher;
+use crate::store::layers::layers_tests::{Env, env, key, request};
+use crate::store::layers::{Built, ChainLease};
+use crate::test_support::fixtures::{build_ctx, iso_fixture, unicode_home};
+use crate::test_support::host::TestHost;
+use crate::test_support::transport::RefusingTransport;
+use crate::{Arch, Dirs, Error, ErrorKind, Result};
+
+pub(super) struct Rig {
+    pub(super) env: Env,
+    pub(super) dirs: Dirs,
+    pub(super) transport: Arc<RefusingTransport>,
+    pub(super) builder: WindowsBuilder,
+    pub(super) ctx: BuildCtx,
+    pub(super) iso: PathBuf,
+}
+
+/// A builder over `backend`, whose ISO is the fixture `iso` copied into `home`, with the pinned virtio-win ISO already
+/// in the download cache (any bytes: the cache is trusted by name). The backend is returned for the tests that read
+/// what it launched.
+pub(super) fn rig(home: &Path, iso: &str, backend: FakeBackend, bounds: Bounds) -> (Rig, Arc<FakeBackend>) {
+    let env = env(home);
+    let dirs = Dirs::under(home);
+    let transport = Arc::new(RefusingTransport::default());
+    let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), env.progress.clone()));
+    let cached = fetcher.entry_path(&VIRTIO_WIN.artifact());
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    std::fs::write(&cached, b"virtio-win").unwrap();
+    let backend = Arc::new(backend);
+    let builder = WindowsBuilder::new(fetcher, backend.clone(), &TestHost, bounds);
+    let mut ctx = build_ctx(home, Arch::Amd64);
+    ctx.progress = env.progress.clone();
+    ctx.clock = env.clock.clone();
+    let path = home.join("windows.iso");
+    std::fs::copy(iso_fixture(iso), &path).unwrap();
+    let rig = Rig {
+        env,
+        dirs,
+        transport,
+        builder,
+        ctx,
+        iso: path,
+    };
+    (rig, backend)
+}
+
+impl Rig {
+    /// The base layer a build of the ISO makes, or its error.
+    pub(super) fn build(&self, edition: Option<&str>) -> Result<ChainLease> {
+        let root = key_iso(
+            &TestHost,
+            &IsoMemo::new(&self.dirs),
+            &self.iso,
+            edition,
+            &*self.env.progress,
+        )
+        .unwrap();
+        *self.ctx.iso.lock().unwrap() = Some(root);
+        let source = Source::Iso {
+            path: self.iso.clone(),
+            edition: edition.map(Into::into),
+        };
+        self.env.store.build(&request(key(1)), None, |staging| {
+            self.builder
+                .build_base(&source, &self.ctx, staging.dir)
+                .map(|meta| Built::from_meta(&meta))
+        })
+    }
+
+    /// The build's own directory for the base, which nothing but the build removes.
+    pub(super) fn work(&self) -> PathBuf {
+        self.ctx.work.join("windows-base")
+    }
+}
+
+/// A rig whose launches never happen, for what the build makes before the first.
+fn rig_without_a_machine(home: &Path, iso: &str) -> Rig {
+    rig(
+        home,
+        iso,
+        FakeBackend::new(&TestHost).with_failing_launch(),
+        Bounds::default(),
+    )
+    .0
+}
+
+pub(super) fn text_of(path: &Path) -> String {
+    String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned()
+}
+
+// The install media ===================================================================================================
+
+#[skuld::test]
+fn boot_patches_become_overlay_patches_with_the_same_offsets_and_bytes(#[fixture(unicode_home)] home: &Path) {
+    let rig = rig_without_a_machine(home, "single-image.iso");
+    let held = key_iso(&TestHost, &IsoMemo::new(&rig.dirs), &rig.iso, None, &*rig.env.progress).unwrap();
+    let expected: Vec<String> = crate::iso::read_install_iso(held)
+        .unwrap()
+        .boot_patches
+        .iter()
+        .map(|patch| format!("{}+{}", patch.offset, patch.bytes.len()))
+        .collect();
+    assert!(!expected.is_empty());
+
+    rig.build(None).unwrap_err();
+
+    let overlay = text_of(&rig.work().join("install.qcow2"));
+    assert!(
+        overlay.ends_with(&format!("patches={}", expected.join(","))),
+        "{overlay}"
+    );
+}
+
+#[skuld::test]
+fn the_overlay_is_made_in_the_builds_work_directory_and_nothing_sweeps_it(#[fixture(unicode_home)] home: &Path) {
+    let rig = rig_without_a_machine(home, "single-image.iso");
+
+    let error = rig.build(None).unwrap_err();
+
+    assert!(error.message().contains("cannot launch"), "{error}");
+    assert!(
+        rig.work().join("install.qcow2").is_file(),
+        "the overlay is the build directory's to remove"
+    );
+    let overlays: Vec<_> = walk(home)
+        .into_iter()
+        .filter(|path| path.ends_with("install.qcow2"))
+        .collect();
+    assert_eq!(
+        overlays,
+        [rig.work().join("install.qcow2")],
+        "the overlay is in no layer"
+    );
+}
+
+/// Every file below `dir`.
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(walk(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[skuld::test]
+fn the_blank_disk_is_the_larger_of_64_gib_and_the_recipes_disk(#[fixture(unicode_home)] home: &Path) {
+    for (disk, expected) in [
+        (None, 64u64 << 30),
+        (Some(10u64 << 30), 64 << 30),
+        (Some(100u64 << 30), 100 << 30),
+    ] {
+        let mut rig = rig_without_a_machine(home, "single-image.iso");
+        rig.ctx.resources.disk = disk;
+        let disks = Mutex::new(Vec::new());
+
+        let error = rig
+            .env
+            .store
+            .build(&request(key(2)), None, |staging| {
+                let root = key_iso(&TestHost, &IsoMemo::new(&rig.dirs), &rig.iso, None, &*rig.env.progress)?;
+                *rig.ctx.iso.lock().unwrap() = Some(root);
+                let source = Source::Iso {
+                    path: rig.iso.clone(),
+                    edition: None,
+                };
+                let result = rig.builder.build_base(&source, &rig.ctx, staging.dir);
+                disks
+                    .lock()
+                    .unwrap()
+                    .push(text_of(&staging.dir.path().join("disk.qcow2")));
+                result.map(|meta| Built::from_meta(&meta))
+            })
+            .unwrap_err();
+
+        assert!(error.message().contains("cannot launch"), "{error}");
+        assert_eq!(*disks.lock().unwrap(), [format!("blank size={expected}")], "{disk:?}");
+        let _ = std::fs::remove_dir_all(rig.work());
+    }
+}
+
+#[skuld::test]
+fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(#[fixture(unicode_home)] home: &Path) {
+    for (edition, index) in [
+        ("Windows 11 Enterprise LTSC 2024", 1),
+        ("Windows 11 IoT Enterprise LTSC 2024", 2),
+        ("Windows 11 IoT Enterprise Subscription LTSC 2024", 3),
+    ] {
+        let rig = rig_without_a_machine(home, "three-images.iso");
+
+        rig.build(Some(edition)).unwrap_err();
+
+        let files = read_files(&rig.work().join("answer.img"), &["Autounattend.xml"]).unwrap();
+        let answer = String::from_utf8(files[0].bytes.clone()).unwrap();
+        assert!(
+            answer.contains(&format!(
+                "<Key>/IMAGE/INDEX</Key>\n              <Value>{index}</Value>"
+            )),
+            "{edition}: {answer}"
+        );
+        assert!(answer.contains("<UILanguage>en-US</UILanguage>"), "{edition}");
+        let _ = std::fs::remove_dir_all(rig.work());
+    }
+}
+
+#[skuld::test]
+fn the_bootstrap_is_told_whether_the_chosen_image_is_an_evaluation(#[fixture(unicode_home)] home: &Path) {
+    // `single-image.iso` holds an evaluation edition, `three-images.iso` volume editions.
+    for (iso, edition, evaluation) in [
+        ("single-image.iso", None, "$true"),
+        ("three-images.iso", Some("Windows 11 Enterprise LTSC 2024"), "$false"),
+    ] {
+        let rig = rig_without_a_machine(home, iso);
+
+        rig.build(edition).unwrap_err();
+
+        let files = read_files(&rig.work().join("answer.img"), &["bootstrap.ps1"]).unwrap();
+        let bootstrap = String::from_utf8(files[0].bytes.clone()).unwrap();
+        assert!(
+            bootstrap.contains(&format!("if ({evaluation} -and $product")),
+            "{iso}: {bootstrap}"
+        );
+        let _ = std::fs::remove_dir_all(rig.work());
+    }
+}
+
+#[skuld::test]
+fn the_virtio_win_iso_is_the_pinned_download_and_a_cached_one_is_not_fetched_again(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let rig = rig_without_a_machine(home, "single-image.iso");
+    let cached = rig.builder.fetcher.entry_path(&VIRTIO_WIN.artifact());
+    std::fs::remove_file(&cached).unwrap();
+
+    let error = rig.build(None).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Download, "{error}");
+    assert_eq!(rig.transport.asked(), [VIRTIO_WIN.url]);
+}
+
+#[skuld::test]
+fn a_base_is_built_from_an_iso_and_only_from_one(#[fixture(unicode_home)] home: &Path) {
+    let rig = rig_without_a_machine(home, "single-image.iso");
+    let source = Source::Embedded("ubuntu-24.04".to_owned());
+
+    let error = rig
+        .env
+        .store
+        .build(&request(key(3)), None, |staging| {
+            rig.builder
+                .build_base(&source, &rig.ctx, staging.dir)
+                .map(|meta| Built::from_meta(&meta))
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::NotSupported, "{error}");
+}
+
+#[skuld::test]
+fn the_definition_hash_is_the_templates() {
+    let rig_hash = {
+        let fetcher = Arc::new(Fetcher::new(
+            std::env::temp_dir(),
+            Arc::new(RefusingTransport::default()),
+            Arc::new(crate::exit::NullProgress),
+        ));
+        WindowsBuilder::new(
+            fetcher,
+            Arc::new(FakeBackend::new(&TestHost)),
+            &TestHost,
+            Bounds::default(),
+        )
+        .definition_hash()
+    };
+    assert_eq!(rig_hash, templates::definition_hash());
+}
+
+#[skuld::test]
+fn the_iso_is_free_again_when_the_build_fails_before_its_first_launch(#[fixture(unicode_home)] home: &Path) {
+    let rig = rig_without_a_machine(home, "single-image.iso");
+
+    rig.build(None).unwrap_err();
+
+    assert!(std::fs::OpenOptions::new().write(true).open(&rig.iso).is_ok());
+}
+
+#[skuld::test]
+fn the_bootstrap_writes_the_marker_that_starts_the_first_logon_phase() {
+    let bootstrap = templates::TEMPLATES
+        .iter()
+        .find(|(name, _)| *name == "bootstrap.ps1")
+        .map(|(_, text)| *text)
+        .unwrap();
+    assert!(
+        bootstrap.contains(&format!("DEVVM-PROGRESS={}", super::FIRST_LOGON)),
+        "the builder tells the first-logon phase by this phase name"
+    );
+}
+
+#[skuld::test]
+fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
+    let exited = || {
+        crate::Error::new(
+            ErrorKind::Unavailable,
+            "the VM process of launch 2 exited with exit code: 1",
+        )
+    };
+
+    let quiet = super::with_qemu_output(exited(), "");
+    assert_eq!(
+        quiet.message(),
+        format!(
+            "the VM process of launch 2 exited with exit code: 1\nQEMU's output:\n{}",
+            crate::backend::PRINTED_NOTHING
+        )
+    );
+    assert_eq!(quiet.kind(), ErrorKind::Unavailable);
+
+    let loud = super::with_qemu_output(exited(), "qemu: out of memory");
+    assert_eq!(
+        loud.message(),
+        "the VM process of launch 2 exited with exit code: 1\nthe end of QEMU's output:\nqemu: out of memory"
+    );
+}
+
+// The clock of a bound ================================================================================================
+
+const MINUTE: Duration = Duration::from_secs(60);
+
+/// A setup bound of ten minutes and a first-logon bound of two.
+fn bounds() -> Bounds {
+    Bounds {
+        setup: 10 * MINUTE,
+        first_logon: 2 * MINUTE,
+        poll: Duration::from_millis(1),
+    }
+}
+
+fn progress_of(phase: &str) -> Serial {
+    Serial {
+        progress: vec![phase.to_owned()],
+        ..Serial::default()
+    }
+}
+
+#[skuld::test]
+fn a_marker_restarts_the_clock_of_the_phase() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+
+    watch.observe(&progress_of("specialize"), start + 9 * MINUTE);
+
+    assert!(
+        watch.stall(&bounds(), start + 19 * MINUTE).is_none(),
+        "ten minutes after the marker"
+    );
+    let stall = watch
+        .stall(&bounds(), start + 19 * MINUTE + Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(stall.awaited, "Windows Setup");
+    assert_eq!(stall.bound, 10 * MINUTE);
+}
+
+#[skuld::test]
+fn a_launch_starts_the_clock_no_earlier_than_itself() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+
+    watch.launched(start + 30 * MINUTE);
+
+    assert!(watch.stall(&bounds(), start + 35 * MINUTE).is_none());
+    assert!(watch.stall(&bounds(), start + 41 * MINUTE).is_some());
+}
+
+#[skuld::test]
+fn the_first_logon_scripts_first_marker_moves_the_wait_to_its_bound() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+
+    watch.observe(&progress_of(&format!("{} x", super::FIRST_LOGON)), start + MINUTE);
+
+    assert!(watch.stall(&bounds(), start + 2 * MINUTE).is_none());
+    let stall = watch.stall(&bounds(), start + 4 * MINUTE).unwrap();
+    assert_eq!(stall.awaited, "the first-logon script");
+    assert_eq!(stall.bound, 2 * MINUTE);
+}
+
+#[skuld::test]
+fn every_kind_of_marker_restarts_the_clock() {
+    for (kind, written) in [
+        ("progress", progress_of("specialize")),
+        (
+            "license",
+            Serial {
+                license: Some("DEVVM-LICENSE=null".to_owned()),
+                ..Serial::default()
+            },
+        ),
+        ("failed", wrote(Some("boom"), false)),
+        ("done", wrote(None, true)),
+    ] {
+        let start = Instant::now();
+        let mut watch = Watch::new(start);
+
+        watch.observe(&written, start + 9 * MINUTE);
+
+        assert!(
+            watch.stall(&bounds(), start + 19 * MINUTE).is_none(),
+            "{kind}: ten minutes after the marker"
+        );
+        assert!(
+            watch
+                .stall(&bounds(), start + 19 * MINUTE + Duration::from_secs(1))
+                .is_some(),
+            "{kind}"
+        );
+    }
+}
+
+#[skuld::test]
+fn nothing_written_leaves_the_clock_where_it_was() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+
+    watch.observe(&Serial::default(), start + 9 * MINUTE);
+
+    assert!(watch.stall(&bounds(), start + 11 * MINUTE).is_some());
+}
+
+#[skuld::test]
+fn winpe_is_over_once_any_marker_has_been_seen() {
+    let start = Instant::now();
+    let mut watch = Watch::new(start);
+    assert!(!watch.marker_seen());
+
+    watch.observe(&progress_of("specialize"), start);
+
+    assert!(watch.marker_seen());
+}
+
+// A launch that ends with a VM process that may still run =============================================================
+
+#[skuld::test]
+fn a_failed_launch_stays_the_headline_when_the_kill_failed_too() {
+    let outcome: Result<()> = Err(Error::new(ErrorKind::Unavailable, "the guest failed to build the base"));
+
+    let error = after_kill(outcome, Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert!(
+        error.message().starts_with("the guest failed to build the base"),
+        "{error}"
+    );
+    assert!(error.message().contains("cannot kill the VM"), "{error}");
+    assert!(
+        error.message().contains("so a VM process that may still run remains"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn a_launch_that_went_well_is_the_kills_error_when_the_kill_failed() {
+    let error = after_kill(Ok(5), Err(Error::new(ErrorKind::Io, "cannot kill the VM"))).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.message(), "cannot kill the VM");
+}
+
+#[skuld::test]
+fn a_kill_that_worked_leaves_the_outcome_as_it_was() {
+    assert_eq!(after_kill(Ok(5), Ok(())).unwrap(), 5);
+    let error = after_kill::<()>(Err(Error::new(ErrorKind::Unavailable, "failed")), Ok(())).unwrap_err();
+    assert_eq!(error.message(), "failed");
+}
+
+// What a launch that was stopped at its bound came to =================================================================
+
+fn stall() -> Stall {
+    Stall {
+        awaited: "the first-logon script",
+        bound: 2 * MINUTE,
+    }
+}
+
+fn wrote(failed: Option<&str>, done: bool) -> Serial {
+    Serial {
+        failed: failed.map(Into::into),
+        done,
+        ..Serial::default()
+    }
+}
+
+#[skuld::test]
+fn a_stall_alone_names_what_made_no_progress_and_that_the_guest_was_stopped() {
+    let error = verdict(1, End::stalled(stall(), None), &wrote(None, false))
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(
+        error.message(),
+        "the first-logon script made no progress for 2m; the guest was stopped"
+    );
+}
+
+#[skuld::test]
+fn a_failed_marker_is_the_headline_of_a_stall_and_the_stall_follows() {
+    let error = verdict(1, End::stalled(stall(), None), &wrote(Some("boom"), false))
+        .err()
+        .unwrap();
+
+    assert_eq!(
+        error.message(),
+        "the Windows guest failed to build the base: boom\nthe first-logon script made no progress for 2m; the guest \
+         was stopped"
+    );
+}
+
+#[skuld::test]
+fn a_failed_marker_wins_over_a_done_marker_at_a_stall() {
+    let error = verdict(1, End::stalled(stall(), None), &wrote(Some("boom"), true))
+        .err()
+        .unwrap();
+
+    assert!(
+        error
+            .message()
+            .starts_with("the Windows guest failed to build the base: boom"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
+fn a_done_marker_at_a_stall_says_the_guest_did_not_power_off() {
+    let error = verdict(1, End::stalled(stall(), None), &wrote(None, true))
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(
+        error.message(),
+        "the guest reported done but did not power off within 2m"
+    );
+}
+
+// What a launch came to, for every account, end and log read ==========================================================
+
+#[cfg(windows)]
+fn failing_status() -> std::process::ExitStatus {
+    std::os::windows::process::ExitStatusExt::from_raw(1)
+}
+
+#[cfg(unix)]
+fn failing_status() -> std::process::ExitStatus {
+    std::os::unix::process::ExitStatusExt::from_raw(1 << 8)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Account {
+    Nothing,
+    Failed,
+    Done,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Ending {
+    CleanExit,
+    FailingExit,
+    Stall,
+    /// The VM was stopped at its bound, and its status could not be read to tell whether it had exited.
+    StallStatusUnknown,
+    StatusUnknown,
+    /// The log could not be read during the wait, and so no end was seen.
+    LogUnreadable,
+}
+
+const STATUS_TEXT: &str = "cannot read the VM process's status";
+const LOG_TEXT: &str = "cannot read the serial log";
+/// The failure to read the log at the wait, which a failed second read replaces.
+const LOG_WAIT_TEXT: &str = "the serial log failed during the wait";
+
+/// The result a launch must come to, as `Ok(true)` for a finished launch and `Ok(false)` for a restarted one, or the
+/// kind and the beginning of the error.
+fn expected(
+    account: Account,
+    ending: Ending,
+    read_failed: bool,
+) -> std::result::Result<bool, (ErrorKind, &'static str)> {
+    use {Account::*, Ending::*};
+    const UNAVAILABLE: ErrorKind = ErrorKind::Unavailable;
+    const FAILED: &str = "the Windows guest failed to build the base: boom";
+    const STALLED: &str = "the first-logon script made no progress for 2m; the guest was stopped";
+    match (account, ending, read_failed) {
+        (Failed, ..) => Err((UNAVAILABLE, FAILED)),
+        (Done, CleanExit, false) => Ok(true),
+        (Done, CleanExit, true) => Err((
+            UNAVAILABLE,
+            "the guest wrote DEVVM-BASE-DONE, but the serial log could not be read to its end, so the disk may be \
+             incomplete",
+        )),
+        (Done, FailingExit, _) => Err((
+            UNAVAILABLE,
+            "the guest wrote DEVVM-BASE-DONE, but the VM process of launch 1 exited with",
+        )),
+        (Done, Stall | StallStatusUnknown, _) => {
+            Err((UNAVAILABLE, "the guest reported done but did not power off within 2m"))
+        }
+        (Done, StatusUnknown | LogUnreadable, _) => Err((
+            UNAVAILABLE,
+            "the guest wrote DEVVM-BASE-DONE, but the launch's end could not be read, so the disk may be incomplete",
+        )),
+        (Nothing, CleanExit, false) => Ok(false),
+        (Nothing, CleanExit, true) => Err((ErrorKind::Io, LOG_TEXT)),
+        (Nothing, FailingExit, _) => Err((UNAVAILABLE, "the VM process of launch 1 exited with")),
+        (Nothing, Stall | StallStatusUnknown, _) => Err((UNAVAILABLE, STALLED)),
+        (Nothing, StatusUnknown, _) => Err((ErrorKind::Io, STATUS_TEXT)),
+        (Nothing, LogUnreadable, false) => Err((ErrorKind::Io, LOG_WAIT_TEXT)),
+        (Nothing, LogUnreadable, true) => Err((ErrorKind::Io, LOG_TEXT)),
+    }
+}
+
+#[skuld::test]
+fn every_account_end_and_log_read_comes_to_one_error_with_its_headline_first_and_each_host_failure_named_once() {
+    for account in [Account::Nothing, Account::Failed, Account::Done] {
+        for ending in [
+            Ending::CleanExit,
+            Ending::FailingExit,
+            Ending::Stall,
+            Ending::StallStatusUnknown,
+            Ending::StatusUnknown,
+            Ending::LogUnreadable,
+        ] {
+            for read_failed in [false, true] {
+                let row = format!("{account:?}, {ending:?}, log read failed: {read_failed}");
+                let serial = match account {
+                    Account::Nothing => Serial::default(),
+                    Account::Failed => wrote(Some("boom"), false),
+                    Account::Done => wrote(None, true),
+                };
+                // The failures the error must name, once each and in this order.
+                let mut host_texts = Vec::new();
+                let mut end = match ending {
+                    Ending::CleanExit => End::exited(MachineExit {
+                        status: std::process::ExitStatus::default(),
+                        output: String::new(),
+                    }),
+                    Ending::FailingExit => End::exited(MachineExit {
+                        status: failing_status(),
+                        output: "qemu: out of memory".to_owned(),
+                    }),
+                    Ending::Stall => End::stalled(stall(), None),
+                    Ending::StallStatusUnknown => {
+                        host_texts.push(STATUS_TEXT);
+                        End::stalled(stall(), Some(Error::new(ErrorKind::Io, STATUS_TEXT)))
+                    }
+                    Ending::StatusUnknown => {
+                        host_texts.push(STATUS_TEXT);
+                        End::failed(Error::new(ErrorKind::Io, STATUS_TEXT))
+                    }
+                    Ending::LogUnreadable => {
+                        // A second failed read replaces this one.
+                        if !read_failed {
+                            host_texts.push(LOG_WAIT_TEXT);
+                        }
+                        End::unreadable(Error::new(ErrorKind::Io, LOG_WAIT_TEXT))
+                    }
+                };
+                if read_failed {
+                    end.log_read_again(Err(Error::new(ErrorKind::Io, LOG_TEXT)));
+                    host_texts.push(LOG_TEXT);
+                }
+
+                let result = verdict(1, end, &serial);
+
+                match (expected(account, ending, read_failed), result) {
+                    (Ok(finished), Ok(launched)) => {
+                        assert_eq!(matches!(launched, Launched::Finished), finished, "{row}");
+                    }
+                    (Err((kind, headline)), Err(error)) => {
+                        assert_eq!(error.kind(), kind, "{row}: {error}");
+                        assert!(error.message().starts_with(headline), "{row}: {error}");
+                        for text in &host_texts {
+                            assert_eq!(error.message().matches(text).count(), 1, "{row}: {text}: {error}");
+                        }
+                        if matches!(ending, Ending::LogUnreadable) && read_failed {
+                            assert!(!error.message().contains(LOG_WAIT_TEXT), "{row}: {error}");
+                        }
+                        assert!(!error.message().contains("as well"), "{row}: {error}");
+                        // The host's own failure is the headline, and so is the error itself, only when the guest
+                        // gave no account and the end told nothing.
+                        let is_the_host = matches!(account, Account::Nothing)
+                            && matches!(
+                                ending,
+                                Ending::CleanExit | Ending::StatusUnknown | Ending::LogUnreadable
+                            );
+                        let source = std::error::Error::source(&error);
+                        if host_texts.is_empty() || (is_the_host && host_texts.len() == 1) {
+                            assert!(source.is_none(), "{row}");
+                        } else {
+                            let source = source.unwrap_or_else(|| panic!("{row}: no source"));
+                            assert!(source.to_string().contains(host_texts[0]), "{row}: {source}");
+                        }
+                    }
+                    (expected, result) => panic!(
+                        "{row}: expected {expected:?}, got {:?}",
+                        result.map(|launched| matches!(launched, Launched::Finished))
+                    ),
+                }
+            }
+        }
+    }
+}
+
+#[skuld::test]
+fn an_end_with_no_exit_and_no_failure_is_an_internal_error_whatever_the_guest_wrote() {
+    for serial in [Serial::default(), wrote(Some("boom"), false), wrote(None, true)] {
+        let end = End {
+            exit: None,
+            status: None,
+            log: None,
+        };
+
+        let error = verdict(1, end, &serial).err().unwrap();
+
+        assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+        if serial.failed.is_some() {
+            assert!(
+                error
+                    .message()
+                    .starts_with("the Windows guest failed to build the base: boom"),
+                "{error}"
+            );
+        }
+    }
+}
+
+// What the second read of the log does to the one that failed at the wait =============================================
+
+#[skuld::test]
+fn a_log_unreadable_at_the_wait_is_the_error_when_the_log_reads_again() {
+    let mut end = End::unreadable(Error::new(ErrorKind::Io, LOG_TEXT));
+    end.log_read_again(Ok(()));
+
+    let error = verdict(1, end, &Serial::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(error.message(), LOG_TEXT);
+}
+
+#[skuld::test]
+fn a_log_that_fails_again_replaces_the_failure_at_the_wait() {
+    let mut end = End::unreadable(Error::new(ErrorKind::Io, "first failure"));
+    end.log_read_again(Err(Error::new(ErrorKind::Io, "second failure")));
+
+    let error = verdict(1, end, &Serial::default()).err().unwrap();
+
+    assert_eq!(error.message(), "second failure");
+}

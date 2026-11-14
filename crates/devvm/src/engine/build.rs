@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::Engine;
 use super::build_dir::BuildDir;
@@ -11,10 +11,10 @@ use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
 use crate::iso::{IsoMemo, IsoRoot, key_iso};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
-use crate::recipe::{CopyFrom, Flattened, Recipe, Shell, Source, Step};
+use crate::recipe::{CopyFrom, Flattened, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
 use crate::vm::{Image, Vm};
-use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, RunAs, StartOptions, random};
+use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, StartOptions, random};
 
 #[cfg(test)]
 #[path = "build_tests.rs"]
@@ -27,10 +27,6 @@ mod build_windows_tests;
 #[cfg(all(test, unix))]
 #[path = "build_unix_tests.rs"]
 mod build_unix_tests;
-
-/// The shell script of a `copy` step's one guest command. `$1` is the destination directory, `$2` the uploaded archive.
-/// The archive is removed whatever the extraction did, and the command ends with the extraction's status.
-const EXTRACT: &str = r#"mkdir -p -- "$1" && tar -xf "$2" -C "$1"; status=$?; rm -f -- "$2"; exit $status"#;
 
 impl Engine {
     /// Builds the image `recipe` describes: a layer for its base, then one per step. A layer whose inputs match one
@@ -74,10 +70,19 @@ impl Engine {
         };
         let keys = chain_keys(&flat, &ctx, &root.content(), &builder.definition_hash(), &manifests)?;
 
+        // The ISO of an ISO root stays held through the root layer's build, which the builder that installs from it ends
+        // as soon as the guest's disk has opened it; a root layer that is found takes no ISO, and it is freed below.
         let build_ctx = BuildCtx {
             dirs: self.dirs.clone(),
             arch,
             progress: self.progress.clone(),
+            clock: self.clock.clone(),
+            resources: flat.resources,
+            work: build_dir.path().to_owned(),
+            iso: Mutex::new(match root {
+                BuildRoot::Iso(root) => Some(root),
+                BuildRoot::Pinned(_) => None,
+            }),
         };
         let request = |key: LayerKey| BuildRequest {
             key,
@@ -88,10 +93,8 @@ impl Engine {
                 .build_base(&flat.root, &build_ctx, staging.dir)
                 .map(|meta| Built::from_meta(&meta))
         })?;
-        // The ISO of an ISO root is held until here: the root layer is found or built, and no step reads the ISO. The
-        // Windows builder reads it from `root` rather than by its path, and keeps it held until the guest's disk
-        // has opened it.
-        drop(root);
+        // The root layer is found or built, and no step reads the ISO.
+        drop(build_ctx.iso.lock().unwrap_or_else(PoisonError::into_inner).take());
         for (index, key) in keys[1..].iter().enumerate() {
             let step = StepRun {
                 engine: self,
@@ -168,7 +171,7 @@ fn step_command(guest: &dyn GuestOs, step: &Step, copy_paths: (&str, &str)) -> R
             run_as: *run_as,
             cwd: cwd.clone(),
         }),
-        Step::Copy { .. } => extract_command(guest, copy_paths.0, copy_paths.1),
+        Step::Copy { .. } => guest.extract_command(copy_paths.0, copy_paths.1),
         Step::Set(setting) => guest.setting_command(setting),
     }
 }
@@ -313,12 +316,18 @@ impl StepRun<'_> {
             .snapshot
             .ok_or_else(|| Error::new(ErrorKind::Internal, "a copy step has no snapshot"))
             .during("finding the files of copy")?;
-        let archive = format!("/tmp/devvm-copy-{}.tar", hex::encode(random::bytes::<16>()));
+        let archive = format!(
+            "{}/devvm-copy-{}.tar",
+            self.guest.copy_scratch_dir(),
+            hex::encode(random::bytes::<16>())
+        );
         // A `~` is the guest's home, which the shell would never expand in a quoted argument: it is resolved here.
         let resolving = format!("resolving the destination of copy to {to}");
         let destination = vm
             .with_sftp(|sftp| sftp.expanded(to))
             .and_then(|(expanded, home)| guest_destination(&**self.guest, &expanded, &home))
+            // `home` is the server's spelling (`/C:/Users/user` on a Windows guest); the command takes the user's.
+            .map(|destination| self.guest.user_path(&destination))
             .during(&resolving)?;
         // The op lock is held for the whole upload; the extraction below takes its own.
         vm.with_sftp(|sftp| {
@@ -439,22 +448,6 @@ fn guest_destination(guest: &dyn GuestOs, expanded: &str, home: &str) -> Result<
         return Ok(format!("{}/{expanded}", home.trim_end_matches('/')));
     }
     Ok(expanded.to_owned())
-}
-
-/// The one guest command of a `copy` step: makes `destination`, extracts `archive` into it, removes `archive`
-/// whatever the extraction did, and ends with the extraction's status. The paths are arguments of the script, never
-/// text in it, so no quoting of theirs is written here: the guest's own wrapping quotes them. The archive is outside
-/// `destination` and gone before the disk is committed, so no later layer or instance carries it.
-fn extract_command(guest: &dyn GuestOs, destination: &str, archive: &str) -> Result<Command> {
-    let mut argv = guest
-        .shell_argv(Some(Shell::Sh), EXTRACT)
-        .map_err(|error| error.with_context(ErrorKind::Recipe, "a copy step extracts its files with `sh`"))?;
-    argv.extend(["devvm-copy".to_owned(), destination.to_owned(), archive.to_owned()]);
-    Ok(Command {
-        argv,
-        run_as: RunAs::User,
-        cwd: None,
-    })
 }
 
 /// A writer that reports each complete line it is given on the progress channel, and the rest when it is dropped. A

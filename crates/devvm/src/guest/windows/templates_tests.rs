@@ -23,6 +23,7 @@ pub(super) fn inputs() -> AnswerInputs<'static> {
         language: "de-DE",
         time_zone: "UTC",
         computer_name: "DEVVM",
+        evaluation: true,
     }
 }
 
@@ -37,7 +38,12 @@ fn raw(name: &str) -> &'static str {
 
 /// The text of a file of the answer disk.
 fn rendered(name: &str) -> String {
-    let files = answer_disk_files(&inputs()).unwrap();
+    rendered_with(name, &inputs())
+}
+
+/// [`rendered`] for other inputs.
+fn rendered_with(name: &str, inputs: &AnswerInputs) -> String {
+    let files = answer_disk_files(inputs).unwrap();
     let file = files
         .iter()
         .find(|file| file.name == name)
@@ -90,6 +96,7 @@ fn the_answer_file_renders_deterministically_and_escapes_xml() {
         language: "x<y",
         time_zone: "t&z",
         computer_name: "n\"m",
+        evaluation: false,
     };
     let text = answer_file(&hostile).unwrap();
     assert_eq!(
@@ -170,11 +177,18 @@ fn the_answer_file_logs_on_the_account_without_a_logon_count() {
 #[skuld::test]
 fn the_specialize_marker_goes_to_the_com1_device_not_to_a_path_in_the_drive_root() {
     let text = answer_file(&inputs()).unwrap();
-    assert!(text.contains(r"echo DEVVM-PROGRESS=specialize&gt;\\.\COM1"), "{text}");
+    assert!(text.contains(r"echo DEVVM-PROGRESS=specialize)&gt;\\.\COM1"), "{text}");
     assert!(
         !text.contains(r"&gt;\.\COM1"),
         "the device is written with two leading backslashes: one names a file in the root of the current drive"
     );
+}
+
+#[skuld::test]
+fn every_serial_marker_starts_with_a_line_end_so_that_bytes_before_it_are_not_its_line() {
+    let text = answer_file(&inputs()).unwrap();
+    assert!(text.contains("(echo.&amp;echo DEVVM-PROGRESS=specialize)"), "{text}");
+    assert!(rendered("lib.ps1").contains(r#"$com.Write("`n" + $line + "`n")"#));
 }
 
 #[skuld::test]
@@ -447,12 +461,130 @@ fn the_bootstrap_catches_and_writes_the_failed_marker_before_shutdown() {
 #[skuld::test]
 fn a_read_with_no_licensed_product_is_sent_as_null_not_thrown() {
     let bootstrap = rendered("bootstrap.ps1");
-    let read = section(&bootstrap, "$license = Get-CimInstance", "Send-Line \"DEVVM-LICENSE=");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
     assert!(
         !read.contains("throw") && !bootstrap.contains("no licensed Windows product"),
         "a retail install with no key has no row, and the host decides what that means"
     );
     assert!(read.contains("'null'"), "{read}");
+}
+
+// A fresh evaluation reads "grace time expired" until Windows activates it (vm-windows run 43545384836: 5/0 at first
+// logon, 1/129600 a minute later), so the read follows a synchronous activation whose account is sent, never thrown.
+#[skuld::test]
+fn an_evaluation_that_is_not_licensed_is_activated_before_its_license_is_read() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    assert_before(read, "-MethodName Activate", "ConvertTo-Json");
+    assert!(
+        read.contains("} catch {") && read.contains("n = 'ActivationOutcome'"),
+        "a failed activation is sent: {read}"
+    );
+}
+
+#[skuld::test]
+fn the_host_says_whether_the_image_is_an_evaluation_and_the_guest_asks_nothing_else() {
+    for evaluation in [true, false] {
+        let bootstrap = rendered_with("bootstrap.ps1", &AnswerInputs { evaluation, ..inputs() });
+        let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+        let value = if evaluation { "$true" } else { "$false" };
+        assert!(
+            read.contains(&format!(
+                "if ({value} -and $product -and $product.LicenseStatus -ne 1) {{"
+            )),
+            "{evaluation}: {read}"
+        );
+        assert!(
+            !bootstrap.contains("ProductKeyChannel") && !bootstrap.contains("TB:Eval"),
+            "the guest does not judge the image itself"
+        );
+    }
+}
+
+#[skuld::test]
+fn the_license_is_read_after_the_installs_and_the_tasks_and_before_the_work_directory_goes() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let tasks = "-Principal (New-ScheduledTaskPrincipal -UserId 'user'";
+    assert_before(&bootstrap, "ssh-broker.exe\" apply", "$filter = ");
+    assert_before(&bootstrap, tasks, "$filter = ");
+    assert_before(&bootstrap, "$filter = ", "Remove-Item -LiteralPath $work");
+    assert_before(&bootstrap, "Send-Line \"DEVVM-LICENSE=", "Send-Line 'DEVVM-BASE-DONE'");
+}
+
+#[skuld::test]
+fn a_failed_activation_is_sent_on_one_line_with_its_codes_not_a_generic_hresult() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    let catch = section(read, "} catch {", "$product = Get-CimInstance");
+    assert!(
+        catch.contains(r"-replace '[\r\n]', ' '") && catch.contains(".Trim()"),
+        "the message is one trimmed line: {catch}"
+    );
+    assert!(
+        catch.contains("NativeErrorCode") && catch.contains("StatusCode"),
+        "the CIM exception's codes are sent: {catch}"
+    );
+    assert!(
+        !catch.contains("HResult"),
+        "a CimException's HResult is a generic .NET code: {catch}"
+    );
+    assert!(
+        !read.contains("'failed: "),
+        "the account is fields, not a prefixed string: {read}"
+    );
+}
+
+// Windows PowerShell 5.1's ConvertTo-Json does not yield plain scalars for a nested [ordered] table.
+#[skuld::test]
+fn the_activation_is_sent_as_flat_scalar_fields_of_the_read() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    for name in [
+        "ActivationOutcome",
+        "ActivationMessage",
+        "ActivationNativeErrorCode",
+        "ActivationStatusCode",
+        "ActivationReturnValue",
+    ] {
+        assert!(read.contains(&format!("n = '{name}'")), "{name}: {read}");
+    }
+    assert!(
+        !read.contains("[ordered]") && !read.contains("n = 'Activation'"),
+        "no nested table: {read}"
+    );
+}
+
+#[skuld::test]
+fn an_activation_that_returns_nonzero_is_a_failure_carrying_the_return_value() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    let call = section(read, "-MethodName Activate", "} catch {");
+    assert!(
+        call.contains(".ReturnValue") && call.contains("$returned -eq 0") && call.contains("'failed'"),
+        "a non-zero ReturnValue is not a success: {call}"
+    );
+    assert_before(call, "if ($null -eq $returned)", "$outcome = 'succeeded'");
+    assert!(
+        section(call, "if ($null -eq $returned)", "} elseif").contains("'failed'"),
+        "a missing ReturnValue is not a success: {call}"
+    );
+}
+
+#[skuld::test]
+fn the_activation_is_announced_before_it_is_called_and_only_when_it_is_called() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    assert_before(
+        read,
+        "Send-Line 'DEVVM-PROGRESS=activating Windows'",
+        "-MethodName Activate",
+    );
+    assert_before(
+        read,
+        "$product.LicenseStatus -ne 1",
+        "Send-Line 'DEVVM-PROGRESS=activating Windows'",
+    );
+    assert_eq!(read.matches("activating Windows").count(), 1, "{read}");
 }
 
 #[skuld::test]

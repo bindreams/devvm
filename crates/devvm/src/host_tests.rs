@@ -1126,3 +1126,32 @@ fn a_host_that_cannot_tell_free_space_says_so(#[fixture(unicode_home)] home: &Pa
     let error = OtherHost.free_space(home).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
 }
+
+#[skuld::test]
+fn read_from_returns_the_bytes_of_a_file_from_an_offset_on(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("log");
+    std::fs::write(&path, b"first\nsecond\n").unwrap();
+
+    assert_eq!(super::read_from(&path, 6).unwrap(), b"second\n");
+    assert_eq!(super::read_from(&path, 0).unwrap(), b"first\nsecond\n");
+}
+
+#[skuld::test]
+fn read_from_an_offset_at_or_past_the_end_reads_nothing(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("log");
+    std::fs::write(&path, b"abc").unwrap();
+
+    assert_eq!(super::read_from(&path, 3).unwrap(), b"");
+    assert_eq!(
+        super::read_from(&path, 4).unwrap(),
+        b"",
+        "a file that was cut short has nothing past its end"
+    );
+}
+
+#[skuld::test]
+fn read_from_a_file_that_is_not_there_is_the_absent_error(#[fixture(unicode_home)] home: &Path) {
+    let error = super::read_from(&home.join("not-there.log"), 0).unwrap_err();
+
+    assert!(super::is_absent(&error), "{error}");
+}

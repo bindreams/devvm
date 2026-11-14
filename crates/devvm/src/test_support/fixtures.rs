@@ -35,6 +35,20 @@ pub fn unicode_home() -> Result<UnicodeHome, String> {
     Ok(UnicodeHome { path, _tmp: tmp })
 }
 
+/// A base build's context for a root that is no ISO: the directories under `home`, a build directory `home/build`, the
+/// system clock and no resources set. Set `iso` for an ISO root.
+pub fn build_ctx(home: &Path, arch: crate::Arch) -> crate::guest::BuildCtx {
+    crate::guest::BuildCtx {
+        dirs: crate::Dirs::under(home),
+        arch,
+        progress: std::sync::Arc::new(crate::exit::NullProgress),
+        clock: std::sync::Arc::new(crate::store::layers::SystemClock),
+        resources: crate::recipe::Resources::default(),
+        work: home.join("build"),
+        iso: std::sync::Mutex::default(),
+    }
+}
+
 /// The installer ISO fixture `name`, which `iso/fixtures/make_fixtures.py` makes.
 pub fn iso_fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -104,17 +118,38 @@ impl crate::store::layers::Clock for FakeClock {
 
 /// A progress sink the test reads back.
 #[derive(Default)]
-pub struct MemoryProgress(std::sync::Mutex<Vec<String>>);
+pub struct MemoryProgress {
+    lines: std::sync::Mutex<Vec<String>>,
+    echo: bool,
+}
 
 impl MemoryProgress {
+    /// A sink that also prints each message to stderr, for a test that runs long enough for its progress to be read
+    /// live.
+    pub fn echoing() -> MemoryProgress {
+        MemoryProgress {
+            echo: true,
+            ..MemoryProgress::default()
+        }
+    }
+
     pub fn messages(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
 impl crate::exit::Progress for MemoryProgress {
     fn message(&self, text: &str) {
-        self.0.lock().unwrap().push(text.to_owned());
+        if self.echo {
+            crate::exit::StderrProgress.message(text);
+        }
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(text.to_owned());
     }
 }
 

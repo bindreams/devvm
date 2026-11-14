@@ -1,6 +1,7 @@
 //! The fake VM: a real process that stands in for QEMU. It listens on a loopback port of its own choosing, writes a
 //! `started` file naming that port when it first runs, and answers each connection with one line describing its own
-//! containment. A client that then sends [`SHUTDOWN_REQUEST`] makes it exit by itself.
+//! containment. A client that then sends [`SHUTDOWN_REQUEST`] makes it exit by itself, and [`CRASH_REQUEST`] makes it
+//! exit with a failure status.
 //!
 //! Only the tests that spawn a frozen process (Windows in 0.1.0) use most of this.
 #![cfg_attr(
@@ -35,6 +36,9 @@ pub const GRACEFUL: &str = "stopped-gracefully";
 
 /// What a client sends to the fake VM to ask it to shut down.
 pub const SHUTDOWN_REQUEST: &str = "shutdown";
+
+/// What a client sends to the fake VM to make it exit with status 1, as QEMU does when it dies.
+pub const CRASH_REQUEST: &str = "crash";
 
 /// Where the port is written before it is renamed to [`STARTED`].
 const PENDING: &str = "started.tmp";
@@ -89,9 +93,13 @@ pub fn fake_vm(args: &[String]) {
         // A client may then ask the VM to power off, as a backend asks its guest to.
         let mut request = String::new();
         let _ = BufReader::new(&stream).read_line(&mut request);
-        if request.trim_end() == SHUTDOWN_REQUEST {
-            std::fs::write(state_dir.join(GRACEFUL), b"").expect("the state directory should exist");
-            std::process::exit(0);
+        match request.trim_end() {
+            SHUTDOWN_REQUEST => {
+                std::fs::write(state_dir.join(GRACEFUL), b"").expect("the state directory should exist");
+                std::process::exit(0);
+            }
+            CRASH_REQUEST => std::process::exit(1),
+            _ => {}
         }
     }
 }

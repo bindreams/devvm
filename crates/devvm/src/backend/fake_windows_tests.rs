@@ -87,6 +87,10 @@ impl Machine for Strict {
         self.inner.release()
     }
 
+    fn try_wait(&self) -> crate::Result<Option<crate::backend::MachineExit>> {
+        self.inner.try_wait()
+    }
+
     fn reset(&mut self) -> crate::Result<()> {
         self.inner.reset()
     }
@@ -238,6 +242,10 @@ impl Machine for Deleting {
 
     fn release(&mut self) -> crate::Result<()> {
         self.0.release()
+    }
+
+    fn try_wait(&self) -> crate::Result<Option<crate::backend::MachineExit>> {
+        self.0.try_wait()
     }
 
     fn reset(&mut self) -> crate::Result<()> {
@@ -421,6 +429,28 @@ fn the_fake_shuts_down_by_asking_the_vm_and_kill_never_asks(#[fixture(unicode_ho
     }
     assert!(target.ended_gracefully(&specs[0]), "shutdown asked the VM to exit");
     assert!(!target.ended_gracefully(&specs[1]), "kill did not ask");
+}
+
+#[skuld::test]
+fn a_fake_machine_that_exited_cleanly_gives_its_status_and_no_output(#[fixture(unicode_home)] home: &Path) {
+    let target = FakeTarget::new();
+    let env = crate::store::layers::layers_tests::env(home);
+    let parent = target.parent_layer(&env.store);
+    let spec = target.spec(home, 0);
+    std::fs::create_dir_all(spec.disk.parent().unwrap()).unwrap();
+    target
+        .backend()
+        .storage()
+        .create_instance_disk(parent.tip().dir(), &spec.disk, Some(1 << 20))
+        .unwrap();
+    let mut machine = target.backend().launch(&spec).unwrap();
+    machine.resume().unwrap();
+    machine.shutdown().unwrap();
+
+    let exit = machine.try_wait().unwrap().expect("the VM has exited");
+
+    assert!(exit.status.success(), "{}", exit.status);
+    assert_eq!(exit.output, "", "output is for a failing exit");
 }
 
 #[skuld::test]
