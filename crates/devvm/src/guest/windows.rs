@@ -12,15 +12,17 @@ use crate::media::write_cidata_image;
 use crate::recipe::{Setting, Shell, UacMode};
 use crate::{Command, Error, ErrorKind, Result, RunAs};
 
+pub(crate) mod builder;
 mod cmdquote;
-mod elevate;
+pub(crate) mod elevate;
 mod expiry;
+mod extract;
 mod paths;
 mod pins;
 pub(crate) mod ready;
 mod seed;
 mod templates;
-mod wrap;
+pub(crate) mod wrap;
 
 #[cfg(test)]
 #[path = "windows_tests.rs"]
@@ -119,7 +121,7 @@ impl GuestOs for WindowsGuest {
                     return Err(Error::new(
                         ErrorKind::Recipe,
                         "`shell: cmd` runs one line: cmd.exe cannot be given a line break in a command line. Use \
-                         `shell: pwsh`",
+                         `shell: pwsh`, or copy a `.cmd` file in and run it",
                     ));
                 }
                 ["cmd", "/d", "/c"]
@@ -154,5 +156,13 @@ impl GuestOs for WindowsGuest {
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
         names::windows_problem(name)
+    }
+
+    fn extract_command(&self, destination: &str, archive: &str) -> Result<Command> {
+        extract::extract_command(destination, archive)
+    }
+
+    fn copy_scratch_dir(&self) -> &'static str {
+        extract::SCRATCH_DIR
     }
 }

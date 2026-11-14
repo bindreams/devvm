@@ -11,14 +11,13 @@ use crate::contain::Lifetime;
 use crate::engine::engine_tests::{EngineFixture, engine_fixture, engine_with, instance_in, memory};
 use crate::engine::{Engine, ListFilter};
 use crate::error::ErrorKind;
-use crate::exit::NullProgress;
-use crate::guest::BuildCtx;
 use crate::host::symlink_metadata_if_present;
+use crate::iso::{IsoMemo, key_iso};
 use crate::recipe::{Recipe, Source};
 use crate::store::fetch::Fetcher;
 use crate::store::layers::Built;
 use crate::store::layers::layers_tests::{key, request};
-use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::fixtures::{MemoryProgress, build_ctx, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::test_support::qemu::{scratch_run, socket_dir};
 use crate::test_support::transport::RefusingTransport;
@@ -83,11 +82,8 @@ impl QemuEngine {
     fn base_build(&self) -> Error {
         let recipe = crate::recipe::embedded::get("ubuntu-24.04").expect("the embedded Ubuntu recipe");
         let builder = self.engine.guests().builder(GuestKind::Linux).unwrap();
-        let context = BuildCtx {
-            dirs: self.dirs.clone(),
-            arch: Arch::Amd64,
-            progress: Arc::new(NullProgress),
-        };
+        let mut context = build_ctx(&self.home, Arch::Amd64);
+        context.dirs = self.dirs.clone();
         self.engine
             .store()
             .unwrap()
@@ -97,6 +93,29 @@ impl QemuEngine {
                     &context,
                     staging.dir,
                 )?))
+            })
+            .expect_err("the transport refuses")
+    }
+
+    /// The error of the engine's Windows guest building a base layer from the fixture ISO, which downloads the virtio-win
+    /// drivers before it touches QEMU.
+    fn windows_base_build(&self) -> Error {
+        let iso = self.home.join("windows.iso");
+        std::fs::copy(iso_fixture("single-image.iso"), &iso).unwrap();
+        let root = key_iso(&TestHost, &IsoMemo::new(&self.dirs), &iso, None, &*self.progress).unwrap();
+        let builder = self.engine.guests().builder(GuestKind::Windows).unwrap();
+        let mut context = build_ctx(&self.home, Arch::Amd64);
+        context.dirs = self.dirs.clone();
+        *context.iso.lock().unwrap() = Some(root);
+        let source = Source::Iso {
+            path: iso,
+            edition: None,
+        };
+        self.engine
+            .store()
+            .unwrap()
+            .build(&request(key(3)), None, |staging| {
+                Ok(Built::from_meta(&builder.build_base(&source, &context, staging.dir)?))
             })
             .expect_err("the transport refuses")
     }
@@ -253,4 +272,20 @@ fn a_launch_over_a_runtime_path_it_refuses_downloads_nothing(#[fixture(unicode_h
         assert!(error.message().contains(fragment), "{}: {error}", run.display());
         assert!(qemu.downloads().is_empty(), "{:?}", qemu.downloads());
     }
+}
+
+#[skuld::test]
+fn the_engines_windows_builder_fetches_the_virtio_win_drivers_through_its_transport(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let qemu = QemuEngine::new(home);
+
+    let error = qemu.windows_base_build();
+
+    assert_eq!(error.kind(), ErrorKind::Download, "{error}");
+    let asked = qemu.downloads();
+    assert!(
+        asked.len() == 1 && asked[0].contains("virtio-win"),
+        "QEMU is not asked for before the drivers are here: {asked:?}"
+    );
 }

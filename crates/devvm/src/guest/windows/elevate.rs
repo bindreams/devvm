@@ -47,7 +47,7 @@ mod elevate_pwsh_tests;
 /// Where the requests are: `Users` may modify it, so a request needs no elevated writer.
 pub(super) const ROOT: &str = r"C:\ProgramData\devvm\eb";
 /// The scheduled task that runs a request: `user`, highest privileges, `MultipleInstances Parallel`.
-pub(super) const TASK: &str = "devvm-eb";
+pub(crate) const TASK: &str = "devvm-eb";
 pub(super) const SCRIPT: &str = "script.ps1";
 pub(super) const CALLER: &str = "caller";
 pub(super) const CLAIM: &str = "claim";

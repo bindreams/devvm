@@ -304,6 +304,18 @@ pub(crate) fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// The bytes of the file `path` from byte `from` on: what a log grew by since a reader last looked. A `from` at or past
+/// the end (the file is as long as the reader's mark, or was cut short) reads nothing. A file that is not there is the
+/// error, which [`is_absent`] recognizes.
+pub(crate) fn read_from(path: &Path, from: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(from))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 /// Deletes whatever is at `path`, a name devvm owns, and succeeds when nothing is there: a link is deleted as a link and
 /// never followed, a directory goes with everything under it, anything else is removed as a file.
 ///

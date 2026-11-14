@@ -206,7 +206,6 @@ const MIN_FAT16_CLUSTERS: u64 = 4085;
 /// refused ([`Table::of`]). The allocation table is checked before anything is read ([`Table::require_chains_end`]).
 /// Directory entries are trusted: a forged start cluster reads wrong bytes from the in-memory copy, or panics in a
 /// debug build.
-#[allow(dead_code, reason = "unused until the Windows base build reads back the answer disk")]
 pub(crate) fn read_files(image: &Path, paths: &[&str]) -> Result<Vec<SeedFile>> {
     refuse_unreadable_paths(paths)?;
     let bytes = std::fs::read(image).map_err(|e| {

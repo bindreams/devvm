@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use super::{NO_REBOOT_REFUSAL, QemuMachine};
+use super::{NO_REBOOT_REFUSAL, QemuMachine, printed_since};
 use crate::backend::qemu::qmp::qmp_tests::serve;
 use crate::backend::{Backend, Machine, MachineRecord};
 use crate::contain::VmProcess;
 use crate::host::{self, Host, ProcessWatch};
-use crate::test_support::fixtures::MemoryProgress;
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::manual_exit::ManualExit;
 use crate::test_support::qemu::{Sock, backend_in, socket_run};
@@ -58,6 +58,7 @@ fn launched(
         sock.claim.clone(),
         Vec::new(),
         PathBuf::from("qemu.log"),
+        0,
         arch,
         host,
         Arc::new(MemoryProgress::default()),
@@ -172,4 +173,33 @@ fn reset_of_an_attached_machine_sends_only_the_target_query_before_the_host_answ
     drop(machine);
     server.join().unwrap();
     assert_eq!(*log.lock().unwrap(), ["qmp_capabilities"]);
+}
+
+#[skuld::test]
+fn a_launchs_output_is_the_log_from_its_offset_on_and_trimmed(#[fixture(unicode_home)] home: &std::path::Path) {
+    let log = home.join("qemu.log");
+    std::fs::write(&log, "qemu: an earlier launch failed\nqemu: this launch failed\n").unwrap();
+    let from = "qemu: an earlier launch failed\n".len() as u64;
+
+    assert_eq!(printed_since(&log, from).unwrap(), "qemu: this launch failed");
+    assert_eq!(
+        printed_since(&log, 0).unwrap(),
+        "qemu: an earlier launch failed\nqemu: this launch failed"
+    );
+}
+
+#[skuld::test]
+fn a_launch_that_printed_nothing_has_empty_output(#[fixture(unicode_home)] home: &std::path::Path) {
+    let log = home.join("qemu.log");
+    std::fs::write(&log, "qemu: an earlier launch failed\n").unwrap();
+    let from = std::fs::metadata(&log).unwrap().len();
+
+    assert_eq!(printed_since(&log, from).unwrap(), "");
+    std::fs::write(&log, "  \r\n").unwrap();
+    assert_eq!(printed_since(&log, 0).unwrap(), "");
+}
+
+#[skuld::test]
+fn a_log_that_cannot_be_read_is_an_error(#[fixture(unicode_home)] home: &std::path::Path) {
+    assert!(printed_since(&home.join("not-there.log"), 0).is_err());
 }
