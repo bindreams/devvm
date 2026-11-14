@@ -477,7 +477,7 @@ fn an_evaluation_that_is_not_licensed_is_activated_before_its_license_is_read() 
     let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
     assert_before(read, "-MethodName Activate", "ConvertTo-Json");
     assert!(
-        read.contains("} catch {") && read.contains("n = 'Activation'"),
+        read.contains("} catch {") && read.contains("n = 'ActivationOutcome'"),
         "a failed activation is sent: {read}"
     );
 }
@@ -512,11 +512,14 @@ fn the_license_is_read_after_the_installs_and_the_tasks_and_before_the_work_dire
 }
 
 #[skuld::test]
-fn a_failed_activation_is_sent_trimmed_with_its_codes_not_a_generic_hresult() {
+fn a_failed_activation_is_sent_on_one_line_with_its_codes_not_a_generic_hresult() {
     let bootstrap = rendered("bootstrap.ps1");
     let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
     let catch = section(read, "} catch {", "$product = Get-CimInstance");
-    assert!(catch.contains("$exception.Message.Trim()"), "{catch}");
+    assert!(
+        catch.contains(r"-replace '[\r\n]', ' '") && catch.contains(".Trim()"),
+        "the message is one trimmed line: {catch}"
+    );
     assert!(
         catch.contains("NativeErrorCode") && catch.contains("StatusCode"),
         "the CIM exception's codes are sent: {catch}"
@@ -527,7 +530,38 @@ fn a_failed_activation_is_sent_trimmed_with_its_codes_not_a_generic_hresult() {
     );
     assert!(
         !read.contains("'failed: "),
-        "the account is structured, not a prefixed string: {read}"
+        "the account is fields, not a prefixed string: {read}"
+    );
+}
+
+// Windows PowerShell 5.1's ConvertTo-Json does not yield plain scalars for a nested [ordered] table.
+#[skuld::test]
+fn the_activation_is_sent_as_flat_scalar_fields_of_the_read() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    for name in [
+        "ActivationOutcome",
+        "ActivationMessage",
+        "ActivationNativeErrorCode",
+        "ActivationStatusCode",
+        "ActivationReturnValue",
+    ] {
+        assert!(read.contains(&format!("n = '{name}'")), "{name}: {read}");
+    }
+    assert!(
+        !read.contains("[ordered]") && !read.contains("n = 'Activation'"),
+        "no nested table: {read}"
+    );
+}
+
+#[skuld::test]
+fn an_activation_that_returns_nonzero_is_a_failure_carrying_the_return_value() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    let call = section(read, "-MethodName Activate", "} catch {");
+    assert!(
+        call.contains(".ReturnValue") && call.contains("$returned -eq 0") && call.contains("'failed'"),
+        "a non-zero ReturnValue is not a success: {call}"
     );
 }
 

@@ -51,9 +51,11 @@ fn an_unlicensed_evaluation_is_unavailable_and_names_its_status() {
     );
 }
 
-// What the first-logon script sends after `Activate`; the codes are synthesized, as no failed activation is captured.
-const ACTIVATION_SUCCEEDED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","Activation":{"Outcome":"succeeded","Message":null,"NativeErrorCode":null,"StatusCode":null}}"#;
-const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","Activation":{"Outcome":"failed","Message":"The Software Licensing Service reported that the computer could not be activated. 0xC004F074","NativeErrorCode":"Failed","StatusCode":1}}"#;
+// What the first-logon script sends after `Activate`: flat fields, null when absent; the codes are synthesized, as no
+// failed activation is captured.
+const ACTIVATION_SUCCEEDED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","ActivationOutcome":"succeeded","ActivationMessage":null,"ActivationNativeErrorCode":null,"ActivationStatusCode":null,"ActivationReturnValue":null}"#;
+const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","ActivationOutcome":"failed","ActivationMessage":"The Software Licensing Service reported that the computer could not be activated. 0xC004F074","ActivationNativeErrorCode":"Failed","ActivationStatusCode":1,"ActivationReturnValue":null}"#;
+const ACTIVATION_RETURNED: &str = r#"DEVVM-LICENSE={"LicenseStatus":5,"GracePeriodRemaining":0,"Description":"d","LicenseFamily":"IoTEnterpriseSEval","ActivationOutcome":"failed","ActivationMessage":"Activate returned 3221549172","ActivationNativeErrorCode":null,"ActivationStatusCode":null,"ActivationReturnValue":3221549172}"#;
 
 #[skuld::test]
 fn an_unlicensed_evaluation_names_the_code_the_guest_sent() {
@@ -62,6 +64,16 @@ fn an_unlicensed_evaluation_names_the_code_the_guest_sent() {
     assert_eq!(
         error.message(),
         "Windows did not license the evaluation: activation failed: The Software Licensing Service reported that the computer could not be activated. 0xC004F074 (native error code Failed, status code 1); status 5"
+    );
+}
+
+#[skuld::test]
+fn an_unlicensed_evaluation_names_the_return_value_of_an_activation_that_returned_nonzero() {
+    let error = expiry_from(ACTIVATION_RETURNED, true, now()).expect_err("an unlicensed evaluation has no expiry");
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert_eq!(
+        error.message(),
+        "Windows did not license the evaluation: activation failed: Activate returned 3221549172 (return value 3221549172); status 5"
     );
 }
 
@@ -77,7 +89,7 @@ fn an_evaluation_that_stays_unlicensed_after_an_activation_is_unavailable_whatev
 
 #[skuld::test]
 fn a_licensed_read_is_not_held_back_by_an_activation_field() {
-    let read = r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":129600,"Description":"d","LicenseFamily":"e","Activation":{"Outcome":"succeeded"}}"#;
+    let read = r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":129600,"Description":"d","LicenseFamily":"e","ActivationOutcome":"succeeded"}"#;
     assert_eq!(
         expiry_from(read, true, now()).unwrap(),
         Some(now() + Duration::from_secs(129_600 * 60))
@@ -99,13 +111,16 @@ fn a_license_is_described_in_plain_words() {
 }
 
 #[skuld::test]
-fn a_license_that_cannot_be_read_is_described_with_the_reason() {
+fn a_license_that_cannot_be_read_is_described_with_the_reason_and_not_the_line() {
     let described = describe("DEVVM-LICENSE=not json");
     assert!(
-        described.contains("cannot read the guest's DEVVM-LICENSE= line"),
+        described.starts_with("cannot read the guest's DEVVM-LICENSE= line ("),
         "{described}"
     );
-    assert!(described.contains("not json"), "{described}");
+    assert!(
+        !described.contains("not json"),
+        "the build error carries the line: {described}"
+    );
 }
 
 #[skuld::test]
@@ -142,8 +157,8 @@ fn an_unparseable_read_is_an_error() {
         r#"DEVVM-LICENSE={"LicenseStatus":"1","GracePeriodRemaining":5}"#,
         r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":-5}"#,
         r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":18446744073709551615}"#,
-        // The activation is an object: the string of an earlier script is not read.
-        r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":5,"Activation":"activated"}"#,
+        // The activation's outcome is text: a nested object of an earlier script is not read.
+        r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":5,"ActivationOutcome":{"Outcome":"succeeded"}}"#,
         r#"DEVVM-OTHER={"LicenseStatus":1,"GracePeriodRemaining":5}"#,
         r#"{"LicenseStatus":1,"GracePeriodRemaining":5}"#,
     ] {

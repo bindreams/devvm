@@ -130,24 +130,38 @@ try {
     # synchronously, makes the read its own state. What the activation came to is sent with the read.
     $filter = "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'"
     $product = Get-CimInstance SoftwareLicensingProduct -Filter $filter | Select-Object -First 1
-    $activation = $null
+    $outcome = $null; $message = $null; $native = $null; $status = $null; $returned = $null
     if (@@!EVALUATION@@ -and $product -and $product.LicenseStatus -ne 1) {
         Send-Line 'DEVVM-PROGRESS=activating Windows'
         try {
-            $product | Invoke-CimMethod -MethodName Activate -ErrorAction Stop | Out-Null
-            $activation = [ordered]@{ Outcome = 'succeeded' }
+            $returned = ($product | Invoke-CimMethod -MethodName Activate -ErrorAction Stop).ReturnValue
+            if ($null -eq $returned -or $returned -eq 0) {
+                $outcome = 'succeeded'
+            } else {
+                $outcome = 'failed'
+                $message = "Activate returned $returned"
+                $returned = [int64]$returned
+            }
         } catch {
             $exception = $_.Exception
+            $outcome = 'failed'
+            # One line: the serial channel ends a message at a line break.
+            $message = ($exception.Message -replace '[\r\n]', ' ').Trim()
             # The codes are a CimException's; any other exception has none.
-            $native = if ($exception.PSObject.Properties['NativeErrorCode']) { [string]$exception.NativeErrorCode } else { $null }
-            $status = if ($exception.PSObject.Properties['StatusCode']) { [int64]$exception.StatusCode } else { $null }
-            $activation = [ordered]@{ Outcome = 'failed'; Message = $exception.Message.Trim(); NativeErrorCode = $native; StatusCode = $status }
+            if ($exception.PSObject.Properties['NativeErrorCode']) { $native = [string]$exception.NativeErrorCode }
+            if ($exception.PSObject.Properties['StatusCode']) { $status = [int64]$exception.StatusCode }
         }
         $product = Get-CimInstance SoftwareLicensingProduct -Filter $filter | Select-Object -First 1
     }
+    # The account is flat fields: Windows PowerShell 5.1 does not serialize a nested table as plain scalars.
     $json = if ($product) {
-        $product | Select-Object -Property LicenseStatus, GracePeriodRemaining, Description, LicenseFamily, @{ n = 'Activation'; e = { $activation } } |
-            ConvertTo-Json -Compress -Depth 4
+        $product | Select-Object -Property LicenseStatus, GracePeriodRemaining, Description, LicenseFamily,
+            @{ n = 'ActivationOutcome'; e = { $outcome } },
+            @{ n = 'ActivationMessage'; e = { $message } },
+            @{ n = 'ActivationNativeErrorCode'; e = { $native } },
+            @{ n = 'ActivationStatusCode'; e = { $status } },
+            @{ n = 'ActivationReturnValue'; e = { $returned } } |
+            ConvertTo-Json -Compress
     } else { 'null' }
     # ASCII only: the serial channel carries no localized text.
     $json = [regex]::Replace($json, '[^\x00-\x7F]', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) '\u{0:x4}' -f [int][char]$m.Value })

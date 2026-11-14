@@ -44,7 +44,7 @@ const UNLICENSED: &str =
     r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"EnterpriseEval"}"#;
 
 // An evaluation whose activation failed, as the first-logon script prints it.
-const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"EnterpriseEval","Activation":{"Outcome":"failed","Message":"no network","NativeErrorCode":"Failed","StatusCode":1}}"#;
+const ACTIVATION_FAILED: &str = r#"DEVVM-LICENSE={"Description":"d","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"EnterpriseEval","ActivationOutcome":"failed","ActivationMessage":"no network","ActivationNativeErrorCode":"Failed","ActivationStatusCode":1,"ActivationReturnValue":null}"#;
 
 /// What the guest does to its media before it powers off.
 type Before = Box<dyn Fn(&MachineSpec) + Send + Sync>;
@@ -618,6 +618,7 @@ fn an_unreadable_license_marker_fails_the_build(#[fixture(unicode_home)] home: &
         "{error}"
     );
     assert!(error.message().contains("DEVVM-LICENSE=not json"), "{error}");
+    assert!(error.message().contains("the end of the serial log"), "{error}");
     rig.assert_names_no_build_file(&error);
 }
 
@@ -647,11 +648,12 @@ fn a_guest_whose_evaluation_is_not_licensed_ends_the_build_unavailable_naming_th
 
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(
-        error
-            .message()
-            .starts_with("Windows did not license the evaluation: no activation was tried; status 5"),
+        error.message().starts_with(
+            "the Windows base's license read: Windows did not license the evaluation: no activation was tried; status 5"
+        ),
         "{error}"
     );
+    assert!(error.message().contains("the end of the serial log"), "{error}");
 }
 
 #[skuld::test]
@@ -666,7 +668,7 @@ fn an_evaluation_whose_activation_failed_ends_the_build_unavailable_naming_the_f
     assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
     assert!(
         error.message().starts_with(
-            "Windows did not license the evaluation: activation failed: no network (native error code Failed, status code 1); status 5"
+            "the Windows base's license read: Windows did not license the evaluation: activation failed: no network (native error code Failed, status code 1); status 5"
         ),
         "{error}"
     );

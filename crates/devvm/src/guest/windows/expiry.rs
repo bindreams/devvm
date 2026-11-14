@@ -18,47 +18,61 @@ const MARKER: &str = "DEVVM-LICENSE=";
 const LICENSED: u32 = 1;
 
 /// The fields of the read that are numbers, and the guest's account of its activation; the description and the family are
-/// only echoed in logs, so no localized text is read except the activation's message, which is echoed too.
+/// only echoed in logs, so no localized text is read except the activation's message, which is echoed too. The account is
+/// flat fields, all `null` or absent when no activation was made.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct License {
     license_status: u32,
     /// Minutes until a time-based license ends.
     grace_period_remaining: u64,
-    /// What the guest's call of `Activate` came to. Absent or `null` when none was made.
-    activation: Option<Activation>,
-}
-
-/// What the first-logon script says of its call of `Activate`: text for a message, never read as meaning.
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct Activation {
-    /// `succeeded` or `failed`.
-    outcome: String,
-    /// The failure's message, trimmed.
-    message: Option<String>,
+    /// `succeeded` or `failed`: what the guest's call of `Activate` came to.
+    activation_outcome: Option<String>,
+    /// The failure's message, on one line.
+    activation_message: Option<String>,
     /// The CIM exception's native error code and status code, when it has them.
-    native_error_code: Option<String>,
-    status_code: Option<i64>,
+    activation_native_error_code: Option<String>,
+    activation_status_code: Option<i64>,
+    /// What `Activate` returned, when it returned a value.
+    activation_return_value: Option<i64>,
 }
 
-impl fmt::Display for Activation {
+impl License {
+    /// The account of the activation: text for a message, never read as meaning. `None` when none was made.
+    fn activation(&self) -> Option<Activation<'_>> {
+        self.activation_outcome
+            .as_deref()
+            .map(|outcome| Activation { license: self, outcome })
+    }
+}
+
+struct Activation<'a> {
+    license: &'a License,
+    outcome: &'a str,
+}
+
+impl fmt::Display for Activation<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.outcome)?;
-        if let Some(message) = &self.message {
+        let license = self.license;
+        f.write_str(self.outcome)?;
+        if let Some(message) = &license.activation_message {
             write!(f, ": {message}")?;
         }
-        let codes: Vec<String> = [
-            self.native_error_code
-                .as_ref()
-                .map(|code| format!("native error code {code}")),
-            self.status_code.map(|code| format!("status code {code}")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        if !codes.is_empty() {
-            write!(f, " ({})", codes.join(", "))?;
+        let mut separator = " (";
+        if let Some(code) = &license.activation_native_error_code {
+            write!(f, "{separator}native error code {code}")?;
+            separator = ", ";
+        }
+        if let Some(code) = license.activation_status_code {
+            write!(f, "{separator}status code {code}")?;
+            separator = ", ";
+        }
+        if let Some(value) = license.activation_return_value {
+            write!(f, "{separator}return value {value}")?;
+            separator = ", ";
+        }
+        if separator == ", " {
+            f.write_str(")")?;
         }
         Ok(())
     }
@@ -76,7 +90,7 @@ impl fmt::Display for Activation {
 /// The host branches on the status and the grace only. A base that ends is `expired-base` only through the store's
 /// margin on a licensed evaluation; what an evaluation that has really ended reads after `Activate` is not measured.
 pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Result<Option<SystemTime>> {
-    let Some(license) = parse(read)? else {
+    let Some(license) = parse(read).map_err(|why| unreadable(read, &why))? else {
         return if evaluation {
             Err(unreadable(read, "an evaluation image reads no product with a key"))
         } else {
@@ -94,7 +108,7 @@ pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Resu
     if !evaluation {
         return Ok(None);
     }
-    let account = match &license.activation {
+    let account = match license.activation() {
         Some(activation) => format!("activation {activation}"),
         None => "no activation was tried".to_owned(),
     };
@@ -108,7 +122,7 @@ pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Resu
 }
 
 /// What `read` says, for a progress line: the numbers and the activation, never the marker line itself. A read that
-/// cannot be read says why.
+/// cannot be read says why; the build's error carries the line.
 pub(super) fn describe(read: &str) -> String {
     match parse(read) {
         Ok(Some(license)) => {
@@ -116,27 +130,27 @@ pub(super) fn describe(read: &str) -> String {
                 "license status {}, {} minutes of grace",
                 license.license_status, license.grace_period_remaining
             );
-            if let Some(activation) = &license.activation {
+            if let Some(activation) = license.activation() {
                 text.push_str(&format!(", activation {activation}"));
             }
             text
         }
         Ok(None) => "no licensed product".to_owned(),
-        Err(error) => error.message().to_owned(),
+        Err(why) => format!("cannot read the guest's {MARKER} line ({why})"),
     }
 }
 
-/// The read's product, or `None` for the script's `null`: no product has a key.
-fn parse(read: &str) -> Result<Option<License>> {
+/// The read's product, or `None` for the script's `null`: no product has a key. An unreadable read gives the reason.
+fn parse(read: &str) -> std::result::Result<Option<License>, String> {
     let json = read
         .trim_start()
         .strip_prefix(MARKER)
-        .ok_or_else(|| unreadable(read, "it does not start with the marker"))?;
+        .ok_or("it does not start with the marker")?;
     serde_json::Deserializer::from_str(json)
         .into_iter::<Option<License>>()
         .next()
-        .ok_or_else(|| unreadable(read, "it holds no JSON"))?
-        .map_err(|e| unreadable(read, &e.to_string()))
+        .ok_or("it holds no JSON")?
+        .map_err(|e| e.to_string())
 }
 
 fn unreadable(read: &str, why: &str) -> Error {

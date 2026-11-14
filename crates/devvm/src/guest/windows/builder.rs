@@ -484,10 +484,14 @@ impl<'a> Build<'a> {
                 &log,
             ));
         };
-        expiry_from(read, self.evaluation, *read_at).map_err(|error| match error.kind() {
-            // The evaluation that Windows did not license: the serial log may say more than the account does.
-            ErrorKind::Unavailable => with_log_tail(error, "the serial log", &log),
-            kind => error.with_context(kind, "the Windows base's license read"),
+        // The serial log may say more than the read does, whatever the kind of the error.
+        expiry_from(read, self.evaluation, *read_at).map_err(|error| {
+            let kind = error.kind();
+            with_log_tail(
+                error.with_context(kind, "the Windows base's license read"),
+                "the serial log",
+                &log,
+            )
         })
     }
 
