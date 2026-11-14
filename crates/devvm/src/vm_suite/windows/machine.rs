@@ -225,7 +225,8 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     };
     // The prompt the session prints for the `n`th time after its first command. The session's own first prompt is
     // printed before the function exists, so the numbering starts with the prompt that follows the first command.
-    let prompt = |n: usize| format!("p{n}-ready>");
+    // The needle stops before the `> `, which the line editor repaints in its own colour as a line is typed.
+    let prompt = |n: usize| format!("p{n}-ready");
 
     input
         .write_all(
