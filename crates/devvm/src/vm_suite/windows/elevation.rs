@@ -11,7 +11,7 @@ use super::{SharedWindowsGuest, WindowsBase, printed, pwsh, ran, shared_windows_
 use crate::guest::windows::elevate::{ROOT, TASK};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{answer_to, step};
-use crate::{Command, ExitStatus, Guest, RunAs};
+use crate::{Command, Error, ErrorKind, ExitStatus, Guest, RunAs};
 
 /// How many requests the helper holds.
 fn pending(guest: &dyn Guest) -> String {
@@ -94,10 +94,7 @@ fn windows_two_elevated_commands_at_once_each_get_their_own_output_and_status(
     let (a, b) = (rendezvous("a", 3), rendezvous("b", 5));
 
     step("running the two commands");
-    // Each command makes its flag and waits. The host sees both flags, which only two commands running at once make, and
-    // then lets them end. A product that runs them one after the other fails the wait for the second flag. The wait also
-    // ends when a command has ended, so that its error is the failure. The guard makes the last flag on every path, so
-    // the commands end either way.
+    // Both flags exist only if the commands run at once; a product that serializes them fails the wait for the second.
     let mut at_once = false;
     let (a, b) = std::thread::scope(|scope| {
         let a = scope.spawn(|| ran(&guest.vm, "the elevated command a", &a));
@@ -193,8 +190,7 @@ fn windows_an_elevated_command_streams_its_output_as_it_runs(
             let status = guest.vm.run_to(&command, &mut watch, &mut io::sink());
             (status, watch.seen)
         });
-        // The first line comes while the command still runs. When the run fails first, the sender is dropped and the
-        // flag is made all the same, so a command that did start does not wait for it for ever.
+        // The first line comes while the command still runs.
         let go = Releases {
             guest: &guest.vm,
             name: "go",
@@ -283,10 +279,7 @@ impl Drop for Child<'_> {
 fn windows_an_elevated_child_that_writes_ends_when_the_client_goes_away(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    // The child prints its process id and start time, then writes a line every 100 ms until it is ended. It has no bound
-    // of its own: a bound that ended it would be the one thing that makes the process go. devvm ends nothing; the child
-    // ends on its own failed write once the channel is closed. When it does not, the wait for the process to end fails
-    // the test, and the test ends the child by its id.
+    // No self-bound: a guest-side timeout would end the child by itself and hide a devvm that never ends it.
     let command = pwsh(
         RunAs::Elevated,
         "[Console]::Out.WriteLine(\"$PID $((Get-Process -Id $PID).StartTime.ToFileTimeUtc())\"); [Console]::Out.Flush(); \
@@ -320,6 +313,8 @@ fn windows_an_elevated_child_that_writes_ends_when_the_client_goes_away(
         started,
         ended: false,
     };
+    // The README's error for a reader that went away: an I/O error, and no status.
+    assert_eq!(result.as_ref().map_err(Error::kind), Err(ErrorKind::Io), "{result:?}");
     step("waiting for the process to end");
     until("the command's process ending", || {
         printed(
@@ -404,6 +399,8 @@ fn windows_an_elevated_request_the_task_never_runs_ends_with_an_error_not_a_wait
             change.what,
             done.stderr_lossy()
         );
+        // The runner removes the request it served on its own poll; the next count is the next command's.
+        until("the runner removing its request", || pending(&*up) == "0");
 
         let seen = ran(
             &*up,
