@@ -244,6 +244,10 @@ jobs:
           "- ISO: $final, $size bytes, sha256 ``$hash``" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Test
+        # A step that hangs ends at its own limit, so the next step and the serial-log upload still run. The limits sum to
+        # less than the job's: this one covers a Windows base build and about twenty boots, the next one a base build and
+        # the exec table.
+        timeout-minutes: 170
         # --nocapture: the base build's progress lines (the guest's markers and license read) land in the log on a pass too.
         run: cargo test -p devvm --lib --locked -- --nocapture
         env:
@@ -256,6 +260,7 @@ jobs:
       # The same group through the real `devvm` executable: the exec table through `devvm ssh`. It builds a base of its own.
       - name: Test the devvm executable
         if: ${{ !cancelled() }}
+        timeout-minutes: 120
         run: cargo test -p devvm-cli --locked --test vm_cli -- --nocapture
         env:
           DEVVM_TEST_VM: "1"
