@@ -30,7 +30,7 @@ function Chain($e) {
     }
     $parts -join ' <- '
 }
-# One look: Refresh (a throw is recorded, not an end), then the raw State (the error it leaves when it reads as $null),
+# One look: Refresh (a throw is recorded; only SCHED_E_TASK_NOT_RUNNING ends), then the raw State (the error it leaves when it reads as $null),
 # then the task's instances. Why says what ended the instance, and is $null while it has not ended.
 function Look {
     $refresh = 'no instance'
@@ -39,7 +39,10 @@ function Look {
     $why = $null
     if ($null -ne $instance) {
         $refresh = 'ok'
-        try { $instance.Refresh() } catch { $refresh = 'threw ' + (Chain $_.Exception) }
+        try { $instance.Refresh() } catch {
+            $refresh = 'threw ' + (Chain $_.Exception)
+            if ($_.Exception.HResult -eq 0x8004130B -or $_.Exception.InnerException.HResult -eq 0x8004130B) { $why = 'Refresh: SCHED_E_TASK_NOT_RUNNING' }
+        }
         $ErrorActionPreference = 'Continue'
         $Error.Clear()
         try {
@@ -53,9 +56,11 @@ function Look {
     try {
         $guids = @($task.GetInstances(0) | ForEach-Object { $_.InstanceGuid })
         $instances = "$($guids.Count) [$($guids -join ', ')]"
-        if ($null -ne $guid) { $listed = [string]($guids -contains $guid) }
-        if ($listed -eq 'False' -and -not $why) { $why = 'InstanceGuid no longer among the instances' }
-        if ($guids.Count -eq 0 -and -not $why) { $why = 'no instances' }
+        if ($guid) { $listed = [string]($guids -contains $guid) }
+        if ($listed -eq 'True') { $script:seen = $true }
+        # Only an instance once listed can be no longer listed: right after Run it may not be listed yet.
+        if ($script:seen -and $listed -eq 'False' -and -not $why) { $why = 'InstanceGuid no longer among the instances' }
+        if (-not $guid -and $guids.Count -eq 0 -and -not $why) { $why = 'no instances' }
     } catch { $instances = 'threw ' + (Chain $_.Exception) }
     $files = 'request=' + [IO.Directory]::Exists($dir) + ' claim=' + [IO.File]::Exists("$dir\{CLAIM}") + ' done=' + [IO.File]::Exists("$dir\{DONE}")
     [pscustomobject]@{ Key = "Refresh: $refresh; State: $state; GetInstances(0): $instances; listed: $listed; $files"; Why = $why }
@@ -72,10 +77,11 @@ $clock = [Diagnostics.Stopwatch]::StartNew()
 $instance = $task.Run($id)
 $returned = if ($null -eq $instance) { 'null' } else { $instance.GetType().FullName }
 $guid = $null
+$script:seen = $false
 if ($null -ne $instance) {
-    try { $guid = "$($instance.InstanceGuid)" } catch { $guid = $null; $returned += ' (InstanceGuid threw ' + (Chain $_.Exception) + ')' }
+    try { $g = $instance.InstanceGuid; $guid = if ($g) { "$g" } else { $null } } catch { $guid = $null; $returned += ' (InstanceGuid threw ' + (Chain $_.Exception) + ')' }
 }
-"{0,6} ms  Run($id) returned $returned; InstanceGuid=$guid; live=$live" -f $clock.ElapsedMilliseconds
+'{0,6} ms  Run({1}) returned {2}; InstanceGuid={3}; live={4}' -f $clock.ElapsedMilliseconds, $id, $returned, $guid, $live
 $last = $null
 $wrote = $false
 do {
