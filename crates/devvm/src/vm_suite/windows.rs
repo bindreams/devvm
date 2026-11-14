@@ -33,6 +33,9 @@ mod elevation;
 mod machine;
 mod seed;
 mod session;
+mod shared;
+
+use shared::{first_try, recipe_text};
 
 /// The Windows base of this test process, with the engine that built it and what it reported.
 pub(super) struct WindowsBase {
@@ -41,8 +44,8 @@ pub(super) struct WindowsBase {
     pub progress: Arc<MemoryProgress>,
     /// The machines this base's engine launched.
     pub launches: Arc<Launches>,
-    /// When the build returned: the base's recorded expiry was read before.
-    pub built: SystemTime,
+    /// When the build began: the base's recorded expiry was read after.
+    pub build_started: SystemTime,
     pub recipe: Recipe,
     pub roots: Roots,
 }
@@ -57,16 +60,8 @@ pub(super) fn windows_iso(#[fixture(windows_guest)] _group: &Group) -> Result<Pa
 
 /// A recipe file `dir/r.devvm.yaml` that installs Windows from `iso` and runs `steps`, each one step's YAML.
 pub(super) fn windows_recipe(dir: &Path, iso: &Path, steps: &[&str]) -> Recipe {
-    let iso = serde_json::to_string(iso.to_str().expect("a UTF-8 ISO path")).unwrap();
-    let steps = if steps.is_empty() {
-        "steps: []\n".to_owned()
-    } else {
-        format!(
-            "steps:\n{}",
-            steps.iter().map(|step| format!("  - {step}\n")).collect::<String>()
-        )
-    };
-    Recipe::parse(&format!("from: {{ iso: {iso} }}\n{steps}"), &dir.join("r.devvm.yaml")).unwrap()
+    let text = recipe_text(iso, steps).expect("a recipe for a UTF-8 ISO path");
+    Recipe::parse(&text, &dir.join("r.devvm.yaml")).unwrap()
 }
 
 /// What a test that boots the Windows guest asks for: Windows 11 wants 4 GiB.
@@ -76,17 +71,6 @@ pub(super) fn windows_options() -> StartOptions {
         memory: Some(4 << 30),
         ..StartOptions::default()
     }
-}
-
-/// Runs `make` unless an earlier call to it, with the same `slot`, failed: skuld runs a fixture's setup again after it
-/// fails, and each attempt is a full Windows install or boot, so the first failure stands for every later test.
-fn first_try<T>(slot: &OnceLock<String>, make: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    if let Some(error) = slot.get() {
-        return Err(format!("the first attempt of this process failed: {error}"));
-    }
-    make().inspect_err(|error| {
-        let _ = slot.set(error.clone());
-    })
 }
 
 #[skuld::fixture(scope = process, serial = GUEST, labels = [crate::test_harness::GUEST])]
@@ -104,6 +88,7 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
     let launches = Arc::new(Launches::default());
     let engine = engine_reporting_to(&roots.dirs, install, launches.clone(), progress.clone());
     let recipe = windows_recipe(&roots.dirs.state, iso, &[]);
+    let build_started = SystemTime::now();
     let image = engine
         .build(&recipe, &BuildOptions::default())
         .map_err(|e| format!("cannot build the Windows base from {}: {e}", iso.display()))?;
@@ -112,7 +97,7 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
         image,
         progress,
         launches,
-        built: SystemTime::now(),
+        build_started,
         recipe,
         roots,
     })

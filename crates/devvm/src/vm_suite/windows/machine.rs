@@ -15,6 +15,7 @@ use super::{
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
 use crate::iso::{IsoMemo, key_iso};
+use crate::test_support::fixtures::iso_fixture;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
 use crate::{Command, ExitStatus, Guest};
@@ -64,7 +65,8 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
 
 /// The recorded expiry is the base's license read at its build plus the grace left then; a second read in a booted
 /// instance of it gives the same moment, less the time the guest was not running (its grace counts only while it runs).
-/// That time is at most the time since the build, which is the tolerance, with some minutes for the build's own end.
+/// That time is at most the time from the licence read, which came after the build began, to the second read: the
+/// tolerance is measured from those two moments. Each read is in whole minutes, so each may be a minute off.
 #[skuld::test]
 fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
     #[fixture(windows_base)] base: &WindowsBase,
@@ -87,13 +89,17 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
 
     let independent = now + Duration::from_secs(minutes * 60);
 
-    let slack = Duration::from_secs(10 * 60);
-    let since_build = now.duration_since(base.built).unwrap_or_default();
+    let rounding = Duration::from_secs(2 * 60);
+    let since_build_began = now.duration_since(base.build_started).unwrap_or_default();
     let (later, by) = match independent.duration_since(recorded) {
         Ok(by) => ("after", by),
         Err(e) => ("before", e.duration()),
     };
-    let allowed = if later == "after" { since_build + slack } else { slack };
+    let allowed = if later == "after" {
+        since_build_began + rounding
+    } else {
+        rounding
+    };
     assert!(
         by <= allowed,
         "the guest's own read ends {by:?} {later} the recorded expiry; at most {allowed:?} is the guest's off time"
@@ -107,12 +113,12 @@ fn windows_the_doctor_iso_line_names_a_changed_iso(
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(windows_iso)] iso: &Path,
 ) {
-    // A copy of the installer ISO that was keyed, then changed in its last byte with its size and time kept: only hashing
-    // it again notices. The ISO the base was built from is left alone.
-    let dir = base.roots.dirs.state.join("doctor-iso");
-    std::fs::create_dir_all(&dir).unwrap();
-    let changed = dir.join("changed.iso");
-    std::fs::copy(iso, &changed).unwrap();
+    // A small ISO that was keyed, then changed in its last byte with its size and time kept: only hashing it again
+    // notices. The line reads the key's file whatever its size. The directory goes with the test, whatever the result;
+    // the ISO the base was built from is left alone.
+    let dir = tempfile::tempdir_in(&base.roots.dirs.state).unwrap();
+    let changed = dir.path().join("changed.iso");
+    std::fs::copy(iso_fixture("single-image.iso"), &changed).unwrap();
     let memo = IsoMemo::new(&base.roots.dirs);
     drop(key_iso(host::current(), &memo, &changed, None, &*base.progress).unwrap());
     {
@@ -145,7 +151,6 @@ fn windows_the_doctor_iso_line_names_a_changed_iso(
         hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "the line of the base's ISO: {hash}"
     );
-    std::fs::remove_file(&changed).unwrap();
 }
 
 // A terminal ==========================================================================================================

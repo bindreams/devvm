@@ -42,6 +42,9 @@ mod roots;
 use roots::XdgRoots;
 #[path = "../../devvm/src/vm_suite/exec/cases.rs"]
 mod cases;
+#[path = "../../devvm/src/vm_suite/windows/shared.rs"]
+mod windows_shared;
+use windows_shared::{first_try, recipe_text};
 
 skuld::default_labels!(VM);
 
@@ -225,30 +228,15 @@ fn windows_instance(
     #[fixture(cli_guests)] cli: &Cli,
     #[fixture(windows_guest)] _group: &Group,
 ) -> Result<Instance, String> {
-    // A failed build is not tried again by every later test: skuld runs a fixture's setup again after it fails, and each
-    // attempt is a full Windows install.
     static FAILED: OnceLock<String> = OnceLock::new();
-    if let Some(error) = FAILED.get() {
-        return Err(format!("the first attempt of this process failed: {error}"));
-    }
-    windows_up(cli).inspect_err(|error| {
-        let _ = FAILED.set(error.clone());
-    })
+    first_try(&FAILED, || windows_up(cli))
 }
 
 fn windows_up(cli: &Cli) -> Result<Instance, String> {
     let iso = std::env::var_os(WINDOWS_ISO_VAR).ok_or_else(|| format!("{WINDOWS_ISO_VAR} is not set"))?;
-    let iso = serde_json::to_string(iso.to_str().ok_or("a UTF-8 ISO path")?).map_err(|e| e.to_string())?;
     let recipe = cli.project.join("windows.devvm.yaml");
-    std::fs::write(
-        &recipe,
-        format!(
-            "from: {{ iso: {iso} }}
-steps: []
-"
-        ),
-    )
-    .map_err(|e| format!("cannot write {}: {e}", recipe.display()))?;
+    std::fs::write(&recipe, recipe_text(Path::new(&iso), &[])?)
+        .map_err(|e| format!("cannot write {}: {e}", recipe.display()))?;
     Instance::up_from(
         cli,
         "windows.devvm.yaml",
