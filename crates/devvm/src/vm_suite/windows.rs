@@ -42,6 +42,9 @@ pub(super) struct WindowsBase {
     pub engine: Arc<Engine>,
     pub image: Image,
     pub progress: Arc<MemoryProgress>,
+    /// When the build reported the license read its base's expiry comes from: taken as the build returns, so a later
+    /// build through `engine` cannot move it.
+    pub license_read_at: SystemTime,
     /// The machines this base's engine launched.
     pub launches: Arc<Launches>,
     pub recipe: Recipe,
@@ -89,10 +92,16 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
     let image = engine
         .build(&recipe, &BuildOptions::default())
         .map_err(|e| format!("cannot build the Windows base from {}: {e}", iso.display()))?;
+    let (license_read_at, _) = progress
+        .messages_at()
+        .into_iter()
+        .rfind(|(_, line)| line.starts_with("Windows base: license status"))
+        .ok_or("the build reported no license read")?;
     Ok(WindowsBase {
         engine,
         image,
         progress,
+        license_read_at,
         launches,
         recipe,
         roots,

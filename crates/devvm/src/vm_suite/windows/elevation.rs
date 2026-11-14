@@ -35,9 +35,10 @@ fn rendezvous(own: &str, other: &str, code: i32) -> Command {
     )
 }
 
-/// Makes the flag file `name` from outside the command that waits for it, so that command ends. A caller whose
-/// run failed calls this for its own flag: the other side then never waits for a command that is not there. The
-/// result is only printed; a guest that cannot make the file has failed the command it serves too.
+/// Makes the flag file `name` from outside the command that waits for it, so that command goes on. The rendezvous
+/// calls it for its own flag whatever its run returned, so the other side never waits for a command that did not
+/// make it; making a flag that exists again is harmless. The result is only printed; a guest that cannot make the
+/// file has failed the command it serves too.
 fn release(guest: &dyn Guest, name: &str) {
     if let Err(error) = guest.run(&pwsh(
         RunAs::User,
@@ -60,16 +61,12 @@ fn windows_two_elevated_commands_at_once_each_get_their_own_output_and_status(
     let (a, b) = std::thread::scope(|scope| {
         let a = scope.spawn(|| {
             let seen = guest.vm.run(&a);
-            if seen.is_err() {
-                release(&guest.vm, "a");
-            }
+            release(&guest.vm, "a");
             seen
         });
         let b = scope.spawn(|| {
             let seen = guest.vm.run(&b);
-            if seen.is_err() {
-                release(&guest.vm, "b");
-            }
+            release(&guest.vm, "b");
             seen
         });
         (a.join().unwrap(), b.join().unwrap())

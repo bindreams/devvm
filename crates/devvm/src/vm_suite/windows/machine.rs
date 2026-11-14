@@ -84,13 +84,7 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
     .parse()
     .expect("the grace period in minutes");
     let now = SystemTime::now();
-    // The build keeps the last license read it saw, and reports each one.
-    let (read_at, _) = base
-        .progress
-        .messages_at()
-        .into_iter()
-        .rfind(|(_, line)| line.starts_with("Windows base: license status"))
-        .expect("the build reported its license read");
+    let read_at = base.license_read_at;
 
     let independent = now + Duration::from_secs(minutes * 60);
 
@@ -114,7 +108,7 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
 // doctor ==============================================================================================================
 
 #[skuld::test]
-fn windows_the_doctor_iso_line_shows_the_hash_of_the_base_iso(
+fn windows_the_doctor_iso_line_of_the_base_iso_shows_a_sha256(
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(windows_iso)] iso: &Path,
 ) {
