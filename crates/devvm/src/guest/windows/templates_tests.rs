@@ -474,9 +474,38 @@ fn an_evaluation_that_is_not_licensed_is_activated_before_its_license_is_read() 
         "only an evaluation is activated: {read}"
     );
     assert!(
-        read.contains("} catch {") && read.contains("'Activation'"),
+        read.contains("} catch {") && read.contains("n = 'Activation'"),
         "a failed activation is sent: {read}"
     );
+}
+
+#[skuld::test]
+fn a_failed_activation_is_sent_with_its_message_not_a_generic_hresult() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    let catch = section(read, "} catch {", "$product = Get-CimInstance");
+    assert!(catch.contains("$_.Exception.Message"), "{catch}");
+    assert!(
+        !catch.contains("HResult"),
+        "a CimException's HResult is a generic .NET code: {catch}"
+    );
+}
+
+#[skuld::test]
+fn the_activation_is_announced_before_it_is_called_and_only_when_it_is_called() {
+    let bootstrap = rendered("bootstrap.ps1");
+    let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
+    assert_before(
+        read,
+        "Send-Line 'DEVVM-PROGRESS=activating Windows'",
+        "-MethodName Activate",
+    );
+    assert_before(
+        read,
+        "-like '*:TB:Eval'",
+        "Send-Line 'DEVVM-PROGRESS=activating Windows'",
+    );
+    assert_eq!(read.matches("activating Windows").count(), 1, "{read}");
 }
 
 #[skuld::test]

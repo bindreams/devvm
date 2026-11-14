@@ -52,11 +52,12 @@ try {
     $product = Get-CimInstance SoftwareLicensingProduct -Filter $filter | Select-Object -First 1
     $activation = $null
     if ($product -and $product.LicenseStatus -ne 1 -and $product.ProductKeyChannel -like '*:TB:Eval') {
+        Send-Line 'DEVVM-PROGRESS=activating Windows'
         try {
             $product | Invoke-CimMethod -MethodName Activate -ErrorAction Stop | Out-Null
             $activation = 'activated'
         } catch {
-            $activation = 'failed: 0x{0:X8} {1}' -f $_.Exception.HResult, $_.Exception.Message
+            $activation = 'failed: {0}' -f $_.Exception.Message
         }
         $product = Get-CimInstance SoftwareLicensingProduct -Filter $filter | Select-Object -First 1
     }
