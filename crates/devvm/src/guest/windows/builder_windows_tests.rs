@@ -739,7 +739,12 @@ fn progress_markers_are_echoed_as_progress_lines(#[fixture(unicode_home)] home: 
     rig.build(None).unwrap();
 
     let lines = rig.progress();
-    for phase in ["specialize", "first logon: x", "installing OpenSSH"] {
+    for phase in [
+        "specialize",
+        "first logon: x",
+        "installing OpenSSH",
+        "\"GracePeriodRemaining\":129600",
+    ] {
         let echoed = lines.iter().filter(|line| line.contains(phase)).count();
         assert_eq!(echoed, 1, "{phase} once in {lines:?}");
     }

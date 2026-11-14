@@ -614,7 +614,7 @@ impl<'a> Build<'a> {
         }
     }
 
-    /// Takes in what the guest wrote: reports each marker, which restarts the clock of the bound and moves to the
+    /// Takes in what the guest wrote: reports each marker and the license read, which restarts the clock of the bound and moves to the
     /// first-logon phase when its script starts, and keeps the last license read.
     fn observe(&mut self, written: &Serial) {
         for phase in &written.progress {
@@ -622,6 +622,7 @@ impl<'a> Build<'a> {
         }
         self.watch.observe(written, Instant::now());
         if let Some(license) = &written.license {
+            self.ctx.progress.message(&format!("Windows base: {license}"));
             self.license = Some((license.clone(), self.ctx.clock.now()));
         }
     }
