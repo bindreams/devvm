@@ -51,6 +51,16 @@ try {
     # ASCII only: the serial channel carries no localized text.
     $json = [regex]::Replace($json, '[^\x00-\x7F]', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) '\u{0:x4}' -f [int][char]$m.Value })
     Send-Line "DEVVM-LICENSE=$json"
+    # TEMPORARY DIAGNOSTIC (deputy, devvm#167): the licence state at first logon and at the end. Reverted after one run.
+    function Send-Diag([string]$tag) {
+        $l = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" |
+            Select-Object LicenseStatus, GracePeriodRemaining, LicenseStatusReason, EvaluationEndDate | ConvertTo-Json -Compress
+        $s = (cscript.exe //nologo C:\Windows\System32\slmgr.vbs /dlv) -join ' | '
+        $svc = (Get-Service sppsvc).Status
+        $net = (Get-NetAdapter | Where-Object Status -eq 'Up' | Measure-Object).Count
+        Send-Line ("DEVVM-PROGRESS=diag {0}: {1} sppsvc={2} up={3} {4} {5}" -f $tag, (Get-Date).ToUniversalTime().ToString('o'), $svc, $net, $l, $s)
+    }
+    Send-Diag 'first-logon'
 
     # The account: an administrator (by SID, never by the group's localized name) whose password never expires.
     $member = Get-LocalGroupMember -SID S-1-5-32-544 | Where-Object { $_.Name -like '*\user' }
@@ -132,6 +142,7 @@ try {
     Register-ScheduledTask -TaskName @@EB_TASK@@ -Action $helperAction -Settings $helperSettings `
         -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel Highest) | Out-Null
 
+    Send-Diag 'end'
     Remove-Item -LiteralPath $work -Recurse -Force
     Write-VolumeCache -DriveLetter C
 } catch {
