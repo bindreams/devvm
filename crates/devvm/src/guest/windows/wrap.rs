@@ -30,7 +30,7 @@ mod wrap_tests;
 pub(super) mod wrap_pwsh_tests;
 
 /// Where ssh-broker is installed, whose `-c "<script>"` is the line sshd builds.
-pub(super) const BROKER_EXE: &str = r"C:\ProgramData\ssh-broker\ssh-broker.exe";
+pub(crate) const BROKER_EXE: &str = r"C:\ProgramData\ssh-broker\ssh-broker.exe";
 /// The PowerShell 7 the broker starts for the script (`config.yaml`'s `shell.start`).
 pub(super) const PWSH_EXE: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 

@@ -21,7 +21,7 @@ use crate::{Arch, Error, ErrorKind, Result};
 mod storage_tests;
 
 /// The disk file of a layer and of an instance's staging.
-pub(crate) const DISK: &str = "disk.qcow2";
+pub(crate) const DISK: &str = crate::backend::LAYER_DISK;
 /// A layer's UEFI variables, and the copy each instance boots from.
 pub(crate) const VARS: &str = "vars.fd";
 /// The format of every layer and instance disk.

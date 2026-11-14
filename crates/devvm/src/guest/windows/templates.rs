@@ -86,6 +86,9 @@ pub(super) struct AnswerInputs<'a> {
     pub language: &'a str,
     pub time_zone: &'a str,
     pub computer_name: &'a str,
+    /// The image is an evaluation edition: the first-logon script activates an unlicensed one before it reads the
+    /// license. The host decides, so no script judges the image itself.
+    pub evaluation: bool,
 }
 
 /// The text of the template `name`.
@@ -126,8 +129,8 @@ pub(super) fn disk_files(templates: &[(&str, &str)], values: &[(&str, String)]) 
 }
 
 /// What the definition hash renders the templates with. The password is a fixed stand-in (the build's is random and
-/// never stored); the rest is what a build of any ISO shares: the image and its language come from the ISO, which is
-/// part of the base's key already.
+/// never stored); the rest is what a build of any ISO shares: the image, its language and whether it is an evaluation come
+/// from the ISO, which is part of the base's key already.
 pub(super) fn probe_inputs() -> AnswerInputs<'static> {
     AnswerInputs {
         password: "definition-hash-probe",
@@ -135,6 +138,7 @@ pub(super) fn probe_inputs() -> AnswerInputs<'static> {
         language: "en-US",
         time_zone: TIME_ZONE,
         computer_name: COMPUTER_NAME,
+        evaluation: false,
     }
 }
 
@@ -217,6 +221,10 @@ pub(super) fn values(inputs: &AnswerInputs) -> Vec<(&'static str, String)> {
         ("LANGUAGE", inputs.language.to_owned()),
         ("TIME_ZONE", inputs.time_zone.to_owned()),
         ("COMPUTER_NAME", inputs.computer_name.to_owned()),
+        (
+            "EVALUATION",
+            if inputs.evaluation { "$true" } else { "$false" }.to_owned(),
+        ),
         ("DRIVER_PATHS_OFFLINE", driver_paths("off")),
         ("DRIVER_PATHS_SPECIALIZE", driver_paths("os")),
         (

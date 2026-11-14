@@ -76,6 +76,10 @@ pub struct Check {
     pub outcome: std::result::Result<String, String>,
 }
 
+/// The disk of a layer in its directory: every backend's layers hold it under this name, so a builder that fills a
+/// layer's disk by running a machine on it can name the file.
+pub(crate) const LAYER_DISK: &str = "disk.qcow2";
+
 /// The instance disk size when the recipe sets none and the layer's disk is no bigger.
 pub(crate) const DEFAULT_DISK: u64 = 40 << 30;
 
@@ -298,6 +302,18 @@ pub(crate) fn make_overlay(into: &Path, fill: impl FnOnce(&Path, &Path) -> Resul
     })
 }
 
+/// What an error says in place of the output of a VM process that printed nothing.
+pub(crate) const PRINTED_NOTHING: &str = "(it printed nothing)";
+
+/// How a VM process ended, as the backend that started it tells it.
+#[derive(Clone, Debug)]
+pub(crate) struct MachineExit {
+    pub status: std::process::ExitStatus,
+    /// What the backend knows of why this launch failed: for QEMU, what that launch printed. Empty when the VM exited
+    /// successfully or nothing is known; a caller reads it for a failing status.
+    pub output: String,
+}
+
 pub(crate) trait Machine: Send {
     fn record(&self) -> MachineRecord;
     fn ssh_endpoints(&self) -> &[(Endpoint, SocketAddr)];
@@ -306,6 +322,9 @@ pub(crate) trait Machine: Send {
     /// Lets a frozen machine run and returns once its endpoints are known: `ssh_endpoints()` and the `ssh` of
     /// `record()` are valid only from then on. `record()` is valid before, apart from the endpoints. `Internal` on a
     /// machine from `Backend::attach`.
+    ///
+    /// Returning completes a command that the VM's main loop serves, with or without forwards, so every drive of the
+    /// spec is open by then: a caller may release what only the opening needed (an ISO held against writes).
     fn resume(&mut self) -> Result<()>;
 
     /// Disarms the containment of a resumed machine: it now outlives this process. `Ok` on a machine from
@@ -321,6 +340,11 @@ pub(crate) trait Machine: Send {
             "this machine cannot be reset in place",
         ))
     }
+
+    /// How the VM process ended if it has exited, `None` while it runs: std's `Child::try_wait`, with the backend's own
+    /// account of the exit. `Internal` for a machine from `Backend::attach` or a released one, whose status this
+    /// process cannot read, and for one that is not resumed.
+    fn try_wait(&self) -> Result<Option<MachineExit>>;
 
     /// Graceful shutdown; returns after the process has exited and its `leftovers` are deleted.
     fn shutdown(&mut self) -> Result<()>;

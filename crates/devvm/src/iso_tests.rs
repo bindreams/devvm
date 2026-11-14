@@ -3,7 +3,11 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::udf::udf_tests::{image, read_at};
-use super::{BootPatch, InstallIso, IsoMemo, IsoRoot, WimArch, WimImage, key_iso, read_install_iso, select_image};
+use super::{
+    BootPatch, HeldIso, InstallIso, IsoMemo, IsoRoot, NO_PROMPT_IMAGE, PROMPTING_IMAGE, SECTOR, WimArch, WimImage,
+    efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, select_image, total,
+};
+use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
 use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
 use crate::{Dirs, ErrorKind, Result, Sha256};
@@ -285,4 +289,48 @@ fn an_arm64_image_is_refused_naming_arch_and_the_x64_scope() {
     assert_eq!(select_image(&images, Some("Intel")).unwrap().index, 2);
     let error = select_image(&images[..1], None).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NotSupported);
+}
+
+// The Windows ISO CI builds from ======================================================================================
+
+/// The ISO the `windows_guest` group builds from has the structure the install patch relies on (found on the evaluation
+/// ISOs): the two boot images are the same size, and the patch puts the no-prompt one where the boot catalog's UEFI
+/// entry loads its image. Nothing here is the address of one ISO build.
+#[skuld::test]
+fn the_evaluation_iso_boot_patch_has_the_structure_the_spike_found(#[fixture(windows_guest)] _group: &Group) {
+    let iso = PathBuf::from(std::env::var_os(WINDOWS_ISO_VAR).expect("the group needs the ISO variable"));
+    let held = HeldIso::open(&TestHost, &iso).unwrap();
+    let udf = mount(&held).unwrap();
+    let boot_image = |path| {
+        udf.pieces(path)
+            .unwrap()
+            .unwrap_or_else(|| panic!("the ISO has no {path}"))
+    };
+    let (prompting, no_prompt) = (boot_image(PROMPTING_IMAGE), boot_image(NO_PROMPT_IMAGE));
+    assert_eq!(
+        total(&prompting),
+        total(&no_prompt),
+        "both boot images are the same size"
+    );
+
+    let patch = no_prompt_patch(&udf, &iso).unwrap();
+
+    let entries = udf.boot_entries().unwrap();
+    let entry = efi_entry(&entries).expect("a bootable UEFI entry in the boot catalog");
+    assert_eq!(
+        patch.offset,
+        u64::from(entry.load_block) * SECTOR,
+        "the patch is where the catalog loads from"
+    );
+    assert_eq!(
+        patch.bytes,
+        udf.read_pieces(&no_prompt).unwrap(),
+        "the patch is the no-prompt image's bytes"
+    );
+    assert_eq!(patch.bytes.len() as u64 % SECTOR, 0);
+    let size = std::fs::metadata(&iso).unwrap().len();
+    assert!(
+        patch.offset + patch.bytes.len() as u64 <= size,
+        "the patch lies inside the ISO"
+    );
 }

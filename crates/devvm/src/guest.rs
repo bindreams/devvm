@@ -1,7 +1,7 @@
 //! Guest operating systems: what differs between Linux, Windows and macOS guests, behind traits.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use secrecy::{ExposeSecret, SecretString};
 
@@ -10,8 +10,9 @@ use crate::backend::{DeviceProfile, Media};
 use crate::exit::Progress;
 use crate::host::Host;
 use crate::instance::record::InstanceId;
-use crate::recipe::{Setting, Shell, Source};
-use crate::store::layers::{LayerDir, LayerMeta};
+use crate::iso::IsoRoot;
+use crate::recipe::{Resources, Setting, Shell, Source};
+use crate::store::layers::{Clock, LayerDir, LayerMeta};
 use crate::{Arch, Command, Dirs, Error, ErrorKind, GuestKind, Result};
 
 #[cfg(test)]
@@ -66,6 +67,13 @@ pub(crate) trait GuestOs: Send + Sync {
     /// Why `name`, a file name taken from the host, cannot be one file name in a guest directory (a Windows guest
     /// refuses `a?b` and device names); `None` when it can.
     fn file_name_problem(&self, name: &str) -> Option<String>;
+    /// The command of a `copy` step that makes `destination`, extracts the tar at `archive` into it (over files that are
+    /// there) and removes `archive` whatever the extraction did, ending with the extraction's status. Both are guest
+    /// paths as the user types them, absolute; the command quotes them. It runs as the user.
+    fn extract_command(&self, destination: &str, archive: &str) -> Result<Command>;
+    /// The directory a `copy` step uploads its archive to, in the form a guest path is typed: one the user can write and
+    /// whose files are not part of any layer once the step has removed them.
+    fn copy_scratch_dir(&self) -> &'static str;
 }
 
 /// [`GuestOs::split_root`] for a path whose only root is `/`; any number of leading `/` are one.
@@ -179,10 +187,21 @@ pub(crate) struct SeedMedia {
     pub media: Media,
 }
 
+/// What a base build knows of the engine that runs it.
 pub(crate) struct BuildCtx {
     pub dirs: Dirs,
     pub arch: Arch,
     pub progress: Arc<dyn Progress>,
+    /// The time a license read is counted from.
+    pub clock: Arc<dyn Clock>,
+    /// The recipe's resources: a base build is as large as the instances of the recipe.
+    pub resources: Resources,
+    /// The build's own directory, which is removed when the build ends: what a base build needs only while it runs goes
+    /// here, not in its layer.
+    pub work: PathBuf,
+    /// The held ISO of an ISO root, which the build takes: it is read once, by the builder that installs from it, which
+    /// keeps it held until the guest's disk has opened it. `None` for any other root, and once taken.
+    pub iso: Mutex<Option<IsoRoot>>,
 }
 
 pub(crate) fn missing(kind: GuestKind) -> Error {

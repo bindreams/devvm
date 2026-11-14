@@ -7,13 +7,14 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::backend::contract::ContractTarget;
 use crate::backend::{
-    Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineRecord, MachineSpec, NetModel,
-    Patch, SshEndpoint, Storage, Video, check_blank_disk_size, check_machine_spec, check_overlay, make_overlay,
+    Backend, Check, Detail, DeviceProfile, DiskBus, Endpoint, FileClaim, Machine, MachineExit, MachineRecord,
+    MachineSpec, NetModel, Patch, SshEndpoint, Storage, Video, check_blank_disk_size, check_machine_spec,
+    check_overlay, make_overlay,
 };
 use crate::contain::{Lifetime, VmProcess};
 use crate::host::{self, Accel, Host};
@@ -50,7 +51,7 @@ pub(crate) fn leftover_paths(dir: &Path, id: &InstanceId, launch: usize) -> Vec<
 }
 
 /// The file in a layer that an instance disk sits on.
-pub(crate) const LAYER_DISK: &str = "disk.qcow2";
+pub(crate) use crate::backend::LAYER_DISK;
 
 pub(crate) struct FakeBackend {
     host: &'static dyn Host,
@@ -71,6 +72,61 @@ pub(crate) struct FakeBackend {
     ssh_endpoint: Option<SocketAddr>,
     shutdown_fails: bool,
     launch_fails: bool,
+    try_wait_fails: bool,
+    kill_fails: bool,
+    resume_fails: bool,
+    late_exit_status: bool,
+    guest: Option<GuestScript>,
+}
+
+/// What the guest of a fake machine does once its machine runs: called by `resume` with the number of the launch (from
+/// 0, in launch order through the backend), the spec the machine was launched with and the means to power the guest
+/// off, which ends the VM process as a guest's shutdown ends QEMU. The script may write the machine's serial log and
+/// its media, as a guest does, and may leave the machine running.
+pub(crate) type GuestScript = Arc<dyn Fn(usize, &MachineSpec, &PowerOff) + Send + Sync>;
+
+/// What a fake machine says of its VM process's failing exit: the fake VM prints nothing, so this stands in for QEMU's
+/// output.
+pub(crate) const EXIT_OUTPUT: &str = "the fake VM's own account of its exit";
+
+/// The power button of a fake machine's guest.
+pub(crate) struct PowerOff {
+    vm: SocketAddr,
+}
+
+impl PowerOff {
+    /// Powers the guest off: the VM process exits with status 0. Fails the test if the VM cannot be asked.
+    pub(crate) fn power_off(&self) {
+        ask_to_exit(self.vm).unwrap_or_else(|e| panic!("the fake guest cannot power off: {e}"));
+    }
+
+    /// Ends the VM process with status 1, as QEMU dying does. Fails the test if the VM cannot be asked.
+    pub(crate) fn crash(&self) {
+        ask_to_crash(self.vm).unwrap_or_else(|e| panic!("the fake guest cannot crash: {e}"));
+    }
+}
+
+/// Asks the fake VM at `addr` to exit, as a backend asks its guest to power off, and returns once it has closed the
+/// connection.
+pub(crate) fn ask_to_exit(addr: SocketAddr) -> Result<()> {
+    ask(addr, fake_vm::SHUTDOWN_REQUEST)
+}
+
+/// Asks the fake VM at `addr` to exit with status 1, and returns once it has closed the connection.
+pub(crate) fn ask_to_crash(addr: SocketAddr) -> Result<()> {
+    ask(addr, fake_vm::CRASH_REQUEST)
+}
+
+fn ask(addr: SocketAddr, request: &str) -> Result<()> {
+    let refused = |e| Error::io(ErrorKind::Io, format!("cannot ask the machine at {addr} to exit"), e);
+    let mut stream = TcpStream::connect(addr).map_err(refused)?;
+    // The VM greets first. Closing with its greeting unread would reset the connection and could drop the request.
+    let mut greeting = String::new();
+    BufReader::new(&stream).read_line(&mut greeting).map_err(refused)?;
+    writeln!(stream, "{request}").map_err(refused)?;
+    // The VM drops the connection when it exits, as a close or as a reset; the process exit is what is awaited.
+    let _ = std::io::copy(&mut stream, &mut std::io::sink());
+    Ok(())
 }
 
 impl FakeBackend {
@@ -88,12 +144,50 @@ impl FakeBackend {
             ssh_endpoint: None,
             shutdown_fails: false,
             launch_fails: false,
+            try_wait_fails: false,
+            kill_fails: false,
+            resume_fails: false,
+            late_exit_status: false,
+            guest: None,
         }
+    }
+
+    /// A backend whose machines have a guest that runs `script` when its machine runs.
+    pub(crate) fn with_guest(mut self, script: GuestScript) -> FakeBackend {
+        self.guest = Some(script);
+        self
     }
 
     /// A backend whose machines refuse every graceful `shutdown`; `kill` still works.
     pub(crate) fn with_failing_shutdown(mut self) -> FakeBackend {
         self.shutdown_fails = true;
+        self
+    }
+
+    /// A backend whose machines cannot say whether their VM process has exited: `try_wait` fails.
+    pub(crate) fn with_failing_try_wait(mut self) -> FakeBackend {
+        self.try_wait_fails = true;
+        self
+    }
+
+    /// A backend whose machines cannot be killed: `kill` ends the VM and fails, as a `kill` does that cannot say the VM
+    /// is gone.
+    pub(crate) fn with_failing_kill(mut self) -> FakeBackend {
+        self.kill_fails = true;
+        self
+    }
+
+    /// A backend whose machines cannot be resumed: `resume` lets the VM run and fails, as one does that cannot say
+    /// whether QEMU finished starting.
+    pub(crate) fn with_failing_resume(mut self) -> FakeBackend {
+        self.resume_fails = true;
+        self
+    }
+
+    /// A backend whose machines report their VM process's exit one look late: the first `try_wait` answers `None`
+    /// after the process has exited, as a process that exits between a status read and the next does.
+    pub(crate) fn with_late_exit_status(mut self) -> FakeBackend {
+        self.late_exit_status = true;
         self
     }
 
@@ -180,6 +274,14 @@ impl FakeBackend {
             .is_none_or(|leftovers| leftovers.cleaned_by_kill)
     }
 
+    /// A disk a machine can run on: an instance disk whose layer is there, or a blank layer disk, which a build runs on.
+    fn check_disk(disk: &Path) -> Result<()> {
+        match std::fs::read_to_string(disk) {
+            Ok(text) if text.starts_with("blank size=") => Ok(()),
+            _ => FakeBackend::backing_layer(disk).map(drop),
+        }
+    }
+
     /// The layer file the instance disk `disk` sits on; an error when that file is gone.
     fn backing_layer(disk: &Path) -> Result<PathBuf> {
         let text = std::fs::read_to_string(disk)
@@ -212,7 +314,7 @@ impl Backend for FakeBackend {
             return Err(Error::new(ErrorKind::Io, "the fake backend cannot launch"));
         }
         check_machine_spec(spec)?;
-        FakeBackend::backing_layer(&spec.disk)?;
+        FakeBackend::check_disk(&spec.disk)?;
         let state_dir = spec.serial_log.parent().expect("a serial log has a directory");
         fake_vm::forget_earlier_runs(state_dir).map_err(|e| {
             Error::io(
@@ -263,6 +365,11 @@ impl Backend for FakeBackend {
             host: self.host,
             ssh_endpoint: self.ssh_endpoint,
             shutdown_fails: self.shutdown_fails,
+            try_wait_fails: self.try_wait_fails,
+            kill_fails: self.kill_fails,
+            resume_fails: self.resume_fails,
+            late_exit_status: self.late_exit_status.then(|| AtomicBool::new(false)),
+            guest: self.guest.clone().map(|script| (script, index, spec.clone())),
         }))
     }
 
@@ -286,6 +393,11 @@ impl Backend for FakeBackend {
             host: self.host,
             ssh_endpoint: self.ssh_endpoint,
             shutdown_fails: self.shutdown_fails,
+            try_wait_fails: self.try_wait_fails,
+            kill_fails: self.kill_fails,
+            resume_fails: self.resume_fails,
+            late_exit_status: None,
+            guest: None,
         }))
     }
 
@@ -326,6 +438,16 @@ struct FakeMachine {
     ssh_endpoint: Option<SocketAddr>,
     /// See [`FakeBackend::with_failing_shutdown`].
     shutdown_fails: bool,
+    /// See [`FakeBackend::with_failing_try_wait`].
+    try_wait_fails: bool,
+    /// See [`FakeBackend::with_failing_kill`].
+    kill_fails: bool,
+    /// See [`FakeBackend::with_failing_resume`].
+    resume_fails: bool,
+    /// See [`FakeBackend::with_late_exit_status`]: whether the late answer has been given.
+    late_exit_status: Option<AtomicBool>,
+    /// See [`FakeBackend::with_guest`]: the script, the launch's number and its spec.
+    guest: Option<(GuestScript, usize, MachineSpec)>,
 }
 
 impl Machine for FakeMachine {
@@ -343,6 +465,9 @@ impl Machine for FakeMachine {
 
     fn resume(&mut self) -> Result<()> {
         self.vm.resume()?;
+        if self.resume_fails {
+            return Err(Error::new(ErrorKind::Io, "the fake machine's resume fails"));
+        }
         let own = SocketAddr::from((Ipv4Addr::LOCALHOST, fake_vm::await_port(&self.vm, &self.state_dir)));
         let addr = self.ssh_endpoint.unwrap_or(own);
         self.ssh = vec![(Endpoint::Normal, addr)];
@@ -359,11 +484,37 @@ impl Machine for FakeMachine {
             std::fs::write(path, b"")
                 .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", path.display()), e))?;
         }
+        if let Some((script, launch, spec)) = &self.guest {
+            script(*launch, spec, &PowerOff { vm: own });
+        }
         Ok(())
     }
 
     fn release(&mut self) -> Result<()> {
         if self.attached { Ok(()) } else { self.vm.release() }
+    }
+
+    fn try_wait(&self) -> Result<Option<MachineExit>> {
+        if self.try_wait_fails {
+            return Err(Error::new(
+                ErrorKind::Io,
+                "cannot read the VM process's status: the fake machine's try_wait fails",
+            ));
+        }
+        if let Some(answered) = &self.late_exit_status
+            && !answered.swap(true, Ordering::SeqCst)
+        {
+            self.vm.wait()?;
+            return Ok(None);
+        }
+        Ok(self.vm.try_wait()?.map(|status| MachineExit {
+            output: if status.success() {
+                String::new()
+            } else {
+                EXIT_OUTPUT.to_owned()
+            },
+            status,
+        }))
     }
 
     /// Counts the reset: the fake guest's boot id changes when the code around it reads the count.
@@ -386,28 +537,18 @@ impl Machine for FakeMachine {
                 "the fake machine's guest does not power down",
             ));
         }
-        let addr = self.endpoint()?;
-        let ask = |e| {
-            Error::io(
-                ErrorKind::Io,
-                format!("cannot ask the machine at {addr} to shut down"),
-                e,
-            )
-        };
-        let mut stream = TcpStream::connect(addr).map_err(ask)?;
-        // The VM greets first. Closing with its greeting unread would reset the connection and could drop the request.
-        let mut greeting = String::new();
-        BufReader::new(&stream).read_line(&mut greeting).map_err(ask)?;
-        writeln!(stream, "{}", fake_vm::SHUTDOWN_REQUEST).map_err(ask)?;
-        // The VM drops the connection when it exits, as a close or as a reset; the process exit is what is awaited.
-        let _ = std::io::copy(&mut stream, &mut std::io::sink());
+        ask_to_exit(self.endpoint()?)?;
         self.vm.wait()?;
         self.remove_leftovers()
     }
 
     fn kill(&mut self) -> Result<()> {
         self.vm.kill()?;
-        self.remove_leftovers()
+        self.remove_leftovers()?;
+        if self.kill_fails {
+            return Err(Error::new(ErrorKind::Io, "the fake machine's kill fails"));
+        }
+        Ok(())
     }
 }
 

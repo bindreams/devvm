@@ -1,5 +1,6 @@
 # Shared by the first-logon script (Windows PowerShell 5.1, as `user`) and the boot task (PowerShell 7, as SYSTEM).
-# Every DEVVM-... marker goes to COM1, the host's serial log, as UTF-8 on one line, and to a log file anyone can write.
+# Every DEVVM-... marker goes to COM1, the host's serial log, as UTF-8 on one line that
+# starts with a line end (a serial terminal may write escape bytes first), and to a log file anyone can write.
 
 $script:DevvmLog = Join-Path @@DEVVM_DIR@@ 'log.txt'
 
@@ -36,7 +37,7 @@ function Send-Line {
         $com = New-Object System.IO.Ports.SerialPort 'COM1', 115200, 'None', 8, 'One'
         $com.Encoding = [System.Text.Encoding]::UTF8
         $com.Open()
-        try { $com.Write($line + "`n") } finally { $com.Close() }
+        try { $com.Write("`n" + $line + "`n") } finally { $com.Close() }
     } catch {
         try { Add-Content -LiteralPath $script:DevvmLog -Value "SERIAL-ERROR $($_.Exception.Message)" } catch { }
     } finally {

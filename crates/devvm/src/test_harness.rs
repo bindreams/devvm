@@ -37,6 +37,10 @@ pub const SYMLINKS: skuld::Label;
 #[skuld::label]
 pub const EXFAT_VOLUME: skuld::Label;
 
+/// Selects the tests that build and boot a real Windows guest from `DEVVM_WINDOWS_ISO`.
+#[skuld::label]
+pub const WINDOWS_GUEST: skuld::Label;
+
 /// Selects the tests that run the Windows guest's wrapped commands in a real `pwsh`.
 #[skuld::label]
 pub const PWSH_WRAP: skuld::Label;

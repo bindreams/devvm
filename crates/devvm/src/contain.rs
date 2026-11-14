@@ -220,6 +220,28 @@ impl VmProcess {
             .map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e))
     }
 
+    /// The exit status of the process if it has exited, `None` while it runs: std's `Child::try_wait`. It reads the
+    /// status from the child this process started, so an exit that this process did not see through its own handle
+    /// cannot be told from here: `Internal` for a frozen process, for a released one and for one found with `attach`.
+    pub(crate) fn try_wait(&self) -> Result<Option<std::process::ExitStatus>> {
+        let id = self.id();
+        match &self.state {
+            State::Running(child, _) => child.try_wait().map_err(|e| {
+                cosca_error(
+                    &format!("cannot read the exit status of the VM process {}", id.pid()),
+                    e,
+                )
+            }),
+            State::Frozen(..) | State::Released(_) | State::Foreign(_) => Err(Error::new(
+                ErrorKind::Internal,
+                format!(
+                    "cannot read the exit status of the VM process {}: this process holds no running child of it",
+                    id.pid()
+                ),
+            )),
+        }
+    }
+
     /// Kills the process and returns only after it has exited. A frozen process never runs. An already-dead process
     /// is `Ok`.
     pub(crate) fn kill(&mut self) -> Result<()> {
