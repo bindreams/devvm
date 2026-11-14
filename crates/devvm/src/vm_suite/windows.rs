@@ -14,6 +14,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::fixture::{Launches, Roots, engine_reporting_to, run_ok_as};
+use super::waits::{answer_to, step};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::engine::Engine;
 use crate::guest::GuestOs;
@@ -28,14 +29,16 @@ use crate::test_support::qemu::{qemu_sidecar, socket_dir};
 use crate::{BuildOptions, Command, Error, ExitStatus, Guest, Image, Output, RunAs, StartOptions, Vm};
 
 mod boots;
+mod bounds;
 mod commands;
 mod elevation;
 mod machine;
 mod seed;
 mod session;
-pub(super) mod shared;
+mod shared;
 
-use shared::{ANSWER_BOUND, STATE_BOUND, first_try, named, recipe_text, step, watch};
+use bounds::{GUEST_BOUND, STATE_BOUND};
+use shared::{first_try, recipe_text};
 
 /// The Windows base of this test process, with the engine that built it and what it reported.
 pub(super) struct WindowsBase {
@@ -146,13 +149,13 @@ pub(super) fn printed(guest: &dyn Guest, script: &str) -> String {
 pub(super) fn printed_as(guest: &dyn Guest, run_as: RunAs, script: &str) -> String {
     let command = pwsh(run_as, script);
     let argv: Vec<&str> = command.argv.iter().map(String::as_str).collect();
-    let _watch = watch(format!("the guest's answer to {}", named(&command.argv)), ANSWER_BOUND);
+    let _watch = answer_to(&command.argv);
     run_ok_as(guest, run_as, &argv).trim().to_owned()
 }
 
-/// Runs `command` in `guest`, which must answer within [`ANSWER_BOUND`].
+/// Runs `command` in `guest`, which must answer within [`ANSWER_BOUND`](super::waits::ANSWER_BOUND).
 pub(super) fn ran(guest: &dyn Guest, command: &Command) -> Result<Output, Error> {
-    let _watch = watch(format!("the guest's answer to {}", named(&command.argv)), ANSWER_BOUND);
+    let _watch = answer_to(&command.argv);
     guest.run(command)
 }
 
@@ -172,15 +175,17 @@ pub(super) fn until(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
-/// PowerShell that waits in the guest until `condition` holds. After [`STATE_BOUND`] it prints that `what` did not
-/// happen and ends the command with status 124, so a command that runs it ends on its own. `$false` is a wait that only
-/// the bound ends.
+/// PowerShell that waits in the guest until `condition` holds. After [`GUEST_BOUND`], which is longer than every host
+/// bound that waits on the effect, it prints that `what` did not happen and ends the wait, not the command or the shell
+/// that runs it: the host fails the test long before, and a bound never decides what the host asserts. `$false` is a
+/// wait that only the bound ends.
 pub(super) fn guest_until(what: &str, condition: &str) -> String {
-    let seconds = STATE_BOUND.as_secs();
+    let seconds = GUEST_BOUND.as_secs();
+    let what = what.replace('\'', "''");
     format!(
         "$deadline = (Get-Date).AddSeconds({seconds}); \
          while (-not ({condition})) {{ \
-         if ((Get-Date) -gt $deadline) {{ [Console]::Error.WriteLine('devvm test: {what} did not happen'); exit 124 }}; \
+         if ((Get-Date) -gt $deadline) {{ [Console]::Error.WriteLine('devvm test: {what} did not happen'); break }}; \
          Start-Sleep -Milliseconds 100 }}"
     )
 }

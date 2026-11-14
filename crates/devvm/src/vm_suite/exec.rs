@@ -2,7 +2,7 @@
 //! which `devvm-cli/tests/vm_cli.rs` runs through the `devvm` executable.
 
 use super::fixture::{SharedGuest, shared_guest};
-use super::windows::shared::{ANSWER_BOUND, named, step, watch};
+use super::waits::answer_to;
 use crate::{Command, ExitStatus, Guest, RunAs, Vm};
 use cases::{Case, Ended, ExecTarget, Observed, Os};
 
@@ -22,8 +22,7 @@ impl ExecTarget for InGuest<'_> {
             run_as: if case.elevated { RunAs::Elevated } else { RunAs::User },
             cwd: case.cwd.clone(),
         };
-        step(&format!("running {}", named(&case.argv)));
-        let _watch = watch(format!("the guest's answer to {}", named(&case.argv)), ANSWER_BOUND);
+        let _watch = answer_to(&case.argv);
         let output = self
             .0
             .run(&command)

@@ -5,13 +5,14 @@
 use std::io::{self, Write};
 use std::sync::mpsc::{self, RecvTimeoutError};
 
-use super::shared::{ANSWER_BOUND, STATE_BOUND, named, step, watch};
+use super::bounds::STATE_BOUND;
 use super::windows_options;
 use super::{
     SharedWindowsGuest, WindowsBase, guest_until, printed, pwsh, ran, shared_windows_guest, until, windows_base,
 };
 use crate::guest::windows::elevate::TASK;
 use crate::vm_suite::fixture::Up;
+use crate::vm_suite::waits::{answer_to, step};
 use crate::{Command, ExitStatus, Guest, RunAs};
 
 /// The directory the helper keeps its requests in; it is empty when no request is pending.
@@ -26,7 +27,7 @@ fn pending(guest: &dyn Guest) -> String {
 }
 
 /// An elevated command that makes its own flag file and waits for the other's: both are running at the same time, or
-/// neither ends (it ends with status 124 when the other's flag does not come).
+/// neither ends (the host's bound on the answer fails the test).
 fn rendezvous(own: &str, other: &str, code: i32) -> Command {
     let wait = guest_until(
         &format!("the flag {other}.flag"),
@@ -142,8 +143,7 @@ fn windows_an_elevated_command_streams_its_output_as_it_runs(
     );
     let (sender, first) = mpsc::channel();
 
-    step("running the command");
-    let _guard = watch(format!("the guest's answer to {}", named(&command.argv)), ANSWER_BOUND);
+    let _guard = answer_to(&command.argv);
 
     let ((status, seen), heard) = std::thread::scope(|scope| {
         let run = scope.spawn(|| {
@@ -201,24 +201,19 @@ impl Write for Leaver {
 fn windows_an_elevated_child_ends_when_the_client_goes_away(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    // The command prints its process id, then runs until it is ended; left alone it ends itself with status 124.
-    let hold = guest_until("the host ending the command", "$false");
+    // The command prints its process id, then runs until it is ended. It has no bound of its own: a bound that ended it
+    // would be the one thing that makes the process go, and the test asserts that devvm does. When devvm does not end
+    // it, the wait below for the process to end fails the test, and the instance's teardown ends the child.
     let command = pwsh(
         RunAs::Elevated,
-        &format!("[Console]::Out.WriteLine($PID); [Console]::Out.Flush(); {hold}"),
+        "[Console]::Out.WriteLine($PID); [Console]::Out.Flush(); while ($true) { Start-Sleep -Milliseconds 100 }",
     );
     let mut leaver = Leaver { seen: Vec::new() };
 
-    step("running the command");
-    let guard = watch(format!("the guest's answer to {}", named(&command.argv)), ANSWER_BOUND);
+    let guard = answer_to(&command.argv);
     // devvm ends the command when its output has nowhere to go; the status that never comes is the guest's.
     let result = guest.vm.run_to(&command, &mut leaver, &mut io::sink());
     drop(guard);
-    assert_ne!(
-        result.as_ref().ok(),
-        Some(&ExitStatus::Code(124)),
-        "the command was not ended: it ran to its own bound"
-    );
 
     let pid = String::from_utf8_lossy(&leaver.seen).trim().to_owned();
     assert!(
@@ -250,7 +245,6 @@ fn windows_an_elevated_command_whose_runner_dies_ends_with_an_error_not_a_wait(
         r#"Get-CimInstance Win32_Process -Filter "Name = 'pwsh.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'eb-runner\.ps1' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep -Seconds 60"#,
     );
 
-    step("running the command that ends its runner");
     let seen = ran(&*up, &command).unwrap();
 
     // The claim file is released by the OS when its runner dies, and `done` never came: the caller says so.
@@ -303,7 +297,6 @@ fn windows_an_elevated_request_the_task_never_runs_ends_with_an_error_not_a_wait
             done.stderr_lossy()
         );
 
-        step("running a command with the helper gone");
         let seen = ran(
             &*up,
             &pwsh(

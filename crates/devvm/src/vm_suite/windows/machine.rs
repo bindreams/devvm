@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, SystemTime};
 
-use super::shared::{TERMINAL_BOUND, step, watch};
+use super::bounds::TERMINAL_BOUND;
 use super::{
     SharedWindowsGuest, WindowsBase, guest_until, printed, ran, shared_windows_guest, windows_base, windows_iso,
     windows_options,
@@ -18,6 +18,7 @@ use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
+use crate::vm_suite::waits::{awaiting, step};
 use crate::{Command, ExitStatus};
 
 // The account =========================================================================================================
@@ -174,41 +175,41 @@ fn windows_interactive_ssh_runs_a_command_and_returns_its_output(
     let mut input = ssh.stdin.take().expect("a piped stdin");
     let output = output_of(ssh.stdout.take().expect("a piped stdout"));
     let mut seen = String::new();
-    // Waits for `needle` in what the terminal printed. The commands print it joined, and the terminal's echo of what was
-    // typed has it in pieces, so only a command that ran can satisfy it. A terminal that prints nothing for
-    // [`TERMINAL_BOUND`] fails the test.
-    let mut await_output = |needle: &str| {
-        step(&format!("awaiting {needle:?} in the terminal"));
+    // Waits for `needle` in what the terminal printed, which `after` makes happen. The commands print it joined, and the
+    // terminal's echo of what was typed has it in pieces, so only a command that ran can satisfy it. A terminal that
+    // prints nothing for [`TERMINAL_BOUND`] fails the test.
+    let mut await_output = |needle: &str, after: &str| {
+        step(&format!("awaiting {needle:?} in the terminal, after {after}"));
         while !seen.contains(needle) {
             match output.recv_timeout(TERMINAL_BOUND) {
                 Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
                 Err(RecvTimeoutError::Timeout) => panic!(
-                    "ssh printed nothing within {TERMINAL_BOUND:?} while the test awaited {needle:?}; it printed {seen:?}"
+                    "ssh printed nothing within {TERMINAL_BOUND:?} while the test awaited {needle:?}, after {after}; it printed {seen:?}"
                 ),
                 Err(RecvTimeoutError::Disconnected) => {
-                    panic!("ssh ended before it printed {needle:?}; it printed {seen:?}")
+                    panic!("ssh ended before it printed {needle:?}, after {after}; it printed {seen:?}")
                 }
             }
         }
     };
 
     input.write_all(b"Write-Output ('devvm-' + 'marker')\r").unwrap();
-    await_output("devvm-marker");
+    await_output("devvm-marker", "the typed command ran");
 
-    // The loop ends at its own bound if the Ctrl-C does not end it.
+    // The loop's own bound is longer than [`TERMINAL_BOUND`], so a Ctrl-C that does not end it fails the test first.
     let hold = guest_until("Ctrl-C ending the loop", "$false");
     input
         .write_all(format!("'run-' + 'ning'; {hold}\r").as_bytes())
         .unwrap();
-    await_output("run-ning");
+    await_output("run-ning", "the loop started");
     // Ctrl-C ends the loop, and the shell takes the next command.
     input.write_all(&[0x03]).unwrap();
     input.write_all(b"'af-' + 'ter'\r").unwrap();
-    await_output("af-ter");
+    await_output("af-ter", "Ctrl-C ended the loop");
 
     input.write_all(b"exit\r").unwrap();
     drop(input);
-    let _watch = watch("the interactive ssh ending", TERMINAL_BOUND);
+    let _watch = awaiting("the interactive ssh ending", TERMINAL_BOUND);
     ssh.wait().unwrap();
 }
 

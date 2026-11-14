@@ -257,6 +257,16 @@ jobs:
           DEVVM_TEST_WINDOWS_GUEST: "1"
           DEVVM_WINDOWS_ISO: D:\windows.iso
 
+      # A test process that ended at a watchdog or at the step's limit leaves its machines running. They run from the
+      # sidecar in the tests' cache below D:\devvm-tmp, which nothing else on the runner uses.
+      - name: Stop the machines the library tests left
+        if: always()
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process -Filter "Name LIKE 'qemu-system-%'" |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('D:\devvm-tmp\', [StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object { "stopping $($_.ProcessId): $($_.ExecutablePath)"; Stop-Process -Id $_.ProcessId -Force }
+
       # The same group through the real `devvm` executable: the exec table through `devvm ssh`. It builds a base of its own.
       - name: Test the devvm executable
         if: ${{ !cancelled() }}
@@ -267,6 +277,14 @@ jobs:
           DEVVM_TEST_VM_CONSENT: "1"
           DEVVM_TEST_WINDOWS_GUEST: "1"
           DEVVM_WINDOWS_ISO: D:\windows.iso
+
+      - name: Stop the machines the executable tests left
+        if: always()
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process -Filter "Name LIKE 'qemu-system-%'" |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('D:\devvm-tmp\', [StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object { "stopping $($_.ProcessId): $($_.ExecutablePath)"; Stop-Process -Id $_.ProcessId -Force }
 
       - name: Free space
         if: always()

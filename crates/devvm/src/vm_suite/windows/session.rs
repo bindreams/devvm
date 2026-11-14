@@ -5,13 +5,14 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Instant;
 
-use super::shared::{ANSWER_BOUND, BOOT_BOUND, STATE_BOUND, step, watch};
+use super::bounds::{BOOT_BOUND, STATE_BOUND};
 use super::{FACTS, PACE, SharedWindowsGuest, WindowsBase, facts, printed, pwsh, ran, user_facts, windows_options};
 use super::{shared_windows_guest, windows_base, windows_iso, windows_recipe};
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::host;
 use crate::vm_suite::fixture::Up;
+use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
 use crate::{BuildOptions, Command, ErrorKind, ExitStatus, Guest, Output, RunAs};
 
 #[skuld::test]
@@ -45,17 +46,21 @@ fn windows_elevated_run_is_high_integrity_without_uac_auto_approve(
 const STOP_AGENT: &str = r#"Get-CimInstance Win32_Process -Filter "Name = 'ssh-broker.exe'" | Where-Object { $_.CommandLine -match 'ssh-broker\.exe"?\s+agent(\s|$)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"#;
 
 /// Runs `command` until the connection to the guest holds: the one that served the command before it is still closing.
-/// A connection that does not hold within [`STATE_BOUND`] fails the test with the loss.
+/// A connection that does not hold within [`STATE_BOUND`] fails the test with the loss; any other error fails it at once.
 fn answered(guest: &dyn Guest, command: &Command) -> Output {
     let deadline = Instant::now() + STATE_BOUND;
     loop {
         match ran(guest, command) {
             Ok(output) => return output,
-            Err(e) if e.kind() == ErrorKind::ConnectionLost && Instant::now() < deadline => std::thread::sleep(PACE),
-            Err(e) => panic!(
-                "cannot run {:?} (the connection did not hold within {STATE_BOUND:?}): {e}",
-                command.argv
-            ),
+            Err(e) if e.kind() == ErrorKind::ConnectionLost => {
+                assert!(
+                    Instant::now() < deadline,
+                    "cannot run {:?}: the connection did not hold within {STATE_BOUND:?}: {e}",
+                    command.argv
+                );
+                std::thread::sleep(PACE);
+            }
+            Err(e) => panic!("cannot run {:?}: {e}", command.argv),
         }
     }
 }
@@ -90,7 +95,7 @@ fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of
 
 /// What a plain `ssh` of the generated `config` gets from `name` for the command `remote`.
 pub(super) fn ssh_remote(config: &Path, name: &str, remote: &str) -> std::process::Output {
-    let _watch = watch(format!("ssh to {name}"), ANSWER_BOUND);
+    let _watch = awaiting(format!("ssh to {name}"), ANSWER_BOUND);
     let mut command = std::process::Command::new("ssh");
     command
         .arg("-F")
@@ -130,8 +135,7 @@ fn probes() -> [(&'static str, String); 2] {
 /// once the agent accepts a connection), which the template tests pin.
 #[skuld::test]
 fn windows_no_command_is_answered_from_session_0_while_booting(#[fixture(windows_base)] base: &WindowsBase) {
-    step("starting an instance and probing it");
-    let _watch = watch("the instance starting while probed", BOOT_BOUND);
+    let _watch = awaiting("the instance starting while probed", BOOT_BOUND);
     let up = Up::created(&base.image, "w-boot-window", &windows_options()).unwrap();
     let config = base.engine.ssh_configs().config();
     let name = up.name().to_owned();

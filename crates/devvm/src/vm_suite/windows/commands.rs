@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-use super::shared::{ANSWER_BOUND, step, watch};
 use super::windows_recipe;
 use super::{
     SharedWindowsGuest, WindowsBase, printed, ran, shared_windows_guest, windows_base, windows_iso, windows_options,
@@ -15,7 +14,8 @@ use crate::test_support::fixtures::unicode_home;
 use crate::vm_suite::exec::InGuest;
 use crate::vm_suite::exec::cases::{self, Os};
 use crate::vm_suite::fixture::Up;
-use crate::{BuildOptions, Command, ErrorKind, ExitStatus, Guest};
+use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
+use crate::{BuildOptions, Command, Error, ErrorKind, ExitStatus, Guest};
 
 #[skuld::test]
 fn windows_exec_exit_codes_7_125_255_and_ntstatus(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
@@ -53,6 +53,12 @@ fn pack(home: &Path) -> PathBuf {
     pack
 }
 
+/// Runs one sftp transfer, which ends only with the guest's answer.
+fn transfer<T>(what: &str, run: impl FnOnce() -> Result<T, Error>) -> T {
+    let _watch = awaiting(what, ANSWER_BOUND);
+    run().unwrap_or_else(|e| panic!("{what} failed: {e}"))
+}
+
 #[skuld::test]
 fn windows_cp_files_and_directories_both_ways_with_drive_paths(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
@@ -62,12 +68,13 @@ fn windows_cp_files_and_directories_both_ways_with_drive_paths(
     let file = home.join("one.txt");
     std::fs::write(&file, b"one").unwrap();
 
-    // The copies are sftp transfers, which ends only with the guest's answer.
-    let _watch = watch("the copies of the cp test", ANSWER_BOUND);
-    step("copying in");
     // A drive path with forward slashes, the spelling `cp` takes, for a tree and for a file.
-    guest.vm.copy_in(&pack, "C:/ProgramData/devvm/cp-pack").unwrap();
-    guest.vm.copy_in(&file, "C:/ProgramData/devvm/cp-one.txt").unwrap();
+    transfer("the copy of the tree in", || {
+        guest.vm.copy_in(&pack, "C:/ProgramData/devvm/cp-pack")
+    });
+    transfer("the copy of the file in", || {
+        guest.vm.copy_in(&file, "C:/ProgramData/devvm/cp-one.txt")
+    });
 
     let listed = printed(
         &guest.vm,
@@ -86,15 +93,14 @@ fn windows_cp_files_and_directories_both_ways_with_drive_paths(
         "nestedone"
     );
 
-    step("copying out");
-    guest
-        .vm
-        .copy_out("C:/ProgramData/devvm/cp-pack", &home.join("back"))
-        .unwrap();
-    guest
-        .vm
-        .copy_out("C:/ProgramData/devvm/cp-one.txt", &home.join("one-back.txt"))
-        .unwrap();
+    transfer("the copy of the tree out", || {
+        guest.vm.copy_out("C:/ProgramData/devvm/cp-pack", &home.join("back"))
+    });
+    transfer("the copy of the file out", || {
+        guest
+            .vm
+            .copy_out("C:/ProgramData/devvm/cp-one.txt", &home.join("one-back.txt"))
+    });
 
     assert_eq!(tree(&home.join("back")), tree(&pack), "the tree back");
     assert_eq!(

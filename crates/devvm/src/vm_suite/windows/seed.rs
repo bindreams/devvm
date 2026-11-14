@@ -7,17 +7,18 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 
+use super::bounds::BOOT_BOUND;
 use super::session::ssh_remote;
-use super::shared::{ANSWER_BOUND, BOOT_BOUND, step, watch};
 use super::{PACE, SharedWindowsGuest, WindowsBase, shared_windows_guest, windows_base, windows_options};
 use crate::engine::Engine;
 use crate::engine::keys::{read_record, running_of};
 use crate::host::{self, is_absent, read_from};
 use crate::vm_suite::fixture::Up;
+use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
 
 /// What `ssh-keyscan` of the instance's forwarded port says its sshd offers, as `<type> <base64>` for each key.
 fn offered_keys(addr: SocketAddr) -> Vec<String> {
-    let _watch = watch(format!("ssh-keyscan of {addr}"), ANSWER_BOUND);
+    let _watch = awaiting(format!("ssh-keyscan of {addr}"), ANSWER_BOUND);
     let mut command = std::process::Command::new("ssh-keyscan");
     command
         .args(["-p", &addr.port().to_string(), &addr.ip().to_string()])
@@ -102,9 +103,8 @@ fn serial_has(log: &Path, marker: &str) -> bool {
 fn windows_a_hard_reset_right_after_the_seed_write_keeps_the_seeded_host_key(
     #[fixture(windows_base)] base: &WindowsBase,
 ) {
-    step("starting an instance and resetting it at the seed write");
     // The loops below end with the start, which the engine's boot bound ends; this ends a start that stops for good.
-    let _watch = watch("the instance starting and resetting", BOOT_BOUND);
+    let _watch = awaiting("the instance starting and resetting at the seed write", BOOT_BOUND);
     let up = Up::created(&base.image, "w-hard-reset", &windows_options()).unwrap();
     let resumed = base.launches.resumed();
     let backend = base.engine.backend().unwrap();

@@ -43,12 +43,11 @@ use roots::XdgRoots;
 #[path = "../../devvm/src/vm_suite/exec/cases.rs"]
 mod cases;
 #[path = "../../devvm/src/vm_suite/windows/shared.rs"]
-#[allow(
-    dead_code,
-    reason = "the bounds and helpers of the lib's Windows suites that this binary does not use"
-)]
 mod windows_shared;
-use windows_shared::{ANSWER_BOUND, first_try, named, recipe_text, step, watch};
+use windows_shared::{first_try, recipe_text};
+#[path = "../../devvm/src/vm_suite/waits.rs"]
+mod waits;
+use waits::{answer_to, step};
 
 skuld::default_labels!(VM);
 
@@ -277,9 +276,8 @@ impl ExecTarget for ThroughSsh<'_> {
         }
         args.push("--");
         args.extend(case.argv.iter().map(String::as_str));
-        step(&format!("devvm ssh {}", named(&case.argv)));
         let output = {
-            let _watch = watch(format!("devvm ssh {}", named(&case.argv)), ANSWER_BOUND);
+            let _watch = answer_to(&case.argv);
             self.0.cli.devvm(&args)
         };
 

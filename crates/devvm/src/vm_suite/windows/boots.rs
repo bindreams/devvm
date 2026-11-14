@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::shared::{BOOT_BOUND, step, watch};
+use super::bounds::BOOT_BOUND;
 use super::{WindowsBase, elevated_facts, facts, ran, user_facts, windows_base, windows_options};
 use crate::engine::Engine;
 use crate::engine::keys::{read_record, running_of};
@@ -11,6 +11,7 @@ use crate::engine::ready::reconnect_after_reset;
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::vm_suite::fixture::Up;
+use crate::vm_suite::waits::{awaiting, step};
 use crate::{Command, ErrorKind, ExitStatus, Guest, Instance, RunAs};
 
 /// How an instance is restarted.
@@ -37,8 +38,7 @@ pub(super) fn boot_id(guest: &dyn Guest) -> String {
 
 /// Restarts `up` the way `kind` says and returns once the guest is ready again.
 pub(super) fn restart(engine: &Arc<Engine>, up: &Up, kind: Restart) {
-    step(&format!("restarting by {kind:?}"));
-    let _watch = watch(format!("the restart by {kind:?}"), BOOT_BOUND);
+    let _watch = awaiting(format!("the restart by {kind:?}"), BOOT_BOUND);
     match kind {
         Restart::StopStart => {
             up.stop().unwrap();
