@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::backend::files_in_run;
-use super::fixture::{Launches, VmEngine, engine_in, guest_options, recipe_in, run_ok, vm_engine};
+use super::fixture::{Launches, Up, VmEngine, engine_in, guest_options, recipe_in, run_ok, vm_engine};
+use super::windows::{WindowsBase, printed, windows_base, windows_iso, windows_options, windows_recipe};
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::backend::qemu::storage::DISK;
 use crate::copy::copy_tests::{add_all, git, new_repo, put};
@@ -240,4 +241,66 @@ fn vm_qemu_guest_a_build_step_leaves_no_runtime_files(
         "{}",
         dirs.builds().display()
     );
+}
+
+// A Windows guest =====================================================================================================
+
+/// The `copy` step on a real Windows base: a tree with a space, non-ASCII characters and a surrogate pair in its names
+/// is at the destination in an instance of the image, the step leaves no archive in the guest, and a second build finds
+/// the layer.
+#[skuld::test]
+fn windows_a_copy_step_puts_its_files_in_the_layer_and_leaves_no_archive(
+    #[fixture(windows_base)] base: &WindowsBase,
+    #[fixture(windows_iso)] iso: &Path,
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let repo = new_repo(home, "proj");
+    put(&repo, "tracked.txt", b"tracked one");
+    put(&repo, "dir/with space \u{416}.txt", b"nested");
+    put(&repo, "\u{1f600}.txt", b"pair");
+    add_all(&repo);
+    git(&repo, &["commit", "-q", "-m", "tracked"]);
+    put(&repo, "untracked.txt", b"not in git");
+    let recipe = windows_recipe(&repo, iso, &["copy: { from: git-tracked, to: ~/copied }"]);
+
+    let image = base.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    let up = Up::new(&image, "w-copy", &windows_options()).unwrap();
+    let listed = printed(
+        &*up,
+        r"$root = Join-Path $HOME 'copied'; Get-ChildItem -LiteralPath $root -Recurse -Force | ForEach-Object { $_.FullName.Substring($root.Length + 1).Replace([char]92, [char]47) + $(if ($_.PSIsContainer) { '/' } else { '' }) }",
+    );
+    let mut found: Vec<&str> = listed.lines().map(str::trim).collect();
+    found.sort();
+    assert_eq!(
+        found,
+        ["dir/", "dir/with space \u{416}.txt", "tracked.txt", "\u{1f600}.txt"]
+    );
+    assert_eq!(
+        printed(
+            &*up,
+            &format!(
+                r"Get-Content -Raw -LiteralPath (Join-Path $HOME 'copied\dir\with space {}.txt')",
+                '\u{416}'
+            )
+        ),
+        "nested"
+    );
+    assert_eq!(
+        printed(
+            &*up,
+            r"(Get-ChildItem -LiteralPath C:\ProgramData\devvm -Filter 'devvm-copy-*.tar' -Force | Measure-Object).Count"
+        ),
+        "0",
+        "the step left its archive in the guest"
+    );
+
+    let launched = base.launches.count();
+    let again = base.engine.build(&recipe, &BuildOptions::default()).unwrap();
+    assert_eq!(
+        again.chain.refs(),
+        image.chain.refs(),
+        "the second build made a new layer"
+    );
+    assert_eq!(base.launches.count(), launched, "the second build booted a guest");
 }

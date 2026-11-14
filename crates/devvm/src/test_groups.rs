@@ -24,31 +24,6 @@ test_group!(
     precondition = host_runs_pwsh_outside_session_0
 );
 
-/// Names the Windows installer ISO the `windows_guest` group's tests build their base from.
-pub(crate) const WINDOWS_ISO_VAR: &str = "DEVVM_WINDOWS_ISO";
-
-// Builds a Windows guest from an ISO (about 15 minutes) and boots it. It is on unless `DEVVM_TEST_WINDOWS_GUEST=0`, and
-// then fails the tests naming the ISO variable where that is not set; only the `vm-windows` job gives one. The tests also
-// need the `vm` group's QEMU, so they ask for that group's consent.
-test_group!(
-    WINDOWS_GUEST => windows_guest,
-    env = "DEVVM_TEST_WINDOWS_GUEST",
-    precondition = host_has_a_windows_iso
-);
-
-fn host_has_a_windows_iso(opt_out: &str) -> Result<(), String> {
-    match std::env::var_os(WINDOWS_ISO_VAR) {
-        None => Err(format!(
-            "the group needs {WINDOWS_ISO_VAR} to name a Windows installer ISO to build the guest from; {opt_out}"
-        )),
-        Some(iso) if !std::path::Path::new(&iso).is_file() => Err(format!(
-            "{WINDOWS_ISO_VAR} names {}, which is not a file; {opt_out}",
-            std::path::Path::new(&iso).display()
-        )),
-        Some(_) => Ok(()),
-    }
-}
-
 fn host_has_code_page_1252(opt_out: &str) -> Result<(), String> {
     let code_page = host::current().ansi_code_page();
     if code_page == Some(1252) {
