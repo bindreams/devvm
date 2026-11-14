@@ -11,14 +11,21 @@ use crate::guest::windows::wrap::wrap_pwsh_tests::{run, shown};
 use crate::test_groups::{Group, pwsh_wrap};
 use crate::test_support::fixtures::unicode_home;
 
-/// `caller_script` with the scheduled task and the requests' root replaced: `run` is the body of the task's `Run` (it
-/// has the request's id as `$id` and the root as `$root`) and `instances` the body of `GetInstances`.
-fn standin(root: &Path, run: &str, instances: &str) -> String {
+/// `caller_script` with the scheduled task and the requests' root replaced. `run` is the body of the task's `Run` (it
+/// has the request's id as `$id` and the root as `$root`); it starts the instance whose `State` is read by the body
+/// `state`. The task also has another request's instance running: `GetInstances` shows it, and nothing in the caller
+/// may take it for its own.
+fn standin(root: &Path, run: &str, state: &str) -> String {
     let text = caller_script("inner");
     let task = format!(
-        "$task = New-Object psobject -Property @{{ State = 4 }}
-Add-Member -InputObject $task -MemberType ScriptMethod -Name Run -Value {{ param($id) {run} }}
-Add-Member -InputObject $task -MemberType ScriptMethod -Name GetInstances -Value {{ param($flags) {instances} }}"
+        "$started = New-Object psobject
+Add-Member -InputObject $started -MemberType ScriptProperty -Name State -Value {{ {state} }}
+Add-Member -InputObject $started -MemberType ScriptMethod -Name Refresh -Value {{ }}
+$foreign = New-Object psobject -Property @{{ State = 4 }}
+$task = New-Object psobject -Property @{{ State = 4 }}
+Add-Member -InputObject $task -MemberType ScriptMethod -Name Run -Value {{ param($id) {run}
+$started }}
+Add-Member -InputObject $task -MemberType ScriptMethod -Name GetInstances -Value {{ param($flags) ,@($foreign) }}"
     );
     let mut text = text;
     // A replacement that finds nothing would leave the real task and root in use: it is a failure.
@@ -40,8 +47,8 @@ Add-Member -InputObject $task -MemberType ScriptMethod -Name GetInstances -Value
     text
 }
 
-fn caller(root: &Path, run_body: &str, instances: &str) -> Output {
-    run(&standin(root, run_body, instances), "none", None)
+fn caller(root: &Path, run_body: &str, state: &str) -> Output {
+    run(&standin(root, run_body, state), "none", None)
 }
 
 /// The names in `root`: the requests, and the unpublished ones that end in `.tmp`.
@@ -66,8 +73,8 @@ if (-not [IO.Directory]::Exists($r)) { throw \"no request $id\" }
 [IO.File]::WriteAllText(\"$r\\exit\", '7')
 [IO.File]::WriteAllText(\"$r\\done\", '')";
 
-/// No instance of the task is running.
-const NONE: &str = ",@()";
+/// The instance the start returned is ready: it ended.
+const ENDED: &str = "3";
 
 #[skuld::test]
 fn a_served_request_gives_its_output_and_its_status_and_is_told_it_was_read(
@@ -75,7 +82,7 @@ fn a_served_request_gives_its_output_and_its_status_and_is_told_it_was_read(
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    let output = caller(&root, SERVE, NONE);
+    let output = caller(&root, SERVE, ENDED);
 
     assert_eq!(output.status.code(), Some(7), "{}", shown(&output));
     assert_eq!(output.stdout, b"out", "{}", shown(&output));
@@ -105,7 +112,7 @@ fn a_runner_that_died_without_a_result_is_126_and_the_request_is_removed(
 ) {
     let root = home.join("eb");
     let died = "[IO.File]::WriteAllText((Join-Path (Join-Path $root $id) 'claim'), '')";
-    let output = caller(&root, died, NONE);
+    let output = caller(&root, died, ENDED);
 
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(
@@ -122,7 +129,7 @@ fn a_start_that_fails_is_126_and_the_request_is_withdrawn(
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    let output = caller(&root, "throw 'boom'", NONE);
+    let output = caller(&root, "throw 'boom'", ENDED);
 
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     let message = stderr(&output);
@@ -140,7 +147,28 @@ fn a_helper_that_never_runs_the_command_is_126_and_the_request_is_withdrawn(
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    let output = caller(&root, "", NONE);
+    let output = caller(&root, "", ENDED);
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    assert!(
+        stderr(&output).contains("devvm: the elevated helper did not run the command"),
+        "{}",
+        shown(&output)
+    );
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
+}
+
+/// The instance's state is an error: the one a finished instance may answer, which says it ended.
+const NOT_RUNNING: &str =
+    "throw [Runtime.InteropServices.COMException]::new('There is no running instance', [int]0x8004130B)";
+
+#[skuld::test]
+fn an_instance_that_answers_not_running_is_an_instance_that_ended(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let output = caller(&root, "", NOT_RUNNING);
 
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(
@@ -152,6 +180,39 @@ fn a_helper_that_never_runs_the_command_is_126_and_the_request_is_withdrawn(
 }
 
 #[skuld::test]
+fn a_state_that_cannot_be_read_is_the_126_message_and_withdraws_the_request(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let output = caller(&root, "", "throw 'boom'");
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    let message = stderr(&output);
+    assert!(
+        message.contains("devvm: the elevated helper failed: ") && message.contains("boom"),
+        "{}",
+        shown(&output)
+    );
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
+}
+
+#[skuld::test]
+fn an_instance_that_still_runs_is_waited_for_until_its_runner_answers(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    // The first look at the instance finds it running and the runner starting to answer: the caller goes on, and its
+    // next look at the files finds the answer. A caller that took the instance for ended would withdraw the request.
+    let state = format!("{SERVE}\n4");
+    let output = caller(&root, "", &state);
+
+    assert_eq!(output.status.code(), Some(7), "{}", shown(&output));
+    assert_eq!(output.stdout, b"out", "{}", shown(&output));
+}
+
+#[skuld::test]
 fn a_request_that_cannot_be_made_is_126_and_leaves_nothing_behind(
     #[fixture(unicode_home)] home: &Path,
     #[fixture(pwsh_wrap)] _group: &Group,
@@ -159,7 +220,7 @@ fn a_request_that_cannot_be_made_is_126_and_leaves_nothing_behind(
     // The root's parent is a file: nothing can be made under it. The status is not the one of a command that failed.
     let file = home.join("not-a-directory");
     std::fs::write(&file, "").unwrap();
-    let output = caller(&file.join("eb"), SERVE, NONE);
+    let output = caller(&file.join("eb"), SERVE, ENDED);
 
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(
@@ -177,7 +238,7 @@ fn a_request_that_is_gone_ends_the_wait_with_126_instead_of_waiting_for_ever(
     let root = home.join("eb");
     // Removed, and the start fails after it: no claim can be made, and none exists.
     let gone = "Remove-Item -LiteralPath (Join-Path $root $id) -Recurse -Force; throw 'boom'";
-    let output = caller(&root, gone, NONE);
+    let output = caller(&root, gone, ENDED);
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(
         stderr(&output).contains("devvm: the elevated helper failed"),
@@ -189,7 +250,7 @@ fn a_request_that_is_gone_ends_the_wait_with_126_instead_of_waiting_for_ever(
     let output = caller(
         &root,
         "Remove-Item -LiteralPath (Join-Path $root $id) -Recurse -Force",
-        NONE,
+        ENDED,
     );
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(

@@ -76,6 +76,19 @@ fn a_start_is_bound_to_its_request_by_the_id() {
 }
 
 #[skuld::test]
+fn a_helper_that_is_not_going_to_run_the_command_is_told_by_the_instance_the_start_returned() {
+    let text = script();
+    // The task runs every request's instance in parallel: its instances say nothing of this request.
+    assert!(!text.contains("GetInstances"), "{text}");
+    let started = at(&text, "$instance = $task.Run($id)");
+    let wait = at(&text, "while (-not $message)");
+    assert!(started < wait, "{text}");
+    let refusal = at(&text, "the elevated helper did not run the command");
+    let check = at(&text, "-not (Test-Running $instance)");
+    assert!(wait < check && check < refusal, "{text}");
+}
+
+#[skuld::test]
 fn any_failure_in_the_try_is_the_126_message_and_withdraws_an_unclaimed_request() {
     let text = script();
     let caught = at(&text, "the elevated helper failed:");

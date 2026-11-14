@@ -189,7 +189,9 @@ jobs:
             exit 0
           fi
           pattern='^(crates/|qemu/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yaml$)'
-          if git diff --name-only "$BASE" HEAD | grep -E "$pattern"; then
+          # Read first: a failed diff fails the step (a pipe into grep would read it as "no change").
+          files=$(git diff --name-only "$BASE" HEAD)
+          if grep -E "$pattern" <<< "$files"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"

@@ -393,6 +393,30 @@ fn no_template_embeds_a_secret_but_the_per_build_password() {
 }
 
 #[skuld::test]
+fn the_first_logon_command_waits_for_the_answer_disk_with_no_cap_as_the_boot_task_does() {
+    let answer = answer_file(&inputs()).unwrap();
+    let command = answer
+        .lines()
+        .find(|line| line.contains("<CommandLine>"))
+        .expect("a first-logon command");
+    // The disk may appear after the logon: the volume is looked for until it shows, as in `boot-task.ps1`.
+    assert!(
+        command.contains("while (-not ($d = [IO.DriveInfo]::GetDrives()"),
+        "{command}"
+    );
+    assert!(command.contains("Start-Sleep -Milliseconds 200"), "{command}");
+    assert!(
+        rendered("boot-task.ps1").contains("while (-not ($disk = Find-VolumeRoot 'CIDATA')) { Start-Sleep"),
+        "the boot task waits the same way"
+    );
+    // The wait ends only when the disk shows: no count and no clock.
+    for bound in ["-lt", "-gt", "-le", "-ge", "Get-Date", "Stopwatch", "TRIES"] {
+        assert!(!command.contains(bound), "{bound}: {command}");
+    }
+    assert_before(command, "Start-Sleep", "bootstrap.ps1");
+}
+
+#[skuld::test]
 fn the_bootstrap_sets_password_never_expires_and_no_logon_count() {
     let bootstrap = rendered("bootstrap.ps1");
     assert!(bootstrap.contains("Set-LocalUser -Name 'user' -PasswordNeverExpires $true"));

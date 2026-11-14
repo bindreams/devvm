@@ -31,8 +31,9 @@
 //! killed caller leaves is the runner's to remove, and the boot task sweeps what nothing else did.
 //!
 //! The caller's wait ends from file state alone, with no time bound: a held claim is a live runner; a released claim
-//! with no `DONE` is a runner that died; no claim and no running instance of the task is a helper that is not going to
-//! run the command (the caller claims the request itself, so no runner can take it afterwards).
+//! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
+//! longer queued or running is a helper that is not going to run the command (the caller claims the request itself, so
+//! no runner can take it afterwards). Another request's instance does not count: the task runs them in parallel.
 
 use super::wrap::{literal, session_check};
 
@@ -110,6 +111,19 @@ function Withdraw-Request {
         throw
     }
 }
+# Whether the instance this caller started is still queued or running. Its own state: the task runs other requests'
+# instances at the same time. A finished instance may answer `SCHED_E_TASK_NOT_RUNNING` (0x8004130B) instead of a state;
+# any other failure is thrown.
+function Test-Running($instance) {
+    try { $instance.Refresh(); $state = [int]$instance.State }
+    catch {
+        for ($e = $_.Exception; $e; $e = $e.InnerException) {
+            if ($e -is [Runtime.InteropServices.COMException] -and ($e.HResult -band 0xFFFF) -eq 0x130B) { return $false }
+        }
+        throw
+    }
+    return $state -ne 1 -and $state -ne 3
+}
 $code = 126
 $message = $null
 $abandoned = $false
@@ -122,7 +136,8 @@ try {
     $published = $true
     $stdout = [Console]::OpenStandardOutput()
     $stderr = [Console]::OpenStandardError()
-    try { [void]$task.Run($id) }
+    $instance = $null
+    try { $instance = $task.Run($id) }
     catch {
         $message = "the elevated helper did not start: $($_.Exception.Message)"
         if (Withdraw-Request) { $abandoned = $true } else { $message = $null }
@@ -142,7 +157,7 @@ try {
             break
         }
         if ($claimed -and -not $held) { $message = 'the elevated runner ended without a result'; $abandoned = $true; break }
-        if (-not $claimed -and $task.GetInstances(0).Count -eq 0) {
+        if (-not $claimed -and -not (Test-Running $instance)) {
             if (-not (Withdraw-Request)) { Start-Sleep -Milliseconds {PAUSE}; continue }
             $message = "the elevated helper did not run the command (task state: $($states[[int]$task.State]))"
             $abandoned = $true

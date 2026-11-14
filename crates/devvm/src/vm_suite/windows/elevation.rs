@@ -357,6 +357,79 @@ fn windows_an_elevated_command_whose_runner_dies_ends_with_an_error_not_a_wait(
     assert_eq!(pending(&*up), "0", "the caller removes a request whose runner died");
 }
 
+/// The runner's script and the name it has while it is hidden.
+const RUNNER: &str = r"C:\Program Files\devvm\eb-runner.ps1";
+const RUNNER_HIDDEN: &str = "eb-runner.ps1.hidden";
+
+#[skuld::test]
+fn windows_a_runner_that_dies_before_its_claim_ends_its_caller_while_another_runner_runs(
+    #[fixture(windows_base)] base: &WindowsBase,
+) {
+    step("booting an instance");
+    let up = Up::new(&base.image, "w-runner-never-claims", &windows_options()).unwrap();
+    clear(&*up, &["hidden", "release", "ran"]);
+    // The first command hides the runner's script, so that the runner of the next request dies before its claim, and
+    // puts it back when the host makes its flag: its own runner has the claim and goes on.
+    let hider = pwsh(
+        RunAs::Elevated,
+        &format!(
+            "$ErrorActionPreference = 'Stop'; $script = Get-Item -LiteralPath '{RUNNER}'; \
+             $name = $script.Name; $hidden = Join-Path $script.DirectoryName '{RUNNER_HIDDEN}'; \
+             Rename-Item -LiteralPath $script.FullName -NewName '{RUNNER_HIDDEN}'; \
+             Set-Content -LiteralPath {} -Value x; {}; \
+             Rename-Item -LiteralPath $hidden -NewName $name; Write-Output 'out hider'; exit 7",
+            flag("hidden"),
+            wait_for_flag("release"),
+        ),
+    );
+    let victim = pwsh(
+        RunAs::Elevated,
+        &format!("Set-Content -LiteralPath {} -Value x", flag("ran")),
+    );
+
+    step("running the command that hides the runner");
+    let (hider, victim) = std::thread::scope(|scope| {
+        let hider = scope.spawn(|| ran(&*up, "the command that hides the runner script", &hider));
+        // On every path of the test: the hider puts the script back, then ends.
+        let release = Releases {
+            guest: &*up,
+            name: "release",
+        };
+        until("the runner script hidden", || {
+            printed(&*up, &format!("Test-Path -LiteralPath {}", flag("hidden"))) == "True" || hider.is_finished()
+        });
+        let victim = ran(&*up, "the command whose runner cannot start", &victim);
+        // The other command's runner still runs while the first caller has its answer.
+        let still_running = !hider.is_finished();
+        drop(release);
+        (hider.join().unwrap(), (victim, still_running))
+    });
+    let (victim, still_running) = victim;
+    let victim = victim.unwrap();
+
+    assert_eq!(victim.status, ExitStatus::Code(126), "{}", victim.stderr_lossy());
+    assert!(
+        victim
+            .stderr_lossy()
+            .contains("devvm: the elevated helper did not run the command"),
+        "{}",
+        victim.stderr_lossy()
+    );
+    assert!(
+        still_running,
+        "the other command ended before the first caller had its answer"
+    );
+    assert_eq!(
+        printed(&*up, &format!("Test-Path -LiteralPath {}", flag("ran"))),
+        "False",
+        "the command whose runner cannot start ran"
+    );
+    let hider = hider.unwrap();
+    assert_eq!(hider.status, ExitStatus::Code(7), "{}", hider.stderr_lossy());
+    assert_eq!(hider.stdout_lossy().trim(), "out hider");
+    until("the runner removing its request", || pending(&*up) == "0");
+}
+
 /// What the helper task is turned into before the request: disabled, or removed.
 struct Change {
     what: &'static str,
