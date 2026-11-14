@@ -291,7 +291,8 @@ fn windows_an_elevated_child_that_writes_ends_when_the_client_goes_away(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
     // A child that writes a line every 100 ms: a reader that went away can end it by what it writes.
-    let body = "while ($true) { Start-Sleep -Milliseconds 100; [Console]::Out.WriteLine('more'); [Console]::Out.Flush() }";
+    let body =
+        "while ($true) { Start-Sleep -Milliseconds 100; [Console]::Out.WriteLine('more'); [Console]::Out.Flush() }";
     let command = pwsh(RunAs::Elevated, &format!("{CHILD_PREFIX}{body}"));
     let mut leaver = Leaver { seen: Vec::new() };
 
