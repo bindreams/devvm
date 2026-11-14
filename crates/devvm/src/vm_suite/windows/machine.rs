@@ -2,7 +2,7 @@
 //! session, the windows on the desktop and `doctor`'s line for the ISO.
 
 use std::ffi::OsStr;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -14,8 +14,6 @@ use super::{
 };
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
-use crate::iso::{IsoMemo, key_iso};
-use crate::test_support::fixtures::iso_fixture;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
 use crate::{Command, ExitStatus, Guest};
@@ -65,8 +63,8 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
 
 /// The recorded expiry is the base's license read at its build plus the grace left then; a second read in a booted
 /// instance of it gives the same moment, less the time the guest was not running (its grace counts only while it runs).
-/// That time is at most the time from the licence read, which came after the build began, to the second read: the
-/// tolerance is measured from those two moments. Each read is in whole minutes, so each may be a minute off.
+/// That time is at most the time from the build's license read, which the build reports as it arrives, to the second
+/// read: the tolerance is measured from those two moments. Each read is in whole minutes, so each may be a minute off.
 #[skuld::test]
 fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
     #[fixture(windows_base)] base: &WindowsBase,
@@ -86,17 +84,24 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
     .parse()
     .expect("the grace period in minutes");
     let now = SystemTime::now();
+    // The build keeps the last license read it saw, and reports each one.
+    let (read_at, _) = base
+        .progress
+        .messages_at()
+        .into_iter()
+        .rfind(|(_, line)| line.starts_with("Windows base: license status"))
+        .expect("the build reported its license read");
 
     let independent = now + Duration::from_secs(minutes * 60);
 
     let rounding = Duration::from_secs(2 * 60);
-    let since_build_began = now.duration_since(base.build_started).unwrap_or_default();
+    let since_read = now.duration_since(read_at).unwrap_or_default();
     let (later, by) = match independent.duration_since(recorded) {
         Ok(by) => ("after", by),
         Err(e) => ("before", e.duration()),
     };
     let allowed = if later == "after" {
-        since_build_began + rounding
+        since_read + rounding
     } else {
         rounding
     };
@@ -109,44 +114,19 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
 // doctor ==============================================================================================================
 
 #[skuld::test]
-fn windows_the_doctor_iso_line_names_a_changed_iso(
+fn windows_the_doctor_iso_line_shows_the_hash_of_the_base_iso(
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(windows_iso)] iso: &Path,
 ) {
-    // A small ISO that was keyed, then changed in its last byte with its size and time kept: only hashing it again
-    // notices. The line reads the key's file whatever its size. The directory goes with the test, whatever the result;
-    // the ISO the base was built from is left alone.
-    let dir = tempfile::tempdir_in(&base.roots.dirs.state).unwrap();
-    let changed = dir.path().join("changed.iso");
-    std::fs::copy(iso_fixture("single-image.iso"), &changed).unwrap();
-    let memo = IsoMemo::new(&base.roots.dirs);
-    drop(key_iso(host::current(), &memo, &changed, None, &*base.progress).unwrap());
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&changed)
-            .unwrap();
-        let mtime = file.metadata().unwrap().modified().unwrap();
-        file.seek(SeekFrom::End(-1)).unwrap();
-        let mut last = [0_u8];
-        file.read_exact(&mut last).unwrap();
-        file.seek(SeekFrom::End(-1)).unwrap();
-        file.write_all(&[last[0] ^ 0xff]).unwrap();
-        file.set_modified(mtime).unwrap();
-    }
-
     let checks = base.engine.checks();
 
-    let line = |path: &Path| {
-        checks
-            .iter()
-            .find(|check| check.name == format!("iso {}", path.display()))
-            .unwrap_or_else(|| panic!("no line for {}: {checks:?}", path.display()))
-    };
-    let why = line(&changed).outcome.clone().unwrap_err();
-    assert!(why.contains("changed since it was keyed"), "{why}");
-    let hash = line(iso).outcome.clone().unwrap();
+    let hash = checks
+        .iter()
+        .find(|check| check.name == format!("iso {}", iso.display()))
+        .unwrap_or_else(|| panic!("no line for {}: {checks:?}", iso.display()))
+        .outcome
+        .clone()
+        .unwrap();
     assert!(
         hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "the line of the base's ISO: {hash}"

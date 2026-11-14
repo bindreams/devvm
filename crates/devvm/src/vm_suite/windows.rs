@@ -44,8 +44,6 @@ pub(super) struct WindowsBase {
     pub progress: Arc<MemoryProgress>,
     /// The machines this base's engine launched.
     pub launches: Arc<Launches>,
-    /// When the build began: the base's recorded expiry was read after.
-    pub build_started: SystemTime,
     pub recipe: Recipe,
     pub roots: Roots,
 }
@@ -88,7 +86,6 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
     let launches = Arc::new(Launches::default());
     let engine = engine_reporting_to(&roots.dirs, install, launches.clone(), progress.clone());
     let recipe = windows_recipe(&roots.dirs.state, iso, &[]);
-    let build_started = SystemTime::now();
     let image = engine
         .build(&recipe, &BuildOptions::default())
         .map_err(|e| format!("cannot build the Windows base from {}: {e}", iso.display()))?;
@@ -97,7 +94,6 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
         image,
         progress,
         launches,
-        build_started,
         recipe,
         roots,
     })
