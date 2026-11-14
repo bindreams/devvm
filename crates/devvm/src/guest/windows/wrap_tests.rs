@@ -184,7 +184,7 @@ fn wrap_refuses_an_empty_argv_a_nul_and_an_oversize_line() {
 
     // The line is over when the larger of the two lines is, and the error names both and the limit.
     let pad = |n: usize| command(&["tool", &"x".repeat(n)]);
-    let low = longest_fit(&pad);
+    let low = longest_fit(&pad, LINE_LIMIT);
     assert!(wrap(&pad(low)).is_ok());
     let error = refused(&pad(low + 1));
     let (sshd, broker) = command_line_lengths(&super::script_unchecked(&pad(low + 1)).unwrap());
@@ -196,41 +196,48 @@ fn wrap_refuses_an_empty_argv_a_nul_and_an_oversize_line() {
     }
 }
 
+/// `pwsh -Command` of a comment of `n` characters: the command of the guest test of the limit.
+pub(crate) fn padded(n: usize) -> Command {
+    let text = format!("'ok' # {}", "a".repeat(n));
+    command(&["pwsh", "-NoProfile", "-NonInteractive", "-Command", &text])
+}
+
 /// `CreateProcess` takes 32,767 units of command line including the terminating NUL, so a line of 32,767 units is
 /// refused: a guest's sshd refused the script whose longer line was exactly that (the guest test of the limit).
 #[skuld::test]
 fn a_line_of_the_limit_plus_the_terminating_null_is_refused() {
-    let padded = |n: usize| {
-        let text = format!("'ok' # {}", "a".repeat(n));
-        command(&["pwsh", "-NoProfile", "-NonInteractive", "-Command", &text])
-    };
     let longer = |n: usize| {
         let (sshd, broker) = command_line_lengths(&super::script_unchecked(&padded(n)).unwrap());
         sshd.max(broker)
     };
-    let (mut low, mut high) = (0, 40_000);
-    while low + 1 < high {
-        let middle = (low + high) / 2;
-        if longer(middle) <= 32_767 {
-            low = middle
-        } else {
-            high = middle
-        }
-    }
+    let low = longest_fit(&padded, LINE_LIMIT + 1);
     assert_eq!(longer(low), 32_767, "a pad of {low} makes a line of 32,767 units");
     let error = wrap(&padded(low)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
-    assert!(wrap(&padded(low - 1)).is_ok(), "a line of 32,765 units is taken");
+    assert!(
+        wrap(&padded(low - 1)).is_ok(),
+        "a line of {} units is within the limit of {LINE_LIMIT}",
+        longer(low - 1)
+    );
 }
 
-/// The most that `make(n)` can be padded by (`n` characters of its argument) and still fit both command lines, found
-/// from the lengths `wrap` computes, one character at a time.
-pub(super) fn longest_fit(make: &dyn Fn(usize) -> Command) -> usize {
+/// The pad of 15,266 that the guest test of the limit sent first (CI run 3 of devvm#168): its script is 32,713 units, and
+/// sshd's line for it, `"<broker>" -c "<script>"`, is 32,767, which `CreateProcess` refuses.
+#[skuld::test]
+fn the_script_a_guest_refused_is_over_the_limit() {
+    let error = wrap(&padded(15_266)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
+    assert!(wrap(&padded(15_265)).is_ok());
+}
+
+/// The most that `make(n)` can be padded by (`n` characters of its argument) and still fit a command line of `limit`
+/// units, found from the lengths `wrap` computes, by halving.
+pub(crate) fn longest_fit(make: &dyn Fn(usize) -> Command, limit: usize) -> usize {
     let fits = |n: usize| {
         let (sshd, broker) = command_line_lengths(&super::script_unchecked(&make(n)).unwrap());
-        sshd.max(broker) <= LINE_LIMIT
+        sshd.max(broker) <= limit
     };
-    let (mut low, mut high) = (0, LINE_LIMIT);
+    let (mut low, mut high) = (0, limit);
     while low + 1 < high {
         let middle = (low + high) / 2;
         if fits(middle) { low = middle } else { high = middle }
@@ -245,8 +252,12 @@ fn the_lines_of_a_small_script_are_counted_by_hand() {
     // `a "b" c\d\` is 10 units. It has a space, so it is one quoted argument (2 units); each of its two quotes gets a
     // backslash (2) and its last backslash is doubled before the closing quote (1): 15 units. The broker line is
     // `C:\ProgramData\ssh-broker\ssh-broker.exe` (40) and ` -c `; the PowerShell line is
-    // `"C:\Program Files\PowerShell\7\pwsh.exe"` (38 and two quotes) and ` -c `.
-    assert_eq!(command_line_lengths(r#"a "b" c\d\"#), (40 + 4 + 15, 38 + 2 + 4 + 15));
+    // `C:\Program Files\PowerShell\7\pwsh.exe` (38) and ` -c `. Each line quotes its program (two units): sshd's
+    // `w32-doexec.c` wraps the shell in quotes, and ssh-broker's escaping is `msvc`.
+    assert_eq!(
+        command_line_lengths(r#"a "b" c\d\"#),
+        (40 + 2 + 4 + 15, 38 + 2 + 4 + 15)
+    );
 }
 
 #[skuld::test]
@@ -257,7 +268,7 @@ fn the_limit_holds_for_an_elevated_command_and_for_an_argument_that_quoting_make
             cmd.run_as = run_as;
             cmd
         };
-        let low = longest_fit(&make);
+        let low = longest_fit(&make, LINE_LIMIT);
         assert!(wrap(&make(low)).is_ok(), "{run_as:?} {filler}: {low} fits");
         let error = wrap(&make(low + 1)).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Usage, "{run_as:?} {filler}: {error}");

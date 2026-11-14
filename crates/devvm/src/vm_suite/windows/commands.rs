@@ -10,12 +10,14 @@ use super::{
 use crate::access::sftp::sftp_tests::tree;
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
+use crate::guest::windows::wrap::LINE_LIMIT;
+use crate::guest::windows::wrap::wrap_tests::{longest_fit, padded};
 use crate::test_support::fixtures::unicode_home;
 use crate::vm_suite::exec::InGuest;
 use crate::vm_suite::exec::cases::{self, Os};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
-use crate::{BuildOptions, Command, Error, ErrorKind, ExitStatus, Guest};
+use crate::{BuildOptions, Error, ErrorKind, ExitStatus, Guest};
 
 #[skuld::test]
 fn windows_exec_exit_codes_7_125_255_and_ntstatus(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
@@ -152,17 +154,6 @@ fn windows_the_machine_path_names_pwsh_7_and_the_default_shell_step_runs_it(
 
 // Length ==============================================================================================================
 
-/// A command whose script is `'ok'` and a comment of `pad` characters.
-fn padded(pad: usize) -> Command {
-    Command::new([
-        "pwsh".to_owned(),
-        "-NoProfile".to_owned(),
-        "-NonInteractive".to_owned(),
-        "-Command".to_owned(),
-        format!("'ok' # {}", "a".repeat(pad)),
-    ])
-}
-
 /// The longest script that `wrap` takes runs in the guest, and the next one is refused before anything is sent. `wrap`'s
 /// limit is computed from both command lines of the guest (sshd's and ssh-broker's), so a script that it takes and the
 /// guest cannot run means the computation is wrong.
@@ -170,22 +161,14 @@ fn padded(pad: usize) -> Command {
 fn windows_a_script_at_the_computed_limit_runs_and_one_over_is_refused_before_sending(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    // `wrap` takes a longer script only while the lines stay under the limit, so the longest pad is found by halving.
-    let (mut fits, mut over) = (0_usize, 40_000_usize);
+    let fits = longest_fit(&padded, LINE_LIMIT);
+    let over = fits + 1;
     WindowsGuest
         .wrap(&padded(fits))
-        .expect("an empty pad is within the limit");
+        .expect("the longest pad that fits is taken");
     WindowsGuest
         .wrap(&padded(over))
-        .expect_err("a pad of 40,000 is over the limit");
-    while over - fits > 1 {
-        let middle = fits + (over - fits) / 2;
-        if WindowsGuest.wrap(&padded(middle)).is_ok() {
-            fits = middle;
-        } else {
-            over = middle;
-        }
-    }
+        .expect_err("a pad over the longest that fits is refused");
 
     let at_the_limit = ran(
         &guest.vm,
