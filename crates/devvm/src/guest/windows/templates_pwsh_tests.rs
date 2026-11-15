@@ -29,18 +29,30 @@ const INTERPRETERS: [(&str, &[&str]); 4] = [
     ("eb-runner.ps1", &["pwsh"]),
 ];
 
-/// The parse errors of the script `text` in the grammar of the PowerShell `exe`, one per line, with their line numbers.
-/// The file is parsed as that PowerShell reads it from disk (its default encoding included), never run.
+/// A script that parses `input` with the parser method `method` (`ParseFile` takes a path, `ParseInput` the text) and
+/// prints its parse errors, one per line, with their line numbers. It never runs `input`; a parser that throws fails it.
+fn parse_errors_script(method: &str, input: &str) -> String {
+    r#"$ErrorActionPreference = 'Stop'
+$errors = $null; $tokens = $null
+[void][System.Management.Automation.Language.Parser]::@@METHOD@@(@@INPUT@@, [ref]$tokens, [ref]$errors)
+foreach ($e in $errors) { "$($e.Extent.StartLineNumber): $($e.Message)" }
+"#
+    .replace("@@METHOD@@", method)
+    // Last: the input is never scanned for a placeholder.
+    .replace("@@INPUT@@", &literal(input))
+}
+
+/// The parse errors of the script `text` in the grammar of the PowerShell `exe`, read from a file as that PowerShell
+/// reads a script it runs (Windows PowerShell 5.1 in this host's ANSI code page; the templates are ASCII).
 fn parse_errors(exe: &str, dir: &std::path::Path, name: &str, text: &[u8]) -> Output {
     let path = dir.join(name);
     std::fs::write(&path, text).unwrap();
-    let script = format!(
-        "$errors = $null; $tokens = $null\n\
-         [void][System.Management.Automation.Language.Parser]::ParseFile({}, [ref]$tokens, [ref]$errors)\n\
-         foreach ($e in $errors) {{ \"$($e.Extent.StartLineNumber): $($e.Message)\" }}",
-        literal(&path.display().to_string())
-    );
-    run_with(exe, &script, None, None)
+    run_with(
+        exe,
+        &parse_errors_script("ParseFile", &path.display().to_string()),
+        None,
+        None,
+    )
 }
 
 #[skuld::test]
@@ -169,19 +181,12 @@ fn first_logon_script(answer: &str) -> String {
     }
 }
 
-/// Parses `@@SCRIPT@@` (never runs it) and prints its parse errors, one per line.
-const PARSE_ERRORS: &str = r#"
-$errors = $null; $tokens = $null
-[void][System.Management.Automation.Language.Parser]::ParseInput(@@SCRIPT@@, [ref]$tokens, [ref]$errors)
-foreach ($e in $errors) { "$($e.Extent.StartLineNumber): $($e.Message)" }
-"#;
-
 /// What the command does is pinned by `the_first_logon_command_waits_for_the_answer_disk_with_no_cap`; this is that it
 /// parses in Windows PowerShell 5.1, which runs it on the guest.
 #[skuld::test]
 fn the_first_logon_command_parses_in_windows_powershell(#[fixture(pwsh_wrap)] _group: &Group) {
     let script = first_logon_script(&answer_file(&inputs()).unwrap());
-    let output = run_windows_powershell(&PARSE_ERRORS.replace("@@SCRIPT@@", &literal(&script)));
+    let output = run_windows_powershell(&parse_errors_script("ParseInput", &script));
     assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "", "{script}");
 }
