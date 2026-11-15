@@ -67,15 +67,20 @@ fn follow(stream: &str, pipe: impl Read) -> String {
 /// The names of the programs of the guest that are the readers whose command line has [`TOKEN`] and `nonce`, one per
 /// line. A reader is the program that the `pwsh -c` of the agent started for the command: it has the token, and its
 /// parent is a `pwsh.exe` that has it. The token is written in two parts, so that this script's own command line does
-/// not have it.
+/// not have it. It runs elevated: the command lines of the broker's children are not the user's to read (a look as the
+/// user found none in CI run 43672193381). With no reader, it prints the shells and readers it sees as `seen:` lines.
 fn readers_on_the_guest(nonce: &str) -> Command {
     pwsh(
-        RunAs::User,
+        RunAs::Elevated,
         &format!(
             "$token = '{TOKEN}' + '{nonce}'; \
-             $hits = @(Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -and $_.CommandLine.Contains($token) }}); \
+             $all = @(Get-CimInstance Win32_Process); \
+             $hits = @($all | Where-Object {{ $_.CommandLine -and $_.CommandLine.Contains($token) }}); \
              $shells = @($hits | Where-Object {{ $_.Name -eq 'pwsh.exe' }} | ForEach-Object {{ $_.ProcessId }}); \
-             $hits | Where-Object {{ $shells -contains $_.ParentProcessId }} | ForEach-Object {{ $_.Name }}"
+             $readers = @($hits | Where-Object {{ $shells -contains $_.ParentProcessId }} | ForEach-Object {{ $_.Name }}); \
+             if ($readers) {{ $readers }} else {{ \
+                 $all | Where-Object {{ $_.Name -in 'pwsh.exe', 'powershell.exe', 'find.exe', 'ssh-broker.exe', 'sshd.exe' }} | \
+                 ForEach-Object {{ \"seen: $($_.ProcessId) <- $($_.ParentProcessId) $($_.Name) $([string]$_.CommandLine)\" }} }}"
         ),
     )
 }
@@ -145,6 +150,8 @@ fn a_killed_client_leaves_the_guest_accepting(
                 format!("a look finding {reader_exe} with {token} in its command line on the guest"),
                 ANSWER_BOUND,
             );
+            // What the last look printed: a look that sees the same is not logged again.
+            let mut shown = String::from("\0");
             loop {
                 // An ended client closed the reader's stdin: the reader can never show, so the case fails now.
                 if let Ok(Some(status)) = client.0.try_wait() {
@@ -162,7 +169,10 @@ fn a_killed_client_leaves_the_guest_accepting(
                         output.stderr_lossy()
                     ));
                 }
-                eprintln!("the look found {readers:?}");
+                if readers != shown {
+                    eprintln!("the look found:\n{readers}");
+                    shown = readers.to_string();
+                }
                 if readers
                     .lines()
                     .any(|program| program.trim().eq_ignore_ascii_case(reader_exe))
