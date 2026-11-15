@@ -2,13 +2,22 @@
 //! the deputy's runner run; a developer's PC may not). The text tests of `templates_tests.rs` cannot see a syntax error
 //! or a compile error; these can. What the scripts do on a guest is measured on a guest.
 
-use std::process::{Command as Process, Output, Stdio};
+use std::process::Output;
 
-use super::{NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, disk_files};
+use quick_xml::Reader;
+use quick_xml::events::Event;
+
+use super::{NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, answer_file, disk_files};
 use crate::guest::windows::templates::templates_tests::inputs;
 use crate::guest::windows::wrap::literal;
-use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, run, shown};
+use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, run, run_with, shown};
 use crate::test_groups::{Group, pwsh_wrap};
+
+/// `script` in Windows PowerShell 5.1 (`powershell.exe`), the PowerShell the guest's first-logon command and bootstrap
+/// run in.
+fn run_windows_powershell(script: &str) -> Output {
+    run_with("powershell.exe", script, None, None)
+}
 
 /// The parse errors of the script `text` in this PowerShell's grammar, one per line, with their line numbers.
 fn parse_errors(dir: &std::path::Path, name: &str, text: &[u8]) -> Output {
@@ -58,11 +67,7 @@ fn the_native_helper_compiles_as_the_bootstrap_compiles_it_and_the_scripts_can_l
         literal(&source.display().to_string()),
         literal(&dll.display().to_string())
     );
-    let built = Process::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &compile])
-        .stdin(Stdio::null())
-        .output()
-        .expect("powershell.exe runs");
+    let built = run_windows_powershell(&compile);
     assert_eq!(built.status.code(), Some(0), "{}", shown(&built));
     assert!(dll.is_file(), "no assembly was written: {}", shown(&built));
 
@@ -105,4 +110,57 @@ fn a_hostile_value_in_a_powershell_template_reads_back_as_itself(#[fixture(pwsh_
             shown(&output)
         );
     }
+}
+
+// The first-logon command =============================================================================================
+
+/// The script of the first-logon command of `answer`, as the XML parser reads it (entities undone) with the
+/// `powershell.exe ... -Command "` frame taken off. The frame is not argv-unquoted: the text is what `powershell.exe`
+/// receives only if it holds no `"` (a `\"` has one too) and does not end in a `\` (it would escape the closing `"`), so
+/// a script with either is refused.
+fn first_logon_script(answer: &str) -> String {
+    let mut reader = Reader::from_str(answer);
+    loop {
+        match reader.read_event().expect("the answer file is XML") {
+            Event::Start(start) if start.name().as_ref() == "CommandLine" => {
+                let raw = reader.read_text(start.name()).unwrap();
+                let line = quick_xml::escape::unescape(&raw.xml10_content()).unwrap().into_owned();
+                let script = line
+                    .strip_prefix("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"")
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .unwrap_or_else(|| panic!("not a powershell.exe -Command line: {line}"));
+                assert!(
+                    !script.contains('"'),
+                    "a `\"` inside the -Command frame needs argv quoting: {line}"
+                );
+                assert!(
+                    !script.ends_with('\\'),
+                    "a `\\` before the closing `\"` escapes it: {line}"
+                );
+                return script.to_owned();
+            }
+            Event::Eof => panic!(
+                "the answer file has no first-logon command:
+{answer}"
+            ),
+            _ => {}
+        }
+    }
+}
+
+/// Parses `@@SCRIPT@@` (never runs it) and prints its parse errors, one per line.
+const PARSE_ERRORS: &str = r#"
+$errors = $null; $tokens = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput(@@SCRIPT@@, [ref]$tokens, [ref]$errors)
+foreach ($e in $errors) { "$($e.Extent.StartLineNumber): $($e.Message)" }
+"#;
+
+/// What the command does is pinned by `the_first_logon_command_waits_for_the_answer_disk_with_no_cap`; this is that it
+/// parses in Windows PowerShell 5.1, which runs it on the guest.
+#[skuld::test]
+fn the_first_logon_command_parses_in_windows_powershell(#[fixture(pwsh_wrap)] _group: &Group) {
+    let script = first_logon_script(&answer_file(&inputs()).unwrap());
+    let output = run_windows_powershell(&PARSE_ERRORS.replace("@@SCRIPT@@", &literal(&script)));
+    assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "", "{script}");
 }

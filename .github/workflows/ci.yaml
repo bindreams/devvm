@@ -189,11 +189,18 @@ jobs:
             exit 0
           fi
           pattern='^(crates/|qemu/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yaml$)'
-          if git diff --name-only "$BASE" HEAD | grep -E "$pattern"; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          # Not piped: a failed diff must fail the step, not read as "no change". NUL-separated, because git quotes the
+          # other forms of an unusual path, which the pattern would miss; no renames, so a moved file names its old path.
+          files="$RUNNER_TEMP/changed-files"
+          git diff -z --no-renames --name-only "$BASE" HEAD > "$files"
+          # grep answers 1 for "no match" and 2 for an error, which must fail the step too.
+          status=0
+          grep -qzE "$pattern" "$files" || status=$?
+          case $status in
+            0) echo "changed=true" >> "$GITHUB_OUTPUT" ;;
+            1) echo "changed=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "grep failed with status $status" >&2; exit "$status" ;;
+          esac
 
   # A Windows guest built from Microsoft's Windows 11 Enterprise evaluation ISO, which it follows from the download link
   # (no pinned build: Microsoft retires them, and layers are keyed by the ISO's content), under the hypervisor platform of

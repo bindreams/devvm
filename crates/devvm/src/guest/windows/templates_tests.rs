@@ -674,8 +674,21 @@ fn user_scripts_use_driveinfo_never_get_volume_and_the_serial_mutex_has_an_every
     assert!(lib.contains("S-1-1-0") && lib.contains("MutexAccessRule") && lib.contains("'Global\\devvm-serial'"));
     assert!(lib.contains("MutexAcl]::Create") && lib.contains("Mutex]::new($false, $name, [ref]$created, $security)"));
     assert!(lib.contains("COM1") && lib.contains("UTF8"));
-    // The first-logon script finds the answer disk by DriveInfo too.
-    assert!(answer_file(&inputs()).unwrap().contains("[IO.DriveInfo]::GetDrives()"));
+}
+
+/// The answer disk may show after first logon starts: the command waits for it, with no count or clock (the host's Setup
+/// bound ends a build that never gets there), then runs bootstrap.ps1 from it. The XML escapes `&`.
+#[skuld::test]
+fn the_first_logon_command_waits_for_the_answer_disk_with_no_cap() {
+    let answer = answer_file(&inputs()).unwrap();
+    assert!(
+        answer.contains(concat!(
+        "-Command \"while (-not ($d = [IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.VolumeLabel -eq ",
+        "'CIDATA' } | Select-Object -First 1)) { Start-Sleep -Milliseconds 200 }; &amp; (Join-Path ",
+        "$d.RootDirectory.FullName 'bootstrap.ps1')\"</CommandLine>"
+        )),
+        "{answer}"
+    );
 }
 
 #[skuld::test]
@@ -846,9 +859,16 @@ fn the_boot_task_waits_for_a_connect_to_the_agent_socket_not_for_a_process() {
     assert!(!task.contains("Get-Process") && !task.contains("Wait-Process") && !task.contains("Get-ScheduledTask"));
     // A condition re-checked until it holds: no count, no time bound.
     assert!(task.contains("while (-not (Test-AgentSocket $sid)) { Start-Sleep -Milliseconds 200 }"));
-    for bound in ["-Timeout", "$tries", "$attempt", "Stopwatch"] {
+    for bound in ["-Timeout", "$tries", "$attempt", "Stopwatch", "Get-Date"] {
         assert!(!task.contains(bound), "{bound}");
     }
+}
+
+#[skuld::test]
+fn the_boot_task_waits_for_the_answer_disk_with_no_cap() {
+    let task = rendered("boot-task.ps1");
+    // The disk may appear after the boot has started; the host's boot bound ends a wait that never gets there.
+    assert!(task.contains("while (-not ($disk = Find-VolumeRoot 'CIDATA')) { Start-Sleep -Milliseconds 200 }"));
 }
 
 #[skuld::test]
