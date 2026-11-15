@@ -182,8 +182,8 @@ fn only_a_license_family_ending_in_eval_in_any_case_marks_an_evaluation() {
             r#"DEVVM-LICENSE={{"LicenseStatus":{status},"GracePeriodRemaining":{grace},"Description":"d"{family}}}"#
         )
     };
-    // No family, and an empty one: no evaluation, so the grace is not an expiry.
-    for family in ["<absent>", ""] {
+    // No family, an empty one, and one with `Eval` not at the end: no evaluation, so the grace is not an expiry.
+    for family in ["<absent>", "", "EvalEnterprise", "Evaluation"] {
         assert_eq!(
             expiry_from(&read(family, 1, 129_600), false, now()).unwrap(),
             None,

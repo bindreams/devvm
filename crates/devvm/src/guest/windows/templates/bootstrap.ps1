@@ -137,12 +137,13 @@ try {
         throw "a partition follows C:: $(($behind | ForEach-Object { "type $($_.GptType), $($_.Size) bytes" }) -join '; ')"
     }
 
-    # The license, read as numbers and identifiers; the host decides what it means. A system no product has a key for (a
-    # retail install nobody activated) has no row: that is a read too, and is sent as null.
+    # The license, read as numbers and identifiers. A system no product has a key for (a retail install nobody
+    # activated) has no row: that is a read too, and is sent as null.
     # A fresh evaluation reads "grace time expired" (0xC004F009) until Windows activates it, which it does online
-    # shortly after the first logon. The host says whether this image is an evaluation, and a license family ending in
-    # Eval says so too (as the host reads it); activating one here, synchronously, makes the read its own state. What
-    # the activation came to is sent with the read.
+    # shortly after the first logon. The guest reads the family only to decide whether to activate: the host says whether
+    # this image is an evaluation, and a license family ending in Eval says so too (the rule of `names_an_evaluation`
+    # in iso/wim.rs). Activating one here, synchronously, makes the read its own state; the host decides the expiry.
+    # What the activation came to is sent with the read.
     $filter = "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'"
     $product = Get-CimInstance SoftwareLicensingProduct -Filter $filter | Select-Object -First 1
     $outcome = $null; $message = $null; $native = $null; $status = $null; $returned = $null

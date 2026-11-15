@@ -17,6 +17,7 @@ use super::{
 use crate::RunAs;
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
+use crate::iso::names_an_evaluation;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{awaiting, step};
@@ -97,7 +98,7 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
             r#"(Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" | Select-Object -First 1).LicenseFamily"#,
         );
         assert!(
-            !family.is_empty() && !family.to_ascii_lowercase().ends_with("eval"),
+            !family.is_empty() && !names_an_evaluation(&family),
             "the guest reads the license family `{family}`, which is an evaluation's or none"
         );
         return;

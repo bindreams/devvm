@@ -81,8 +81,9 @@ pub enum RootContent {
     Sha256(Sha256),
     /// An OCI image digest; hashed in lowercase, so case variants share a key.
     OciDigest(String),
-    /// A Windows ISO: the sha256 of its content and the image installed from it (its index in the ISO and its name), so
-    /// two editions of one ISO are two roots, and an `edition` omitted and one that names the only image are one.
+    /// A Windows ISO: the sha256 of its content, the image installed from it (its index in the ISO and its name) and the
+    /// product key. Two editions of one ISO are two roots, an `edition` omitted and one that names the only image are one,
+    /// and a changed key is another root.
     Iso {
         sha256: Sha256,
         image_index: u32,

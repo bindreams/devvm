@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
+use crate::iso::names_an_evaluation;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -41,10 +42,7 @@ struct License {
 impl License {
     /// Whether the license family names an evaluation edition (ends in `Eval`, any case).
     fn is_evaluation(&self) -> bool {
-        self.license_family.as_deref().is_some_and(|family| {
-            let family = family.as_bytes();
-            family.len() >= 4 && family[family.len() - 4..].eq_ignore_ascii_case(b"eval")
-        })
+        self.license_family.as_deref().is_some_and(names_an_evaluation)
     }
 
     /// The account of the activation: text for a message, never read as meaning. `None` when none was made.

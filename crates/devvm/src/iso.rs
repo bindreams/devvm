@@ -18,7 +18,7 @@ mod udf;
 mod wim;
 
 pub(crate) use memo::{HashedIso, IsoMemo, Known, QuarantineOutcome};
-pub(crate) use wim::{WimArch, WimImage};
+pub(crate) use wim::{WimArch, WimImage, names_an_evaluation};
 
 use udf::{BootEntry, Piece, Platform, SECTOR, Udf};
 
@@ -235,7 +235,7 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
 }
 
 /// Whether `product_key` fits the edition `image` is: a non-evaluation edition needs one (Setup stops on its key page
-/// otherwise), an evaluation edition takes none. An image with no edition id counts as non-evaluation.
+/// otherwise), an evaluation edition takes none. An image with no edition id is not known to be an evaluation edition, so it needs a key.
 pub(crate) fn check_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<()> {
     let name = &image.name;
     match (image.is_evaluation(), product_key) {
