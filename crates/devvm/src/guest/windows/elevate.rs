@@ -31,8 +31,11 @@
 //! killed caller leaves is the runner's to remove, and the boot task sweeps what nothing else did.
 //!
 //! The caller's wait ends from file state alone, with no time bound: a held claim is a live runner; a released claim
-//! with no `DONE` is a runner that died; no claim and no running instance of the task is a helper that is not going to
-//! run the command (the caller claims the request itself, so no runner can take it afterwards).
+//! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
+//! longer queued or running is a helper that is not going to run the command (the caller claims the request itself, so
+//! no runner can take it afterwards). An instance whose state cannot be read is the same: the caller withdraws the
+//! request, and the wait goes on if a runner has claimed it. Another request's instance does not count: the task runs
+//! them in parallel.
 
 use super::wrap::{literal, session_check};
 
@@ -110,6 +113,32 @@ function Withdraw-Request {
         throw
     }
 }
+# `SCHED_E_TASK_NOT_RUNNING` (0x8004130B): what `Refresh` of an ended instance throws, anywhere in the exception chain
+# (measured on a guest).
+function Test-NotRunning($failure) {
+    for ($e = $failure; $e; $e = $e.InnerException) {
+        if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) { return $true }
+    }
+    return $false
+}
+# The state of the instance this caller started, as text (the task runs other requests' instances at the same time, so
+# the task's own state says nothing). `not started` is no instance, `not running` an ended one (see Test-NotRunning). A
+# state that cannot be read is returned as the exception, never as a state; nothing here throws. `State` reads stale 0
+# after a throwing `Refresh`, and PowerShell answers a failed getter with `$null`, so `$null` means unreadable.
+function Get-InstanceState($instance) {
+    if ($null -eq $instance) { return 'not started' }
+    try {
+        $instance.Refresh()
+        $raw = $instance.State
+        if ($null -eq $raw) { return [InvalidOperationException]::new('the state read as empty') }
+        $state = [int]$raw
+    } catch {
+        if (Test-NotRunning $_.Exception) { return 'not running' }
+        return $_.Exception
+    }
+    if ($state -ge 0 -and $state -lt $states.Count) { return $states[$state] }
+    return "$state"
+}
 $code = 126
 $message = $null
 $abandoned = $false
@@ -122,7 +151,8 @@ try {
     $published = $true
     $stdout = [Console]::OpenStandardOutput()
     $stderr = [Console]::OpenStandardError()
-    try { [void]$task.Run($id) }
+    $instance = $null
+    try { $instance = $task.Run($id) }
     catch {
         $message = "the elevated helper did not start: $($_.Exception.Message)"
         if (Withdraw-Request) { $abandoned = $true } else { $message = $null }
@@ -142,11 +172,17 @@ try {
             break
         }
         if ($claimed -and -not $held) { $message = 'the elevated runner ended without a result'; $abandoned = $true; break }
-        if (-not $claimed -and $task.GetInstances(0).Count -eq 0) {
-            if (-not (Withdraw-Request)) { Start-Sleep -Milliseconds {PAUSE}; continue }
-            $message = "the elevated helper did not run the command (task state: $($states[[int]$task.State]))"
-            $abandoned = $true
-            break
+        if (-not $claimed) {
+            $instanceState = Get-InstanceState $instance
+            $unreadable = $instanceState -is [Exception]
+            if ($unreadable -or ($instanceState -ne 'queued' -and $instanceState -ne 'running')) {
+                # A runner that claimed since the look serves the request: the wait goes on.
+                if (-not (Withdraw-Request)) { Start-Sleep -Milliseconds {PAUSE}; continue }
+                $message = if ($unreadable) { "the elevated helper failed: the state of the instance could not be read: $($instanceState.Message)" }
+                else { "the elevated helper did not run the command (instance state: $instanceState)" }
+                $abandoned = $true
+                break
+            }
         }
         Start-Sleep -Milliseconds {PAUSE}
     }

@@ -126,7 +126,7 @@
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$d = [IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.VolumeLabel -eq 'CIDATA' } | Select-Object -First 1; &amp; (Join-Path $d.RootDirectory.FullName 'bootstrap.ps1')"</CommandLine>
+          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "while (-not ($d = [IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.VolumeLabel -eq 'CIDATA' } | Select-Object -First 1)) { Start-Sleep -Milliseconds 200 }; &amp; (Join-Path $d.RootDirectory.FullName 'bootstrap.ps1')"</CommandLine>
           <Description>devvm first logon</Description>
         </SynchronousCommand>
       </FirstLogonCommands>
