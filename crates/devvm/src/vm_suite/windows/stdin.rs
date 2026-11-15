@@ -7,92 +7,122 @@
 //! keys to a new session's pipe, leave the listener accepting. Every case boots an instance of its own: a wedged guest
 //! would fail every case after it.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::mpsc;
 
-use super::elevation::joined;
 use super::machine::Client;
 use super::session::{answer, ssh_command, ssh_remote};
-use super::{FACTS, WindowsBase, facts, ran, user_facts, windows_base, windows_options};
-use crate::guest::GuestOs;
-use crate::guest::windows::WindowsGuest;
+use super::{FACTS, WindowsBase, facts, joined, ran, user_facts, windows_base, windows_options};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
 use crate::{Command, ExitStatus, RunAs};
 
 // A client killed in the middle of stdin ==============================================================================
 
-/// What the test has written into the client's stdin pipe when it kills the client. The client's channel window is
-/// 2 MiB, so the client takes this much whatever the guest does with it.
+/// The bytes of one write of the input.
+const CHUNK: usize = 64 * 1024;
+
+/// What the test has written into the client's stdin pipe when it kills the client. The guest's sshd advertises a 2 MiB
+/// window, so the client takes this much whatever the guest does with it. A multiple of [`CHUNK`]: the count passes it
+/// exactly once.
 const TAKEN: u64 = 1 << 20;
+const _: () = assert!(TAKEN.is_multiple_of(CHUNK as u64));
+
+/// The line that a reader writes before it reads: it ran, and it is about to read.
+const READING: &str = "devvm-reading";
 
 /// 64 KiB of text lines, which every reader of the cases takes.
 fn chunk() -> Vec<u8> {
     let line = [vec![b'x'; 1023], vec![b'\n']].concat();
-    line.repeat(64)
+    line.repeat(CHUNK / line.len())
 }
 
-/// Pipes input without an end through the system `ssh` to `reader`, a program of the guest that reads its stdin, kills the
-/// client once its stdin pipe has taken [`TAKEN`] bytes (a count of what the test wrote, not a time), and checks that a
-/// fresh command of the guest is answered. A hang of the session that the killed client had is not a failure: the limit
-/// is stated.
-fn a_killed_client_leaves_the_guest_accepting(base: &WindowsBase, name: &str, reader: &[&str]) {
+/// Reads `pipe` to its end. Sends on `reading` for each line that is [`READING`]. Returns what it read.
+fn read_marked(pipe: impl Read, reading: mpsc::Sender<()>) -> String {
+    let mut pipe = BufReader::new(pipe);
+    let mut text = String::new();
+    let mut line = Vec::new();
+    while matches!(pipe.read_until(b'\n', &mut line), Ok(n) if n > 0) {
+        let line_text = String::from_utf8_lossy(&line);
+        if line_text.trim_end() == READING {
+            let _ = reading.send(());
+        }
+        text.push_str(&line_text);
+        line.clear();
+    }
+    text
+}
+
+/// Pipes input without an end through the system `ssh` to `reader`, a command of the guest that writes [`READING`] and
+/// then reads its stdin. It kills the client once its stdin pipe has taken [`TAKEN`] bytes (a count of what the test
+/// wrote, not a time), and checks that a fresh command of the guest is answered. A hang of the session that the killed
+/// client had is not a failure: the limit is stated.
+///
+/// `reader` is sent as it is: that is what a user's own `ssh -F` sends, and the guest's agent runs it as `pwsh -c
+/// <reader>` with the session's stdin pipe. devvm's own wrapper is not in that path (`devvm run` sends no stdin).
+fn a_killed_client_leaves_the_guest_accepting(base: &WindowsBase, name: &str, reader: &str) {
     step("booting an instance");
     let up = Up::new(&base.image, name, &windows_options()).unwrap();
     let config = up.ssh_config().unwrap();
-    let remote = WindowsGuest.wrap(&Command::new(reader.iter().copied())).unwrap();
-    let mut command = ssh_command(&config, up.name(), &remote);
+    let mut command = ssh_command(&config, up.name(), reader);
     command
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut client = Client(command.spawn().unwrap_or_else(|e| panic!("cannot run ssh: {e}")));
     let mut input = client.0.stdin.take().expect("a piped stdin");
+    let output = client.0.stdout.take().expect("a piped stdout");
+    let mut errors = client.0.stderr.take().expect("a piped stderr");
 
     step("piping stdin through ssh until it has taken 1 MiB");
+    let (reading, started) = mpsc::channel();
     let (taken, reached) = mpsc::channel();
-    let (reached, ended, written) = std::thread::scope(|scope| {
+    let (started, reached, ended, written, stdout, stderr) = std::thread::scope(|scope| {
         // The input has no end: the writer ends when the client does, by its failed write.
         let writer = scope.spawn(move || {
             let chunk = chunk();
             let mut total = 0_u64;
-            let mut told = false;
             loop {
                 if let Err(e) = input.write_all(&chunk) {
                     return (total, e);
                 }
                 total += chunk.len() as u64;
-                if total >= TAKEN && !told {
-                    told = true;
+                if total == TAKEN {
                     let _ = taken.send(());
                 }
             }
         });
-        let watch = awaiting("the ssh client's stdin taking 1 MiB", ANSWER_BOUND);
+        // The client's output is read for the whole run, so that a full pipe never stops it from reading stdin.
+        let stdout = scope.spawn(move || read_marked(output, reading));
+        let stderr = scope.spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = errors.read_to_end(&mut bytes);
+            String::from_utf8_lossy(&bytes).into_owned()
+        });
+        let watch = awaiting(
+            "the reader's first line and the ssh client's stdin taking 1 MiB",
+            ANSWER_BOUND,
+        );
+        let started = started.recv();
         let reached = reached.recv();
         drop(watch);
         let ended = client.0.try_wait();
-        // On every path: the writer ends with its client, so the scope can end.
+        // On every path: the threads end with their client, so the scope can end.
         let _ = client.0.kill();
         let _ = client.0.wait();
-        (reached, ended, joined(writer))
+        (started, reached, ended, joined(writer), joined(stdout), joined(stderr))
     });
     let (total, error) = written;
-    let mut stderr = String::new();
-    if let Some(mut pipe) = client.0.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
-    assert!(
-        reached.is_ok(),
-        "ssh took only {total} bytes of stdin before it ended ({error}): {stderr}"
-    );
+    let seen =
+        format!("ssh {ended:?}; {total} bytes of stdin written, then: {error}; stdout {stdout:?}; stderr {stderr:?}");
+    assert!(started.is_ok(), "the reader did not write {READING}: {seen}");
+    assert!(reached.is_ok(), "ssh took less than 1 MiB of stdin: {seen}");
     assert!(
         matches!(ended, Ok(None)),
-        "ssh ended by itself ({ended:?}) within the transfer, after {total} bytes; stdin ended with: {error}: {stderr}"
+        "ssh ended by itself within the transfer: {seen}"
     );
-    assert!(total >= TAKEN, "{total} bytes of stdin were written");
 
     step("running a command in the guest after the kill");
     assert_eq!(
@@ -107,7 +137,9 @@ fn windows_a_client_killed_mid_stdin_to_pwsh_leaves_the_guest_accepting(#[fixtur
     a_killed_client_leaves_the_guest_accepting(
         base,
         "w-stdin-pwsh",
-        &["pwsh", "-NoProfile", "-NonInteractive", "-Command", "$input | Out-Null"],
+        &format!(
+            "pwsh -NoProfile -NonInteractive -Command '[Console]::Out.WriteLine(''{READING}''); $input | Out-Null'"
+        ),
     );
 }
 
@@ -118,23 +150,23 @@ fn windows_a_client_killed_mid_stdin_to_windows_powershell_leaves_the_guest_acce
     a_killed_client_leaves_the_guest_accepting(
         base,
         "w-stdin-ps51",
-        &[
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[Console]::In.ReadToEnd() | Out-Null",
-        ],
+        &format!(
+            "powershell.exe -NoProfile -NonInteractive -Command '[Console]::Out.WriteLine(''{READING}''); [Console]::In.ReadToEnd() | Out-Null'"
+        ),
     );
 }
 
-/// `find` is a plain program of the system: it reads its input with `ReadFile`, and no runtime stands between it and the
-/// pipe.
+/// `find` is a plain program of the system: it reads its stdin with `ReadFile`, where the two above read it through a
+/// .NET runtime. It cannot write [`READING`] itself, so the command writes it before `find` starts.
 #[skuld::test]
 fn windows_a_client_killed_mid_stdin_to_a_readfile_program_leaves_the_guest_accepting(
     #[fixture(windows_base)] base: &WindowsBase,
 ) {
-    a_killed_client_leaves_the_guest_accepting(base, "w-stdin-readfile", &["find", "/c", "/v", ""]);
+    a_killed_client_leaves_the_guest_accepting(
+        base,
+        "w-stdin-readfile",
+        &format!("[Console]::Out.WriteLine('{READING}'); find /c /v ''"),
+    );
 }
 
 // Back-to-back connections ============================================================================================

@@ -157,6 +157,13 @@ pub(super) fn ran(guest: &dyn Guest, what: &str, command: &Command) -> Result<Ou
     guest.run(command)
 }
 
+/// The result of a scoped thread. A panic in it goes on in the test with its own message, not as an opaque `Any`.
+pub(super) fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    thread
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
 /// The pause between two looks at a condition.
 pub(super) const PACE: Duration = Duration::from_millis(200);
 
