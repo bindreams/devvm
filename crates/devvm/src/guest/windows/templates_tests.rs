@@ -680,11 +680,15 @@ fn user_scripts_use_driveinfo_never_get_volume_and_the_serial_mutex_has_an_every
 /// bound ends a build that never gets there), then runs bootstrap.ps1 from it. The XML escapes `&`.
 #[skuld::test]
 fn the_first_logon_command_waits_for_the_answer_disk_with_no_cap() {
-    assert!(answer_file(&inputs()).unwrap().contains(concat!(
+    let answer = answer_file(&inputs()).unwrap();
+    assert!(
+        answer.contains(concat!(
         "-Command \"while (-not ($d = [IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.VolumeLabel -eq ",
         "'CIDATA' } | Select-Object -First 1)) { Start-Sleep -Milliseconds 200 }; &amp; (Join-Path ",
         "$d.RootDirectory.FullName 'bootstrap.ps1')\"</CommandLine>"
-    )));
+        )),
+        "{answer}"
+    );
 }
 
 #[skuld::test]

@@ -41,9 +41,10 @@ pub(in crate::guest::windows) fn run_with(
     process
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .stdin(Stdio::null());
-    if let Some(helper) = helper {
-        process.env(HELPER_VAR, helper);
-    }
+    match helper {
+        Some(helper) => process.env(HELPER_VAR, helper),
+        None => process.env_remove(HELPER_VAR),
+    };
     if let Some(dir) = path {
         let mut paths = vec![dir.to_path_buf()];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
