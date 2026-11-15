@@ -162,7 +162,7 @@ fn output_of(stdout: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
 }
 
 /// The `ssh` client of a test, ended when the test is: a test that fails leaves no session running on the guest.
-struct Client(std::process::Child);
+pub(super) struct Client(pub(super) std::process::Child);
 
 impl Drop for Client {
     fn drop(&mut self) {

@@ -32,6 +32,7 @@ mod machine;
 mod seed;
 mod session;
 mod shared;
+mod stdin;
 
 use bounds::STATE_BOUND;
 use shared::{first_try, recipe_text};
@@ -154,6 +155,13 @@ pub(super) fn printed_as(guest: &dyn Guest, run_as: RunAs, script: &str) -> Stri
 pub(super) fn ran(guest: &dyn Guest, what: &str, command: &Command) -> Result<Output, Error> {
     let _watch = answer_to(what);
     guest.run(command)
+}
+
+/// The result of a scoped thread. A panic in it goes on in the test with its own message, not as an opaque `Any`.
+pub(super) fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    thread
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
 }
 
 /// The pause between two looks at a condition.
