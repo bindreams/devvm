@@ -126,7 +126,6 @@ fn an_iso_takes_a_product_key() {
             product_key: Some(ProductKey::parse(KEY).unwrap()),
         }
     );
-    // The edition is optional: an ISO with one image needs none.
     let Source::Iso { product_key, .. } = parse(&format!("from: {{ iso: win.iso, product-key: {KEY} }}")).source else {
         panic!()
     };
@@ -154,7 +153,6 @@ fn a_product_key_of_the_wrong_shape_is_refused_without_being_printed() {
             "{bad}"
         );
     }
-    // Only an ISO has a product key.
     let error = parse_err(&format!("from: {{ url: x, sha256: {SHA_A}, product-key: {KEY} }}"));
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(!error.to_string().contains(KEY), "{error}");

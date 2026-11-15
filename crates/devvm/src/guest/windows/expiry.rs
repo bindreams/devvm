@@ -17,9 +17,8 @@ const MARKER: &str = "DEVVM-LICENSE=";
 /// `SoftwareLicensingProduct`'s `LicenseStatus` for a licensed product.
 const LICENSED: u32 = 1;
 
-/// The fields of the read that are numbers, the license's family, and the guest's account of its activation; the
-/// description is only echoed in logs, so no localized text is read except the activation's message, which is echoed too. The account is
-/// flat fields, all `null` or absent when no activation was made.
+/// The fields of the guest's license read that the host acts on. The activation fields are `null` or absent when no
+/// activation was made.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct License {
@@ -40,8 +39,7 @@ struct License {
 }
 
 impl License {
-    /// Whether the family ends in `Eval`, in any case: the license of an evaluation edition, as the edition id of its
-    /// image does.
+    /// Whether the license family names an evaluation edition (ends in `Eval`, any case).
     fn is_evaluation(&self) -> bool {
         self.license_family.as_deref().is_some_and(|family| {
             let family = family.as_bytes();
@@ -92,17 +90,10 @@ impl fmt::Display for Activation<'_> {
 /// When the base a guest printed `read` for stops being usable: `None` when it never does.
 ///
 /// `read` is the marker line the first-logon script wrote to the serial port; text after the JSON is ignored.
-/// An image is an evaluation when `evaluation` says so (its edition id) or its license reads an evaluation family (an
-/// image that names no edition id is not flagged, and the license is the guest's own account of it). A licensed
-/// evaluation with grace left ends `now` plus that grace; in any other state it is `unavailable`: Windows did not
-/// license it, whatever the guest's activation said, and the error names that account and the status.
-/// Any other image has no expiry, whatever grace its license reads (a KMS client reads its renewal window, and renews
-/// it), including one that reads no product with a key (`null`: a retail install nobody activated). An evaluation
-/// image that reads none, and a read that is neither `null` nor the marker and its fields, are `internal` errors: a
-/// build never goes on without knowing.
-///
-/// The host branches on the status and the grace only. A base that ends is `expired-base` only through the store's
-/// margin on a licensed evaluation; what an evaluation that has really ended reads after `Activate` is not measured.
+/// An image is an evaluation when `evaluation` (its edition id) says so or its license family does. An evaluation
+/// licensed with grace left ends `now` plus the grace; otherwise `unavailable`. Any other image has none, whatever
+/// grace it reads (a KMS client's renewal window is not an expiry), including a `null` read. An unreadable read, or no
+/// read for an evaluation, is `internal`.
 pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Result<Option<SystemTime>> {
     let Some(license) = parse(read).map_err(|why| unreadable(read, &why))? else {
         return if evaluation {

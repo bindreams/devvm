@@ -14,7 +14,7 @@ use crate::guest::windows::templates;
 use crate::guest::{BaseBuilder, BuildCtx};
 use crate::iso::{IsoMemo, key_iso};
 use crate::media::read_files;
-use crate::recipe::Source;
+use crate::recipe::{ProductKey, Source};
 use crate::store::fetch::Fetcher;
 use crate::store::layers::layers_tests::{Env, env, key, request};
 use crate::store::layers::{Built, ChainLease};
@@ -64,6 +64,11 @@ pub(super) fn rig(home: &Path, iso: &str, backend: FakeBackend, bounds: Bounds) 
 impl Rig {
     /// The base layer a build of the ISO makes, or its error.
     pub(super) fn build(&self, edition: Option<&str>) -> Result<ChainLease> {
+        self.build_keyed(edition, None)
+    }
+
+    /// The same, with the recipe's `product-key`.
+    pub(super) fn build_keyed(&self, edition: Option<&str>, product_key: Option<&str>) -> Result<ChainLease> {
         let root = key_iso(
             &TestHost,
             &IsoMemo::new(&self.dirs),
@@ -76,7 +81,7 @@ impl Rig {
         let source = Source::Iso {
             path: self.iso.clone(),
             edition: edition.map(Into::into),
-            product_key: None,
+            product_key: product_key.map(|text| ProductKey::parse(text).unwrap()),
         };
         self.env.store.build(&request(key(1)), None, |staging| {
             self.builder
@@ -227,22 +232,37 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
 }
 
 #[skuld::test]
-fn the_bootstrap_is_told_whether_the_chosen_image_is_an_evaluation(#[fixture(unicode_home)] home: &Path) {
-    // `single-image.iso` holds an evaluation edition, `three-images.iso` volume editions.
-    for (iso, edition, evaluation) in [
-        ("single-image.iso", None, "$true"),
-        ("three-images.iso", Some("Windows 11 Enterprise LTSC 2024"), "$false"),
+fn the_bootstrap_is_told_whether_the_chosen_image_is_an_evaluation_and_a_keyed_edition_gets_its_key(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
+    // `single-image.iso` holds an evaluation edition, which takes no key; `three-images.iso` volume editions, which need one.
+    for (iso, edition, product_key, evaluation) in [
+        ("single-image.iso", None, None, "$true"),
+        (
+            "three-images.iso",
+            Some("Windows 11 Enterprise LTSC 2024"),
+            Some(KEY),
+            "$false",
+        ),
     ] {
         let rig = rig_without_a_machine(home, iso);
 
-        rig.build(edition).unwrap_err();
+        rig.build_keyed(edition, product_key).unwrap_err();
 
-        let files = read_files(&rig.work().join("answer.img"), &["bootstrap.ps1"]).unwrap();
-        let bootstrap = String::from_utf8(files[0].bytes.clone()).unwrap();
+        let files = read_files(&rig.work().join("answer.img"), &["bootstrap.ps1", "Autounattend.xml"]).unwrap();
+        let [bootstrap, answer] = [0, 1].map(|i| String::from_utf8(files[i].bytes.clone()).unwrap());
         assert!(
-            bootstrap.contains(&format!("if ({evaluation} -and $product")),
+            bootstrap.contains(&format!("-and ({evaluation} -or $product.LicenseFamily")),
             "{iso}: {bootstrap}"
         );
+        match product_key {
+            Some(key) => {
+                assert_eq!(answer.matches(key).count(), 1, "{iso}: {answer}");
+                assert_eq!(answer.matches("<ProductKey>").count(), 1, "{iso}: {answer}");
+            }
+            None => assert!(!answer.contains("ProductKey"), "{iso}: {answer}"),
+        }
         let _ = std::fs::remove_dir_all(rig.work());
     }
 }

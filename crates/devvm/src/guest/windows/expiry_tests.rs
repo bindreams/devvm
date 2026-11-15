@@ -17,8 +17,7 @@ const LTSC_EVAL: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), IoTEnterpriseSEval
 // of an unactivated non-evaluation guest exists until the owner's LTSC first run.
 const UNACTIVATED: &str = r#"DEVVM-LICENSE={"Description":"Windows(R) Operating System, RETAIL channel","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"IoTEnterpriseS"}"#;
 
-// Synthesized from the documented values: a volume edition activated by a KMS host reads licensed with the renewal
-// window's 180 days (259200 minutes) as its grace.
+// Synthesized from documented values, not measured.
 const KMS_ACTIVATED: &str = r#"DEVVM-LICENSE={"Description":"Windows(R) Operating System, VOLUME_KMSCLIENT channel","LicenseStatus":1,"GracePeriodRemaining":259200,"LicenseFamily":"IoTEnterpriseS","ProductKeyChannel":"Volume:GVLK"}"#;
 
 fn now() -> SystemTime {
@@ -144,8 +143,7 @@ fn a_licensed_status_with_zero_grace_has_no_expiry_unless_the_image_is_an_evalua
 
 #[skuld::test]
 fn a_non_evaluation_image_has_no_expiry_whatever_grace_its_license_reads() {
-    // The image decides, not the grace: a licensed non-evaluation one (a KMS client reads about 180 days of renewal grace,
-    // and an activation by a key reads none) never takes that grace as the end of its base.
+    // The image decides, not the grace.
     let with_grace = EN_US.replace("EnterpriseEval", "Enterprise");
     assert_ne!(with_grace, EN_US);
     assert_eq!(expiry_from(&with_grace, false, now()).unwrap(), None);
@@ -154,8 +152,7 @@ fn a_non_evaluation_image_has_no_expiry_whatever_grace_its_license_reads() {
 
 #[skuld::test]
 fn an_image_not_known_to_be_an_evaluation_is_one_when_the_guest_reads_an_evaluation_family() {
-    // An image with no edition id is not flagged; its license family, which Windows reports in English whatever the
-    // language, still ends in `Eval`, and the evaluation's grace is its expiry.
+    // No edition id: the license family still marks it an evaluation.
     assert_eq!(
         expiry_from(EN_US, false, now()).unwrap(),
         Some(now() + Duration::from_secs(129_600 * 60))
@@ -171,6 +168,36 @@ fn an_image_not_known_to_be_an_evaluation_is_one_when_the_guest_reads_an_evaluat
     let read = EN_US.replace("EnterpriseEval\",\"Product", "EvalEnterprise\",\"Product");
     assert_ne!(read, EN_US);
     assert_eq!(expiry_from(&read, false, now()).unwrap(), None);
+}
+
+#[skuld::test]
+fn only_a_license_family_ending_in_eval_in_any_case_marks_an_evaluation() {
+    let read = |family: &str, status: u32, grace: u32| {
+        let family = if family == "<absent>" {
+            String::new()
+        } else {
+            format!(r#","LicenseFamily":"{family}""#)
+        };
+        format!(
+            r#"DEVVM-LICENSE={{"LicenseStatus":{status},"GracePeriodRemaining":{grace},"Description":"d"{family}}}"#
+        )
+    };
+    // No family, and an empty one: no evaluation, so the grace is not an expiry.
+    for family in ["<absent>", ""] {
+        assert_eq!(
+            expiry_from(&read(family, 1, 129_600), false, now()).unwrap(),
+            None,
+            "{family:?}"
+        );
+    }
+    // `Eval` alone is an evaluation: unlicensed, it is an error.
+    let error = expiry_from(&read("Eval", 5, 0), false, now()).expect_err("an unlicensed evaluation has no expiry");
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    // `eval` in lower case, licensed with grace, expires with it.
+    assert_eq!(
+        expiry_from(&read("eval", 1, 129_600), false, now()).unwrap(),
+        Some(now() + Duration::from_secs(129_600 * 60))
+    );
 }
 
 #[skuld::test]

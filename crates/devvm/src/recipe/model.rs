@@ -58,8 +58,7 @@ pub enum Source {
     /// expires reads it again. A layer is keyed by the ISO's content, so the same bytes at another path are the same
     /// layer. x64 images only; an image of another architecture is refused.
     ///
-    /// `product_key` is required by an edition that is not an evaluation edition, and refused on one that is; the
-    /// base's layer key includes it.
+    /// `product_key` is required by an edition that is not an evaluation edition, and refused on one that is.
     Iso {
         path: PathBuf,
         edition: Option<String>,

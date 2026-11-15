@@ -174,7 +174,6 @@ fn a_guest_that_cannot_start_names_the_step_and_commits_nothing(#[fixture(unicod
 
 // Pure parts ==========================================================================================================
 
-/// What a build of the ISO at `path` is rooted at.
 fn iso_root(
     memo: &crate::iso::IsoMemo,
     path: &Path,
@@ -252,7 +251,7 @@ fn an_iso_root_is_refused_when_its_product_key_does_not_fit_the_edition(#[fixtur
         |path: &Path, edition: Option<&str>, product_key: Option<&str>| iso_root(&memo, path, edition, product_key);
     let (only, first) = ("Windows 11 Enterprise Evaluation", "Windows 11 Enterprise LTSC 2024");
     let a = "AB12C-DE34F-GH56J-KL78M-NP90Q";
-    // Before anything boots: an edition that is not an evaluation needs a key, and an evaluation takes none.
+    // Before anything boots.
     let error = root(&three, Some(first), None).err().unwrap();
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(

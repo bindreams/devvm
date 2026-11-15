@@ -568,14 +568,14 @@ fn an_evaluation_that_is_not_licensed_is_activated_before_its_license_is_read() 
 }
 
 #[skuld::test]
-fn the_host_says_whether_the_image_is_an_evaluation_and_the_guest_asks_nothing_else() {
+fn the_guest_activates_an_unlicensed_product_when_the_host_or_its_license_family_says_evaluation() {
     for evaluation in [true, false] {
         let bootstrap = rendered_with("bootstrap.ps1", &AnswerInputs { evaluation, ..inputs() });
         let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
         let value = if evaluation { "$true" } else { "$false" };
         assert!(
             read.contains(&format!(
-                "if ({value} -and $product -and $product.LicenseStatus -ne 1) {{"
+                "if ($product -and $product.LicenseStatus -ne 1 -and ({value} -or $product.LicenseFamily -like '*Eval')) {{"
             )),
             "{evaluation}: {read}"
         );

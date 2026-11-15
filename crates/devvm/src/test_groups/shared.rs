@@ -109,12 +109,10 @@ pub(crate) const WINDOWS_PRODUCT_KEY_VAR: &str = "DEVVM_WINDOWS_PRODUCT_KEY";
 /// Names the image of that ISO to build from, as a recipe's `edition` does. Unset when the ISO has one image.
 pub(crate) const WINDOWS_EDITION_VAR: &str = "DEVVM_WINDOWS_EDITION";
 
-/// The key `DEVVM_WINDOWS_PRODUCT_KEY` gives, or `None` when it is not set or empty.
 pub(crate) fn windows_product_key() -> Result<Option<String>, String> {
     optional_text(WINDOWS_PRODUCT_KEY_VAR)
 }
 
-/// The edition `DEVVM_WINDOWS_EDITION` names, or `None` when it is not set or empty.
 pub(crate) fn windows_edition() -> Result<Option<String>, String> {
     optional_text(WINDOWS_EDITION_VAR)
 }

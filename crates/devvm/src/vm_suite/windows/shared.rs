@@ -15,8 +15,7 @@ pub fn first_try<T>(slot: &OnceLock<String>, make: impl FnOnce() -> Result<T, St
     })
 }
 
-/// What a recipe's `from:` says of the ISO besides its path: the image to build from, and the key an edition that is not
-/// an evaluation edition needs. The test variables give both.
+/// The `edition` and `product-key` of a recipe's ISO `from:`, taken from the test variables.
 pub struct IsoChoice<'a> {
     pub edition: Option<&'a str>,
     pub product_key: Option<&'a str>,

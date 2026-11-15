@@ -140,12 +140,13 @@ try {
     # The license, read as numbers and identifiers; the host decides what it means. A system no product has a key for (a
     # retail install nobody activated) has no row: that is a read too, and is sent as null.
     # A fresh evaluation reads "grace time expired" (0xC004F009) until Windows activates it, which it does online
-    # shortly after the first logon. The host says whether this image is an evaluation; activating one here,
-    # synchronously, makes the read its own state. What the activation came to is sent with the read.
+    # shortly after the first logon. The host says whether this image is an evaluation, and a license family ending in
+    # Eval says so too (as the host reads it); activating one here, synchronously, makes the read its own state. What
+    # the activation came to is sent with the read.
     $filter = "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'"
     $product = Get-CimInstance SoftwareLicensingProduct -Filter $filter | Select-Object -First 1
     $outcome = $null; $message = $null; $native = $null; $status = $null; $returned = $null
-    if (@@!EVALUATION@@ -and $product -and $product.LicenseStatus -ne 1) {
+    if ($product -and $product.LicenseStatus -ne 1 -and (@@!EVALUATION@@ -or $product.LicenseFamily -like '*Eval')) {
         Send-Line 'DEVVM-PROGRESS=activating Windows'
         try {
             $returned = ($product | Invoke-CimMethod -MethodName Activate -ErrorAction Stop).ReturnValue
