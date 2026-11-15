@@ -71,7 +71,7 @@ fn follow(stream: &str, pipe: impl Read) -> String {
 /// processes do. The token is written in two parts, so that this script's own command line does not have it.
 ///
 /// It runs elevated. A look as the user found no reader for 600 s in CI run 43672193381; the `seen:` lines of a look
-/// that finds none tell whether the reader is there and what its command line and parent are.
+/// that finds none show which processes hold the token, with their parents and the start of their command lines.
 fn readers_on_the_guest(nonce: &str) -> Command {
     pwsh(
         RunAs::Elevated,
@@ -157,7 +157,9 @@ fn a_killed_client_leaves_the_guest_accepting(
             );
             // What the last look printed: a look that sees the same is not logged again.
             let mut shown = String::from("\0");
-            // The case kills a live client: ssh that ends before the kill, by itself, is a failure.
+            // ssh that has ended by itself while the looks go on is a failure. It may still end between the last look
+            // and the kill; the case then checks the same thing, a guest that answers after the client of a session
+            // with a live reader ended.
             let mut ended = || match client.0.try_wait() {
                 Ok(None) => None,
                 Ok(Some(status)) => Some(format!("ssh ended by itself with {status} before the kill")),
