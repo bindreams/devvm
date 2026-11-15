@@ -4,7 +4,10 @@
 
 use std::process::{Command as Process, Output, Stdio};
 
-use super::{NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, disk_files};
+use quick_xml::Reader;
+use quick_xml::events::Event;
+
+use super::{NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, answer_file, disk_files};
 use crate::guest::windows::templates::templates_tests::inputs;
 use crate::guest::windows::wrap::literal;
 use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, run, shown};
@@ -105,4 +108,88 @@ fn a_hostile_value_in_a_powershell_template_reads_back_as_itself(#[fixture(pwsh_
             shown(&output)
         );
     }
+}
+
+// The first-logon command =============================================================================================
+
+/// The script of the first-logon command of `answer`, as the XML parser reads it (entities undone) with the
+/// `powershell.exe ... -Command "` frame taken off.
+fn first_logon_script(answer: &str) -> String {
+    let mut reader = Reader::from_str(answer);
+    loop {
+        match reader.read_event().expect("the answer file is XML") {
+            Event::Start(start) if start.name().as_ref() == "CommandLine" => {
+                let raw = reader.read_text(start.name()).unwrap();
+                let line = quick_xml::escape::unescape(&raw.xml10_content()).unwrap().into_owned();
+                return line
+                    .strip_prefix("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"")
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .unwrap_or_else(|| panic!("not a powershell.exe -Command line: {line}"))
+                    .to_owned();
+            }
+            Event::Eof => panic!(
+                "the answer file has no first-logon command:
+{answer}"
+            ),
+            _ => {}
+        }
+    }
+}
+
+/// Parses `@@SCRIPT@@` (never runs it) and prints its parse errors as `ERROR ...` lines, then the facts the first-logon
+/// test asserts as `name=value` lines.
+const FIRST_LOGON_FACTS: &str = r#"
+$errors = $null; $tokens = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseInput(@@SCRIPT@@, [ref]$tokens, [ref]$errors)
+foreach ($e in $errors) { "ERROR $($e.Extent.StartLineNumber): $($e.Message)" }
+function Kind($node) { if ($null -ne $node) { $node.GetType().Name } }
+$loops = @($ast.EndBlock.Statements | Where-Object { (Kind $_) -eq 'WhileStatementAst' })
+"loops=$($loops.Count)"
+$loop = $loops[0]
+$element = if ((Kind $loop.Condition) -eq 'PipelineAst' -and $loop.Condition.PipelineElements.Count -eq 1) { $loop.Condition.PipelineElements[0] }
+$negated = if ((Kind $element) -eq 'CommandExpressionAst') { $element.Expression }
+$paren = if ((Kind $negated) -eq 'UnaryExpressionAst' -and $negated.TokenKind -eq 'Not') { $negated.Child }
+$assignment = if ((Kind $paren) -eq 'ParenExpressionAst') { $paren.Pipeline }
+$assigns = (Kind $assignment) -eq 'AssignmentStatementAst' -and $assignment.Left.VariablePath.UserPath -eq 'd'
+"condition_is_not_of_an_assignment_to_d=$assigns"
+$lookup = $assigns -and @($assignment.Right.FindAll({ param($n) (Kind $n) -eq 'InvokeMemberExpressionAst' -and $n.Member.Value -eq 'GetDrives' }, $true)).Count -eq 1 -and @($assignment.Right.FindAll({ param($n) (Kind $n) -eq 'StringConstantExpressionAst' -and $n.Value -eq 'CIDATA' }, $true)).Count -eq 1
+"assigns_the_cidata_drive_lookup=$lookup"
+$body = foreach ($s in $loop.Body.Statements) {
+    if ((Kind $s) -eq 'PipelineAst' -and $s.PipelineElements.Count -eq 1 -and (Kind $s.PipelineElements[0]) -eq 'CommandAst') { $s.PipelineElements[0].GetCommandName() } else { Kind $s }
+}
+"body=$($body -join ',')"
+"uses_of_d_after_the_loop=$(@($ast.FindAll({ param($n) (Kind $n) -eq 'VariableExpressionAst' -and $n.VariablePath.UserPath -eq 'd' -and $n.Extent.StartOffset -ge $loop.Extent.EndOffset }, $true)).Count)"
+$bootstrap = @($ast.FindAll({ param($n) (Kind $n) -eq 'StringConstantExpressionAst' -and $n.Value -eq 'bootstrap.ps1' }, $true))
+"bootstrap_follows_the_loop=$($bootstrap.Count -eq 1 -and $bootstrap[0].Extent.StartOffset -ge $loop.Extent.EndOffset)"
+"#;
+
+#[skuld::test]
+fn the_first_logon_command_parses_and_waits_for_the_answer_disk_with_no_cap(#[fixture(pwsh_wrap)] _group: &Group) {
+    let script = first_logon_script(&answer_file(&inputs()).unwrap());
+    let output = run(
+        &FIRST_LOGON_FACTS.replace("@@SCRIPT@@", &literal(&script)),
+        "none",
+        None,
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
+    let text = String::from_utf8_lossy(&output.stdout);
+    let errors: Vec<&str> = text.lines().filter(|line| line.starts_with("ERROR ")).collect();
+    assert!(
+        errors.is_empty(),
+        "the command does not parse: {errors:?}
+{script}"
+    );
+    let facts: Vec<&str> = text.lines().filter(|line| !line.starts_with("ERROR ")).collect();
+    assert_eq!(
+        facts,
+        [
+            "loops=1",
+            "condition_is_not_of_an_assignment_to_d=True",
+            "assigns_the_cidata_drive_lookup=True",
+            "body=Start-Sleep",
+            "uses_of_d_after_the_loop=1",
+            "bootstrap_follows_the_loop=True",
+        ],
+        "{script}"
+    );
 }

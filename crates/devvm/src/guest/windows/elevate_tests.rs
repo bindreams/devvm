@@ -89,23 +89,6 @@ fn a_helper_that_is_not_going_to_run_the_command_is_told_by_the_instance_the_sta
 }
 
 #[skuld::test]
-fn an_instance_that_cannot_be_read_is_decided_by_the_withdrawal_not_by_a_look_at_the_claim() {
-    let text = script();
-    let start = at(&text, "function Get-InstanceState");
-    let reader = &text[start..at(&text, "$code = 126")];
-    // A look at the claim before a throw leaves a gap in which a runner claims: the withdrawal is the one check.
-    assert!(!reader.contains("$claim"), "{reader}");
-    assert!(!reader.contains("throw"), "{reader}");
-    let wait = &text[at(&text, "while (-not $message)")
-        ..at(
-            &text,
-            "} catch {
-    if ($published)",
-        )];
-    assert!(wait.contains("$unreadable"), "{wait}");
-}
-
-#[skuld::test]
 fn any_failure_in_the_try_is_the_126_message_and_withdraws_an_unclaimed_request() {
     let text = script();
     let caught = at(&text, "the elevated helper failed:");

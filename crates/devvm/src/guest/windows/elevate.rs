@@ -34,8 +34,7 @@
 //! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
 //! longer queued or running is a helper that is not going to run the command (the caller claims the request itself, so
 //! no runner can take it afterwards). An instance whose state cannot be read is the same: the caller withdraws the
-//! request, and the wait goes on if a runner holds the claim. Another request's instance does not count: the task runs
-//! them in parallel.
+//! request. Another request's instance does not count: the task runs them in parallel.
 
 use super::wrap::{literal, session_check};
 
@@ -113,20 +112,17 @@ function Withdraw-Request {
         throw
     }
 }
-# `SCHED_E_TASK_NOT_RUNNING` (0x8004130B), which an ended instance answers instead of a state, anywhere in the chain.
-# Measured on a guest: `Refresh` of an ended instance throws a COMException of exactly this HRESULT.
+# `SCHED_E_TASK_NOT_RUNNING` (0x8004130B): what `Refresh` of an ended instance throws, anywhere in the exception chain.
 function Test-NotRunning($failure) {
     for ($e = $failure; $e; $e = $e.InnerException) {
         if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) { return $true }
     }
     return $false
 }
-# The state of the instance this caller started, as text: its own state, because the task runs other requests'
-# instances at the same time. `not started` is no instance, and `not running` an ended one (see Test-NotRunning). A
-# state that cannot be read is the exception that says why, never a state, and nothing here throws. Measured on a
-# guest: `Run` returns an instance, which reads 4 (running) from the first look; `Refresh` of an ended one throws, and
-# its `State` then reads a stale 0. A failing `State` getter was never seen; PowerShell answers a failed property getter
-# with `$null`, so `$null` is unreadable whatever the cause.
+# The state of the instance this caller started, as text (the task runs other requests' instances at the same time, so
+# the task's own state says nothing). `not started` is no instance, `not running` an ended one (see Test-NotRunning). A
+# state that cannot be read is returned as the exception, never as a state; nothing here throws. `State` reads stale 0
+# after a throwing `Refresh`, and PowerShell answers a failed getter with `$null`, so `$null` means unreadable.
 function Get-InstanceState($instance) {
     if ($null -eq $instance) { return 'not started' }
     try {

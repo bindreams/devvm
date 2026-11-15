@@ -364,7 +364,6 @@ fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
         .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
 }
 
-/// The runner's script and the name it has while it is hidden.
 const RUNNER: &str = r"C:\Program Files\devvm\eb-runner.ps1";
 const RUNNER_HIDDEN: &str = "eb-runner.ps1.hidden";
 

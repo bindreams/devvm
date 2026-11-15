@@ -240,7 +240,7 @@ fn an_instance_in_a_state_that_is_neither_queued_nor_running_has_ended(
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    // `unknown` (0) is not running. A caller that waited on it would be served at the next look and answer 7.
+    // A caller that waited on it would be served at the next look and answer 7.
     let output = caller(
         &root,
         "",
