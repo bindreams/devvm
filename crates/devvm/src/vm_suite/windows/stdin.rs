@@ -4,19 +4,21 @@
 //! start` recover it. The first cases check the limit's bound: a client that is killed in the middle of such a transfer
 //! ends with its session on the client's side and leaves the guest accepting. They do not assert that the transfer ends.
 //! They test the path of a user's own `ssh -F <config> <name> <command>` with the generated configuration, whose command
-//! the guest's agent runs as `pwsh -c <command>` with the session's stdin pipe. `devvm ssh <name> <command>` is not that
-//! path: it runs the command with the embedded client and no stdin. The last two cases check that back-to-back
-//! connections, which each make sshd's listener write its configuration and host keys to a new session's pipe, leave the
-//! listener accepting. Every case boots an instance of its own: a wedged guest would fail every case after it.
+//! the guest's agent runs as `pwsh -c <command>` with the session's stdin pipe. `devvm ssh <name> -- <command>` is not
+//! that path: it runs the command with the embedded client and no stdin. The look at the reader runs while the killed
+//! client's session may still hang: a guest that then stops answering other sessions contradicts the stated limit, which
+//! is a hang of that session only, so the case fails. The last two cases check that back-to-back connections, which
+//! each make sshd's listener write its configuration and host keys to a new session's pipe, leave the listener
+//! accepting. Every case boots an instance of its own: a wedged guest would fail every case after it.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::mpsc;
 
 use super::machine::Client;
 use super::session::{answer, ssh_command, ssh_remote};
-use super::{FACTS, WindowsBase, facts, joined, output_of, pwsh, ran, user_facts, windows_base, windows_options};
+use super::{FACTS, WindowsBase, facts, joined, pwsh, ran, user_facts, windows_base, windows_options};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
 use crate::{Command, ExitStatus, RunAs, random};
@@ -43,16 +45,25 @@ fn chunk() -> Vec<u8> {
     chunk
 }
 
-/// Logs what `chunks` (a pipe of the ssh client) carries as it arrives, so that a case that ends at its bound shows it,
-/// and returns all of it.
-fn follow(stream: &str, chunks: mpsc::Receiver<Vec<u8>>) -> String {
+/// Reads `pipe` (a stream of the ssh client) line by line until it ends, logs each line as it arrives, so that a case
+/// that ends at its bound shows it, and returns all of it. A read error ends the stream: the client's writes then fail,
+/// they do not block.
+fn follow(stream: &str, pipe: impl Read) -> String {
+    let mut pipe = BufReader::new(pipe);
     let mut text = String::new();
-    for chunk in chunks {
-        let part = String::from_utf8_lossy(&chunk);
-        eprintln!("ssh {stream}: {}", part.trim_end());
-        text.push_str(&part);
+    let mut line = Vec::new();
+    loop {
+        let ended = !matches!(pipe.read_until(b'\n', &mut line), Ok(read) if read > 0);
+        if !line.is_empty() {
+            let part = String::from_utf8_lossy(&line);
+            eprintln!("ssh {stream}: {}", part.trim_end());
+            text.push_str(&part);
+            line.clear();
+        }
+        if ended {
+            return text;
+        }
     }
-    text
 }
 
 /// The names of the programs of the guest that are the readers whose command line has [`TOKEN`] and `nonce`, one per
@@ -98,12 +109,13 @@ fn a_killed_client_leaves_the_guest_accepting(
         .stderr(Stdio::piped());
     let mut client = Client(command.spawn().unwrap_or_else(|e| panic!("cannot run ssh: {e}")));
     let mut input = client.0.stdin.take().expect("a piped stdin");
-    let stdout = output_of(client.0.stdout.take().expect("a piped stdout"));
-    let stderr = output_of(client.0.stderr.take().expect("a piped stderr"));
+    let stdout = client.0.stdout.take().expect("a piped stdout");
+    let stderr = client.0.stderr.take().expect("a piped stderr");
 
     step("piping stdin through ssh until it has taken 1 MiB");
     let (taken, reached) = mpsc::channel();
-    let (reached, ended, look, written, stdout, stderr) = std::thread::scope(|scope| {
+    let looking = readers_on_the_guest(&nonce);
+    let (reached, look, written, stdout, stderr) = std::thread::scope(|scope| {
         // The input has no end: the writer ends when the client does, by its failed write.
         let writer = scope.spawn(move || {
             let chunk = chunk();
@@ -124,39 +136,49 @@ fn a_killed_client_leaves_the_guest_accepting(
         let watch = awaiting("the ssh client's stdin taking 1 MiB", ANSWER_BOUND);
         let reached = reached.recv();
         drop(watch);
-        let ended = client.0.try_wait();
-        step("looking for the reader on the guest");
         // A failed look is a result, not a panic: a panic here would leave the writer blocked and the scope never ending.
-        let look = reached
-            .is_ok()
-            .then(|| ran(&*up, "a look at the reader on the guest", &readers_on_the_guest(&nonce)));
-        // On every path: the threads end with their client, so the scope can end.
+        let look = reached.is_ok().then(|| {
+            step("looking for the reader on the guest");
+            // Nothing orders the reader's start before the first look, so the looks go on until the reader shows. The
+            // bound is the failure: a reader that never shows (it failed to start, or died) is not an answer.
+            let _watch = awaiting(
+                format!("{reader_exe} with {token} in its command line on the guest"),
+                ANSWER_BOUND,
+            );
+            loop {
+                let output = match ran(&*up, "a look at the reader on the guest", &looking) {
+                    Ok(output) => output,
+                    Err(e) => break Err(format!("cannot look at the reader on the guest: {e}")),
+                };
+                let readers = output.stdout_lossy();
+                if output.status != ExitStatus::Code(0) {
+                    break Err(format!(
+                        "the look at the reader failed: {:?} {readers:?} {}",
+                        output.status,
+                        output.stderr_lossy()
+                    ));
+                }
+                eprintln!("the look found {readers:?}");
+                if readers
+                    .lines()
+                    .any(|program| program.trim().eq_ignore_ascii_case(reader_exe))
+                {
+                    break Ok(());
+                }
+            }
+        });
+        // On every path: the threads end with their client, so the scope can end. None of these ends by itself if the
+        // client does not.
+        let _ending = awaiting("the ssh client and its pipes ending after the kill", ANSWER_BOUND);
         let _ = client.0.kill();
         let _ = client.0.wait();
-        (reached, ended, look, joined(writer), joined(stdout), joined(stderr))
+        (reached, look, joined(writer), joined(stdout), joined(stderr))
     });
     let (total, error) = written;
-    let seen =
-        format!("ssh {ended:?}; {total} bytes of stdin written, then: {error}; stdout {stdout:?}; stderr {stderr:?}");
+    let seen = format!("{total} bytes of stdin written, then: {error}; stdout {stdout:?}; stderr {stderr:?}");
     assert!(reached.is_ok(), "ssh took less than 1 MiB of stdin: {seen}");
-    let look = look
-        .expect("a look when the client took 1 MiB")
-        .unwrap_or_else(|e| panic!("cannot look at the reader on the guest: {e}; {seen}"));
-    let readers = look.stdout_lossy();
-    assert_eq!(
-        look.status,
-        ExitStatus::Code(0),
-        "the look at the reader failed: {readers:?} {}; {seen}",
-        look.stderr_lossy()
-    );
-    assert!(
-        readers
-            .lines()
-            .any(|program| program.trim().eq_ignore_ascii_case(reader_exe)),
-        "no {reader_exe} with {token} in its command line is running on the guest after 1 MiB of stdin; the look found \
-         {readers:?} {}; {seen}",
-        look.stderr_lossy()
-    );
+    look.expect("a look when the client took 1 MiB")
+        .unwrap_or_else(|e| panic!("{e}; {seen}"));
 
     step("running a command in the guest after the kill");
     assert_eq!(
@@ -193,7 +215,9 @@ fn windows_a_client_killed_mid_stdin_to_windows_powershell_leaves_the_guest_acce
 }
 
 /// `find` is a plain program of the system: it reads its stdin with `ReadFile`, where the two above read it through a
-/// .NET runtime. The token is its search string.
+/// .NET runtime. The token is its search string. The stop-parsing token `--%` makes PowerShell pass the rest of the line
+/// as it is: without it the quotes around the search string are stripped and `find` ends at once ("Parameter format not
+/// correct").
 #[skuld::test]
 fn windows_a_client_killed_mid_stdin_to_a_readfile_program_leaves_the_guest_accepting(
     #[fixture(windows_base)] base: &WindowsBase,
@@ -201,7 +225,7 @@ fn windows_a_client_killed_mid_stdin_to_a_readfile_program_leaves_the_guest_acce
     a_killed_client_leaves_the_guest_accepting(
         base,
         "w-stdin-readfile",
-        |token| format!("find /c /v \"{token}\""),
+        |token| format!("find --% /c /v \"{token}\""),
         "find.exe",
     );
 }
