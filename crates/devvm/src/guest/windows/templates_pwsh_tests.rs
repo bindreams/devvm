@@ -13,6 +13,16 @@ use crate::guest::windows::wrap::literal;
 use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, run, shown};
 use crate::test_groups::{Group, pwsh_wrap};
 
+/// `script` in Windows PowerShell 5.1 (`powershell.exe`), the PowerShell the guest's first-logon command and bootstrap
+/// run in.
+fn run_windows_powershell(script: &str) -> Output {
+    Process::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .stdin(Stdio::null())
+        .output()
+        .expect("powershell.exe runs")
+}
+
 /// The parse errors of the script `text` in this PowerShell's grammar, one per line, with their line numbers.
 fn parse_errors(dir: &std::path::Path, name: &str, text: &[u8]) -> Output {
     let path = dir.join(name);
@@ -61,11 +71,7 @@ fn the_native_helper_compiles_as_the_bootstrap_compiles_it_and_the_scripts_can_l
         literal(&source.display().to_string()),
         literal(&dll.display().to_string())
     );
-    let built = Process::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &compile])
-        .stdin(Stdio::null())
-        .output()
-        .expect("powershell.exe runs");
+    let built = run_windows_powershell(&compile);
     assert_eq!(built.status.code(), Some(0), "{}", shown(&built));
     assert!(dll.is_file(), "no assembly was written: {}", shown(&built));
 
@@ -113,7 +119,8 @@ fn a_hostile_value_in_a_powershell_template_reads_back_as_itself(#[fixture(pwsh_
 // The first-logon command =============================================================================================
 
 /// The script of the first-logon command of `answer`, as the XML parser reads it (entities undone) with the
-/// `powershell.exe ... -Command "` frame taken off.
+/// `powershell.exe ... -Command "` frame taken off. The frame is not argv-unquoted: the text is what `powershell.exe`
+/// receives only if it holds no `"` (a `\"` has one too), so a script with one is refused.
 fn first_logon_script(answer: &str) -> String {
     let mut reader = Reader::from_str(answer);
     loop {
@@ -121,11 +128,15 @@ fn first_logon_script(answer: &str) -> String {
             Event::Start(start) if start.name().as_ref() == "CommandLine" => {
                 let raw = reader.read_text(start.name()).unwrap();
                 let line = quick_xml::escape::unescape(&raw.xml10_content()).unwrap().into_owned();
-                return line
+                let script = line
                     .strip_prefix("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"")
                     .and_then(|rest| rest.strip_suffix('"'))
-                    .unwrap_or_else(|| panic!("not a powershell.exe -Command line: {line}"))
-                    .to_owned();
+                    .unwrap_or_else(|| panic!("not a powershell.exe -Command line: {line}"));
+                assert!(
+                    !script.contains('"'),
+                    "a `\"` inside the -Command frame needs argv quoting: {line}"
+                );
+                return script.to_owned();
             }
             Event::Eof => panic!(
                 "the answer file has no first-logon command:
@@ -152,8 +163,15 @@ $paren = if ((Kind $negated) -eq 'UnaryExpressionAst' -and $negated.TokenKind -e
 $assignment = if ((Kind $paren) -eq 'ParenExpressionAst') { $paren.Pipeline }
 $assigns = (Kind $assignment) -eq 'AssignmentStatementAst' -and $assignment.Left.VariablePath.UserPath -eq 'd'
 "condition_is_not_of_an_assignment_to_d=$assigns"
-$lookup = $assigns -and @($assignment.Right.FindAll({ param($n) (Kind $n) -eq 'InvokeMemberExpressionAst' -and $n.Member.Value -eq 'GetDrives' }, $true)).Count -eq 1 -and @($assignment.Right.FindAll({ param($n) (Kind $n) -eq 'StringConstantExpressionAst' -and $n.Value -eq 'CIDATA' }, $true)).Count -eq 1
-"assigns_the_cidata_drive_lookup=$lookup"
+$pipe = if ($assigns) { $assignment.Right }
+$parts = if ((Kind $pipe) -eq 'PipelineAst') { @($pipe.PipelineElements) } else { @() }
+$drives = $parts.Count -eq 3 -and (Kind $parts[0]) -eq 'CommandExpressionAst' -and (Kind $parts[0].Expression) -eq 'InvokeMemberExpressionAst' -and $parts[0].Expression.Static -and $parts[0].Expression.Expression.TypeName.Name -eq 'IO.DriveInfo' -and $parts[0].Expression.Member.Value -eq 'GetDrives'
+$filter = $parts.Count -eq 3 -and (Kind $parts[1]) -eq 'CommandAst' -and $parts[1].GetCommandName() -eq 'Where-Object' -and $parts[1].CommandElements.Count -eq 2 -and (Kind $parts[1].CommandElements[1]) -eq 'ScriptBlockExpressionAst'
+$first = $parts.Count -eq 3 -and (Kind $parts[2]) -eq 'CommandAst' -and $parts[2].Extent.Text -eq 'Select-Object -First 1'
+"assignment_is_getdrives_where_select_first_1=$($drives -and $filter -and $first)"
+$block = if ($filter) { $parts[1].CommandElements[1] }
+$cidata = if ($filter) { @($block.FindAll({ param($n) (Kind $n) -eq 'StringConstantExpressionAst' -and $n.Value -eq 'CIDATA' }, $true)).Count }
+"filter_names_cidata=$cidata"
 $body = foreach ($s in $loop.Body.Statements) {
     if ((Kind $s) -eq 'PipelineAst' -and $s.PipelineElements.Count -eq 1 -and (Kind $s.PipelineElements[0]) -eq 'CommandAst') { $s.PipelineElements[0].GetCommandName() } else { Kind $s }
 }
@@ -166,11 +184,8 @@ $bootstrap = @($ast.FindAll({ param($n) (Kind $n) -eq 'StringConstantExpressionA
 #[skuld::test]
 fn the_first_logon_command_parses_and_waits_for_the_answer_disk_with_no_cap(#[fixture(pwsh_wrap)] _group: &Group) {
     let script = first_logon_script(&answer_file(&inputs()).unwrap());
-    let output = run(
-        &FIRST_LOGON_FACTS.replace("@@SCRIPT@@", &literal(&script)),
-        "none",
-        None,
-    );
+    // Windows PowerShell 5.1 runs the command on the guest; its parser reads it here.
+    let output = run_windows_powershell(&FIRST_LOGON_FACTS.replace("@@SCRIPT@@", &literal(&script)));
     assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
     let text = String::from_utf8_lossy(&output.stdout);
     let errors: Vec<&str> = text.lines().filter(|line| line.starts_with("ERROR ")).collect();
@@ -185,7 +200,8 @@ fn the_first_logon_command_parses_and_waits_for_the_answer_disk_with_no_cap(#[fi
         [
             "loops=1",
             "condition_is_not_of_an_assignment_to_d=True",
-            "assigns_the_cidata_drive_lookup=True",
+            "assignment_is_getdrives_where_select_first_1=True",
+            "filter_names_cidata=1",
             "body=Start-Sleep",
             "uses_of_d_after_the_loop=1",
             "bootstrap_follows_the_loop=True",

@@ -852,6 +852,16 @@ fn the_boot_task_waits_for_a_connect_to_the_agent_socket_not_for_a_process() {
 }
 
 #[skuld::test]
+fn the_boot_task_waits_for_the_answer_disk_with_no_cap() {
+    let task = rendered("boot-task.ps1");
+    // The disk may appear after the boot has started; the host's boot bound ends a wait that never gets there.
+    assert!(task.contains("while (-not ($disk = Find-VolumeRoot 'CIDATA')) { Start-Sleep -Milliseconds 200 }"));
+    for bound in ["-Timeout", "$tries", "$attempt", "Stopwatch", "Get-Date"] {
+        assert!(!task.contains(bound), "{bound}");
+    }
+}
+
+#[skuld::test]
 fn the_boot_task_sweeps_the_request_directories_nothing_else_removed() {
     let task = rendered("boot-task.ps1");
     assert_eq!(task.matches("Remove-Item").count(), 1);
