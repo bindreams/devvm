@@ -13,7 +13,7 @@ use crate::test_support::fixtures::unicode_home;
 
 /// `caller_script` with the scheduled task and the requests' root replaced. `run` is the body of the task's `Run` (it
 /// has the request's id as `$id` and the root as `$root`); it starts the instance whose `Refresh` runs the body
-/// and whose `State` is read by the body `state`.
+/// `refresh` and whose `State` is read by the body `state`.
 /// The task's own `State` is running, as it is while another request's instance runs: nothing in the caller may take it
 /// for its instance's.
 fn standin(root: &Path, run: &str, refresh: &str, state: &str) -> String {
@@ -298,7 +298,9 @@ fn an_instance_whose_state_cannot_be_read_is_the_126_message_and_withdraws_the_r
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     let message = stderr(&output);
     assert!(
-        message.contains("devvm: the elevated helper failed: ") && message.contains("state of the instance"),
+        message.contains(
+            "devvm: the elevated helper failed: the state of the instance could not be read: the state read as empty"
+        ),
         "{}",
         shown(&output)
     );
@@ -317,6 +319,25 @@ fn an_instance_whose_state_cannot_be_read_while_a_runner_claims_the_request_goes
         &format!(
             "{SERVE}
 {UNREADABLE_STATE}"
+        ),
+    );
+
+    assert_eq!(output.status.code(), Some(7), "{}", shown(&output));
+    assert_eq!(output.stdout, b"out", "{}", shown(&output));
+}
+
+#[skuld::test]
+fn a_state_that_is_not_a_number_while_a_runner_claims_the_request_goes_on_with_the_runner(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let output = caller(
+        &root,
+        "",
+        &format!(
+            "{SERVE}
+'not a number'"
         ),
     );
 
