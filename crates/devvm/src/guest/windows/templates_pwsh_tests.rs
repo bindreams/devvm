@@ -43,7 +43,8 @@ foreach ($e in $errors) { "$($e.Extent.StartLineNumber): $($e.Message)" }
 }
 
 /// The parse errors of the script `text` in the grammar of the PowerShell `exe`, read from a file as that PowerShell
-/// reads a script it runs (Windows PowerShell 5.1 in this host's ANSI code page; the templates are ASCII).
+/// reads a script it runs. Windows PowerShell 5.1 reads it in this host's ANSI code page, not the guest's, so `text` must
+/// be ASCII.
 fn parse_errors(exe: &str, dir: &std::path::Path, name: &str, text: &[u8]) -> Output {
     let path = dir.join(name);
     std::fs::write(&path, text).unwrap();
@@ -73,6 +74,7 @@ fn every_script_of_the_answer_disk_parses_in_each_powershell_that_runs_it(#[fixt
     );
     for (name, exes) in INTERPRETERS {
         let file = scripts.iter().find(|file| file.name == name).unwrap();
+        assert!(file.bytes.is_ascii(), "{name} as rendered is not ASCII");
         for exe in exes {
             let output = parse_errors(exe, dir.path(), name, &file.bytes);
             assert_eq!(output.status.code(), Some(0), "{name} in {exe}: {}", shown(&output));
