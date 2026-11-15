@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::MachineRecord;
-use crate::host::remove_if_present;
+use crate::host::{self, Host, remove_if_present};
 use crate::instance::name::InstanceName;
 use crate::random;
 use crate::recipe::hash::LayerKey;
@@ -249,9 +249,9 @@ pub(crate) fn is_write_file_temporary(name: &str) -> bool {
 }
 
 /// Writes `text` to `dir/file` through a temp file and a rename, so a reader sees the old or the new content, never a
-/// mixture, and a crash leaves no half-written `file`.
-pub(crate) fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
-    use std::io::Write;
+/// mixture, and a crash leaves no half-written `file`. `file` is the user's alone from the moment it exists, whatever
+/// `dir` hands down: the temp file is private and a rename keeps its DACL or mode.
+pub(crate) fn write_file(host: &dyn Host, dir: &Path, file: &str, text: &str) -> Result<()> {
     let suffix = random::bytes::<TEMP_BYTES>();
     let temp = dir.join(format!("{file}{TEMP_MARK}{}", hex::encode(suffix)));
     let target = dir.join(file);
@@ -259,11 +259,10 @@ pub(crate) fn write_file(dir: &Path, file: &str, text: &str) -> Result<()> {
         Error::io(ErrorKind::Io, format!("cannot {action} {}", path.display()), source)
     };
     (|| {
-        let mut out = std::fs::File::create_new(&temp).map_err(|e| fail("create", &temp, e))?;
-        out.write_all(text.as_bytes()).map_err(|e| fail("write", &temp, e))?;
-        out.sync_all().map_err(|e| fail("sync", &temp, e))?;
-        drop(out);
-        std::fs::rename(&temp, &target).map_err(|e| fail("replace", &target, e))
+        host.write_private(&temp, text.as_bytes())
+            .map_err(|e| fail("write", &temp, e))?;
+        host.replace_file(&temp, &target)
+            .map_err(|e| fail("replace", &target, e))
     })()
     .map_err(|e| {
         e.after_cleanup(
@@ -323,7 +322,8 @@ impl InstanceRecord {
             machine: self.machine.clone(),
         };
         let text = serde_json::to_string_pretty(&wire).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
-        write_file(dir, RECORD_FILE, &text)
+        // No caller of a record holds a host; every record is written by this process for its own user.
+        write_file(host::current(), dir, RECORD_FILE, &text)
     }
 }
 
@@ -392,5 +392,5 @@ pub(crate) fn write_marker(dir: &Path, marker: &Marker) -> Result<()> {
         id: marker.id.to_string(),
     };
     let text = serde_json::to_string(&wire).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
-    write_file(dir, MARKER_FILE, &text)
+    write_file(host::current(), dir, MARKER_FILE, &text)
 }
