@@ -103,10 +103,22 @@ test_group!(
 /// Names the Windows installer ISO the `windows_guest` group's tests build their base from.
 pub(crate) const WINDOWS_ISO_VAR: &str = "DEVVM_WINDOWS_ISO";
 
+/// Gives the product key of that ISO's edition, when it is not an evaluation edition. Unset for an evaluation ISO.
+pub(crate) const WINDOWS_PRODUCT_KEY_VAR: &str = "DEVVM_WINDOWS_PRODUCT_KEY";
+
+/// The key `DEVVM_WINDOWS_PRODUCT_KEY` gives, or `None` when it is not set.
+pub(crate) fn windows_product_key() -> Result<Option<String>, String> {
+    match std::env::var(WINDOWS_PRODUCT_KEY_VAR) {
+        Ok(key) => Ok(Some(key)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{WINDOWS_PRODUCT_KEY_VAR} is not UTF-8")),
+    }
+}
+
 // Builds a Windows guest from an ISO (about 15 minutes) and boots it. It is on unless `DEVVM_TEST_WINDOWS_GUEST=0`, and
-// then fails the tests naming the ISO variable where that is not set; only the `vm-windows` job gives one. The tests also
-// need the `vm` group's QEMU, so they ask for that group's consent. The lib's tests and `devvm-cli`'s `vm_cli` both join
-// it.
+// then fails the tests naming the ISO variable where that is not set; only the `vm-windows` job gives one (an evaluation
+// ISO; a non-evaluation one also needs `DEVVM_WINDOWS_PRODUCT_KEY`). The tests also need the `vm` group's QEMU, so they
+// ask for that group's consent. The lib's tests and `devvm-cli`'s `vm_cli` both join it.
 test_group!(
     WINDOWS_GUEST => windows_guest,
     env = "DEVVM_TEST_WINDOWS_GUEST",

@@ -81,11 +81,12 @@ impl fmt::Display for Activation<'_> {
 /// When the base a guest printed `read` for stops being usable: `None` when it never does.
 ///
 /// `read` is the marker line the first-logon script wrote to the serial port; text after the JSON is ignored.
-/// A licensed product with grace left ends `now` plus that grace. An `evaluation` image in any other state is
-/// `unavailable`: Windows did not license it, whatever the guest's activation said, and the error names that account
-/// and the status. Any other image has no expiry, including one that reads no product with a key (`null`: a retail
-/// install nobody activated). An evaluation image that reads none, and a read that is neither `null` nor the marker and
-/// its fields, are `internal` errors: a build never goes on without knowing.
+/// A licensed `evaluation` image with grace left ends `now` plus that grace; in any other state it is `unavailable`:
+/// Windows did not license it, whatever the guest's activation said, and the error names that account and the status.
+/// Any other image has no expiry, whatever grace its license reads (a KMS client reads its renewal window, and renews
+/// it), including one that reads no product with a key (`null`: a retail install nobody activated). An evaluation
+/// image that reads none, and a read that is neither `null` nor the marker and its fields, are `internal` errors: a
+/// build never goes on without knowing.
 ///
 /// The host branches on the status and the grace only. A base that ends is `expired-base` only through the store's
 /// margin on a licensed evaluation; what an evaluation that has really ended reads after `Activate` is not measured.
@@ -97,6 +98,9 @@ pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Resu
             Ok(None)
         };
     };
+    if !evaluation {
+        return Ok(None);
+    }
     if license.license_status == LICENSED && license.grace_period_remaining > 0 {
         let end = license
             .grace_period_remaining
@@ -104,9 +108,6 @@ pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Resu
             .and_then(|seconds| now.checked_add(Duration::from_secs(seconds)))
             .ok_or_else(|| unreadable(read, "the grace period does not fit a date"))?;
         return Ok(Some(end));
-    }
-    if !evaluation {
-        return Ok(None);
     }
     let account = match license.activation() {
         Some(activation) => format!("activation {activation}"),

@@ -17,6 +17,10 @@ const LTSC_EVAL: &str = r#"DEVVM-LICENSE={"Name":"Windows(R), IoTEnterpriseSEval
 // of an unactivated non-evaluation guest exists until the owner's LTSC first run.
 const UNACTIVATED: &str = r#"DEVVM-LICENSE={"Description":"Windows(R) Operating System, RETAIL channel","LicenseStatus":5,"GracePeriodRemaining":0,"LicenseFamily":"IoTEnterpriseS"}"#;
 
+// Synthesized from the documented values: a volume edition activated by a KMS host reads licensed with the renewal
+// window's 180 days (259200 minutes) as its grace.
+const KMS_ACTIVATED: &str = r#"DEVVM-LICENSE={"Description":"Windows(R) Operating System, VOLUME_KMSCLIENT channel","LicenseStatus":1,"GracePeriodRemaining":259200,"LicenseFamily":"IoTEnterpriseS","ProductKeyChannel":"Volume:GVLK"}"#;
+
 fn now() -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)
 }
@@ -139,12 +143,11 @@ fn a_licensed_status_with_zero_grace_has_no_expiry_unless_the_image_is_an_evalua
 }
 
 #[skuld::test]
-fn a_non_evaluation_image_with_grace_left_ends_with_it() {
-    // The image decides, not the read: a licensed non-evaluation one with grace left still reports its own end.
-    assert_eq!(
-        expiry_from(EN_US, false, now()).unwrap(),
-        Some(now() + Duration::from_secs(129_600 * 60))
-    );
+fn a_non_evaluation_image_has_no_expiry_whatever_grace_its_license_reads() {
+    // The image decides, not the read: a licensed non-evaluation one (a KMS client reads about 180 days of renewal grace,
+    // and an activation by a key reads none) never takes that grace as the end of its base.
+    assert_eq!(expiry_from(EN_US, false, now()).unwrap(), None);
+    assert_eq!(expiry_from(KMS_ACTIVATED, false, now()).unwrap(), None);
 }
 
 #[skuld::test]
@@ -156,7 +159,6 @@ fn an_unparseable_read_is_an_error() {
         r#"DEVVM-LICENSE={"LicenseStatus":1}"#,
         r#"DEVVM-LICENSE={"LicenseStatus":"1","GracePeriodRemaining":5}"#,
         r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":-5}"#,
-        r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":18446744073709551615}"#,
         // The activation's outcome is text: a nested object of an earlier script is not read.
         r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":5,"ActivationOutcome":{"Outcome":"succeeded"}}"#,
         r#"DEVVM-OTHER={"LicenseStatus":1,"GracePeriodRemaining":5}"#,
@@ -168,6 +170,16 @@ fn an_unparseable_read_is_an_error() {
             assert!(error.message().contains("DEVVM-LICENSE"), "{read}: {}", error.message());
         }
     }
+}
+
+#[skuld::test]
+fn a_grace_that_does_not_fit_a_date_is_an_error_only_for_an_evaluation() {
+    // A non-evaluation image takes no expiry from the grace, so it never reads it as a date.
+    let read = r#"DEVVM-LICENSE={"LicenseStatus":1,"GracePeriodRemaining":18446744073709551615}"#;
+    let error = expiry_from(read, true, now()).expect_err(read);
+    assert_eq!(error.kind(), ErrorKind::Internal, "{read}");
+    assert!(error.message().contains("DEVVM-LICENSE"), "{read}: {}", error.message());
+    assert_eq!(expiry_from(read, false, now()).unwrap(), None);
 }
 
 // The first-logon script sends `null` when no product has a key.

@@ -149,6 +149,11 @@ fn the_product_key_changes_the_layer_key() {
     assert_ne!(none, one, "a key and no key");
     assert_ne!(one, other, "two keys");
     assert_eq!(key(Some("AB12C-DE34F-GH56J-KL78M-NP90Q")), one);
+    assert_eq!(
+        key(Some("ab12c-de34f-gh56j-kl78m-np90q")),
+        one,
+        "a key's case is not part of it"
+    );
 }
 
 #[skuld::test]

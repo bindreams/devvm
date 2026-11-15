@@ -161,6 +161,20 @@ fn a_product_key_of_the_wrong_shape_is_refused_without_being_printed() {
 }
 
 #[skuld::test]
+fn a_product_key_is_kept_in_uppercase() {
+    // Windows keys are case-insensitive: the answer file and the layer key see one spelling.
+    let lower = ProductKey::parse("ab12c-de34f-gh56j-kl78m-np90q").unwrap();
+    assert_eq!(lower.expose(), KEY);
+    assert_eq!(lower, ProductKey::parse(KEY).unwrap());
+    let Source::Iso { product_key, .. } =
+        parse("from: { iso: win.iso, product-key: ab12c-de34f-gh56j-kl78m-np90q }").source
+    else {
+        panic!()
+    };
+    assert_eq!(product_key.unwrap().expose(), KEY);
+}
+
+#[skuld::test]
 fn the_product_key_is_in_no_debug_text_of_a_recipe() {
     let recipe = parse(&format!("from: {{ iso: win.iso, product-key: {KEY} }}"));
     for text in [

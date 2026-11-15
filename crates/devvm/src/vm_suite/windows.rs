@@ -18,7 +18,7 @@ use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::elevate::TASK;
 use crate::guest::windows::wrap::BROKER_EXE;
 use crate::recipe::{Recipe, Shell};
-use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
+use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest, windows_product_key};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir};
@@ -61,7 +61,8 @@ pub(super) fn windows_iso(#[fixture(windows_guest)] _group: &Group) -> Result<Pa
 
 /// A recipe file `dir/r.devvm.yaml` that installs Windows from `iso` and runs `steps`, each one step's YAML.
 pub(super) fn windows_recipe(dir: &Path, iso: &Path, steps: &[&str]) -> Recipe {
-    let text = recipe_text(iso, steps).expect("a recipe for a UTF-8 ISO path");
+    let product_key = windows_product_key().expect("a UTF-8 product key");
+    let text = recipe_text(iso, product_key.as_deref(), steps).expect("a recipe for a UTF-8 ISO path");
     Recipe::parse(&text, &dir.join("r.devvm.yaml")).unwrap()
 }
 

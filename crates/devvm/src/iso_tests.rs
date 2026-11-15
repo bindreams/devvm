@@ -92,8 +92,13 @@ fn a_product_key_is_required_by_an_edition_that_is_not_an_evaluation_and_refused
         "the edition `Windows 11 Enterprise Evaluation` is an evaluation edition; `product-key` in `from:` must not be set"
     );
     assert!(!format!("{error:?} {error}").contains(KEY));
-    // An image that names no edition id is not known to be an evaluation.
-    assert!(check_product_key(&edition_of("", "No id"), None).is_err());
+    // An image that names no edition id is not known to be an evaluation: the error says that, not that it is not one.
+    let error = check_product_key(&edition_of("", "No id"), None).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert_eq!(
+        error.message(),
+        "the edition `No id` names no edition id, so it is not known to be an evaluation edition; `product-key` in `from:` is required"
+    );
 }
 
 // The boot patch ======================================================================================================

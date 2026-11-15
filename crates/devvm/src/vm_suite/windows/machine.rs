@@ -17,6 +17,7 @@ use super::{
 use crate::RunAs;
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
+use crate::test_groups::windows_product_key;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{awaiting, step};
@@ -87,13 +88,13 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    let recorded = base
-        .image
-        .chain
-        .tip()
-        .meta()
-        .expires
-        .expect("an evaluation base has an expiry");
+    let expires = base.image.chain.tip().meta().expires;
+    // An ISO that needs a product key is not an evaluation edition: its base has no expiry to compare.
+    if windows_product_key().unwrap().is_some() {
+        assert_eq!(expires, None, "a base of a non-evaluation edition has no expiry");
+        return;
+    }
+    let recorded = expires.expect("an evaluation base has an expiry");
     let minutes: u64 = printed(
         &guest.vm,
         r#"(Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" | Select-Object -First 1).GracePeriodRemaining"#,

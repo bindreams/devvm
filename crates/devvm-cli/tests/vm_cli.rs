@@ -14,7 +14,7 @@ use devvm::{ExitStatus, host_exit_width};
 use serde_json::Value;
 
 use cases::{Case, Ended, ExecTarget, Observed, Os};
-use test_groups::{Group, WINDOWS_ISO_VAR, vm_group, windows_guest};
+use test_groups::{Group, WINDOWS_ISO_VAR, vm_group, windows_guest, windows_product_key};
 use test_harness::{GUEST, VM};
 
 #[path = "../../devvm/src/test_groups/shared.rs"]
@@ -239,7 +239,8 @@ fn windows_up(cli: &Cli) -> Result<Instance, String> {
     let iso = std::env::var_os(WINDOWS_ISO_VAR).ok_or_else(|| format!("{WINDOWS_ISO_VAR} is not set"))?;
     step("devvm up builds the Windows base and boots an instance");
     let recipe = cli.project.join("windows.devvm.yaml");
-    std::fs::write(&recipe, recipe_text(Path::new(&iso), &[])?)
+    let product_key = windows_product_key()?;
+    std::fs::write(&recipe, recipe_text(Path::new(&iso), product_key.as_deref(), &[])?)
         .map_err(|e| format!("cannot write {}: {e}", recipe.display()))?;
     Instance::up_from(
         cli,

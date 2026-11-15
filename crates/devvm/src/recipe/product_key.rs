@@ -13,14 +13,15 @@ impl ProductKey {
     const GROUPS: usize = 5;
     const GROUP_LEN: usize = 5;
 
-    /// The key `text` spells, or `None` when it is not five groups of five letters and digits joined by `-`.
+    /// The key `text` spells, in uppercase (Windows keys are case-insensitive, so one key has one spelling), or `None`
+    /// when it is not five groups of five letters and digits joined by `-`.
     pub fn parse(text: &str) -> Option<ProductKey> {
         let groups: Vec<&str> = text.split('-').collect();
         let shaped = groups.len() == Self::GROUPS
             && groups
                 .iter()
                 .all(|group| group.len() == Self::GROUP_LEN && group.bytes().all(|b| b.is_ascii_alphanumeric()));
-        shaped.then(|| ProductKey(SecretString::from(text)))
+        shaped.then(|| ProductKey(SecretString::from(text.to_ascii_uppercase())))
     }
 
     pub(crate) fn expose(&self) -> &str {

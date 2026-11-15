@@ -236,14 +236,21 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
 
 /// Whether `product_key` fits the edition `image` is: an edition that is not an evaluation edition needs one, because
 /// Windows Setup stops on its key page without it, and an evaluation edition takes none. An image that names no
-/// edition id is not known to be an evaluation edition.
+/// edition id is not known to be an evaluation edition, and the error says that.
 pub(crate) fn check_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<()> {
     let name = &image.name;
     match (image.is_evaluation(), product_key) {
-        (false, None) => Err(Error::new(
-            ErrorKind::Recipe,
-            format!("the edition `{name}` is not an evaluation edition; `product-key` in `from:` is required"),
-        )),
+        (false, None) => {
+            let why = if image.edition_id.is_empty() {
+                "names no edition id, so it is not known to be an evaluation edition"
+            } else {
+                "is not an evaluation edition"
+            };
+            Err(Error::new(
+                ErrorKind::Recipe,
+                format!("the edition `{name}` {why}; `product-key` in `from:` is required"),
+            ))
+        }
         (true, Some(_)) => Err(Error::new(
             ErrorKind::Recipe,
             format!("the edition `{name}` is an evaluation edition; `product-key` in `from:` must not be set"),

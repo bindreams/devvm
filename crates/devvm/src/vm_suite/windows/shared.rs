@@ -15,10 +15,18 @@ pub fn first_try<T>(slot: &OnceLock<String>, make: impl FnOnce() -> Result<T, St
     })
 }
 
-/// The text of a recipe that installs Windows from `iso` and runs `steps`, each one step's YAML.
-pub fn recipe_text(iso: &Path, steps: &[&str]) -> Result<String, String> {
+/// The text of a recipe that installs Windows from `iso` (with `product_key`, for an edition that is not an evaluation
+/// edition) and runs `steps`, each one step's YAML.
+pub fn recipe_text(iso: &Path, product_key: Option<&str>, steps: &[&str]) -> Result<String, String> {
     let iso = iso.to_str().ok_or("a UTF-8 ISO path")?;
     let iso = serde_json::to_string(iso).map_err(|e| e.to_string())?;
+    let product_key = match product_key {
+        Some(key) => format!(
+            ", product-key: {}",
+            serde_json::to_string(key).map_err(|e| e.to_string())?
+        ),
+        None => String::new(),
+    };
     let steps = if steps.is_empty() {
         "steps: []\n".to_owned()
     } else {
@@ -27,5 +35,5 @@ pub fn recipe_text(iso: &Path, steps: &[&str]) -> Result<String, String> {
             steps.iter().map(|step| format!("  - {step}\n")).collect::<String>()
         )
     };
-    Ok(format!("from: {{ iso: {iso} }}\n{steps}"))
+    Ok(format!("from: {{ iso: {iso}{product_key} }}\n{steps}"))
 }
