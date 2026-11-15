@@ -236,7 +236,7 @@ impl Engine {
 
     /// The `ssh_config` entries of this engine's state directory.
     pub(crate) fn ssh_configs(&self) -> SshConfigDir {
-        SshConfigDir::new(self.dirs.ssh()).with_progress(self.progress.clone())
+        SshConfigDir::new(self.dirs.ssh(), self.host).with_progress(self.progress.clone())
     }
 
     /// The instances matching `filter`, by name.
