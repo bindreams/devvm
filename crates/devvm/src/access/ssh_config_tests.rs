@@ -8,6 +8,7 @@ use crate::host::Host;
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceId;
 use crate::store::lock::{FileLock, Mode};
+use crate::test_support::file_mode;
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::host::TestHost;
 
@@ -44,7 +45,7 @@ fn conf(dir: &SshConfigDir, name: &str) -> PathBuf {
 
 #[skuld::test]
 fn entry_quotes_values_with_spaces_and_uses_forward_slashes(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     dir.write_entry(&entry(home, "web", 2222), &host_public()).unwrap();
     let identity = slashed(&home.join("keys").join("client"));
     let known_hosts = slashed(&home.join("keys").join("known_hosts"));
@@ -70,7 +71,7 @@ fn entry_quotes_values_with_spaces_and_uses_forward_slashes(#[fixture(unicode_ho
 
 #[skuld::test]
 fn a_quote_in_a_value_is_escaped(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     let mut e = entry(home, "web", 22);
     e.identity = home.join("it's \"q\"").join("client");
     dir.write_entry(&e, &host_public()).unwrap();
@@ -81,7 +82,7 @@ fn a_quote_in_a_value_is_escaped(#[fixture(unicode_home)] home: &Path) {
 
 #[skuld::test]
 fn port_change_rewrites_only_the_conf_not_known_hosts(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     let e = entry(home, "web", 2222);
     dir.write_entry(&e, &host_public()).unwrap();
     // A second name for the same file: if the file were replaced, writing through the link would not reach it.
@@ -103,7 +104,7 @@ fn port_change_rewrites_only_the_conf_not_known_hosts(#[fixture(unicode_home)] h
 
 #[skuld::test]
 fn a_changed_host_key_rewrites_known_hosts(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     let e = entry(home, "web", 2222);
     dir.write_entry(&e, &host_public()).unwrap();
     dir.write_entry(&e, "ssh-ed25519 AAAAOther").unwrap();
@@ -115,7 +116,7 @@ fn a_changed_host_key_rewrites_known_hosts(#[fixture(unicode_home)] home: &Path)
 
 #[skuld::test]
 fn remove_entry_removes_the_conf_and_is_idempotent(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     dir.write_entry(&entry(home, "web", 22), &host_public()).unwrap();
     dir.remove_entry(&InstanceName::parse("web").unwrap()).unwrap();
     assert!(!conf(&dir, "web").exists());
@@ -132,7 +133,7 @@ fn concurrent_write_and_remove_leave_every_live_entry_whole(#[fixture(unicode_ho
         .map(|i| {
             let (home, barrier) = (home.clone(), barrier.clone());
             std::thread::spawn(move || {
-                let dir = SshConfigDir::new(home.join("ssh"));
+                let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
                 let mut e = entry(&home, &format!("vm-{i}"), 1000);
                 e.known_hosts = home.join(format!("known-{i}"));
                 barrier.wait();
@@ -150,7 +151,7 @@ fn concurrent_write_and_remove_leave_every_live_entry_whole(#[fixture(unicode_ho
     for worker in workers {
         worker.join().unwrap();
     }
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     for i in 0..THREADS {
         let name = format!("vm-{i}");
         let path = conf(&dir, &name);
@@ -176,7 +177,7 @@ fn concurrent_write_and_remove_leave_every_live_entry_whole(#[fixture(unicode_ho
 
 #[skuld::test]
 fn sweep_removes_only_confs_of_gone_instances(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     for (name, port) in [("kept", 1), ("gone", 2)] {
         dir.write_entry(&entry(home, name, port), &host_public()).unwrap();
     }
@@ -205,7 +206,7 @@ fn sweep_removes_only_confs_of_gone_instances(#[fixture(unicode_home)] home: &Pa
 fn a_sweep_holds_the_lock_while_it_asks_whether_an_instance_lives(#[fixture(unicode_home)] home: &Path) {
     // A sweeper that read "no instance" must not delete the conf of an instance placed a moment later: the whole
     // sweep, the question included, is under the lock the writers take.
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     dir.write_entry(&entry(home, "reused", 3), &host_public()).unwrap();
     let held = std::cell::Cell::new(None);
     dir.sweep(&|_| {
@@ -240,7 +241,7 @@ fn snapshot(dir: &Path) -> Vec<(String, String)> {
 /// shows in the snapshot taken when the message arrives; a write after it cannot happen while the holder has the lock.
 fn waits_for_the_lock(home: &Path, operation: impl FnOnce(SshConfigDir) + Send) -> SshConfigDir {
     let (progress, messages) = ChannelProgress::new();
-    let operated = SshConfigDir::new(home.join("ssh")).with_progress(progress);
+    let operated = SshConfigDir::new(home.join("ssh"), &TestHost).with_progress(progress);
     let mut holder = FileLock::open(&operated.path().join(".lock")).unwrap();
     assert!(holder.try_lock(Mode::Exclusive).unwrap());
     let before = snapshot(operated.path());
@@ -257,7 +258,7 @@ fn waits_for_the_lock(home: &Path, operation: impl FnOnce(SshConfigDir) + Send) 
         waiting.join().unwrap();
         assert_eq!(during, before, "the operation wrote before it had the lock");
     });
-    SshConfigDir::new(home.join("ssh"))
+    SshConfigDir::new(home.join("ssh"), &TestHost)
 }
 
 #[skuld::test]
@@ -270,7 +271,7 @@ fn writing_an_entry_waits_for_the_lock(#[fixture(unicode_home)] home: &Path) {
 
 #[skuld::test]
 fn removing_an_entry_waits_for_the_lock(#[fixture(unicode_home)] home: &Path) {
-    let plain = SshConfigDir::new(home.join("ssh"));
+    let plain = SshConfigDir::new(home.join("ssh"), &TestHost);
     plain.write_entry(&entry(home, "web", 1), &host_public()).unwrap();
     let dir = waits_for_the_lock(home, |dir| {
         dir.remove_entry(&InstanceName::parse("web").unwrap()).unwrap()
@@ -286,7 +287,7 @@ fn writing_the_top_level_config_waits_for_the_lock(#[fixture(unicode_home)] home
 
 #[skuld::test]
 fn a_sweep_waits_for_the_lock(#[fixture(unicode_home)] home: &Path) {
-    let plain = SshConfigDir::new(home.join("ssh"));
+    let plain = SshConfigDir::new(home.join("ssh"), &TestHost);
     plain.write_entry(&entry(home, "gone", 1), &host_public()).unwrap();
     let dir = waits_for_the_lock(home, |dir| {
         assert!(dir.sweep(&|_| false).is_empty());
@@ -296,7 +297,7 @@ fn a_sweep_waits_for_the_lock(#[fixture(unicode_home)] home: &Path) {
 
 #[skuld::test]
 fn sweep_removes_temporary_files_a_killed_writer_left(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     dir.write_entry(&entry(home, "kept", 1), &host_public()).unwrap();
     let stale = dir.path().join("kept.conf.tmp-deadbeef");
     std::fs::write(&stale, "half").unwrap();
@@ -307,7 +308,7 @@ fn sweep_removes_temporary_files_a_killed_writer_left(#[fixture(unicode_home)] h
 
 #[skuld::test]
 fn sweep_removes_the_temporary_of_every_file_written_there_and_only_those(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     dir.ensure_top_level().unwrap();
     let stale = [
         "config.tmp-deadbeef",
@@ -335,7 +336,7 @@ fn sweep_removes_the_temporary_of_every_file_written_there_and_only_those(#[fixt
 
 #[skuld::test]
 fn top_level_config_is_static_and_idempotent(#[fixture(unicode_home)] home: &Path) {
-    let dir = SshConfigDir::new(home.join("ssh"));
+    let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
     dir.ensure_top_level().unwrap();
     let config = dir.path().join("config");
     let want = format!("Include \"{}/*.conf\"\n", slashed(dir.path()));
@@ -358,7 +359,7 @@ fn top_level_config_is_static_and_idempotent(#[fixture(unicode_home)] home: &Pat
 /// What `ssh -G` makes of the config for `web`, with the ssh directory below `state` and the entry's files below
 /// `files`. Runs the real OpenSSH; fails naming it when it is not on `PATH`.
 fn check_system_ssh(state: &Path, files: &Path) {
-    let dir = SshConfigDir::new(state.join("ssh"));
+    let dir = SshConfigDir::new(state.join("ssh"), &TestHost);
     let e = entry(files, "web", 2222);
     dir.write_entry(&e, &host_public()).unwrap();
     dir.ensure_top_level().unwrap();
@@ -402,6 +403,81 @@ fn check_system_ssh(state: &Path, files: &Path) {
 #[skuld::test]
 fn system_ssh_accepts_the_generated_config(#[fixture(unicode_home)] home: &Path) {
     check_system_ssh(home, home);
+}
+
+/// Makes `dir` hand `Authenticated Users` full access to everything created below it, as the root of a fresh NTFS
+/// volume does. Returns the user's SID.
+#[cfg(windows)]
+fn let_other_accounts_write_below(dir: &Path) -> String {
+    use crate::host::windows::user::current_sid;
+    use crate::test_support::file_security::{Security, set_protected_dacl};
+    const AUTHENTICATED_USERS: &str = "S-1-5-11";
+
+    let me = current_sid().unwrap();
+    set_protected_dacl(dir, &format!("D:P(A;OICI;FA;;;{me})(A;OICI;FA;;;AU)"));
+    let probe = dir.join("probe");
+    std::fs::write(&probe, "x").unwrap();
+    let inherited = Security::of(&probe).allowed_sids();
+    assert!(
+        inherited.iter().any(|sid| sid == AUTHENTICATED_USERS),
+        "a new file in the directory must inherit Authenticated Users write: {inherited:?}"
+    );
+    me
+}
+
+/// OpenSSH for Windows refuses an `Include`d conf that an account other than the user, Administrators or SYSTEM can
+/// write ("Bad owner or permissions"), which fails every `ssh -F <config>`.
+#[cfg(windows)]
+#[skuld::test]
+fn system_ssh_reads_a_state_directory_that_other_accounts_can_write(#[fixture(unicode_home)] home: &Path) {
+    let state = home.join("loose state");
+    std::fs::create_dir(&state).unwrap();
+    let_other_accounts_write_below(&state);
+    check_system_ssh(&state, &state);
+}
+
+#[skuld::test]
+fn the_generated_files_are_the_users_alone_whatever_the_directory_hands_down(#[fixture(unicode_home)] home: &Path) {
+    let state = home.join("loose state");
+    std::fs::create_dir(&state).unwrap();
+    #[cfg(windows)]
+    let me = let_other_accounts_write_below(&state);
+    let dir = SshConfigDir::new(state.join("ssh"), &TestHost);
+    let e = entry(&state, "web", 2222);
+    dir.write_entry(&e, &host_public()).unwrap();
+    dir.ensure_top_level().unwrap();
+    // A rewrite replaces each file, and the replacement is as private as the first.
+    let e = entry(&state, "web", 2223);
+    dir.write_entry(&e, &host_public()).unwrap();
+    for path in [conf(&dir, "web"), dir.config(), e.known_hosts.clone()] {
+        assert_eq!(
+            file_mode::mode(&path),
+            cfg!(unix).then_some(0o600),
+            "{}",
+            path.display()
+        );
+        #[cfg(windows)]
+        assert_is_the_users_alone(&path, &me);
+    }
+}
+
+/// The file's DACL is protected and grants only `me`, whose owner is the user or Administrators (OpenSSH accepts both).
+#[cfg(windows)]
+fn assert_is_the_users_alone(path: &Path, me: &str) {
+    use crate::test_support::file_security::Security;
+    let security = Security::of(path);
+    assert!(
+        security.dacl_is_protected(),
+        "{}: the DACL must be protected",
+        path.display()
+    );
+    assert_eq!(security.allowed_sids(), vec![me.to_owned()], "{}", path.display());
+    let owner = security.owner();
+    assert!(
+        owner == me || owner == "S-1-5-32-544",
+        "{}: the owner must be the user or Administrators, not {owner}",
+        path.display()
+    );
 }
 
 /// `[` and `]` are glob syntax and `$` starts a variable to ssh; a state directory can hold them (`*` and `?` cannot
@@ -473,7 +549,7 @@ fn system_ssh_reads_key_files_below_a_directory_with_a_percent(#[fixture(unicode
 fn percent_signs_in_key_paths_and_glob_characters_in_the_state_path_are_escaped(#[fixture(unicode_home)] home: &Path) {
     let state = home.join("[w]");
     let files = home.join("50% keys");
-    let dir = SshConfigDir::new(state.join("ssh"));
+    let dir = SshConfigDir::new(state.join("ssh"), &TestHost);
     let e = entry(&files, "web", 22);
     dir.write_entry(&e, &host_public()).unwrap();
     dir.ensure_top_level().unwrap();
@@ -507,7 +583,7 @@ fn glob_literal_matches_only_itself() {
 #[skuld::test]
 fn a_path_ssh_would_read_as_an_environment_variable_is_refused(#[fixture(unicode_home)] home: &Path) {
     let base = home.join("${HOME}");
-    let dir = SshConfigDir::new(base.join("ssh"));
+    let dir = SshConfigDir::new(base.join("ssh"), &TestHost);
     let error = dir.write_entry(&entry(&base, "web", 22), &host_public()).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("${"), "{error}");
@@ -523,7 +599,7 @@ fn a_path_ssh_would_read_as_an_environment_variable_is_refused(#[fixture(unicode
 #[skuld::test]
 fn a_state_directory_with_a_percent_is_refused(#[fixture(unicode_home)] home: &Path) {
     let base = home.join("50% done");
-    let dir = SshConfigDir::new(base.join("ssh"));
+    let dir = SshConfigDir::new(base.join("ssh"), &TestHost);
     let error = dir.ensure_top_level().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     let message = error.message();
@@ -537,13 +613,13 @@ fn a_state_directory_with_a_percent_is_refused(#[fixture(unicode_home)] home: &P
 fn a_line_break_in_a_path_is_refused(#[fixture(unicode_home)] home: &Path) {
     for breaker in ["\n", "\r", "\r\n"] {
         let base = home.join(format!("x{breaker}ProxyCommand evil"));
-        let dir = SshConfigDir::new(home.join("ssh"));
+        let dir = SshConfigDir::new(home.join("ssh"), &TestHost);
         let error = dir.write_entry(&entry(&base, "web", 22), &host_public()).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Io, "{breaker:?}: {error}");
         assert!(error.message().contains("line break"), "{breaker:?}: {error}");
         assert!(!conf(&dir, "web").exists(), "nothing was written");
 
-        let dir = SshConfigDir::new(base.join("ssh"));
+        let dir = SshConfigDir::new(base.join("ssh"), &TestHost);
         let error = dir.ensure_top_level().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Io, "{breaker:?}: {error}");
         assert!(error.message().contains("line break"), "{breaker:?}: {error}");

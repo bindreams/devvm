@@ -12,6 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crate::exit::{NullProgress, Progress};
+use crate::host::Host;
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, is_write_file_temporary, write_file};
 use crate::store::lock::{FileLock, Mode};
@@ -37,6 +38,9 @@ pub(crate) struct SshConfigEntry {
 /// `<state>/ssh`.
 pub(crate) struct SshConfigDir {
     dir: PathBuf,
+    /// Writes every file here as the user's alone: OpenSSH for Windows refuses an `Include`d conf that another account
+    /// can write, and a file takes the DACL of its directory's parent unless it is given one.
+    host: &'static dyn Host,
     /// Told "waiting for the ssh configuration" when another process holds the lock.
     progress: Arc<dyn Progress>,
 }
@@ -178,8 +182,8 @@ fn known_hosts_text(id: &InstanceId, host_public: &str) -> Result<String> {
     }
 }
 
-/// Writes `text` to `path` through a temporary file and a rename, unless the file already holds exactly `text`.
-fn write_if_different(path: &Path, text: &str) -> Result<()> {
+/// Writes `text` to `path` ([`write_file`]), unless the file already holds exactly `text`.
+fn write_if_different(host: &dyn Host, path: &Path, text: &str) -> Result<()> {
     if std::fs::read_to_string(path).is_ok_and(|existing| existing == text) {
         return Ok(());
     }
@@ -190,13 +194,14 @@ fn write_if_different(path: &Path, text: &str) -> Result<()> {
         ));
     };
     std::fs::create_dir_all(dir).map_err(|e| io("create", dir, e))?;
-    write_file(dir, file, text)
+    write_file(host, dir, file, text)
 }
 
 impl SshConfigDir {
-    pub(crate) fn new(dir: PathBuf) -> Self {
+    pub(crate) fn new(dir: PathBuf, host: &'static dyn Host) -> Self {
         SshConfigDir {
             dir,
+            host,
             progress: Arc::new(NullProgress),
         }
     }
@@ -234,8 +239,8 @@ impl SshConfigDir {
         let conf = conf_text(e)?;
         let known_hosts = known_hosts_text(&e.id, host_public)?;
         let _lock = self.lock()?;
-        write_if_different(&e.known_hosts, &known_hosts)?;
-        write_if_different(&self.conf_path(&e.name), &conf)
+        write_if_different(self.host, &e.known_hosts, &known_hosts)?;
+        write_if_different(self.host, &self.conf_path(&e.name), &conf)
     }
 
     /// Removes `<name>.conf`; an entry that is not there is fine.
@@ -258,7 +263,7 @@ impl SshConfigDir {
         let glob = format!("{dir}/*{CONF_SUFFIX}");
         let text = format!("Include {}\n", quoted(&glob));
         let _lock = self.lock()?;
-        write_if_different(&self.config(), &text)
+        write_if_different(self.host, &self.config(), &text)
     }
 
     /// Removes the conf of every instance `live` denies, and the temporary files a killed writer left. Returns what it
