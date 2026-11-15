@@ -32,6 +32,7 @@ mod machine;
 mod seed;
 mod session;
 mod shared;
+mod stdin;
 
 use bounds::STATE_BOUND;
 use shared::{first_try, recipe_text};

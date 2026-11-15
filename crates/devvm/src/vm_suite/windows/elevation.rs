@@ -358,7 +358,7 @@ fn windows_an_elevated_command_whose_runner_dies_ends_with_an_error_not_a_wait(
 }
 
 /// The result of a scoped thread. A panic in it goes on in the test with its own message, not as an opaque `Any`.
-fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
+pub(super) fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
     thread
         .join()
         .unwrap_or_else(|payload| std::panic::resume_unwind(payload))

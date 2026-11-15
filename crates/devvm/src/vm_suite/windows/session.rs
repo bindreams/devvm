@@ -74,9 +74,8 @@ fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of
 
 // The boot window =====================================================================================================
 
-/// What a plain `ssh` of the generated `config` gets from `name` for the command `remote`.
-pub(super) fn ssh_remote(config: &Path, name: &str, remote: &str) -> std::process::Output {
-    let _watch = awaiting(format!("ssh to {name}"), ANSWER_BOUND);
+/// The plain `ssh` of the generated `config` for the command `remote` on `name`, with its streams still to be set.
+pub(super) fn ssh_command(config: &Path, name: &str, remote: &str) -> std::process::Command {
     let mut command = std::process::Command::new("ssh");
     command
         .arg("-F")
@@ -85,14 +84,21 @@ pub(super) fn ssh_remote(config: &Path, name: &str, remote: &str) -> std::proces
         // A connection that the guest does not answer yet is no answer: the next probe asks again.
         .args(["-o", "ConnectTimeout=10"])
         .arg(name)
-        .arg(remote)
-        .stdin(Stdio::null());
+        .arg(remote);
     host::current().quiet(&mut command);
+    command
+}
+
+/// What a plain `ssh` of the generated `config` gets from `name` for the command `remote`.
+pub(super) fn ssh_remote(config: &Path, name: &str, remote: &str) -> std::process::Output {
+    let _watch = awaiting(format!("ssh to {name}"), ANSWER_BOUND);
+    let mut command = ssh_command(config, name, remote);
+    command.stdin(Stdio::null());
     command.output().unwrap_or_else(|e| panic!("cannot run ssh: {e}"))
 }
 
 /// What a probe through `ssh` says: the `session=.. integrity=..` line of a command that ran, or nothing.
-fn answer(output: &std::process::Output) -> Option<String> {
+pub(super) fn answer(output: &std::process::Output) -> Option<String> {
     let text = String::from_utf8_lossy(&output.stdout);
     text.lines()
         .map(str::trim)
