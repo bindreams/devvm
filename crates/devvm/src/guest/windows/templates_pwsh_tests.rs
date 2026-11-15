@@ -19,9 +19,8 @@ fn run_windows_powershell(script: &str) -> Output {
     run_with("powershell.exe", script, None, None)
 }
 
-/// The PowerShells that run each script of the answer disk: the first-logon command runs `bootstrap.ps1` in Windows
-/// PowerShell 5.1, the tasks it registers run `boot-task.ps1` and `eb-runner.ps1` in PowerShell 7, and `lib.ps1` is
-/// dot-sourced by both sides.
+/// The PowerShells that run each script on the guest: the first-logon command runs `bootstrap.ps1` (5.1); the tasks it
+/// registers run the others (7); `lib.ps1` is dot-sourced by both.
 const INTERPRETERS: [(&str, &[&str]); 4] = [
     ("bootstrap.ps1", &["powershell.exe"]),
     ("lib.ps1", &["powershell.exe", "pwsh"]),
@@ -30,7 +29,7 @@ const INTERPRETERS: [(&str, &[&str]); 4] = [
 ];
 
 /// A script that parses `input` with the parser method `method` (`ParseFile` takes a path, `ParseInput` the text) and
-/// prints its parse errors, one per line, with their line numbers. It never runs `input`; a parser that throws fails it.
+/// prints its parse errors, one per line, with their line numbers. It never runs `input`.
 fn parse_errors_script(method: &str, input: &str) -> String {
     r#"$ErrorActionPreference = 'Stop'
 $errors = $null; $tokens = $null
@@ -38,7 +37,7 @@ $errors = $null; $tokens = $null
 foreach ($e in $errors) { "$($e.Extent.StartLineNumber): $($e.Message)" }
 "#
     .replace("@@METHOD@@", method)
-    // Last: the input is never scanned for a placeholder.
+    // Last, so the input is never scanned for a placeholder.
     .replace("@@INPUT@@", &literal(input))
 }
 
