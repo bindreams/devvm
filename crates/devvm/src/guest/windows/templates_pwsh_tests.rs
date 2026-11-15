@@ -16,7 +16,7 @@ use crate::test_groups::{Group, pwsh_wrap};
 /// `script` in Windows PowerShell 5.1 (`powershell.exe`), the PowerShell the guest's first-logon command and bootstrap
 /// run in.
 fn run_windows_powershell(script: &str) -> Output {
-    run_with("powershell.exe", script, "none", None)
+    run_with("powershell.exe", script, None, None)
 }
 
 /// The parse errors of the script `text` in this PowerShell's grammar, one per line, with their line numbers.
@@ -148,51 +148,19 @@ fn first_logon_script(answer: &str) -> String {
     }
 }
 
-/// Parses `@@SCRIPT@@` (never runs it) and prints its parse errors as `ERROR ...` lines, then the facts the first-logon
-/// test asserts as `name=value` lines. The loop's condition is printed whole, its whitespace collapsed.
-const FIRST_LOGON_FACTS: &str = r#"
+/// Parses `@@SCRIPT@@` (never runs it) and prints its parse errors, one per line.
+const PARSE_ERRORS: &str = r#"
 $errors = $null; $tokens = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseInput(@@SCRIPT@@, [ref]$tokens, [ref]$errors)
-foreach ($e in $errors) { "ERROR $($e.Extent.StartLineNumber): $($e.Message)" }
-function Kind($node) { if ($null -ne $node) { $node.GetType().Name } }
-$loops = @($ast.EndBlock.Statements | Where-Object { (Kind $_) -eq 'WhileStatementAst' })
-"loops=$($loops.Count)"
-$loop = $loops[0]
-"condition=$($loop.Condition.Extent.Text -replace '\s+', ' ')"
-$body = foreach ($s in $loop.Body.Statements) {
-    if ((Kind $s) -eq 'PipelineAst' -and $s.PipelineElements.Count -eq 1 -and (Kind $s.PipelineElements[0]) -eq 'CommandAst') { $s.PipelineElements[0].GetCommandName() } else { Kind $s }
-}
-"body=$($body -join ',')"
-$bootstrap = @($ast.FindAll({ param($n) (Kind $n) -eq 'StringConstantExpressionAst' -and $n.Value -eq 'bootstrap.ps1' }, $true))
-"bootstrap_follows_the_loop=$($bootstrap.Count -eq 1 -and $bootstrap[0].Extent.StartOffset -ge $loop.Extent.EndOffset)"
+[void][System.Management.Automation.Language.Parser]::ParseInput(@@SCRIPT@@, [ref]$tokens, [ref]$errors)
+foreach ($e in $errors) { "$($e.Extent.StartLineNumber): $($e.Message)" }
 "#;
 
-/// The loop's condition, whitespace collapsed: waits for a ready volume labelled `CIDATA`. Any rewrite of it fails here,
-/// to be read: the wait has no cap.
-const FIRST_LOGON_CONDITION: &str = "-not ($d = [IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.VolumeLabel -eq 'CIDATA' } | Select-Object -First 1)";
-
+/// What the command does is pinned by `the_first_logon_command_waits_for_the_answer_disk_with_no_cap`; this is that it
+/// parses in Windows PowerShell 5.1, which runs it on the guest.
 #[skuld::test]
-fn the_first_logon_command_parses_and_waits_for_the_answer_disk_with_no_cap(#[fixture(pwsh_wrap)] _group: &Group) {
+fn the_first_logon_command_parses_in_windows_powershell(#[fixture(pwsh_wrap)] _group: &Group) {
     let script = first_logon_script(&answer_file(&inputs()).unwrap());
-    // Windows PowerShell 5.1 runs the command on the guest; its parser reads it here.
-    let output = run_windows_powershell(&FIRST_LOGON_FACTS.replace("@@SCRIPT@@", &literal(&script)));
+    let output = run_windows_powershell(&PARSE_ERRORS.replace("@@SCRIPT@@", &literal(&script)));
     assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
-    let text = String::from_utf8_lossy(&output.stdout);
-    let errors: Vec<&str> = text.lines().filter(|line| line.starts_with("ERROR ")).collect();
-    assert!(
-        errors.is_empty(),
-        "the command does not parse: {errors:?}
-{script}"
-    );
-    let facts: Vec<&str> = text.lines().filter(|line| !line.starts_with("ERROR ")).collect();
-    assert_eq!(
-        facts,
-        [
-            "loops=1",
-            &format!("condition={FIRST_LOGON_CONDITION}"),
-            "body=Start-Sleep",
-            "bootstrap_follows_the_loop=True",
-        ],
-        "{script}"
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "", "{script}");
 }

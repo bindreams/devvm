@@ -26,16 +26,24 @@ pub(in crate::guest::windows) fn test_binary() -> String {
 
 /// `script` in `pwsh -c`, the test binary in `helper` mode, `path` (a directory) first on the PATH.
 pub(in crate::guest::windows) fn run(script: &str, helper: &str, path: Option<&Path>) -> Output {
-    run_with("pwsh", script, helper, path)
+    run_with("pwsh", script, Some(helper), path)
 }
 
-/// [`run`] in the PowerShell `exe` (`powershell.exe` is Windows PowerShell 5.1, which the guest's own scripts run in).
-pub(in crate::guest::windows) fn run_with(exe: &str, script: &str, helper: &str, path: Option<&Path>) -> Output {
+/// [`run`] in the PowerShell `exe` (`powershell.exe` is Windows PowerShell 5.1, which the guest's own scripts run in),
+/// with no helper variable when `helper` is `None`.
+pub(in crate::guest::windows) fn run_with(
+    exe: &str,
+    script: &str,
+    helper: Option<&str>,
+    path: Option<&Path>,
+) -> Output {
     let mut process = Process::new(exe);
     process
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env(HELPER_VAR, helper)
         .stdin(Stdio::null());
+    if let Some(helper) = helper {
+        process.env(HELPER_VAR, helper);
+    }
     if let Some(dir) = path {
         let mut paths = vec![dir.to_path_buf()];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
