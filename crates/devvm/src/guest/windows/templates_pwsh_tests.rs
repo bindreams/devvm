@@ -19,8 +19,19 @@ fn run_windows_powershell(script: &str) -> Output {
     run_with("powershell.exe", script, None, None)
 }
 
-/// The parse errors of the script `text` in this PowerShell's grammar, one per line, with their line numbers.
-fn parse_errors(dir: &std::path::Path, name: &str, text: &[u8]) -> Output {
+/// The PowerShells that run each script of the answer disk: the first-logon command runs `bootstrap.ps1` in Windows
+/// PowerShell 5.1, the tasks it registers run `boot-task.ps1` and `eb-runner.ps1` in PowerShell 7, and `lib.ps1` is
+/// dot-sourced by both sides.
+const INTERPRETERS: [(&str, &[&str]); 4] = [
+    ("bootstrap.ps1", &["powershell.exe"]),
+    ("lib.ps1", &["powershell.exe", "pwsh"]),
+    ("boot-task.ps1", &["pwsh"]),
+    ("eb-runner.ps1", &["pwsh"]),
+];
+
+/// The parse errors of the script `text` in the grammar of the PowerShell `exe`, one per line, with their line numbers.
+/// The file is parsed as that PowerShell reads it from disk (its default encoding included), never run.
+fn parse_errors(exe: &str, dir: &std::path::Path, name: &str, text: &[u8]) -> Output {
     let path = dir.join(name);
     std::fs::write(&path, text).unwrap();
     let script = format!(
@@ -29,23 +40,33 @@ fn parse_errors(dir: &std::path::Path, name: &str, text: &[u8]) -> Output {
          foreach ($e in $errors) {{ \"$($e.Extent.StartLineNumber): $($e.Message)\" }}",
         literal(&path.display().to_string())
     );
-    run(&script, "none", None)
+    run_with(exe, &script, None, None)
 }
 
 #[skuld::test]
-fn every_script_of_the_answer_disk_parses_as_powershell(#[fixture(pwsh_wrap)] _group: &Group) {
+fn every_script_of_the_answer_disk_parses_in_each_powershell_that_runs_it(#[fixture(pwsh_wrap)] _group: &Group) {
     let dir = tempfile::tempdir().unwrap();
-    let scripts: Vec<_> = answer_disk_files(&inputs())
+    let mut scripts: Vec<_> = answer_disk_files(&inputs())
         .unwrap()
         .into_iter()
         .filter(|file| file.name.ends_with(".ps1"))
         .collect();
-    assert_eq!(scripts.len(), 4, "bootstrap, boot-task, eb-runner and lib");
-    for file in scripts {
-        let output = parse_errors(dir.path(), &file.name, &file.bytes);
-        assert_eq!(output.status.code(), Some(0), "{}: {}", file.name, shown(&output));
-        let errors = String::from_utf8_lossy(&output.stdout);
-        assert!(errors.trim().is_empty(), "{} does not parse:\n{errors}", file.name);
+    scripts.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut named: Vec<_> = INTERPRETERS.iter().map(|(name, _)| *name).collect();
+    named.sort();
+    assert_eq!(
+        scripts.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(),
+        named,
+        "every script of the answer disk names the PowerShells that run it"
+    );
+    for (name, exes) in INTERPRETERS {
+        let file = scripts.iter().find(|file| file.name == name).unwrap();
+        for exe in exes {
+            let output = parse_errors(exe, dir.path(), name, &file.bytes);
+            assert_eq!(output.status.code(), Some(0), "{name} in {exe}: {}", shown(&output));
+            let errors = String::from_utf8_lossy(&output.stdout);
+            assert!(errors.trim().is_empty(), "{name} does not parse in {exe}:\n{errors}");
+        }
     }
 }
 
