@@ -114,6 +114,7 @@ function Withdraw-Request {
     }
 }
 # `SCHED_E_TASK_NOT_RUNNING` (0x8004130B), which an ended instance answers instead of a state, anywhere in the chain.
+# Measured on a guest: `Refresh` of an ended instance throws a COMException of exactly this HRESULT.
 function Test-NotRunning($failure) {
     for ($e = $failure; $e; $e = $e.InnerException) {
         if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) { return $true }
@@ -122,9 +123,10 @@ function Test-NotRunning($failure) {
 }
 # The state of the instance this caller started, as text: its own state, because the task runs other requests'
 # instances at the same time. `not started` is no instance, and `not running` an ended one (see Test-NotRunning). A
-# state that cannot be read is the exception that says why, never a state. A getter that failed reads as `$null` in
-# PowerShell and leaves its error in `$Error`, so the raw value is checked before it becomes a number, and the error
-# is looked at.
+# state that cannot be read is the exception that says why, never a state. Measured on a guest: a started instance reads
+# 4 (running) from the first look, `Run` returns an instance, and `State` read after the end is a stale 0, which is why
+# `Refresh` comes first. A getter failing was never seen; in PowerShell such a failure reads as `$null` and leaves its
+# error in `$Error`, so the raw value is checked before it becomes a number, and the error is looked at.
 function Get-InstanceState($instance) {
     if ($null -eq $instance) { return 'not started' }
     try { $instance.Refresh(); $Error.Clear(); $raw = $instance.State }
@@ -133,8 +135,12 @@ function Get-InstanceState($instance) {
         return $_.Exception
     }
     if ($null -eq $raw) {
-        # `$Error` holds error records, and may hold a bare exception.
-        $failures = @($Error | ForEach-Object { if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception } else { $_ } })
+        # `$Error` holds error records, and any object can be added to it.
+        $failures = @($Error | ForEach-Object {
+            if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception }
+            elseif ($_ -is [Exception]) { $_ }
+            else { [InvalidOperationException]::new("$_") }
+        })
         foreach ($failure in $failures) { if (Test-NotRunning $failure) { return 'not running' } }
         if ($failures.Count -gt 0) { return $failures[0] }
         return [InvalidOperationException]::new('the state was empty')

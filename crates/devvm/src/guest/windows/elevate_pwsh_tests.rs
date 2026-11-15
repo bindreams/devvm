@@ -365,6 +365,43 @@ fn a_state_getter_that_leaves_a_bare_exception_is_unreadable_and_its_error_is_in
 }
 
 #[skuld::test]
+fn a_state_getter_that_leaves_a_bare_not_running_exception_is_an_instance_that_ended(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let getter =
+        "$global:Error.Insert(0, [Runtime.InteropServices.COMException]::new('x', [int]0x8004130B)); return $null";
+    let output = caller(&root, "", getter);
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    assert!(
+        stderr(&output).contains("(instance state: not running)"),
+        "{}",
+        shown(&output)
+    );
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
+}
+
+#[skuld::test]
+fn a_state_getter_that_leaves_something_other_than_an_error_is_unreadable(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let output = caller(&root, "", "$global:Error.Insert(0, 'odd entry'); return $null");
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    assert!(
+        stderr(&output)
+            .contains("devvm: the elevated helper failed: the state of the instance could not be read: odd entry"),
+        "{}",
+        shown(&output)
+    );
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
+}
+
+#[skuld::test]
 fn an_instance_whose_state_cannot_be_read_while_a_runner_claims_the_request_goes_on_with_the_runner(
     #[fixture(unicode_home)] home: &Path,
     #[fixture(pwsh_wrap)] _group: &Group,
