@@ -106,19 +106,33 @@ pub(crate) const WINDOWS_ISO_VAR: &str = "DEVVM_WINDOWS_ISO";
 /// Gives the product key of that ISO's edition, when it is not an evaluation edition. Unset for an evaluation ISO.
 pub(crate) const WINDOWS_PRODUCT_KEY_VAR: &str = "DEVVM_WINDOWS_PRODUCT_KEY";
 
-/// The key `DEVVM_WINDOWS_PRODUCT_KEY` gives, or `None` when it is not set.
+/// Names the image of that ISO to build from, as a recipe's `edition` does. Unset when the ISO has one image.
+pub(crate) const WINDOWS_EDITION_VAR: &str = "DEVVM_WINDOWS_EDITION";
+
+/// The key `DEVVM_WINDOWS_PRODUCT_KEY` gives, or `None` when it is not set or empty.
 pub(crate) fn windows_product_key() -> Result<Option<String>, String> {
-    match std::env::var(WINDOWS_PRODUCT_KEY_VAR) {
-        Ok(key) => Ok(Some(key)),
+    optional_text(WINDOWS_PRODUCT_KEY_VAR)
+}
+
+/// The edition `DEVVM_WINDOWS_EDITION` names, or `None` when it is not set or empty.
+pub(crate) fn windows_edition() -> Result<Option<String>, String> {
+    optional_text(WINDOWS_EDITION_VAR)
+}
+
+/// The text of the variable `name` without the space around it; `None` when it is not set, empty or only space.
+fn optional_text(name: &str) -> Result<Option<String>, String> {
+    match std::env::var(name) {
+        Ok(text) => Ok(Some(text.trim().to_owned()).filter(|text| !text.is_empty())),
         Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{WINDOWS_PRODUCT_KEY_VAR} is not UTF-8")),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} is not UTF-8")),
     }
 }
 
 // Builds a Windows guest from an ISO (about 15 minutes) and boots it. It is on unless `DEVVM_TEST_WINDOWS_GUEST=0`, and
 // then fails the tests naming the ISO variable where that is not set; only the `vm-windows` job gives one (an evaluation
-// ISO; a non-evaluation one also needs `DEVVM_WINDOWS_PRODUCT_KEY`). The tests also need the `vm` group's QEMU, so they
-// ask for that group's consent. The lib's tests and `devvm-cli`'s `vm_cli` both join it.
+// ISO; a non-evaluation one also needs `DEVVM_WINDOWS_PRODUCT_KEY`, and one with several images
+// `DEVVM_WINDOWS_EDITION`). The tests also need the `vm` group's QEMU, so they ask for that group's consent. The lib's
+// tests and `devvm-cli`'s `vm_cli` both join it.
 test_group!(
     WINDOWS_GUEST => windows_guest,
     env = "DEVVM_TEST_WINDOWS_GUEST",

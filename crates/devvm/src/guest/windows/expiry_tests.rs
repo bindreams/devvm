@@ -144,10 +144,33 @@ fn a_licensed_status_with_zero_grace_has_no_expiry_unless_the_image_is_an_evalua
 
 #[skuld::test]
 fn a_non_evaluation_image_has_no_expiry_whatever_grace_its_license_reads() {
-    // The image decides, not the read: a licensed non-evaluation one (a KMS client reads about 180 days of renewal grace,
+    // The image decides, not the grace: a licensed non-evaluation one (a KMS client reads about 180 days of renewal grace,
     // and an activation by a key reads none) never takes that grace as the end of its base.
-    assert_eq!(expiry_from(EN_US, false, now()).unwrap(), None);
+    let with_grace = EN_US.replace("EnterpriseEval", "Enterprise");
+    assert_ne!(with_grace, EN_US);
+    assert_eq!(expiry_from(&with_grace, false, now()).unwrap(), None);
     assert_eq!(expiry_from(KMS_ACTIVATED, false, now()).unwrap(), None);
+}
+
+#[skuld::test]
+fn an_image_not_known_to_be_an_evaluation_is_one_when_the_guest_reads_an_evaluation_family() {
+    // An image with no edition id is not flagged; its license family, which Windows reports in English whatever the
+    // language, still ends in `Eval`, and the evaluation's grace is its expiry.
+    assert_eq!(
+        expiry_from(EN_US, false, now()).unwrap(),
+        Some(now() + Duration::from_secs(129_600 * 60))
+    );
+    assert_eq!(
+        expiry_from(DE_DE, false, now()).unwrap(),
+        Some(now() + Duration::from_secs(129_600 * 60))
+    );
+    // And an evaluation that Windows did not license is an error, as for a flagged one.
+    let error = expiry_from(LTSC_EVAL, false, now()).expect_err("an unlicensed evaluation has no expiry");
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    // The family, not the edition's name or description: a family that only mentions the word is not an evaluation.
+    let read = EN_US.replace("EnterpriseEval\",\"Product", "EvalEnterprise\",\"Product");
+    assert_ne!(read, EN_US);
+    assert_eq!(expiry_from(&read, false, now()).unwrap(), None);
 }
 
 #[skuld::test]

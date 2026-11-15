@@ -336,8 +336,9 @@ fn an_arm64_image_is_refused_naming_arch_and_the_x64_scope() {
 // The Windows ISO CI builds from ======================================================================================
 
 /// The ISO the `windows_guest` group builds from has the structure the install patch relies on (found on the evaluation
-/// ISOs): the two boot images are the same size, and the patch puts the no-prompt one where the boot catalog's UEFI
-/// entry loads its image. Nothing here is the address of one ISO build.
+/// ISOs, and measured on an IoT Enterprise LTSC 2024 ISO, which is not one): the two boot images are the same size, and
+/// the patch puts the no-prompt one where the boot catalog's UEFI entry loads its image. Nothing here is the address of
+/// one ISO build.
 #[skuld::test]
 fn the_evaluation_iso_boot_patch_has_the_structure_the_spike_found(#[fixture(windows_guest)] _group: &Group) {
     let iso = PathBuf::from(std::env::var_os(WINDOWS_ISO_VAR).expect("the group needs the ISO variable"));

@@ -15,18 +15,23 @@ pub fn first_try<T>(slot: &OnceLock<String>, make: impl FnOnce() -> Result<T, St
     })
 }
 
-/// The text of a recipe that installs Windows from `iso` (with `product_key`, for an edition that is not an evaluation
-/// edition) and runs `steps`, each one step's YAML.
-pub fn recipe_text(iso: &Path, product_key: Option<&str>, steps: &[&str]) -> Result<String, String> {
+/// What a recipe's `from:` says of the ISO besides its path: the image to build from, and the key an edition that is not
+/// an evaluation edition needs. The test variables give both.
+pub struct IsoChoice<'a> {
+    pub edition: Option<&'a str>,
+    pub product_key: Option<&'a str>,
+}
+
+/// The text of a recipe that installs Windows from `iso` as `choice` says and runs `steps`, each one step's YAML.
+pub fn recipe_text(iso: &Path, choice: &IsoChoice<'_>, steps: &[&str]) -> Result<String, String> {
     let iso = iso.to_str().ok_or("a UTF-8 ISO path")?;
-    let iso = serde_json::to_string(iso).map_err(|e| e.to_string())?;
-    let product_key = match product_key {
-        Some(key) => format!(
-            ", product-key: {}",
-            serde_json::to_string(key).map_err(|e| e.to_string())?
-        ),
-        None => String::new(),
-    };
+    let quoted = |text: &str| serde_json::to_string(text).map_err(|e| e.to_string());
+    let mut from = format!("iso: {}", quoted(iso)?);
+    for (field, value) in [("edition", choice.edition), ("product-key", choice.product_key)] {
+        if let Some(value) = value {
+            from.push_str(&format!(", {field}: {}", quoted(value)?));
+        }
+    }
     let steps = if steps.is_empty() {
         "steps: []\n".to_owned()
     } else {
@@ -35,5 +40,5 @@ pub fn recipe_text(iso: &Path, product_key: Option<&str>, steps: &[&str]) -> Res
             steps.iter().map(|step| format!("  - {step}\n")).collect::<String>()
         )
     };
-    Ok(format!("from: {{ iso: {iso}{product_key} }}\n{steps}"))
+    Ok(format!("from: {{ {from} }}\n{steps}"))
 }
