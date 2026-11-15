@@ -17,6 +17,7 @@ use super::{
 use crate::RunAs;
 use crate::backend::qemu::sidecar::QemuInstall;
 use crate::host;
+use crate::iso::names_an_evaluation;
 use crate::test_support::qemu::{qemu_img, qemu_sidecar};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{awaiting, step};
@@ -82,18 +83,27 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
 /// instance of it gives the same moment, less the time the guest was not running (its grace counts only while it runs).
 /// That time is at most the time from the build's license read, which the build reports as it arrives, to the second
 /// read: the tolerance is measured from those two moments. Each read is in whole minutes, so each may be a minute off.
+/// A base of an edition that is not an evaluation has no expiry, and the guest's own read agrees: its license is not an
+/// evaluation family's.
 #[skuld::test]
 fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
     #[fixture(windows_base)] base: &WindowsBase,
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    let recorded = base
-        .image
-        .chain
-        .tip()
-        .meta()
-        .expires
-        .expect("an evaluation base has an expiry");
+    let expires = base.image.chain.tip().meta().expires;
+    if !base.evaluation {
+        assert_eq!(expires, None, "a base of a non-evaluation edition has no expiry");
+        let family = printed(
+            &guest.vm,
+            r#"(Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" | Select-Object -First 1).LicenseFamily"#,
+        );
+        assert!(
+            !family.is_empty() && !names_an_evaluation(&family),
+            "the guest reads the license family `{family}`, which is an evaluation's or none"
+        );
+        return;
+    }
+    let recorded = expires.expect("an evaluation base has an expiry");
     let minutes: u64 = printed(
         &guest.vm,
         r#"(Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" | Select-Object -First 1).GracePeriodRemaining"#,

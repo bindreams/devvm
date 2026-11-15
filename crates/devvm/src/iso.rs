@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
 use crate::host::{Host, is_absent};
+use crate::recipe::ProductKey;
 use crate::{Error, ErrorKind, Result, Sha256};
 
 mod memo;
@@ -17,7 +18,7 @@ mod udf;
 mod wim;
 
 pub(crate) use memo::{HashedIso, IsoMemo, Known, QuarantineOutcome};
-pub(crate) use wim::{WimArch, WimImage};
+pub(crate) use wim::{WimArch, WimImage, names_an_evaluation};
 
 use udf::{BootEntry, Piece, Platform, SECTOR, Udf};
 
@@ -231,6 +232,30 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
         ));
     }
     Ok(chosen)
+}
+
+/// Whether `product_key` fits the edition `image` is: a non-evaluation edition needs one (Setup stops on its key page
+/// otherwise), an evaluation edition takes none. An image with no edition id is not known to be an evaluation edition, so it needs a key.
+pub(crate) fn check_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<()> {
+    let name = &image.name;
+    match (image.is_evaluation(), product_key) {
+        (false, None) => {
+            let why = if image.edition_id.is_empty() {
+                "names no edition id, so it is not known to be an evaluation edition"
+            } else {
+                "is not an evaluation edition"
+            };
+            Err(Error::new(
+                ErrorKind::Recipe,
+                format!("the edition `{name}` {why}; `product-key` in `from:` is required"),
+            ))
+        }
+        (true, Some(_)) => Err(Error::new(
+            ErrorKind::Recipe,
+            format!("the edition `{name}` is an evaluation edition; `product-key` in `from:` must not be set"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// The patch that puts the no-prompt boot image where the UEFI entry of the boot catalog loads its image. The image

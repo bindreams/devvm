@@ -6,7 +6,7 @@ use crate::recipe::hash::{
     CopyManifest, EntryContent, KeyContext, LayerKey, ManifestEntry, RootContent, STEP_SEMANTICS_VERSION, chain_keys,
     root_key, root_key_with, step_key, step_key_with,
 };
-use crate::recipe::{CopyFrom, Recipe, Setting, Shell, Step, UacMode};
+use crate::recipe::{CopyFrom, ProductKey, Recipe, Setting, Shell, Step, UacMode};
 use crate::test_support::fixtures::unicode_home;
 use crate::{Arch, ErrorKind, RunAs, Sha256};
 
@@ -118,6 +118,7 @@ fn the_image_selected_changes_the_layer_key() {
             sha256: sha(1),
             image_index: index,
             image_name: name.into(),
+            product_key: None,
         };
         chain.root()
     };
@@ -126,6 +127,33 @@ fn the_image_selected_changes_the_layer_key() {
     assert_ne!(key(1, "Windows 11 Pro"), key(2, "Windows 11 Pro"), "the index");
     assert_ne!(key(1, "Windows 11 Pro"), key(1, "Windows 11 Home"), "the name");
     assert_eq!(key(1, "Windows 11 Pro"), pro);
+}
+
+#[skuld::test]
+fn the_product_key_changes_the_layer_key() {
+    let mut chain = Chain::base();
+    let mut key = |product_key: Option<&str>| {
+        chain.content = RootContent::Iso {
+            sha256: sha(1),
+            image_index: 1,
+            image_name: "Windows 11 Pro".into(),
+            product_key: product_key.map(|text| ProductKey::parse(text).unwrap()),
+        };
+        chain.root()
+    };
+    let (none, one, other) = (
+        key(None),
+        key(Some("AB12C-DE34F-GH56J-KL78M-NP90Q")),
+        key(Some("AB12C-DE34F-GH56J-KL78M-NP90R")),
+    );
+    assert_ne!(none, one, "a key and no key");
+    assert_ne!(one, other, "two keys");
+    assert_eq!(key(Some("AB12C-DE34F-GH56J-KL78M-NP90Q")), one);
+    assert_eq!(
+        key(Some("ab12c-de34f-gh56j-kl78m-np90q")),
+        one,
+        "a key's case is not part of it"
+    );
 }
 
 #[skuld::test]
@@ -149,6 +177,7 @@ fn every_key_input_changes_the_key() {
             sha256: sha(1),
             image_index: 1,
             image_name: "Windows 11 Pro".into(),
+            product_key: None,
         }
     });
     vary("iso image index", &|c| {
@@ -156,6 +185,7 @@ fn every_key_input_changes_the_key() {
             sha256: sha(1),
             image_index: 2,
             image_name: "Windows 11 Pro".into(),
+            product_key: None,
         }
     });
     vary("iso image name", &|c| {
@@ -163,6 +193,15 @@ fn every_key_input_changes_the_key() {
             sha256: sha(1),
             image_index: 1,
             image_name: "Windows 11 Home".into(),
+            product_key: None,
+        }
+    });
+    vary("iso product key", &|c| {
+        c.content = RootContent::Iso {
+            sha256: sha(1),
+            image_index: 1,
+            image_name: "Windows 11 Pro".into(),
+            product_key: Some(ProductKey::parse("AB12C-DE34F-GH56J-KL78M-NP90Q").unwrap()),
         }
     });
     vary("iso content", &|c| {
@@ -170,6 +209,7 @@ fn every_key_input_changes_the_key() {
             sha256: sha(2),
             image_index: 1,
             image_name: "Windows 11 Pro".into(),
+            product_key: None,
         }
     });
     vary("base definition", &|c| c.base_definition = [8; 32]);

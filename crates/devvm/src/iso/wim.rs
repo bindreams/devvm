@@ -77,11 +77,17 @@ pub(crate) struct WimImage {
 }
 
 impl WimImage {
-    /// Whether the image is an evaluation edition: its edition id ends in `Eval`, in any case.
+    /// Whether the image is an evaluation edition: its edition id names an evaluation.
     pub(crate) fn is_evaluation(&self) -> bool {
-        let id = self.edition_id.as_bytes();
-        id.len() >= 4 && id[id.len() - 4..].eq_ignore_ascii_case(b"eval")
+        names_an_evaluation(&self.edition_id)
     }
+}
+
+/// Whether an edition id or license family names an evaluation edition: it ends in `Eval`, in any case. The first-logon
+/// script's `-like '*Eval'` applies the same rule.
+pub(crate) fn names_an_evaluation(name: &str) -> bool {
+    let name = name.as_bytes();
+    name.len() >= 4 && name[name.len() - 4..].eq_ignore_ascii_case(b"eval")
 }
 
 /// The images of the WIM `file` (its name, for errors) that `reader` reads.

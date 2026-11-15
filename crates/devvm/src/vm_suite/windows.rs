@@ -12,13 +12,16 @@ use std::time::{Duration, Instant, SystemTime};
 use super::fixture::{Launches, Roots, engine_reporting_to, run_ok_as};
 use super::waits::{answer_to, cut, step};
 use crate::backend::qemu::sidecar::QemuInstall;
+use crate::dirs::Dirs;
 use crate::engine::Engine;
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::elevate::TASK;
 use crate::guest::windows::wrap::BROKER_EXE;
+use crate::host;
+use crate::iso::{IsoMemo, key_iso};
 use crate::recipe::{Recipe, Shell};
-use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
+use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_edition, windows_guest, windows_product_key};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir};
@@ -35,7 +38,7 @@ mod shared;
 mod stdin;
 
 use bounds::STATE_BOUND;
-use shared::{first_try, recipe_text};
+use shared::{IsoChoice, first_try, recipe_text};
 
 /// The Windows base of this test process, with the engine that built it and what it reported.
 pub(super) struct WindowsBase {
@@ -49,6 +52,8 @@ pub(super) struct WindowsBase {
     pub launches: Arc<Launches>,
     pub recipe: Recipe,
     pub roots: Roots,
+    /// Whether the image the recipe selects is an evaluation edition: what the ISO's image list says, as the build read it.
+    pub evaluation: bool,
 }
 
 /// The installer ISO the group's tests build from.
@@ -61,7 +66,15 @@ pub(super) fn windows_iso(#[fixture(windows_guest)] _group: &Group) -> Result<Pa
 
 /// A recipe file `dir/r.devvm.yaml` that installs Windows from `iso` and runs `steps`, each one step's YAML.
 pub(super) fn windows_recipe(dir: &Path, iso: &Path, steps: &[&str]) -> Recipe {
-    let text = recipe_text(iso, steps).expect("a recipe for a UTF-8 ISO path");
+    let (edition, product_key) = (
+        windows_edition().expect("a UTF-8 edition"),
+        windows_product_key().expect("a UTF-8 product key"),
+    );
+    let choice = IsoChoice {
+        edition: edition.as_deref(),
+        product_key: product_key.as_deref(),
+    };
+    let text = recipe_text(iso, &choice, steps).expect("a recipe for a UTF-8 ISO path");
     Recipe::parse(&text, &dir.join("r.devvm.yaml")).unwrap()
 }
 
@@ -92,6 +105,7 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
     let image = engine
         .build(&recipe, &BuildOptions::default())
         .map_err(|e| format!("cannot build the Windows base from {}: {e}", iso.display()))?;
+    let evaluation = selects_an_evaluation(&roots.dirs, iso)?;
     let (license_read_at, _) = progress
         .messages_at()
         .into_iter()
@@ -105,7 +119,23 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
         launches,
         recipe,
         roots,
+        evaluation,
     })
+}
+
+/// Whether the image of `iso` that the tests build from is an evaluation edition, by the image list the build left in
+/// the memo of `dirs`.
+fn selects_an_evaluation(dirs: &Dirs, iso: &Path) -> Result<bool, String> {
+    let edition = windows_edition()?;
+    let root = key_iso(
+        host::current(),
+        &IsoMemo::new(dirs),
+        iso,
+        edition.as_deref(),
+        &MemoryProgress::default(),
+    )
+    .map_err(|e| format!("cannot read the edition of {}: {e}", iso.display()))?;
+    Ok(root.image.is_evaluation())
 }
 
 /// One instance of the base, started once per test process; it runs until the process ends.
@@ -207,14 +237,14 @@ const DAY: Duration = Duration::from_secs(24 * 3600);
 // The base ============================================================================================================
 
 #[skuld::test]
-fn the_base_builds_from_the_evaluation_iso_and_reports_an_expiry(#[fixture(windows_base)] base: &WindowsBase) {
-    let expires = base
-        .image
-        .chain
-        .tip()
-        .meta()
-        .expires
-        .expect("an evaluation base has an expiry");
+fn the_base_builds_from_the_iso_and_reports_an_expiry_for_an_evaluation(#[fixture(windows_base)] base: &WindowsBase) {
+    let expires = base.image.chain.tip().meta().expires;
+    // An edition that is not an evaluation edition takes its key, and its base has no expiry.
+    if !base.evaluation {
+        assert_eq!(expires, None, "a base of a non-evaluation edition has no expiry");
+        return;
+    }
+    let expires = expires.expect("an evaluation base has an expiry");
     let now = SystemTime::now();
     // A fresh evaluation install has about 90 days of grace left.
     assert!(expires > now + 30 * DAY, "{expires:?}");

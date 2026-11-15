@@ -27,8 +27,8 @@ use crate::host::{Host, is_absent};
 use crate::instance::record::InstanceId;
 use crate::iso::{HeldIso, InstallIso, read_install_iso};
 use crate::media::{SeedFile, read_files, write_cidata_image};
-use crate::recipe::Source;
 use crate::recipe::hash::LayerKey;
+use crate::recipe::{ProductKey, Source};
 use crate::store::fetch::Fetcher;
 use crate::store::layers::{Generation, LayerDir, LayerMeta};
 use crate::vm::{DEFAULT_CPUS, DEFAULT_MEMORY};
@@ -112,7 +112,7 @@ impl WindowsBuilder {
 
 impl BaseBuilder for WindowsBuilder {
     fn build_base(&self, src: &Source, ctx: &BuildCtx, staging: &LayerDir) -> Result<LayerMeta> {
-        let Source::Iso { .. } = src else {
+        let Source::Iso { product_key, .. } = src else {
             return Err(Error::new(
                 ErrorKind::NotSupported,
                 "a Windows base is built from an ISO, which the recipe's `from` must name",
@@ -126,7 +126,7 @@ impl BaseBuilder for WindowsBuilder {
             .ok_or_else(|| Error::new(ErrorKind::Internal, "the build has no held ISO to install Windows from"))?;
         let evaluation = root.image.is_evaluation();
         let install = read_install_iso(root)?;
-        let expires = Build::prepare(self, ctx, staging, &install, evaluation)?.run(install)?;
+        let expires = Build::prepare(self, ctx, staging, &install, evaluation, product_key.as_ref())?.run(install)?;
         // The store owns the key, the generation and the creation time; it reads only the expiry from what a base
         // builder returns.
         Ok(LayerMeta {
@@ -402,6 +402,7 @@ impl<'a> Build<'a> {
         staging: &LayerDir,
         install: &InstallIso,
         evaluation: bool,
+        product_key: Option<&ProductKey>,
     ) -> Result<Build<'a>> {
         let work = ctx.work.join(WORK_DIR);
         let machine_dir = work.join(MACHINE_DIR);
@@ -436,6 +437,7 @@ impl<'a> Build<'a> {
             time_zone: TIME_ZONE,
             computer_name: COMPUTER_NAME,
             evaluation,
+            product_key,
         })?;
         let answer = write_cidata_image(
             builder.host,

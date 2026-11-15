@@ -13,6 +13,7 @@ use crate::guest::windows::elevate::{self, caller_script};
 use crate::guest::windows::pins::{ALL, Pin};
 use crate::guest::windows::wrap::{BROKER_EXE, PWSH_EXE, literal};
 use crate::media::SeedFile;
+use crate::recipe::ProductKey;
 
 const PASSWORD: &str = "SENTINEL-Pw-1";
 
@@ -24,6 +25,7 @@ pub(super) fn inputs() -> AnswerInputs<'static> {
         time_zone: "UTC",
         computer_name: "DEVVM",
         evaluation: true,
+        product_key: None,
     }
 }
 
@@ -97,6 +99,7 @@ fn the_answer_file_renders_deterministically_and_escapes_xml() {
         time_zone: "t&z",
         computer_name: "n\"m",
         evaluation: false,
+        product_key: None,
     };
     let text = answer_file(&hostile).unwrap();
     assert_eq!(
@@ -125,6 +128,57 @@ fn the_answer_file_renders_deterministically_and_escapes_xml() {
             Err(e) => panic!("the answer file is not XML: {e}\n{text}"),
         }
     }
+}
+
+const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
+
+#[skuld::test]
+fn a_keyed_edition_has_a_product_key_that_setup_never_asks_for_and_an_evaluation_has_none() {
+    let key = ProductKey::parse(KEY).unwrap();
+    let keyed = AnswerInputs {
+        evaluation: false,
+        product_key: Some(&key),
+        ..inputs()
+    };
+    let text = answer_file(&keyed).unwrap();
+    let windows_pe = section(&text, "pass=\"windowsPE\"", "<settings");
+    let user_data = section(windows_pe, "<UserData>", "</UserData>");
+    assert!(
+        user_data.contains("<ProductKey>"),
+        "the key is in the windowsPE UserData: {user_data}"
+    );
+    let product_key = section(user_data, "<ProductKey>", "</ProductKey>");
+    assert!(product_key.contains(&format!("<Key>{KEY}</Key>")), "{product_key}");
+    assert!(product_key.contains("<WillShowUI>Never</WillShowUI>"), "{product_key}");
+    assert!(user_data.contains("<AcceptEula>true</AcceptEula>"));
+    assert_eq!(text.matches(KEY).count(), 1, "nowhere else");
+    assert!(!text.contains("@@"));
+    let mut reader = Reader::from_str(&text);
+    while !matches!(reader.read_event(), Ok(Event::Eof)) {}
+
+    let text = answer_file(&inputs()).unwrap();
+    assert!(
+        !text.contains("ProductKey"),
+        "an evaluation edition has no ProductKey: {text}"
+    );
+    assert!(!text.contains(KEY));
+}
+
+#[skuld::test]
+fn the_product_key_is_written_to_the_answer_file_and_to_no_other_file_of_the_answer_disk() {
+    let key = ProductKey::parse(KEY).unwrap();
+    let files = answer_disk_files(&AnswerInputs {
+        evaluation: false,
+        product_key: Some(&key),
+        ..inputs()
+    })
+    .unwrap();
+    let holders: Vec<&str> = files
+        .iter()
+        .filter(|file| String::from_utf8_lossy(&file.bytes).contains(KEY))
+        .map(|file| file.name.as_str())
+        .collect();
+    assert_eq!(holders, [ANSWER_FILE]);
 }
 
 #[skuld::test]
@@ -514,14 +568,14 @@ fn an_evaluation_that_is_not_licensed_is_activated_before_its_license_is_read() 
 }
 
 #[skuld::test]
-fn the_host_says_whether_the_image_is_an_evaluation_and_the_guest_asks_nothing_else() {
+fn the_guest_activates_an_unlicensed_product_when_the_host_or_its_license_family_says_evaluation() {
     for evaluation in [true, false] {
         let bootstrap = rendered_with("bootstrap.ps1", &AnswerInputs { evaluation, ..inputs() });
         let read = section(&bootstrap, "$filter = ", "Send-Line \"DEVVM-LICENSE=");
         let value = if evaluation { "$true" } else { "$false" };
         assert!(
             read.contains(&format!(
-                "if ({value} -and $product -and $product.LicenseStatus -ne 1) {{"
+                "if ($product -and $product.LicenseStatus -ne 1 -and ({value} -or $product.LicenseFamily -like '*Eval')) {{"
             )),
             "{evaluation}: {read}"
         );
