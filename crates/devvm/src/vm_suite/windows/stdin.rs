@@ -218,12 +218,17 @@ fn a_killed_client_leaves_the_guest_accepting(
     );
 }
 
+/// A reader that ends prints how many lines it read.
 #[skuld::test]
 fn windows_a_client_killed_mid_stdin_to_pwsh_leaves_the_guest_accepting(#[fixture(windows_base)] base: &WindowsBase) {
     a_killed_client_leaves_the_guest_accepting(
         base,
         "w-stdin-pwsh",
-        |token| format!("pwsh -NoProfile -NonInteractive -Command '$input | Out-Null # {token}'"),
+        |token| {
+            format!(
+                "pwsh -NoProfile -NonInteractive -Command '$n = 0; foreach ($l in $input) {{ $n++ }}; [Console]::Out.WriteLine($n) # {token}'"
+            )
+        },
         "pwsh.exe",
     );
 }
