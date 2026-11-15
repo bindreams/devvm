@@ -74,8 +74,8 @@ fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of
 
 // The boot window =====================================================================================================
 
-/// The plain `ssh` of the generated `config` for the command `remote` on `name`, with its streams still to be set. It
-/// makes one attempt and waits for the guest as long as its caller does: no connect time is taken as an answer.
+/// The plain `ssh` of the generated `config` for `remote` on `name`; streams unset. One attempt, no connect timeout: it
+/// waits as long as its caller does.
 pub(super) fn ssh_command(config: &Path, name: &str, remote: &str) -> std::process::Command {
     ssh_command_with(config, name, remote, &[])
 }

@@ -23,7 +23,6 @@ use crate::{Command, ExitStatus, RunAs, random};
 
 // A client killed in the middle of stdin ==============================================================================
 
-/// The bytes of one write of the input.
 const CHUNK: usize = 64 * 1024;
 
 /// What the test has written into the client's stdin pipe when it kills the client. The window that the guest's sshd
@@ -44,14 +43,19 @@ fn chunk() -> Vec<u8> {
 }
 
 /// Reads `pipe` (a stream of the ssh client) line by line until it ends, logs each line as it arrives, so that a case
-/// that ends at its bound shows it, and returns all of it. A read error ends the stream: the client's writes then fail,
-/// they do not block.
+/// that ends at its bound shows it, and returns all of it. A read error, logged and kept, ends the stream: the client's
+/// writes then fail, they do not block.
 fn follow(stream: &str, pipe: impl Read) -> String {
     let mut pipe = BufReader::new(pipe);
     let mut text = String::new();
     let mut line = Vec::new();
     loop {
-        let ended = !matches!(pipe.read_until(b'\n', &mut line), Ok(read) if read > 0);
+        let read = pipe.read_until(b'\n', &mut line);
+        if let Err(e) = &read {
+            eprintln!("ssh {stream}: cannot read: {e}");
+            text.push_str(&format!("[cannot read: {e}]"));
+        }
+        let ended = !matches!(read, Ok(read) if read > 0);
         if !line.is_empty() {
             let part = String::from_utf8_lossy(&line);
             eprintln!("ssh {stream}: {}", part.trim_end());
@@ -70,8 +74,8 @@ fn follow(stream: &str, pipe: impl Read) -> String {
 /// and its command line on one line, cut), or one `seen:` line saying none has it; these lines change only when those
 /// processes do. The token is written in two parts, so that this script's own command line does not have it.
 ///
-/// It runs elevated. A look as the user found no reader for 600 s in CI run 43672193381; the `seen:` lines of a look
-/// that finds none show which processes hold the token, with their parents and the start of their command lines.
+/// It runs elevated: a look as the user did not see the reader. The `seen:` lines of a look that finds none show which
+/// processes hold the token, with their parents and the start of their command lines.
 fn readers_on_the_guest(nonce: &str) -> Command {
     pwsh(
         RunAs::Elevated,
@@ -90,14 +94,11 @@ fn readers_on_the_guest(nonce: &str) -> Command {
     )
 }
 
-/// Pipes input without an end through the system `ssh` to `reader(token)`, a command of the guest that reads its stdin
-/// and has `token` in its command line, and which runs as the program `reader_exe` there. It kills the client once its
-/// stdin pipe has taken [`TAKEN`] bytes (a count of what the test wrote, not a time) and fresh commands of the guest,
-/// asked again until one finds it, have seen the reader alive: a reader that has not failed is alive, since its stdin
-/// never closes. The looks run before the kill, while the client's session may hang: a guest that stops answering other
-/// sessions then contradicts the stated limit, a hang of that session only, so the case fails. Then it checks that a
-/// fresh command of the guest is answered. A hang of the session that the killed client had is not a failure: the limit
-/// is stated.
+/// Pipes endless stdin through the system `ssh` to `reader(token)` (a guest command that reads stdin and has `token` in
+/// its command line, running as `reader_exe`). Once [`TAKEN`] bytes are written and elevated looks have seen the reader
+/// alive (its stdin never closes, so a reader that has not failed is alive), it kills the client and asserts a fresh
+/// command is answered. A hang of the killed client's own session is the stated limit, not a failure; a guest that
+/// stops answering other sessions during it is.
 ///
 /// `reader` is sent as it is: that is what a user's own `ssh -F` sends. devvm's own wrapper is not in that path
 /// (`devvm run` sends no stdin).
@@ -126,6 +127,9 @@ fn a_killed_client_leaves_the_guest_accepting(
     let (taken, reached) = mpsc::channel();
     let looking = readers_on_the_guest(&nonce);
     let (reached, look, written, stdout, stderr) = std::thread::scope(|scope| {
+        // Owned by the scope's body: a panic in it drops the client (which kills ssh, and so ends the threads below)
+        // before the scope waits for those threads.
+        let mut client = client;
         // The input has no end: the writer ends when the client does, by its failed write.
         let writer = scope.spawn(move || {
             let chunk = chunk();
@@ -136,7 +140,7 @@ fn a_killed_client_leaves_the_guest_accepting(
                 }
                 total += chunk.len() as u64;
                 if total == TAKEN {
-                    let _ = taken.send(());
+                    taken.send(()).expect("the receiver waits for the whole scope");
                 }
             }
         });
@@ -146,20 +150,17 @@ fn a_killed_client_leaves_the_guest_accepting(
         let watch = awaiting("the ssh client's stdin taking 1 MiB", ANSWER_BOUND);
         let reached = reached.recv();
         drop(watch);
-        // A failed look is a result, not a panic: a panic here would leave the writer blocked and the scope never ending.
+        // A failed look is a result, not a panic: the assertions come after the scope.
         let look = reached.is_ok().then(|| {
             step("looking for the reader on the guest");
-            // Nothing orders the reader's start before the first look, so the looks go on until the reader shows. The
-            // bound is the failure: a reader that never shows (it failed to start, or died) is not an answer.
+            // Nothing orders the reader's start before the first look, so the looks go on until the reader shows.
             let _watch = awaiting(
                 format!("a look finding {reader_exe} with {token} in its command line on the guest"),
                 ANSWER_BOUND,
             );
-            // What the last look printed: a look that sees the same is not logged again.
             let mut shown = String::from("\0");
-            // ssh that has ended by itself while the looks go on is a failure. It may still end between the last look
-            // and the kill; the case then checks the same thing, a guest that answers after the client of a session
-            // with a live reader ended.
+            // ssh ending by itself during the looks is a failure; it can still end between the last look and the kill,
+            // which the final fresh-command check covers.
             let mut ended = || match client.0.try_wait() {
                 Ok(None) => None,
                 Ok(Some(status)) => Some(format!("ssh ended by itself with {status} before the kill")),
