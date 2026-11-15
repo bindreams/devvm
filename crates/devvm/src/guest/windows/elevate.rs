@@ -123,28 +123,18 @@ function Test-NotRunning($failure) {
 }
 # The state of the instance this caller started, as text: its own state, because the task runs other requests'
 # instances at the same time. `not started` is no instance, and `not running` an ended one (see Test-NotRunning). A
-# state that cannot be read is the exception that says why, never a state. Measured on a guest: a started instance reads
-# 4 (running) from the first look, `Run` returns an instance, and `State` read after the end is a stale 0, which is why
-# `Refresh` comes first. A getter failing was never seen; in PowerShell such a failure reads as `$null` and leaves its
-# error in `$Error`, so the raw value is checked before it becomes a number, and the error is looked at.
+# state that cannot be read is the exception that says why, never a state. Measured on a guest: `Run` returns an
+# instance, which reads 4 (running) from the first look, and `Refresh` of an ended one throws; without `Refresh`, a
+# cached queued or running state would keep the wait going after the end. A failed property getter reads as `$null` in
+# PowerShell, its error swallowed, so `$null` is unreadable whatever the cause.
 function Get-InstanceState($instance) {
     if ($null -eq $instance) { return 'not started' }
-    try { $instance.Refresh(); $Error.Clear(); $raw = $instance.State }
+    try { $instance.Refresh(); $raw = $instance.State }
     catch {
         if (Test-NotRunning $_.Exception) { return 'not running' }
         return $_.Exception
     }
-    if ($null -eq $raw) {
-        # `$Error` holds error records, and any object can be added to it.
-        $failures = @($Error | ForEach-Object {
-            if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception }
-            elseif ($_ -is [Exception]) { $_ }
-            else { [InvalidOperationException]::new("$_") }
-        })
-        foreach ($failure in $failures) { if (Test-NotRunning $failure) { return 'not running' } }
-        if ($failures.Count -gt 0) { return $failures[0] }
-        return [InvalidOperationException]::new('the state was empty')
-    }
+    if ($null -eq $raw) { return [InvalidOperationException]::new('the state read as empty') }
     $state = [int]$raw
     if ($state -ge 0 -and $state -lt $states.Count) { return $states[$state] }
     return "$state"
