@@ -34,7 +34,7 @@
 //! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
 //! longer queued or running is a helper that is not going to run the command (the caller claims the request itself, so
 //! no runner can take it afterwards). An instance whose state cannot be read is the same: the caller withdraws the
-//! request, and the wait goes on if a runner holds the claim. Another request's instance does not count: the task runs
+//! request, and the wait goes on if a runner has claimed it. Another request's instance does not count: the task runs
 //! them in parallel.
 
 use super::wrap::{literal, session_check};
@@ -114,7 +114,7 @@ function Withdraw-Request {
     }
 }
 # `SCHED_E_TASK_NOT_RUNNING` (0x8004130B): what `Refresh` of an ended instance throws, anywhere in the exception chain
-# (measured on a guest, where `State` then reads a stale 0).
+# (measured on a guest).
 function Test-NotRunning($failure) {
     for ($e = $failure; $e; $e = $e.InnerException) {
         if ($e -is [Runtime.InteropServices.COMException] -and $e.HResult -eq 0x8004130B) { return $true }

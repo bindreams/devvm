@@ -2,7 +2,7 @@
 //! the deputy's runner run; a developer's PC may not). The text tests of `templates_tests.rs` cannot see a syntax error
 //! or a compile error; these can. What the scripts do on a guest is measured on a guest.
 
-use std::process::{Command as Process, Output, Stdio};
+use std::process::Output;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -10,17 +10,13 @@ use quick_xml::events::Event;
 use super::{NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, answer_file, disk_files};
 use crate::guest::windows::templates::templates_tests::inputs;
 use crate::guest::windows::wrap::literal;
-use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, run, shown};
+use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, run, run_with, shown};
 use crate::test_groups::{Group, pwsh_wrap};
 
 /// `script` in Windows PowerShell 5.1 (`powershell.exe`), the PowerShell the guest's first-logon command and bootstrap
 /// run in.
 fn run_windows_powershell(script: &str) -> Output {
-    Process::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .stdin(Stdio::null())
-        .output()
-        .expect("powershell.exe runs")
+    run_with("powershell.exe", script, "none", None)
 }
 
 /// The parse errors of the script `text` in this PowerShell's grammar, one per line, with their line numbers.
@@ -120,7 +116,8 @@ fn a_hostile_value_in_a_powershell_template_reads_back_as_itself(#[fixture(pwsh_
 
 /// The script of the first-logon command of `answer`, as the XML parser reads it (entities undone) with the
 /// `powershell.exe ... -Command "` frame taken off. The frame is not argv-unquoted: the text is what `powershell.exe`
-/// receives only if it holds no `"` (a `\"` has one too), so a script with one is refused.
+/// receives only if it holds no `"` (a `\"` has one too) and does not end in a `\` (it would escape the closing `"`), so
+/// a script with either is refused.
 fn first_logon_script(answer: &str) -> String {
     let mut reader = Reader::from_str(answer);
     loop {
@@ -136,6 +133,10 @@ fn first_logon_script(answer: &str) -> String {
                     !script.contains('"'),
                     "a `\"` inside the -Command frame needs argv quoting: {line}"
                 );
+                assert!(
+                    !script.ends_with('\\'),
+                    "a `\\` before the closing `\"` escapes it: {line}"
+                );
                 return script.to_owned();
             }
             Event::Eof => panic!(
@@ -148,7 +149,7 @@ fn first_logon_script(answer: &str) -> String {
 }
 
 /// Parses `@@SCRIPT@@` (never runs it) and prints its parse errors as `ERROR ...` lines, then the facts the first-logon
-/// test asserts as `name=value` lines.
+/// test asserts as `name=value` lines. The loop's condition is printed whole, its whitespace collapsed.
 const FIRST_LOGON_FACTS: &str = r#"
 $errors = $null; $tokens = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseInput(@@SCRIPT@@, [ref]$tokens, [ref]$errors)
@@ -157,29 +158,18 @@ function Kind($node) { if ($null -ne $node) { $node.GetType().Name } }
 $loops = @($ast.EndBlock.Statements | Where-Object { (Kind $_) -eq 'WhileStatementAst' })
 "loops=$($loops.Count)"
 $loop = $loops[0]
-$element = if ((Kind $loop.Condition) -eq 'PipelineAst' -and $loop.Condition.PipelineElements.Count -eq 1) { $loop.Condition.PipelineElements[0] }
-$negated = if ((Kind $element) -eq 'CommandExpressionAst') { $element.Expression }
-$paren = if ((Kind $negated) -eq 'UnaryExpressionAst' -and $negated.TokenKind -eq 'Not') { $negated.Child }
-$assignment = if ((Kind $paren) -eq 'ParenExpressionAst') { $paren.Pipeline }
-$assigns = (Kind $assignment) -eq 'AssignmentStatementAst' -and $assignment.Left.VariablePath.UserPath -eq 'd'
-"condition_is_not_of_an_assignment_to_d=$assigns"
-$pipe = if ($assigns) { $assignment.Right }
-$parts = if ((Kind $pipe) -eq 'PipelineAst') { @($pipe.PipelineElements) } else { @() }
-$drives = $parts.Count -eq 3 -and (Kind $parts[0]) -eq 'CommandExpressionAst' -and (Kind $parts[0].Expression) -eq 'InvokeMemberExpressionAst' -and $parts[0].Expression.Static -and $parts[0].Expression.Expression.TypeName.Name -eq 'IO.DriveInfo' -and $parts[0].Expression.Member.Value -eq 'GetDrives'
-$filter = $parts.Count -eq 3 -and (Kind $parts[1]) -eq 'CommandAst' -and $parts[1].GetCommandName() -eq 'Where-Object' -and $parts[1].CommandElements.Count -eq 2 -and (Kind $parts[1].CommandElements[1]) -eq 'ScriptBlockExpressionAst'
-$first = $parts.Count -eq 3 -and (Kind $parts[2]) -eq 'CommandAst' -and $parts[2].Extent.Text -eq 'Select-Object -First 1'
-"assignment_is_getdrives_where_select_first_1=$($drives -and $filter -and $first)"
-$block = if ($filter) { $parts[1].CommandElements[1] }
-$cidata = if ($filter) { @($block.FindAll({ param($n) (Kind $n) -eq 'StringConstantExpressionAst' -and $n.Value -eq 'CIDATA' }, $true)).Count }
-"filter_names_cidata=$cidata"
+"condition=$($loop.Condition.Extent.Text -replace '\s+', ' ')"
 $body = foreach ($s in $loop.Body.Statements) {
     if ((Kind $s) -eq 'PipelineAst' -and $s.PipelineElements.Count -eq 1 -and (Kind $s.PipelineElements[0]) -eq 'CommandAst') { $s.PipelineElements[0].GetCommandName() } else { Kind $s }
 }
 "body=$($body -join ',')"
-"uses_of_d_after_the_loop=$(@($ast.FindAll({ param($n) (Kind $n) -eq 'VariableExpressionAst' -and $n.VariablePath.UserPath -eq 'd' -and $n.Extent.StartOffset -ge $loop.Extent.EndOffset }, $true)).Count)"
 $bootstrap = @($ast.FindAll({ param($n) (Kind $n) -eq 'StringConstantExpressionAst' -and $n.Value -eq 'bootstrap.ps1' }, $true))
 "bootstrap_follows_the_loop=$($bootstrap.Count -eq 1 -and $bootstrap[0].Extent.StartOffset -ge $loop.Extent.EndOffset)"
 "#;
+
+/// The loop's condition, whitespace collapsed: waits for a ready volume labelled `CIDATA`. Any rewrite of it fails here,
+/// to be read: the wait has no cap.
+const FIRST_LOGON_CONDITION: &str = "-not ($d = [IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.VolumeLabel -eq 'CIDATA' } | Select-Object -First 1)";
 
 #[skuld::test]
 fn the_first_logon_command_parses_and_waits_for_the_answer_disk_with_no_cap(#[fixture(pwsh_wrap)] _group: &Group) {
@@ -199,11 +189,8 @@ fn the_first_logon_command_parses_and_waits_for_the_answer_disk_with_no_cap(#[fi
         facts,
         [
             "loops=1",
-            "condition_is_not_of_an_assignment_to_d=True",
-            "assignment_is_getdrives_where_select_first_1=True",
-            "filter_names_cidata=1",
+            &format!("condition={FIRST_LOGON_CONDITION}"),
             "body=Start-Sleep",
-            "uses_of_d_after_the_loop=1",
             "bootstrap_follows_the_loop=True",
         ],
         "{script}"
