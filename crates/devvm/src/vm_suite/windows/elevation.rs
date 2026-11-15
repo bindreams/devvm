@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 
 use super::bounds::STATE_BOUND;
 use super::windows_options;
-use super::{SharedWindowsGuest, WindowsBase, printed, pwsh, ran, shared_windows_guest, until, windows_base};
+use super::{SharedWindowsGuest, WindowsBase, joined, printed, pwsh, ran, shared_windows_guest, until, windows_base};
 use crate::guest::windows::elevate::{ROOT, TASK};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{answer_to, step};
@@ -355,13 +355,6 @@ fn windows_an_elevated_command_whose_runner_dies_ends_with_an_error_not_a_wait(
     );
     assert_eq!(seen.stdout_lossy(), "");
     assert_eq!(pending(&*up), "0", "the caller removes a request whose runner died");
-}
-
-/// The result of a scoped thread. A panic in it goes on in the test with its own message, not as an opaque `Any`.
-fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
-    thread
-        .join()
-        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
 }
 
 const RUNNER: &str = r"C:\Program Files\devvm\eb-runner.ps1";

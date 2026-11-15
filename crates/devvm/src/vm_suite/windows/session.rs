@@ -74,25 +74,49 @@ fn windows_a_command_after_the_agent_is_stopped_fails_in_the_preamble_instead_of
 
 // The boot window =====================================================================================================
 
-/// What a plain `ssh` of the generated `config` gets from `name` for the command `remote`.
-pub(super) fn ssh_remote(config: &Path, name: &str, remote: &str) -> std::process::Output {
-    let _watch = awaiting(format!("ssh to {name}"), ANSWER_BOUND);
+/// The plain `ssh` of the generated `config` for `remote` on `name`; streams unset. One attempt, no connect timeout: it
+/// waits as long as its caller does.
+pub(super) fn ssh_command(config: &Path, name: &str, remote: &str) -> std::process::Command {
+    ssh_command_with(config, name, remote, &[])
+}
+
+/// [`ssh_command`] with the extra `options` (`-o` arguments, which come before the host).
+fn ssh_command_with(config: &Path, name: &str, remote: &str, options: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new("ssh");
     command
         .arg("-F")
         .arg(config)
         .args(["-o", "BatchMode=yes"])
-        // A connection that the guest does not answer yet is no answer: the next probe asks again.
-        .args(["-o", "ConnectTimeout=10"])
+        .args(options)
         .arg(name)
-        .arg(remote)
-        .stdin(Stdio::null());
+        .arg(remote);
     host::current().quiet(&mut command);
+    command
+}
+
+/// What a plain `ssh` of the generated `config` gets from `name` for the command `remote`.
+pub(super) fn ssh_remote(config: &Path, name: &str, remote: &str) -> std::process::Output {
+    ssh_output(name, ssh_command(config, name, remote))
+}
+
+/// [`ssh_remote`] for a probe loop: a connection that the guest does not answer in 10 s is no answer, and the next probe
+/// asks again.
+pub(super) fn ssh_probe(config: &Path, name: &str, remote: &str) -> std::process::Output {
+    ssh_output(
+        name,
+        ssh_command_with(config, name, remote, &["-o", "ConnectTimeout=10"]),
+    )
+}
+
+/// Runs `command`, an `ssh` to `name` with its stdin closed, to its end and returns what it printed.
+fn ssh_output(name: &str, mut command: std::process::Command) -> std::process::Output {
+    let _watch = awaiting(format!("ssh to {name}"), ANSWER_BOUND);
+    command.stdin(Stdio::null());
     command.output().unwrap_or_else(|e| panic!("cannot run ssh: {e}"))
 }
 
 /// What a probe through `ssh` says: the `session=.. integrity=..` line of a command that ran, or nothing.
-fn answer(output: &std::process::Output) -> Option<String> {
+pub(super) fn answer(output: &std::process::Output) -> Option<String> {
     let text = String::from_utf8_lossy(&output.stdout);
     text.lines()
         .map(str::trim)
@@ -126,7 +150,7 @@ fn windows_no_command_is_answered_from_session_0_while_booting(#[fixture(windows
         let mut answered = 0_usize;
         while !start.is_finished() {
             for (kind, remote) in probes() {
-                if let Some(line) = answer(&ssh_remote(&config, &name, &remote)) {
+                if let Some(line) = answer(&ssh_probe(&config, &name, &remote)) {
                     assert_eq!(line, user_facts(), "{kind} was answered while the guest booted");
                     answered += 1;
                 }
