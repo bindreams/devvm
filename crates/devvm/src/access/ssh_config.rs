@@ -38,8 +38,8 @@ pub(crate) struct SshConfigEntry {
 /// `<state>/ssh`.
 pub(crate) struct SshConfigDir {
     dir: PathBuf,
-    /// Writes every file ssh reads here as the user's alone: OpenSSH for Windows refuses an `Include`d conf that another
-    /// account can write, and a new file takes its directory's inheritable ACEs unless it is given a DACL.
+    /// Writes every file ssh reads here user-only: OpenSSH for Windows refuses an `Include`d conf that another account
+    /// can write.
     host: &'static dyn Host,
     /// Told "waiting for the ssh configuration" when another process holds the lock.
     progress: Arc<dyn Progress>,

@@ -249,9 +249,8 @@ pub(crate) fn is_write_file_temporary(name: &str) -> bool {
 }
 
 /// Writes `text` to `dir/file` through a temp file and a rename, so a reader sees the old or the new content, never a
-/// mixture, and a crash leaves no half-written `file`. The temp file is made with [`Host::write_private`] and moved
-/// with [`Host::replace_file`], so `file` is the user's alone from the moment it exists, whatever `dir` hands down
-/// (a rename keeps the DACL or mode of the file it moves).
+/// mixture, and a crash leaves no half-written `file`. `file` is the user's alone from the moment it exists, whatever
+/// `dir` hands down: the temp file is private and a rename keeps its DACL or mode.
 pub(crate) fn write_file(host: &dyn Host, dir: &Path, file: &str, text: &str) -> Result<()> {
     let suffix = random::bytes::<TEMP_BYTES>();
     let temp = dir.join(format!("{file}{TEMP_MARK}{}", hex::encode(suffix)));
@@ -323,6 +322,7 @@ impl InstanceRecord {
             machine: self.machine.clone(),
         };
         let text = serde_json::to_string_pretty(&wire).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
+        // No caller of a record holds a host; every record is written by this process for its own user.
         write_file(host::current(), dir, RECORD_FILE, &text)
     }
 }

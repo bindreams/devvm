@@ -447,7 +447,7 @@ fn the_generated_files_are_the_users_alone_whatever_the_directory_hands_down(#[f
     let e = entry(&state, "web", 2222);
     dir.write_entry(&e, &host_public()).unwrap();
     dir.ensure_top_level().unwrap();
-    // A rewrite replaces each file, and the replacement is as private as the first.
+    // A rewrite replaces each file.
     let e = entry(&state, "web", 2223);
     dir.write_entry(&e, &host_public()).unwrap();
     for path in [conf(&dir, "web"), dir.config(), e.known_hosts.clone()] {
@@ -462,7 +462,7 @@ fn the_generated_files_are_the_users_alone_whatever_the_directory_hands_down(#[f
     }
 }
 
-/// The file's DACL is protected and grants only `me`, whose owner is the user or Administrators (OpenSSH accepts both).
+/// The owner may be Administrators as well as the user: OpenSSH accepts both.
 #[cfg(windows)]
 fn assert_is_the_users_alone(path: &Path, me: &str) {
     use crate::test_support::file_security::Security;
