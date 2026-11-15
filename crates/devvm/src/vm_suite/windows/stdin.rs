@@ -5,9 +5,9 @@
 //! ends with its session on the client's side and leaves the guest accepting. They do not assert that the transfer ends.
 //! They test the path of a user's own `ssh -F <config> <name> <command>` with the generated configuration, whose command
 //! the guest's agent runs as `pwsh -c <command>` with the session's stdin pipe. `devvm ssh <name> -- <command>` is not
-//! that path: it runs the command with the embedded client and no stdin. The last two cases check that back-to-back connections, which
-//! each make sshd's listener write its configuration and host keys to a new session's pipe, leave the listener
-//! accepting. Every case boots an instance of its own: a wedged guest would fail every case after it.
+//! that path: it runs the command with the embedded client and no stdin. The last two cases check that back-to-back
+//! connections, which each make sshd's listener write its configuration and host keys to a new session's pipe, leave
+//! the listener accepting. Every case boots an instance of its own: a wedged guest would fail every case after it.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
@@ -64,23 +64,28 @@ fn follow(stream: &str, pipe: impl Read) -> String {
     }
 }
 
-/// The names of the programs of the guest that are the readers whose command line has [`TOKEN`] and `nonce`, one per
-/// line. A reader is the program that the `pwsh -c` of the agent started for the command: it has the token, and its
-/// parent is a `pwsh.exe` that has it. The token is written in two parts, so that this script's own command line does
-/// not have it. It runs elevated: the command lines of the broker's children are not the user's to read (a look as the
-/// user found none in CI run 43672193381). With no reader, it prints the shells and readers it sees as `seen:` lines.
+/// Prints `reader: <name>` for each program of the guest that is a reader whose command line has [`TOKEN`] and `nonce`:
+/// the program that the `pwsh -c` of the agent started for the command, which has the token and whose parent is a
+/// `pwsh.exe` that has it. With no reader, it prints a `seen:` line for each process that has the token (its parent
+/// and its command line on one line, cut), or one `seen:` line saying none has it; these lines change only when those
+/// processes do. The token is written in two parts, so that this script's own command line does not have it.
+///
+/// It runs elevated. A look as the user found no reader for 600 s in CI run 43672193381; the `seen:` lines of a look
+/// that finds none tell whether the reader is there and what its command line and parent are.
 fn readers_on_the_guest(nonce: &str) -> Command {
     pwsh(
         RunAs::Elevated,
         &format!(
             "$token = '{TOKEN}' + '{nonce}'; \
-             $all = @(Get-CimInstance Win32_Process); \
-             $hits = @($all | Where-Object {{ $_.CommandLine -and $_.CommandLine.Contains($token) }}); \
+             $hits = @(Get-CimInstance Win32_Process -Filter (\"CommandLine LIKE '%\" + $token + \"%'\")); \
              $shells = @($hits | Where-Object {{ $_.Name -eq 'pwsh.exe' }} | ForEach-Object {{ $_.ProcessId }}); \
-             $readers = @($hits | Where-Object {{ $shells -contains $_.ParentProcessId }} | ForEach-Object {{ $_.Name }}); \
-             if ($readers) {{ $readers }} else {{ \
-                 $all | Where-Object {{ $_.Name -in 'pwsh.exe', 'powershell.exe', 'find.exe', 'ssh-broker.exe', 'sshd.exe' }} | \
-                 ForEach-Object {{ \"seen: $($_.ProcessId) <- $($_.ParentProcessId) $($_.Name) $([string]$_.CommandLine)\" }} }}"
+             $readers = @($hits | Where-Object {{ $shells -contains $_.ParentProcessId }}); \
+             if ($readers) {{ $readers | ForEach-Object {{ 'reader: ' + $_.Name }} }} \
+             elseif (-not $hits) {{ 'seen: no process has the token' }} \
+             else {{ $hits | ForEach-Object {{ \
+                 $parent = Get-CimInstance Win32_Process -Filter \"ProcessId = $($_.ParentProcessId)\"; \
+                 $line = ([string]$_.CommandLine) -replace '[\\r\\n]+', ' '; \
+                 \"seen: $($_.ProcessId) $($_.Name) <- $($_.ParentProcessId) $($parent.Name): \" + $line.Substring(0, [Math]::Min(200, $line.Length)) }} }}"
         ),
     )
 }
@@ -89,10 +94,10 @@ fn readers_on_the_guest(nonce: &str) -> Command {
 /// and has `token` in its command line, and which runs as the program `reader_exe` there. It kills the client once its
 /// stdin pipe has taken [`TAKEN`] bytes (a count of what the test wrote, not a time) and fresh commands of the guest,
 /// asked again until one finds it, have seen the reader alive: a reader that has not failed is alive, since its stdin
-/// never closes. The looks run before the kill, while the client's session may hang: a guest that stops answering
-/// other sessions then contradicts the stated limit, a hang of that session only, so the case fails. Then it checks that
-/// a fresh command of the guest is answered. A hang of the session that the killed client had is not a
-/// failure: the limit is stated.
+/// never closes. The looks run before the kill, while the client's session may hang: a guest that stops answering other
+/// sessions then contradicts the stated limit, a hang of that session only, so the case fails. Then it checks that a
+/// fresh command of the guest is answered. A hang of the session that the killed client had is not a failure: the limit
+/// is stated.
 ///
 /// `reader` is sent as it is: that is what a user's own `ssh -F` sends. devvm's own wrapper is not in that path
 /// (`devvm run` sends no stdin).
@@ -152,10 +157,15 @@ fn a_killed_client_leaves_the_guest_accepting(
             );
             // What the last look printed: a look that sees the same is not logged again.
             let mut shown = String::from("\0");
+            // The case kills a live client: ssh that ends before the kill, by itself, is a failure.
+            let mut ended = || match client.0.try_wait() {
+                Ok(None) => None,
+                Ok(Some(status)) => Some(format!("ssh ended by itself with {status} before the kill")),
+                Err(e) => Some(format!("cannot tell whether ssh has ended: {e}")),
+            };
             loop {
-                // An ended client closed the reader's stdin: the reader can never show, so the case fails now.
-                if let Ok(Some(status)) = client.0.try_wait() {
-                    break Err(format!("ssh ended with {status} before the reader showed"));
+                if let Some(failure) = ended() {
+                    break Err(failure);
                 }
                 let output = match ran(&*up, "a look at the reader on the guest", &looking) {
                     Ok(output) => output,
@@ -173,11 +183,13 @@ fn a_killed_client_leaves_the_guest_accepting(
                     eprintln!("the look found:\n{readers}");
                     shown = readers.to_string();
                 }
-                if readers
-                    .lines()
-                    .any(|program| program.trim().eq_ignore_ascii_case(reader_exe))
-                {
-                    break Ok(());
+                if readers.lines().any(|line| {
+                    line.trim()
+                        .strip_prefix("reader: ")
+                        .is_some_and(|program| program.eq_ignore_ascii_case(reader_exe))
+                }) {
+                    // A look takes seconds: ssh may have ended during it.
+                    break ended().map_or(Ok(()), Err);
                 }
                 std::thread::sleep(PACE);
             }
