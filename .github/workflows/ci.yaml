@@ -189,10 +189,11 @@ jobs:
             exit 0
           fi
           pattern='^(crates/|qemu/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yaml$)'
-          # Not piped: a failed diff must fail the step, not read as "no change".
-          # quotePath off: git C-quotes non-ASCII paths, which `^crates/` would miss.
-          files=$(git -c core.quotePath=false diff --name-only "$BASE" HEAD)
-          if grep -E "$pattern" <<< "$files"; then
+          # Not piped: a failed diff must fail the step, not read as "no change". NUL-separated, because git quotes the
+          # other forms of an unusual path, which the pattern would miss; no renames, so a moved file names its old path.
+          files="$RUNNER_TEMP/changed-files"
+          git diff -z --no-renames --name-only "$BASE" HEAD > "$files"
+          if grep -qzE "$pattern" "$files"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
