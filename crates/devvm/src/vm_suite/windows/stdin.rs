@@ -5,9 +5,7 @@
 //! ends with its session on the client's side and leaves the guest accepting. They do not assert that the transfer ends.
 //! They test the path of a user's own `ssh -F <config> <name> <command>` with the generated configuration, whose command
 //! the guest's agent runs as `pwsh -c <command>` with the session's stdin pipe. `devvm ssh <name> -- <command>` is not
-//! that path: it runs the command with the embedded client and no stdin. The look at the reader runs while the killed
-//! client's session may still hang: a guest that then stops answering other sessions contradicts the stated limit, which
-//! is a hang of that session only, so the case fails. The last two cases check that back-to-back connections, which
+//! that path: it runs the command with the embedded client and no stdin. The last two cases check that back-to-back connections, which
 //! each make sshd's listener write its configuration and host keys to a new session's pipe, leave the listener
 //! accepting. Every case boots an instance of its own: a wedged guest would fail every case after it.
 
@@ -18,7 +16,7 @@ use std::sync::mpsc;
 
 use super::machine::Client;
 use super::session::{answer, ssh_command, ssh_remote};
-use super::{FACTS, WindowsBase, facts, joined, pwsh, ran, user_facts, windows_base, windows_options};
+use super::{FACTS, PACE, WindowsBase, facts, joined, pwsh, ran, user_facts, windows_base, windows_options};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
 use crate::{Command, ExitStatus, RunAs, random};
@@ -84,9 +82,11 @@ fn readers_on_the_guest(nonce: &str) -> Command {
 
 /// Pipes input without an end through the system `ssh` to `reader(token)`, a command of the guest that reads its stdin
 /// and has `token` in its command line, and which runs as the program `reader_exe` there. It kills the client once its
-/// stdin pipe has taken [`TAKEN`] bytes (a count of what the test wrote, not a time), after it has asked the guest, in a
-/// command of its own, for the reader: a reader that has not failed is alive, since its stdin never closes. Then it
-/// checks that a fresh command of the guest is answered. A hang of the session that the killed client had is not a
+/// stdin pipe has taken [`TAKEN`] bytes (a count of what the test wrote, not a time) and fresh commands of the guest,
+/// asked again until one finds it, have seen the reader alive: a reader that has not failed is alive, since its stdin
+/// never closes. The looks run before the kill, while the client's session may hang: a guest that stops answering
+/// other sessions then contradicts the stated limit, a hang of that session only, so the case fails. Then it checks that
+/// a fresh command of the guest is answered. A hang of the session that the killed client had is not a
 /// failure: the limit is stated.
 ///
 /// `reader` is sent as it is: that is what a user's own `ssh -F` sends. devvm's own wrapper is not in that path
@@ -142,10 +142,14 @@ fn a_killed_client_leaves_the_guest_accepting(
             // Nothing orders the reader's start before the first look, so the looks go on until the reader shows. The
             // bound is the failure: a reader that never shows (it failed to start, or died) is not an answer.
             let _watch = awaiting(
-                format!("{reader_exe} with {token} in its command line on the guest"),
+                format!("a look finding {reader_exe} with {token} in its command line on the guest"),
                 ANSWER_BOUND,
             );
             loop {
+                // An ended client closed the reader's stdin: the reader can never show, so the case fails now.
+                if let Ok(Some(status)) = client.0.try_wait() {
+                    break Err(format!("ssh ended with {status} before the reader showed"));
+                }
                 let output = match ran(&*up, "a look at the reader on the guest", &looking) {
                     Ok(output) => output,
                     Err(e) => break Err(format!("cannot look at the reader on the guest: {e}")),
@@ -165,6 +169,7 @@ fn a_killed_client_leaves_the_guest_accepting(
                 {
                     break Ok(());
                 }
+                std::thread::sleep(PACE);
             }
         });
         // On every path: the threads end with their client, so the scope can end. None of these ends by itself if the
