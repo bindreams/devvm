@@ -87,9 +87,9 @@ Limits:
 - After the guest's agent stops, `devvm ssh` and `devvm cp` run in session 0 at High until the instance is restarted;
   `devvm run` exits 126 "the command did not reach the user's session". A program that returns 126 looks the same;
   the message on stderr tells them apart.
-- Piping large input through system `ssh` (`devvm ssh <name>` with no command, or your own `ssh` with the config devvm
-  writes for the instance), or into a .NET program such as Windows PowerShell 5.1, can hang that session; `devvm stop`
-  and `devvm start` recover it. `devvm run` and `devvm ssh <name> -- <command>` send no stdin.
+- Piping large input through system `ssh` (interactive `devvm ssh <name>`, or your own `ssh` with devvm's generated
+  config), or into a .NET program such as Windows PowerShell 5.1, can hang that session; `devvm stop` and `devvm start`
+  recover it. `devvm run` and `devvm ssh <name> -- <command>` send no stdin.
 - Interactive `devvm ssh <name>` and `ssh -t` end with status 0 on a Windows guest; commands keep their status.
 - On a Windows guest, a session that asks for a terminal (`ssh -t`/`-tt`) while its input is not a terminal (`</dev/null`,
   a pipe that ends, or a library that sends end-of-input) may end with status 0 without running the command. Drop `-t`,
