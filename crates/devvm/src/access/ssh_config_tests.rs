@@ -422,6 +422,7 @@ fn let_other_accounts_write_below(dir: &Path) -> String {
         inherited.iter().any(|sid| sid == AUTHENTICATED_USERS),
         "a new file in the directory must inherit Authenticated Users write: {inherited:?}"
     );
+    std::fs::remove_file(&probe).unwrap();
     me
 }
 

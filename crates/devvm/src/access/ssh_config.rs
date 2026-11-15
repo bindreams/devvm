@@ -39,7 +39,7 @@ pub(crate) struct SshConfigEntry {
 pub(crate) struct SshConfigDir {
     dir: PathBuf,
     /// Writes every file here as the user's alone: OpenSSH for Windows refuses an `Include`d conf that another account
-    /// can write, and a file takes the DACL of its directory's parent unless it is given one.
+    /// can write, and a new file inherits its directory's DACL unless it is given one.
     host: &'static dyn Host,
     /// Told "waiting for the ssh configuration" when another process holds the lock.
     progress: Arc<dyn Progress>,

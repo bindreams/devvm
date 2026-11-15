@@ -259,14 +259,11 @@ pub(crate) fn write_file(host: &dyn Host, dir: &Path, file: &str, text: &str) ->
     let fail = |action: &str, path: &Path, source| {
         Error::io(ErrorKind::Io, format!("cannot {action} {}", path.display()), source)
     };
-    (|| {
-        host.write_private(&temp, text.as_bytes())
-            .map_err(|e| fail("write", &temp, e))?;
-        host.replace_file(&temp, &target)
-            .map_err(|e| fail("replace", &target, e))
-    })()
-    .map_err(|e| {
-        e.after_cleanup(
+    // `write_private` removes what it made when it fails, and an `AlreadyExists` temp is not this call's to remove.
+    host.write_private(&temp, text.as_bytes())
+        .map_err(|e| fail("write", &temp, e))?;
+    host.replace_file(&temp, &target).map_err(|e| {
+        fail("replace", &target, e).after_cleanup(
             &format!("the temporary file {}", temp.display()),
             remove_if_present(&temp),
         )
