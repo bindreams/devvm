@@ -2,16 +2,16 @@
 //! session, the windows on the desktop and `doctor`'s line for the ISO.
 
 use std::ffi::OsStr;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::bounds::TERMINAL_BOUND;
 use super::{
-    SharedWindowsGuest, WindowsBase, output_of, printed, pwsh, ran, shared_windows_guest, windows_base, windows_iso,
+    SharedWindowsGuest, WindowsBase, printed, pwsh, ran, shared_windows_guest, windows_base, windows_iso,
     windows_options,
 };
 use crate::RunAs;
@@ -145,6 +145,21 @@ fn windows_the_doctor_iso_line_of_the_base_iso_shows_a_sha256(
 }
 
 // A terminal ==========================================================================================================
+
+/// Everything `ssh -tt` printed, a chunk at a time, until it ends.
+fn output_of(stdout: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut chunk = [0_u8; 4096];
+        while let Ok(read) = stdout.read(&mut chunk) {
+            if read == 0 || sender.send(chunk[..read].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    receiver
+}
 
 /// The `ssh` client of a test, ended when the test is: a test that fails leaves no session running on the guest.
 pub(super) struct Client(pub(super) std::process::Child);
