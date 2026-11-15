@@ -51,15 +51,15 @@ mod elevate_pwsh_tests;
 pub(crate) const ROOT: &str = r"C:\ProgramData\devvm\eb";
 /// The scheduled task that runs a request: `user`, highest privileges, `MultipleInstances Parallel`.
 pub(crate) const TASK: &str = "devvm-eb";
-pub(crate) const SCRIPT: &str = "script.ps1";
-pub(crate) const CALLER: &str = "caller";
-pub(crate) const CLAIM: &str = "claim";
+pub(super) const SCRIPT: &str = "script.ps1";
+pub(super) const CALLER: &str = "caller";
+pub(super) const CLAIM: &str = "claim";
 pub(super) const STDOUT: &str = "stdout";
 pub(super) const STDERR: &str = "stderr";
 pub(super) const EXIT: &str = "exit";
-pub(crate) const DONE: &str = "done";
+pub(super) const DONE: &str = "done";
 /// Written by the caller when it has read everything the runner wrote: the runner may remove the request.
-pub(crate) const READ: &str = "read";
+pub(super) const READ: &str = "read";
 
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
 const PAUSE_MILLISECONDS: u32 = 200;
@@ -133,8 +133,10 @@ function Get-InstanceState($instance) {
         return $_.Exception
     }
     if ($null -eq $raw) {
-        foreach ($record in $Error) { if (Test-NotRunning $record.Exception) { return 'not running' } }
-        if ($Error.Count -gt 0) { return $Error[0].Exception }
+        # `$Error` holds error records, and may hold a bare exception.
+        $failures = @($Error | ForEach-Object { if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception } else { $_ } })
+        foreach ($failure in $failures) { if (Test-NotRunning $failure) { return 'not running' } }
+        if ($failures.Count -gt 0) { return $failures[0] }
         return [InvalidOperationException]::new('the state was empty')
     }
     $state = [int]$raw

@@ -29,7 +29,6 @@ mod bounds;
 mod commands;
 mod elevation;
 mod machine;
-mod measure;
 mod seed;
 mod session;
 mod shared;
