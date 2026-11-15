@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 use sha2::{Digest, Sha256 as Sha2};
 
-use super::{Flattened, Setting, Shell, Step, UacMode};
+use super::{Flattened, ProductKey, Setting, Shell, Step, UacMode};
 use crate::{Arch, Error, ErrorKind, Result, RunAs, Sha256};
 
 #[cfg(test)]
@@ -81,12 +81,14 @@ pub enum RootContent {
     Sha256(Sha256),
     /// An OCI image digest; hashed in lowercase, so case variants share a key.
     OciDigest(String),
-    /// A Windows ISO: the sha256 of its content and the image installed from it (its index in the ISO and its name), so
-    /// two editions of one ISO are two roots, and an `edition` omitted and one that names the only image are one.
+    /// A Windows ISO: the sha256 of its content, the image installed from it (its index in the ISO and its name) and the
+    /// product key. Two editions of one ISO are two roots, an `edition` omitted and one that names the only image are one,
+    /// and a changed key is another root.
     Iso {
         sha256: Sha256,
         image_index: u32,
         image_name: String,
+        product_key: Option<ProductKey>,
     },
 }
 
@@ -236,7 +238,13 @@ pub(crate) fn root_key_with(
             sha256,
             image_index,
             image_name,
-        } => framer.tag(3).bytes(sha256.as_bytes()).u32(*image_index).str(image_name),
+            product_key,
+        } => framer
+            .tag(3)
+            .bytes(sha256.as_bytes())
+            .u32(*image_index)
+            .str(image_name)
+            .opt_str(product_key.as_ref().map(ProductKey::expose)),
     };
     framer.bytes(base_definition);
     framer.finish()

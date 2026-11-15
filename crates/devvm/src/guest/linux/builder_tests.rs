@@ -180,6 +180,7 @@ fn a_non_disk_source_is_not_supported_naming_it(#[fixture(unicode_home)] home: &
             Source::Iso {
                 path: PathBuf::from("win11.iso"),
                 edition: None,
+                product_key: None,
             },
             "ISO",
         ),

@@ -162,6 +162,7 @@ fn guest_kind_follows_the_root(#[fixture(unicode_home)] home: &Path) {
         Source::Iso {
             path: home.join("win.iso"),
             edition: None,
+            product_key: None,
         }
     );
 

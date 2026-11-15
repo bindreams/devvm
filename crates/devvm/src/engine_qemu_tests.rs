@@ -110,6 +110,7 @@ impl QemuEngine {
         let source = Source::Iso {
             path: iso,
             edition: None,
+            product_key: None,
         };
         self.engine
             .store()

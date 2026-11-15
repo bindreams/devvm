@@ -9,8 +9,10 @@ pub mod embedded;
 pub mod file;
 pub mod hash;
 pub mod model;
+pub mod product_key;
 
 pub use model::{CopyFrom, PerArch, Pin, Recipe, Resources, Setting, Shell, Source, Step, UacMode};
+pub use product_key::ProductKey;
 
 #[cfg(test)]
 #[path = "recipe_tests.rs"]

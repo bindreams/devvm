@@ -51,6 +51,7 @@
         </RunSynchronousCommand>
       </RunSynchronous>
       <UserData>
+        @@!PRODUCT_KEY@@
         <AcceptEula>true</AcceptEula>
       </UserData>
     </component>

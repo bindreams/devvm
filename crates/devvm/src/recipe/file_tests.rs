@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::recipe::{CopyFrom, PerArch, Pin, Recipe, Setting, Shell, Source, Step, UacMode};
+use crate::recipe::{CopyFrom, PerArch, Pin, ProductKey, Recipe, Setting, Shell, Source, Step, UacMode};
 use crate::test_support::fixtures::unicode_home;
 use crate::{Arch, ErrorKind, RunAs};
 
@@ -38,6 +38,7 @@ fn each_from_variant_parses() {
         Source::Iso {
             path: dir.join("../isos/win.iso"),
             edition: None,
+            product_key: None,
         }
     );
 
@@ -87,6 +88,7 @@ fn relative_from_resolves_against_the_recipe_directory(#[fixture(unicode_home)] 
         Source::Iso {
             path: home.join("a b").join("win.iso"),
             edition: None,
+            product_key: None,
         }
     );
 }
@@ -98,6 +100,7 @@ fn an_iso_takes_an_edition() {
         Source::Iso {
             path: Path::new("proj").join("win.iso"),
             edition: Some("Windows 11 Pro".to_owned()),
+            product_key: None,
         }
     );
     let error = parse_err("from: { iso: win.iso, edition: '  ' }");
@@ -106,6 +109,81 @@ fn an_iso_takes_an_edition() {
     // Only an ISO has editions.
     let error = parse_err(&format!("from: {{ url: x, sha256: {SHA_A}, edition: Pro }}"));
     assert_eq!(error.kind(), ErrorKind::Recipe);
+}
+
+const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
+
+#[skuld::test]
+fn an_iso_takes_a_product_key() {
+    assert_eq!(
+        parse(&format!(
+            "from: {{ iso: win.iso, edition: Windows 11 Pro, product-key: {KEY} }}"
+        ))
+        .source,
+        Source::Iso {
+            path: Path::new("proj").join("win.iso"),
+            edition: Some("Windows 11 Pro".to_owned()),
+            product_key: Some(ProductKey::parse(KEY).unwrap()),
+        }
+    );
+    let Source::Iso { product_key, .. } = parse(&format!("from: {{ iso: win.iso, product-key: {KEY} }}")).source else {
+        panic!()
+    };
+    assert_eq!(product_key, Some(ProductKey::parse(KEY).unwrap()));
+}
+
+#[skuld::test]
+fn a_product_key_of_the_wrong_shape_is_refused_without_being_printed() {
+    for bad in [
+        "AB12C-DE34F-GH56J-KL78M",
+        "AB12C-DE34F-GH56J-KL78M-NP90Q-XY12Z",
+        "AB12C-DE34F-GH56J-KL78M-NP90",
+        "AB12C-DE34F-GH56J-KL78M-NP90QR",
+        "AB12CDE34FGH56JKL78MNP90Q",
+        "AB12C-DE34F-GH56J-KL78M-NP9 Q",
+        "AB12C-DE34F-GH56J-KL78M-NP9ÉQ",
+        "AB12C_DE34F_GH56J_KL78M_NP90Q",
+        "",
+    ] {
+        let error = parse_err(&format!("from: {{ iso: win.iso, product-key: \"{bad}\" }}"));
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{bad}");
+        assert_eq!(
+            error.message(),
+            "invalid recipe proj/x.devvm.yaml: `product-key` must be five groups of five letters and digits, XXXXX-XXXXX-XXXXX-XXXXX-XXXXX",
+            "{bad}"
+        );
+    }
+    let error = parse_err(&format!("from: {{ url: x, sha256: {SHA_A}, product-key: {KEY} }}"));
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(!error.to_string().contains(KEY), "{error}");
+}
+
+#[skuld::test]
+fn a_product_key_is_kept_in_uppercase() {
+    // Windows keys are case-insensitive: the answer file and the layer key see one spelling.
+    let lower = ProductKey::parse("ab12c-de34f-gh56j-kl78m-np90q").unwrap();
+    assert_eq!(lower.expose(), KEY);
+    assert_eq!(lower, ProductKey::parse(KEY).unwrap());
+    let Source::Iso { product_key, .. } =
+        parse("from: { iso: win.iso, product-key: ab12c-de34f-gh56j-kl78m-np90q }").source
+    else {
+        panic!()
+    };
+    assert_eq!(product_key.unwrap().expose(), KEY);
+}
+
+#[skuld::test]
+fn the_product_key_is_in_no_debug_text_of_a_recipe() {
+    let recipe = parse(&format!("from: {{ iso: win.iso, product-key: {KEY} }}"));
+    for text in [
+        format!("{recipe:?}"),
+        format!("{:?}", recipe.source),
+        format!("{:#?}", recipe.source),
+    ] {
+        assert!(!text.contains(KEY), "{text}");
+    }
+    let key = ProductKey::parse(KEY).unwrap();
+    assert!(!format!("{key:?}").contains(KEY));
 }
 
 #[skuld::test]

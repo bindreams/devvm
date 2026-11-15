@@ -17,8 +17,8 @@ use crate::guest::linux::{LinuxBuilder, QemuGuests};
 use crate::guest::windows::builder::{Bounds, WindowsBuilder};
 use crate::guest::{GuestOs, Guests};
 use crate::host::symlink_metadata_if_present;
-use crate::recipe::Recipe;
 use crate::recipe::hash::{KeyContext, LayerKey, chain_keys};
+use crate::recipe::{ProductKey, Recipe};
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::TestHost;
@@ -174,51 +174,97 @@ fn a_guest_that_cannot_start_names_the_step_and_commits_nothing(#[fixture(unicod
 
 // Pure parts ==========================================================================================================
 
+fn iso_root(
+    memo: &crate::iso::IsoMemo,
+    path: &Path,
+    edition: Option<&str>,
+    product_key: Option<&str>,
+) -> crate::Result<(super::BuildRoot, String)> {
+    let source = crate::recipe::Source::Iso {
+        path: path.to_owned(),
+        edition: edition.map(Into::into),
+        product_key: product_key.map(|text| ProductKey::parse(text).unwrap()),
+    };
+    root_of(&source, Arch::host(), &|iso, edition| {
+        crate::iso::key_iso(&TestHost, memo, iso, edition, &MemoryProgress::default())
+    })
+}
+
 #[skuld::test]
 fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home)] home: &Path) {
-    use crate::iso::{IsoMemo, key_iso};
-    use crate::recipe::Source;
+    use crate::iso::IsoMemo;
     use crate::recipe::hash::root_key;
     let memo = IsoMemo::new(&Dirs::under(home));
-    let progress = MemoryProgress::default();
     let fixture = crate::test_support::fixtures::iso_fixture;
     let (one, two, three) = (home.join("one.iso"), home.join("two.iso"), home.join("three.iso"));
     std::fs::copy(fixture("single-image.iso"), &one).unwrap();
     std::fs::copy(fixture("single-image.iso"), &two).unwrap();
     std::fs::copy(fixture("three-images.iso"), &three).unwrap();
-    let key = |path: &Path, edition: Option<&str>| {
-        let source = Source::Iso {
-            path: path.to_owned(),
-            edition: edition.map(Into::into),
-        };
-        let (root, _) = root_of(&source, Arch::host(), &|iso, edition| {
-            key_iso(&TestHost, &memo, iso, edition, &progress)
-        })
-        .unwrap();
+    let root =
+        |path: &Path, edition: Option<&str>, product_key: Option<&str>| iso_root(&memo, path, edition, product_key);
+    let key = |path: &Path, edition: Option<&str>, product_key: Option<&str>| {
         let ctx = KeyContext {
             arch: Arch::host(),
             disk: None,
             guest_semantics_version: 1,
         };
-        root_key(&ctx, &root.content(), &[0; 32])
+        root_key(&ctx, &root(path, edition, product_key).unwrap().0.content(), &[0; 32])
     };
     let (only, first, second) = (
         "Windows 11 Enterprise Evaluation",
         "Windows 11 Enterprise LTSC 2024",
         "Windows 11 IoT Enterprise LTSC 2024",
     );
-    assert_eq!(key(&one, None), key(&two, None), "two paths, equal bytes, one key");
-    assert_ne!(key(&one, None), key(&three, Some(first)));
+    let (a, b) = ("AB12C-DE34F-GH56J-KL78M-NP90Q", "AB12C-DE34F-GH56J-KL78M-NP90R");
+    assert_eq!(
+        key(&one, None, None),
+        key(&two, None, None),
+        "two paths, equal bytes, one key"
+    );
+    assert_ne!(key(&one, None, None), key(&three, Some(first), Some(a)));
     assert_ne!(
-        key(&three, Some(first)),
-        key(&three, Some(second)),
+        key(&three, Some(first), Some(a)),
+        key(&three, Some(second), Some(a)),
         "two images of one ISO"
     );
     assert_eq!(
-        key(&one, None),
-        key(&one, Some(only)),
+        key(&one, None, None),
+        key(&one, Some(only), None),
         "an omitted edition and the name of the only image are one install"
     );
+    assert_ne!(
+        key(&three, Some(first), Some(a)),
+        key(&three, Some(first), Some(b)),
+        "the product key is an input of the base"
+    );
+}
+
+#[skuld::test]
+fn an_iso_root_is_refused_when_its_product_key_does_not_fit_the_edition(#[fixture(unicode_home)] home: &Path) {
+    use crate::iso::IsoMemo;
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let fixture = crate::test_support::fixtures::iso_fixture;
+    let (one, three) = (home.join("one.iso"), home.join("three.iso"));
+    std::fs::copy(fixture("single-image.iso"), &one).unwrap();
+    std::fs::copy(fixture("three-images.iso"), &three).unwrap();
+    let root =
+        |path: &Path, edition: Option<&str>, product_key: Option<&str>| iso_root(&memo, path, edition, product_key);
+    let (only, first) = ("Windows 11 Enterprise Evaluation", "Windows 11 Enterprise LTSC 2024");
+    let a = "AB12C-DE34F-GH56J-KL78M-NP90Q";
+    // Before anything boots.
+    let error = root(&three, Some(first), None).err().unwrap();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(
+        error.message().contains(first) && error.message().contains("`product-key`"),
+        "{error}"
+    );
+    let error = root(&one, None, Some(a)).err().unwrap();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(
+        error.message().contains(only) && error.message().contains("`product-key`"),
+        "{error}"
+    );
+    assert!(!error.message().contains(a), "{error}");
 }
 
 #[skuld::test]

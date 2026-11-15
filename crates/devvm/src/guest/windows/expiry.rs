@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
+use crate::iso::names_an_evaluation;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -17,15 +18,16 @@ const MARKER: &str = "DEVVM-LICENSE=";
 /// `SoftwareLicensingProduct`'s `LicenseStatus` for a licensed product.
 const LICENSED: u32 = 1;
 
-/// The fields of the read that are numbers, and the guest's account of its activation; the description and the family are
-/// only echoed in logs, so no localized text is read except the activation's message, which is echoed too. The account is
-/// flat fields, all `null` or absent when no activation was made.
+/// The fields of the guest's license read that the host acts on. The activation fields are `null` or absent when no
+/// activation was made.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct License {
     license_status: u32,
     /// Minutes until a time-based license ends.
     grace_period_remaining: u64,
+    /// The license's family, such as `EnterpriseEval`: Windows reports it in English whatever the language.
+    license_family: Option<String>,
     /// `succeeded` or `failed`: what the guest's call of `Activate` came to.
     activation_outcome: Option<String>,
     /// The failure's message, on one line.
@@ -38,6 +40,11 @@ struct License {
 }
 
 impl License {
+    /// Whether the license family names an evaluation edition (ends in `Eval`, any case).
+    fn is_evaluation(&self) -> bool {
+        self.license_family.as_deref().is_some_and(names_an_evaluation)
+    }
+
     /// The account of the activation: text for a message, never read as meaning. `None` when none was made.
     fn activation(&self) -> Option<Activation<'_>> {
         self.activation_outcome
@@ -81,14 +88,10 @@ impl fmt::Display for Activation<'_> {
 /// When the base a guest printed `read` for stops being usable: `None` when it never does.
 ///
 /// `read` is the marker line the first-logon script wrote to the serial port; text after the JSON is ignored.
-/// A licensed product with grace left ends `now` plus that grace. An `evaluation` image in any other state is
-/// `unavailable`: Windows did not license it, whatever the guest's activation said, and the error names that account
-/// and the status. Any other image has no expiry, including one that reads no product with a key (`null`: a retail
-/// install nobody activated). An evaluation image that reads none, and a read that is neither `null` nor the marker and
-/// its fields, are `internal` errors: a build never goes on without knowing.
-///
-/// The host branches on the status and the grace only. A base that ends is `expired-base` only through the store's
-/// margin on a licensed evaluation; what an evaluation that has really ended reads after `Activate` is not measured.
+/// An image is an evaluation when `evaluation` (its edition id) says so or its license family does. An evaluation
+/// licensed with grace left ends `now` plus the grace; otherwise `unavailable`. Any other image has none, whatever
+/// grace it reads (a KMS client's renewal window is not an expiry), including a `null` read. An unreadable read, or no
+/// read for an evaluation, is `internal`.
 pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Result<Option<SystemTime>> {
     let Some(license) = parse(read).map_err(|why| unreadable(read, &why))? else {
         return if evaluation {
@@ -97,6 +100,9 @@ pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Resu
             Ok(None)
         };
     };
+    if !(evaluation || license.is_evaluation()) {
+        return Ok(None);
+    }
     if license.license_status == LICENSED && license.grace_period_remaining > 0 {
         let end = license
             .grace_period_remaining
@@ -104,9 +110,6 @@ pub(super) fn expiry_from(read: &str, evaluation: bool, now: SystemTime) -> Resu
             .and_then(|seconds| now.checked_add(Duration::from_secs(seconds)))
             .ok_or_else(|| unreadable(read, "the grace period does not fit a date"))?;
         return Ok(Some(end));
-    }
-    if !evaluation {
-        return Ok(None);
     }
     let account = match license.activation() {
         Some(activation) => format!("activation {activation}"),

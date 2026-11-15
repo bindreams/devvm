@@ -9,9 +9,9 @@ use super::build_dir::BuildDir;
 use crate::copy::{self, Snapshot};
 use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
-use crate::iso::{IsoMemo, IsoRoot, key_iso};
+use crate::iso::{IsoMemo, IsoRoot, check_product_key, key_iso};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
-use crate::recipe::{CopyFrom, Flattened, Recipe, Source, Step};
+use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
 use crate::vm::{Image, Vm};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, StartOptions, random};
@@ -80,7 +80,7 @@ impl Engine {
             resources: flat.resources,
             work: build_dir.path().to_owned(),
             iso: Mutex::new(match root {
-                BuildRoot::Iso(root) => Some(root),
+                BuildRoot::Iso { root, .. } => Some(root),
                 BuildRoot::Pinned(_) => None,
             }),
         };
@@ -181,7 +181,10 @@ enum BuildRoot {
     /// A disk image or an OCI image, which the key hashes as it is.
     Pinned(RootContent),
     /// A Windows ISO, held, with what a key is made from.
-    Iso(IsoRoot),
+    Iso {
+        root: IsoRoot,
+        product_key: Option<ProductKey>,
+    },
 }
 
 impl BuildRoot {
@@ -189,10 +192,11 @@ impl BuildRoot {
     fn content(&self) -> RootContent {
         match self {
             BuildRoot::Pinned(content) => content.clone(),
-            BuildRoot::Iso(root) => RootContent::Iso {
+            BuildRoot::Iso { root, product_key } => RootContent::Iso {
                 sha256: root.sha256,
                 image_index: root.image.index,
                 image_name: root.image.name.clone(),
+                product_key: product_key.clone(),
             },
         }
     }
@@ -222,10 +226,21 @@ fn root_of(
             BuildRoot::Pinned(RootContent::OciDigest(digest.clone())),
             format!("OCI image {reference}"),
         )),
-        Source::Iso { path, edition } => Ok((
-            BuildRoot::Iso(iso_root(path, edition.as_deref())?),
-            format!("Windows ISO {}", path.display()),
-        )),
+        Source::Iso {
+            path,
+            edition,
+            product_key,
+        } => {
+            let root = iso_root(path, edition.as_deref())?;
+            check_product_key(&root.image, product_key.as_ref())?;
+            Ok((
+                BuildRoot::Iso {
+                    root,
+                    product_key: product_key.clone(),
+                },
+                format!("Windows ISO {}", path.display()),
+            ))
+        }
         Source::Recipe(_) | Source::Embedded(_) => Err(Error::new(
             ErrorKind::Internal,
             "a flattened recipe starts from a disk image, an OCI image or an ISO",

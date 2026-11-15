@@ -14,7 +14,7 @@ use devvm::{ExitStatus, host_exit_width};
 use serde_json::Value;
 
 use cases::{Case, Ended, ExecTarget, Observed, Os};
-use test_groups::{Group, WINDOWS_ISO_VAR, vm_group, windows_guest};
+use test_groups::{Group, WINDOWS_ISO_VAR, vm_group, windows_edition, windows_guest, windows_product_key};
 use test_harness::{GUEST, VM};
 
 #[path = "../../devvm/src/test_groups/shared.rs"]
@@ -44,7 +44,7 @@ use roots::XdgRoots;
 mod cases;
 #[path = "../../devvm/src/vm_suite/windows/shared.rs"]
 mod windows_shared;
-use windows_shared::{first_try, recipe_text};
+use windows_shared::{IsoChoice, first_try, recipe_text};
 #[path = "../../devvm/src/vm_suite/waits.rs"]
 mod waits;
 use waits::{answer_to, named, step};
@@ -239,7 +239,12 @@ fn windows_up(cli: &Cli) -> Result<Instance, String> {
     let iso = std::env::var_os(WINDOWS_ISO_VAR).ok_or_else(|| format!("{WINDOWS_ISO_VAR} is not set"))?;
     step("devvm up builds the Windows base and boots an instance");
     let recipe = cli.project.join("windows.devvm.yaml");
-    std::fs::write(&recipe, recipe_text(Path::new(&iso), &[])?)
+    let (edition, product_key) = (windows_edition()?, windows_product_key()?);
+    let choice = IsoChoice {
+        edition: edition.as_deref(),
+        product_key: product_key.as_deref(),
+    };
+    std::fs::write(&recipe, recipe_text(Path::new(&iso), &choice, &[])?)
         .map_err(|e| format!("cannot write {}: {e}", recipe.display()))?;
     Instance::up_from(
         cli,

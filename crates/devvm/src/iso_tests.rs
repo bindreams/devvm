@@ -5,8 +5,9 @@ use sha2::{Digest, Sha256 as Sha2};
 use super::udf::udf_tests::{image, read_at};
 use super::{
     BootPatch, HeldIso, InstallIso, IsoMemo, IsoRoot, NO_PROMPT_IMAGE, PROMPTING_IMAGE, SECTOR, WimArch, WimImage,
-    efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, select_image, total,
+    check_product_key, efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, select_image, total,
 };
+use crate::recipe::ProductKey;
 use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
 use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
@@ -57,6 +58,46 @@ fn image_of(index: u32, name: &str, arch: WimArch) -> WimImage {
         arch,
         language: "en-US".to_owned(),
     }
+}
+
+// The product key =====================================================================================================
+
+const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
+
+fn edition_of(id: &str, name: &str) -> WimImage {
+    WimImage {
+        edition_id: id.to_owned(),
+        ..image_of(1, name, WimArch::X64)
+    }
+}
+
+#[skuld::test]
+fn a_product_key_is_required_by_an_edition_that_is_not_an_evaluation_and_refused_on_one_that_is() {
+    let key = ProductKey::parse(KEY).unwrap();
+    let eval = edition_of("EnterpriseEval", "Windows 11 Enterprise Evaluation");
+    let retail = edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024");
+    check_product_key(&eval, None).unwrap();
+    check_product_key(&retail, Some(&key)).unwrap();
+
+    let error = check_product_key(&retail, None).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert_eq!(
+        error.message(),
+        "the edition `Windows 11 IoT Enterprise LTSC 2024` is not an evaluation edition; `product-key` in `from:` is required"
+    );
+    let error = check_product_key(&eval, Some(&key)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert_eq!(
+        error.message(),
+        "the edition `Windows 11 Enterprise Evaluation` is an evaluation edition; `product-key` in `from:` must not be set"
+    );
+    assert!(!format!("{error:?} {error}").contains(KEY));
+    let error = check_product_key(&edition_of("", "No id"), None).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert_eq!(
+        error.message(),
+        "the edition `No id` names no edition id, so it is not known to be an evaluation edition; `product-key` in `from:` is required"
+    );
 }
 
 // The boot patch ======================================================================================================
@@ -294,8 +335,9 @@ fn an_arm64_image_is_refused_naming_arch_and_the_x64_scope() {
 // The Windows ISO CI builds from ======================================================================================
 
 /// The ISO the `windows_guest` group builds from has the structure the install patch relies on (found on the evaluation
-/// ISOs): the two boot images are the same size, and the patch puts the no-prompt one where the boot catalog's UEFI
-/// entry loads its image. Nothing here is the address of one ISO build.
+/// ISOs, and measured on an IoT Enterprise LTSC 2024 ISO, which is not one): the two boot images are the same size, and
+/// the patch puts the no-prompt one where the boot catalog's UEFI entry loads its image. Nothing here is the address of
+/// one ISO build.
 #[skuld::test]
 fn the_evaluation_iso_boot_patch_has_the_structure_the_spike_found(#[fixture(windows_guest)] _group: &Group) {
     let iso = PathBuf::from(std::env::var_os(WINDOWS_ISO_VAR).expect("the group needs the ISO variable"));
