@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use super::ProductKey;
 use crate::{Arch, RunAs, Sha256};
 
 /// A value that may differ per architecture.
@@ -56,9 +57,13 @@ pub enum Source {
     /// The ISO is read where the recipe says, never copied: keep it at that path, because a rebuild before the base
     /// expires reads it again. A layer is keyed by the ISO's content, so the same bytes at another path are the same
     /// layer. x64 images only; an image of another architecture is refused.
+    ///
+    /// `product_key` is required by an edition that is not an evaluation edition, and refused on one that is; the
+    /// base's layer key includes it.
     Iso {
         path: PathBuf,
         edition: Option<String>,
+        product_key: Option<ProductKey>,
     },
 }
 

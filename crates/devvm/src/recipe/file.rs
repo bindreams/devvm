@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde::de::Error as _;
 
+use super::ProductKey;
 use super::model::{CopyFrom, PerArch, Pin, Recipe, Resources, Setting, Shell, Source, Step, UacMode};
 use crate::{Error, ErrorKind, Result, RunAs, Sha256};
 
@@ -82,6 +83,8 @@ struct RawOci {
 struct RawIso {
     iso: PathBuf,
     edition: Option<String>,
+    #[serde(rename = "product-key")]
+    product_key: Option<String>,
 }
 
 /// `from:`: a string, or one of four mappings told apart by their keys.
@@ -181,9 +184,21 @@ fn source(raw: RawFrom, dir: &Path, origin: &Path) -> Result<Source> {
             if iso.edition.as_deref().is_some_and(|edition| edition.trim().is_empty()) {
                 return Err(invalid(origin, "`edition` must name an image, not be empty"));
             }
+            let product_key = iso
+                .product_key
+                .map(|text| {
+                    ProductKey::parse(&text).ok_or_else(|| {
+                        invalid(
+                            origin,
+                            "`product-key` must be five groups of five letters and digits, XXXXX-XXXXX-XXXXX-XXXXX-XXXXX",
+                        )
+                    })
+                })
+                .transpose()?;
             Source::Iso {
                 path: dir.join(iso.iso),
                 edition: iso.edition,
+                product_key,
             }
         }
         RawFrom::Oci(oci) => {

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
 use crate::host::{Host, is_absent};
+use crate::recipe::ProductKey;
 use crate::{Error, ErrorKind, Result, Sha256};
 
 mod memo;
@@ -231,6 +232,24 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
         ));
     }
     Ok(chosen)
+}
+
+/// Whether `product_key` fits the edition `image` is: an edition that is not an evaluation edition needs one, because
+/// Windows Setup stops on its key page without it, and an evaluation edition takes none. An image that names no
+/// edition id is not known to be an evaluation edition.
+pub(crate) fn check_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<()> {
+    let name = &image.name;
+    match (image.is_evaluation(), product_key) {
+        (false, None) => Err(Error::new(
+            ErrorKind::Recipe,
+            format!("the edition `{name}` is not an evaluation edition; `product-key` in `from:` is required"),
+        )),
+        (true, Some(_)) => Err(Error::new(
+            ErrorKind::Recipe,
+            format!("the edition `{name}` is an evaluation edition; `product-key` in `from:` must not be set"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// The patch that puts the no-prompt boot image where the UEFI entry of the boot catalog loads its image. The image

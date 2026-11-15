@@ -12,6 +12,7 @@ use super::wrap::{BROKER_EXE, PWSH_EXE, literal};
 use super::{BOOT_ID_FILE, UTF8_OUTPUT, WindowsGuest};
 use crate::guest::GuestOs;
 use crate::media::SeedFile;
+use crate::recipe::ProductKey;
 use crate::recipe::hash::Framer;
 use crate::{Error, ErrorKind, Result};
 
@@ -89,6 +90,8 @@ pub(super) struct AnswerInputs<'a> {
     /// The image is an evaluation edition: the first-logon script activates an unlicensed one before it reads the
     /// license. The host decides, so no script judges the image itself.
     pub evaluation: bool,
+    /// The key Setup installs with: set for an edition that is not an evaluation edition, so Setup never asks for one.
+    pub product_key: Option<&'a ProductKey>,
 }
 
 /// The text of the template `name`.
@@ -139,6 +142,7 @@ pub(super) fn probe_inputs() -> AnswerInputs<'static> {
         time_zone: TIME_ZONE,
         computer_name: COMPUTER_NAME,
         evaluation: false,
+        product_key: None,
     }
 }
 
@@ -213,6 +217,16 @@ fn driver_paths(key_prefix: &str) -> String {
     entries.join("\n        ")
 }
 
+/// The answer file's `ProductKey` element: the key, which Setup never asks for, or nothing for an evaluation edition.
+fn product_key_element(key: Option<&ProductKey>) -> String {
+    key.map_or_else(String::new, |key| {
+        format!(
+            "<ProductKey><Key>{}</Key><WillShowUI>Never</WillShowUI></ProductKey>",
+            Quoting::Xml.apply(key.expose())
+        )
+    })
+}
+
 /// Every value a template can name.
 pub(super) fn values(inputs: &AnswerInputs) -> Vec<(&'static str, String)> {
     let values: Vec<(&'static str, String)> = vec![
@@ -225,6 +239,7 @@ pub(super) fn values(inputs: &AnswerInputs) -> Vec<(&'static str, String)> {
             "EVALUATION",
             if inputs.evaluation { "$true" } else { "$false" }.to_owned(),
         ),
+        ("PRODUCT_KEY", product_key_element(inputs.product_key)),
         ("DRIVER_PATHS_OFFLINE", driver_paths("off")),
         ("DRIVER_PATHS_SPECIALIZE", driver_paths("os")),
         (

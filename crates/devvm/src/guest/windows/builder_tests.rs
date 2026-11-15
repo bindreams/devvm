@@ -76,6 +76,7 @@ impl Rig {
         let source = Source::Iso {
             path: self.iso.clone(),
             edition: edition.map(Into::into),
+            product_key: None,
         };
         self.env.store.build(&request(key(1)), None, |staging| {
             self.builder
@@ -184,6 +185,7 @@ fn the_blank_disk_is_the_larger_of_64_gib_and_the_recipes_disk(#[fixture(unicode
                 let source = Source::Iso {
                     path: rig.iso.clone(),
                     edition: None,
+                    product_key: None,
                 };
                 let result = rig.builder.build_base(&source, &rig.ctx, staging.dir);
                 disks

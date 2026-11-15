@@ -5,8 +5,9 @@ use sha2::{Digest, Sha256 as Sha2};
 use super::udf::udf_tests::{image, read_at};
 use super::{
     BootPatch, HeldIso, InstallIso, IsoMemo, IsoRoot, NO_PROMPT_IMAGE, PROMPTING_IMAGE, SECTOR, WimArch, WimImage,
-    efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, select_image, total,
+    check_product_key, efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, select_image, total,
 };
+use crate::recipe::ProductKey;
 use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
 use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
@@ -57,6 +58,42 @@ fn image_of(index: u32, name: &str, arch: WimArch) -> WimImage {
         arch,
         language: "en-US".to_owned(),
     }
+}
+
+// The product key =====================================================================================================
+
+const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
+
+fn edition_of(id: &str, name: &str) -> WimImage {
+    WimImage {
+        edition_id: id.to_owned(),
+        ..image_of(1, name, WimArch::X64)
+    }
+}
+
+#[skuld::test]
+fn a_product_key_is_required_by_an_edition_that_is_not_an_evaluation_and_refused_on_one_that_is() {
+    let key = ProductKey::parse(KEY).unwrap();
+    let eval = edition_of("EnterpriseEval", "Windows 11 Enterprise Evaluation");
+    let retail = edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024");
+    check_product_key(&eval, None).unwrap();
+    check_product_key(&retail, Some(&key)).unwrap();
+
+    let error = check_product_key(&retail, None).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert_eq!(
+        error.message(),
+        "the edition `Windows 11 IoT Enterprise LTSC 2024` is not an evaluation edition; `product-key` in `from:` is required"
+    );
+    let error = check_product_key(&eval, Some(&key)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert_eq!(
+        error.message(),
+        "the edition `Windows 11 Enterprise Evaluation` is an evaluation edition; `product-key` in `from:` must not be set"
+    );
+    assert!(!format!("{error:?} {error}").contains(KEY));
+    // An image that names no edition id is not known to be an evaluation.
+    assert!(check_product_key(&edition_of("", "No id"), None).is_err());
 }
 
 // The boot patch ======================================================================================================

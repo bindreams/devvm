@@ -47,6 +47,11 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
 
 - `edition` is the image's name in the ISO's `install.wim` (or `install.esd`). An ISO with one image does not need it;
   with several, the error lists their names.
+- A non-evaluation edition needs `product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` in `from:`, and an evaluation edition takes
+  none; the build is refused, before anything boots, when it is missing or does not belong.
+- Microsoft publishes generic KMS client setup keys for its volume editions: see
+  [Key Management Services (KMS) client activation and product keys](https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys).
+- Windows installs unactivated with one of those keys; activate it however you are licensed.
 - x64 images only. The install language is the image's default language.
 - Keep the ISO at the recipe's path. devvm never copies it, and a rebuild before the base expires reads it again.
   The layer is keyed by the ISO's content, so moving or renaming it does not rebuild.
