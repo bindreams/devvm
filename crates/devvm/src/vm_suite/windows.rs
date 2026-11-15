@@ -5,8 +5,9 @@
 //! that only look at what a command does in the guest; a test that stops, kills, disables, resets or restarts something
 //! boots an instance of its own. All of them run alone among the tests that boot a guest (`GUEST`).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::fixture::{Launches, Roots, engine_reporting_to, run_ok_as};
@@ -162,6 +163,22 @@ pub(super) fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
     thread
         .join()
         .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
+/// Everything a pipe of an `ssh` client carries, a chunk at a time, until it ends. The pipe is read for as long as it is
+/// open, so that a full pipe never stops the client.
+pub(super) fn output_of(pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut pipe = pipe;
+        let mut chunk = [0_u8; 4096];
+        while let Ok(read) = pipe.read(&mut chunk) {
+            if read == 0 || sender.send(chunk[..read].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    receiver
 }
 
 /// The pause between two looks at a condition.

@@ -96,19 +96,20 @@ fn ssh_command_with(config: &Path, name: &str, remote: &str, options: &[&str]) -
 
 /// What a plain `ssh` of the generated `config` gets from `name` for the command `remote`.
 pub(super) fn ssh_remote(config: &Path, name: &str, remote: &str) -> std::process::Output {
-    output_of(name, ssh_command(config, name, remote))
+    ssh_output(name, ssh_command(config, name, remote))
 }
 
 /// [`ssh_remote`] for a probe loop: a connection that the guest does not answer in 10 s is no answer, and the next probe
 /// asks again.
 pub(super) fn ssh_probe(config: &Path, name: &str, remote: &str) -> std::process::Output {
-    output_of(
+    ssh_output(
         name,
         ssh_command_with(config, name, remote, &["-o", "ConnectTimeout=10"]),
     )
 }
 
-fn output_of(name: &str, mut command: std::process::Command) -> std::process::Output {
+/// Runs `command`, an `ssh` to `name` with its stdin closed, to its end and returns what it printed.
+fn ssh_output(name: &str, mut command: std::process::Command) -> std::process::Output {
     let _watch = awaiting(format!("ssh to {name}"), ANSWER_BOUND);
     command.stdin(Stdio::null());
     command.output().unwrap_or_else(|e| panic!("cannot run ssh: {e}"))
