@@ -39,9 +39,11 @@ downloaded on first use.
 
 ## Usage
 
-Each instance has a name (letters, digits and `-`). `up` builds the guest, starts it and prints its name; the other
-commands take that name. The first `up` downloads QEMU and the guest image, and prints one progress line per MiB when
-stderr is not a terminal.
+Each instance has a name (letters, digits and `-`). `up` builds a guest from a recipe, starts it and prints its name;
+`ssh`, `cp`, `stop`, `start` and `rm` take that name. `run` and `build` take a recipe, as `up` does.
+
+Examples are for Git Bash. Git Bash rewrites arguments that look like paths (`/tmp/x`, `/c`), also after `--`: set
+`MSYS_NO_PATHCONV=1` for such a command.
 
 ### A Linux guest
 
@@ -59,8 +61,8 @@ devvm start dev
 devvm rm dev
 ```
 
-- `up` took under a minute, including the 619 MiB image download. `--cpus`, `--memory` and `--network` (`nat`, or `none`
-  for no internet) size the guest.
+- The first `up` downloads QEMU and the guest image. `--cpus`, `--memory` and `--arch` size the guest; `--network none`
+  cuts it off from the internet.
 - `ssh` with no command opens a login shell. `devvm ssh dev -- <command>` runs one command and exits with its status.
 - The words after `--` are one argv, not a shell string, and nothing in them is expanded by the guest: `-- 'a; b'`
   looks for a program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell:
@@ -69,13 +71,11 @@ devvm rm dev
   home. `devvm cp --help` lists the names it cannot carry.
 - `ls` lists the instances created from the current directory; `ls --all` lists every one.
 - `stop` keeps the disk; `start` boots it again. The guest's `/tmp` is empty after a restart: keep files under `~`.
-- Git Bash rewrites arguments that look like paths (`/tmp/x`), also after `--`. Set `MSYS_NO_PATHCONV=1` for the
-  command.
 
 ### A project in a recipe
 
-A recipe file ends in `.devvm.yaml`. This one starts from the embedded recipe and copies the git project that holds
-the file into the guest:
+A recipe file ends in `.devvm.yaml`. Put this one in a git repository: it starts from the embedded recipe and copies
+the repository into the guest.
 
 ```yaml
 from: ubuntu-24.04
@@ -84,7 +84,7 @@ steps:
 ```
 
 ```sh
-devvm run proj.devvm.yaml -- bash -c 'cd ~/proj && ls -R && cat hello.txt'
+devvm run proj.devvm.yaml -- bash -c 'cd ~/proj && ls -R'
 ```
 
 `run` boots a throwaway guest from the recipe, runs the command, destroys the guest and exits with the command's
@@ -112,8 +112,8 @@ What a recipe file takes (an unknown key is an error):
 
 ### A Windows guest
 
-Build a Windows guest from an installer ISO you downloaded (see [Windows ISOs](#windows-isos) for the recipe and its
-rules). The key is for a non-evaluation edition only. `windows.devvm.yaml`:
+`windows.devvm.yaml`, from an installer ISO you downloaded ([Windows ISOs](#windows-isos) has the rules for `edition`
+and `product-key`):
 
 ```yaml
 from:
@@ -133,24 +133,21 @@ devvm start win
 devvm rm win
 ```
 
-A recipe can start from this one and add steps. `proj-win.devvm.yaml`:
+A recipe next to it can start from it and add steps. `proj-win.devvm.yaml`, in the same git repository:
 
 ```yaml
-from: ../win/windows.devvm.yaml
+from: windows.devvm.yaml
 steps:
   - copy: { from: git-tracked, to: ~/proj }
 ```
 
 ```sh
-devvm run proj-win.devvm.yaml -- cmd /c dir /s /b proj
+devvm run proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/proj'
 ```
 
-- The first `up` builds the Windows base from the ISO: it downloads the virtio drivers (about 0.9 GB) and
-  took 11 minutes. Later `up`s reuse it; the ISO stays where the recipe names it.
-- `ssh win` opens PowerShell 7. A program is looked up on the guest's `PATH`: `dir` is a `cmd` builtin, so
-  `devvm ssh win -- dir` exits 127; use `-- cmd /c dir`.
-- Write guest paths with `/`; a relative one starts in the user's profile. [Windows guests](#windows-guests) lists the
-  rest.
+- The first `up` builds the Windows base from the ISO. The build downloads the virtio drivers from fedorapeople.org
+  (about 0.9 GB) and OpenSSH, PowerShell 7 and ssh-broker from github.com. Later `up`s reuse the base.
+- `ssh win` opens PowerShell 7. [Windows guests](#windows-guests) has how commands, paths and `copy` work there.
 
 ## Windows ISOs
 
