@@ -63,7 +63,7 @@ pub(crate) struct Reservation {
     pub endpoint: QmpEndpoint,
     /// The hold file as made. It goes in the machine's record; cleanup deletes nothing that it does not still name.
     pub claim: FileClaim,
-    /// The hold on the claim file. QEMU inherits a duplicate of it; this one is dropped once QEMU is spawned.
+    /// The hold on the claim file. QEMU is given a duplicate of it; this one is dropped once that is done.
     pub hold: Box<dyn Hold>,
 }
 

@@ -7,15 +7,10 @@ use cosca::identity::ProcessIdRecord;
 
 use crate::backend::fake::{ask_to_crash, ask_to_exit};
 use crate::contain::{Lifetime, VmProcess};
-use crate::test_support::fake_vm::{self, STARTED, await_port, connect_when_up};
+use crate::test_support::fake_vm::{self, STARTED, await_port, connect_when_up, frozen};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::{ErrorKind, host};
-
-fn frozen(home: &Path, lifetime: Lifetime) -> VmProcess {
-    VmProcess::spawn_frozen(host::current(), fake_vm::command(home), lifetime, &fake_vm::log(home))
-        .expect("the fake VM should spawn frozen")
-}
 
 /// Starts helper `name` (`contain-owner` or `release-owner`) with a fake VM; stdout and stdin are piped.
 fn owner(name: &str, home: &Path) -> std::process::Child {
