@@ -1,27 +1,29 @@
 From: devvm <https://github.com/bindreams/devvm>
 Subject: [PATCH] target/i386/whpx: take the XSAVE area size from the hypervisor
 
-QEMU answers CPUID[0xD,0].EBX, the XSAVE area size for the enabled XCR0
-features, from its own stale copy of XCR0. The hypervisor already supplies the
+QEMU answers CPUID[0xD,0].EBX, the XSAVE area size for the features enabled in
+XCR0, from its own stale copy of XCR0. The hypervisor already supplies the
 current value in DefaultResultRbx, which QEMU takes for sub-leaves 1 and 2. A
-Windows guest that enables AVX then sees an area smaller than XSAVE writes (576
-bytes instead of 2432), and software that sizes a buffer from it, such as
-Cygwin, overruns it.
+guest then sees an area smaller than XSAVE writes (measured on an AMD Zen 5
+host, Windows guest at XCR0=0xE7: 576 bytes instead of 2432), and software that
+sizes a buffer from it, such as Cygwin 3.6, overruns it. CPUID reads only EAX
+and ECX, so the leaf and sub-leaf are compared as 32-bit values.
 
-devvm-only; applies after 0002.
+To be upstreamed; applies after 0002.
 ---
 --- a/target/i386/whpx/whpx-all.c
 +++ b/target/i386/whpx/whpx-all.c
-@@ -2659,9 +2659,10 @@
+@@ -2659,10 +2659,9 @@
                  }
              }
  
 -            /* CPUID[0xD,{1,2}].EBX are dynamic depending on guest features. */
-+            /* CPUID[0xD,{0,1,2}].EBX are dynamic, depending on XCR0 and XSS. */
-             if (vcpu->exit_ctx.CpuidAccess.Rax == 0xd) {
+-            if (vcpu->exit_ctx.CpuidAccess.Rax == 0xd) {
 -                if (vcpu->exit_ctx.CpuidAccess.Rcx == 1
-+                if (vcpu->exit_ctx.CpuidAccess.Rcx == 0
-+                    || vcpu->exit_ctx.CpuidAccess.Rcx == 1
-                     || vcpu->exit_ctx.CpuidAccess.Rcx == 2) {
+-                    || vcpu->exit_ctx.CpuidAccess.Rcx == 2) {
++            /* CPUID[0xD,0].EBX depends on XCR0 and [0xD,1].EBX on XCR0|XSS. */
++            if ((uint32_t)vcpu->exit_ctx.CpuidAccess.Rax == 0xd) {
++                if ((uint32_t)vcpu->exit_ctx.CpuidAccess.Rcx <= 2) {
                      reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
                  }
+             }
