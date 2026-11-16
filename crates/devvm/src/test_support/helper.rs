@@ -41,7 +41,7 @@ pub fn command(name: &str, args: &[&str]) -> Command {
     command
 }
 
-/// `command` for cosca: a frozen spawn needs cosca's own command type.
+/// `command` for cosca, for code that takes cosca's command type (`Host::detach`).
 pub fn cosca_command(name: &str, args: &[&str]) -> cosca::Command {
     let mut command = cosca::Command::new();
     command.arg(exe()).args(args).env(HELPER_VAR, name);
