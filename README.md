@@ -37,6 +37,129 @@ downloaded on first use.
 
 `devvm --help` lists the commands.
 
+## Usage
+
+Each instance has a name: 1 to 63 of the ASCII letters, digits and `-`, starting and ending with a letter or digit,
+not a Windows device name (`con`, `nul`, `com1`, ...), and lowercased (`--name Dev` makes `dev`). `up` builds a guest
+from a recipe, starts it and prints its name; `ssh`, `cp`, `stop`, `start` and `rm` take that name.
+
+Examples are for Git Bash. Git Bash rewrites arguments that look like paths (`/tmp/x`, `/c`), also after `--`: set
+`MSYS_NO_PATHCONV=1` for such a command, and write its local paths as `C:/x` or relative ones.
+
+### A Linux guest
+
+The guest account of the embedded `ubuntu-24.04` is `user`, with passwordless `sudo`.
+
+```sh
+devvm up ubuntu-24.04 --name dev
+devvm ssh dev
+devvm ssh dev -- uname -a
+devvm cp blob.bin dev:blob.bin
+devvm cp dev:blob.bin blob.back
+devvm ls
+devvm stop dev
+devvm start dev
+devvm rm dev
+```
+
+- A command that needs a guest (`up`, `run` or `build`) downloads QEMU and the guest image the first time, with
+  progress on stderr. For `up` and `run`, `--cpus` and `--memory` size the guest and `--network none` cuts it off from
+  the internet; `--arch arm64` (also for `build`) runs under software emulation, slowly.
+- `ssh` with no command opens a login shell. `devvm ssh dev -- <command>` runs one command and exits with its status.
+- The words after `--` are one argv, not a shell string, and nothing in them is expanded by the guest: `-- 'a; b'`
+  looks for a program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell:
+  `devvm ssh dev -- bash -c 'cd ~/proj && ls'`. `devvm run` takes its command the same way.
+- `cp` takes `INSTANCE:PATH` on one side and a local path on the other. A relative guest path starts in the user's
+  home. `devvm cp --help` lists the names it cannot carry.
+- `ls` lists the instances created from the current directory; `ls --all` lists every one.
+- `stop` keeps the disk; `start` boots it again. The guest's `/tmp` is empty after a restart: keep files under `~`.
+
+### A project in a recipe
+
+A recipe file ends in `.devvm.yaml`. Put this one in a git repository: it starts from the embedded recipe and copies
+the files git tracks there into the guest (an untracked or ignored file stays behind).
+
+```yaml
+from: ubuntu-24.04
+steps:
+  - copy: { from: git-tracked, to: ~/proj }
+```
+
+```sh
+devvm run proj.devvm.yaml -- bash -c 'cd ~/proj && ls -R'
+```
+
+`run` boots a throwaway guest from the recipe, runs the command, destroys the guest and exits with the command's
+status. `devvm up proj.devvm.yaml --name dev` keeps the guest instead. `devvm build proj.devvm.yaml` builds the image
+and starts nothing.
+
+Each step's result is cached as a layer: a rerun rebuilds from the first step that changed.
+
+What a recipe file takes (an unknown key is an error):
+
+- `from:` (required) is one of:
+  - `ubuntu-24.04`, the embedded recipe;
+  - another recipe file, `../base.devvm.yaml`, relative to this file;
+  - `{ iso, edition, product-key }`, a Windows ISO (see [Windows ISOs](#windows-isos));
+  - `{ url, sha256 }`, a Linux cloud image with cloud-init (qcow2 or another format `qemu-img` converts); `amd64:` and
+    `arm64:` each take one.
+- `name:` names the recipe; the default is the file name without `.devvm.yaml`.
+- `resources:` takes `cpus`, `memory` and `disk`, as `8GiB` or a byte count.
+- `steps:` run in order. A step is exactly one of:
+  - `run: <script>`, with optional `shell: bash | sh | pwsh | cmd`, `elevated: true` and `cwd: <guest path>`. The
+    default shell is `bash` on Linux and `pwsh` on Windows. A Linux guest refuses `cmd`, and has `pwsh` only if an
+    earlier step installs it (`ubuntu-24.04` has none).
+  - `copy: { from: git-tracked, to: <guest path>, read-only: true }`. It copies the files git tracks in the repository
+    that contains the recipe, as they are on disk; `read-only` is optional. Relative `to` paths and `~` start in the
+    user's home.
+  - `set: { uac: auto-approve }`, on Windows only.
+
+### A Windows guest
+
+`win/windows.devvm.yaml`, from an installer ISO you downloaded ([Windows ISOs](#windows-isos) has the rules for
+`edition` and `product-key`):
+
+```yaml
+from:
+  iso: C:/isos/windows.iso
+  edition: Windows 11 IoT Enterprise LTSC 2024
+  product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
+```
+
+```sh
+devvm up win/windows.devvm.yaml --name win
+devvm ssh win -- whoami
+devvm ssh win
+devvm cp blob.bin win:blob.bin
+devvm cp win:blob.bin blob.back
+devvm stop win
+devvm start win
+devvm rm win
+```
+
+A project's recipe can start from it and add steps. `proj/proj-win.devvm.yaml`, where `proj/` is the root of the
+project's git repository and `win/` sits beside it, outside the repository, so the recipe holding the key is neither
+committed nor copied in by `copy` (Windows Setup still installs the key in the guest):
+
+```yaml
+from: ../win/windows.devvm.yaml
+steps:
+  - copy: { from: git-tracked, to: ~/proj }
+```
+
+```sh
+devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/proj'
+```
+
+- The first command that needs the Windows base builds it from the ISO, which takes minutes. The build downloads the
+  virtio drivers from fedorapeople.org (about 0.9 GB) and OpenSSH, PowerShell 7 and ssh-broker from github.com. Later
+  commands reuse the base. An evaluation edition's base is rebuilt from the ISO 10 days before its evaluation ends; a
+  base built with a product key does not expire.
+- `ssh win` opens PowerShell 7; the home (`~`, and where relative guest paths start) is the user's profile.
+- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127. Use
+  `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
+- [Windows guests](#windows-guests) has how programs, shells, paths and `copy` work in a Windows guest.
+
 ## Windows ISOs
 
 A recipe starts a Windows guest from an installer ISO you downloaded:
