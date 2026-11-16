@@ -879,16 +879,16 @@ fn a_missing_file_is_no_hold(#[fixture(unicode_home)] home: &Path) {
     );
 }
 
-/// What a child that inherited the hold is: another handle to the same open file, which keeps the hold when the
-/// holder closes its own.
+/// A duplicate of the held file is another handle to the same open file, which keeps the hold when the holder closes
+/// its own.
 #[skuld::test]
 fn a_duplicate_of_the_held_file_keeps_the_hold_when_the_holder_is_gone(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.hold");
     let hold = current().hold_new(&path).unwrap();
-    let inherited = hold.file().try_clone().unwrap();
+    let duplicate = hold.file().try_clone().unwrap();
     drop(hold);
     assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
-    drop(inherited);
+    drop(duplicate);
     drop(taken(current().hold_existing(&path)));
 }
 
@@ -900,8 +900,7 @@ fn deleting_a_hold_removes_the_file_and_frees_the_name(#[fixture(unicode_home)] 
     drop(current().hold_new(&path).unwrap());
 }
 
-/// What a child that inherited the hold is: another handle to the file, which outlives the delete. The name is free at
-/// once all the same.
+/// A duplicate of the file outlives the delete. The name is free at once all the same.
 #[skuld::test]
 fn a_deleted_hold_frees_its_name_while_a_duplicate_of_the_file_is_open(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.hold");

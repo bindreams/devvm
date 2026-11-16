@@ -13,7 +13,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::super::wide;
 use super::super::windows_tests::{long_dir, with_nul};
-use crate::contain::{Lifetime, VmProcess};
+use crate::contain::Lifetime;
 use crate::host::{HoldOutcome, claim_of_deleting_name, current, deleting_name};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fake_vm;
@@ -65,13 +65,7 @@ fn a_held_file_can_be_neither_deleted_nor_renamed_by_anyone_else(#[fixture(unico
 fn a_hold_shared_with_a_process_keeps_the_file_held_until_the_process_is_gone(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.sock.hold");
     let hold = current().hold_new(&path).unwrap();
-    let mut vm = VmProcess::spawn_frozen(
-        current(),
-        fake_vm::command(home),
-        Lifetime::DiesWithOwner,
-        &fake_vm::log(home),
-    )
-    .unwrap();
+    let mut vm = fake_vm::frozen(home, Lifetime::DiesWithOwner);
 
     hold.share_with(vm.id()).unwrap();
     drop(hold);
@@ -107,7 +101,7 @@ fn a_delete_leaves_the_deleting_name_a_dead_delete_left(#[fixture(unicode_home)]
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 1);
 }
 
-/// A duplicate of a deleted hold's file (a child's inherited copy) keeps that file's deleting name. The next delete of
+/// A duplicate of a deleted hold's file (a duplicate in a child) keeps that file's deleting name. The next delete of
 /// a file at the same name takes a deleting name of its own, and the name the duplicate keeps is of the shape the
 /// sweep removes: `<name>.<16 hex>.del`.
 #[skuld::test]

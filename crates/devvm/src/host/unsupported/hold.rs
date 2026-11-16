@@ -1,5 +1,4 @@
-//! A hold off Windows: an exclusive `flock`, which belongs to the open file and so to every duplicate of it, an
-//! inherited descriptor included.
+//! A hold off Windows: an exclusive `flock`, which belongs to the open file and so to every duplicate of it.
 
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
@@ -117,6 +116,7 @@ pub(super) fn existing(host: &dyn FileModes, path: &Path) -> std::io::Result<Hol
 }
 
 impl Hold for FlockHold {
+    #[cfg(test)]
     fn file(&self) -> &File {
         &self.file
     }

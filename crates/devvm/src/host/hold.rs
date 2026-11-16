@@ -1,13 +1,12 @@
-//! A hold on a file: the liveness mark of a launch. Whoever holds it exclusively is alive; a process the hold is shared
-//! with (a duplicate of the open file in it) keeps the hold after the holder has closed its own copy, and the OS ends it
-//! when the last holder is gone, killed or not.
+//! A hold on a file: the liveness mark of a launch. Whoever holds it exclusively is alive; a process the hold is
+//! shared with (a duplicate of the open file in it) keeps the hold after the holder has closed its own copy, and the OS
+//! ends it when the last holder is gone, killed or not.
 //!
 //! Windows: the file is open with share mode 0, so no other open of it succeeds. (A `LockFileEx` lock does not do:
 //! it belongs to the handle that took it, not to the file, and a duplicate handle does not carry it. Measured.)
 //! Elsewhere: an exclusive `flock`, which belongs to the open file and so to every duplicate of it.
 
 use std::fmt;
-use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -72,7 +71,8 @@ pub(crate) fn claim_of_deleting_name(name: &str) -> Option<&str> {
 pub(crate) trait Hold: Send + fmt::Debug {
     /// The held file. A duplicate of it carries the hold on, as the duplicate [`Hold::share_with`] puts in a process
     /// does; the tests use it as that process.
-    fn file(&self) -> &File;
+    #[cfg(test)]
+    fn file(&self) -> &std::fs::File;
 
     /// Puts a duplicate of the held file in `process`, which keeps the hold after this one is dropped, until it exits.
     /// The duplicate is not inheritable, so no other process ever gets it: a handle made inheritable for a child's

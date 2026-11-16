@@ -69,6 +69,12 @@ pub fn command(state_dir: &Path) -> cosca::Command {
     helper::cosca_command("fake-vm", &[&state_dir.display().to_string()])
 }
 
+/// The fake VM of `state_dir`, spawned frozen with `lifetime`.
+pub fn frozen(state_dir: &Path, lifetime: Lifetime) -> VmProcess {
+    VmProcess::spawn_frozen(host::current(), command(state_dir), lifetime, &log(state_dir))
+        .expect("the fake VM should spawn frozen")
+}
+
 /// Helper `fake-vm <state-dir>`. Binds a loopback port of its own choosing, like QEMU's port-0 forward, and reports it
 /// as the content of `started`, which appears (whole, by rename) only once the VM listens.
 pub fn fake_vm(args: &[String]) {
