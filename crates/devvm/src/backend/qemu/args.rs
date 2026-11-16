@@ -119,7 +119,10 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
     };
     args.pair("-accel", spec.accel.name());
     args.pair("-machine", machine);
-    args.pair("-cpu", "max");
+    // Under WHPX, QEMU reports the XSAVE area of CPUID leaf 0xD, sub-leaf 0, from an XCR0 it never reads back, so a CPU
+    // with AVX says 0x240 bytes for an area that fills more, and Cygwin 3.6 and later (Git Bash) overruns the buffer
+    // it sizes by that. A model without XSAVE has no such area; Westmere is the newest of QEMU's Intel models without.
+    args.pair("-cpu", if spec.accel == Accel::Whpx { "Westmere" } else { "max" });
     args.pair("-smp", spec.cpus.to_string());
     args.pair("-m", (spec.memory >> 20).to_string());
     args.pair("-display", "none");

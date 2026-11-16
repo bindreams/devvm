@@ -56,7 +56,7 @@ fn args(spec: &MachineSpec, paths: &LaunchPaths) -> Vec<String> {
 
 /// The command line `spec` and `paths` must produce, written out from their values: the arguments in the order QEMU
 /// is given them, with the machine type and accelerator the caller names.
-fn expected_args(spec: &MachineSpec, paths: &LaunchPaths, accel: &str, machine: &str) -> Vec<String> {
+fn expected_args(spec: &MachineSpec, paths: &LaunchPaths, accel: &str, machine: &str, cpu: &str) -> Vec<String> {
     let qmp = paths.qmp.display();
     let log = spec.serial_log.display();
     let code = paths.code.as_ref().unwrap().display();
@@ -69,7 +69,7 @@ fn expected_args(spec: &MachineSpec, paths: &LaunchPaths, accel: &str, machine: 
         "-machine",
         machine,
         "-cpu",
-        "max",
+        cpu,
         "-smp",
         &spec.cpus.to_string(),
         "-m",
@@ -109,7 +109,10 @@ fn expected_args(spec: &MachineSpec, paths: &LaunchPaths, accel: &str, machine: 
 #[skuld::test]
 fn amd64_whpx_command_line_is_the_one_the_spec_asks_for() {
     let (spec, paths) = (spec(), paths());
-    assert_eq!(args(&spec, &paths), expected_args(&spec, &paths, "whpx", "q35"));
+    assert_eq!(
+        args(&spec, &paths),
+        expected_args(&spec, &paths, "whpx", "q35", "Westmere")
+    );
 }
 
 #[skuld::test]
@@ -122,8 +125,22 @@ fn arm64_tcg_command_line_is_built_with_the_virt_machine_and_its_firmware() {
 
     assert_eq!(
         args(&spec, &paths),
-        expected_args(&spec, &paths, "tcg", "virt,gic-version=3")
+        expected_args(&spec, &paths, "tcg", "virt,gic-version=3", "max")
     );
+}
+
+#[skuld::test]
+fn only_whpx_gets_a_named_cpu_model() {
+    for (accel, cpu) in [
+        (Accel::Whpx, "Westmere"),
+        (Accel::Kvm, "max"),
+        (Accel::Hvf, "max"),
+        (Accel::Tcg, "max"),
+    ] {
+        let mut spec = spec();
+        spec.accel = accel;
+        assert_eq!(values_of(&args(&spec, &paths()), "-cpu"), [cpu], "{accel:?}");
+    }
 }
 
 #[skuld::test]
@@ -688,7 +705,7 @@ fn the_linux_profile_args_are_unchanged() {
         "-machine",
         "q35",
         "-cpu",
-        "max",
+        "Westmere",
         "-smp",
         "2",
         "-m",
