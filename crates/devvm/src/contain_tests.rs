@@ -4,7 +4,7 @@ use std::sync::mpsc;
 
 use cosca::identity::{Liveness, ProcessIdRecord};
 
-use crate::contain::{VmProcess, frozen_spawn_error, unknown_liveness};
+use crate::contain::{Lifetime, VmProcess, frozen_spawn_error, unknown_liveness};
 use crate::test_support::helper;
 use crate::{ErrorKind, Result};
 
@@ -59,6 +59,24 @@ impl Drop for Sleeper {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+#[skuld::test]
+fn a_relative_program_is_refused_before_anything_is_created() {
+    let dir = skuld::TempDir::new().unwrap();
+    let log = dir.path().join("vm.log");
+    let error = VmProcess::spawn_frozen(
+        crate::host::current(),
+        "qemu".as_ref(),
+        |_| {},
+        Lifetime::DiesWithOwner,
+        &log,
+    )
+    .err()
+    .expect("a relative program is refused");
+    assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
+    assert!(error.to_string().contains("qemu"), "{error}");
+    assert!(!log.exists());
 }
 
 #[skuld::test]

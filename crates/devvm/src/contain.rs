@@ -65,7 +65,7 @@ pub(crate) fn frozen_spawn_error(error: cosca::error::Error) -> Error {
 }
 
 impl VmProcess {
-    /// Starts the program at `program` with `cmd`'s arguments frozen: the process exists and has an identity, and has
+    /// Starts the program at `program` frozen: the process exists and has an identity, and has
     /// not run. Record the identity (`record`), then `resume`. Dropping a frozen `VmProcess` kills the process, so it
     /// never runs.
     ///
@@ -75,7 +75,8 @@ impl VmProcess {
     /// owner.
     ///
     /// `program` is the absolute path of the executable; it is argv[0] and the command's executable, and `configure`
-    /// adds the rest (arguments, environment, working directory). Naming the executable is what gives the handle
+    /// adds only the arguments, environment and working directory: this function owns stdio, handles, containment and
+    /// the console. Naming the executable is what gives the handle
     /// guarantee: cosca 0.6.0's `routes_to_raw_backend` sends a Windows command that names one to its raw backend,
     /// which hands the child only the handles listed for it. Any other command goes through `std`, which has the child
     /// inherit every inheritable handle of this process.
