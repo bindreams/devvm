@@ -37,6 +37,121 @@ downloaded on first use.
 
 `devvm --help` lists the commands.
 
+## Usage
+
+Each instance has a name (letters, digits and `-`). `up` builds the guest, starts it and prints its name; the other
+commands take that name. The first `up` downloads QEMU and the guest image, and prints one progress line per MiB when
+stderr is not a terminal.
+
+### A Linux guest
+
+`ubuntu-24.04` is the one embedded recipe. The guest account is `user`, with passwordless `sudo`.
+
+```sh
+devvm up ubuntu-24.04 --name dev
+devvm ssh dev
+devvm ssh dev -- uname -a
+devvm cp blob.bin dev:blob.bin
+devvm cp dev:blob.bin blob.back
+devvm ls
+devvm stop dev
+devvm start dev
+devvm rm dev
+```
+
+- `up` took under a minute, including the 619 MiB image download. `--cpus`, `--memory` and `--network` (`nat`, or `none`
+  for no internet) size the guest.
+- `ssh` with no command opens a login shell. `devvm ssh dev -- <command>` runs one command and exits with its status.
+- The words after `--` are one argv, not a shell string, and nothing in them is expanded by the guest: `-- 'a; b'`
+  looks for a program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell:
+  `devvm ssh dev -- bash -c 'cd ~/proj && ls'`. `devvm run` takes its command the same way.
+- `cp` takes `INSTANCE:PATH` on one side and a local path on the other. A relative guest path starts in the user's
+  home. `devvm cp --help` lists the names it cannot carry.
+- `ls` lists the instances created from the current directory; `ls --all` lists every one.
+- `stop` keeps the disk; `start` boots it again. The guest's `/tmp` is empty after a restart: keep files under `~`.
+- Git Bash rewrites arguments that look like paths (`/tmp/x`), also after `--`. Set `MSYS_NO_PATHCONV=1` for the
+  command.
+
+### A project in a recipe
+
+A recipe file ends in `.devvm.yaml`. This one starts from the embedded recipe and copies the git project that holds
+the file into the guest:
+
+```yaml
+from: ubuntu-24.04
+steps:
+  - copy: { from: git-tracked, to: ~/proj }
+```
+
+```sh
+devvm run proj.devvm.yaml -- bash -c 'cd ~/proj && ls -R && cat hello.txt'
+```
+
+`run` boots a throwaway guest from the recipe, runs the command, destroys the guest and exits with the command's
+status. `devvm up proj.devvm.yaml --name dev` keeps the guest instead. `devvm build proj.devvm.yaml` builds the image
+and starts nothing.
+
+Each step's result is cached as a layer: a rerun rebuilds from the first step that changed.
+
+What a recipe file takes (an unknown key is an error):
+
+- `from:` (required) is one of:
+  - `ubuntu-24.04`, the embedded recipe;
+  - another recipe file, `../base.devvm.yaml`, relative to this file;
+  - `{ iso, edition, product-key }`, a Windows ISO (see [Windows ISOs](#windows-isos));
+  - `{ url, sha256 }`, a disk image; `amd64:` and `arm64:` each take one.
+- `name:` names the recipe; the default is the file name without `.devvm.yaml`.
+- `resources:` takes `cpus`, `memory` and `disk`, as `8GiB` or a byte count.
+- `steps:` run in order. A step is exactly one of:
+  - `run: <script>`, with optional `shell: bash | sh | pwsh | cmd`, `elevated: true` and `cwd: <guest path>`. The
+    default shell is `bash` on Linux and `pwsh` on Windows.
+  - `copy: { from: git-tracked, to: <guest path>, read-only: true }`. It copies the files git tracks in the repository
+    that contains the recipe, as they are on disk; `read-only` is optional. Relative `to` paths and `~` start in the
+    user's home.
+  - `set: { uac: auto-approve }`, on Windows only.
+
+### A Windows guest
+
+Build a Windows guest from an installer ISO you downloaded (see [Windows ISOs](#windows-isos) for the recipe and its
+rules). The key is for a non-evaluation edition only. `windows.devvm.yaml`:
+
+```yaml
+from:
+  iso: C:/isos/windows.iso
+  edition: Windows 11 IoT Enterprise LTSC 2024
+  product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
+```
+
+```sh
+devvm up windows.devvm.yaml --name win
+devvm ssh win -- whoami
+devvm ssh win
+devvm cp blob.bin win:blob.bin
+devvm cp win:blob.bin blob.back
+devvm stop win
+devvm start win
+devvm rm win
+```
+
+A recipe can start from this one and add steps. `proj-win.devvm.yaml`:
+
+```yaml
+from: ../win/windows.devvm.yaml
+steps:
+  - copy: { from: git-tracked, to: ~/proj }
+```
+
+```sh
+devvm run proj-win.devvm.yaml -- cmd /c dir /s /b proj
+```
+
+- The first `up` builds the Windows base from the ISO: it downloads the virtio drivers (about 0.9 GB) and
+  took 11 minutes. Later `up`s reuse it; the ISO stays where the recipe names it.
+- `ssh win` opens PowerShell 7. A program is looked up on the guest's `PATH`: `dir` is a `cmd` builtin, so
+  `devvm ssh win -- dir` exits 127; use `-- cmd /c dir`.
+- Write guest paths with `/`; a relative one starts in the user's profile. [Windows guests](#windows-guests) lists the
+  rest.
+
 ## Windows ISOs
 
 A recipe starts a Windows guest from an installer ISO you downloaded:
