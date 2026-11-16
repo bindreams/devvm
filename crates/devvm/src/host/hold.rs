@@ -70,7 +70,8 @@ pub(crate) fn claim_of_deleting_name(name: &str) -> Option<&str> {
 
 /// An exclusive hold on a file, and the open file that carries it.
 pub(crate) trait Hold: Send + fmt::Debug {
-    /// The held file. A duplicate of it carries the hold on; the tests use one as another holder of the open file.
+    /// The held file. A duplicate of it keeps the hold, so it goes to another process only through
+    /// [`Hold::share_with`]; the tests duplicate it to stand for that process.
     fn file(&self) -> &File;
 
     /// Puts a duplicate of the held file in `process`, which keeps the hold after this one is dropped, until it exits.
