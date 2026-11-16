@@ -39,15 +39,16 @@ downloaded on first use.
 
 ## Usage
 
-Each instance has a name (letters, digits and `-`). `up` builds a guest from a recipe, starts it and prints its name;
-`ssh`, `cp`, `stop`, `start` and `rm` take that name. `run` and `build` take a recipe, as `up` does.
+Each instance has a name: 1 to 63 of the ASCII letters, digits and `-`, starting and ending with a letter or digit,
+not a Windows device name (`con`, `nul`, `com1`, ...), and lowercased (`--name Dev` makes `dev`). `up` builds a guest
+from a recipe, starts it and prints its name; `ssh`, `cp`, `stop`, `start` and `rm` take that name.
 
 Examples are for Git Bash. Git Bash rewrites arguments that look like paths (`/tmp/x`, `/c`), also after `--`: set
 `MSYS_NO_PATHCONV=1` for such a command, and write its local paths as `C:/x` or relative ones.
 
 ### A Linux guest
 
-`ubuntu-24.04` is the one embedded recipe. The guest account is `user`, with passwordless `sudo`.
+The guest account of the embedded `ubuntu-24.04` is `user`, with passwordless `sudo`.
 
 ```sh
 devvm up ubuntu-24.04 --name dev
@@ -62,8 +63,8 @@ devvm rm dev
 ```
 
 - A command that needs a guest (`up`, `run` or `build`) downloads QEMU and the guest image the first time, with
-  progress on stderr: under a minute on the owner's PC and connection. `--cpus` and `--memory` size the guest,
-  `--network none` cuts it off from the internet, and `--arch arm64` runs under software emulation, slowly.
+  progress on stderr. For `up` and `run`, `--cpus` and `--memory` size the guest and `--network none` cuts it off from
+  the internet; `--arch arm64` (also for `build`) runs under software emulation, slowly.
 - `ssh` with no command opens a login shell. `devvm ssh dev -- <command>` runs one command and exits with its status.
 - The words after `--` are one argv, not a shell string, and nothing in them is expanded by the guest: `-- 'a; b'`
   looks for a program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell:
@@ -100,12 +101,14 @@ What a recipe file takes (an unknown key is an error):
   - `ubuntu-24.04`, the embedded recipe;
   - another recipe file, `../base.devvm.yaml`, relative to this file;
   - `{ iso, edition, product-key }`, a Windows ISO (see [Windows ISOs](#windows-isos));
-  - `{ url, sha256 }`, a disk image; `amd64:` and `arm64:` each take one.
+  - `{ url, sha256 }`, a Linux cloud image with cloud-init (qcow2 or another format `qemu-img` converts); `amd64:` and
+    `arm64:` each take one.
 - `name:` names the recipe; the default is the file name without `.devvm.yaml`.
 - `resources:` takes `cpus`, `memory` and `disk`, as `8GiB` or a byte count.
 - `steps:` run in order. A step is exactly one of:
   - `run: <script>`, with optional `shell: bash | sh | pwsh | cmd`, `elevated: true` and `cwd: <guest path>`. The
-    default shell is `bash` on Linux and `pwsh` on Windows.
+    default shell is `bash` on Linux and `pwsh` on Windows. A Linux guest refuses `cmd`, and has `pwsh` only if an
+    earlier step installs it (`ubuntu-24.04` has none).
   - `copy: { from: git-tracked, to: <guest path>, read-only: true }`. It copies the files git tracks in the repository
     that contains the recipe, as they are on disk; `read-only` is optional. Relative `to` paths and `~` start in the
     user's home.
@@ -136,7 +139,7 @@ devvm rm win
 
 A project's recipe can start from it and add steps. `proj/proj-win.devvm.yaml`, where `proj/` is the root of the
 project's git repository and `win/` sits beside it, outside the repository, so the recipe holding the key is neither
-committed nor copied in by `copy` (Setup still installs the key in the guest):
+committed nor copied in by `copy` (Windows Setup still installs the key in the guest):
 
 ```yaml
 from: ../win/windows.devvm.yaml
@@ -148,11 +151,11 @@ steps:
 devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/proj'
 ```
 
-- The first command that needs the Windows base builds it from the ISO: 11 minutes on the owner's PC. The build
-  downloads the virtio drivers from fedorapeople.org (about 0.9 GB) and OpenSSH, PowerShell 7 and ssh-broker from
-  github.com. Later commands reuse the base until it expires, then rebuild it from the ISO (see
-  [Windows ISOs](#windows-isos)).
-- `ssh win` opens PowerShell 7. A relative guest path, in `cp` or a `copy` step, starts in the user's profile.
+- The first command that needs the Windows base builds it from the ISO, which takes minutes. The build downloads the
+  virtio drivers from fedorapeople.org (about 0.9 GB) and OpenSSH, PowerShell 7 and ssh-broker from github.com. Later
+  commands reuse the base. An evaluation edition's base is rebuilt from the ISO 10 days before its evaluation ends; a
+  base built with a product key does not expire.
+- `ssh win` opens PowerShell 7; the home (`~`, and where relative guest paths start) is the user's profile.
 - A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127. Use
   `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
 - [Windows guests](#windows-guests) has how programs, shells, paths and `copy` work in a Windows guest.
