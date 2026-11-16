@@ -196,7 +196,7 @@ fn remove_files_names_a_file_that_cannot_be_looked_at_instead_of_taking_it_for_g
 fn remove_files_deletes_nothing_while_the_claim_is_held(#[fixture(unicode_home)] home: &Path) {
     let (paths, claim) = launch_files(home, "a");
     let alive = held(&claim.path);
-    // Another deleter or an inheritor owns the cleanup.
+    // Another deleter or a process the hold is shared with owns the cleanup.
     assert_eq!(removed(&paths, Some(&claim)), Vec::<String>::new());
     assert!(paths.iter().all(|path| path.exists()));
     drop(alive);

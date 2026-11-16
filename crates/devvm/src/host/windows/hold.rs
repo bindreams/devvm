@@ -6,9 +6,11 @@
 use std::fs::File;
 use std::mem::{offset_of, size_of};
 use std::os::windows::fs::MetadataExt;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
+use cosca::identity::ProcessId;
+use windows_sys::Win32::Foundation::{DuplicateHandle, HANDLE};
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
@@ -16,6 +18,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
     FileDispositionInfoEx, FileRenameInfo, FileRenameInfoEx, OPEN_ALWAYS, OPEN_EXISTING, SetFileInformationByHandle,
 };
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE};
 use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMANTICS;
 
 use super::create_file::{Failure, open};
@@ -177,8 +180,8 @@ pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
 }
 
 /// Opens `path` as a hold: share mode 0 refuses every other open of the file, including `DELETE`, for as long as any
-/// handle to this open file exists, the inherited ones too. `DELETE` access is for [`Hold::delete`]. A link at the name
-/// is opened itself, not followed: [`LINK_OPEN`].
+/// handle to this open file exists, a duplicate in another process too. `DELETE` access is for [`Hold::delete`]. A link
+/// at the name is opened itself, not followed: [`LINK_OPEN`].
 fn open_hold(path: &Path, creation: u32) -> Result<File, Failure> {
     open(
         path,
@@ -269,6 +272,36 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
 impl Hold for WindowsHold {
     fn file(&self) -> &File {
         &self.file
+    }
+
+    /// Duplicates the file's handle into `process` with access 0 and not inheritable: the hold belongs to the file
+    /// object, so the duplicate keeps it, and `process` cannot write or delete the file.
+    fn share_with(&self, process: ProcessId) -> std::io::Result<()> {
+        // SAFETY: plain `OpenProcess`; no pointers.
+        let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, process.pid()) };
+        if raw.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `raw` is a new handle that nothing else owns.
+        let target = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+        let mut duplicate: HANDLE = std::ptr::null_mut();
+        // SAFETY: both processes' handles and the source file handle are open for the call; `duplicate` is a valid
+        // place for the new handle's value, which belongs to `target`'s process and is not used here.
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                self.file.as_raw_handle() as HANDLE,
+                target.as_raw_handle() as HANDLE,
+                &mut duplicate,
+                0,
+                0,
+                0,
+            )
+        };
+        if duplicated == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     fn id(&self) -> std::io::Result<FileId> {
