@@ -61,9 +61,9 @@ devvm start dev
 devvm rm dev
 ```
 
-- The first command that needs a guest (`up`, `run` or `build`) downloads QEMU and the guest image, printing one
-  progress line per MiB; here it took under a minute. `--cpus` and `--memory` size the guest, `--network none` cuts it
-  off from the internet, and `--arch` picks `amd64` or `arm64` (the one the host is not runs under emulation, slowly).
+- A command that needs a guest (`up`, `run` or `build`) downloads QEMU and the guest image the first time, with
+  progress on stderr: under a minute on the owner's PC and connection. `--cpus` and `--memory` size the guest,
+  `--network none` cuts it off from the internet, and `--arch arm64` runs under software emulation, slowly.
 - `ssh` with no command opens a login shell. `devvm ssh dev -- <command>` runs one command and exits with its status.
 - The words after `--` are one argv, not a shell string, and nothing in them is expanded by the guest: `-- 'a; b'`
   looks for a program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell:
@@ -134,8 +134,9 @@ devvm start win
 devvm rm win
 ```
 
-A project's recipe can start from it and add steps. `proj/proj-win.devvm.yaml`, in the project's git repository, with
-`win/` beside `proj/` and outside it, so the key is neither committed nor copied into the guest:
+A project's recipe can start from it and add steps. `proj/proj-win.devvm.yaml`, where `proj/` is the root of the
+project's git repository and `win/` sits beside it, outside the repository, so the recipe holding the key is neither
+committed nor copied in by `copy` (Setup still installs the key in the guest):
 
 ```yaml
 from: ../win/windows.devvm.yaml
@@ -147,12 +148,14 @@ steps:
 devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/proj'
 ```
 
-- The first command that needs the Windows base builds it from the ISO: here it took 11 minutes. The build downloads
-  the virtio drivers from fedorapeople.org (about 0.9 GB) and OpenSSH, PowerShell 7 and ssh-broker from github.com.
-  Later commands reuse the base.
-- `ssh win` opens PowerShell 7. A relative guest path starts in the user's profile.
+- The first command that needs the Windows base builds it from the ISO: 11 minutes on the owner's PC. The build
+  downloads the virtio drivers from fedorapeople.org (about 0.9 GB) and OpenSSH, PowerShell 7 and ssh-broker from
+  github.com. Later commands reuse the base until it expires, then rebuild it from the ISO (see
+  [Windows ISOs](#windows-isos)).
+- `ssh win` opens PowerShell 7. A relative guest path, in `cp` or a `copy` step, starts in the user's profile.
 - A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127. Use
-  `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`. [Windows guests](#windows-guests) has the rest.
+  `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
+- [Windows guests](#windows-guests) has how programs, shells, paths and `copy` work in a Windows guest.
 
 ## Windows ISOs
 
