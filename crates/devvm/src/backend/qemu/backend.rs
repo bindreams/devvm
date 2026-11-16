@@ -107,8 +107,7 @@ impl QemuBackend {
         let log = qemu_log(&spec.dir);
         let log_from = log_length(&log)?;
         let vm = started.insert(VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?);
-        // QEMU keeps the hold, unused, until it exits or is killed. It is given before QEMU runs and is not
-        // inheritable, so no other process spawned meanwhile gets it.
+        // QEMU keeps the hold, unused, until it exits or is killed.
         hold.share_with(vm.id())
             .map_err(|e| Error::io(ErrorKind::Io, "cannot give the launch's hold to QEMU", e))?;
         drop(hold);

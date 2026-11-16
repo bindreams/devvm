@@ -69,7 +69,6 @@ pub fn command(state_dir: &Path) -> cosca::Command {
     helper::cosca_command("fake-vm", &[&state_dir.display().to_string()])
 }
 
-/// The fake VM of `state_dir`, spawned frozen with `lifetime`.
 pub fn frozen(state_dir: &Path, lifetime: Lifetime) -> VmProcess {
     VmProcess::spawn_frozen(host::current(), command(state_dir), lifetime, &log(state_dir))
         .expect("the fake VM should spawn frozen")

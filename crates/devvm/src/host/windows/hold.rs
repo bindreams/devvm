@@ -274,8 +274,8 @@ impl Hold for WindowsHold {
         &self.file
     }
 
-    /// Duplicates the file's handle into `process`, not inheritable and with no access: the hold belongs to the file
-    /// object, so the duplicate keeps it, and `process` cannot write the file or delete it.
+    /// Duplicates the file's handle into `process` with access 0 and not inheritable: the hold belongs to the file
+    /// object, so the duplicate keeps it, and `process` cannot write or delete the file.
     fn share_with(&self, process: ProcessId) -> std::io::Result<()> {
         // SAFETY: plain `OpenProcess`; no pointers.
         let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, process.pid()) };
