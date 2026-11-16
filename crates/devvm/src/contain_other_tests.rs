@@ -1,4 +1,4 @@
-use crate::contain::{Lifetime, VmProcess};
+use crate::contain::Lifetime;
 use crate::test_support::fake_vm;
 use crate::{ErrorKind, host};
 
