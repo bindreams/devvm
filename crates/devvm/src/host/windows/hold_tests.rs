@@ -13,8 +13,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::super::wide;
 use super::super::windows_tests::{long_dir, with_nul};
-use crate::host::{claim_of_deleting_name, current, deleting_name};
+use crate::contain::{Lifetime, VmProcess};
+use crate::host::{HoldOutcome, claim_of_deleting_name, current, deleting_name};
 use crate::test_groups::{Group, symlinks};
+use crate::test_support::fake_vm;
 use crate::test_support::file_security::set_attributes;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
@@ -56,6 +58,27 @@ fn a_held_file_can_be_neither_deleted_nor_renamed_by_anyone_else(#[fixture(unico
 
     assert!(path.exists());
     drop(hold);
+}
+
+/// A hold shared into a frozen process outlives the holder's own copy and ends with the process.
+#[skuld::test]
+fn a_hold_shared_with_a_process_keeps_the_file_held_until_the_process_is_gone(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let mut vm = VmProcess::spawn_frozen(
+        current(),
+        fake_vm::command(home),
+        Lifetime::DiesWithOwner,
+        &fake_vm::log(home),
+    )
+    .unwrap();
+
+    hold.share_with(vm.id()).unwrap();
+    drop(hold);
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
+
+    vm.kill().unwrap();
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Taken(_)));
 }
 
 #[skuld::test]

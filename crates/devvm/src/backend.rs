@@ -412,7 +412,7 @@ impl MachineRecord {
 ///
 /// Nothing is deleted when there is no claim, or when the claim file is held by another process, is another file than
 /// the claim says, or is gone. With no claim nothing owns the files, so `warn` is told which are there. In the other
-/// three someone else owns the cleanup (another deleter or an inheritor of the hold; the launch whose file it is; the
+/// three someone else owns the cleanup (another deleter or a process the hold is shared with; the launch whose file it is; the
 /// deleter of the claim, which goes after every other file, so what is there now is a later launch's) and nothing is
 /// said. A file that is already gone is fine; a failure to look at or hold the claim, or to delete a file, goes to
 /// `warn`.

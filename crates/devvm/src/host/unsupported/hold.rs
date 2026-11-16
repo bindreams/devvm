@@ -4,6 +4,8 @@
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
+use cosca::identity::ProcessId;
+
 use super::FileModes;
 use crate::host::{
     FileId, Hold, HoldOutcome, after_failed_write, is_a_link, is_absent, new_name, symlink_metadata_if_present,
@@ -117,6 +119,13 @@ pub(super) fn existing(host: &dyn FileModes, path: &Path) -> std::io::Result<Hol
 impl Hold for FlockHold {
     fn file(&self) -> &File {
         &self.file
+    }
+
+    fn share_with(&self, _process: ProcessId) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "only Windows gives a hold to a process before it runs",
+        ))
     }
 
     fn id(&self) -> std::io::Result<FileId> {

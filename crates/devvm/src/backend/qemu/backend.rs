@@ -77,8 +77,8 @@ impl QemuBackend {
         error
     }
 
-    /// Everything of a launch after its names are reserved, up to the frozen process and its watch. `hold` is given to
-    /// the process to inherit and dropped here, so the launch's own copy never outlives the spawn.
+    /// Everything of a launch after its names are reserved, up to the frozen process and its watch. `hold` is shared
+    /// with the frozen process and dropped here, so the launch's own copy never outlives the spawn.
     fn start(
         &self,
         spec: &MachineSpec,
@@ -103,18 +103,14 @@ impl QemuBackend {
             .env_clear()
             .envs(install.environment(self.host.system_dirs().as_ref())?)
             .current_dir(&cwd);
-        // QEMU inherits the hold as descriptor 3 and keeps it, unused, until it exits or is killed.
-        let inherited = hold
-            .file()
-            .try_clone()
-            .map_err(|e| Error::io(ErrorKind::Io, "cannot duplicate the launch's hold", e))?;
-        command
-            .fd(INHERITED_HOLD, cosca::Stdio::from_file(inherited))
-            .map_err(|e| Error::new(ErrorKind::Io, format!("cannot pass the launch's hold to QEMU: {e}")))?;
         // Every launch in a directory appends to its `qemu.log`: this one's output begins where the file ends now.
         let log = qemu_log(&spec.dir);
         let log_from = log_length(&log)?;
         let vm = started.insert(VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?);
+        // QEMU keeps the hold, unused, until it exits or is killed. It is given before QEMU runs and is not inheritable,
+        // so no other process spawned meanwhile gets it.
+        hold.share_with(vm.id())
+            .map_err(|e| Error::io(ErrorKind::Io, "cannot give the launch's hold to QEMU", e))?;
         drop(hold);
         let process = vm.record()?;
         let watch = self.host.watch_process(vm.id())?;
@@ -134,9 +130,6 @@ fn log_length(log: &Path) -> Result<u64> {
         )),
     }
 }
-
-/// The descriptor the launch's hold has in QEMU. QEMU does not know of it.
-const INHERITED_HOLD: i32 = 3;
 
 /// What a successful `start` knows of the process.
 struct MachineRecordParts {

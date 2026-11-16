@@ -987,6 +987,14 @@ fn a_hold_new_leaves_no_private_name_behind(#[fixture(unicode_home)] home: &Path
     drop(hold);
 }
 
+/// Only a host that can start a process frozen can give a hold to one; the others say so.
+#[skuld::test]
+fn a_hold_off_windows_cannot_be_shared_with_a_process(#[fixture(unicode_home)] home: &Path) {
+    let hold = OtherHost.hold_new(&home.join("x.hold")).unwrap();
+    let error = hold.share_with(cosca::identity::ProcessId::current()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+}
+
 /// A sweep and a record's cleanup can race for one claim: the loser finds the file gone.
 #[skuld::test]
 fn deleting_a_hold_whose_file_is_already_unlinked_is_fine(#[fixture(unicode_home)] home: &Path) {
