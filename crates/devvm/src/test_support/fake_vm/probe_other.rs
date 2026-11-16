@@ -11,3 +11,7 @@ pub fn console_processes() -> String {
 pub fn console_window() -> &'static str {
     "n/a"
 }
+
+pub fn pipe_after<T>(_spawn: impl FnOnce() -> T) -> &'static str {
+    "n/a"
+}

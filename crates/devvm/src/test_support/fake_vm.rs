@@ -16,8 +16,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
+use crate::Result;
 use crate::contain::{Lifetime, VmProcess};
-use crate::host;
+use crate::host::{self, Host};
 use crate::test_support::helper;
 
 #[cfg(windows)]
@@ -64,14 +65,15 @@ pub fn forget_earlier_runs(state_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The command that runs the fake VM, with `state_dir` for its `started` file.
-pub fn command(state_dir: &Path) -> cosca::Command {
-    helper::cosca_command("fake-vm", &[&state_dir.display().to_string()])
+/// Spawns the fake VM frozen on `host`, with `state_dir` for its `started` file and its log.
+pub fn spawn_frozen(host: &dyn Host, state_dir: &Path, lifetime: Lifetime) -> Result<VmProcess> {
+    let program = std::env::current_exe().expect("test binary path should be known");
+    let command = helper::cosca_command("fake-vm", &[&state_dir.display().to_string()]);
+    VmProcess::spawn_frozen(host, &program, command, lifetime, &log(state_dir))
 }
 
 pub fn frozen(state_dir: &Path, lifetime: Lifetime) -> VmProcess {
-    VmProcess::spawn_frozen(host::current(), command(state_dir), lifetime, &log(state_dir))
-        .expect("the fake VM should spawn frozen")
+    spawn_frozen(host::current(), state_dir, lifetime).expect("the fake VM should spawn frozen")
 }
 
 /// Helper `fake-vm <state-dir>`. Binds a loopback port of its own choosing, like QEMU's port-0 forward, and reports it
@@ -178,8 +180,7 @@ pub fn answer(port: u16) -> String {
 /// Spawns the fake VM frozen with `lifetime`, resumes it and prints its identity record on one line.
 fn spawn_and_report(args: &[String], lifetime: Lifetime) -> VmProcess {
     let state_dir = Path::new(&args[0]);
-    let mut vm = VmProcess::spawn_frozen(host::current(), command(state_dir), lifetime, &log(state_dir))
-        .expect("the fake VM should spawn frozen");
+    let mut vm = frozen(state_dir, lifetime);
     vm.resume().expect("the fake VM should resume");
     vm
 }
@@ -204,6 +205,13 @@ pub fn release_owner(args: &[String]) {
     let mut vm = spawn_and_report(args, Lifetime::OutlivesOwner);
     vm.release().expect("the fake VM should release");
     print_record(&vm);
+}
+
+/// Helper `pipe-owner <state-dir>`: spawns a frozen fake VM while holding the write end of an inheritable pipe, closes
+/// that end and prints `broken` when the VM did not inherit it, `open` when it did.
+pub fn pipe_owner(args: &[String]) {
+    let state_dir = Path::new(&args[0]);
+    println!("{}", probe::pipe_after(|| frozen(state_dir, Lifetime::DiesWithOwner)));
 }
 
 /// Helper `console-window`: prints whether this process has a console window and how many processes share its console.

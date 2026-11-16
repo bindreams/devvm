@@ -31,13 +31,7 @@ struct World {
 }
 
 fn world(dir: &Path) -> World {
-    let mut vm = VmProcess::spawn_frozen(
-        host::current(),
-        fake_vm::command(dir),
-        Lifetime::DiesWithOwner,
-        &fake_vm::log(dir),
-    )
-    .unwrap();
+    let mut vm = fake_vm::spawn_frozen(host::current(), dir, Lifetime::DiesWithOwner).unwrap();
     vm.resume().unwrap();
     let sock = Sock::new();
     let marker = dir.join("leftover");

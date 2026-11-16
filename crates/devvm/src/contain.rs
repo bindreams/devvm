@@ -65,22 +65,30 @@ pub(crate) fn frozen_spawn_error(error: cosca::error::Error) -> Error {
 }
 
 impl VmProcess {
-    /// Starts `cmd` frozen: the process exists and has an identity, and has not run. Record the identity
-    /// (`record`), then `resume`. Dropping a frozen `VmProcess` kills the process, so it never runs.
+    /// Starts the program at `program` with `cmd`'s arguments frozen: the process exists and has an identity, and has
+    /// not run. Record the identity (`record`), then `resume`. Dropping a frozen `VmProcess` kills the process, so it
+    /// never runs.
     ///
-    /// The process is always contained (killed when this process dies), has no console (the host's detach) and holds
-    /// none of this process's pipes: stdin is null, and stdout and stderr are appended to the file `log`, which is
-    /// created. Both lifetimes start alike; `release` is what lets an `OutlivesOwner` VM outlive its owner.
+    /// The process is always contained (killed when this process dies), has no console (the host's detach) and
+    /// inherits none of this process's handles or pipes: stdin is null, and stdout and stderr are appended to the file
+    /// `log`, which is created. Both lifetimes start alike; `release` is what lets an `OutlivesOwner` VM outlive its
+    /// owner.
+    ///
+    /// Setting `program` as the command's executable is what gives that guarantee: cosca spawns a Windows command that
+    /// names an executable through its raw backend, which hands the child only the handles listed for it. Any other
+    /// command goes through `std`, which has the child inherit every inheritable handle of this process (cosca-0.6.0
+    /// `src/child/spawn.rs:338-340`).
     ///
     /// Windows only in 0.1.0: cosca can hold a process before its first instruction there alone (a POSIX child cannot
     /// be held before exec without a gate), so every other host gets `NotSupported`.
     pub(crate) fn spawn_frozen(
         host: &dyn Host,
+        program: &Path,
         mut cmd: cosca::Command,
         lifetime: Lifetime,
         log: &Path,
     ) -> Result<VmProcess> {
-        cmd.contain();
+        cmd.executable(program).contain();
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

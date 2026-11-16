@@ -96,9 +96,10 @@ impl QemuBackend {
         std::fs::create_dir_all(&cwd)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", cwd.display()), e))?;
 
+        let tool = install.tool(&ArchFiles::of(spec.arch).system);
         let mut command = cosca::Command::new();
         command
-            .arg(install.tool(&ArchFiles::of(spec.arch).system))
+            .arg(&tool)
             .args(args)
             .env_clear()
             .envs(install.environment(self.host.system_dirs().as_ref())?)
@@ -106,7 +107,7 @@ impl QemuBackend {
         // Every launch in a directory appends to its `qemu.log`: this one's output begins where the file ends now.
         let log = qemu_log(&spec.dir);
         let log_from = log_length(&log)?;
-        let vm = started.insert(VmProcess::spawn_frozen(self.host, command, spec.lifetime, &log)?);
+        let vm = started.insert(VmProcess::spawn_frozen(self.host, &tool, command, spec.lifetime, &log)?);
         // QEMU keeps the hold, unused, until it exits or is killed.
         hold.share_with(vm.id())
             .map_err(|e| Error::io(ErrorKind::Io, "cannot give the launch's hold to QEMU", e))?;
