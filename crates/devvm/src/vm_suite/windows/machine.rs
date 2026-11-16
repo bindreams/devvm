@@ -77,6 +77,74 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
     assert!(size <= 72 << 30, "C: is {size} bytes, more than the disk");
 }
 
+// The CPU =============================================================================================================
+
+/// Runs CPUID and XGETBV in the guest and prints `xsave=0` for a CPU without XSAVE, or `xcr0=<hex> needed=<bytes>
+/// reported=<bytes>`: the area the enabled XSAVE components fill, and the size CPUID leaf 0xD says it is.
+const XSAVE_AREA: &str = r#"Add-Type -TypeDefinition '
+using System;
+using System.Runtime.InteropServices;
+public static class Cpu {
+  [DllImport("kernel32.dll")] static extern IntPtr VirtualAlloc(IntPtr a, UIntPtr s, uint t, uint p);
+  [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void CpuidFn(uint leaf, uint sub, IntPtr result);
+  [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate ulong XgetbvFn(uint index);
+  static IntPtr Code(byte[] bytes) {
+    IntPtr p = VirtualAlloc(IntPtr.Zero, (UIntPtr)4096, 0x3000, 0x40);
+    Marshal.Copy(bytes, 0, p, bytes.Length);
+    return p;
+  }
+  // mov eax,ecx; mov ecx,edx; cpuid; store eax, ebx, ecx, edx at r8.
+  static CpuidFn cpuid = (CpuidFn)Marshal.GetDelegateForFunctionPointer(Code(new byte[] { 0x53, 0x89, 0xC8, 0x89, 0xD1, 0x0F, 0xA2, 0x41, 0x89, 0x00, 0x41, 0x89, 0x58, 0x04, 0x41, 0x89, 0x48, 0x08, 0x41, 0x89, 0x50, 0x0C, 0x5B, 0xC3 }), typeof(CpuidFn));
+  // xgetbv; rax = edx:eax.
+  static XgetbvFn xgetbv = (XgetbvFn)Marshal.GetDelegateForFunctionPointer(Code(new byte[] { 0x0F, 0x01, 0xD0, 0x48, 0xC1, 0xE2, 0x20, 0x48, 0x09, 0xD0, 0xC3 }), typeof(XgetbvFn));
+  public static uint[] Id(uint leaf, uint sub) {
+    IntPtr memory = Marshal.AllocHGlobal(16);
+    cpuid(leaf, sub, memory);
+    int[] registers = new int[4];
+    Marshal.Copy(memory, registers, 0, 4);
+    Marshal.FreeHGlobal(memory);
+    return new uint[] { (uint)registers[0], (uint)registers[1], (uint)registers[2], (uint)registers[3] };
+  }
+  public static ulong Xcr(uint index) { return xgetbv(index); }
+}'
+if (([Cpu]::Id(1, 0)[2] -band 0x04000000) -eq 0) { 'xsave=0'; return }
+$xcr0 = [Cpu]::Xcr(0)
+$needed = 0x240
+foreach ($component in 2..62) {
+  if (($xcr0 -shr $component) -band 1) {
+    $r = [Cpu]::Id(13, $component)
+    $needed = [Math]::Max($needed, [int]($r[1] + $r[0]))
+  }
+}
+$reported = [Cpu]::Id(13, 0)[1]
+"xcr0=0x{0:X} needed=$needed reported=$reported" -f $xcr0"#;
+
+/// Cygwin 3.6 and later (Git Bash) sizes the buffer of the `xsave64` it runs on every signal, which includes the ones a
+/// fork raises, by CPUID leaf 0xD, sub-leaf 0, EBX. Under WHPX, QEMU answers that from an XCR0 it never reads back from
+/// the guest, so a CPU with AVX reports 0x240 bytes for an area that fills 0x340 or more, and bash crashes on its first
+/// fork.
+#[skuld::test]
+fn windows_the_xsave_area_cpuid_reports_holds_the_enabled_features(
+    #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
+) {
+    let report = printed(&guest.vm, XSAVE_AREA);
+    if report == "xsave=0" {
+        return;
+    }
+    let number = |field: &str| -> u32 {
+        report
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix(field))
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or_else(|| panic!("no {field}<bytes> in the guest's answer: {report:?}"))
+    };
+    let (needed, reported) = (number("needed="), number("reported="));
+    assert!(
+        reported >= needed,
+        "CPUID says the XSAVE area is {reported} bytes; the enabled features fill {needed} ({report})"
+    );
+}
+
 // The expiry ==========================================================================================================
 
 /// The recorded expiry is the base's license read at its build plus the grace left then; a second read in a booted
