@@ -44,12 +44,6 @@ pub fn command(name: &str, args: &[&str]) -> Command {
 /// `command` for cosca: a frozen spawn needs cosca's own command type.
 pub fn cosca_command(name: &str, args: &[&str]) -> cosca::Command {
     let mut command = cosca::Command::new();
-    command.arg(exe());
-    cosca_helper(&mut command, name, args);
+    command.arg(exe()).args(args).env(HELPER_VAR, name);
     command
-}
-
-/// Makes `command`, whose argv[0] is [`exe`], run helper `name` with `args`.
-pub fn cosca_helper(command: &mut cosca::Command, name: &str, args: &[&str]) {
-    command.args(args).env(HELPER_VAR, name);
 }

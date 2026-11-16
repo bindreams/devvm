@@ -10,7 +10,7 @@ use super::qmp::{QmpEndpoint, Reservation};
 use super::sidecar::{LazyInstall, QemuInstall};
 use super::storage::QemuStorage;
 use crate::backend::{Backend, Check, Detail, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
-use crate::contain::VmProcess;
+use crate::contain::{VmCommand, VmProcess};
 use crate::exit::Progress;
 use crate::host::{Hold, Host, is_absent, remove_tree};
 use crate::{Error, ErrorKind, Result};
@@ -97,20 +97,16 @@ impl QemuBackend {
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", cwd.display()), e))?;
 
         let tool = install.tool(&ArchFiles::of(spec.arch).system);
-        let environment = install.environment(self.host.system_dirs().as_ref())?;
-        let configure = |command: &mut cosca::Command| {
-            command.args(args).env_clear().envs(environment).current_dir(&cwd);
+        let command = VmCommand {
+            args,
+            clear_env: true,
+            env: install.environment(self.host.system_dirs().as_ref())?,
+            cwd: Some(cwd),
         };
         // Every launch in a directory appends to its `qemu.log`: this one's output begins where the file ends now.
         let log = qemu_log(&spec.dir);
         let log_from = log_length(&log)?;
-        let vm = started.insert(VmProcess::spawn_frozen(
-            self.host,
-            &tool,
-            configure,
-            spec.lifetime,
-            &log,
-        )?);
+        let vm = started.insert(VmProcess::spawn_frozen(self.host, &tool, command, spec.lifetime, &log)?);
         // QEMU keeps the hold, unused, until it exits or is killed.
         hold.share_with(vm.id())
             .map_err(|e| Error::io(ErrorKind::Io, "cannot give the launch's hold to QEMU", e))?;

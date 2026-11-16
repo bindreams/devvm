@@ -17,7 +17,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
 use crate::Result;
-use crate::contain::{Lifetime, VmProcess};
+use crate::contain::{Lifetime, VmCommand, VmProcess};
 use crate::host::{self, Host};
 use crate::test_support::helper;
 
@@ -67,10 +67,13 @@ pub fn forget_earlier_runs(state_dir: &Path) -> std::io::Result<()> {
 
 /// Spawns the fake VM frozen on `host`, with `state_dir` for its `started` file and its log.
 pub fn spawn_frozen(host: &dyn Host, state_dir: &Path, lifetime: Lifetime) -> Result<VmProcess> {
-    let configure = |command: &mut cosca::Command| {
-        helper::cosca_helper(command, "fake-vm", &[&state_dir.display().to_string()]);
+    let command = VmCommand {
+        args: vec![state_dir.into()],
+        clear_env: false,
+        env: vec![(helper::HELPER_VAR.into(), "fake-vm".into())],
+        cwd: None,
     };
-    VmProcess::spawn_frozen(host, &helper::exe(), configure, lifetime, &log(state_dir))
+    VmProcess::spawn_frozen(host, &helper::exe(), command, lifetime, &log(state_dir))
 }
 
 pub fn frozen(state_dir: &Path, lifetime: Lifetime) -> VmProcess {
