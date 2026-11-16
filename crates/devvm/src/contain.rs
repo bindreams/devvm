@@ -1,6 +1,7 @@
 //! VM processes: found again by identity (PID plus start token), never by a bare PID.
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use cosca::error::RecordErrorKind;
 use cosca::identity::{Liveness, ProcessId, ProcessIdRecord};
@@ -64,23 +65,56 @@ pub(crate) fn frozen_spawn_error(error: cosca::error::Error) -> Error {
     }
 }
 
+/// What a VM process is started with besides its program. The rest (argv[0], stdio, handles, containment, the
+/// console) is [`VmProcess::spawn_frozen`]'s.
+pub(crate) struct VmCommand {
+    pub(crate) args: Vec<OsString>,
+    /// Start from an empty environment instead of this process's.
+    pub(crate) clear_env: bool,
+    pub(crate) env: Vec<(OsString, OsString)>,
+    pub(crate) cwd: Option<PathBuf>,
+}
+
 impl VmProcess {
-    /// Starts `cmd` frozen: the process exists and has an identity, and has not run. Record the identity
-    /// (`record`), then `resume`. Dropping a frozen `VmProcess` kills the process, so it never runs.
+    /// Starts the program at `program` frozen: the process exists and has an identity, and has not run. Record the
+    /// identity (`record`), then `resume`. Dropping a frozen `VmProcess` kills the process, so it never runs.
     ///
-    /// The process is always contained (killed when this process dies), has no console (the host's detach) and holds
-    /// none of this process's pipes: stdin is null, and stdout and stderr are appended to the file `log`, which is
-    /// created. Both lifetimes start alike; `release` is what lets an `OutlivesOwner` VM outlive its owner.
+    /// The process is always contained (killed when this process dies), has no console (the host's detach) and
+    /// inherits none of this process's handles or pipes: stdin is null, and stdout and stderr are appended to the file
+    /// `log`, which is created. Both lifetimes start alike; `release` is what lets an `OutlivesOwner` VM outlive its
+    /// owner.
+    ///
+    /// `program` is the absolute path of the executable, and argv[0]; `command` gives the rest of the arguments, the
+    /// environment and the working directory. Naming the executable is what gives the handle guarantee: cosca 0.6.0's
+    /// `routes_to_raw_backend` sends a Windows command that names one to its raw backend, which hands the child only
+    /// the handles listed for it. Any other command goes through `std`, which has the child inherit every inheritable
+    /// handle of this process.
     ///
     /// Windows only in 0.1.0: cosca can hold a process before its first instruction there alone (a POSIX child cannot
     /// be held before exec without a gate), so every other host gets `NotSupported`.
     pub(crate) fn spawn_frozen(
         host: &dyn Host,
-        mut cmd: cosca::Command,
+        program: &Path,
+        command: VmCommand,
         lifetime: Lifetime,
         log: &Path,
     ) -> Result<VmProcess> {
-        cmd.contain();
+        if !program.is_absolute() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("the VM program {} is not an absolute path", program.display()),
+            ));
+        }
+        let mut cmd = cosca::Command::new();
+        cmd.arg(program).args(command.args);
+        if command.clear_env {
+            cmd.env_clear();
+        }
+        cmd.envs(command.env);
+        if let Some(cwd) = command.cwd {
+            cmd.current_dir(cwd);
+        }
+        cmd.executable(program).contain();
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

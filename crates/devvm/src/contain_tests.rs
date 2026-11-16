@@ -4,7 +4,7 @@ use std::sync::mpsc;
 
 use cosca::identity::{Liveness, ProcessIdRecord};
 
-use crate::contain::{VmProcess, frozen_spawn_error, unknown_liveness};
+use crate::contain::{Lifetime, VmCommand, VmProcess, frozen_spawn_error, unknown_liveness};
 use crate::test_support::helper;
 use crate::{ErrorKind, Result};
 
@@ -58,6 +58,33 @@ impl Drop for Sleeper {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[skuld::test]
+fn a_relative_program_is_refused_before_anything_is_created() {
+    let dir = skuld::TempDir::new().unwrap();
+    let log = dir.path().join("vm.log");
+    // A bare name, and on Windows a root-relative and a drive-relative path: none is absolute.
+    for program in ["qemu", r"\qemu.exe", "C:qemu.exe"] {
+        let command = VmCommand {
+            args: Vec::new(),
+            clear_env: true,
+            env: Vec::new(),
+            cwd: None,
+        };
+        let error = VmProcess::spawn_frozen(
+            crate::host::current(),
+            program.as_ref(),
+            command,
+            Lifetime::DiesWithOwner,
+            &log,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{program} is refused"));
+        assert_eq!(error.kind(), ErrorKind::Internal, "{program}: {error}");
+        assert!(error.to_string().contains(program), "{error}");
+        assert!(!log.exists(), "{program}");
     }
 }
 

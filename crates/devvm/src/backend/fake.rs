@@ -323,12 +323,7 @@ impl Backend for FakeBackend {
                 e,
             )
         })?;
-        let vm = VmProcess::spawn_frozen(
-            self.host,
-            fake_vm::command(state_dir),
-            spec.lifetime,
-            &fake_vm::log(state_dir),
-        )?;
+        let vm = fake_vm::spawn_frozen(self.host, state_dir, spec.lifetime)?;
         let leftovers = match &self.leftovers {
             Some(leftovers) => leftover_paths(&leftovers.dir, &spec.id, self.named.fetch_add(1, Ordering::SeqCst)),
             None => Vec::new(),

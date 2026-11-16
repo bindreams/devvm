@@ -7,15 +7,10 @@ use cosca::identity::ProcessIdRecord;
 
 use crate::backend::fake::{ask_to_crash, ask_to_exit};
 use crate::contain::{Lifetime, VmProcess};
-use crate::test_support::fake_vm::{self, STARTED, await_port, connect_when_up};
+use crate::test_support::fake_vm::{self, STARTED, await_port, connect_when_up, frozen};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::{ErrorKind, host};
-
-fn frozen(home: &Path, lifetime: Lifetime) -> VmProcess {
-    VmProcess::spawn_frozen(host::current(), fake_vm::command(home), lifetime, &fake_vm::log(home))
-        .expect("the fake VM should spawn frozen")
-}
 
 /// Starts helper `name` (`contain-owner` or `release-owner`) with a fake VM; stdout and stdin are piped.
 fn owner(name: &str, home: &Path) -> std::process::Child {
@@ -162,6 +157,18 @@ fn a_released_vm_survives_its_owner_exiting(#[fixture(unicode_home)] home: &Path
     vm.kill().unwrap();
 }
 
+/// A frozen VM inherits no handle of its owner, whatever route its spawn takes. A helper owns the pipe: in this process
+/// another test's spawn could inherit the write end too and keep the pipe open.
+#[skuld::test]
+fn a_frozen_vm_does_not_inherit_the_owners_handles(#[fixture(unicode_home)] home: &Path) {
+    let output = helper::command("pipe-owner", &[&home.display().to_string()])
+        .output()
+        .expect("the pipe-owner helper should run");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    // The pipe is broken only if the frozen VM, which is alive, holds nothing of the owner's.
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "broken");
+}
+
 #[skuld::test]
 fn a_released_vm_does_not_hold_the_owners_pipes(#[fixture(unicode_home)] home: &Path) {
     let mut owner = owner("release-owner", home);
@@ -226,13 +233,7 @@ fn a_vms_stdout_and_stderr_go_to_the_log_file_whatever_its_lifetime(#[fixture(un
     for lifetime in [Lifetime::DiesWithOwner, Lifetime::OutlivesOwner] {
         let state = home.join(format!("{lifetime:?}"));
         std::fs::create_dir_all(&state).unwrap();
-        let mut vm = VmProcess::spawn_frozen(
-            host::current(),
-            fake_vm::command(&state),
-            lifetime,
-            &fake_vm::log(&state),
-        )
-        .unwrap();
+        let mut vm = fake_vm::spawn_frozen(host::current(), &state, lifetime).unwrap();
         vm.resume().unwrap();
         // The VM wrote both lines before it opened the port.
         connect_when_up(&vm, await_port(&vm, &state));
@@ -249,13 +250,7 @@ fn fake_vms_bind_their_own_port_and_report_it_once_they_listen(#[fixture(unicode
     let mut vms = Vec::new();
     for state in [&first_dir, &second_dir] {
         std::fs::create_dir_all(state).unwrap();
-        let mut vm = VmProcess::spawn_frozen(
-            host::current(),
-            fake_vm::command(state),
-            Lifetime::DiesWithOwner,
-            &fake_vm::log(state),
-        )
-        .unwrap();
+        let mut vm = fake_vm::spawn_frozen(host::current(), state, Lifetime::DiesWithOwner).unwrap();
         vm.resume().unwrap();
         vms.push(vm);
     }

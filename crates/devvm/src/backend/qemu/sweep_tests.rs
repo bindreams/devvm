@@ -139,7 +139,7 @@ fn sweep_leaves_a_socket_that_has_no_claim_file() {
     assert!(sock.exists() && lock.exists());
 }
 
-/// A launch whose reservation has returned holds its claim, which QEMU will inherit: a sweep finds it `Busy` and
+/// A launch whose reservation has returned holds its claim, which QEMU will be given: a sweep finds it `Busy` and
 /// leaves it, and takes the dead machine beside it.
 #[skuld::test]
 fn sweep_leaves_a_reserved_launch_that_has_not_connected_and_takes_a_dead_machine() {

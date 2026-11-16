@@ -879,16 +879,16 @@ fn a_missing_file_is_no_hold(#[fixture(unicode_home)] home: &Path) {
     );
 }
 
-/// What a child that inherited the hold is: another handle to the same open file, which keeps the hold when the
-/// holder closes its own.
+/// A duplicate of the held file is another handle to the same open file, which keeps the hold when the holder closes
+/// its own.
 #[skuld::test]
 fn a_duplicate_of_the_held_file_keeps_the_hold_when_the_holder_is_gone(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.hold");
     let hold = current().hold_new(&path).unwrap();
-    let inherited = hold.file().try_clone().unwrap();
+    let duplicate = hold.file().try_clone().unwrap();
     drop(hold);
     assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
-    drop(inherited);
+    drop(duplicate);
     drop(taken(current().hold_existing(&path)));
 }
 
@@ -900,8 +900,7 @@ fn deleting_a_hold_removes_the_file_and_frees_the_name(#[fixture(unicode_home)] 
     drop(current().hold_new(&path).unwrap());
 }
 
-/// What a child that inherited the hold is: another handle to the file, which outlives the delete. The name is free at
-/// once all the same.
+/// A duplicate of the file outlives the delete. The name is free at once all the same.
 #[skuld::test]
 fn a_deleted_hold_frees_its_name_while_a_duplicate_of_the_file_is_open(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.hold");
@@ -985,6 +984,14 @@ fn a_hold_new_leaves_no_private_name_behind(#[fixture(unicode_home)] home: &Path
         HoldOutcome::Busy
     ));
     drop(hold);
+}
+
+/// Only a host that can start a process frozen can give a hold to one; the others say so.
+#[skuld::test]
+fn a_hold_off_windows_cannot_be_shared_with_a_process(#[fixture(unicode_home)] home: &Path) {
+    let hold = OtherHost.hold_new(&home.join("x.hold")).unwrap();
+    let error = hold.share_with(cosca::identity::ProcessId::current()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
 }
 
 /// A sweep and a record's cleanup can race for one claim: the loser finds the file gone.

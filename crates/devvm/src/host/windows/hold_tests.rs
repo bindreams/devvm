@@ -13,8 +13,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::super::wide;
 use super::super::windows_tests::{long_dir, with_nul};
-use crate::host::{claim_of_deleting_name, current, deleting_name};
+use crate::contain::Lifetime;
+use crate::host::{HoldOutcome, claim_of_deleting_name, current, deleting_name};
 use crate::test_groups::{Group, symlinks};
+use crate::test_support::fake_vm;
 use crate::test_support::file_security::set_attributes;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::symlink::symlink;
@@ -58,6 +60,21 @@ fn a_held_file_can_be_neither_deleted_nor_renamed_by_anyone_else(#[fixture(unico
     drop(hold);
 }
 
+/// A hold shared into a frozen process outlives the holder's own copy and ends with the process.
+#[skuld::test]
+fn a_hold_shared_with_a_process_keeps_the_file_held_until_the_process_is_gone(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.sock.hold");
+    let hold = current().hold_new(&path).unwrap();
+    let mut vm = fake_vm::frozen(home, Lifetime::DiesWithOwner);
+
+    hold.share_with(vm.id()).unwrap();
+    drop(hold);
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Busy));
+
+    vm.kill().unwrap();
+    assert!(matches!(current().hold_existing(&path).unwrap(), HoldOutcome::Taken(_)));
+}
+
 #[skuld::test]
 fn a_deleted_hold_leaves_no_deleting_name_once_its_duplicates_are_closed(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.sock.hold");
@@ -84,9 +101,9 @@ fn a_delete_leaves_the_deleting_name_a_dead_delete_left(#[fixture(unicode_home)]
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 1);
 }
 
-/// A duplicate of a deleted hold's file (a child's inherited copy) keeps that file's deleting name. The next delete of
-/// a file at the same name takes a deleting name of its own, and the name the duplicate keeps is of the shape the
-/// sweep removes: `<name>.<16 hex>.del`.
+/// A duplicate of a deleted hold's file, as the process the hold was shared with has, keeps that file's deleting
+/// name. The next delete of a file at the same name takes a deleting name of its own, and the name the duplicate keeps
+/// is of the shape the sweep removes: `<name>.<16 hex>.del`.
 #[skuld::test]
 fn a_delete_takes_a_deleting_name_of_its_own_while_a_duplicate_keeps_the_first(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("x.sock.hold");
