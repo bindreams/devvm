@@ -7,6 +7,7 @@
 //! Elsewhere: an exclusive `flock`, which belongs to the open file and so to every duplicate of it.
 
 use std::fmt;
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -69,10 +70,8 @@ pub(crate) fn claim_of_deleting_name(name: &str) -> Option<&str> {
 
 /// An exclusive hold on a file, and the open file that carries it.
 pub(crate) trait Hold: Send + fmt::Debug {
-    /// The held file. A duplicate of it carries the hold on, as the duplicate [`Hold::share_with`] puts in a process
-    /// does; the tests use it as that process.
-    #[cfg(test)]
-    fn file(&self) -> &std::fs::File;
+    /// The held file. A duplicate of it carries the hold on; the tests use one as another holder of the open file.
+    fn file(&self) -> &File;
 
     /// Puts a duplicate of the held file in `process`, which keeps the hold after this one is dropped, until it exits.
     /// The duplicate is not inheritable, so no other process ever gets it: a handle made inheritable for a child's

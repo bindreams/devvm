@@ -101,7 +101,7 @@ fn a_delete_leaves_the_deleting_name_a_dead_delete_left(#[fixture(unicode_home)]
     assert_eq!(std::fs::read_dir(home).unwrap().count(), 1);
 }
 
-/// A duplicate of a deleted hold's file (a duplicate in a child) keeps that file's deleting name. The next delete of
+/// A duplicate of a deleted hold's file, as another holder has, keeps that file's deleting name. The next delete of
 /// a file at the same name takes a deleting name of its own, and the name the duplicate keeps is of the shape the
 /// sweep removes: `<name>.<16 hex>.del`.
 #[skuld::test]

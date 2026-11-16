@@ -180,8 +180,8 @@ pub(super) fn remove_deleting_name(path: &Path) -> std::io::Result<()> {
 }
 
 /// Opens `path` as a hold: share mode 0 refuses every other open of the file, including `DELETE`, for as long as any
-/// handle to this open file exists, a duplicate in another process too. `DELETE` access is for [`Hold::delete`]. A link at the name
-/// is opened itself, not followed: [`LINK_OPEN`].
+/// handle to this open file exists, a duplicate in another process too. `DELETE` access is for [`Hold::delete`]. A link
+/// at the name is opened itself, not followed: [`LINK_OPEN`].
 fn open_hold(path: &Path, creation: u32) -> Result<File, Failure> {
     open(
         path,
@@ -270,7 +270,6 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
 }
 
 impl Hold for WindowsHold {
-    #[cfg(test)]
     fn file(&self) -> &File {
         &self.file
     }

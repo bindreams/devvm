@@ -116,7 +116,6 @@ pub(super) fn existing(host: &dyn FileModes, path: &Path) -> std::io::Result<Hol
 }
 
 impl Hold for FlockHold {
-    #[cfg(test)]
     fn file(&self) -> &File {
         &self.file
     }
