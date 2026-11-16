@@ -74,10 +74,11 @@ impl VmProcess {
     /// `log`, which is created. Both lifetimes start alike; `release` is what lets an `OutlivesOwner` VM outlive its
     /// owner.
     ///
-    /// Setting `program` as the command's executable is what gives that guarantee: cosca spawns a Windows command that
-    /// names an executable through its raw backend, which hands the child only the handles listed for it. Any other
-    /// command goes through `std`, which has the child inherit every inheritable handle of this process (cosca-0.6.0
-    /// `src/child/spawn.rs:338-340`).
+    /// `program` is the absolute path of the executable, and the same value as `cmd`'s argv[0]: the caller builds
+    /// both from one variable. Setting it as the command's executable is what gives the handle guarantee: cosca's
+    /// `routes_to_raw_backend` sends a Windows command that names an executable to its raw backend, which hands the
+    /// child only the handles listed for it. Any other command goes through `std`, which has the child inherit every
+    /// inheritable handle of this process.
     ///
     /// Windows only in 0.1.0: cosca can hold a process before its first instruction there alone (a POSIX child cannot
     /// be held before exec without a gate), so every other host gets `NotSupported`.
@@ -88,6 +89,11 @@ impl VmProcess {
         lifetime: Lifetime,
         log: &Path,
     ) -> Result<VmProcess> {
+        debug_assert!(
+            program.is_absolute(),
+            "the VM program {} is not absolute",
+            program.display()
+        );
         cmd.executable(program).contain();
         let file = std::fs::OpenOptions::new()
             .create(true)

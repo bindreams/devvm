@@ -3,6 +3,7 @@
 //! The test binary's `main` calls [`run_if_requested`] before `skuld::run_all()`. A test builds the child with
 //! [`command`], which spawns the same binary with [`HELPER_VAR`] set to the helper's name.
 
+use std::path::Path;
 use std::process::Command;
 
 /// Environment variable that selects helper mode and names the helper.
@@ -35,9 +36,8 @@ pub fn command(name: &str, args: &[&str]) -> Command {
     command
 }
 
-/// `command` for cosca: a frozen spawn needs cosca's own command type.
-pub fn cosca_command(name: &str, args: &[&str]) -> cosca::Command {
-    let exe = std::env::current_exe().expect("test binary path should be known");
+/// `command` for cosca, running `exe` (the current test binary): a frozen spawn needs cosca's own command type.
+pub fn cosca_command(exe: &Path, name: &str, args: &[&str]) -> cosca::Command {
     let mut command = cosca::Command::new();
     command.arg(exe).args(args).env(HELPER_VAR, name);
     command

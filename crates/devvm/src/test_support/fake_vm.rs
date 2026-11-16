@@ -68,7 +68,7 @@ pub fn forget_earlier_runs(state_dir: &Path) -> std::io::Result<()> {
 /// Spawns the fake VM frozen on `host`, with `state_dir` for its `started` file and its log.
 pub fn spawn_frozen(host: &dyn Host, state_dir: &Path, lifetime: Lifetime) -> Result<VmProcess> {
     let program = std::env::current_exe().expect("test binary path should be known");
-    let command = helper::cosca_command("fake-vm", &[&state_dir.display().to_string()]);
+    let command = helper::cosca_command(&program, "fake-vm", &[&state_dir.display().to_string()]);
     VmProcess::spawn_frozen(host, &program, command, lifetime, &log(state_dir))
 }
 

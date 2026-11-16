@@ -51,7 +51,11 @@ fn console_facts(mut cmd: cosca::Command) -> ConsoleFacts {
 }
 
 fn console_window_command() -> cosca::Command {
-    helper::cosca_command("console-window", &[])
+    helper::cosca_command(
+        &std::env::current_exe().expect("test binary path should be known"),
+        "console-window",
+        &[],
+    )
 }
 
 /// A child that was not detached, started with `CREATE_NO_WINDOW`: on Windows it has a console of its own with no
