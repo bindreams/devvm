@@ -43,7 +43,7 @@ Each instance has a name (letters, digits and `-`). `up` builds a guest from a r
 `ssh`, `cp`, `stop`, `start` and `rm` take that name. `run` and `build` take a recipe, as `up` does.
 
 Examples are for Git Bash. Git Bash rewrites arguments that look like paths (`/tmp/x`, `/c`), also after `--`: set
-`MSYS_NO_PATHCONV=1` for such a command.
+`MSYS_NO_PATHCONV=1` for such a command, and write its local paths as `C:/x` or relative ones.
 
 ### A Linux guest
 
@@ -61,8 +61,9 @@ devvm start dev
 devvm rm dev
 ```
 
-- The first `up` downloads QEMU and the guest image. `--cpus`, `--memory` and `--arch` size the guest; `--network none`
-  cuts it off from the internet.
+- The first command that needs a guest (`up`, `run` or `build`) downloads QEMU and the guest image, printing one
+  progress line per MiB; here it took under a minute. `--cpus` and `--memory` size the guest, `--network none` cuts it
+  off from the internet, and `--arch` picks `amd64` or `arm64` (the one the host is not runs under emulation, slowly).
 - `ssh` with no command opens a login shell. `devvm ssh dev -- <command>` runs one command and exits with its status.
 - The words after `--` are one argv, not a shell string, and nothing in them is expanded by the guest: `-- 'a; b'`
   looks for a program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell:
@@ -75,7 +76,7 @@ devvm rm dev
 ### A project in a recipe
 
 A recipe file ends in `.devvm.yaml`. Put this one in a git repository: it starts from the embedded recipe and copies
-the repository into the guest.
+the files git tracks there into the guest (an untracked or ignored file stays behind).
 
 ```yaml
 from: ubuntu-24.04
@@ -112,8 +113,8 @@ What a recipe file takes (an unknown key is an error):
 
 ### A Windows guest
 
-`windows.devvm.yaml`, from an installer ISO you downloaded ([Windows ISOs](#windows-isos) has the rules for `edition`
-and `product-key`):
+`win/windows.devvm.yaml`, from an installer ISO you downloaded ([Windows ISOs](#windows-isos) has the rules for
+`edition` and `product-key`):
 
 ```yaml
 from:
@@ -123,7 +124,7 @@ from:
 ```
 
 ```sh
-devvm up windows.devvm.yaml --name win
+devvm up win/windows.devvm.yaml --name win
 devvm ssh win -- whoami
 devvm ssh win
 devvm cp blob.bin win:blob.bin
@@ -133,21 +134,25 @@ devvm start win
 devvm rm win
 ```
 
-A recipe next to it can start from it and add steps. `proj-win.devvm.yaml`, in the same git repository:
+A project's recipe can start from it and add steps. `proj/proj-win.devvm.yaml`, in the project's git repository, with
+`win/` beside `proj/` and outside it, so the key is neither committed nor copied into the guest:
 
 ```yaml
-from: windows.devvm.yaml
+from: ../win/windows.devvm.yaml
 steps:
   - copy: { from: git-tracked, to: ~/proj }
 ```
 
 ```sh
-devvm run proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/proj'
+devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/proj'
 ```
 
-- The first `up` builds the Windows base from the ISO. The build downloads the virtio drivers from fedorapeople.org
-  (about 0.9 GB) and OpenSSH, PowerShell 7 and ssh-broker from github.com. Later `up`s reuse the base.
-- `ssh win` opens PowerShell 7. [Windows guests](#windows-guests) has how commands, paths and `copy` work there.
+- The first command that needs the Windows base builds it from the ISO: here it took 11 minutes. The build downloads
+  the virtio drivers from fedorapeople.org (about 0.9 GB) and OpenSSH, PowerShell 7 and ssh-broker from github.com.
+  Later commands reuse the base.
+- `ssh win` opens PowerShell 7. A relative guest path starts in the user's profile.
+- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127. Use
+  `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`. [Windows guests](#windows-guests) has the rest.
 
 ## Windows ISOs
 
