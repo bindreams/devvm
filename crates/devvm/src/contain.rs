@@ -74,26 +74,30 @@ impl VmProcess {
     /// `log`, which is created. Both lifetimes start alike; `release` is what lets an `OutlivesOwner` VM outlive its
     /// owner.
     ///
-    /// `program` is the absolute path of the executable, and the same value as `cmd`'s argv[0]: the caller builds
-    /// both from one variable. Setting it as the command's executable is what gives the handle guarantee: cosca's
-    /// `routes_to_raw_backend` sends a Windows command that names an executable to its raw backend, which hands the
-    /// child only the handles listed for it. Any other command goes through `std`, which has the child inherit every
-    /// inheritable handle of this process.
+    /// `program` is the absolute path of the executable; it is argv[0] and the command's executable, and `configure`
+    /// adds the rest (arguments, environment, working directory). Naming the executable is what gives the handle
+    /// guarantee: cosca 0.6.0's `routes_to_raw_backend` sends a Windows command that names one to its raw backend,
+    /// which hands the child only the handles listed for it. Any other command goes through `std`, which has the child
+    /// inherit every inheritable handle of this process.
     ///
     /// Windows only in 0.1.0: cosca can hold a process before its first instruction there alone (a POSIX child cannot
     /// be held before exec without a gate), so every other host gets `NotSupported`.
     pub(crate) fn spawn_frozen(
         host: &dyn Host,
         program: &Path,
-        mut cmd: cosca::Command,
+        configure: impl FnOnce(&mut cosca::Command),
         lifetime: Lifetime,
         log: &Path,
     ) -> Result<VmProcess> {
-        debug_assert!(
-            program.is_absolute(),
-            "the VM program {} is not absolute",
-            program.display()
-        );
+        if !program.is_absolute() {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("the VM program {} is not an absolute path", program.display()),
+            ));
+        }
+        let mut cmd = cosca::Command::new();
+        cmd.arg(program);
+        configure(&mut cmd);
         cmd.executable(program).contain();
         let file = std::fs::OpenOptions::new()
             .create(true)
