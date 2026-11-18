@@ -263,6 +263,7 @@ fn ending_stops_the_terminal_screen_before_the_error_is_written() {
         Look::default(),
         None,
         || 60,
+        || {},
     ));
     let run = Run::new();
     run.begin(Active {

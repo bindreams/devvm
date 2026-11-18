@@ -70,21 +70,21 @@ pub(crate) struct Sinks {
 
 /// What the run in progress holds that its ending needs, and that a panic on any thread must reach: the log to name and
 /// record in, and the terminal screen to stop before anything is written below it.
-struct Active {
-    log: Option<Arc<FileLog>>,
-    tty: Option<Arc<TtyProgress>>,
+pub(crate) struct Active {
+    pub(crate) log: Option<Arc<FileLog>>,
+    pub(crate) tty: Option<Arc<TtyProgress>>,
 }
 
 /// The run in progress. The command line runs one command at a time per process: a run replaces this when it starts
 /// and [`end`] empties it, so a later run in the same process starts from nothing.
-struct Run(Mutex<Option<Active>>);
+pub(crate) struct Run(Mutex<Option<Active>>);
 
 impl Run {
-    const fn new() -> Run {
+    pub(crate) const fn new() -> Run {
         Run(Mutex::new(None))
     }
 
-    fn begin(&self, active: Active) {
+    pub(crate) fn begin(&self, active: Active) {
         let before = self.0.lock().unwrap_or_else(PoisonError::into_inner).replace(active);
         debug_assert!(before.is_none(), "a command began while another had not ended");
     }
@@ -141,9 +141,9 @@ fn compose(screen: Arc<dyn Progress>, dirs: Option<&Dirs>) -> Sinks {
 
 // Ending ==============================================================================================================
 
-/// Ends a command as [`devvm::exit::finish`] does, with the error line red where stderr takes colour. A failure also
-/// names the log file on the line before it and is recorded there. The error goes to the log alone, never through the
-/// sinks: the screen would print it as a warning above its own line.
+/// The one ending of a command: [`conclude`] it, then print the error line it names, red where stderr takes colour. A
+/// failure also names the log file on the line before it and is recorded there. The error goes to the log alone, never
+/// through the sinks: the screen would print it as a warning above its own line.
 ///
 /// The terminal screen is stopped and cleared first, so that nothing it draws can erase what is written here; this is
 /// also what the panic hook calls. The run is over afterwards.
@@ -156,7 +156,7 @@ pub(crate) fn end(
     end_in(&RUN, stderr_colour(), status_file, outcome, width, stderr)
 }
 
-fn end_in(
+pub(crate) fn end_in(
     run: &Run,
     colour: bool,
     status_file: Option<&Path>,

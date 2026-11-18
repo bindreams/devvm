@@ -1,9 +1,12 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Mutex};
 
+use devvm::exit::ExitWidth;
 use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
-use indicatif::{InMemoryTerm, ProgressDrawTarget};
+use devvm::{Error, ErrorKind};
+use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
+use crate::output::{Active, Run, end_in};
 use crate::tty::TtyProgress;
 
 const MIB: u64 = 1 << 20;
@@ -14,10 +17,21 @@ const PLAIN: Look = Look {
     verbose: false,
 };
 
+/// What the screen does to start a fresh line, as the real one does on stderr.
+fn newline(term: &InMemoryTerm) -> impl Fn() + Send + Sync + 'static + use<> {
+    let term = term.clone();
+    move || {
+        term.write_line("").unwrap();
+    }
+}
+
 fn screen(rows: u16, columns: u16, look: Look) -> (TtyProgress, InMemoryTerm) {
     let term = InMemoryTerm::new(rows, columns);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    (TtyProgress::new(target, look, None, move || columns), term)
+    (
+        TtyProgress::new(target, look, None, move || columns, newline(&term)),
+        term,
+    )
 }
 
 /// A screen whose width the test can change, as a person resizing the window does.
@@ -26,7 +40,13 @@ fn resizable(rows: u16, columns: u16) -> (TtyProgress, InMemoryTerm, Arc<AtomicU
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let width = Arc::new(AtomicU16::new(columns));
     let read = width.clone();
-    let tty = TtyProgress::new(target, PLAIN, None, move || read.load(Ordering::Relaxed));
+    let tty = TtyProgress::new(
+        target,
+        PLAIN,
+        None,
+        move || read.load(Ordering::Relaxed),
+        newline(&term),
+    );
     (tty, term, width)
 }
 
@@ -194,7 +214,7 @@ fn a_warning_prefix_is_yellow_only_when_asked() {
 }
 
 #[skuld::test]
-fn step_output_is_hidden_unless_verbose_and_stripped_of_ansi() {
+fn step_output_is_hidden_unless_verbose_and_its_controls_are_escaped() {
     let (quiet, term) = screen(5, 60, PLAIN);
     quiet.output("hidden");
     quiet.debug("also hidden");
@@ -208,9 +228,9 @@ fn step_output_is_hidden_unless_verbose_and_stripped_of_ansi() {
             verbose: true,
         },
     );
-    loud.output("\u{1b}[32mgreen\u{1b}[0m text\rredraw\0");
+    loud.output("\u{1b}[32mgreen text\rredraw\0");
     loud.debug("detail");
-    assert_eq!(lines(&term), ["green text\\rredraw\\0", "detail"]);
+    assert_eq!(lines(&term), ["\\u{1b}[32mgreen text\\rredraw\\0", "detail"]);
 }
 
 #[skuld::test]
@@ -328,4 +348,293 @@ fn a_resize_refits_the_line_at_the_next_report() {
     let after = console::measure_text_width(term.contents().trim_end());
     assert!(after < 40, "{after}: {:?}", term.contents());
     assert_eq!(term.contents().lines().count(), 1, "{:?}", term.contents());
+}
+
+// Ancestry ============================================================================================================
+
+/// An ancestor that ended leaves a blank column. The task before it at that depth, an uncle, is not the ancestor.
+#[skuld::test]
+fn an_uncle_is_not_taken_for_an_ancestor_that_ended() {
+    let (tty, term) = screen(8, 60, PLAIN);
+    let [root, uncle, parent, child, later] = [(); 5].map(|()| id());
+    begin(&tty, root, None, "R", Total::Unknown);
+    begin(&tty, uncle, Some(root), "U", Total::Unknown);
+    begin(&tty, parent, Some(root), "P", Total::Unknown);
+    begin(&tty, child, Some(parent), "C", Total::Unknown);
+    begin(&tty, later, Some(root), "L", Total::Unknown);
+    assert_eq!(lines(&term), ["- R", "- ├─ U", "- ├─ P", "- │  └─ C", "- └─ L"]);
+    end(&tty, parent, Outcome::Finished);
+    assert_eq!(lines(&term), ["- R", "- ├─ U", "-    └─ C", "- └─ L"]);
+}
+
+/// A child begun under a parent goes below all the parent's descendants, even one whose middle ancestor ended.
+#[skuld::test]
+fn a_child_goes_below_the_descendants_of_its_parent() {
+    let (tty, term) = screen(8, 60, PLAIN);
+    let [root, parent, middle, grandchild, sibling, other] = [(); 6].map(|()| id());
+    begin(&tty, root, None, "R", Total::Unknown);
+    begin(&tty, parent, Some(root), "P", Total::Unknown);
+    begin(&tty, middle, Some(parent), "M", Total::Unknown);
+    begin(&tty, grandchild, Some(middle), "G", Total::Unknown);
+    end(&tty, middle, Outcome::Finished);
+    begin(&tty, sibling, Some(parent), "S", Total::Unknown);
+    begin(&tty, other, Some(root), "O", Total::Unknown);
+    assert_eq!(lines(&term), ["- R", "- ├─ P", "- │     └─ G", "- │  └─ S", "- └─ O"]);
+}
+
+// Caching =============================================================================================================
+
+type Trap = Box<dyn FnOnce() + Send>;
+
+/// A `TermLike` that counts draws, and runs a closure at the next one.
+#[derive(Clone)]
+struct Probe {
+    term: InMemoryTerm,
+    draws: Arc<AtomicUsize>,
+    trap: Arc<Mutex<Option<Trap>>>,
+}
+
+impl std::fmt::Debug for Probe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Probe")
+    }
+}
+
+impl Probe {
+    fn new(term: &InMemoryTerm) -> Probe {
+        Probe {
+            term: term.clone(),
+            draws: Arc::default(),
+            trap: Arc::default(),
+        }
+    }
+
+    /// Runs `trap` when the next draw begins, then panics, as a draw that fails does.
+    fn trap_next_draw(&self, trap: impl FnOnce() + Send + 'static) {
+        *self.trap.lock().unwrap() = Some(Box::new(trap));
+    }
+
+    fn tripped(&self) {
+        let trap = self.trap.lock().unwrap().take();
+        if let Some(trap) = trap {
+            trap();
+            panic!("the terminal failed");
+        }
+    }
+}
+
+impl TermLike for Probe {
+    fn width(&self) -> u16 {
+        self.tripped();
+        self.term.width()
+    }
+    fn height(&self) -> u16 {
+        self.term.height()
+    }
+    fn move_cursor_up(&self, n: usize) -> std::io::Result<()> {
+        self.term.move_cursor_up(n)
+    }
+    fn move_cursor_down(&self, n: usize) -> std::io::Result<()> {
+        self.term.move_cursor_down(n)
+    }
+    fn move_cursor_right(&self, n: usize) -> std::io::Result<()> {
+        self.term.move_cursor_right(n)
+    }
+    fn move_cursor_left(&self, n: usize) -> std::io::Result<()> {
+        self.term.move_cursor_left(n)
+    }
+    fn write_line(&self, s: &str) -> std::io::Result<()> {
+        self.term.write_line(s)
+    }
+    fn write_str(&self, s: &str) -> std::io::Result<()> {
+        self.term.write_str(s)
+    }
+    fn clear_line(&self) -> std::io::Result<()> {
+        self.term.clear_line()
+    }
+    fn flush(&self) -> std::io::Result<()> {
+        self.draws.fetch_add(1, Ordering::SeqCst);
+        self.term.flush()
+    }
+}
+
+fn probed(rows: u16, columns: u16) -> (TtyProgress, InMemoryTerm, Probe) {
+    let term = InMemoryTerm::new(rows, columns);
+    let probe = Probe::new(&term);
+    let target = ProgressDrawTarget::term_like(Box::new(probe.clone()));
+    let tty = TtyProgress::new(target, PLAIN, None, move || columns, newline(&term));
+    (tty, term, probe)
+}
+
+/// A report that changes nothing about how the line is fitted sets the position and nothing else: a copy reports
+/// at every MiB.
+#[skuld::test]
+fn a_report_that_changes_no_text_draws_once() {
+    let (tty, _term, probe) = probed(4, 80);
+    let [bytes, items] = [(); 2].map(|()| id());
+    begin(&tty, bytes, None, "copying a.img", Total::Bytes(5 * GIB));
+    begin(&tty, items, None, "step", Total::Items(100));
+    advance(&tty, bytes, MIB);
+    advance(&tty, items, 1);
+    for (task, position) in [(bytes, 2 * MIB), (bytes, 3 * MIB), (items, 2), (items, 3)] {
+        let before = probe.draws.load(Ordering::SeqCst);
+        advance(&tty, task, position);
+        let drew = probe.draws.load(Ordering::SeqCst) - before;
+        assert!(drew <= 1, "{drew} draws for one report");
+    }
+}
+
+#[skuld::test]
+fn the_width_is_read_once_for_a_report() {
+    let term = InMemoryTerm::new(4, 80);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = reads.clone();
+    let tty = TtyProgress::new(
+        ProgressDrawTarget::term_like(Box::new(term.clone())),
+        PLAIN,
+        None,
+        move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            80
+        },
+        newline(&term),
+    );
+    let [first, second] = [(); 2].map(|()| id());
+    begin(&tty, first, None, "a", Total::Bytes(GIB));
+    begin(&tty, second, None, "b", Total::Bytes(GIB));
+    let before = reads.load(Ordering::SeqCst);
+    advance(&tty, first, MIB);
+    assert_eq!(reads.load(Ordering::SeqCst) - before, 1);
+}
+
+// Ending ==============================================================================================================
+
+/// Quiet takes the screen lock, so a draw of another thread is over before it returns, and one that starts after it
+/// draws nothing: whatever is written next stays.
+#[skuld::test]
+fn a_tick_and_a_report_racing_quiet_leave_the_line_written_after_it() {
+    for _ in 0..50 {
+        let (tty, term) = screen(6, 60, PLAIN);
+        let (spinner, bar) = (id(), id());
+        begin(&tty, spinner, None, "waiting", Total::Unknown);
+        begin(&tty, bar, None, "copying", Total::Bytes(GIB));
+        let start = Barrier::new(3);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                start.wait();
+                tty.shared.tick();
+            });
+            scope.spawn(|| {
+                start.wait();
+                advance(&tty, bar, MIB);
+                tty.warn("noted");
+            });
+            start.wait();
+            tty.quiet();
+            term.write_line("devvm-error: x").unwrap();
+        });
+        let shown = lines(&term);
+        // A note printed before the screen was quiet stays above the error; nothing is drawn after it.
+        assert_eq!(shown.last().map(String::as_str), Some("devvm-error: x"), "{shown:?}");
+        assert!(
+            shown
+                .iter()
+                .all(|line| line == "devvm-error: x" || line == "warning: noted"),
+            "{shown:?}"
+        );
+    }
+}
+
+/// A thread that is panicking draws nothing (indicatif skips the draw), so the bars stay: quiet starts a line for
+/// what is written next.
+#[skuld::test]
+fn quiet_from_a_panicking_thread_starts_a_fresh_line() {
+    struct Quiet<'a>(&'a TtyProgress);
+    impl Drop for Quiet<'_> {
+        fn drop(&mut self) {
+            self.0.quiet();
+        }
+    }
+
+    let (tty, term) = screen(6, 60, PLAIN);
+    begin(&tty, id(), None, "working", Total::Unknown);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _quiet = Quiet(&tty);
+        panic!("a failure outside a draw");
+    }));
+    assert!(unwound.is_err());
+    term.write_line("devvm-error: x").unwrap();
+    assert_eq!(lines(&term), ["- working", "devvm-error: x"]);
+}
+
+/// A panic inside a draw holds the screen lock when the hook runs, so the hook cannot lock it: it starts a fresh line
+/// and the ending still prints.
+#[skuld::test]
+fn a_panic_inside_a_draw_still_ends_with_the_error_line() {
+    let term = InMemoryTerm::new(6, 60);
+    let probe = Probe::new(&term);
+    let tty = Arc::new(TtyProgress::new(
+        ProgressDrawTarget::term_like(Box::new(probe.clone())),
+        PLAIN,
+        None,
+        || 60,
+        newline(&term),
+    ));
+    let run = Arc::new(Run::new());
+    run.begin(Active {
+        log: None,
+        tty: Some(tty.clone()),
+    });
+    let first = id();
+    begin(&tty, first, None, "working", Total::Unknown);
+
+    let stderr = Arc::new(Mutex::new(Vec::new()));
+    let (hook_run, hook_stderr) = (run.clone(), stderr.clone());
+    probe.trap_next_draw(move || {
+        // What the panic hook does, on the thread that is inside the draw.
+        let mut out = hook_stderr.lock().unwrap();
+        end_in(
+            &hook_run,
+            false,
+            None,
+            Err(Error::new(ErrorKind::Panic, "the draw failed")),
+            ExitWidth::Full32,
+            &mut *out,
+        );
+    });
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        advance(&tty, first, 1);
+        begin(&tty, id(), None, "next", Total::Unknown);
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(
+        String::from_utf8(stderr.lock().unwrap().clone()).unwrap(),
+        "devvm-error: panic: the draw failed\n"
+    );
+    // The screen is quiet afterwards and does not hang on the lock the panic poisoned.
+    begin(&tty, id(), None, "late", Total::Unknown);
+    tty.warn("late note");
+    assert!(!term.contents().contains("late"), "{:?}", term.contents());
+    // The draw that panicked poisoned indicatif's own lock, which dropping a bar would panic on.
+    std::mem::forget(tty);
+}
+
+#[skuld::test]
+fn a_spinner_turns_by_itself_and_its_thread_ends_with_the_screen() {
+    let term = InMemoryTerm::new(4, 60);
+    let tty = TtyProgress::new(
+        ProgressDrawTarget::term_like(Box::new(term.clone())),
+        PLAIN,
+        Some(std::time::Duration::from_millis(1)),
+        || 60,
+        newline(&term),
+    );
+    begin(&tty, id(), None, "waiting", Total::Unknown);
+    let first = lines(&term);
+    // Each tick turns the glyph; this waits for the first.
+    while lines(&term) == first {
+        std::thread::yield_now();
+    }
+    // Dropping the screen stops and joins the thread: a thread left behind would hang here or draw on.
+    drop(tty);
 }
