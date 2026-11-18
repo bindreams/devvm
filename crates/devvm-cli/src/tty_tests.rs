@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use devvm::exit::ExitWidth;
-use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
+use devvm::progress::{Event, FileLog, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
+use devvm::store::layers::SystemClock;
 use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
 use crate::output::{Active, Run, Shown};
@@ -629,6 +630,36 @@ fn the_ending_stops_the_screen_before_it_writes_the_error() {
     assert_eq!(lines(&term), ["devvm-error: io: bad"]);
 }
 
+/// A screen that is blocked on a paused terminal holds the ending's stop of it: the failure is in the log before that
+/// stop begins to draw.
+#[skuld::test]
+fn the_ending_records_the_error_in_the_log_before_it_stops_the_screen() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let log = Arc::new(FileLog::create(&tmp.path().join("logs"), Arc::new(SystemClock)).unwrap());
+    let term = InMemoryTerm::new(6, 60);
+    let probe = Probe::new(&term);
+    let target = ProgressDrawTarget::term_like(Box::new(probe.clone()));
+    let tty = Arc::new(TtyProgress::new(target, PLAIN, None, || 60));
+    let run = Run::new();
+    run.begin(Active {
+        log: Some(log.clone()),
+        screen: Some(Shown::Tty(tty.clone())),
+    });
+    begin(&tty, id(), None, "working", Total::Unknown);
+    let logged = Arc::new(Mutex::new(None));
+    let (path, read) = (log.path().to_owned(), logged.clone());
+    probe.hold_next_draw(move || *read.lock().unwrap() = Some(std::fs::read_to_string(path).unwrap()));
+
+    end_with_error(&run, &term);
+
+    let logged = logged
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the stop took the bars off with a draw");
+    assert!(logged.contains(" ERROR devvm-error: io: bad"), "{logged:?}");
+}
+
 /// The ending takes the screen's lock: a draw in flight is over before the bars are cleared, and a tick or a report
 /// that comes after draws nothing over what is written then.
 #[skuld::test]
@@ -671,9 +702,10 @@ fn draws_only_after_stderrs_lock_is_free(op: impl Fn(&TtyProgress, TaskId, TaskI
     let ending = std::io::stderr().lock();
 
     std::thread::scope(|scope| {
-        scope.spawn(|| op(&tty, spinner, bar));
-        // The report holds the screen's lock; it draws after the ending's.
-        while tty.shared.screen.try_lock().is_ok() {
+        let reporting = scope.spawn(|| op(&tty, spinner, bar));
+        // The report holds the screen's lock; it draws after the ending's. One that finishes without waiting for it
+        // is a failure, not a wait.
+        while !reporting.is_finished() && tty.shared.screen.try_lock().is_ok() {
             std::thread::yield_now();
         }
         order.lock().unwrap().push("released");
@@ -735,6 +767,20 @@ fn a_report_that_draws_nothing_does_not_wait_for_stderrs_lock() {
             end(&tty, id(), Outcome::Finished);
             tty.shared.tick();
         });
+    });
+    drop(writing);
+}
+
+/// A stopped screen draws nothing, so its last handle is dropped without stderr's lock: an ending, or a hook, may hold
+/// it while it waits for the thread that drops.
+#[skuld::test]
+fn dropping_a_stopped_screen_does_not_wait_for_stderrs_lock() {
+    let (tty, _term) = screen(4, 60, PLAIN);
+    begin(&tty, id(), None, "working", Total::Unknown);
+    tty.stop();
+    let writing = std::io::stderr().lock();
+    std::thread::scope(|scope| {
+        scope.spawn(move || drop(tty));
     });
     drop(writing);
 }
@@ -879,7 +925,6 @@ fn every_stop_of_the_ticker_waits_for_the_spinners_thread() {
     // The spinners' thread is in a draw it does not leave until released.
     seen.recv().unwrap();
 
-    let (started, begun) = mpsc::channel();
     std::thread::scope(|scope| {
         scope.spawn(|| ticker.stop());
         // The first stop has the thread's handle, and waits for the thread.
@@ -891,12 +936,14 @@ fn every_stop_of_the_ticker_waits_for_the_spinners_thread() {
             }
         }
         let second = scope.spawn(|| {
-            started.send(()).unwrap();
             ticker.stop();
             // The thread holds a handle to the screen's state until it ends.
             Arc::strong_count(&tty.shared)
         });
-        begun.recv().unwrap();
+        // The second caller is inside `Ticker::stop`: it has asked the pace to stop, as has the first.
+        while tty.shared.pace.state().stops < 2 {
+            std::thread::yield_now();
+        }
         release.send(()).unwrap();
         assert_eq!(
             second.join().unwrap(),

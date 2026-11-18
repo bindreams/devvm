@@ -155,13 +155,7 @@ fn a_screen_that_blocks_holds_back_no_log_record() {
         // The report is in the screen, which is stuck: the log has it.
         let logged = std::fs::read_to_string(log.path()).unwrap();
         go.send(()).unwrap();
-        assert!(
-            logged.ends_with(
-                " INFO hello
-"
-            ),
-            "{logged:?}"
-        );
+        assert!(logged.ends_with(" INFO hello\n"), "{logged:?}");
     });
 }
 

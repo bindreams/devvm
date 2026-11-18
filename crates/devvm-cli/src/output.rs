@@ -4,7 +4,7 @@ use std::io::{IsTerminal, StderrLock, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use devvm::exit::{ExitStatus, ExitWidth, conclude, print_error_line};
+use devvm::exit::{Ending, ExitStatus, ExitWidth, conclude, print_error_line};
 use devvm::progress::{Fanout, FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Error, ErrorKind, Result};
@@ -133,16 +133,21 @@ pub(crate) enum Shown {
 }
 
 impl Active {
-    /// Stops each sink, one at a time: the sink's lock is taken, so that a write in flight is over first, its `stopped`
-    /// flag is set under it, and a terminal screen's bars are taken off. Nothing is written by a sink after this.
-    fn stop(&self) {
+    /// Stops the log: its record in flight is over, and it records no event more.
+    fn stop_log(&self) {
+        if let Some(log) = &self.log {
+            log.stop();
+        }
+    }
+
+    /// Stops the screen: its lock is taken, so that a write in flight is over first, its `stopped` flag is set under
+    /// it, and a terminal screen's bars are taken off. Nothing is written by it after this. A screen that cannot be
+    /// written waits here, so the log's record of the ending is made before.
+    fn stop_screen(&self) {
         match &self.screen {
             Some(Shown::Tty(tty)) => tty.stop(),
             Some(Shown::Lines(lines)) => lines.stop(),
             None => {}
-        }
-        if let Some(log) = &self.log {
-            log.stop();
         }
     }
 }
@@ -210,10 +215,11 @@ impl Run {
         Ended { code, _held: held }
     }
 
-    /// The one ending of a command: stops the sinks, takes the one-ending lock, [`conclude`]s, and prints the error
-    /// line it names, red where `colour` is set. A failure also names the log file on the line before it and is
-    /// recorded there. The error goes to the log alone, never through the sinks: the screen would print it as a
-    /// warning above its own line.
+    /// The one ending of a command: stops the log, [`conclude`]s and records the failure in it, stops the screen, takes
+    /// the one-ending lock, and prints the error line, red where `colour` is set. A failure also names the log file
+    /// on the line before it. The error goes to the log alone, never through the sinks: the screen would print it as
+    /// a warning above its own line. The record is made before the screen is stopped, which waits for a screen that
+    /// cannot be written.
     ///
     /// The run stays in `self` until the ending is written, so that a panic on this thread finds the log.
     pub(crate) fn end(
@@ -226,17 +232,24 @@ impl Run {
     ) -> Ended {
         let active = self.active().clone();
         if let Some(active) = &active {
-            active.stop();
+            active.stop_log();
+        }
+        let log = active.as_ref().and_then(|active| active.log.clone());
+        let ending = conclude_and_record(log.as_deref(), status_file, &outcome, width);
+        if let Some(active) = &active {
+            active.stop_screen();
         }
         let held = std::io::stderr().lock();
-        let log = active.and_then(|active| active.log);
-        let code = end_with(log.as_deref(), colour, status_file, outcome, width, stderr);
+        let code = print_ending(log.as_deref(), &ending, colour, stderr);
         let finished = self.active().take();
+        // Dropped after `active`'s guard is released: a sink's drop can take stderr's lock, and a hook holds that lock
+        // and waits for `active`.
         drop(finished);
         Ended { code, _held: held }
     }
 }
 
+/// An ending whose sinks are already stopped, or have no part in it: [`conclude_and_record`], then [`print_ending`].
 fn end_with(
     log: Option<&FileLog>,
     colour: bool,
@@ -245,11 +258,29 @@ fn end_with(
     width: ExitWidth,
     stderr: &mut dyn Write,
 ) -> i32 {
-    let ending = conclude(status_file, &outcome, width);
-    if let Some(line) = &ending.error_line {
+    let ending = conclude_and_record(log, status_file, &outcome, width);
+    print_ending(log, &ending, colour, stderr)
+}
+
+/// Writes the status file and records the failure, if any, in the log: the log is stopped by now, or is a panic's.
+fn conclude_and_record(
+    log: Option<&FileLog>,
+    status_file: Option<&Path>,
+    outcome: &Result<ExitStatus>,
+    width: ExitWidth,
+) -> Ending {
+    let ending = conclude(status_file, outcome, width);
+    if let (Some(log), Some(line)) = (log, &ending.error_line) {
         // The line printed is the line recorded: the status file can turn a success into a failure.
+        log.failed(line);
+    }
+    ending
+}
+
+/// Names the log on the line before the error line, and prints the error line; returns the exit code.
+fn print_ending(log: Option<&FileLog>, ending: &Ending, colour: bool, stderr: &mut dyn Write) -> i32 {
+    if let Some(line) = &ending.error_line {
         if let Some(log) = log {
-            log.failed(line);
             let _ = writeln!(stderr, "log: {}", log.describe());
         }
         print_error_line(stderr, line, colour);

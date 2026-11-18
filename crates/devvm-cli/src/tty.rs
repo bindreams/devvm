@@ -134,6 +134,10 @@ impl Drop for Shared {
         if poisoned {
             // The bars of a screen that a panic poisoned would panic when dropped.
             std::mem::forget(screen);
+        } else if screen.stopped {
+            // A stopped screen draws nothing, so this waits for no lock: a last handle may be dropped on a thread
+            // that stderr's holder is waiting for, after the ending.
+            drop(screen);
         } else {
             // Dropping the bars draws.
             let _stderr = stderr();
@@ -142,8 +146,8 @@ impl Drop for Shared {
     }
 }
 
-/// Stderr's lock, which every call into indicatif holds: taken by the [`Screen`] methods that make one, after the
-/// screen's, and only where something is drawn.
+/// Stderr's lock, which every call into indicatif holds: taken once by each [`Screen`] method that makes one, after the
+/// screen's, and only where something is drawn. [`Screen::relabel`] and [`Screen::refresh`] hold it already.
 fn stderr() -> StderrLock<'static> {
     std::io::stderr().lock()
 }
@@ -161,6 +165,8 @@ struct Pace {
 struct PaceState {
     spinners: usize,
     stopped: bool,
+    /// How many stops were asked: a test waits on it for a caller to be inside [`Ticker::stop`].
+    stops: usize,
 }
 
 impl Pace {
@@ -174,7 +180,10 @@ impl Pace {
     }
 
     fn stop(&self) {
-        self.state().stopped = true;
+        let mut state = self.state();
+        state.stopped = true;
+        state.stops += 1;
+        drop(state);
         self.changed.notify_all();
     }
 
@@ -441,9 +450,9 @@ impl Screen {
         self.relabel((self.columns)(), None);
     }
 
-    /// Sets each line's tree prefix from the order and the ancestry, and refreshes it. The line at `first` goes first.
+    /// Sets each line's tree prefix from the order and the ancestry, and refreshes it, under the caller's hold of
+    /// stderr's lock. The line at `first` goes first.
     fn relabel(&mut self, columns: u16, first: Option<usize>) {
-        let _stderr = stderr();
         let prefixes = self.prefixes();
         let rest = (0..prefixes.len()).filter(|index| Some(*index) != first);
         for index in first.into_iter().chain(rest) {
@@ -488,6 +497,7 @@ impl Screen {
         slot.status = Some(escape_controls(text).into_owned());
         slot.stale = true;
         let columns = (self.columns)();
+        let _stderr = stderr();
         self.refresh(id, columns);
     }
 
@@ -501,12 +511,11 @@ impl Screen {
         self.tasks[&id].bar.set_position(position);
     }
 
-    /// Gives the bar of `id` the style and the text that fit a terminal `columns` wide, where something changed. The
-    /// label is cut so that the line is shorter than the terminal: a line that fills it wraps on some terminals, and a
-    /// redraw clears one row of the two.
+    /// Gives the bar of `id` the style and the text that fit a terminal `columns` wide, where something changed; the
+    /// caller holds stderr's lock. The label is cut so that the line is shorter than the terminal: a line that fills
+    /// it wraps on some terminals, and a redraw clears one row of the two.
     fn refresh(&mut self, id: TaskId, columns: u16) {
         let Some(slot) = self.tasks.get_mut(&id) else { return };
-        let _stderr = stderr();
         let wide = columns >= BAR_COLUMNS;
         let used = 2 + slot.prefix_width + suffix_width(slot.total, wide, slot.position) + 1;
         let budget = usize::from(columns).saturating_sub(used).max(1);
