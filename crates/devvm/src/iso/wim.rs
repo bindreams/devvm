@@ -89,7 +89,9 @@ impl WimImage {
     /// leading zero) of a number that fits `u32`.
     pub(crate) fn build_number(&self) -> Option<u32> {
         let text = self.build.as_deref()?;
-        text.parse().ok().filter(|number: &u32| number.to_string() == text)
+        let plain =
+            !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) && (text == "0" || !text.starts_with('0'));
+        if plain { text.parse().ok() } else { None }
     }
 
     /// Whether the image is an evaluation edition: its edition id names an evaluation.
