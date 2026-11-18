@@ -93,6 +93,46 @@ fn relative_from_resolves_against_the_recipe_directory(#[fixture(unicode_home)] 
     );
 }
 
+/// `Path` equality ignores `.` components, so these compare the text a person would see.
+#[skuld::test]
+fn an_iso_path_written_with_dot_slash_has_no_dot_in_it(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("a b").join("x.devvm.yaml");
+    let Source::Iso { path, .. } = Recipe::parse("from: { iso: ./windows.iso }", &file).unwrap().source else {
+        panic!()
+    };
+    assert_eq!(
+        path.display().to_string(),
+        home.join("a b").join("windows.iso").display().to_string()
+    );
+    let Source::Iso { path, .. } = Recipe::parse("from: { iso: ../iso/windows.iso }", &file)
+        .unwrap()
+        .source
+    else {
+        panic!()
+    };
+    assert_eq!(
+        path.display().to_string(),
+        home.join("a b")
+            .join("..")
+            .join("iso")
+            .join("windows.iso")
+            .display()
+            .to_string()
+    );
+}
+
+#[skuld::test]
+fn a_base_recipe_named_with_dot_slash_is_joined_without_it(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("a b").join("x.devvm.yaml");
+    let Source::Recipe(path) = Recipe::parse("from: ./base.devvm.yaml", &file).unwrap().source else {
+        panic!()
+    };
+    assert_eq!(
+        path.display().to_string(),
+        home.join("a b").join("base.devvm.yaml").display().to_string()
+    );
+}
+
 #[skuld::test]
 fn an_iso_takes_an_edition() {
     assert_eq!(

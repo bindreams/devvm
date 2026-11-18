@@ -178,7 +178,7 @@ fn pin(raw: RawPin) -> Pin {
 
 fn source(raw: RawFrom, dir: &Path, origin: &Path) -> Result<Source> {
     Ok(match raw {
-        RawFrom::Name(name) if name.ends_with(SUFFIX) => Source::Recipe(dir.join(name)),
+        RawFrom::Name(name) if name.ends_with(SUFFIX) => Source::Recipe(dir.join(name).components().collect()),
         RawFrom::Name(name) => Source::Embedded(name),
         RawFrom::Iso(iso) => {
             if iso.edition.as_deref().is_some_and(|edition| edition.trim().is_empty()) {
@@ -196,7 +196,7 @@ fn source(raw: RawFrom, dir: &Path, origin: &Path) -> Result<Source> {
                 })
                 .transpose()?;
             Source::Iso {
-                path: dir.join(iso.iso),
+                path: dir.join(iso.iso).components().collect(),
                 edition: iso.edition,
                 product_key,
             }
