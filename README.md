@@ -209,10 +209,11 @@ The base has no Windows Recovery Environment.
   the guest has no separation between the user and the administrator, as a Linux guest has none with its passwordless
   `sudo`.
 - **`set: { uac: auto-approve }`** makes an administrator's elevation prompt-free in the guest, with no reboot.
-- A command whose script is longer than 32,766 characters once quoted is refused, naming both lengths. Each argument is
-  written into the script twice, next to its fixed text, so the arguments get about 15,000 characters (about 10,000
-  for `cmd`, less when elevated). The `longest_fit` measurement in `crates/devvm/src/guest/windows/wrap_tests.rs` gives
-  the exact figures.
+- A command is refused when the command line that carries its script is over 32,766 UTF-16 units (the script is quoted
+  as one argument, and the line is about 46 units longer than it), and the error names both lengths. Each argument is in
+  the script twice, next to its fixed text, so the arguments get about 14,940 characters; the text of `cmd /c` is there
+  a third time (about 9,920), and less fits when the command is elevated (about 11,440, and 7,580 for `cmd`). These are
+  the figures at the time of writing; `longest_fit` in `crates/devvm/src/guest/windows/wrap_tests.rs` measures them.
 
 Limits:
 

@@ -278,6 +278,7 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         "TOOL.PS1",
         "note.txt",
         "note.txt.ps1",
+        "only.txt.ps1",
         "other.txt",
     ] {
         std::fs::write(scripts.join(name), "'ran'").unwrap();
@@ -296,8 +297,8 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         "./TOOL.PS1",
         r".\proj[1]\tool.ps1",
         // The extension left out, as PowerShell takes it: `.ps1` is added to every name by path, also to one with
-        // another extension.
-        r".\note.txt",
+        // another extension, when the file of that name is not there.
+        r".\only.txt",
         r".\tool",
         "./TOOL",
         r".\a[1]",
@@ -307,8 +308,9 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
     ] {
         hinted(&by_path(name), name);
     }
-    // A name by path that is no script, or a script that is not there, is not found.
-    for name in [r".\other.txt", r".\note", r".\a[2].ps1", r".\proj[1]"] {
+    // A name by path that is no script, or a script that is not there, is not found; so is a file that is there and no
+    // script, even with a script of the name plus `.ps1`: PowerShell runs the file named.
+    for name in [r".\other.txt", r".\note.txt", r".\note", r".\a[2].ps1", r".\proj[1]"] {
         let output = by_path(name);
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
         assert!(
@@ -714,36 +716,54 @@ fn a_line_at_the_limit_runs_and_one_over_is_refused(#[fixture(pwsh_wrap)] _group
     assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
 }
 
-/// A read-only `$full` in a profile, which no assignment of the script can overwrite: a program runs and a name that
-/// is none is 127, and neither is an error of the script.
+/// A profile of the guest user runs before the script, and can make any variable the script assigns read-only or a
+/// constant: the script runs in a child scope, where its assignments make locals. A program runs and a name that is
+/// none is 127, and neither is an error of the script.
 #[skuld::test]
-fn a_read_only_full_variable_of_a_profile_stops_nothing(#[fixture(pwsh_wrap)] _group: &Group) {
-    let profile = "Set-Variable full -Option ReadOnly -Value 'x'\n";
+fn a_profile_that_makes_the_scripts_variables_read_only_or_constant_stops_nothing(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
     let exe = test_binary();
-    let output = run_with(
-        "pwsh",
-        &format!("{profile}{}", wrapped(&[&exe, "ok"])),
-        Some("wrap-argv"),
-        Search::Caller,
-    );
-    assert_eq!(echoed(&output), ["ok"], "{}", shown(&output));
-    for (name, expected) in [
-        ("Get-Date", hint("Get-Date")),
-        (r".\none.ps1", r"devvm: .\none.ps1: command not found".to_owned()),
-    ] {
+    for option in ["ReadOnly", "Constant"] {
+        let profile: String = ["app", "w", "f", "c", "program", "psi", "p"]
+            .iter()
+            .map(|name| format!("Set-Variable {name} -Option {option} -Value 'x'\n"))
+            .collect();
         let output = run_with(
             "pwsh",
-            &format!("{profile}{}", wrapped(&[name])),
+            &format!("{profile}{}", wrapped(&[&exe, "ok"])),
             Some("wrap-argv"),
-            Search::Only(None),
+            Search::Caller,
         );
-        assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
-        assert!(stderr(&output).starts_with(&expected), "{name}: {}", shown(&output));
+        assert_eq!(echoed(&output), ["ok"], "{option}: {}", shown(&output));
+        for (name, expected) in [
+            ("Get-Date", hint("Get-Date")),
+            (r".\none.ps1", r"devvm: .\none.ps1: command not found".to_owned()),
+            (
+                "no-such-program-xyz",
+                "devvm: no-such-program-xyz: command not found".to_owned(),
+            ),
+        ] {
+            let output = run_with(
+                "pwsh",
+                &format!("{profile}{}", wrapped(&[name])),
+                Some("wrap-argv"),
+                Search::Only(None),
+            );
+            assert_eq!(output.status.code(), Some(127), "{option} {name}: {}", shown(&output));
+            assert_eq!(
+                stderr(&output).lines().next(),
+                Some(expected.as_str()),
+                "{option} {name}: {}",
+                shown(&output)
+            );
+        }
     }
 }
 
 /// A location that is no directory (`HKCU:`) has no path to resolve a name against: a name with a path that is fully
-/// qualified is found as it is, and one relative to the location is not found. Neither is an error of the script.
+/// qualified is found as it is. One relative to the location is not found, and exits 127 with the reason the lookup
+/// gave. Neither is an error of the script.
 #[skuld::test]
 fn a_location_that_is_no_directory_stops_nothing(
     #[fixture(unicode_home)] home: &Path,
@@ -767,14 +787,25 @@ fn a_location_that_is_no_directory_stops_nothing(
     let output = run_at(&[&script], Search::Only(None));
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
     assert!(stderr(&output).starts_with(&hint(&script)), "{}", shown(&output));
+    // An absolute name that is not there is not found, and nothing failed.
     let missing = home.join("none.ps1").display().to_string();
-    for name in [missing.as_str(), r".\registry.ps1"] {
-        let output = run_at(&[name], Search::Only(None));
-        assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
-        assert!(
-            stderr(&output).starts_with(&format!("devvm: {name}: command not found")),
-            "{name}: {}",
-            shown(&output)
-        );
-    }
+    let output = run_at(&[&missing], Search::Only(None));
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert_eq!(
+        stderr(&output).lines().next(),
+        Some(format!("devvm: {missing}: command not found").as_str()),
+        "{}",
+        shown(&output)
+    );
+    // A relative name has no directory to be relative to: 127, with the reason of the lookup.
+    let output = run_at(&[r".\registry.ps1"], Search::Only(None));
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert_eq!(
+        stderr(&output).lines().next(),
+        Some(
+            r#"devvm: .\registry.ps1: command not found (lookup failed: Exception calling "GetFullPath" with "2" argument(s): "Basepath argument is not fully qualified. (Parameter 'basePath')")"#
+        ),
+        "{}",
+        shown(&output)
+    );
 }

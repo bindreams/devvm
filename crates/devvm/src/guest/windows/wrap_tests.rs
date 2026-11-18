@@ -237,6 +237,22 @@ fn wrap_starts_with_a_session_check_that_exits_126_in_session_0() {
 }
 
 #[skuld::test]
+fn everything_the_command_assigns_is_in_a_child_scope_after_the_session_check() {
+    let text = script(&["tool", "arg"]);
+    let body = format!("$ErrorActionPreference = 'Stop'\n{}& {{\n", session_check());
+    assert!(text.starts_with(&body), "{text}");
+    // The block ends the script, so no assignment of the command is made outside it.
+    assert!(text.ends_with("exit $p.ExitCode\n}\n"), "{text}");
+    assert_eq!(text.matches("& {\n").count(), 1, "{text}");
+    for assigned in ["$program = ", "$app = ", "$psi = ", "$p = ", "$w = "] {
+        assert!(
+            text.find(assigned).unwrap() > body.len(),
+            "{assigned} is outside the block in {text}"
+        );
+    }
+}
+
+#[skuld::test]
 fn wrap_sets_no_output_encoding() {
     for run_as in [RunAs::User, RunAs::Elevated] {
         let mut cmd = command(&["tool", "\u{e9}"]);

@@ -3,7 +3,8 @@
 //! sshd hands the string to ssh-broker (`"<broker>" -c "<script>"`), which starts `pwsh.exe -c <script>` in the user's
 //! session. The script, in this order:
 //!
-//! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High;
+//! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High; the rest is
+//!    one child scope, so a variable of the user's profile that is read-only or a constant stops no assignment of it;
 //! 2. sets the working directory, if the command has one, and finds argv[0] as a **file**: the file itself for a name
 //!    with a path, a file of `PATH` otherwise, as it is or with an extension of `PATHEXT`, never a cmdlet or an alias
 //!    and never read as a wildcard; a name that is not found is 127, and one that PowerShell knows as a cmdlet, function,
@@ -56,18 +57,28 @@ pub(super) fn session_check() -> String {
     )
 }
 
-/// What `$name` is as a full path: the name itself when it is fully qualified, and otherwise relative to the location
-/// the script is in. A location that is no directory (`HKCU:`) has no path to be relative to, and that throws.
-macro_rules! full_path {
-    ($name:literal) => {
+/// A name with a path (a `\` or a `/` in it) is by its file, and one without is by `otherwise`: the PowerShell
+/// `if (<name has a path>) { <head><full path of the name><tail> } else { <otherwise> }`. The full path of the name
+/// is the name itself when it is fully qualified, and otherwise relative to the location the script is in; a location
+/// that is no directory (`HKCU:`) has no path to be relative to, and that throws.
+macro_rules! by_path {
+    ($name:literal, $head:literal, $tail:literal, $otherwise:literal) => {
         concat!(
+            "if (",
+            $name,
+            ".IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { ",
+            $head,
             "if ([IO.Path]::IsPathFullyQualified(",
             $name,
             ")) { [IO.Path]::GetFullPath(",
             $name,
             ") } else { [IO.Path]::GetFullPath(",
             $name,
-            ", (Get-Location).ProviderPath) }"
+            ", (Get-Location).ProviderPath) }",
+            $tail,
+            " } else { ",
+            $otherwise,
+            " }"
         )
     };
 }
@@ -79,9 +90,14 @@ const RESOLVE: &str = concat!(
     "function Find-Program([string]$name) {
     $exts = @($env:PATHEXT -split ';' | Where-Object { $_ })
     $named = $exts -contains [IO.Path]::GetExtension($name)
-    $stems = if ($name.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { try { @(",
-    full_path!("$name"),
-    ") } catch { @() } } else { @($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) }) }
+    $stems = ",
+    by_path!(
+        "$name",
+        "try { @(",
+        ") } catch { @() }",
+        "@($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) })"
+    ),
+    "
     foreach ($stem in $stems) {
         if ($named -and [IO.File]::Exists($stem)) { return $stem }
         foreach ($ext in $exts) { if ([IO.File]::Exists($stem + $ext)) { return $stem + $ext } }
@@ -114,19 +130,26 @@ pub(crate) const POWERSHELL_COMMAND: &str = ": a PowerShell command, not a progr
 /// name is not a program either); a lookup that throws is said and is no answer.
 ///
 /// The lookup is in the script because only the guest knows its commands, and runs only when no program is found. A
-/// name with a path is a script by its file, with `.ps1` added to it as PowerShell adds it to every such name; a bare
-/// name is looked up by `Get-Command`, escaped because it is a name and not a wildcard. The block works from `$program`
-/// alone: no variable of the search is read. `Find-Program` is removed first, so the script's own function is not an
-/// answer; the removal is in the `try`, so a failure of it is said and the lookup is not made. A name that cannot be
-/// made a full path (see `full_path!`) throws there, and that is said too.
+/// name with a path is a script by its file: the file named when it is a `.ps1`, and when it is not there, the file
+/// with `.ps1` added, as PowerShell adds it to every such name (a file that is there and is no script is not one, even
+/// when a file of its name and `.ps1` is there too: PowerShell runs the file named). A bare name is looked up by `Get-Command`, escaped because it is a name and
+/// not a wildcard. The block works from `$program` alone: no variable of the search is read. `Find-Program` is
+/// removed first, so the script's own function is not an answer; the removal is in the `try`, so a failure of it is
+/// said and the lookup is not made. A relative name in a location that is no directory (see `by_path!`) throws in the
+/// `try` too: the status is 127 and the message says why.
 fn not_found() -> String {
     format!(
         r#"if (-not $app) {{
 $w = ': command not found'
-try {{ Remove-Item Function:Find-Program; $c = if ($program.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) {{ $f = {}; ([IO.File]::Exists($f) -and $f -like '*.ps1') -or [IO.File]::Exists($f + '.ps1') }} else {{ Get-Command ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction Ignore }}; if ($c) {{ $w = '{POWERSHELL_COMMAND}' }} }} catch {{ $w += ' (lookup failed: ' + $_.Exception.Message + ')' }}
+try {{ Remove-Item Function:Find-Program; $c = {}; if ($c) {{ $w = '{POWERSHELL_COMMAND}' }} }} catch {{ $w += ' (lookup failed: ' + $_.Exception.Message + ')' }}
 {} }}
 "#,
-        full_path!("$program"),
+        by_path!(
+            "$program",
+            "$f = ",
+            "; if ([IO.File]::Exists($f)) { $f -like '*.ps1' } else { [IO.File]::Exists($f + '.ps1') }",
+            "Get-Command ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction Ignore"
+        ),
         failure("'devvm: ' + $program + $w", 127)
     )
 }
@@ -209,6 +232,12 @@ fn user_script(cmd: &Command) -> Result<String> {
     let args = &cmd.argv[1..];
     let mut script = String::from("$ErrorActionPreference = 'Stop'\n");
     script.push_str(&session_check());
+    // A child scope: a variable the guest user's profile made read-only, constant or typed does not stop an assignment
+    // of the command, which makes a local over it.
+    script.push_str(
+        "& {
+",
+    );
     if let Some(cwd) = &cmd.cwd {
         script.push_str(&format!(
             "$cwd = {}\ntry {{ Set-Location -LiteralPath $cwd }} catch {{ {} }}\n",
@@ -253,6 +282,10 @@ fn user_script(cmd: &Command) -> Result<String> {
     ));
     script.push_str(CARRY);
     script.push_str(EXIT);
+    script.push_str(
+        "}
+",
+    );
     Ok(script)
 }
 
