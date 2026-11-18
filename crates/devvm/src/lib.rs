@@ -36,7 +36,6 @@ pub use error::{Error, ErrorKind, Result};
 pub use exit::{ExitStatus, Output};
 pub use host::{Unavailable, host_exit_width};
 pub use instance::info::{InstanceInfo, InstanceState};
-pub use instance::record::HOSTNAME_LEN;
 pub use types::{Arch, BuildOptions, Command, GuestKind, Network, RunAs, Sha256, StartOptions};
 pub use vm::{Guest, Image, Instance, Vm, availability};
 
