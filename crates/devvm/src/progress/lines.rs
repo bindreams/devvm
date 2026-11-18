@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 
-use crate::progress::{Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint, strip_ansi};
+use crate::progress::{
+    Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint, strip_ansi,
+};
 
 #[cfg(test)]
 #[path = "lines_tests.rs"]
@@ -17,6 +19,32 @@ pub struct Look {
     pub colour: bool,
     /// Also writes [`Level::Debug`] notes and step output.
     pub verbose: bool,
+}
+
+/// The variable that asks for step output and debug notes.
+pub const VERBOSE_VAR: &str = "DEVVM_VERBOSE";
+
+/// Whether [`VERBOSE_VAR`] asks for them: set, and not empty, `0`, `false`, `no` or `off` in any case. The one reader
+/// of the variable; the command line takes it from here too.
+pub fn verbose_from_env() -> bool {
+    verbose_in(&|name| std::env::var_os(name))
+}
+
+fn verbose_in(lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    lookup(VERBOSE_VAR).is_some_and(|value| {
+        let value = value.to_string_lossy().to_lowercase();
+        !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
+    })
+}
+
+impl Look {
+    /// No colour, and verbose when [`verbose_from_env`] says so: how a library user's progress looks.
+    pub fn from_env() -> Look {
+        Look {
+            colour: false,
+            verbose: verbose_from_env(),
+        }
+    }
 }
 
 /// Writes one concise line per event worth a person's attention.

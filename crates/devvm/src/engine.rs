@@ -143,9 +143,9 @@ impl Engine {
         Ok((engine, install))
     }
 
-    /// `from_env` reporting progress on stderr.
+    /// `from_env` reporting progress on stderr, with step output and debug notes when `DEVVM_VERBOSE` asks for them.
     pub fn from_env_stderr(transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
-        Engine::from_env(Arc::new(LineProgress::stderr(Look::default())), transport)
+        Engine::from_env(Arc::new(LineProgress::stderr(Look::from_env())), transport)
     }
 
     pub(crate) fn with_parts(parts: EngineParts) -> Arc<Engine> {

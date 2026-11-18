@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use crate::progress::lines::{LineProgress, Look};
+use crate::progress::lines::{LineProgress, Look, verbose_in};
 use crate::progress::{Progress, Task, Total};
 use crate::test_support::fixtures::MemoryProgress;
 
@@ -259,4 +259,29 @@ fn colour_escapes_in_step_output_are_dropped() {
     let (progress, out) = sink(VERBOSE);
     progress.output("\u{1b}[32mgreen\u{1b}[0m text\u{1b}[2K");
     assert_eq!(out.lines(), ["green text"]);
+}
+
+#[skuld::test]
+fn devvm_verbose_says_whether_the_environment_asks_for_step_output() {
+    let says = |value: Option<&str>| {
+        let value = value.map(std::ffi::OsString::from);
+        verbose_in(&|name| {
+            assert_eq!(name, "DEVVM_VERBOSE");
+            value.clone()
+        })
+    };
+    for (value, expected) in [
+        (None, false),
+        (Some(""), false),
+        (Some("0"), false),
+        (Some("false"), false),
+        (Some("No"), false),
+        (Some("OFF"), false),
+        (Some("1"), true),
+        (Some("true"), true),
+        (Some("yes"), true),
+        (Some("anything"), true),
+    ] {
+        assert_eq!(says(value), expected, "{value:?}");
+    }
 }
