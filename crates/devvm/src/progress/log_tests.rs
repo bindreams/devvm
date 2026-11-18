@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use crate::error::{Error, ErrorKind};
 use crate::exit::format_error_line;
 use crate::host::Host;
-use crate::progress::log::FileLog;
+use crate::progress::log::{FileLog, lock_path};
 use crate::progress::{Event, Progress, Task, Total};
 use crate::store::layers::Clock;
 use crate::test_support::file_mode;
@@ -230,7 +230,7 @@ impl Clock for HookClock {
     }
 }
 
-/// A panic inside the log's lock reaches the panic hook on the same thread, which records the error: waiting for the
+/// A panic inside the log's lock reaches the panic hook on the same thread, whose record is skipped: waiting for the
 /// lock would wait for itself.
 #[skuld::test]
 fn a_record_attempted_on_the_thread_that_holds_the_log_is_skipped(#[fixture(unicode_home)] home: &Path) {
@@ -243,4 +243,64 @@ fn a_record_attempted_on_the_thread_that_holds_the_log_is_skipped(#[fixture(unic
     log.failed("later");
 
     assert_eq!(records(&log), [format!("{AT} WARN outer"), format!("{AT} ERROR later")]);
+}
+
+/// A file that cannot be written: the disk is full.
+struct FullDisk;
+
+impl std::io::Write for FullDisk {
+    fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("the disk is full"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[skuld::test]
+fn a_log_that_could_not_be_written_says_so_with_the_first_error(#[fixture(unicode_home)] home: &Path) {
+    let log = open(&home.join("logs"));
+    assert_eq!(log.describe(), log.path().display().to_string());
+
+    log.state.lock().unwrap().out = Box::new(FullDisk);
+    log.warn("first");
+    log.state.lock().unwrap().out = Box::new(std::io::sink());
+    log.warn("second");
+
+    assert_eq!(
+        log.describe(),
+        format!("{} (incomplete: the disk is full)", log.path().display())
+    );
+}
+
+#[skuld::test]
+fn the_log_of_a_run_that_is_alive_is_kept_however_old_and_removed_once_it_is_gone(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("logs");
+    let live = open(&dir);
+    let (path, lock) = (live.path().to_owned(), lock_path(live.path()));
+    age(&path, 15);
+
+    let _next = open(&dir);
+    assert!(path.exists() && lock.exists(), "a live run's log is not pruned");
+
+    drop(live);
+    let _after = open(&dir);
+    assert!(!path.exists(), "the log of a run that has ended is pruned");
+    assert!(!lock.exists(), "and so is its lock");
+}
+
+#[skuld::test]
+fn a_lock_whose_log_is_gone_is_removed_unless_a_run_holds_it(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let orphan = lock_path(&dir.join("devvm-20261101T000000Z-1-aaaa.log"));
+    let held = lock_path(&dir.join("devvm-20261101T000000Z-1-bbbb.log"));
+    drop(TestHost.hold_new(&orphan).unwrap());
+    let _alive = TestHost.hold_new(&held).unwrap();
+
+    let _log = open(&dir);
+
+    assert!(!orphan.exists());
+    assert!(held.exists(), "a creating run holds its lock before its log is there");
 }

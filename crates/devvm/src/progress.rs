@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod lines;
 mod log;
+mod owned;
 pub use lines::{LineProgress, Look, VERBOSE_VAR, verbose_from_env};
 pub use log::FileLog;
 
