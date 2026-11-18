@@ -609,7 +609,6 @@ fn nothing_the_base_records_carries_the_computers_name_at_the_build() {
         "-UserId $userSid",
     );
     assert!(!bootstrap.contains("-UserId 'user'"));
-    // Nothing in the base reads or writes the computer's name, so nothing keeps the name it has at the build.
     let code = bootstrap.to_lowercase();
     for name in [
         "computername",
@@ -851,47 +850,33 @@ fn the_boot_task_starts_sshd_last_after_the_agent() {
     assert!(after.trim_end().ends_with('}') && !after.contains("Resize") && !after.contains("Send-Line \"DEVVM-SEED"));
 }
 
+// What the boot task's functions decide is run in `templates_pwsh_tests.rs`; these pin where the boot calls them.
+
 #[skuld::test]
 fn the_boot_task_names_the_computer_from_the_seed_and_restarts_before_anything_else_of_the_boot() {
     let task = rendered("boot-task.ps1");
-    // The name is the seed's `local-hostname`, as the Linux seed's; a boot that has another name renames and restarts,
-    // and ends there: the seed, the boot id and sshd are the next boot's.
-    assert!(task.contains("'meta.json'") && task.contains("'local-hostname'"));
-    assert_before(&task, "Find-VolumeRoot 'CIDATA'", "'local-hostname'");
-    assert_before(&task, "'local-hostname'", "Rename-Computer");
+    let call = "if (Set-ComputerNameFromSeed $disk $renamedFile) { exit 0 }";
+    assert_before(&task, "Find-VolumeRoot 'CIDATA'", call);
+    assert_before(&task, call, "DEVVM-SEED-WRITTEN");
+    assert_before(&task, call, "Start-Service");
+    // Inside the try: a failure of the rename is sent as DEVVM-BOOT-FAILED.
     assert_before(
         &task,
-        "Rename-Computer",
-        "Restart-Now
-",
+        "try {
+    # Requests the last boot",
+        call,
     );
-    let ends = section(
-        &task,
-        "        Restart-Now
-",
-        "
-    }",
+    assert_before(&task, call, "} catch {");
+    assert_before(&task, "} catch {", "DEVVM-BOOT-FAILED=");
+    assert_eq!(task.matches("Rename-Computer -NewName").count(), 1);
+    assert!(
+        task.contains(&format!("$renamedFile = Join-Path '{DEVVM_DIR}' 'renamed-to'")),
+        "{task}"
     );
-    assert!(ends.contains("exit 0"), "the boot that restarts ends there: {ends}");
-    assert_before(
-        &task,
-        "        Restart-Now
-",
-        "DEVVM-SEED-WRITTEN",
-    );
-    assert_before(
-        &task,
-        "        Restart-Now
-",
-        "Start-Service",
-    );
-    assert_eq!(task.matches("Rename-Computer").count(), 1);
-    // A name already right is not renamed again: only a boot that finds another name restarts.
-    assert!(task.contains("$env:COMPUTERNAME -ne $hostname"));
 }
 
 #[skuld::test]
-fn the_boot_task_restarts_again_while_the_system_refuses_as_not_ready_and_fails_on_any_other_refusal() {
+fn the_boot_task_restarts_with_no_cap_and_in_one_place() {
     let task = rendered("boot-task.ps1");
     let restart = section(
         &task,
@@ -900,117 +885,30 @@ fn the_boot_task_restarts_again_while_the_system_refuses_as_not_ready_and_fails_
 }
 ",
     );
-    // The request is made until it is accepted: a loop that re-checks the answer, with no count and no clock.
     assert!(
         restart.contains("while ($true)") && restart.contains("shutdown.exe /r /f /t 0"),
         "{restart}"
     );
-    // Accepted, or a shutdown already under way (ERROR_SHUTDOWN_IN_PROGRESS, 1115: a restart or a power-off): the rename
-    // applies at the next boot either way.
-    assert_before(restart, "$status = $LASTEXITCODE", "-in 0, 1115) { return }");
-    // Refused for now: ERROR_NOT_READY (21), RPC_S_SERVER_UNAVAILABLE (1722), ERROR_SHUTDOWN_IS_SCHEDULED (1190).
-    assert_before(restart, "-in 0, 1115) { return }", "-notin 21, 1722, 1190) { throw");
-    assert_before(restart, "-notin 21, 1722, 1190) { throw", "Start-Sleep");
-    // A refusal is visible in the log: one line for each distinct status of this call, never one per attempt, so
-    // alternating statuses do not flood it. The set is made before the loop.
-    assert_before(restart, "$seen = @()", "while ($true)");
-    assert_before(restart, "-notin 21, 1722, 1190) { throw", "if ($status -notin $seen)");
-    assert_before(
-        restart,
-        "if ($status -notin $seen)",
-        "Send-Line \"DEVVM-RESTART-REFUSED=$status\"",
-    );
-    assert_before(
-        restart,
-        "Send-Line \"DEVVM-RESTART-REFUSED=$status\"",
-        "$seen += $status",
-    );
-    assert_before(restart, "$seen += $status", "Start-Sleep");
-    assert!(!restart.contains("$previous"), "{restart}");
-    // A scheduled shutdown (1190) refuses until its schedule fires: it is aborted, and this boot restarts anyway.
-    assert_before(
-        restart,
-        "-notin 21, 1722, 1190) { throw",
-        "if ($status -eq 1190) { shutdown.exe /a }",
-    );
-    assert_before(restart, "if ($status -eq 1190) { shutdown.exe /a }", "Start-Sleep");
-    assert!(restart.contains("status $status"), "the refusal is named: {restart}");
     for bound in ["$tries", "$attempt", "-lt ", "-gt ", "Stopwatch", "Get-Date", "timeout"] {
         assert!(!restart.contains(bound), "the retry has no cap ({bound}): {restart}");
     }
-    // The restart of the rename is this one; there is no other way out of it.
     assert_eq!(task.matches("shutdown.exe /r /f /t 0").count(), 1);
     assert!(!task.contains("Restart-Computer"));
 }
 
 #[skuld::test]
-fn the_boot_task_flushes_the_pending_computer_name_before_it_records_the_rename() {
+fn the_boot_task_opens_the_computer_name_key_read_only_to_flush_it() {
     let task = rendered("boot-task.ps1");
-    let rename = section(
+    let save = section(
         &task,
-        "if ($env:COMPUTERNAME -ne $hostname) {",
+        "function Save-ComputerName",
         "
-    }
+}
 ",
     );
-    // The marker says a restart is owed for the name; a kill between the two must not leave the marker without the name.
-    assert_before(rename, "Rename-Computer", r"Control\ComputerName\ComputerName'");
-    assert_before(rename, r"Control\ComputerName\ComputerName'", ".Flush()");
-    assert_before(rename, ".Flush()", "Write-Whole $renamedFile");
-    // The key is opened read-only: a flush needs no write access.
-    assert!(rename.contains(r"Control\ComputerName\ComputerName')"), "{rename}");
-    assert!(!rename.contains(r"ComputerName', $true)"), "{rename}");
-}
-
-#[skuld::test]
-fn the_boot_task_fails_naming_a_seed_without_a_local_hostname() {
-    let task = rendered("boot-task.ps1");
-    // Inside the try: the catch sends DEVVM-BOOT-FAILED. Before the name is compared and before it reaches
-    // Rename-Computer, whose binding error would name nothing.
-    assert_before(
-        &task,
-        "'local-hostname'",
-        "throw \"the seed's meta.json has no local-hostname\"",
-    );
-    assert_before(&task, "has no local-hostname", "$env:COMPUTERNAME -ne $hostname");
-    assert_before(
-        &task,
-        "try {
-    # Requests the last boot",
-        "has no local-hostname",
-    );
-    assert_before(&task, "has no local-hostname", "} catch {");
-    assert_before(&task, "} catch {", "DEVVM-BOOT-FAILED=");
-}
-
-#[skuld::test]
-fn the_boot_task_records_the_name_it_restarts_for_and_fails_instead_of_restarting_for_it_twice() {
-    let task = rendered("boot-task.ps1");
-    let rename = section(
-        &task,
-        "if ($env:COMPUTERNAME -ne $hostname) {",
-        "
-    }
-",
-    );
-    // A boot that still has another name, after a restart for this one, fails naming the rename.
-    assert_before(
-        rename,
-        "Test-Path -LiteralPath $renamedFile",
-        "throw \"the computer is still named",
-    );
-    assert_before(rename, "throw \"the computer is still named", "Rename-Computer");
-    assert!(
-        rename.contains("-eq $hostname)") && rename.contains("$hostname and a restart"),
-        "{rename}"
-    );
-    // The name is on the disk before the restart, and in a file the boot task's own cleanup does not remove.
-    assert_before(rename, "Rename-Computer", "Write-Whole $renamedFile");
-    assert_before(rename, "Write-Whole $renamedFile", "Restart-Now");
-    assert!(
-        task.contains(&format!("$renamedFile = Join-Path '{DEVVM_DIR}' 'renamed-to'")),
-        "{task}"
-    );
+    assert!(save.contains(r"Control\ComputerName\ComputerName')"), "{save}");
+    assert!(!save.contains(r"ComputerName', $true)"), "{save}");
+    assert!(save.contains(".Flush()"), "{save}");
 }
 
 #[skuld::test]
