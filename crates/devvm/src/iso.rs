@@ -114,14 +114,20 @@ pub(crate) struct InstallIso {
 pub(crate) struct IsoRoot {
     /// The SHA-256 of the ISO's content.
     pub sha256: Sha256,
-    /// The image the recipe's `edition` selects: what the build installs, so what the key says.
-    pub image: WimImage,
-    /// The key Setup installs `image` with; only [`key_iso`] sets it.
+    /// The image the recipe's `edition` selects: what the build installs, so what the key says. Read it with
+    /// [`IsoRoot::image`]; only [`key_iso`] sets it, together with `product_key`.
+    image: WimImage,
+    /// The key Setup installs `image` with.
     product_key: Option<ProductKey>,
     iso: HeldIso,
 }
 
 impl IsoRoot {
+    /// The image the key was resolved for.
+    pub(crate) fn image(&self) -> &WimImage {
+        &self.image
+    }
+
     /// The key Setup installs `image` with, as [`resolve_product_key`] resolved it when the ISO was keyed: `None` only
     /// for an evaluation edition.
     pub(crate) fn product_key(&self) -> Option<&ProductKey> {
@@ -279,7 +285,7 @@ fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Re
                 ("", ..) => "no edition id".to_owned(),
                 (id, None, _) => format!("edition id `{id}`, no build"),
                 (id, Some(_), Some(build)) => format!("edition id `{id}`, build {build}"),
-                (id, Some(text), None) => format!("edition id `{id}`, BUILD `{text}` is not a number"),
+                (id, Some(text), None) => format!("edition id `{id}`, BUILD {text:?} is not a build number devvm can read"),
             };
             Error::new(
                 ErrorKind::Recipe,

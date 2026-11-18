@@ -156,7 +156,21 @@ fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_
                 build: Some("26x".to_owned()),
                 ..edition_of("EnterpriseS", "Malformed build")
             },
-            "edition id `EnterpriseS`, BUILD `26x` is not a number",
+            r#"edition id `EnterpriseS`, BUILD "26x" is not a build number devvm can read"#,
+        ),
+        (
+            WimImage {
+                build: Some("4294967296".to_owned()),
+                ..edition_of("EnterpriseS", "Huge build")
+            },
+            r#"edition id `EnterpriseS`, BUILD "4294967296" is not a build number devvm can read"#,
+        ),
+        (
+            WimImage {
+                build: Some("26\"</BUILD>\n".to_owned()),
+                ..edition_of("EnterpriseS", "Raw XML build")
+            },
+            r#"edition id `EnterpriseS`, BUILD "26\"</BUILD>\n" is not a build number devvm can read"#,
         ),
         (edition_of("", "No id"), "no edition id"),
     ] {
@@ -285,7 +299,7 @@ fn an_iso_is_keyed_by_its_hash_and_the_image_an_edition_selects(#[fixture(unicod
         "the hash is of the whole file, whatever was read before it"
     );
     assert_eq!(
-        (root.image.index, root.image.name.as_str()),
+        (root.image().index, root.image().name.as_str()),
         (2, "Windows 11 IoT Enterprise LTSC 2024")
     );
     let error = key(home, &iso, None).unwrap_err();

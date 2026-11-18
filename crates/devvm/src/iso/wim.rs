@@ -85,7 +85,7 @@ pub(crate) struct WimImage {
 }
 
 impl WimImage {
-    /// The image's build as a number; `None` when it has none or its text is not a number.
+    /// The image's build as a number; `None` when it has none or its text is not a number that fits `u32`.
     pub(crate) fn build_number(&self) -> Option<u32> {
         self.build.as_deref().and_then(|text| text.parse().ok())
     }
