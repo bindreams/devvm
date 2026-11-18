@@ -103,10 +103,12 @@ fn compose(screen: Arc<dyn Progress>, dirs: std::result::Result<&Dirs, &Error>) 
             None
         }
     };
-    let mut all = vec![screen];
+    // The log first: a screen that cannot be written holds back no record.
+    let mut all: Vec<Arc<dyn Progress>> = Vec::new();
     if let Some(log) = &log {
         all.push(log.clone());
     }
+    all.push(screen);
     Sinks {
         progress: Arc::new(Fanout::new(all)),
         log,
@@ -229,7 +231,6 @@ impl Run {
         let held = std::io::stderr().lock();
         let log = active.and_then(|active| active.log);
         let code = end_with(log.as_deref(), colour, status_file, outcome, width, stderr);
-        // Dropped here, after the state's lock: a sink's drop may wait on a thread.
         let finished = self.active().take();
         drop(finished);
         Ended { code, _held: held }

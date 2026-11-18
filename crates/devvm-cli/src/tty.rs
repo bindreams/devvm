@@ -119,31 +119,31 @@ impl Shared {
 
     /// Turns each spinner once.
     fn tick(&self) {
-        let Some(screen) = self.lock() else { return };
-        if screen.spinners == 0 {
-            return;
-        }
-        let _stderr = stderr();
-        for slot in screen.tasks.values() {
-            if matches!(slot.total, Total::Unknown) {
-                slot.bar.tick();
-            }
+        if let Some(screen) = self.lock() {
+            screen.tick();
         }
     }
 }
 
 impl Drop for Shared {
     fn drop(&mut self) {
-        // The bars of a screen that a panic poisoned would panic when dropped.
-        if self.screen.is_poisoned()
-            && let Some(screen) = self.screen.get_mut().unwrap_or_else(PoisonError::into_inner).take()
-        {
+        let poisoned = self.screen.is_poisoned();
+        let Some(screen) = self.screen.get_mut().unwrap_or_else(PoisonError::into_inner).take() else {
+            return;
+        };
+        if poisoned {
+            // The bars of a screen that a panic poisoned would panic when dropped.
             std::mem::forget(screen);
+        } else {
+            // Dropping the bars draws.
+            let _stderr = stderr();
+            drop(screen);
         }
     }
 }
 
-/// Stderr's lock, which every call into indicatif holds, taken after the screen's and only where something is drawn.
+/// Stderr's lock, which every call into indicatif holds: taken by the [`Screen`] methods that make one, after the
+/// screen's, and only where something is drawn.
 fn stderr() -> StderrLock<'static> {
     std::io::stderr().lock()
 }
@@ -218,11 +218,11 @@ impl Ticker {
         })
     }
 
-    /// Stops the thread and waits for it, once.
+    /// Stops the thread and waits for it: a caller that comes while another is waiting waits too.
     fn stop(&self) {
         self.pace.stop();
-        let thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(thread) = thread {
+        let mut slot = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(thread) = slot.take() {
             // A thread that panicked has said so through the panic hook.
             let _ = thread.join();
         }
@@ -283,11 +283,8 @@ impl TtyProgress {
         let Ok(mut screen) = self.shared.screen.lock() else {
             return;
         };
-        let _stderr = stderr();
         if let Some(screen) = screen.as_mut() {
-            screen.stopped = true;
-            let _ = screen.multi.clear();
-            screen.multi.set_draw_target(ProgressDrawTarget::hidden());
+            screen.stop();
         }
     }
 }
@@ -348,12 +345,35 @@ fn style(total: Total, wide: bool) -> ProgressStyle {
 }
 
 impl Screen {
+    /// Turns each spinner once.
+    fn tick(&self) {
+        if self.spinners == 0 {
+            return;
+        }
+        let _stderr = stderr();
+        for slot in self.tasks.values() {
+            if matches!(slot.total, Total::Unknown) {
+                slot.bar.tick();
+            }
+        }
+    }
+
+    /// Takes the bars off and draws nothing more.
+    fn stop(&mut self) {
+        let _stderr = stderr();
+        self.stopped = true;
+        let _ = self.multi.clear();
+        self.multi.set_draw_target(ProgressDrawTarget::hidden());
+    }
+
     fn print(&self, line: &str) {
+        let _stderr = stderr();
         // A terminal that cannot be written has nobody to tell.
         let _ = self.multi.println(line);
     }
 
     fn begin(&mut self, id: TaskId, parent: Option<TaskId>, label: &str, total: Total) {
+        let _stderr = stderr();
         let label = escape_controls(label).into_owned();
         // A parent that is not open (never seen, or ended) makes a root.
         let parent = parent.filter(|parent| self.tasks.contains_key(parent));
@@ -410,6 +430,7 @@ impl Screen {
         };
         self.order.remove(at);
         let Some(slot) = self.tasks.remove(&id) else { return };
+        let _stderr = stderr();
         if matches!(slot.total, Total::Unknown) {
             self.spinners -= 1;
             self.pace.set_spinners(self.spinners);
@@ -422,6 +443,7 @@ impl Screen {
 
     /// Sets each line's tree prefix from the order and the ancestry, and refreshes it. The line at `first` goes first.
     fn relabel(&mut self, columns: u16, first: Option<usize>) {
+        let _stderr = stderr();
         let prefixes = self.prefixes();
         let rest = (0..prefixes.len()).filter(|index| Some(*index) != first);
         for index in first.into_iter().chain(rest) {
@@ -461,11 +483,30 @@ impl Screen {
         prefixes
     }
 
+    fn status(&mut self, id: TaskId, text: &str) {
+        let Some(slot) = self.tasks.get_mut(&id) else { return };
+        slot.status = Some(escape_controls(text).into_owned());
+        slot.stale = true;
+        let columns = (self.columns)();
+        self.refresh(id, columns);
+    }
+
+    fn advance(&mut self, id: TaskId, position: u64) {
+        let Some(slot) = self.tasks.get_mut(&id) else { return };
+        slot.position = position;
+        let columns = (self.columns)();
+        let _stderr = stderr();
+        // The text that fits the new position goes first, so that no line is drawn wider than the terminal.
+        self.refresh(id, columns);
+        self.tasks[&id].bar.set_position(position);
+    }
+
     /// Gives the bar of `id` the style and the text that fit a terminal `columns` wide, where something changed. The
     /// label is cut so that the line is shorter than the terminal: a line that fills it wraps on some terminals, and a
     /// redraw clears one row of the two.
     fn refresh(&mut self, id: TaskId, columns: u16) {
         let Some(slot) = self.tasks.get_mut(&id) else { return };
+        let _stderr = stderr();
         let wide = columns >= BAR_COLUMNS;
         let used = 2 + slot.prefix_width + suffix_width(slot.total, wide, slot.position) + 1;
         let budget = usize::from(columns).saturating_sub(used).max(1);
@@ -490,7 +531,6 @@ impl Screen {
 }
 
 impl Progress for TtyProgress {
-    /// Stderr's lock is taken after the early returns, around the calls into indicatif.
     fn event(&self, event: &Event) {
         let Some(mut screen) = self.shared.lock() else { return };
         let screen = &mut *screen;
@@ -501,18 +541,13 @@ impl Progress for TtyProgress {
                     Level::Debug if !screen.look.verbose => {}
                     Level::Warn => {
                         let word = paint(screen.look.colour, Colour::Yellow, "warning:");
-                        let _stderr = stderr();
                         screen.print(&format!("{word} {text}"));
                     }
-                    Level::Debug | Level::Info => {
-                        let _stderr = stderr();
-                        screen.print(&text);
-                    }
+                    Level::Debug | Level::Info => screen.print(&text),
                 }
             }
             Event::Output { line } => {
                 if screen.look.verbose {
-                    let _stderr = stderr();
                     screen.print(&escape_controls(line));
                 }
             }
@@ -521,37 +556,11 @@ impl Progress for TtyProgress {
                 parent,
                 label,
                 total,
-            } => {
-                let _stderr = stderr();
-                screen.begin(*id, *parent, label, *total);
-            }
-            Event::Status { id, text } => {
-                let columns = (screen.columns)();
-                if let Some(slot) = screen.tasks.get_mut(id) {
-                    slot.status = Some(escape_controls(text).into_owned());
-                    slot.stale = true;
-                    let _stderr = stderr();
-                    screen.refresh(*id, columns);
-                }
-            }
-            Event::Advance { id, position } => {
-                let columns = (screen.columns)();
-                if let Some(slot) = screen.tasks.get_mut(id) {
-                    slot.position = *position;
-                    let _stderr = stderr();
-                    // The text that fits the new position goes first, so that no line is drawn wider than the
-                    // terminal.
-                    screen.refresh(*id, columns);
-                    screen.tasks[id].bar.set_position(*position);
-                }
-            }
+            } => screen.begin(*id, *parent, label, *total),
+            Event::Status { id, text } => screen.status(*id, text),
+            Event::Advance { id, position } => screen.advance(*id, *position),
             // Finished or not, the task leaves no line: an error is reported below the bars.
-            Event::End { id, .. } => {
-                if screen.tasks.contains_key(id) {
-                    let _stderr = stderr();
-                    screen.end(*id);
-                }
-            }
+            Event::End { id, .. } => screen.end(*id),
         }
     }
 }

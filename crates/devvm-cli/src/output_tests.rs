@@ -1,9 +1,9 @@
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use devvm::exit::{ExitStatus, ExitWidth};
-use devvm::progress::{FileLog, LineProgress, Look, Progress};
+use devvm::progress::{Event, FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Error, ErrorKind};
 
@@ -120,6 +120,49 @@ fn a_writable_log_dir_gives_a_log_that_gets_what_the_screen_gets() {
     let log = sinks.log.expect("a log");
     assert_eq!(log.path().parent(), Some(dirs.logs().as_path()));
     assert!(std::fs::read_to_string(log.path()).unwrap().ends_with(" INFO hello\n"));
+}
+
+/// A screen that holds every report until told to go on, as a paused terminal does.
+struct Paused {
+    entered: Mutex<mpsc::Sender<()>>,
+    go: Mutex<mpsc::Receiver<()>>,
+}
+
+impl Progress for Paused {
+    fn event(&self, _event: &Event) {
+        self.entered.lock().unwrap().send(()).unwrap();
+        self.go.lock().unwrap().recv().unwrap();
+    }
+}
+
+/// The log gets a report before the screen does, so that a screen that cannot be written holds back no record.
+#[skuld::test]
+fn a_screen_that_blocks_holds_back_no_log_record() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let dirs = dirs_under(tmp.path());
+    let (entered, in_screen) = mpsc::channel();
+    let (go, wait) = mpsc::channel();
+    let paused = Arc::new(Paused {
+        entered: Mutex::new(entered),
+        go: Mutex::new(wait),
+    });
+
+    let sinks = compose(paused, Ok(&dirs));
+    let log = sinks.log.clone().expect("a log");
+    std::thread::scope(|scope| {
+        scope.spawn(|| sinks.progress.message("hello"));
+        in_screen.recv().unwrap();
+        // The report is in the screen, which is stuck: the log has it.
+        let logged = std::fs::read_to_string(log.path()).unwrap();
+        go.send(()).unwrap();
+        assert!(
+            logged.ends_with(
+                " INFO hello
+"
+            ),
+            "{logged:?}"
+        );
+    });
 }
 
 fn log_in(dir: &Path) -> FileLog {

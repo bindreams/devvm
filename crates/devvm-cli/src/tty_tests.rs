@@ -510,6 +510,31 @@ fn the_width_is_read_once_for_a_report() {
     assert_eq!(reads.load(Ordering::SeqCst) - before, 1);
 }
 
+/// A report of a task the screen does not have draws nothing and asks the terminal nothing.
+#[skuld::test]
+fn a_report_of_an_unknown_task_does_not_read_the_width() {
+    let term = InMemoryTerm::new(4, 80);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = reads.clone();
+    let tty = TtyProgress::new(
+        ProgressDrawTarget::term_like(Box::new(term.clone())),
+        PLAIN,
+        None,
+        move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            80
+        },
+    );
+    let unknown = id();
+    advance(&tty, unknown, MIB);
+    tty.event(&Event::Status {
+        id: unknown,
+        text: "now".to_owned(),
+    });
+    end(&tty, unknown, Outcome::Finished);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+}
+
 // Ending ==============================================================================================================
 
 /// An `io::Write` onto the terminal, as stderr is: each complete line is written to it.
@@ -633,17 +658,20 @@ fn the_ending_waits_for_a_draw_in_flight_and_what_is_drawn_after_it_draws_nothin
 }
 
 /// Every call into indicatif holds stderr's lock, the one an ending holds while it writes: a cursor move on a Windows
-/// console is a call that takes no lock of its own, and this keeps it from landing in the middle of the ending.
-#[skuld::test]
-fn a_report_draws_only_when_stderrs_lock_is_free() {
-    let (tty, _term, probe) = probed(4, 80);
+/// console is a call that takes no lock of its own, and this keeps it from landing in the middle of the ending. `op`
+/// runs on another thread while the test holds that lock, and draws once it is let go.
+fn draws_only_after_stderrs_lock_is_free(op: impl Fn(&TtyProgress, TaskId, TaskId) + Sync) {
+    let (tty, _term, probe) = probed(6, 80);
+    let [spinner, bar] = [(); 2].map(|()| id());
+    begin(&tty, spinner, None, "waiting", Total::Unknown);
+    begin(&tty, bar, None, "copying", Total::Bytes(GIB));
     let order = Arc::new(Mutex::new(Vec::new()));
     let drawn = order.clone();
     probe.hold_next_draw(move || drawn.lock().unwrap().push("drew"));
     let ending = std::io::stderr().lock();
 
     std::thread::scope(|scope| {
-        scope.spawn(|| begin(&tty, id(), None, "working", Total::Unknown));
+        scope.spawn(|| op(&tty, spinner, bar));
         // The report holds the screen's lock; it draws after the ending's.
         while tty.shared.screen.try_lock().is_ok() {
             std::thread::yield_now();
@@ -655,8 +683,44 @@ fn a_report_draws_only_when_stderrs_lock_is_free() {
     assert_eq!(*order.lock().unwrap(), ["released", "drew"]);
 }
 
+#[skuld::test]
+fn a_begin_draws_only_after_stderrs_lock_is_free() {
+    draws_only_after_stderrs_lock_is_free(|tty, _, _| begin(tty, id(), None, "working", Total::Unknown));
+}
+
+#[skuld::test]
+fn a_status_draws_only_after_stderrs_lock_is_free() {
+    draws_only_after_stderrs_lock_is_free(|tty, spinner, _| {
+        tty.event(&Event::Status {
+            id: spinner,
+            text: "now".to_owned(),
+        });
+    });
+}
+
+#[skuld::test]
+fn an_advance_draws_only_after_stderrs_lock_is_free() {
+    draws_only_after_stderrs_lock_is_free(|tty, _, bar| advance(tty, bar, MIB));
+}
+
+#[skuld::test]
+fn an_end_draws_only_after_stderrs_lock_is_free() {
+    draws_only_after_stderrs_lock_is_free(|tty, spinner, _| end(tty, spinner, Outcome::Finished));
+}
+
+#[skuld::test]
+fn a_note_draws_only_after_stderrs_lock_is_free() {
+    draws_only_after_stderrs_lock_is_free(|tty, _, _| tty.warn("a note"));
+}
+
+#[skuld::test]
+fn a_tick_draws_only_after_stderrs_lock_is_free() {
+    draws_only_after_stderrs_lock_is_free(|tty, _, _| tty.shared.tick());
+}
+
 /// A report that draws nothing does not wait for stderr's lock: with an ending or a hook writing under it, a paused
-/// terminal or a full pipe must not stop the reports, and the log records behind them.
+/// terminal or a full pipe must not stop it. A report that draws waits, which a screen cannot avoid; the log is
+/// composed before the screen, so its record is made first.
 #[skuld::test]
 fn a_report_that_draws_nothing_does_not_wait_for_stderrs_lock() {
     let (tty, _term) = screen(4, 60, PLAIN);
@@ -790,4 +854,54 @@ fn stopping_the_screen_joins_the_spinners_thread() {
     tty.stop();
     // The thread holds a handle to the screen's state until it ends.
     assert_eq!(Arc::strong_count(&tty.shared), 1);
+}
+
+/// Every caller of `Ticker::stop` returns after the thread has ended, also one that comes while another is waiting for
+/// it: the ending joins the spinners before it takes stderr's lock, and must not go on while one is still turning.
+#[skuld::test]
+fn every_stop_of_the_ticker_waits_for_the_spinners_thread() {
+    let term = InMemoryTerm::new(4, 60);
+    let probe = Probe::new(&term);
+    let tty = TtyProgress::new(
+        ProgressDrawTarget::term_like(Box::new(probe.clone())),
+        PLAIN,
+        Some(Duration::from_millis(1)),
+        || 60,
+    );
+    let ticker = tty.ticker.as_ref().expect("a ticker");
+    begin(&tty, id(), None, "waiting", Total::Unknown);
+    let (in_draw, seen) = mpsc::channel();
+    let (release, held) = mpsc::channel::<()>();
+    probe.hold_next_draw(move || {
+        in_draw.send(()).unwrap();
+        held.recv().unwrap();
+    });
+    // The spinners' thread is in a draw it does not leave until released.
+    seen.recv().unwrap();
+
+    let (started, begun) = mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| ticker.stop());
+        // The first stop has the thread's handle, and waits for the thread.
+        loop {
+            match ticker.thread.try_lock() {
+                Err(std::sync::TryLockError::WouldBlock) => break,
+                Ok(slot) if slot.is_none() => break,
+                _ => std::thread::yield_now(),
+            }
+        }
+        let second = scope.spawn(|| {
+            started.send(()).unwrap();
+            ticker.stop();
+            // The thread holds a handle to the screen's state until it ends.
+            Arc::strong_count(&tty.shared)
+        });
+        begun.recv().unwrap();
+        release.send(()).unwrap();
+        assert_eq!(
+            second.join().unwrap(),
+            1,
+            "the second stop returned with the thread running"
+        );
+    });
 }
