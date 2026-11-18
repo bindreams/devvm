@@ -45,8 +45,9 @@ from a recipe, starts it and prints its name; `ssh`, `cp`, `stop`, `start` and `
 
 In the guest, Linux or Windows, the machine's hostname is `devvm-` and the first 8 hex digits of the instance's id
 (`devvm-0a1b2c3d`; `ls` shows it as HOSTNAME), not the name. It is set at the first boot and `stop` and `start` keep it.
-A Windows guest restarts once at the first boot to take it. Any two instances share a hostname with a chance of 1 in 2^32;
-devvm does not check.
+A Windows guest restarts once at the first boot to take it. Any two instances share a hostname with a chance of 1 in
+2^32; devvm does not check. An instance made from a Windows base built before this version stays named `DEVVM` while
+`ls` shows `devvm-<8 hex>`; `rm` it and `up` again.
 
 Examples are for Git Bash. Git Bash rewrites arguments that look like paths (`/tmp/x`, `/c`), also after `--`: set
 `MSYS_NO_PATHCONV=1` for such a command, and write its local paths as `C:/x` or relative ones.
