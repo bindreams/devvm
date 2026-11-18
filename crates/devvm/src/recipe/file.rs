@@ -1,6 +1,6 @@
 //! Parsing and validating `*.devvm.yaml` text.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 use serde::de::Error as _;
@@ -176,9 +176,18 @@ fn pin(raw: RawPin) -> Pin {
     }
 }
 
+/// `dir/name` without the `.` components a recipe wrote (`./windows.iso`) or a bare relative recipe path supplies.
+/// `..` and symlinks are left alone.
+fn join_without_dots(dir: &Path, name: &Path) -> PathBuf {
+    dir.join(name)
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect()
+}
+
 fn source(raw: RawFrom, dir: &Path, origin: &Path) -> Result<Source> {
     Ok(match raw {
-        RawFrom::Name(name) if name.ends_with(SUFFIX) => Source::Recipe(dir.join(name).components().collect()),
+        RawFrom::Name(name) if name.ends_with(SUFFIX) => Source::Recipe(join_without_dots(dir, Path::new(&name))),
         RawFrom::Name(name) => Source::Embedded(name),
         RawFrom::Iso(iso) => {
             if iso.edition.as_deref().is_some_and(|edition| edition.trim().is_empty()) {
@@ -196,7 +205,7 @@ fn source(raw: RawFrom, dir: &Path, origin: &Path) -> Result<Source> {
                 })
                 .transpose()?;
             Source::Iso {
-                path: dir.join(iso.iso).components().collect(),
+                path: join_without_dots(dir, &iso.iso),
                 edition: iso.edition,
                 product_key,
             }
