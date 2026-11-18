@@ -88,8 +88,9 @@ enum Failed {
     Write(std::io::Error),
 }
 
-/// Copies `reader` to `writer` in chunks of [`CHUNK`], telling `moved` the size of each. The SFTP library reports a failed guest read or write as a
-/// plain `io::Error` with no mark of whose fault it was, so the end that failed is known by where the call was.
+/// Copies `reader` to `writer` in chunks of [`CHUNK`], telling `moved` the size of each. The SFTP library reports a
+/// failed guest read or write as a plain `io::Error` with no mark of whose fault it was, so the end that failed is
+/// known by where the call was.
 async fn pump<R, W>(mut reader: R, mut writer: W, moved: &Moved) -> std::result::Result<(), Failed>
 where
     R: AsyncRead + Unpin,
