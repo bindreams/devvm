@@ -1,10 +1,9 @@
 //! Progress bars and a task tree on a terminal.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread::{self, JoinHandle, ThreadId};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use devvm::progress::{Colour, Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint};
@@ -28,22 +27,27 @@ const BAR_COLUMNS: u16 = 50;
 /// set: at each report of its task.
 ///
 /// Every call into indicatif is made holding one lock, the screen's, and nothing else draws: the spinners are ticked
-/// by a thread of this screen that takes the same lock. So [`TtyProgress::quiet`] ends all drawing at once.
+/// by a thread of this screen that takes the same lock. So [`TtyProgress::quiet`] ends all drawing at once. A thread
+/// that panics inside a draw leaves the lock poisoned, and the screen is then never touched again: what indicatif
+/// holds may be half changed, and dropping it would panic.
 pub(crate) struct TtyProgress {
-    shared: Arc<Shared>,
-    /// Stops the spinners' thread when this screen is dropped.
+    /// Stops the spinners' thread when this screen is dropped. Declared first, so that it ends before the rest.
     _ticker: Option<Ticker>,
+    shared: Arc<Shared>,
 }
 
 struct Shared {
-    /// Every call into indicatif is made holding this.
-    screen: Mutex<Screen>,
-    /// The thread that holds `screen`, so that a panic inside a draw does not wait on itself.
-    owner: Mutex<Option<ThreadId>>,
+    /// Every call into indicatif is made holding this. `None` only for [`Shared`]'s drop, which leaves a poisoned
+    /// screen as it is.
+    screen: Mutex<Option<Screen>>,
     /// Nothing is drawn any more: set before `screen` is taken, so a draw that waits for it draws nothing.
     quiet: AtomicBool,
-    /// Starts a fresh line below the bars, for a thread that cannot take `screen`.
+    /// The rows the screen has drawn: the open tasks, set under `screen` once a report is drawn. A thread that cannot
+    /// take `screen` reads it to know how far to start a fresh line below the bars.
+    rows: AtomicUsize,
+    /// Starts a fresh line below the bars.
     newline: Box<dyn Fn() + Send + Sync>,
+    pace: Arc<Pace>,
 }
 
 struct Screen {
@@ -54,6 +58,9 @@ struct Screen {
     /// The open tasks in the order they are drawn: a parent, then each of its children with their own.
     order: Vec<TaskId>,
     tasks: HashMap<TaskId, Slot>,
+    /// The open tasks of unknown size, which the ticker turns.
+    spinners: usize,
+    pace: Arc<Pace>,
 }
 
 struct Slot {
@@ -90,55 +97,43 @@ impl Slot {
 
 // Locking =============================================================================================================
 
-/// The screen, locked; records the thread that holds it.
-struct Held<'a> {
-    screen: MutexGuard<'a, Screen>,
-    owner: &'a Mutex<Option<ThreadId>>,
-}
+/// The screen, locked.
+struct Locked<'a>(MutexGuard<'a, Option<Screen>>);
 
-impl std::ops::Deref for Held<'_> {
+impl std::ops::Deref for Locked<'_> {
     type Target = Screen;
 
     fn deref(&self) -> &Screen {
-        &self.screen
+        self.0.as_ref().expect("the screen is there until it is dropped")
     }
 }
 
-impl std::ops::DerefMut for Held<'_> {
+impl std::ops::DerefMut for Locked<'_> {
     fn deref_mut(&mut self) -> &mut Screen {
-        &mut self.screen
-    }
-}
-
-impl Drop for Held<'_> {
-    fn drop(&mut self) {
-        *self.owner.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.0.as_mut().expect("the screen is there until it is dropped")
     }
 }
 
 impl Shared {
-    /// A thread that panicked inside a draw is poisoning the lock it holds: later calls go on.
-    fn lock(&self) -> Held<'_> {
-        let screen = self.screen.lock().unwrap_or_else(PoisonError::into_inner);
-        *self.owner.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread::current().id());
-        Held {
-            screen,
-            owner: &self.owner,
-        }
-    }
-
-    /// Whether this thread holds the screen lock: only it can set or clear its own id there.
-    fn held_by_this_thread(&self) -> bool {
-        *self.owner.lock().unwrap_or_else(PoisonError::into_inner) == Some(thread::current().id())
+    /// The screen, locked; `None` when a thread panicked inside a draw.
+    fn lock(&self) -> Option<Locked<'_>> {
+        self.screen.lock().ok().map(Locked)
     }
 
     fn is_quiet(&self) -> bool {
         self.quiet.load(Ordering::SeqCst)
     }
 
+    /// Starts a fresh line for each row the screen has drawn: below the bars wherever the cursor is among them.
+    fn newlines(&self) {
+        for _ in 0..self.rows.load(Ordering::SeqCst) {
+            (self.newline)();
+        }
+    }
+
     /// Turns each spinner once.
     fn tick(&self) {
-        let screen = self.lock();
+        let Some(screen) = self.lock() else { return };
         if self.is_quiet() {
             return;
         }
@@ -150,30 +145,83 @@ impl Shared {
     }
 }
 
+impl Drop for Shared {
+    fn drop(&mut self) {
+        // The bars of a screen that a panic poisoned would panic when dropped.
+        if self.screen.is_poisoned()
+            && let Some(screen) = self.screen.get_mut().unwrap_or_else(PoisonError::into_inner).take()
+        {
+            std::mem::forget(screen);
+        }
+    }
+}
+
 // Ticking =============================================================================================================
+
+/// When the spinners turn: while there is one, until stopped.
+#[derive(Default)]
+struct Pace {
+    state: Mutex<PaceState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct PaceState {
+    spinners: usize,
+    stopped: bool,
+}
+
+impl Pace {
+    fn state(&self) -> MutexGuard<'_, PaceState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set_spinners(&self, spinners: usize) {
+        self.state().spinners = spinners;
+        self.changed.notify_all();
+    }
+
+    fn stop(&self) {
+        self.state().stopped = true;
+        self.changed.notify_all();
+    }
+
+    /// Waits until a spinner is to be turned, which is `every` after the last turn; false once stopped. With no spinner
+    /// it waits for one, and wakes for nothing else.
+    fn wait_turn(&self, every: Duration) -> bool {
+        let mut state = self.state();
+        while !state.stopped && state.spinners == 0 {
+            state = self.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+        // The wait sets the pace of the turns; a stop or the last spinner's end cuts it short.
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, every, |state| !state.stopped && state.spinners > 0)
+            .unwrap_or_else(PoisonError::into_inner);
+        !state.stopped
+    }
+}
 
 /// The thread that turns the spinners.
 struct Ticker {
-    /// Dropped to stop the thread.
-    stop: Option<mpsc::Sender<()>>,
+    pace: Arc<Pace>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Ticker {
     /// A spinner that cannot be ticked stands still; the screen is otherwise right, so there is nobody to tell.
     fn start(shared: Arc<Shared>, every: Duration) -> Option<Ticker> {
-        let (stop, stopped) = mpsc::channel();
+        let pace = shared.pace.clone();
         let thread = thread::Builder::new()
             .name("devvm-spinners".to_owned())
             .spawn(move || {
-                // The wait sets the pace of the ticks; the sender's drop is what ends the loop.
-                while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(every) {
+                while shared.pace.wait_turn(every) {
                     shared.tick();
                 }
             })
             .ok()?;
         Some(Ticker {
-            stop: Some(stop),
+            pace,
             thread: Some(thread),
         })
     }
@@ -181,7 +229,7 @@ impl Ticker {
 
 impl Drop for Ticker {
     fn drop(&mut self) {
-        drop(self.stop.take());
+        self.pace.stop();
         if let Some(thread) = self.thread.take() {
             // A thread that panicked has said so through the panic hook.
             let _ = thread.join();
@@ -201,22 +249,26 @@ impl TtyProgress {
         columns: impl Fn() -> u16 + Send + Sync + 'static,
         newline: impl Fn() + Send + Sync + 'static,
     ) -> TtyProgress {
+        let pace = Arc::new(Pace::default());
         let shared = Arc::new(Shared {
-            screen: Mutex::new(Screen {
+            screen: Mutex::new(Some(Screen {
                 multi: MultiProgress::with_draw_target(target),
                 look,
                 columns: Box::new(columns),
                 order: Vec::new(),
                 tasks: HashMap::new(),
-            }),
-            owner: Mutex::new(None),
+                spinners: 0,
+                pace: pace.clone(),
+            })),
             quiet: AtomicBool::new(false),
+            rows: AtomicUsize::new(0),
             newline: Box::new(newline),
+            pace,
         });
         let ticker = tick.and_then(|every| Ticker::start(shared.clone(), every));
         TtyProgress {
-            shared,
             _ticker: ticker,
+            shared,
         }
     }
 
@@ -238,25 +290,32 @@ impl TtyProgress {
     }
 
     /// Stops drawing and takes the bars off the screen, so that what is written below next stays: no later draw, a
-    /// spinner's tick included, can erase it. A draw of another thread is over when this returns.
+    /// spinner's tick included, can erase it. The spinners' thread is told to stop, and a draw of another thread is
+    /// over when this returns.
     ///
-    /// A thread that panicked inside [`Progress::event`] holds the screen lock and cannot take it: it starts a fresh
-    /// line and leaves the screen as it is. A panicking thread draws nothing (indicatif skips it), so it starts a fresh
-    /// line below the bars too.
+    /// When a thread panicked inside a draw the screen is left as it is, and a fresh line starts below the bars.
     pub(crate) fn quiet(&self) {
         let shared = &*self.shared;
+        shared.pace.stop();
         shared.quiet.store(true, Ordering::SeqCst);
-        if shared.held_by_this_thread() {
-            (shared.newline)();
-            return;
+        match shared.screen.lock() {
+            Ok(mut screen) => {
+                if let Some(screen) = screen.as_mut() {
+                    // A terminal that cannot be written has nobody to tell.
+                    let _ = screen.multi.clear();
+                    screen.multi.set_draw_target(ProgressDrawTarget::hidden());
+                }
+                shared.rows.store(0, Ordering::SeqCst);
+            }
+            Err(_poisoned) => shared.newlines(),
         }
-        let screen = shared.lock();
-        // A terminal that cannot be written has nobody to tell.
-        let _ = screen.multi.clear();
-        screen.multi.set_draw_target(ProgressDrawTarget::hidden());
-        if thread::panicking() {
-            (shared.newline)();
-        }
+    }
+
+    /// For a panic hook, on the panicking thread, which may hold the screen's lock and so cannot take it: nothing is
+    /// drawn from now on, and a fresh line starts below the bars. The bars stay as they were.
+    pub(crate) fn panicked(&self) {
+        self.shared.quiet.store(true, Ordering::SeqCst);
+        self.shared.newlines();
     }
 }
 
@@ -340,6 +399,10 @@ impl Screen {
         };
         let bar = self.multi.insert(index, bar);
         self.order.insert(index, id);
+        if matches!(total, Total::Unknown) {
+            self.spinners += 1;
+            self.pace.set_spinners(self.spinners);
+        }
         self.tasks.insert(
             id,
             Slot {
@@ -367,6 +430,10 @@ impl Screen {
         };
         self.order.remove(at);
         let Some(slot) = self.tasks.remove(&id) else { return };
+        if matches!(slot.total, Total::Unknown) {
+            self.spinners -= 1;
+            self.pace.set_spinners(self.spinners);
+        }
         slot.bar.finish_and_clear();
         self.multi.remove(&slot.bar);
         // A sibling that ends changes its elder's glyph.
@@ -444,7 +511,7 @@ impl Screen {
 
 impl Progress for TtyProgress {
     fn event(&self, event: &Event) {
-        let mut screen = self.shared.lock();
+        let Some(mut screen) = self.shared.lock() else { return };
         if self.shared.is_quiet() {
             return;
         }
@@ -493,5 +560,6 @@ impl Progress for TtyProgress {
             // Finished or not, the task leaves no line: an error is reported below the bars.
             Event::End { id, .. } => screen.end(*id),
         }
+        self.shared.rows.store(screen.order.len(), Ordering::SeqCst);
     }
 }

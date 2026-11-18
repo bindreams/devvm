@@ -2,12 +2,13 @@
 
 use std::io::{IsTerminal, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::thread::{self, ThreadId};
 
 use devvm::exit::{ExitStatus, ExitWidth, conclude, print_error_line};
 use devvm::progress::{Fanout, FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
-use devvm::{Dirs, Result};
+use devvm::{Dirs, Error, ErrorKind, Result};
 
 use crate::tty::TtyProgress;
 
@@ -68,34 +69,6 @@ pub(crate) struct Sinks {
     pub log: Option<Arc<FileLog>>,
 }
 
-/// What the run in progress holds that its ending needs, and that a panic on any thread must reach: the log to name and
-/// record in, and the terminal screen to stop before anything is written below it.
-pub(crate) struct Active {
-    pub(crate) log: Option<Arc<FileLog>>,
-    pub(crate) tty: Option<Arc<TtyProgress>>,
-}
-
-/// The run in progress. The command line runs one command at a time per process: a run replaces this when it starts
-/// and [`end`] empties it, so a later run in the same process starts from nothing.
-pub(crate) struct Run(Mutex<Option<Active>>);
-
-impl Run {
-    pub(crate) const fn new() -> Run {
-        Run(Mutex::new(None))
-    }
-
-    pub(crate) fn begin(&self, active: Active) {
-        let before = self.0.lock().unwrap_or_else(PoisonError::into_inner).replace(active);
-        debug_assert!(before.is_none(), "a command began while another had not ended");
-    }
-
-    fn take(&self) -> Option<Active> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
-    }
-}
-
-static RUN: Run = Run::new();
-
 /// The screen for stderr and the log of this run in the state directory, both chosen from the process's facts, with
 /// step output and debug notes when `verbose`. The run is kept for [`end`].
 pub(crate) fn sinks(verbose: bool) -> Sinks {
@@ -141,35 +114,198 @@ fn compose(screen: Arc<dyn Progress>, dirs: Option<&Dirs>) -> Sinks {
 
 // Ending ==============================================================================================================
 
-/// The one ending of a command: [`conclude`] it, then print the error line it names, red where stderr takes colour. A
-/// failure also names the log file on the line before it and is recorded there. The error goes to the log alone, never
-/// through the sinks: the screen would print it as a warning above its own line.
-///
-/// The terminal screen is stopped and cleared first, so that nothing it draws can erase what is written here; this is
-/// also what the panic hook calls. The run is over afterwards.
-pub(crate) fn end(
-    status_file: Option<&Path>,
-    outcome: Result<ExitStatus>,
-    width: ExitWidth,
-    stderr: &mut dyn Write,
-) -> i32 {
-    end_in(&RUN, stderr_colour(), status_file, outcome, width, stderr)
+/// What the run in progress holds that its ending needs: the log to name and record in, and the terminal screen to stop
+/// before anything is written below it.
+pub(crate) struct Active {
+    pub(crate) log: Option<Arc<FileLog>>,
+    pub(crate) tty: Option<Arc<TtyProgress>>,
 }
 
-pub(crate) fn end_in(
-    run: &Run,
-    colour: bool,
-    status_file: Option<&Path>,
-    outcome: Result<ExitStatus>,
-    width: ExitWidth,
-    stderr: &mut dyn Write,
-) -> i32 {
-    let active = run.take();
-    if let Some(tty) = active.as_ref().and_then(|active| active.tty.as_ref()) {
-        tty.quiet();
+/// The run in progress, and who ends it. The command line runs one command at a time per process: a run replaces
+/// `active` when it starts and its ending empties it, so a later run in the same process starts from nothing.
+///
+/// Exactly one ending prints. Either the command's own [`Ending`] does, or a panic hook does when no ending is under
+/// way ([`Run::on_panic`]). The state mutex decides which: a hook that ends the run keeps it locked until the process
+/// exits, so another panic or an ending waits there. A hook on another thread that finds an ending under way stores its
+/// message and returns, so that its thread unwinds and lets go of what the ending waits for; the ending reports it. A
+/// hook on the ending's own thread ends the run: the ending itself failed.
+pub(crate) struct Run {
+    active: Mutex<Option<Active>>,
+    state: Mutex<State>,
+}
+
+pub(crate) enum State {
+    Idle,
+    /// A command's [`Ending`] is under way.
+    Ending {
+        /// The thread running it.
+        thread: ThreadId,
+        /// The first panic another thread's hook stored.
+        panic: Option<String>,
+        /// The outcome is decided: a panic after this is dropped, since the process is exiting.
+        sealed: bool,
+    },
+    /// A panic hook is the ending.
+    Panicking,
+}
+
+/// What [`Run::on_panic`] did.
+pub(crate) enum Panicked<'a> {
+    /// This hook was the ending and printed it. The process must exit with `code` while `_held` is kept.
+    Ended { code: i32, _held: MutexGuard<'a, State> },
+    /// A command's ending is under way: it reports the panic.
+    Deferred,
+}
+
+/// The run of this process.
+pub(crate) static RUN: Run = Run::new();
+
+impl Run {
+    pub(crate) const fn new() -> Run {
+        Run {
+            active: Mutex::new(None),
+            state: Mutex::new(State::Idle),
+        }
     }
-    let log = active.as_ref().and_then(|active| active.log.as_deref());
-    end_with(log, colour, status_file, outcome, width, stderr)
+
+    pub(crate) fn begin(&self, active: Active) {
+        let before = self
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(active);
+        debug_assert!(before.is_none(), "a command began while another had not ended");
+    }
+
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The command's ending starts: a panic from now on is stored for [`Ending::end`] instead of ending the process.
+    /// Waits while a panic hook is the ending, which is until the process exits.
+    pub(crate) fn begin_ending(&self) -> Ending<'_> {
+        *self.state() = State::Ending {
+            thread: thread::current().id(),
+            panic: None,
+            sealed: false,
+        };
+        Ending { run: self }
+    }
+
+    /// The panic hook's part, on the panicking thread. Never takes the screen's lock (the thread may hold it) and never
+    /// drops the screen or the log: it stops the screen drawing, starts a line below what it drew, and prints. A bar of
+    /// the last frame can stay above the error line; the error line is the last.
+    pub(crate) fn on_panic(
+        &self,
+        message: String,
+        colour: bool,
+        status_file: Option<&Path>,
+        width: ExitWidth,
+        stderr: &mut dyn Write,
+    ) -> Panicked<'_> {
+        let mut state = self.state();
+        // A panic on the ending's own thread cannot be left to it: the ending is what failed.
+        if let State::Ending { thread, panic, sealed } = &mut *state
+            && *thread != thread::current().id()
+        {
+            if !*sealed && panic.is_none() {
+                *panic = Some(message);
+            }
+            return Panicked::Deferred;
+        }
+        *state = State::Panicking;
+        // A lock that is busy is held by a thread in the middle of `begin`: there is no screen to tell.
+        let active = match self.active.try_lock() {
+            Ok(active) => Some(active),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        let active = active.as_deref().and_then(Option::as_ref);
+        if let Some(tty) = active.and_then(|active| active.tty.as_deref()) {
+            tty.panicked();
+        }
+        let log = active.and_then(|active| active.log.as_deref());
+        let code = end_with(
+            log,
+            colour,
+            status_file,
+            Err(Error::new(ErrorKind::Panic, message)),
+            width,
+            stderr,
+        );
+        Panicked::Ended { code, _held: state }
+    }
+}
+
+/// A command's ending, from the end of its action until the process exits.
+pub(crate) struct Ending<'a> {
+    run: &'a Run,
+}
+
+impl Drop for Ending<'_> {
+    fn drop(&mut self) {
+        *self.run.state() = State::Idle;
+    }
+}
+
+impl Ending<'_> {
+    /// The one ending of a command: [`conclude`] it, then print the error line it names, red where `colour` is set. A
+    /// failure also names the log file on the line before it and is recorded there. The error goes to the log alone,
+    /// never through the sinks: the screen would print it as a warning above its own line.
+    ///
+    /// The terminal screen is stopped and cleared first, so that nothing it draws can erase what is written here. A
+    /// panic a hook stored while this waited for the screen is the outcome, whatever `outcome` was. The run is over
+    /// afterwards.
+    pub(crate) fn end(
+        &self,
+        colour: bool,
+        status_file: Option<&Path>,
+        outcome: Result<ExitStatus>,
+        width: ExitWidth,
+        stderr: &mut dyn Write,
+    ) -> i32 {
+        let active = self.run.active.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(tty) = active.as_ref().and_then(|active| active.tty.as_ref()) {
+            tty.quiet();
+        }
+        let outcome = match self.seal() {
+            Some(message) => Err(Error::new(ErrorKind::Panic, message)),
+            None => outcome,
+        };
+        let log = active.as_ref().and_then(|active| active.log.as_deref());
+        end_with(log, colour, status_file, outcome, width, stderr)
+    }
+
+    /// [`Ending::end`] for a command that succeeded and needs no status file: `0`, unless a hook stored a panic.
+    pub(crate) fn end_clean(
+        &self,
+        colour: bool,
+        status_file: Option<&Path>,
+        width: ExitWidth,
+        stderr: &mut dyn Write,
+    ) -> i32 {
+        match self.seal() {
+            None => 0,
+            Some(message) => self.end(
+                colour,
+                status_file,
+                Err(Error::new(ErrorKind::Panic, message)),
+                width,
+                stderr,
+            ),
+        }
+    }
+
+    /// Decides the outcome: the panic a hook stored, and no later one is kept.
+    fn seal(&self) -> Option<String> {
+        match &mut *self.run.state() {
+            State::Ending { panic, sealed, .. } => {
+                *sealed = true;
+                panic.take()
+            }
+            State::Idle | State::Panicking => None,
+        }
+    }
 }
 
 fn end_with(

@@ -1,13 +1,14 @@
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
-use devvm::exit::ExitWidth;
+use devvm::exit::{ExitStatus, ExitWidth};
 use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
-use devvm::{Error, ErrorKind};
 use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
-use crate::output::{Active, Run, end_in};
-use crate::tty::TtyProgress;
+use crate::output::{Active, Panicked, Run};
+use crate::tty::{Pace, TtyProgress};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
@@ -387,7 +388,11 @@ fn a_child_goes_below_the_descendants_of_its_parent() {
 
 // Caching =============================================================================================================
 
-type Trap = Box<dyn FnOnce() + Send>;
+/// What runs when a draw begins, and whether the draw then fails.
+struct Trap {
+    run: Box<dyn FnOnce() + Send>,
+    fails: bool,
+}
 
 /// A `TermLike` that counts draws, and runs a closure at the next one.
 #[derive(Clone)]
@@ -414,14 +419,27 @@ impl Probe {
 
     /// Runs `trap` when the next draw begins, then panics, as a draw that fails does.
     fn trap_next_draw(&self, trap: impl FnOnce() + Send + 'static) {
-        *self.trap.lock().unwrap() = Some(Box::new(trap));
+        *self.trap.lock().unwrap() = Some(Trap {
+            run: Box::new(trap),
+            fails: true,
+        });
+    }
+
+    /// Runs `hold` when the next draw begins, and draws on once it returns.
+    fn hold_next_draw(&self, hold: impl FnOnce() + Send + 'static) {
+        *self.trap.lock().unwrap() = Some(Trap {
+            run: Box::new(hold),
+            fails: false,
+        });
     }
 
     fn tripped(&self) {
         let trap = self.trap.lock().unwrap().take();
         if let Some(trap) = trap {
-            trap();
-            panic!("the terminal failed");
+            (trap.run)();
+            if trap.fails {
+                panic!("the terminal failed");
+            }
         }
     }
 }
@@ -512,74 +530,47 @@ fn the_width_is_read_once_for_a_report() {
 
 // Ending ==============================================================================================================
 
-/// Quiet takes the screen lock, so a draw of another thread is over before it returns, and one that starts after it
-/// draws nothing: whatever is written next stays.
-#[skuld::test]
-fn a_tick_and_a_report_racing_quiet_leave_the_line_written_after_it() {
-    for _ in 0..50 {
-        let (tty, term) = screen(6, 60, PLAIN);
-        let (spinner, bar) = (id(), id());
-        begin(&tty, spinner, None, "waiting", Total::Unknown);
-        begin(&tty, bar, None, "copying", Total::Bytes(GIB));
-        let start = Barrier::new(3);
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                start.wait();
-                tty.shared.tick();
-            });
-            scope.spawn(|| {
-                start.wait();
-                advance(&tty, bar, MIB);
-                tty.warn("noted");
-            });
-            start.wait();
-            tty.quiet();
-            term.write_line("devvm-error: x").unwrap();
-        });
-        let shown = lines(&term);
-        // A note printed before the screen was quiet stays above the error; nothing is drawn after it.
-        assert_eq!(shown.last().map(String::as_str), Some("devvm-error: x"), "{shown:?}");
-        assert!(
-            shown
-                .iter()
-                .all(|line| line == "devvm-error: x" || line == "warning: noted"),
-            "{shown:?}"
-        );
-    }
+/// An `io::Write` onto the terminal, as stderr is: each complete line is written to it.
+struct TermWriter {
+    term: InMemoryTerm,
+    pending: Vec<u8>,
 }
 
-/// A thread that is panicking draws nothing (indicatif skips the draw), so the bars stay: quiet starts a line for
-/// what is written next.
-#[skuld::test]
-fn quiet_from_a_panicking_thread_starts_a_fresh_line() {
-    struct Quiet<'a>(&'a TtyProgress);
-    impl Drop for Quiet<'_> {
-        fn drop(&mut self) {
-            self.0.quiet();
+impl TermWriter {
+    fn new(term: &InMemoryTerm) -> TermWriter {
+        TermWriter {
+            term: term.clone(),
+            pending: Vec::new(),
         }
     }
-
-    let (tty, term) = screen(6, 60, PLAIN);
-    begin(&tty, id(), None, "working", Total::Unknown);
-    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _quiet = Quiet(&tty);
-        panic!("a failure outside a draw");
-    }));
-    assert!(unwound.is_err());
-    term.write_line("devvm-error: x").unwrap();
-    assert_eq!(lines(&term), ["- working", "devvm-error: x"]);
 }
 
-/// A panic inside a draw holds the screen lock when the hook runs, so the hook cannot lock it: it starts a fresh line
-/// and the ending still prints.
-#[skuld::test]
-fn a_panic_inside_a_draw_still_ends_with_the_error_line() {
+impl Write for TermWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        for &byte in bytes {
+            if byte == b'\n' {
+                let line = String::from_utf8(std::mem::take(&mut self.pending)).unwrap();
+                self.term.write_line(&line)?;
+            } else {
+                self.pending.push(byte);
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A screen in a run, with the terminal it draws to and a probe of its draws.
+fn run_with_screen(tick: Option<Duration>) -> (Arc<Run>, Arc<TtyProgress>, InMemoryTerm, Probe) {
     let term = InMemoryTerm::new(6, 60);
     let probe = Probe::new(&term);
     let tty = Arc::new(TtyProgress::new(
         ProgressDrawTarget::term_like(Box::new(probe.clone())),
         PLAIN,
-        None,
+        tick,
         || 60,
         newline(&term),
     ));
@@ -588,38 +579,192 @@ fn a_panic_inside_a_draw_still_ends_with_the_error_line() {
         log: None,
         tty: Some(tty.clone()),
     });
-    let first = id();
-    begin(&tty, first, None, "working", Total::Unknown);
+    (run, tty, term, probe)
+}
 
-    let stderr = Arc::new(Mutex::new(Vec::new()));
-    let (hook_run, hook_stderr) = (run.clone(), stderr.clone());
+/// What the panic hook does for `message`, writing to `term`: whether it was the ending.
+fn hook(run: &Run, term: &InMemoryTerm, message: &str) -> bool {
+    let panicked = run.on_panic(
+        message.to_owned(),
+        false,
+        None,
+        ExitWidth::Full32,
+        &mut TermWriter::new(term),
+    );
+    matches!(panicked, Panicked::Ended { code: 125, .. })
+}
+
+/// The command's ending, with `bad` as its outcome, writing to `term`.
+fn end_with_error(run: &Run, term: &InMemoryTerm) -> i32 {
+    run.begin_ending().end(
+        false,
+        None,
+        Err(devvm::Error::new(devvm::ErrorKind::Io, "bad")),
+        ExitWidth::Full32,
+        &mut TermWriter::new(term),
+    )
+}
+
+#[skuld::test]
+fn the_rows_drawn_follow_the_open_tasks() {
+    let (tty, _term) = screen(6, 60, PLAIN);
+    let rows = || tty.shared.rows.load(Ordering::SeqCst);
+    let [first, second] = [(); 2].map(|()| id());
+    assert_eq!(rows(), 0);
+    begin(&tty, first, None, "one", Total::Unknown);
+    begin(&tty, second, Some(first), "two", Total::Bytes(MIB));
+    assert_eq!(rows(), 2);
+    end(&tty, first, Outcome::Finished);
+    assert_eq!(rows(), 1);
+    end(&tty, second, Outcome::Finished);
+    assert_eq!(rows(), 0);
+}
+
+/// The panic hook runs on the thread that is inside the draw, holding the screen's lock, with the cursor part way
+/// through the bars: it cannot take the lock, and its newlines put the error line below them.
+#[skuld::test]
+fn after_a_panic_in_a_draw_the_error_line_is_the_last_line() {
+    let (run, tty, term, probe) = run_with_screen(None);
+    let [first, second] = [(); 2].map(|()| id());
+    begin(&tty, first, None, "working", Total::Unknown);
+    begin(&tty, second, None, "copying", Total::Bytes(GIB));
+    let (hook_run, hook_term) = (run.clone(), term.clone());
+    let was_the_ending = Arc::new(AtomicBool::new(false));
+    let recorded = was_the_ending.clone();
+    probe.trap_next_draw(move || recorded.store(hook(&hook_run, &hook_term, "the draw failed"), Ordering::SeqCst));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| advance(&tty, second, 1)));
+    assert!(unwound.is_err());
+    assert!(was_the_ending.load(Ordering::SeqCst));
+    let shown = lines(&term);
+    assert_eq!(
+        shown.last().map(String::as_str),
+        Some("devvm-error: panic: the draw failed"),
+        "{shown:?}"
+    );
+    // The screen is left alone afterwards: nothing hangs on the lock the panic poisoned, nothing more is drawn, and
+    // dropping it does not touch what indicatif holds.
+    begin(&tty, id(), None, "late", Total::Unknown);
+    tty.warn("late note");
+    assert_eq!(lines(&term), shown);
+    drop(run);
+    drop(tty);
+}
+
+#[skuld::test]
+fn a_panic_with_nothing_drawn_writes_no_blank_line() {
+    let (run, _tty, term, _probe) = run_with_screen(None);
+    assert!(hook(&run, &term, "boom"));
+    assert_eq!(lines(&term), ["devvm-error: panic: boom"]);
+}
+
+#[skuld::test]
+fn a_panic_with_one_row_drawn_starts_one_line_below_it() {
+    let (run, tty, term, _probe) = run_with_screen(None);
+    begin(&tty, id(), None, "working", Total::Unknown);
+    assert!(hook(&run, &term, "boom"));
+    assert_eq!(lines(&term), ["- working", "devvm-error: panic: boom"]);
+}
+
+/// A spinner thread that panics inside a draw, while the command's ending waits for the screen: its hook cannot end
+/// the run, so it stores the panic and unwinds, and the ending reports it.
+#[skuld::test]
+fn a_panic_on_the_spinner_thread_during_the_ending_is_reported_by_the_ending() {
+    let (run, tty, term, probe) = run_with_screen(Some(Duration::from_millis(1)));
+    begin(&tty, id(), None, "waiting", Total::Unknown);
+    let ending = run.begin_ending();
+    let (in_draw, seen) = mpsc::channel();
+    let (hook_run, hook_term) = (run.clone(), term.clone());
+    let was_the_ending = Arc::new(AtomicBool::new(true));
+    let recorded = was_the_ending.clone();
     probe.trap_next_draw(move || {
-        // What the panic hook does, on the thread that is inside the draw.
-        let mut out = hook_stderr.lock().unwrap();
-        end_in(
-            &hook_run,
-            false,
-            None,
-            Err(Error::new(ErrorKind::Panic, "the draw failed")),
-            ExitWidth::Full32,
-            &mut *out,
-        );
+        in_draw.send(()).unwrap();
+        recorded.store(hook(&hook_run, &hook_term, "the spinner failed"), Ordering::SeqCst);
     });
+    // The spinner thread is inside a draw, holding the screen's lock.
+    seen.recv().unwrap();
+    let code = ending.end(
+        false,
+        None,
+        Ok(ExitStatus::Code(0)),
+        ExitWidth::Full32,
+        &mut TermWriter::new(&term),
+    );
+    assert_eq!(code, 125);
+    assert!(!was_the_ending.load(Ordering::SeqCst), "the hook ended the run");
+    let shown = lines(&term);
+    assert_eq!(
+        shown.last().map(String::as_str),
+        Some("devvm-error: panic: the spinner failed"),
+        "{shown:?}"
+    );
+    assert_eq!(
+        shown.iter().filter(|line| line.starts_with("devvm-error")).count(),
+        1,
+        "{shown:?}"
+    );
+}
+
+/// A draw in flight when the ending starts is over before the bars are cleared, and nothing drawn later can erase
+/// what is written after.
+#[skuld::test]
+fn quiet_waits_for_a_draw_in_flight_and_what_is_written_after_it_stays() {
+    let (run, tty, term, probe) = run_with_screen(None);
+    let [spinner, bar] = [(); 2].map(|()| id());
+    begin(&tty, spinner, None, "waiting", Total::Unknown);
+    begin(&tty, bar, None, "copying", Total::Bytes(GIB));
+    let (in_draw, seen) = mpsc::channel();
+    let watched = tty.clone();
+    probe.hold_next_draw(move || {
+        in_draw.send(()).unwrap();
+        // The ending has begun to stop the screen; its lock is what it waits for.
+        while !watched.shared.is_quiet() {
+            std::thread::yield_now();
+        }
+    });
+    std::thread::scope(|scope| {
+        scope.spawn(|| advance(&tty, bar, MIB));
+        seen.recv().unwrap();
+        end_with_error(&run, &term);
+    });
+    // A tick or a report that comes after draws nothing.
+    tty.shared.tick();
+    advance(&tty, bar, 2 * MIB);
+    tty.warn("late");
+    assert_eq!(lines(&term), ["devvm-error: io: bad"]);
+}
+
+#[skuld::test]
+fn a_screen_a_draw_panicked_in_is_left_as_it_was_by_the_ending() {
+    let (run, tty, term, probe) = run_with_screen(None);
+    begin(&tty, id(), None, "working", Total::Unknown);
+    probe.trap_next_draw(|| {});
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        advance(&tty, first, 1);
         begin(&tty, id(), None, "next", Total::Unknown);
     }));
     assert!(unwound.is_err());
-    assert_eq!(
-        String::from_utf8(stderr.lock().unwrap().clone()).unwrap(),
-        "devvm-error: panic: the draw failed\n"
-    );
-    // The screen is quiet afterwards and does not hang on the lock the panic poisoned.
-    begin(&tty, id(), None, "late", Total::Unknown);
-    tty.warn("late note");
-    assert!(!term.contents().contains("late"), "{:?}", term.contents());
-    // The draw that panicked poisoned indicatif's own lock, which dropping a bar would panic on.
-    std::mem::forget(tty);
+    end_with_error(&run, &term);
+    assert_eq!(lines(&term), ["- working", "devvm-error: io: bad"]);
+    drop(run);
+    drop(tty);
+}
+
+// Ticking =============================================================================================================
+
+#[skuld::test]
+fn the_spinners_thread_waits_for_a_spinner_and_for_a_stop() {
+    let pace = Pace::default();
+    std::thread::scope(|scope| {
+        let turn = scope.spawn(|| pace.wait_turn(Duration::ZERO));
+        pace.set_spinners(1);
+        assert!(turn.join().unwrap(), "a spinner is to be turned");
+    });
+    pace.set_spinners(0);
+    std::thread::scope(|scope| {
+        let turn = scope.spawn(|| pace.wait_turn(Duration::ZERO));
+        pace.stop();
+        assert!(!turn.join().unwrap(), "stopped");
+    });
+    assert!(!pace.wait_turn(Duration::ZERO), "a stop stays");
 }
 
 #[skuld::test]
@@ -628,7 +773,7 @@ fn a_spinner_turns_by_itself_and_its_thread_ends_with_the_screen() {
     let tty = TtyProgress::new(
         ProgressDrawTarget::term_like(Box::new(term.clone())),
         PLAIN,
-        Some(std::time::Duration::from_millis(1)),
+        Some(Duration::from_millis(1)),
         || 60,
         newline(&term),
     );

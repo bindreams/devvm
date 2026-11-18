@@ -7,7 +7,7 @@ use devvm::progress::{FileLog, LineProgress, Look, Progress, Total};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Error, ErrorKind};
 
-use crate::output::{Active, Facts, Run, Screen, choose, compose, end_in, end_with};
+use crate::output::{Active, Facts, Panicked, Run, Screen, choose, compose, end_with};
 use crate::tty::TtyProgress;
 use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
@@ -222,7 +222,8 @@ fn a_failure_and_an_unwritable_status_file_record_the_combined_line_that_was_pri
 
 fn run_ending(run: &Run, outcome: devvm::Result<ExitStatus>) -> String {
     let mut stderr = Vec::new();
-    end_in(run, false, None, outcome, ExitWidth::Full32, &mut stderr);
+    run.begin_ending()
+        .end(false, None, outcome, ExitWidth::Full32, &mut stderr);
     String::from_utf8(stderr).unwrap()
 }
 
@@ -283,4 +284,161 @@ fn ending_stops_the_terminal_screen_before_the_error_is_written() {
     late.set(1);
     progress.message("a note");
     assert_eq!(term.contents().trim(), "devvm-error: io: bad");
+}
+
+// Who ends the run ====================================================================================================
+
+/// What a panic hook does for `message`: the text it printed, when it was the ending.
+fn panic_hook(run: &Run, message: &str) -> Option<String> {
+    let mut stderr = Vec::new();
+    let panicked = run.on_panic(message.to_owned(), false, None, ExitWidth::Full32, &mut stderr);
+    match panicked {
+        Panicked::Ended { code, .. } => {
+            assert_eq!(code, 125);
+            Some(String::from_utf8(stderr).unwrap())
+        }
+        Panicked::Deferred => {
+            assert!(stderr.is_empty());
+            None
+        }
+    }
+}
+
+/// [`panic_hook`] on another thread than the one that began the ending.
+fn panic_hook_elsewhere(run: &Run, message: &str) -> Option<String> {
+    std::thread::scope(|scope| scope.spawn(|| panic_hook(run, message)).join().unwrap())
+}
+
+#[skuld::test]
+fn a_panic_with_no_ending_under_way_ends_the_run_and_names_the_log() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let run = Run::new();
+    let log = Arc::new(log_in(&tmp.path().join("logs")));
+    run.begin(Active {
+        log: Some(log.clone()),
+        tty: None,
+    });
+
+    let text = panic_hook(&run, "boom").expect("the hook ends the run");
+
+    assert_eq!(
+        text,
+        format!("log: {}\ndevvm-error: panic: boom\n", log.path().display())
+    );
+    assert!(
+        std::fs::read_to_string(log.path())
+            .unwrap()
+            .contains(" ERROR devvm-error: panic: boom")
+    );
+}
+
+#[skuld::test]
+fn a_panic_while_the_ending_is_under_way_is_stored_and_the_ending_reports_it() {
+    let run = Run::new();
+    let ending = run.begin_ending();
+
+    assert_eq!(panic_hook_elsewhere(&run, "first"), None);
+    assert_eq!(panic_hook_elsewhere(&run, "second"), None);
+    let mut stderr = Vec::new();
+    let code = ending.end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut stderr);
+
+    assert_eq!(code, 125);
+    assert_eq!(String::from_utf8(stderr).unwrap(), "devvm-error: panic: first\n");
+}
+
+#[skuld::test]
+fn a_stored_panic_replaces_the_outcome_the_ending_was_given() {
+    let run = Run::new();
+    let ending = run.begin_ending();
+    assert_eq!(panic_hook_elsewhere(&run, "boom"), None);
+    let mut stderr = Vec::new();
+
+    let code = ending.end(
+        false,
+        None,
+        Err(Error::new(ErrorKind::Io, "bad")),
+        ExitWidth::Full32,
+        &mut stderr,
+    );
+
+    assert_eq!(code, 125);
+    assert_eq!(String::from_utf8(stderr).unwrap(), "devvm-error: panic: boom\n");
+}
+
+#[skuld::test]
+fn a_panic_after_the_ending_has_decided_is_dropped_and_none_reaches_the_next_ending() {
+    let run = Run::new();
+    let ending = run.begin_ending();
+    let mut stderr = Vec::new();
+    assert_eq!(
+        ending.end(false, None, Ok(ExitStatus::Code(3)), ExitWidth::Full32, &mut stderr),
+        3
+    );
+
+    assert_eq!(panic_hook_elsewhere(&run, "late"), None);
+    drop(ending);
+
+    let next = run.begin_ending();
+    assert_eq!(
+        next.end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut stderr),
+        0
+    );
+    assert_eq!(String::from_utf8(stderr).unwrap(), "");
+}
+
+#[skuld::test]
+fn a_panic_stored_for_an_ending_that_never_decided_does_not_reach_the_next_one() {
+    let run = Run::new();
+    drop({
+        let ending = run.begin_ending();
+        assert_eq!(panic_hook_elsewhere(&run, "unclaimed"), None);
+        ending
+    });
+
+    let mut stderr = Vec::new();
+    let code = run
+        .begin_ending()
+        .end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut stderr);
+
+    assert_eq!(code, 0);
+    assert_eq!(String::from_utf8(stderr).unwrap(), "");
+}
+
+#[skuld::test]
+fn once_the_ending_is_over_a_panic_ends_the_run_again() {
+    let run = Run::new();
+    drop(run.begin_ending());
+
+    assert!(panic_hook_elsewhere(&run, "boom").is_some());
+}
+
+#[skuld::test]
+fn a_clean_ending_is_zero_unless_a_panic_was_stored() {
+    let run = Run::new();
+    let mut stderr = Vec::new();
+    assert_eq!(
+        run.begin_ending()
+            .end_clean(false, None, ExitWidth::Full32, &mut stderr),
+        0
+    );
+
+    let ending = run.begin_ending();
+    assert_eq!(panic_hook_elsewhere(&run, "boom"), None);
+    assert_eq!(ending.end_clean(false, None, ExitWidth::Full32, &mut stderr), 125);
+    assert_eq!(String::from_utf8(stderr).unwrap(), "devvm-error: panic: boom\n");
+}
+
+/// The ending itself failed: nothing else would report it.
+#[skuld::test]
+fn a_panic_on_the_endings_own_thread_ends_the_run() {
+    let run = Run::new();
+    let _ending = run.begin_ending();
+
+    assert_eq!(
+        panic_hook(&run, "boom").as_deref(),
+        Some(
+            "devvm-error: panic: boom
+"
+        )
+    );
 }
