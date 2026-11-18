@@ -32,7 +32,9 @@ pub(in crate::guest::windows) fn run(script: &str, helper: &str, path: Option<&P
 
 /// Where the script finds programs.
 pub(in crate::guest::windows) enum Search<'a> {
+    /// The caller's PATH and PATHEXT.
     Caller,
+    /// The caller's PATH with the directory in front of it, and the caller's PATHEXT.
     First(&'a Path),
     /// A PATH of its own: the directory (if any), then the directory of `pwsh.exe` and the system directory, and
     /// nothing the caller has (Git's `usr\bin` has a `dir.exe` and a `mkdir.exe`, which are programs); and a PATHEXT
@@ -89,6 +91,10 @@ fn process(exe: &str, script: &str, helper: Option<&str>) -> Process {
         None => process.env_remove(HELPER_VAR),
     };
     process
+}
+
+pub(in crate::guest::windows) fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 pub(in crate::guest::windows) fn shown(output: &Output) -> String {
@@ -204,15 +210,11 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
     }
     let output = run(&wrapped(&["no-such-program-xyz"]), "wrap-argv", None);
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no-such-program-xyz: command not found"));
+    assert!(stderr(&output).contains("no-such-program-xyz: command not found"));
     for name in ["Get-ChildItem", "dir", "mkdir"] {
         let output = run_with("pwsh", &wrapped(&[name]), Some("wrap-argv"), Search::Only(None));
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(&hint(name)),
-            "{name}: {}",
-            shown(&output)
-        );
+        assert!(stderr(&output).contains(&hint(name)), "{name}: {}", shown(&output));
     }
     let output = run_with(
         "pwsh",
@@ -225,9 +227,8 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
     for name in ["Get-ChildIte[m]", "Get-*", "*"] {
         let output = run_with("pwsh", &wrapped(&[name]), Some("wrap-argv"), Search::Only(None));
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
-        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains(&format!("devvm: {name}: command not found")),
+            stderr(&output).contains(&format!("devvm: {name}: command not found")),
             "{name}: {}",
             shown(&output)
         );
@@ -247,11 +248,7 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
     }
     let hinted = |output: &Output, name: &str| {
         assert_eq!(output.status.code(), Some(127), "{}", shown(output));
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(&hint(name)),
-            "{}",
-            shown(output)
-        );
+        assert!(stderr(output).contains(&hint(name)), "{}", shown(output));
     };
     hinted(
         &run_with(
@@ -300,7 +297,7 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         let output = by_path(name);
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains(&format!("devvm: {name}: command not found")),
+            stderr(&output).contains(&format!("devvm: {name}: command not found")),
             "{name}: {}",
             shown(&output)
         );
@@ -327,7 +324,7 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
     );
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("devvm: Find-Program: command not found"),
+        stderr(&output).contains("devvm: Find-Program: command not found"),
         "{}",
         shown(&output)
     );
@@ -350,6 +347,12 @@ fn a_filter_of_a_module_gets_the_hint_and_a_module_that_will_not_load_is_not_fou
         std::fs::create_dir_all(modules.join(module)).unwrap();
         std::fs::write(modules.join(module).join(format!("{module}.psm1")), text).unwrap();
     }
+    // The manifest exports `Invoke-Broken` statically, so the lookup of that name imports the module, which throws.
+    std::fs::write(
+        modules.join("Broken").join("Broken.psd1"),
+        "@{ RootModule = 'Broken.psm1'; ModuleVersion = '1.0'; GUID = '5b1c0a0e-2d5e-4c1a-9a53-0c3f7f6a9c11'; FunctionsToExport = @('Invoke-Broken') }\n",
+    )
+    .unwrap();
     let output = run_with(
         "pwsh",
         &wrapped(&["Invoke-Filt"]),
@@ -357,21 +360,18 @@ fn a_filter_of_a_module_gets_the_hint_and_a_module_that_will_not_load_is_not_fou
         Search::Modules(&modules),
     );
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains(&hint("Invoke-Filt")),
-        "{}",
-        shown(&output)
-    );
-    // Measured: a module that throws does not make `Get-Command` throw, so the name is not found.
+    assert!(stderr(&output).contains(&hint("Invoke-Filt")), "{}", shown(&output));
+    // Measured: a module that throws on import does not make `Get-Command -ErrorAction Ignore` throw, so the name is
+    // not found.
     let output = run_with(
         "pwsh",
-        &wrapped(&["Invoke-Nothing"]),
+        &wrapped(&["Invoke-Broken"]),
         Some("wrap-argv"),
         Search::Modules(&modules),
     );
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
     assert!(
-        String::from_utf8_lossy(&output.stderr).starts_with("devvm: Invoke-Nothing: command not found"),
+        stderr(&output).starts_with("devvm: Invoke-Broken: command not found"),
         "{}",
         shown(&output)
     );
@@ -387,8 +387,66 @@ fn a_lookup_that_throws_is_127_and_the_message_says_so(#[fixture(pwsh_wrap)] _gr
     let output = run_with("pwsh", &script, Some("wrap-argv"), Search::Only(None));
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .starts_with("devvm: Get-Date: command not found (lookup failed: no lookup)"),
+        stderr(&output).starts_with("devvm: Get-Date: command not found (lookup failed: no lookup)"),
+        "{}",
+        shown(&output)
+    );
+}
+
+/// A profile of the guest user runs before the script: its `Set-StrictMode` and its variables are the script's too.
+#[skuld::test]
+fn a_profile_cannot_change_what_the_not_found_block_answers(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let script = home.join("profile.ps1");
+    std::fs::write(&script, "'ran'").unwrap();
+    // A `$full` of the profile's, naming a script that exists or one that does not, is not the name looked up.
+    let strict = "Set-StrictMode -Version Latest\n";
+    let profiles = [
+        strict.to_owned(),
+        format!("{strict}$full = '{}'\n", script.display()),
+        format!("{strict}$full = '{}'\n", home.join("none.ps1").display()),
+    ];
+    for profile in &profiles {
+        for (name, hinted) in [("Get-Date", true), ("no-such-program-xyz", false)] {
+            let output = run_with(
+                "pwsh",
+                &format!("{profile}{}", wrapped(&[name])),
+                Some("wrap-argv"),
+                Search::Only(None),
+            );
+            assert_eq!(output.status.code(), Some(127), "{profile}{name}: {}", shown(&output));
+            let expected = if hinted {
+                hint(name)
+            } else {
+                format!("devvm: {name}: command not found")
+            };
+            assert!(
+                stderr(&output).starts_with(&expected),
+                "{profile}{name}: {}",
+                shown(&output)
+            );
+        }
+    }
+}
+
+/// `Remove-Item` of the script's own function is the first thing the lookup does: its failure is said, and the status is
+/// still 127.
+#[skuld::test]
+fn a_removal_that_fails_is_told_and_is_127(#[fixture(pwsh_wrap)] _group: &Group) {
+    let remove = "Remove-Item Function:Find-Program";
+    let text = wrapped(&["Get-Date"]);
+    assert!(text.contains(remove), "{text}");
+    let output = run_with(
+        "pwsh",
+        &text.replace(remove, "Remove-Item Function:No-Such-Function"),
+        Some("wrap-argv"),
+        Search::Only(None),
+    );
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert!(
+        stderr(&output).starts_with("devvm: Get-Date: command not found (lookup failed: "),
         "{}",
         shown(&output)
     );
@@ -459,7 +517,7 @@ fn wrap_sets_the_working_directory_of_the_program(
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(output.stdout.is_empty(), "{}", shown(&output));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("devvm: working directory "),
+        stderr(&output).contains("devvm: working directory "),
         "{}",
         shown(&output)
     );
@@ -477,7 +535,7 @@ fn a_program_that_cannot_start_exits_126_naming_it(
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(output.stdout.is_empty(), "{}", shown(&output));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains(&format!("devvm: {bad}: ")),
+        stderr(&output).contains(&format!("devvm: {bad}: ")),
         "{}",
         shown(&output)
     );
@@ -535,11 +593,7 @@ fn a_cmd_file_target_keeps_cmd_quoting(#[fixture(unicode_home)] home: &Path, #[f
     let output = run(&wrapped(&[&script, "a\nb"]), "wrap-argv", None);
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(output.stdout.is_empty(), "{}", shown(&output));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("line break"),
-        "{}",
-        shown(&output)
-    );
+    assert!(stderr(&output).contains("line break"), "{}", shown(&output));
 
     let quoted = format!("\"{exe}\" \"a b\" \"c&d\" \"q\"\"x\"");
     for (script, stdout, status) in [
@@ -567,11 +621,7 @@ fn a_cmd_file_target_keeps_cmd_quoting(#[fixture(unicode_home)] home: &Path, #[f
     let lines = run(&wrapped(&["cmd.exe", "/d", "/c", "echo a\necho b"]), "wrap-argv", None);
     assert_eq!(lines.status.code(), Some(126), "{}", shown(&lines));
     assert!(lines.stdout.is_empty(), "{}", shown(&lines));
-    assert!(
-        String::from_utf8_lossy(&lines.stderr).contains("line break"),
-        "{}",
-        shown(&lines)
-    );
+    assert!(stderr(&lines).contains("line break"), "{}", shown(&lines));
     // `/c` ends a chain of switches, and is a plain argument of a program that is not cmd.
     let chained = run(&wrapped(&["cmd.exe", "/d/c", "echo hello"]), "wrap-argv", None);
     assert_eq!(chained.status.code(), Some(0), "{}", shown(&chained));

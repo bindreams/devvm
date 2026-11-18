@@ -8,7 +8,7 @@ use std::process::Output;
 
 use super::{ROOT, caller_script, literal};
 use crate::guest::windows::wrap::wrap;
-use crate::guest::windows::wrap::wrap_pwsh_tests::{run, shown};
+use crate::guest::windows::wrap::wrap_pwsh_tests::{run, shown, stderr};
 use crate::guest::windows::wrap::wrap_tests::hint;
 use crate::test_groups::{Group, pwsh_wrap};
 use crate::test_support::fixtures::unicode_home;
@@ -67,10 +67,6 @@ fn requests(root: &Path) -> Vec<PathBuf> {
         Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
         Err(_) => Vec::new(),
     }
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// A runner that serves the request `$id` at once: it needs the request to exist, which is how the tests see that the

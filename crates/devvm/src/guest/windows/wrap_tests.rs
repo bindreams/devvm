@@ -154,7 +154,9 @@ fn a_name_that_is_a_powershell_command_exits_127_naming_pwsh_c() {
         text.contains("Get-Command ([WildcardPattern]::Escape($program))"),
         "{text}"
     );
-    assert!(text.contains("[IO.File]::Exists($full)"), "{text}");
+    assert!(text.contains("[IO.File]::Exists($f)"), "{text}");
+    // No variable of the search is read: a profile's own, or none under `Set-StrictMode`, cannot change the answer.
+    assert!(!text.contains("$full") && !text.contains("$script:"), "{text}");
     // The hint is the shared text, once, with no example command or guest name.
     assert_eq!(text.matches(POWERSHELL_COMMAND).count(), 1, "{text}");
     assert!(
@@ -170,16 +172,17 @@ fn the_lookup_finds_no_function_of_the_script_and_a_lookup_that_throws_is_told()
     let text = script(&["Find-Program"]);
     let (_, lookup) = text.split_once("if (-not $app) {").unwrap();
     let at = |needle: &str| lookup.find(needle).unwrap_or_else(|| panic!("{needle} is in {lookup}"));
-    // The function the script defined is removed before the lookup, outside the `try`: its failure is not swallowed.
-    let (remove, try_at, get, catch, end) = (
-        at("Remove-Item"),
+    // The function the script defined is removed before the lookup, in the `try`: a failure of it is told by the `catch`
+    // and the lookup is not made.
+    let (try_at, remove, get, catch, end) = (
         at("try {"),
+        at("Remove-Item"),
         at("Get-Command"),
         at("} catch {"),
         at("exit 127"),
     );
     assert!(
-        remove < try_at && try_at < get && get < catch && catch < end,
+        try_at < remove && remove < get && get < catch && catch < end,
         "{lookup}"
     );
     // A lookup that throws is said, and the status is still the one 127 after it.
@@ -201,8 +204,8 @@ fn argv0_and_the_working_directory_are_in_the_script_once_for_a_user_and_for_an_
 
 #[skuld::test]
 fn a_command_with_a_long_program_name_or_working_directory_still_wraps() {
-    // argv[0] is written once: a name over a third of the limit fits only so.
-    assert!(wrap(&command(&[&"x".repeat(LINE_LIMIT / 3 + 1), "arg"])).is_ok());
+    // argv[0] is written once: written twice, 16,000 characters would be 32,000 units and over the limit.
+    assert!(wrap(&command(&[&"x".repeat(16_000), "arg"])).is_ok());
     // The working directory is written once: twice, 16,000 characters would be 32,000 units and over the limit.
     let mut cmd = command(&["tool"]);
     cmd.cwd = Some(format!(r"C:\{}", "d".repeat(16_000)));

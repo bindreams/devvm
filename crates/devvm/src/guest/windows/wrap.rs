@@ -37,8 +37,10 @@ pub(super) const PWSH_EXE: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 
 /// The longest command line `CreateProcess` takes, in UTF-16 units: its 32,767 include the terminating NUL.
 ///
-/// The fixed text of a script is about 2,450 units, and each character of an argument is in it twice: one argument of
-/// at most about 15,100 characters fits a command of a short name.
+/// The fixed text of a script is about 2,600 units, and each character of an argument is in it twice (the list and the
+/// batch form), so one argument of at most about 15,000 characters fits a command of a short name. The arguments of
+/// `cmd` are in it a third time (the line of `cmd.exe /c`): about 10,000 characters. An elevated command is the script
+/// inside the helper's: about 11,500.
 pub(crate) const LINE_LIMIT: usize = 32_766;
 
 /// What a command prints in session 0, with status 126.
@@ -57,11 +59,11 @@ pub(super) fn session_check() -> String {
 
 /// The file `name` names, or nothing: `name` is the file itself when it has a path (relative to the working directory)
 /// and a file of PATH otherwise, as it is or with an extension of PATHEXT. It is a plain name: no wildcard reads its
-/// `[` or `*`, and no cmdlet or alias answers to it. A name with a path leaves its full path in `$full`.
+/// `[` or `*`, and no cmdlet or alias answers to it.
 const RESOLVE: &str = "function Find-Program([string]$name) {
     $exts = @($env:PATHEXT -split ';' | Where-Object { $_ })
     $named = $exts -contains [IO.Path]::GetExtension($name)
-    $stems = if ($name.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { $script:full = [IO.Path]::GetFullPath($name, (Get-Location).ProviderPath); @($full) } else { @($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) }) }
+    $stems = if ($name.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { @([IO.Path]::GetFullPath($name, (Get-Location).ProviderPath)) } else { @($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) }) }
     foreach ($stem in $stems) {
         if ($named -and [IO.File]::Exists($stem)) { return $stem }
         foreach ($ext in $exts) { if ([IO.File]::Exists($stem + $ext)) { return $stem + $ext } }
@@ -93,18 +95,18 @@ pub(crate) const POWERSHELL_COMMAND: &str = ": a PowerShell command, not a progr
 /// name is not a program either); a lookup that throws is said and is no answer.
 ///
 /// The lookup is in the script because only the guest knows its commands, and runs only when no program is found. A
-/// name with a path is a script by its file (`$full`, which `Find-Program` set); a bare name is looked up by
-/// `Get-Command`, escaped because it is a name and not a wildcard. `Find-Program` is removed first, so the script's own
-/// function is not an answer.
+/// name with a path is a script by its file; a bare name is looked up by `Get-Command`, escaped because it is a name
+/// and not a wildcard. The block works from `$program` alone: no variable of the search is read. `Find-Program` is
+/// removed first, so the script's own function is not an answer; the removal is in the `try`, so a failure of it is
+/// said and the lookup is not made.
 ///
-/// The block makes every script about 470 units longer, which is about 235 characters off the longest argument (it
-/// is in the script twice); a name written once and not three times gives back 2 units per character of it.
+/// The block makes every script about 560 units longer: the longest argument of a program is about 280 characters
+/// shorter (about 190 for `cmd`, about 290 elevated).
 fn not_found() -> String {
     format!(
         r#"if (-not $app) {{
-Remove-Item Function:Find-Program
 $w = ': command not found'
-try {{ $c = if ($full) {{ [IO.File]::Exists($full) -and $full -like '*.ps1' }} else {{ Get-Command ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction Ignore }}; if ($c) {{ $w = '{POWERSHELL_COMMAND}' }} }} catch {{ $w += ' (lookup failed: ' + $_.Exception.Message + ')' }}
+try {{ Remove-Item Function:Find-Program; $c = if ($program.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) {{ $f = [IO.Path]::GetFullPath($program, (Get-Location).ProviderPath); [IO.File]::Exists($f) -and $f -like '*.ps1' }} else {{ Get-Command ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction Ignore }}; if ($c) {{ $w = '{POWERSHELL_COMMAND}' }} }} catch {{ $w += ' (lookup failed: ' + $_.Exception.Message + ')' }}
 {} }}
 "#,
         failure("'devvm: ' + $program + $w", 127)
