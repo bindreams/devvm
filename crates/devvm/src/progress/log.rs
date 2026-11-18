@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, ThreadId};
 use std::time::{Duration, SystemTime};
 
 use crate::error::{Error, ErrorKind, Result};
@@ -39,6 +40,21 @@ pub struct FileLog {
     path: PathBuf,
     clock: Arc<dyn Clock>,
     state: Mutex<State>,
+    /// The thread that holds `state`: a record that thread attempts is skipped, since waiting would wait for itself. A
+    /// panic inside the log reaches the panic hook on the thread that holds it, and the hook records the error.
+    holder: Mutex<Option<ThreadId>>,
+}
+
+/// The log's state, locked; records the thread that holds it.
+struct Held<'a> {
+    state: MutexGuard<'a, State>,
+    holder: &'a Mutex<Option<ThreadId>>,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        *self.holder.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 struct State {
@@ -97,6 +113,7 @@ impl FileLog {
                 file,
                 bars: HashMap::new(),
             }),
+            holder: Mutex::new(None),
         };
         for warning in warnings {
             log.warn(&warning);
@@ -111,8 +128,22 @@ impl FileLog {
     /// Records `line`, the `devvm-error:` line that ends the run, as one `ERROR` record. It is not an event: no other
     /// sink sees it.
     pub fn failed(&self, line: &str) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        self.record(&mut state, "ERROR", line);
+        let Some(mut held) = self.lock() else { return };
+        self.record(&mut held.state, "ERROR", line);
+    }
+
+    /// The state, locked; `None` when this thread holds it already.
+    fn lock(&self) -> Option<Held<'_>> {
+        let me = thread::current().id();
+        if *self.holder.lock().unwrap_or_else(PoisonError::into_inner) == Some(me) {
+            return None;
+        }
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        *self.holder.lock().unwrap_or_else(PoisonError::into_inner) = Some(me);
+        Some(Held {
+            state,
+            holder: &self.holder,
+        })
     }
 
     fn record(&self, state: &mut State, kind: &str, text: &str) {
@@ -174,8 +205,8 @@ fn prune(dir: &Path, now: SystemTime) -> Vec<String> {
 
 impl Progress for FileLog {
     fn event(&self, event: &Event) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let state = &mut *state;
+        let Some(mut held) = self.lock() else { return };
+        let state = &mut *held.state;
         match event {
             Event::Note { level, text } => {
                 let kind = match level {

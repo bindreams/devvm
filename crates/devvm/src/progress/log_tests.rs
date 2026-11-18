@@ -215,3 +215,35 @@ fn a_begin_whose_parent_was_never_seen_is_logged_with_that_parent_id(#[fixture(u
         ]
     );
 }
+
+/// A clock that runs one closure when it is first read, which is inside the log's lock.
+#[derive(Default)]
+struct HookClock(std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
+impl Clock for HookClock {
+    fn now(&self) -> SystemTime {
+        let hook = self.0.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        noon()
+    }
+}
+
+/// A panic inside the log's lock reaches the panic hook on the same thread, which records the error: waiting for the
+/// lock would wait for itself.
+#[skuld::test]
+fn a_record_attempted_on_the_thread_that_holds_the_log_is_skipped(#[fixture(unicode_home)] home: &Path) {
+    let clock = Arc::new(HookClock::default());
+    let log = Arc::new(FileLog::create(&home.join("logs"), clock.clone()).unwrap());
+    let again = log.clone();
+    *clock.0.lock().unwrap() = Some(Box::new(move || again.failed("from the hook")));
+
+    log.warn("outer");
+    log.failed("later");
+
+    assert_eq!(
+        records(&log),
+        [format!("{AT} WARN outer"), format!("{AT} ERROR later")]
+    );
+}
