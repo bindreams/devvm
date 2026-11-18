@@ -30,13 +30,14 @@ impl ProductKey {
     }
 
     /// The generic key Microsoft publishes for the Windows edition `edition_id` (`EDITIONID` of the image, in any case)
-    /// at `build` (`BUILD` of its version), or `None` when [`GENERIC_KEYS`] has none: an edition or a build it does
-    /// not list, or an image that names no build.
-    pub(crate) fn generic_for(edition_id: &str, build: Option<u32>) -> Option<ProductKey> {
+    /// at `build` and `spbuild` (`BUILD` and `SPBUILD` of its version), or `None` when [`GENERIC_KEYS`] has none: an
+    /// edition, build or `SPBUILD` it does not list, or an image that names no build. `spbuild` matters only where a
+    /// row's builds name a first one.
+    pub(crate) fn generic_for(edition_id: &str, build: Option<u32>, spbuild: Option<u32>) -> Option<ProductKey> {
         let build = build?;
         GENERIC_KEYS
             .iter()
-            .find(|row| row.matches(edition_id, build))
+            .find(|row| row.matches(edition_id, build, spbuild))
             .map(|row| ProductKey::parse(row.key).expect("every key in GENERIC_KEYS parses"))
     }
 
@@ -53,8 +54,29 @@ impl PartialEq for ProductKey {
 
 impl Eq for ProductKey {}
 
-/// The builds of Windows a [`Generic`] key is for: inclusive ranges, `(first, last)`.
-type Builds = &'static [(u32, u32)];
+/// Builds of Windows from `first` to `last`, inclusive, whose `SPBUILD` is at least `spbuild_from` (0: any).
+struct Span {
+    first: u32,
+    last: u32,
+    spbuild_from: u32,
+}
+
+impl Span {
+    fn contains(&self, build: u32, spbuild: Option<u32>) -> bool {
+        (self.first..=self.last).contains(&build) && spbuild.unwrap_or(0) >= self.spbuild_from
+    }
+}
+
+const fn builds(first: u32, last: u32) -> Span {
+    Span {
+        first,
+        last,
+        spbuild_from: 0,
+    }
+}
+
+/// The builds of Windows a [`Generic`] key is for.
+type Builds = &'static [Span];
 
 /// A generic volume license key (GVLK) of an edition: the key a KMS client installs with. Setup takes it for a volume
 /// edition, which is installed unactivated.
@@ -65,9 +87,8 @@ struct Generic {
 }
 
 impl Generic {
-    fn matches(&self, edition_id: &str, build: u32) -> bool {
-        self.edition_id.eq_ignore_ascii_case(edition_id)
-            && self.builds.iter().any(|&(first, last)| (first..=last).contains(&build))
+    fn matches(&self, edition_id: &str, build: u32, spbuild: Option<u32>) -> bool {
+        self.edition_id.eq_ignore_ascii_case(edition_id) && self.builds.iter().any(|span| span.contains(build, spbuild))
     }
 }
 
@@ -80,23 +101,29 @@ const fn row(edition_id: &'static str, builds: Builds, key: &'static str) -> Gen
 }
 
 /// Windows 10 (build 10240) and every release since: the page lists one key per client edition, not one per release.
-const WINDOWS_10_AND_11: Builds = &[(10240, u32::MAX)];
+const WINDOWS_10_AND_11: Builds = &[builds(10240, u32::MAX)];
 /// Windows Enterprise LTSC 2019 (17763), 2021 and 2024 (26100), which share their keys. LTSC 2021 (Windows 10 21H2)
 /// matches the whole 19041 to 19045 build family.
-const LTSC_2019_ON: Builds = &[(17763, 17763), (19041, 19045), (26100, 26100)];
-/// Windows IoT Enterprise LTSC 2021 (the 19041 to 19045 family, as above) and 2024.
-const IOT_LTSC_2021_ON: Builds = &[(19041, 19045), (26100, 26100)];
-const LTSB_2016: Builds = &[(14393, 14393)];
-const LTSB_2015: Builds = &[(10240, 10240)];
-const SERVER_2016: Builds = &[(14393, 14393)];
-const SERVER_2019: Builds = &[(17763, 17763)];
-const SERVER_2022: Builds = &[(20348, 20348)];
-const SERVER_2025: Builds = &[(26100, 26100)];
+const LTSC_2019_ON: Builds = &[builds(17763, 17763), builds(19041, 19045), builds(26100, 26100)];
+/// Windows IoT Enterprise LTSC 2021 (build 19044, from image 19044.2905: the page's IoT tab) and 2024.
+const IOT_LTSC_2021_ON: Builds = &[
+    Span {
+        first: 19044,
+        last: 19044,
+        spbuild_from: 2905,
+    },
+    builds(26100, 26100),
+];
+const LTSB_2016: Builds = &[builds(14393, 14393)];
+const LTSB_2015: Builds = &[builds(10240, 10240)];
+const SERVER_2016: Builds = &[builds(14393, 14393)];
+const SERVER_2019: Builds = &[builds(17763, 17763)];
+const SERVER_2022: Builds = &[builds(20348, 20348)];
+const SERVER_2025: Builds = &[builds(26100, 26100)];
 
 /// The generic keys of the editions devvm can install. Copied on 2026-11-18 from
 /// <https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys>. Nothing checks it against
-/// the page. A missing edition needs `product-key`: Home, multi-session, the IoT Enterprise subscription LTSC,
-/// pre-Windows 10 and pre-2016 Server, Semi-Annual Channel servers, Server Essentials, Azure Edition.
+/// the page. A missing edition needs `product-key`.
 const GENERIC_KEYS: &[Generic] = &[
     // Windows 11 and Windows 10 Semi-Annual Channel
     row("Professional", WINDOWS_10_AND_11, "W269N-WFGWX-YVC9B-4J6C9-T83GX"),

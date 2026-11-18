@@ -272,7 +272,7 @@ fn a_recipe_with_no_product_key_installs_the_generic_key_of_the_image_edition_an
         ("Windows 11 IoT Enterprise LTSC 2024", "IoTEnterpriseS"),
     ] {
         let rig = rig_without_a_machine(home, "three-images.iso");
-        let generic = ProductKey::generic_for(edition_id, Some(26100)).unwrap();
+        let generic = ProductKey::generic_for(edition_id, Some(26100), Some(1742)).unwrap();
 
         rig.build_keyed(Some(edition), None).unwrap_err();
 
@@ -288,8 +288,8 @@ fn a_recipe_with_no_product_key_installs_the_generic_key_of_the_image_edition_an
 fn the_bootstrap_is_told_whether_the_chosen_image_is_an_evaluation_and_a_keyed_edition_gets_its_key(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    // `single-image.iso` holds an evaluation edition, which takes no key; `three-images.iso` volume editions, which are
-    // installed with a key.
+    // An evaluation edition takes no key; Setup would reject one. `three-images.iso` holds volume editions, which get a
+    // key.
     for (iso, edition, product_key, evaluation) in [
         ("single-image.iso", None, None, "$true"),
         (

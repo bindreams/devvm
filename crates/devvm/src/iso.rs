@@ -97,9 +97,8 @@ impl HeldIso {
     }
 }
 
-/// What a build reads from an ISO: the keyed [`IsoRoot`] and the boot patch. Built only by [`read_install_iso`], so the
-/// image, the key Setup installs it with and the evaluation flag are of the one image the root keyed. The key is `None`
-/// only for an evaluation edition: [`key_iso`] refuses a recipe that gives one a key, and any other image has one.
+/// What a build reads from an ISO: the keyed [`IsoRoot`] and the boot patch. Built only by [`read_install_iso`], so
+/// image, key and evaluation flag belong to one image. `key` is `None` only for an evaluation edition.
 #[derive(Debug)]
 pub(crate) struct InstallIso {
     root: IsoRoot,
@@ -140,8 +139,8 @@ impl InstallIso {
     }
 }
 
-/// What a layer key is made from, of an ISO, and the ISO held. Built only by [`key_iso`], which resolves the key for the
-/// image it selects, so the two cannot drift.
+/// What a layer key is made from, of an ISO, and the ISO held. Built only by [`key_iso`], which resolves the key for
+/// the image it selects.
 #[derive(Debug)]
 pub(crate) struct IsoRoot {
     sha256: Sha256,
@@ -297,10 +296,9 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
     Ok(chosen)
 }
 
-/// The key the build installs `image` with: the recipe's `product_key`, else the generic key devvm knows for the
-/// image's edition and build ([`ProductKey::generic_for`]). An evaluation edition takes none, and a recipe that gives it
-/// one is refused; an image that is not an evaluation edition and has no key either way is refused (Setup stops on its
-/// key page otherwise), naming `product-key` and where Microsoft lists generic keys.
+/// The key the build installs `image` with: the recipe's `product_key`, else the generic key for the image's edition and
+/// build ([`ProductKey::generic_for`]). Refuses a key given to an evaluation edition, and no key for any other edition,
+/// naming `product-key` and Microsoft's page.
 fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<Option<ProductKey>> {
     let name = escape_controls(&image.name);
     if image.is_evaluation() {
@@ -315,13 +313,21 @@ fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Re
     if let Some(key) = product_key {
         return Ok(Some(key.clone()));
     }
-    ProductKey::generic_for(&image.edition_id, image.build_number())
+    ProductKey::generic_for(&image.edition_id, image.build_number(), image.spbuild_number())
         .map(Some)
         .ok_or_else(|| {
             let detail = match (image.edition_id.as_str(), image.build.as_deref(), image.build_number()) {
                 ("", ..) => "no edition id".to_owned(),
                 (id, None, _) => format!("edition id `{}`, no build", escape_controls(id)),
-                (id, Some(_), Some(build)) => format!("edition id `{}`, build {build}", escape_controls(id)),
+                (id, Some(_), Some(build)) => format!(
+                    "edition id `{}`, build {build}{}",
+                    escape_controls(id),
+                    image
+                        .spbuild
+                        .as_deref()
+                        .map(|text| format!(".{}", escape_controls(text)))
+                        .unwrap_or_default()
+                ),
                 (id, Some(text), None) => format!(
                     "edition id `{}`, BUILD `{}` is not a build number devvm can read",
                     escape_controls(id),

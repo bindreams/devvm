@@ -30,12 +30,19 @@ fn images(fixture_name: &str) -> Vec<WimImage> {
     read_image_list(&mut Cursor::new(wim_with(&fixture(fixture_name), 2)), "install.wim").unwrap()
 }
 
+/// An image as the fixtures list it: the `SPBUILD` that goes with `build` there (`26100.1742`, `26200.6584`).
 fn image(index: u32, name: &str, edition_id: &str, build: Option<u32>, arch: WimArch, language: &str) -> WimImage {
+    let spbuild = match build {
+        Some(26100) => Some("1742".to_owned()),
+        Some(26200) => Some("6584".to_owned()),
+        _ => None,
+    };
     WimImage {
         index,
         name: name.to_owned(),
         edition_id: edition_id.to_owned(),
         build: build.map(|build| build.to_string()),
+        spbuild,
         arch,
         language: language.to_owned(),
     }
@@ -108,31 +115,50 @@ fn the_build_is_the_one_of_the_images_own_version() {
 }
 
 #[skuld::test]
-fn an_image_with_no_version_has_no_build() {
-    let list = "<WIM><IMAGE INDEX=\"1\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><LANGUAGES><DEFAULT>en-US</DEFAULT>                </LANGUAGES></WINDOWS></IMAGE></WIM>";
-    assert_eq!(parse_image_list(list.as_bytes(), "install.wim").unwrap()[0].build, None);
+fn the_spbuild_is_the_one_of_the_images_own_version() {
+    assert_eq!(images("wim-ltsc-2024-eval.xml")[0].spbuild_number(), Some(1742));
+    assert_eq!(images("wim-win11-eval-en-us.xml")[0].spbuild_number(), Some(6584));
 }
 
 #[skuld::test]
-fn a_build_that_is_not_a_number_keeps_its_text_and_does_not_refuse_the_list() {
+fn an_image_with_no_version_has_no_build() {
+    let list = "<WIM><IMAGE INDEX=\"1\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><LANGUAGES><DEFAULT>en-US</DEFAULT>                </LANGUAGES></WINDOWS></IMAGE></WIM>";
+    let image = &parse_image_list(list.as_bytes(), "install.wim").unwrap()[0];
+    assert_eq!((&image.build, &image.spbuild), (&None, &None));
+}
+
+#[skuld::test]
+fn a_build_and_an_spbuild_that_are_not_numbers_keep_their_text_and_do_not_refuse_the_list() {
     for (build, text) in [("abc", Some("abc")), (" 12x ", Some("12x")), ("", None), ("  ", None)] {
         let list = format!(
-            "<WIM><IMAGE INDEX=\"4\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><VERSION><BUILD>{build}</BUILD></VERSION><LANGUAGES><DEFAULT>en-US</DEFAULT></LANGUAGES></WINDOWS></IMAGE></WIM>"
+            "<WIM><IMAGE INDEX=\"4\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><VERSION><BUILD>{build}</BUILD><SPBUILD>{build}</SPBUILD></VERSION><LANGUAGES><DEFAULT>en-US</DEFAULT></LANGUAGES></WINDOWS></IMAGE></WIM>"
         );
         let images = parse_image_list(list.as_bytes(), "install.wim").unwrap();
         assert_eq!(images[0].build.as_deref(), text, "BUILD `{build}`");
         assert_eq!(images[0].build_number(), None, "BUILD `{build}`");
+        assert_eq!(images[0].spbuild.as_deref(), text, "SPBUILD `{build}`");
+        assert_eq!(images[0].spbuild_number(), None, "SPBUILD `{build}`");
     }
 }
 
 #[skuld::test]
-fn a_build_is_a_number_only_when_it_is_written_as_plain_decimal_digits() {
-    let number = |build: &str| {
-        WimImage {
-            build: Some(build.to_owned()),
-            ..image(1, "n", "EnterpriseS", None, WimArch::X64, "en-US")
-        }
-        .build_number()
+fn a_build_and_an_spbuild_are_numbers_only_when_written_as_plain_decimal_digits() {
+    let number = |text: &str| {
+        let image = image(1, "n", "EnterpriseS", None, WimArch::X64, "en-US");
+        let build = WimImage {
+            build: Some(text.to_owned()),
+            ..image.clone()
+        };
+        let spbuild = WimImage {
+            spbuild: Some(text.to_owned()),
+            ..image
+        };
+        assert_eq!(
+            build.build_number(),
+            spbuild.spbuild_number(),
+            "BUILD and SPBUILD {text:?}"
+        );
+        build.build_number()
     };
     assert_eq!(number("26100"), Some(26100));
     assert_eq!(number("0"), Some(0));

@@ -238,10 +238,10 @@ fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home
         "the product key is an input of the base"
     );
     // An edition devvm knows a generic key for, with no key in the recipe, is keyed as it is with that key written out.
-    let generic = "M7XTQ-FN8P6-TTKYV-9D4CC-J462D";
+    let generic = ProductKey::generic_for("EnterpriseS", Some(26100), Some(1742)).unwrap();
     assert_eq!(
         key(&three, Some(first), None),
-        key(&three, Some(first), Some(generic)),
+        key(&three, Some(first), Some(generic.expose())),
         "the generic key is an input of the base, as the recipe's is"
     );
     assert_ne!(key(&three, Some(first), None), key(&three, Some(first), Some(a)));

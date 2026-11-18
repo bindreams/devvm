@@ -58,9 +58,8 @@ pub enum Source {
     /// expires reads it again. A layer is keyed by the ISO's content, so the same bytes at another path are the same
     /// layer. x64 images only; an image of another architecture is refused.
     ///
-    /// `product_key` is installed instead of the generic key devvm knows for the edition; an edition that is not an
-    /// evaluation edition and has no generic key needs it, and an evaluation edition refuses it. The key the base is
-    /// installed with is part of its layer key, so changing it rebuilds the base.
+    /// `product_key` is installed instead of the generic key devvm knows for the edition. The key the base is installed
+    /// with is part of its layer key, so changing it rebuilds the base.
     Iso {
         path: PathBuf,
         edition: Option<String>,

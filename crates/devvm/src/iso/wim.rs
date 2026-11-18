@@ -71,12 +71,15 @@ pub(crate) struct WimImage {
     pub name: String,
     /// `EDITIONID`, such as `EnterpriseS`; empty when the image has none.
     pub edition_id: String,
-    /// `VERSION`'s `BUILD` as the image has it, such as `26100`; `None` when the image has none. An edition id alone
-    /// does not say which generation of Windows the image is (`EnterpriseS` is five of them), so a key follows both.
-    /// Read it with [`WimImage::build_number`]: a text that is not a number must not fail the image list, only the key
-    /// of an image that needs one.
+    /// `VERSION`'s `BUILD` text, such as `26100`; `None` when absent. Read via [`WimImage::build_number`], so a
+    /// malformed one fails only an image that needs a key. An edition id alone does not say which generation of Windows
+    /// the image is (`EnterpriseS` is five of them), so a key follows both.
     #[serde(deserialize_with = "Option::deserialize")]
     pub build: Option<String>,
+    /// `VERSION`'s `SPBUILD` text, such as `2905` in build `19044.2905`; `None` when absent. Read via
+    /// [`WimImage::spbuild_number`].
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub spbuild: Option<String>,
     pub arch: WimArch,
     /// The image's default language, such as `en-US`.
     pub language: String,
@@ -86,16 +89,24 @@ impl WimImage {
     /// The image's build as a number; `None` when it has none or its text is not plain decimal digits (no sign, no
     /// leading zero) of a number that fits `u32`.
     pub(crate) fn build_number(&self) -> Option<u32> {
-        let text = self.build.as_deref()?;
-        let plain =
-            !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) && (text == "0" || !text.starts_with('0'));
-        if plain { text.parse().ok() } else { None }
+        plain_number(self.build.as_deref()?)
+    }
+
+    /// The image's `SPBUILD` as a number, under the rule of [`WimImage::build_number`].
+    pub(crate) fn spbuild_number(&self) -> Option<u32> {
+        plain_number(self.spbuild.as_deref()?)
     }
 
     /// Whether the image is an evaluation edition: its edition id names an evaluation.
     pub(crate) fn is_evaluation(&self) -> bool {
         names_an_evaluation(&self.edition_id)
     }
+}
+
+/// `text` as a number when it is plain decimal digits (no sign, no leading zero) of a number that fits `u32`.
+fn plain_number(text: &str) -> Option<u32> {
+    let plain = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) && (text == "0" || !text.starts_with('0'));
+    if plain { text.parse().ok() } else { None }
 }
 
 /// Whether an edition id or license family names an evaluation edition: it ends in `Eval`, in any case. The first-logon
@@ -333,6 +344,7 @@ struct Partial {
     name: Option<String>,
     edition_id: Option<String>,
     build: Option<String>,
+    spbuild: Option<String>,
     arch: Option<String>,
     language: Option<String>,
 }
@@ -344,6 +356,7 @@ impl Partial {
             name: None,
             edition_id: None,
             build: None,
+            spbuild: None,
             arch: None,
             language: None,
         }
@@ -368,12 +381,13 @@ impl Partial {
             .trim()
             .parse::<u32>()
             .map_err(|_| missing("numeric ARCH"))?;
-        let build = self
-            .build
-            .as_deref()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned);
+        let version_text = |text: &Option<String>| {
+            text.as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        let (build, spbuild) = (version_text(&self.build), version_text(&self.spbuild));
         let language = self
             .language
             .clone()
@@ -384,6 +398,7 @@ impl Partial {
             name,
             edition_id: self.edition_id.unwrap_or_default(),
             build,
+            spbuild,
             arch: WimArch::from_code(code),
             language,
         })
@@ -398,6 +413,7 @@ fn add_text(images: &mut [Partial], path: &[String], text: &str) {
         ["WIM", "IMAGE", "NAME"] => &mut image.name,
         ["WIM", "IMAGE", "WINDOWS", "EDITIONID"] => &mut image.edition_id,
         ["WIM", "IMAGE", "WINDOWS", "VERSION", "BUILD"] => &mut image.build,
+        ["WIM", "IMAGE", "WINDOWS", "VERSION", "SPBUILD"] => &mut image.spbuild,
         ["WIM", "IMAGE", "WINDOWS", "ARCH"] => &mut image.arch,
         ["WIM", "IMAGE", "WINDOWS", "LANGUAGES", "DEFAULT"] => &mut image.language,
         _ => return,

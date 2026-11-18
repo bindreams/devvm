@@ -131,7 +131,7 @@ fn optional_text(name: &str) -> Result<Option<String>, String> {
 // then fails the tests naming the ISO variable where that is not set; only the `vm-windows` job gives one (an evaluation
 // ISO; a non-evaluation edition devvm has no generic key for also needs `DEVVM_WINDOWS_PRODUCT_KEY`, and one with
 // several images `DEVVM_WINDOWS_EDITION`). The tests also need the `vm` group's QEMU, so they ask for that group's
-// consent. The lib's tests and `devvm-cli`'s `vm_cli` both join it.
+// consent.
 test_group!(
     WINDOWS_GUEST => windows_guest,
     env = "DEVVM_TEST_WINDOWS_GUEST",

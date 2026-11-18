@@ -57,6 +57,7 @@ fn image_of(index: u32, name: &str, arch: WimArch) -> WimImage {
         name: name.to_owned(),
         edition_id: String::new(),
         build: None,
+        spbuild: None,
         arch,
         language: "en-US".to_owned(),
     }
@@ -110,7 +111,7 @@ fn an_edition_with_no_key_in_the_recipe_gets_the_generic_key_of_its_edition_and_
         26100,
         edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024"),
     );
-    let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100)).unwrap();
+    let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100), Some(1742)).unwrap();
     assert_eq!(resolve_product_key(&ltsc, None).unwrap(), Some(generic));
     let key = |build| resolve_product_key(&built(build, edition_of("EnterpriseS", "e")), None).unwrap();
     assert!(key(10240).is_some() && key(14393).is_some() && key(17763).is_some());
@@ -131,6 +132,21 @@ fn an_evaluation_edition_takes_no_key_from_the_recipe_or_the_table() {
         "the edition `Windows 11 Enterprise Evaluation` is an evaluation edition; `product-key` in `from:` must not be set"
     );
     assert!(!format!("{error:?} {error}").contains(KEY));
+}
+
+#[skuld::test]
+fn iot_ltsc_2021_media_from_19044_2905_on_gets_the_generic_key() {
+    let image = WimImage {
+        spbuild: Some("2905".to_owned()),
+        ..built(
+            19044,
+            edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
+        )
+    };
+    assert_eq!(
+        resolve_product_key(&image, None).unwrap(),
+        ProductKey::generic_for("IoTEnterpriseS", Some(19044), Some(2905))
+    );
 }
 
 #[skuld::test]
@@ -177,6 +193,23 @@ fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_
             r#"edition id `Id"</EDITIONID>\n`, build 26100"#,
         ),
         (edition_of("", "No id"), "no edition id"),
+        (
+            WimImage {
+                spbuild: Some("2904".to_owned()),
+                ..built(
+                    19044,
+                    edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
+                )
+            },
+            "edition id `IoTEnterpriseS`, build 19044.2904",
+        ),
+        (
+            built(
+                19044,
+                edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
+            ),
+            "edition id `IoTEnterpriseS`, build 19044",
+        ),
     ] {
         let error = resolve_product_key(&image, None).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Recipe);
@@ -202,7 +235,7 @@ fn a_keyed_iso_root_has_the_key_its_image_is_installed_with(#[fixture(unicode_ho
     };
     let given = ProductKey::parse(KEY).unwrap();
     let ltsc = Some("Windows 11 IoT Enterprise LTSC 2024");
-    let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100));
+    let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100), Some(1742));
     assert_eq!(root(&three, ltsc, None).unwrap().product_key(), generic.as_ref());
     assert_eq!(root(&three, ltsc, Some(&given)).unwrap().product_key(), Some(&given));
     assert_eq!(root(&one, None, None).unwrap().product_key(), None);
@@ -330,7 +363,7 @@ fn what_a_build_installs_carries_the_image_its_key_and_its_evaluation_flag_from_
     assert_eq!(ltsc.image().index, 2);
     assert_eq!(
         ltsc.product_key(),
-        ProductKey::generic_for("IoTEnterpriseS", Some(26100)).as_ref()
+        ProductKey::generic_for("IoTEnterpriseS", Some(26100), Some(1742)).as_ref()
     );
     assert!(!ltsc.evaluation());
 
@@ -500,7 +533,7 @@ fn an_arm64_image_is_refused_naming_arch_and_the_x64_scope() {
 
 // WIM text in a refusal ===============================================================================================
 
-/// Every refusal that quotes a name from the image list, built from images named `name`.
+/// The refusals built from images named `name`.
 fn refusals_naming(name: &str) -> Vec<(&'static str, crate::Error)> {
     let key = ProductKey::parse(KEY).unwrap();
     let twin = |index| image_of(index, name, WimArch::X64);
