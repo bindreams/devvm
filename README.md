@@ -123,7 +123,6 @@ What a recipe file takes (an unknown key is an error):
 from:
   iso: C:/isos/windows.iso
   edition: Windows 11 IoT Enterprise LTSC 2024
-  product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
 ```
 
 ```sh
