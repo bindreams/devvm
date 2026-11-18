@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Output, Stdio};
 
 use super::wrap_tests::{hint, longest_fit};
-use super::{LINE_LIMIT, wrap};
+use super::{LINE_LIMIT, literal, wrap};
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::recipe::Shell;
@@ -102,7 +102,7 @@ pub(in crate::guest::windows) fn shown(output: &Output) -> String {
         "status {:?}, stdout {:?}, stderr {:?}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        stderr(output)
     )
 }
 
@@ -288,12 +288,18 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         r".\b`c.ps1",
         "./TOOL.PS1",
         r".\proj[1]\tool.ps1",
+        // The extension left out, as PowerShell takes it: `.ps1` is added.
+        r".\tool",
+        "./TOOL",
+        r".\a[1]",
+        r".\proj[1]\tool",
+        absolute.trim_end_matches(".ps1"),
         absolute.as_str(),
     ] {
         hinted(&by_path(name), name);
     }
     // A name by path that is no script, or a script that is not there, is not found.
-    for name in [r".\note.txt", r".\a[2].ps1", r".\proj[1]"] {
+    for name in [r".\note.txt", r".\note", r".\a[2].ps1", r".\proj[1]"] {
         let output = by_path(name);
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
         assert!(
@@ -370,8 +376,9 @@ fn a_filter_of_a_module_gets_the_hint_and_a_module_that_will_not_load_is_not_fou
         Search::Modules(&modules),
     );
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
-    assert!(
-        stderr(&output).starts_with("devvm: Invoke-Broken: command not found"),
+    assert_eq!(
+        stderr(&output).lines().next(),
+        Some("devvm: Invoke-Broken: command not found"),
         "{}",
         shown(&output)
     );
@@ -393,9 +400,10 @@ fn a_lookup_that_throws_is_127_and_the_message_says_so(#[fixture(pwsh_wrap)] _gr
     );
 }
 
-/// A profile of the guest user runs before the script: its `Set-StrictMode` and its variables are the script's too.
+/// A profile of the guest user runs before the script: its `Set-StrictMode` and its variables are the script's too. A
+/// variable of the profile cannot change what the block answers.
 #[skuld::test]
-fn a_profile_cannot_change_what_the_not_found_block_answers(
+fn a_variable_of_a_profile_cannot_change_what_the_not_found_block_answers(
     #[fixture(unicode_home)] home: &Path,
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
@@ -405,8 +413,11 @@ fn a_profile_cannot_change_what_the_not_found_block_answers(
     let strict = "Set-StrictMode -Version Latest\n";
     let profiles = [
         strict.to_owned(),
-        format!("{strict}$full = '{}'\n", script.display()),
-        format!("{strict}$full = '{}'\n", home.join("none.ps1").display()),
+        format!("{strict}$full = {}\n", literal(&script.display().to_string())),
+        format!(
+            "{strict}$full = {}\n",
+            literal(&home.join("none.ps1").display().to_string())
+        ),
     ];
     for profile in &profiles {
         for (name, hinted) in [("Get-Date", true), ("no-such-program-xyz", false)] {
@@ -424,6 +435,11 @@ fn a_profile_cannot_change_what_the_not_found_block_answers(
             };
             assert!(
                 stderr(&output).starts_with(&expected),
+                "{profile}{name}: {}",
+                shown(&output)
+            );
+            assert!(
+                !stderr(&output).contains("lookup failed"),
                 "{profile}{name}: {}",
                 shown(&output)
             );
