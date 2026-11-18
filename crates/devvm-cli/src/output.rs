@@ -150,15 +150,16 @@ impl Active {
 ///
 /// Exactly one ending prints: the command's own ([`Run::end`]) or a panic hook's ([`Run::on_panic`]). Each writes
 /// under the one-ending lock, `std::io::stderr()`'s, and keeps it until the process exits ([`Ended`]), so the other
-/// waits there. Every screen writes through that lock too: indicatif's frames (`console::Term` goes through
-/// `std::io::stderr()`, and every call into it holds that lock) and [`LineProgress::stderr`]. The lock is re-entrant,
-/// so a hook on the thread of an ending, which the ending itself failed, ends the run instead of waiting for itself. A
-/// panic on another thread after the ending has taken the lock is not reported: its hook waits for the exit.
+/// waits there. The screens stay out of its way: [`LineProgress::stderr`] writes through that lock, and
+/// [`TtyProgress`] takes it around every call into indicatif, which `console::Term` does not do itself on a Windows
+/// console. The lock is re-entrant, so a hook on the thread of an ending, which the ending itself failed, ends the run
+/// instead of waiting for itself. A panic on another thread after the ending has taken the lock is not reported: its
+/// hook waits for the exit.
 ///
 /// A hook never stops, clears or waits for a sink: the thread that panicked may hold a sink's lock. It reads the log
-/// from `active`, which is held only to clone or replace what it holds.
-///
-/// A Ctrl-C or a crash (a panic) can leave the last frame of the progress bars on screen above the error line.
+/// from `active`, which is held only to clone or replace what it holds. The ending stops and joins the sinks' threads
+/// before it takes the one-ending lock, and waits for nothing under it. What a Ctrl-C or a panic leaves on screen is in
+/// the README's "Output".
 pub(crate) struct Run {
     active: Mutex<Option<Active>>,
 }

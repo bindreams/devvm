@@ -655,6 +655,26 @@ fn a_report_draws_only_when_stderrs_lock_is_free() {
     assert_eq!(*order.lock().unwrap(), ["released", "drew"]);
 }
 
+/// A report that draws nothing does not wait for stderr's lock: with an ending or a hook writing under it, a paused
+/// terminal or a full pipe must not stop the reports, and the log records behind them.
+#[skuld::test]
+fn a_report_that_draws_nothing_does_not_wait_for_stderrs_lock() {
+    let (tty, _term) = screen(4, 60, PLAIN);
+    let writing = std::io::stderr().lock();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            tty.debug("not shown");
+            tty.event(&Event::Output {
+                line: "not shown".to_owned(),
+            });
+            advance(&tty, id(), MIB);
+            end(&tty, id(), Outcome::Finished);
+            tty.shared.tick();
+        });
+    });
+    drop(writing);
+}
+
 /// A panic hook does not touch the screen: the last frame stays, and the error line follows it.
 #[skuld::test]
 fn after_a_panic_the_error_line_follows_the_last_frame() {
@@ -754,4 +774,20 @@ fn a_spinner_turns_by_itself_and_its_thread_ends_with_the_screen() {
     }
     // Dropping the screen stops and joins the thread: a thread left behind would hang here or draw on.
     drop(tty);
+}
+
+/// Stopping the screen ends the spinners' thread before it returns, so that the ending holds no lock while it waits for
+/// that thread.
+#[skuld::test]
+fn stopping_the_screen_joins_the_spinners_thread() {
+    let tty = TtyProgress::new(
+        ProgressDrawTarget::term_like(Box::new(InMemoryTerm::new(4, 60))),
+        PLAIN,
+        Some(Duration::from_millis(1)),
+        || 60,
+    );
+    begin(&tty, id(), None, "waiting", Total::Unknown);
+    tty.stop();
+    // The thread holds a handle to the screen's state until it ends.
+    assert_eq!(Arc::strong_count(&tty.shared), 1);
 }

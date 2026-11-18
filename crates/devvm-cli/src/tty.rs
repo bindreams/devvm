@@ -30,8 +30,9 @@ const BAR_COLUMNS: u16 = 50;
 /// leaves the lock poisoned, and the screen is then never touched again: what indicatif holds may be half changed, and
 /// dropping it would panic.
 pub(crate) struct TtyProgress {
-    /// Stops the spinners' thread when this screen is dropped. Declared first, so that it ends before the rest.
-    _ticker: Option<Ticker>,
+    /// Stopped and joined by [`TtyProgress::stop`], and when this screen is dropped. Declared first, so that it ends
+    /// before the rest.
+    ticker: Option<Ticker>,
     shared: Arc<Shared>,
 }
 
@@ -89,10 +90,9 @@ impl Slot {
 
 // Locking =============================================================================================================
 
-/// The screen, locked and not stopped, and stderr's lock with it.
+/// The screen, locked and not stopped.
 struct Locked<'a> {
     screen: MutexGuard<'a, Option<Screen>>,
-    _stderr: StderrLock<'static>,
 }
 
 impl std::ops::Deref for Locked<'_> {
@@ -110,20 +110,20 @@ impl std::ops::DerefMut for Locked<'_> {
 }
 
 impl Shared {
-    /// The screen, locked; `None` when a thread panicked inside a draw, and when the screen is stopped. Stderr's lock is
-    /// taken after the screen's.
+    /// The screen, locked; `None` when a thread panicked inside a draw, and when the screen is stopped.
     fn lock(&self) -> Option<Locked<'_>> {
         let screen = self.screen.lock().ok()?;
         let open = screen.as_ref().is_some_and(|screen| !screen.stopped);
-        open.then(|| Locked {
-            screen,
-            _stderr: std::io::stderr().lock(),
-        })
+        open.then_some(Locked { screen })
     }
 
     /// Turns each spinner once.
     fn tick(&self) {
         let Some(screen) = self.lock() else { return };
+        if screen.spinners == 0 {
+            return;
+        }
+        let _stderr = stderr();
         for slot in screen.tasks.values() {
             if matches!(slot.total, Total::Unknown) {
                 slot.bar.tick();
@@ -141,6 +141,11 @@ impl Drop for Shared {
             std::mem::forget(screen);
         }
     }
+}
+
+/// Stderr's lock, which every call into indicatif holds, taken after the screen's and only where something is drawn.
+fn stderr() -> StderrLock<'static> {
+    std::io::stderr().lock()
 }
 
 // Ticking =============================================================================================================
@@ -192,7 +197,7 @@ impl Pace {
 /// The thread that turns the spinners.
 struct Ticker {
     pace: Arc<Pace>,
-    thread: Option<JoinHandle<()>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Ticker {
@@ -209,18 +214,24 @@ impl Ticker {
             .ok()?;
         Some(Ticker {
             pace,
-            thread: Some(thread),
+            thread: Mutex::new(Some(thread)),
         })
+    }
+
+    /// Stops the thread and waits for it, once.
+    fn stop(&self) {
+        self.pace.stop();
+        let thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(thread) = thread {
+            // A thread that panicked has said so through the panic hook.
+            let _ = thread.join();
+        }
     }
 }
 
 impl Drop for Ticker {
     fn drop(&mut self) {
-        self.pace.stop();
-        if let Some(thread) = self.thread.take() {
-            // A thread that panicked has said so through the panic hook.
-            let _ = thread.join();
-        }
+        self.stop();
     }
 }
 
@@ -250,10 +261,7 @@ impl TtyProgress {
             pace,
         });
         let ticker = tick.and_then(|every| Ticker::start(shared.clone(), every));
-        TtyProgress {
-            _ticker: ticker,
-            shared,
-        }
+        TtyProgress { ticker, shared }
     }
 
     pub(crate) fn stderr(look: Look) -> TtyProgress {
@@ -264,15 +272,18 @@ impl TtyProgress {
         })
     }
 
-    /// Takes the screen's lock, which waits for the draw in flight, stops the screen and takes the bars off under that
-    /// lock: nothing is drawn after it, and the cursor is where the first bar was. A screen that a panic poisoned is
-    /// left as it is.
+    /// Stops and joins the spinners' thread, then takes the screen's lock, which waits for the draw in flight, stops the
+    /// screen and takes the bars off under that lock: nothing is drawn after it, and the cursor is where the first bar
+    /// was. A screen that a panic poisoned is left as it is. Nothing here waits for a thread under stderr's lock.
     pub(crate) fn stop(&self) {
-        self.shared.pace.stop();
+        match &self.ticker {
+            Some(ticker) => ticker.stop(),
+            None => self.shared.pace.stop(),
+        }
         let Ok(mut screen) = self.shared.screen.lock() else {
             return;
         };
-        let _stderr = std::io::stderr().lock();
+        let _stderr = stderr();
         if let Some(screen) = screen.as_mut() {
             screen.stopped = true;
             let _ = screen.multi.clear();
@@ -479,6 +490,7 @@ impl Screen {
 }
 
 impl Progress for TtyProgress {
+    /// Stderr's lock is taken after the early returns, around the calls into indicatif.
     fn event(&self, event: &Event) {
         let Some(mut screen) = self.shared.lock() else { return };
         let screen = &mut *screen;
@@ -489,13 +501,18 @@ impl Progress for TtyProgress {
                     Level::Debug if !screen.look.verbose => {}
                     Level::Warn => {
                         let word = paint(screen.look.colour, Colour::Yellow, "warning:");
+                        let _stderr = stderr();
                         screen.print(&format!("{word} {text}"));
                     }
-                    Level::Debug | Level::Info => screen.print(&text),
+                    Level::Debug | Level::Info => {
+                        let _stderr = stderr();
+                        screen.print(&text);
+                    }
                 }
             }
             Event::Output { line } => {
                 if screen.look.verbose {
+                    let _stderr = stderr();
                     screen.print(&escape_controls(line));
                 }
             }
@@ -504,12 +521,16 @@ impl Progress for TtyProgress {
                 parent,
                 label,
                 total,
-            } => screen.begin(*id, *parent, label, *total),
+            } => {
+                let _stderr = stderr();
+                screen.begin(*id, *parent, label, *total);
+            }
             Event::Status { id, text } => {
                 let columns = (screen.columns)();
                 if let Some(slot) = screen.tasks.get_mut(id) {
                     slot.status = Some(escape_controls(text).into_owned());
                     slot.stale = true;
+                    let _stderr = stderr();
                     screen.refresh(*id, columns);
                 }
             }
@@ -517,6 +538,7 @@ impl Progress for TtyProgress {
                 let columns = (screen.columns)();
                 if let Some(slot) = screen.tasks.get_mut(id) {
                     slot.position = *position;
+                    let _stderr = stderr();
                     // The text that fits the new position goes first, so that no line is drawn wider than the
                     // terminal.
                     screen.refresh(*id, columns);
@@ -524,7 +546,12 @@ impl Progress for TtyProgress {
                 }
             }
             // Finished or not, the task leaves no line: an error is reported below the bars.
-            Event::End { id, .. } => screen.end(*id),
+            Event::End { id, .. } => {
+                if screen.tasks.contains_key(id) {
+                    let _stderr = stderr();
+                    screen.end(*id);
+                }
+            }
         }
     }
 }

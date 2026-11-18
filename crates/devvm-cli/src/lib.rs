@@ -82,11 +82,10 @@ fn set_status_file(path: Option<PathBuf>) {
     *STATUS_FILE.lock().unwrap_or_else(PoisonError::into_inner) = path;
 }
 
-/// Makes a panic on any thread print one `devvm-error: panic:` line, write the status file if one is set, and exit 125.
+/// Makes a panic print one `devvm-error: panic:` line, write the status file if one is set, and exit 125.
 ///
-/// Exactly one ending prints; see [`output::Run`] for which. The hook never panics: it ignores write errors and
-/// tolerates a poisoned lock. A Ctrl-C or a crash (a panic) can leave the last frame of the progress bars on screen
-/// above the error line.
+/// Exactly one ending prints, and a panic after the command's ending has begun may not be reported; see [`output::Run`].
+/// The hook never panics: it ignores write errors and tolerates a poisoned lock.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let payload = info.payload();
