@@ -11,7 +11,7 @@ use cosca::identity::{Liveness, Resolved};
 
 use crate::error::{Error, ErrorKind, Result};
 use crate::host::{self, remove_if_present};
-use crate::progress::{Event, Gate, Level, Outcome, Progress, TaskId, Total, escape_controls};
+use crate::progress::{Event, Level, Outcome, Progress, TaskId, Total, escape_controls};
 use crate::random;
 use crate::store::layers::Clock;
 
@@ -40,8 +40,6 @@ pub struct FileLog {
     path: PathBuf,
     clock: Arc<dyn Clock>,
     state: Mutex<State>,
-    /// Stopped by the ending: no event is recorded after it, and the ending waits out the one in flight.
-    gate: Gate,
     /// Appends [`FileLog::failed`]'s record, so that the ending never takes `state`.
     tail: File,
     /// The first error of a write to the log, from `state` or `tail`: the log is then missing records.
@@ -51,6 +49,8 @@ pub struct FileLog {
 struct State {
     out: Box<dyn Write + Send>,
     bars: HashMap<TaskId, Bar>,
+    /// Set by [`FileLog::stop`]; checked under the lock by every event.
+    stopped: bool,
 }
 
 struct Bar {
@@ -110,8 +110,8 @@ impl FileLog {
             state: Mutex::new(State {
                 out: Box::new(out),
                 bars: HashMap::new(),
+                stopped: false,
             }),
-            gate: Gate::default(),
             tail,
             first_error: OnceLock::new(),
         };
@@ -134,14 +134,15 @@ impl FileLog {
         }
     }
 
-    /// The gate the ending stops before it calls [`FileLog::failed`].
-    pub fn gate(&self) -> &Gate {
-        &self.gate
+    /// Waits for the record being written, if any, then records no event more: the command line's ending stops the log
+    /// before it calls [`FileLog::failed`].
+    pub fn stop(&self) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).stopped = true;
     }
 
     /// Records `line`, the `devvm-error:` line that ends the run, as one `ERROR` record. It is not an event: no other
-    /// sink sees it. It takes no lock, so it works from a panic hook on a thread that is inside the log; the ending
-    /// calls it once the gate is stopped and idle, when no other record is being written.
+    /// sink sees it. It takes no lock, so it works from a panic hook on a thread that is inside the log. The ending
+    /// calls it once the log is stopped; a hook does not stop it, and an event of another thread can follow the record.
     pub fn failed(&self, line: &str) {
         let record = self.record_line("ERROR", line);
         if let Err(e) = (&self.tail).write_all(record.as_bytes()) {
@@ -183,7 +184,7 @@ fn process_is_alive(pid: u32) -> bool {
 /// The pid in the name of the log `devvm-<time>-<pid>-<hex>.log`.
 fn owner_of(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("devvm-")?.strip_suffix(".log")?;
-    rest.split('-').nth(1)?.parse().ok()
+    rest.rsplit('-').nth(1)?.parse().ok()
 }
 
 /// Removes the logs in `dir` that are older than [`KEEP`] by `now`, except those of a process that `alive` says is
@@ -234,7 +235,9 @@ fn prune(dir: &Path, now: SystemTime, alive: &dyn Fn(u32) -> bool) -> Vec<String
 impl Progress for FileLog {
     fn event(&self, event: &Event) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(_flying) = self.gate.enter() else { return };
+        if state.stopped {
+            return;
+        }
         let state = &mut *state;
         match event {
             Event::Note { level, text } => {

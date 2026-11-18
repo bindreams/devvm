@@ -24,7 +24,7 @@ mod tty;
 
 use args::Cli;
 pub use args::{Cmd, CpSide, VmFlags, parse_cp_side};
-use output::{Ending, Run};
+use output::{Ended, Run};
 
 #[cfg(test)]
 fn main() {
@@ -85,7 +85,9 @@ fn set_status_file(path: Option<PathBuf>) {
 /// Makes a panic on any thread print one `devvm-error: panic:` line, write the status file if one is set, and exit 125.
 ///
 /// Exactly one ending prints; see [`output::Run`] for which. The hook never panics: it ignores write errors and
-/// tolerates a poisoned lock.
+/// tolerates a poisoned lock. If devvm itself panics, progress from other threads can still appear around the error
+/// line, and a bar of the last frame can stay above it; the exit code, the status file and the log's `ERROR` record
+/// are right.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let payload = info.payload();
@@ -99,16 +101,14 @@ pub fn install_panic_hook() {
             None => text,
         };
         let status_file = STATUS_FILE.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        let panicked = output::RUN.on_panic(
+        let ended = output::RUN.on_panic(
             message,
             output::stderr_colour(),
             status_file.as_deref(),
             ExitWidth::Full32,
             &mut std::io::stderr(),
         );
-        if let output::Panicked::Ended { code, .. } = panicked {
-            std::process::exit(code);
-        }
+        std::process::exit(ended.code);
     }));
 }
 
@@ -220,30 +220,24 @@ pub fn main_entry_with(
     run_ended(&output::RUN, width, args, deps, action).code
 }
 
-/// Like [`main_entry`], but ends the process, so that no panic on another thread can print a second line or rewrite
-/// the status file between the normal ending and the exit.
+/// Like [`main_entry`], but ends the process while the ending holds the one-ending lock, so that no panic on another
+/// thread can print a second line or rewrite the status file between the normal ending and the exit.
 pub fn run(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> ! {
     install_panic_hook();
-    let exit = run_ended(&output::RUN, width, args, deps, &dispatch);
-    std::process::exit(exit.code)
+    let ended = run_ended(&output::RUN, width, args, deps, &dispatch);
+    std::process::exit(ended.code)
 }
 
-/// How the command ended, with its ending still under way: a panic hook cannot end the process until this is dropped.
-struct Exit<'a> {
-    code: i32,
-    _ending: Ending<'a>,
-}
-
-/// The command line from status-file setup to the ending. The ending starts once the action is over and `deps` is
-/// dropped, not before: a panic in either must end the process by its hook, and a drop may wait on the thread that
-/// panics.
-fn run_ended<'a>(
-    run: &'a Run,
+/// The command line from status-file setup to the ending, which holds the one-ending lock until `Ended` is dropped. The
+/// ending starts once the action is over and `deps` is dropped, not before: a panic in either must end the process by
+/// its hook, and a drop may wait on the thread that panics.
+fn run_ended(
+    run: &Run,
     width: ExitWidth,
     args: Vec<OsString>,
     deps: Deps,
     action: &dyn Fn(&Deps, Cmd, bool) -> Result<ExitStatus>,
-) -> Exit<'a> {
+) -> Ended {
     let status_file = status_file_hint(&args, &|name| std::env::var_os(name));
     set_status_file(status_file.clone());
     let colour = output::stderr_colour();
@@ -254,39 +248,28 @@ fn run_ended<'a>(
             // `--help` and `--version`: printed on stdout, not a failure. A write that fails is one, and only then is
             // the status file written.
             drop(deps);
-            let ending = run.begin_ending();
             let printed = e.print().map_err(stdout_error);
-            let code = match flushed(printed.map(|()| ExitStatus::Code(0)), &mut std::io::stdout()) {
-                Ok(_) => ending.end_clean(colour, status_file.as_deref(), width, &mut std::io::stderr()),
-                Err(error) => ending.end(
-                    colour,
-                    status_file.as_deref(),
-                    Err(error),
-                    width,
-                    &mut std::io::stderr(),
-                ),
+            let (status_file, outcome) = match flushed(printed.map(|()| ExitStatus::Code(0)), &mut std::io::stdout()) {
+                Ok(status) => (None, Ok(status)),
+                Err(error) => (status_file.as_deref(), Err(error)),
             };
-            return Exit { code, _ending: ending };
+            return run.end(colour, status_file, outcome, width, &mut std::io::stderr());
         }
         Err(e) => {
             drop(deps);
-            let ending = run.begin_ending();
-            let code = ending.end(
+            return run.end(
                 colour,
                 status_file.as_deref(),
                 Err(usage_error(&e)),
                 width,
                 &mut std::io::stderr(),
             );
-            return Exit { code, _ending: ending };
         }
     };
     let outcome = action(&deps, cli.command, cli.verbose || verbose_from_env());
     drop(deps);
-    let ending = run.begin_ending();
     let outcome = flushed(outcome, &mut std::io::stdout());
-    let code = ending.end(colour, status_file.as_deref(), outcome, width, &mut std::io::stderr());
-    Exit { code, _ending: ending }
+    run.end(colour, status_file.as_deref(), outcome, width, &mut std::io::stderr())
 }
 
 /// `outcome` once `out` is flushed. A flush that fails turns a success into an `io` error, since output was lost; a

@@ -1,11 +1,12 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use devvm::exit::{ExitStatus, ExitWidth};
 
 use devvm::{Error, ErrorKind};
 
-use crate::output::{Panicked, Run};
+use crate::output::Run;
 use crate::{Deps, flushed, run_ended, status_file_hint};
 
 fn args(items: &[&str]) -> Vec<OsString> {
@@ -81,34 +82,56 @@ fn a_double_dash_is_never_the_status_file_value() {
     assert_eq!(status_file_hint(&args(&["--status-file", "--"]), &no_env), None);
 }
 
-/// A panic on another thread must not interleave with the normal ending: from its start until the process exits, a
-/// panic is stored for it instead of ending the process.
+/// A writer that fails the test if it is written to before `released` is set.
+struct AfterRelease<'a>(&'a AtomicBool);
+
+impl std::io::Write for AfterRelease<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        assert!(
+            self.0.load(Ordering::SeqCst),
+            "the hook wrote while the ending held the lock"
+        );
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A panic on another thread must not interleave with the normal ending: from its start until the process exits, the
+/// hook waits for the one-ending lock the ending holds.
 #[skuld::test]
 fn the_normal_ending_holds_off_the_panic_hook_until_the_exit() {
     let run = Run::new();
-    let exit = run_ended(
+    let ended = run_ended(
         &run,
         ExitWidth::LowByte,
         args(&["build", "x"]),
         Deps::real(),
         &|_, _, _| Ok(ExitStatus::Code(3)),
     );
-    assert_eq!(exit.code, 3);
-    let hook = |run: &Run| {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let mut stderr = Vec::new();
-                    let panicked = run.on_panic("late".to_owned(), false, None, ExitWidth::Full32, &mut stderr);
-                    matches!(panicked, Panicked::Deferred)
-                })
-                .join()
-                .unwrap()
-        })
-    };
-    assert!(hook(&run), "a panic now would race the exit");
-    drop(exit);
-    assert!(!hook(&run), "after the ending the hook ends the run again");
+    assert_eq!(ended.code, 3);
+    let released = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| {
+            run.on_panic(
+                "late".to_owned(),
+                false,
+                None,
+                ExitWidth::Full32,
+                &mut AfterRelease(&released),
+            )
+            .code
+        });
+        released.store(true, Ordering::SeqCst);
+        drop(ended);
+        assert_eq!(
+            hook.join().unwrap(),
+            125,
+            "after the ending the hook ends the run again"
+        );
+    });
 }
 
 /// A writer whose flush fails.

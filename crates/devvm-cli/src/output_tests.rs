@@ -1,13 +1,13 @@
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 
 use devvm::exit::{ExitStatus, ExitWidth};
 use devvm::progress::{FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Error, ErrorKind};
 
-use crate::output::{Active, Facts, Panicked, Run, Screen, Shown, choose, compose, end_with};
+use crate::output::{Active, Facts, Run, Screen, Shown, choose, compose, end_with};
 
 #[derive(Clone, Default)]
 struct Buffer(Arc<Mutex<Vec<u8>>>);
@@ -237,8 +237,7 @@ fn a_failure_and_an_unwritable_status_file_record_the_combined_line_that_was_pri
 
 fn run_ending(run: &Run, outcome: devvm::Result<ExitStatus>) -> String {
     let mut stderr = Vec::new();
-    run.begin_ending()
-        .end(false, None, outcome, ExitWidth::Full32, &mut stderr);
+    run.end(false, None, outcome, ExitWidth::Full32, &mut stderr);
     String::from_utf8(stderr).unwrap()
 }
 
@@ -273,25 +272,12 @@ fn each_run_ends_with_its_own_log_and_leaves_nothing_for_the_next() {
 
 // Who ends the run ====================================================================================================
 
-/// What a panic hook does for `message`: the text it printed, when it was the ending.
-fn panic_hook(run: &Run, message: &str) -> Option<String> {
+/// What a panic hook prints for `message`.
+fn panic_hook(run: &Run, message: &str) -> String {
     let mut stderr = Vec::new();
-    let panicked = run.on_panic(message.to_owned(), false, None, ExitWidth::Full32, &mut stderr);
-    match panicked {
-        Panicked::Ended { code, .. } => {
-            assert_eq!(code, 125);
-            Some(String::from_utf8(stderr).unwrap())
-        }
-        Panicked::Deferred => {
-            assert!(stderr.is_empty());
-            None
-        }
-    }
-}
-
-/// [`panic_hook`] on another thread than the one that began the ending.
-fn panic_hook_elsewhere(run: &Run, message: &str) -> Option<String> {
-    std::thread::scope(|scope| scope.spawn(|| panic_hook(run, message)).join().unwrap())
+    let ended = run.on_panic(message.to_owned(), false, None, ExitWidth::Full32, &mut stderr);
+    assert_eq!(ended.code, 125);
+    String::from_utf8(stderr).unwrap()
 }
 
 #[skuld::test]
@@ -304,7 +290,7 @@ fn a_panic_with_no_ending_under_way_ends_the_run_and_names_the_log() {
         screen: None,
     });
 
-    let text = panic_hook(&run, "boom").expect("the hook ends the run");
+    let text = panic_hook(&run, "boom");
 
     assert_eq!(
         text,
@@ -318,114 +304,41 @@ fn a_panic_with_no_ending_under_way_ends_the_run_and_names_the_log() {
 }
 
 #[skuld::test]
-fn a_panic_while_the_ending_is_under_way_is_stored_and_the_ending_reports_it() {
-    let run = Run::new();
-    let ending = run.begin_ending();
-
-    assert_eq!(panic_hook_elsewhere(&run, "first"), None);
-    assert_eq!(panic_hook_elsewhere(&run, "second"), None);
-    let mut stderr = Vec::new();
-    let code = ending.end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut stderr);
-
-    assert_eq!(code, 125);
-    assert_eq!(String::from_utf8(stderr).unwrap(), "devvm-error: panic: first\n");
-}
-
-#[skuld::test]
-fn a_stored_panic_replaces_the_outcome_the_ending_was_given() {
-    let run = Run::new();
-    let ending = run.begin_ending();
-    assert_eq!(panic_hook_elsewhere(&run, "boom"), None);
+fn a_panic_writes_the_status_file() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let status = tmp.path().join("status.json");
     let mut stderr = Vec::new();
 
-    let code = ending.end(
-        false,
-        None,
-        Err(Error::new(ErrorKind::Io, "bad")),
-        ExitWidth::Full32,
-        &mut stderr,
-    );
+    let ended = Run::new().on_panic("boom".to_owned(), false, Some(&status), ExitWidth::Full32, &mut stderr);
 
-    assert_eq!(code, 125);
-    assert_eq!(String::from_utf8(stderr).unwrap(), "devvm-error: panic: boom\n");
+    assert_eq!(ended.code, 125);
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&status).unwrap()).unwrap();
+    assert_eq!(json["devvm"]["kind"], "panic");
+    assert_eq!(json["devvm"]["message"], "boom");
 }
 
-#[skuld::test]
-fn a_panic_after_the_ending_has_decided_is_dropped_and_none_reaches_the_next_ending() {
-    let run = Run::new();
-    let ending = run.begin_ending();
-    let mut stderr = Vec::new();
-    assert_eq!(
-        ending.end(false, None, Ok(ExitStatus::Code(3)), ExitWidth::Full32, &mut stderr),
-        3
-    );
-
-    assert_eq!(panic_hook_elsewhere(&run, "late"), None);
-    drop(ending);
-
-    let next = run.begin_ending();
-    assert_eq!(
-        next.end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut stderr),
-        0
-    );
-    assert_eq!(String::from_utf8(stderr).unwrap(), "");
-}
-
-#[skuld::test]
-fn a_panic_stored_for_an_ending_that_never_decided_does_not_reach_the_next_one() {
-    let run = Run::new();
-    drop({
-        let ending = run.begin_ending();
-        assert_eq!(panic_hook_elsewhere(&run, "unclaimed"), None);
-        ending
-    });
-
-    let mut stderr = Vec::new();
-    let code = run
-        .begin_ending()
-        .end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut stderr);
-
-    assert_eq!(code, 0);
-    assert_eq!(String::from_utf8(stderr).unwrap(), "");
-}
-
-#[skuld::test]
-fn once_the_ending_is_over_a_panic_ends_the_run_again() {
-    let run = Run::new();
-    drop(run.begin_ending());
-
-    assert!(panic_hook_elsewhere(&run, "boom").is_some());
-}
-
-#[skuld::test]
-fn a_clean_ending_is_zero_unless_a_panic_was_stored() {
-    let run = Run::new();
-    let mut stderr = Vec::new();
-    assert_eq!(
-        run.begin_ending()
-            .end_clean(false, None, ExitWidth::Full32, &mut stderr),
-        0
-    );
-
-    let ending = run.begin_ending();
-    assert_eq!(panic_hook_elsewhere(&run, "boom"), None);
-    assert_eq!(ending.end_clean(false, None, ExitWidth::Full32, &mut stderr), 125);
-    assert_eq!(String::from_utf8(stderr).unwrap(), "devvm-error: panic: boom\n");
-}
-
-/// The ending itself failed: nothing else would report it.
+/// The ending itself failed: nothing else would report it. The one-ending lock is the thread's own, so the hook is not
+/// kept waiting for it.
 #[skuld::test]
 fn a_panic_on_the_endings_own_thread_ends_the_run() {
     let run = Run::new();
-    let _ending = run.begin_ending();
+    let _ended = run.end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut Vec::new());
 
-    assert_eq!(
-        panic_hook(&run, "boom").as_deref(),
-        Some(
-            "devvm-error: panic: boom
-"
-        )
-    );
+    assert_eq!(panic_hook(&run, "boom"), "devvm-error: panic: boom\n");
+}
+
+#[skuld::test]
+fn each_ending_leaves_the_run_empty_for_the_next_panic() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let run = Run::new();
+    let log = Arc::new(log_in(&tmp.path().join("logs")));
+    run.begin(Active {
+        log: Some(log),
+        screen: None,
+    });
+    assert!(run_ending(&run, failure()).contains("log: "));
+
+    assert_eq!(panic_hook(&run, "boom"), "devvm-error: panic: boom\n");
 }
 
 // The line screen =====================================================================================================
@@ -446,8 +359,7 @@ fn the_ending_stops_the_line_screen_before_it_writes_the_error() {
     let (run, lines) = run_with_lines(&out);
     lines.message("before");
 
-    run.begin_ending()
-        .end(false, None, failure(), ExitWidth::Full32, &mut out.clone());
+    run.end(false, None, failure(), ExitWidth::Full32, &mut out.clone());
     lines.message("late");
     lines.warn("late");
 
@@ -460,20 +372,24 @@ devvm-error: io: bad
 }
 
 #[skuld::test]
-fn a_panic_hook_stops_the_line_screen_so_that_the_error_line_is_the_last() {
-    let out = Buffer::default();
-    let (run, lines) = run_with_lines(&out);
-    lines.message("before");
+fn the_ending_stops_the_log_before_it_records_the_error() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let run = Run::new();
+    let log = Arc::new(log_in(&tmp.path().join("logs")));
+    run.begin(Active {
+        log: Some(log.clone()),
+        screen: None,
+    });
+    log.message("before");
 
-    let panicked = run.on_panic("boom".to_owned(), false, None, ExitWidth::Full32, &mut out.clone());
-    assert!(matches!(panicked, Panicked::Ended { .. }));
-    lines.message("late");
+    run_ending(&run, failure());
+    log.message("late");
 
-    assert_eq!(
-        out.text(),
-        "before
-devvm-error: panic: boom
-"
+    let text = std::fs::read_to_string(log.path()).unwrap();
+    assert!(!text.contains("late"), "{text}");
+    assert!(
+        text.lines().last().unwrap().ends_with(" ERROR devvm-error: io: bad"),
+        "{text}"
     );
 }
 
@@ -489,7 +405,7 @@ struct PanicsOnFirstWrite<'a> {
 impl Write for PanicsOnFirstWrite<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if std::mem::take(&mut self.first) {
-            self.hook_text = panic_hook(self.run, "boom");
+            self.hook_text = Some(panic_hook(self.run, "boom"));
         }
         Ok(bytes.len())
     }
@@ -516,8 +432,7 @@ fn a_panic_while_the_ending_writes_finds_the_log_of_the_run() {
         first: true,
     };
 
-    run.begin_ending()
-        .end(false, None, failure(), ExitWidth::Full32, &mut stderr);
+    run.end(false, None, failure(), ExitWidth::Full32, &mut stderr);
 
     let hook_text = stderr.hook_text.expect("the hook ended the run");
     assert_eq!(
@@ -534,7 +449,8 @@ devvm-error: panic: boom
 }
 
 // A panic inside a sink ===============================================================================================
-// The thread that panics is inside the sink's write, holding its lock and its mark, when the hook runs on it.
+// The thread that panics is inside the sink's write, holding its lock, when the hook runs on it: the hook takes no
+// sink's lock.
 
 /// What a thread runs inside its next write or clock read, as the panic hook does when the thread panics there.
 type Inside = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
@@ -578,148 +494,8 @@ impl devvm::store::layers::Clock for PanickingClock {
     }
 }
 
-/// The closure for [`Panicking`] and [`PanickingClock`] when another thread is the ender: waits until `stopped` says the
-/// ending has begun, runs the hook of a panic on this thread, and stays inside the sink until `done` is sent.
-fn hook_then_wait(
-    run: &Arc<Run>,
-    stopped: impl Fn() -> bool + Send + 'static,
-    deferred: &Arc<Mutex<Option<bool>>>,
-    entered: mpsc::Sender<()>,
-    done: mpsc::Receiver<()>,
-) -> Box<dyn FnOnce() + Send> {
-    let (run, deferred) = (run.clone(), deferred.clone());
-    Box::new(move || {
-        entered.send(()).unwrap();
-        while !stopped() {
-            std::thread::yield_now();
-        }
-        *deferred.lock().unwrap() = Some(panic_hook(&run, "boom").is_none());
-        done.recv().unwrap();
-    })
-}
-
-/// Runs `inside_a_sink` on its own thread, which panics out of the sink, and `ending` on this one once that thread is
-/// inside it (`entered`); `done` lets the thread go.
-fn ending_while_another_thread_is_inside_a_sink(
-    ending: impl FnOnce() -> i32,
-    inside_a_sink: impl FnOnce() + Send,
-    entered: mpsc::Receiver<()>,
-    done: mpsc::Sender<()>,
-) -> i32 {
-    std::thread::scope(|scope| {
-        let other = scope.spawn(|| {
-            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(inside_a_sink));
-            assert!(unwound.is_err());
-        });
-        entered.recv().unwrap();
-        let code = ending();
-        done.send(()).unwrap();
-        other.join().unwrap();
-        code
-    })
-}
-
-/// The ending goes on while the panicking thread is still inside the screen's write, holding its lock: it does not wait
-/// for that thread to leave, the panic stored for it is the outcome, and the error line is the last.
 #[skuld::test]
-fn a_panic_inside_a_line_write_does_not_hold_up_the_ending_and_is_its_outcome() {
-    let out = Buffer::default();
-    let inside = Inside::default();
-    let lines = Arc::new(LineProgress::to(
-        Box::new(Panicking {
-            inside: inside.clone(),
-            written: out.clone(),
-        }),
-        Look::default(),
-    ));
-    let run = Arc::new(Run::new());
-    run.begin(Active {
-        log: None,
-        screen: Some(Shown::Lines(lines.clone())),
-    });
-    let ending = run.begin_ending();
-    let (entered, in_sink) = mpsc::channel();
-    let (done, done_rx) = mpsc::channel();
-    let deferred = Arc::new(Mutex::new(None));
-    let watched = lines.clone();
-    *inside.lock().unwrap() = Some(hook_then_wait(
-        &run,
-        move || watched.gate().is_stopped(),
-        &deferred,
-        entered,
-        done_rx,
-    ));
-
-    let code = ending_while_another_thread_is_inside_a_sink(
-        || {
-            ending.end(
-                false,
-                None,
-                Ok(ExitStatus::Code(0)),
-                ExitWidth::Full32,
-                &mut out.clone(),
-            )
-        },
-        || lines.message("in the write"),
-        in_sink,
-        done,
-    );
-
-    assert_eq!(code, 125);
-    assert_eq!(*deferred.lock().unwrap(), Some(true), "the ending was under way");
-    assert_eq!(out.text(), "devvm-error: panic: boom\n");
-}
-
-#[skuld::test]
-fn a_panic_inside_a_log_record_does_not_hold_up_the_ending_and_is_its_outcome() {
-    let tmp = skuld::TempDir::new().unwrap();
-    let inside = Inside::default();
-    let log = Arc::new(FileLog::create(&tmp.path().join("logs"), Arc::new(PanickingClock(inside.clone()))).unwrap());
-    let run = Arc::new(Run::new());
-    run.begin(Active {
-        log: Some(log.clone()),
-        screen: None,
-    });
-    let ending = run.begin_ending();
-    let (entered, in_sink) = mpsc::channel();
-    let (done, done_rx) = mpsc::channel();
-    let deferred = Arc::new(Mutex::new(None));
-    let watched = log.clone();
-    *inside.lock().unwrap() = Some(hook_then_wait(
-        &run,
-        move || watched.gate().is_stopped(),
-        &deferred,
-        entered,
-        done_rx,
-    ));
-    let mut stderr = Vec::new();
-
-    let code = ending_while_another_thread_is_inside_a_sink(
-        || ending.end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut stderr),
-        || log.message("in the record"),
-        in_sink,
-        done,
-    );
-
-    assert_eq!(code, 125);
-    assert_eq!(*deferred.lock().unwrap(), Some(true), "the ending was under way");
-    assert_eq!(
-        String::from_utf8(stderr).unwrap(),
-        format!("log: {}\ndevvm-error: panic: boom\n", log.path().display())
-    );
-    let text = std::fs::read_to_string(log.path()).unwrap();
-    assert!(
-        text.lines()
-            .last()
-            .unwrap()
-            .ends_with(" ERROR devvm-error: panic: boom"),
-        "{text}"
-    );
-}
-
-/// No ending is under way, so the hook is the ending, on the thread that is inside the sink.
-#[skuld::test]
-fn a_hook_that_ends_the_run_inside_a_line_write_ends_it_and_the_error_is_the_last_line() {
+fn a_hook_inside_a_line_write_ends_the_run_without_the_screens_lock() {
     let out = Buffer::default();
     let inside = Inside::default();
     let lines = Arc::new(LineProgress::to(
@@ -737,20 +513,19 @@ fn a_hook_that_ends_the_run_inside_a_line_write_ends_it_and_the_error_is_the_las
     let (hook_run, hook_out) = (run.clone(), out.clone());
     *inside.lock().unwrap() = Some(Box::new(move || {
         let mut stderr = hook_out.clone();
-        let panicked = hook_run.on_panic("boom".to_owned(), false, None, ExitWidth::Full32, &mut stderr);
-        assert!(matches!(panicked, Panicked::Ended { code: 125, .. }));
+        let ended = hook_run.on_panic("boom".to_owned(), false, None, ExitWidth::Full32, &mut stderr);
+        assert_eq!(ended.code, 125);
     }));
 
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lines.message("in the write")));
 
     assert!(unwound.is_err());
-    lines.message("late");
     assert_eq!(out.text(), "devvm-error: panic: boom\n");
 }
 
 /// The hook's record is written even though its thread is inside the log's lock.
 #[skuld::test]
-fn a_hook_that_ends_the_run_inside_a_log_record_records_the_error() {
+fn a_hook_inside_a_log_record_records_the_error() {
     let tmp = skuld::TempDir::new().unwrap();
     let inside = Inside::default();
     let log = Arc::new(FileLog::create(&tmp.path().join("logs"), Arc::new(PanickingClock(inside.clone()))).unwrap());
@@ -763,7 +538,7 @@ fn a_hook_that_ends_the_run_inside_a_log_record_records_the_error() {
     let text = Arc::new(Mutex::new(None));
     let recorded = text.clone();
     *inside.lock().unwrap() = Some(Box::new(move || {
-        *recorded.lock().unwrap() = panic_hook(&hook_run, "boom");
+        *recorded.lock().unwrap() = Some(panic_hook(&hook_run, "boom"));
     }));
 
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| log.message("in the record")));

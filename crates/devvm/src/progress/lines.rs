@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Mutex, PoisonError};
 
-use crate::progress::{
-    Colour, Event, Gate, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint,
-};
+use crate::progress::{Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint};
 
 #[cfg(test)]
 #[path = "lines_tests.rs"]
@@ -52,13 +50,14 @@ impl Look {
 /// record is one line.
 pub struct LineProgress {
     state: Mutex<State>,
-    gate: Gate,
     look: Look,
 }
 
 struct State {
     out: Box<dyn Write + Send>,
     tasks: HashMap<TaskId, Open>,
+    /// Set by [`LineProgress::stop`]; checked under the lock by every event.
+    stopped: bool,
 }
 
 struct Open {
@@ -78,16 +77,16 @@ impl LineProgress {
             state: Mutex::new(State {
                 out,
                 tasks: HashMap::new(),
+                stopped: false,
             }),
-            gate: Gate::default(),
             look,
         }
     }
 
-    /// Stopped, this writes nothing more; the command line's ending and its panic hook stop it, wait out a line in
-    /// flight, and write below the last line.
-    pub fn gate(&self) -> &Gate {
-        &self.gate
+    /// Waits for the line being written, if any, then writes nothing more: the command line's ending stops it before
+    /// it writes below the last line.
+    pub fn stop(&self) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).stopped = true;
     }
 }
 
@@ -104,7 +103,9 @@ impl Progress for LineProgress {
     fn event(&self, event: &Event) {
         let look = self.look;
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(_flying) = self.gate.enter() else { return };
+        if state.stopped {
+            return;
+        }
         match event {
             Event::Note { level, text } => {
                 let text = escape_controls(text);

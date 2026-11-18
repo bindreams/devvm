@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use crate::error::{Error, ErrorKind};
 use crate::exit::format_error_line;
 use crate::host::Host;
-use crate::progress::log::FileLog;
+use crate::progress::log::{FileLog, owner_of};
 use crate::progress::{Event, Progress, Task, Total};
 use crate::store::layers::Clock;
 use crate::test_support::file_mode;
@@ -260,7 +260,7 @@ fn a_record_made_by_a_hook_on_the_thread_inside_the_log_is_written(#[fixture(uni
 fn a_stopped_log_records_no_event_and_still_takes_the_error(#[fixture(unicode_home)] home: &Path) {
     let log = open(&home.join("logs"));
     log.message("before");
-    log.gate().stop();
+    log.stop();
     log.message("after");
     log.failed("the end");
     assert_eq!(
@@ -333,4 +333,11 @@ fn the_log_of_this_process_is_not_pruned_however_old(#[fixture(unicode_home)] ho
     let _next = open(&dir);
 
     assert!(path.exists());
+}
+
+#[skuld::test]
+fn the_owner_is_the_pid_before_the_last_dash() {
+    assert_eq!(owner_of("devvm-20260101T000000Z-7-aaaa.log"), Some(7));
+    assert_eq!(owner_of("devvm-2026-01-01-7-aaaa.log"), Some(7));
+    assert_eq!(owner_of("devvm-old.log"), None);
 }

@@ -3,11 +3,11 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use devvm::exit::{ExitStatus, ExitWidth};
-use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total, release_in_flight};
+use devvm::exit::ExitWidth;
+use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
 use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
-use crate::output::{Active, Panicked, Run, Shown};
+use crate::output::{Active, Run, Shown};
 use crate::tty::{Pace, TtyProgress};
 
 const MIB: u64 = 1 << 20;
@@ -18,21 +18,10 @@ const PLAIN: Look = Look {
     verbose: false,
 };
 
-/// What the screen does to start a fresh line, as the real one does on stderr.
-fn newline(term: &InMemoryTerm) -> impl Fn() + Send + Sync + 'static + use<> {
-    let term = term.clone();
-    move || {
-        term.write_line("").unwrap();
-    }
-}
-
 fn screen(rows: u16, columns: u16, look: Look) -> (TtyProgress, InMemoryTerm) {
     let term = InMemoryTerm::new(rows, columns);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    (
-        TtyProgress::new(target, look, None, move || columns, newline(&term)),
-        term,
-    )
+    (TtyProgress::new(target, look, None, move || columns), term)
 }
 
 /// A screen whose width the test can change, as a person resizing the window does.
@@ -41,13 +30,7 @@ fn resizable(rows: u16, columns: u16) -> (TtyProgress, InMemoryTerm, Arc<AtomicU
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
     let width = Arc::new(AtomicU16::new(columns));
     let read = width.clone();
-    let tty = TtyProgress::new(
-        target,
-        PLAIN,
-        None,
-        move || read.load(Ordering::Relaxed),
-        newline(&term),
-    );
+    let tty = TtyProgress::new(target, PLAIN, None, move || read.load(Ordering::Relaxed));
     (tty, term, width)
 }
 
@@ -355,8 +338,8 @@ fn a_resize_refits_the_line_at_the_next_report() {
 
 // Ancestry ============================================================================================================
 
-/// An ancestor that ended leaves a column that goes on while its parent has later children, and is blank after. The task
-/// before it at that depth, an uncle, is not the ancestor.
+/// An ancestor that ended leaves a column that goes on while its parent has later children, and is blank after. The
+/// task before it at that depth, an uncle, is not the ancestor.
 #[skuld::test]
 fn an_uncle_is_not_taken_for_an_ancestor_that_ended() {
     let (tty, term) = screen(8, 60, PLAIN);
@@ -483,7 +466,7 @@ fn probed(rows: u16, columns: u16) -> (TtyProgress, InMemoryTerm, Probe) {
     let term = InMemoryTerm::new(rows, columns);
     let probe = Probe::new(&term);
     let target = ProgressDrawTarget::term_like(Box::new(probe.clone()));
-    let tty = TtyProgress::new(target, PLAIN, None, move || columns, newline(&term));
+    let tty = TtyProgress::new(target, PLAIN, None, move || columns);
     (tty, term, probe)
 }
 
@@ -518,7 +501,6 @@ fn the_width_is_read_once_for_a_report() {
             counted.fetch_add(1, Ordering::SeqCst);
             80
         },
-        newline(&term),
     );
     let [first, second] = [(); 2].map(|()| id());
     begin(&tty, first, None, "a", Total::Bytes(GIB));
@@ -564,15 +546,14 @@ impl Write for TermWriter {
 }
 
 /// A screen in a run, with the terminal it draws to and a probe of its draws.
-fn run_with_screen(tick: Option<Duration>) -> (Arc<Run>, Arc<TtyProgress>, InMemoryTerm, Probe) {
+fn run_with_screen() -> (Arc<Run>, Arc<TtyProgress>, InMemoryTerm, Probe) {
     let term = InMemoryTerm::new(6, 60);
     let probe = Probe::new(&term);
     let tty = Arc::new(TtyProgress::new(
         ProgressDrawTarget::term_like(Box::new(probe.clone())),
         PLAIN,
-        tick,
+        None,
         || 60,
-        newline(&term),
     ));
     let run = Arc::new(Run::new());
     run.begin(Active {
@@ -582,39 +563,35 @@ fn run_with_screen(tick: Option<Duration>) -> (Arc<Run>, Arc<TtyProgress>, InMem
     (run, tty, term, probe)
 }
 
-/// What the panic hook does for `message`, writing to `term`: whether it was the ending.
+/// What the panic hook does for `message`, writing to `term`: whether it was an ending with exit 125.
 fn hook(run: &Run, term: &InMemoryTerm, message: &str) -> bool {
-    let panicked = run.on_panic(
+    let ended = run.on_panic(
         message.to_owned(),
         false,
         None,
         ExitWidth::Full32,
         &mut TermWriter::new(term),
     );
-    matches!(panicked, Panicked::Ended { code: 125, .. })
+    ended.code == 125
 }
 
 /// The command's ending, with `bad` as its outcome, writing to `term`.
 fn end_with_error(run: &Run, term: &InMemoryTerm) -> i32 {
-    run.begin_ending().end(
+    run.end(
         false,
         None,
         Err(devvm::Error::new(devvm::ErrorKind::Io, "bad")),
         ExitWidth::Full32,
         &mut TermWriter::new(term),
     )
-}
-
-/// The draws in flight on `tty`.
-fn in_flight(tty: &TtyProgress) -> usize {
-    tty.gate().in_flight()
+    .code
 }
 
 /// The ending writes the error itself, below the bars it has taken off: what the screen is told afterwards draws
 /// nothing over it.
 #[skuld::test]
 fn the_ending_stops_the_screen_before_it_writes_the_error() {
-    let (run, tty, term, _probe) = run_with_screen(None);
+    let (run, tty, term, _probe) = run_with_screen();
     let progress: &dyn Progress = &*tty;
     let _task = progress.task("building x", Total::Unknown);
     assert_eq!(lines(&term), ["- building x"]);
@@ -627,32 +604,11 @@ fn the_ending_stops_the_screen_before_it_writes_the_error() {
     assert_eq!(lines(&term), ["devvm-error: io: bad"]);
 }
 
-/// Every report is drawn, so the rows the screen says it drew are the bars on the terminal.
+/// The ending takes the screen's lock: a draw in flight is over before the bars are cleared, and a tick or a report
+/// that comes after draws nothing over what is written then.
 #[skuld::test]
-fn the_rows_drawn_are_the_lines_on_the_terminal_after_every_report() {
-    let (tty, term) = screen(8, 60, PLAIN);
-    let on_screen = || term.contents().lines().filter(|line| !line.trim().is_empty()).count();
-    let [root, child, grandchild, spinner] = [(); 4].map(|()| id());
-    let steps: [&dyn Fn(); 8] = [
-        &|| begin(&tty, root, None, "building", Total::Items(3)),
-        &|| begin(&tty, child, Some(root), "copying", Total::Bytes(GIB)),
-        &|| advance(&tty, child, MIB),
-        &|| begin(&tty, grandchild, Some(child), "hashing", Total::Bytes(GIB)),
-        &|| begin(&tty, spinner, None, "waiting", Total::Unknown),
-        &|| end(&tty, grandchild, Outcome::Finished),
-        &|| end(&tty, child, Outcome::Abandoned),
-        &|| end(&tty, root, Outcome::Finished),
-    ];
-    for (n, step) in steps.iter().enumerate() {
-        step();
-        assert_eq!(tty.shared.rows.load(Ordering::SeqCst), on_screen(), "after step {n}");
-    }
-}
-
-/// The ender waits for a draw in flight: the frame that draw writes is above the error line, never over it.
-#[skuld::test]
-fn the_ender_waits_for_a_draw_in_flight_before_it_writes() {
-    let (run, tty, term, probe) = run_with_screen(None);
+fn the_ending_waits_for_a_draw_in_flight_and_what_is_drawn_after_it_draws_nothing() {
+    let (run, tty, term, probe) = run_with_screen();
     let [spinner, bar] = [(); 2].map(|()| id());
     begin(&tty, spinner, None, "waiting", Total::Unknown);
     begin(&tty, bar, None, "copying", Total::Bytes(GIB));
@@ -660,71 +616,45 @@ fn the_ender_waits_for_a_draw_in_flight_before_it_writes() {
     let watched = tty.clone();
     probe.hold_next_draw(move || {
         in_draw.send(()).unwrap();
-        // The hook has set the quiet flag; the ender is to wait for this draw.
-        while !watched.gate().is_stopped() {
+        // The ending has begun to stop the screen, and is to wait for this draw: it stops the spinners first.
+        while !watched.shared.pace.state().stopped {
             std::thread::yield_now();
         }
     });
     std::thread::scope(|scope| {
         scope.spawn(|| advance(&tty, bar, MIB));
         seen.recv().unwrap();
-        // Another thread's hook, with the draw in flight on the first.
-        let ender = scope.spawn(|| hook(&run, &term, "boom"));
-        assert!(ender.join().unwrap());
+        end_with_error(&run, &term);
     });
-    let shown = lines(&term);
-    assert_eq!(
-        shown.last().map(String::as_str),
-        Some("devvm-error: panic: boom"),
-        "{shown:?}"
-    );
-    assert!(shown.iter().any(|line| line.contains("1.0 MiB/1.0 GiB")), "{shown:?}");
-    assert_eq!(in_flight(&tty), 0);
+    tty.shared.tick();
+    advance(&tty, bar, 2 * MIB);
+    tty.warn("late");
+    assert_eq!(lines(&term), ["devvm-error: io: bad"]);
 }
 
+/// A panic hook does not touch the screen: the last frame stays, and the error line follows it.
 #[skuld::test]
-fn a_draw_that_panics_leaves_no_draw_in_flight() {
-    let (_run, tty, _term, probe) = run_with_screen(None);
+fn after_a_panic_the_error_line_follows_the_last_frame() {
+    let (run, tty, term, _probe) = run_with_screen();
     begin(&tty, id(), None, "working", Total::Unknown);
-    probe.trap_next_draw(|| {});
-    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        begin(&tty, id(), None, "next", Total::Unknown);
-    }));
-    assert!(unwound.is_err());
-    assert_eq!(in_flight(&tty), 0);
-}
 
-/// A thread that is not in a draw has nothing to release.
-#[skuld::test]
-fn releasing_a_draw_on_a_thread_that_is_not_in_one_does_nothing() {
-    let (tty, _term) = screen(4, 60, PLAIN);
-    release_in_flight();
-    begin(&tty, id(), None, "a", Total::Unknown);
-    assert_eq!(in_flight(&tty), 0);
-    release_in_flight();
-    assert_eq!(in_flight(&tty), 0);
+    assert!(hook(&run, &term, "boom"));
+
+    assert_eq!(lines(&term), ["- working", "devvm-error: panic: boom"]);
 }
 
 #[skuld::test]
-fn the_rows_drawn_follow_the_open_tasks() {
-    let (tty, _term) = screen(6, 60, PLAIN);
-    let rows = || tty.shared.rows.load(Ordering::SeqCst);
-    let [first, second] = [(); 2].map(|()| id());
-    assert_eq!(rows(), 0);
-    begin(&tty, first, None, "one", Total::Unknown);
-    begin(&tty, second, Some(first), "two", Total::Bytes(MIB));
-    assert_eq!(rows(), 2);
-    end(&tty, first, Outcome::Finished);
-    assert_eq!(rows(), 1);
-    end(&tty, second, Outcome::Finished);
-    assert_eq!(rows(), 0);
+fn a_panic_with_nothing_drawn_writes_no_blank_line() {
+    let (run, _tty, term, _probe) = run_with_screen();
+    assert!(hook(&run, &term, "boom"));
+    assert_eq!(lines(&term), ["devvm-error: panic: boom"]);
 }
 
-/// The panic hook runs on the thread that is inside the draw, holding the screen's lock, with the cursor part way
-/// through the bars: it cannot take the lock, and its newlines put the error line below them.
+/// The panic hook runs on the thread that is inside the draw, holding the screen's lock: it takes none, and the error
+/// line is the last line.
 #[skuld::test]
 fn after_a_panic_in_a_draw_the_error_line_is_the_last_line() {
-    let (run, tty, term, probe) = run_with_screen(None);
+    let (run, tty, term, probe) = run_with_screen();
     let [first, second] = [(); 2].map(|()| id());
     begin(&tty, first, None, "working", Total::Unknown);
     begin(&tty, second, None, "copying", Total::Bytes(GIB));
@@ -746,98 +676,13 @@ fn after_a_panic_in_a_draw_the_error_line_is_the_last_line() {
     begin(&tty, id(), None, "late", Total::Unknown);
     tty.warn("late note");
     assert_eq!(lines(&term), shown);
-    assert_eq!(in_flight(&tty), 0, "the hook released its own thread's draw");
     drop(run);
     drop(tty);
 }
 
 #[skuld::test]
-fn a_panic_with_nothing_drawn_writes_no_blank_line() {
-    let (run, _tty, term, _probe) = run_with_screen(None);
-    assert!(hook(&run, &term, "boom"));
-    assert_eq!(lines(&term), ["devvm-error: panic: boom"]);
-}
-
-#[skuld::test]
-fn a_panic_with_one_row_drawn_starts_one_line_below_it() {
-    let (run, tty, term, _probe) = run_with_screen(None);
-    begin(&tty, id(), None, "working", Total::Unknown);
-    assert!(hook(&run, &term, "boom"));
-    assert_eq!(lines(&term), ["- working", "devvm-error: panic: boom"]);
-}
-
-/// A spinner thread that panics inside a draw, while the command's ending waits for the screen: its hook cannot end
-/// the run, so it stores the panic and unwinds, and the ending reports it.
-#[skuld::test]
-fn a_panic_on_the_spinner_thread_during_the_ending_is_reported_by_the_ending() {
-    let (run, tty, term, probe) = run_with_screen(Some(Duration::from_millis(1)));
-    begin(&tty, id(), None, "waiting", Total::Unknown);
-    let ending = run.begin_ending();
-    let (in_draw, seen) = mpsc::channel();
-    let (hook_run, hook_term) = (run.clone(), term.clone());
-    let was_the_ending = Arc::new(AtomicBool::new(true));
-    let recorded = was_the_ending.clone();
-    probe.trap_next_draw(move || {
-        in_draw.send(()).unwrap();
-        recorded.store(hook(&hook_run, &hook_term, "the spinner failed"), Ordering::SeqCst);
-    });
-    // The spinner thread is inside a draw, holding the screen's lock.
-    seen.recv().unwrap();
-    let code = ending.end(
-        false,
-        None,
-        Ok(ExitStatus::Code(0)),
-        ExitWidth::Full32,
-        &mut TermWriter::new(&term),
-    );
-    assert_eq!(code, 125);
-    assert_eq!(in_flight(&tty), 0, "the hook released its own thread's draw");
-    assert!(!was_the_ending.load(Ordering::SeqCst), "the hook ended the run");
-    let shown = lines(&term);
-    assert_eq!(
-        shown.last().map(String::as_str),
-        Some("devvm-error: panic: the spinner failed"),
-        "{shown:?}"
-    );
-    assert_eq!(
-        shown.iter().filter(|line| line.starts_with("devvm-error")).count(),
-        1,
-        "{shown:?}"
-    );
-}
-
-/// A draw in flight when the ending starts is over before the bars are cleared, and nothing drawn later can erase
-/// what is written after.
-#[skuld::test]
-fn quiet_waits_for_a_draw_in_flight_and_what_is_written_after_it_stays() {
-    let (run, tty, term, probe) = run_with_screen(None);
-    let [spinner, bar] = [(); 2].map(|()| id());
-    begin(&tty, spinner, None, "waiting", Total::Unknown);
-    begin(&tty, bar, None, "copying", Total::Bytes(GIB));
-    let (in_draw, seen) = mpsc::channel();
-    let watched = tty.clone();
-    probe.hold_next_draw(move || {
-        in_draw.send(()).unwrap();
-        // The ending has begun to stop the screen; its lock is what it waits for.
-        while !watched.gate().is_stopped() {
-            std::thread::yield_now();
-        }
-    });
-    std::thread::scope(|scope| {
-        scope.spawn(|| advance(&tty, bar, MIB));
-        seen.recv().unwrap();
-        end_with_error(&run, &term);
-    });
-    // A tick or a report that comes after draws nothing.
-    tty.shared.tick();
-    advance(&tty, bar, 2 * MIB);
-    tty.warn("late");
-    assert_eq!(lines(&term), ["devvm-error: io: bad"]);
-}
-
-#[skuld::test]
 fn a_screen_a_draw_panicked_in_is_left_as_it_was_by_the_ending() {
-    let (run, tty, term, probe) = run_with_screen(None);
+    let (run, tty, term, probe) = run_with_screen();
     begin(&tty, id(), None, "working", Total::Unknown);
     probe.trap_next_draw(|| {});
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -877,7 +722,6 @@ fn a_spinner_turns_by_itself_and_its_thread_ends_with_the_screen() {
         PLAIN,
         Some(Duration::from_millis(1)),
         || 60,
-        newline(&term),
     );
     begin(&tty, id(), None, "waiting", Total::Unknown);
     let first = lines(&term);

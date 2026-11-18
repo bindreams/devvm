@@ -1,14 +1,11 @@
 //! Progress bars and a task tree on a terminal.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use devvm::progress::{
-    Colour, Event, Flying, Gate, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint,
-};
+use devvm::progress::{Colour, Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 
 #[cfg(test)]
@@ -26,9 +23,10 @@ const BAR_COLUMNS: u16 = 50;
 /// set: at each report of its task.
 ///
 /// Every call into indicatif is made holding one lock, the screen's, and nothing else draws: the spinners are ticked
-/// by a thread of this screen that takes the same lock. So a stopped screen ([`TtyProgress::stop`]) draws nothing more. A thread
-/// that panics inside a draw leaves the lock poisoned, and the screen is then never touched again: what indicatif
-/// holds may be half changed, and dropping it would panic.
+/// by a thread of this screen that takes the same lock. Every report checks the screen's `stopped` flag under it, so a
+/// stopped screen ([`TtyProgress::stop`]) draws nothing more. A thread that panics inside a draw leaves the lock
+/// poisoned, and the screen is then never touched again: what indicatif holds may be half changed, and dropping it
+/// would panic.
 pub(crate) struct TtyProgress {
     /// Stops the spinners' thread when this screen is dropped. Declared first, so that it ends before the rest.
     _ticker: Option<Ticker>,
@@ -38,19 +36,14 @@ pub(crate) struct TtyProgress {
 struct Shared {
     /// `None` only for [`Shared`]'s drop, which leaves a poisoned screen as it is.
     screen: Mutex<Option<Screen>>,
-    /// Stopped, nothing is drawn any more; a draw is in flight while it holds `screen`.
-    gate: Gate,
-    /// The rows the screen has drawn: the open tasks, set under `screen` once a report is drawn. Every report is drawn,
-    /// so this is what is on the terminal. A thread that cannot take `screen` reads it to know how far to start a fresh
-    /// line below the bars.
-    rows: AtomicUsize,
-    newline: Box<dyn Fn() + Send + Sync>,
     pace: Arc<Pace>,
 }
 
 struct Screen {
     multi: MultiProgress,
     look: Look,
+    /// Set by [`TtyProgress::stop`]: nothing is drawn after it.
+    stopped: bool,
     columns: Box<dyn Fn() -> u16 + Send + Sync>,
     /// The open tasks in the order they are drawn: a parent, then each of its children with their own.
     order: Vec<TaskId>,
@@ -94,44 +87,29 @@ impl Slot {
 
 // Locking =============================================================================================================
 
-/// The screen, locked, and a draw in flight when the screen is drawn on.
-struct Locked<'a> {
-    screen: MutexGuard<'a, Option<Screen>>,
-    // After `screen`, so that a draw is in flight until the lock is free: whoever sees none can take it.
-    _drawing: Option<Flying>,
-}
+/// The screen, locked and not stopped.
+struct Locked<'a>(MutexGuard<'a, Option<Screen>>);
 
 impl std::ops::Deref for Locked<'_> {
     type Target = Screen;
 
     fn deref(&self) -> &Screen {
-        self.screen.as_ref().expect("the screen is there until it is dropped")
+        self.0.as_ref().expect("the screen is there until it is dropped")
     }
 }
 
 impl std::ops::DerefMut for Locked<'_> {
     fn deref_mut(&mut self) -> &mut Screen {
-        self.screen.as_mut().expect("the screen is there until it is dropped")
+        self.0.as_mut().expect("the screen is there until it is dropped")
     }
 }
 
 impl Shared {
-    /// The screen, locked, with a draw in flight; `None` when a thread panicked inside a draw, and when the screen is
-    /// stopped.
+    /// The screen, locked; `None` when a thread panicked inside a draw, and when the screen is stopped.
     fn lock(&self) -> Option<Locked<'_>> {
         let screen = self.screen.lock().ok()?;
-        let drawing = self.gate.enter()?;
-        Some(Locked {
-            screen,
-            _drawing: Some(drawing),
-        })
-    }
-
-    /// Starts a fresh line for each row the screen has drawn: below the bars wherever the cursor is among them.
-    fn newlines(&self) {
-        for _ in 0..self.rows.load(Ordering::SeqCst) {
-            (self.newline)();
-        }
+        let open = screen.as_ref().is_some_and(|screen| !screen.stopped);
+        open.then(|| Locked(screen))
     }
 
     /// Turns each spinner once.
@@ -241,28 +219,25 @@ impl Drop for Ticker {
 
 impl TtyProgress {
     /// Draws to `target`, which `columns` says is that wide now; spinners turn each `tick`, or only when their task
-    /// reports, with `None`. `newline` starts a fresh line on the terminal.
+    /// reports, with `None`.
     pub(crate) fn new(
         target: ProgressDrawTarget,
         look: Look,
         tick: Option<Duration>,
         columns: impl Fn() -> u16 + Send + Sync + 'static,
-        newline: impl Fn() + Send + Sync + 'static,
     ) -> TtyProgress {
         let pace = Arc::new(Pace::default());
         let shared = Arc::new(Shared {
             screen: Mutex::new(Some(Screen {
                 multi: MultiProgress::with_draw_target(target),
                 look,
+                stopped: false,
                 columns: Box::new(columns),
                 order: Vec::new(),
                 tasks: HashMap::new(),
                 spinners: 0,
                 pace: pace.clone(),
             })),
-            gate: Gate::default(),
-            rows: AtomicUsize::new(0),
-            newline: Box::new(newline),
             pace,
         });
         let ticker = tick.and_then(|every| Ticker::start(shared.clone(), every));
@@ -273,51 +248,30 @@ impl TtyProgress {
     }
 
     pub(crate) fn stderr(look: Look) -> TtyProgress {
-        TtyProgress::new(
-            stderr_target(),
-            look,
-            Some(Duration::from_millis(120)),
-            || {
-                console::Term::stderr()
-                    .size_checked()
-                    .map_or(80, |(_rows, columns)| columns)
-            },
-            || {
-                let _ = console::Term::stderr().write_line("");
-            },
-        )
+        TtyProgress::new(stderr_target(), look, Some(Duration::from_millis(120)), || {
+            console::Term::stderr()
+                .size_checked()
+                .map_or(80, |(_rows, columns)| columns)
+        })
     }
 
-    pub(crate) fn gate(&self) -> &Gate {
-        &self.shared.gate
-    }
-
-    /// Stops drawing: no report or spinner turn draws from now on, and the spinners' thread is told to stop. The
-    /// ending then waits for the draws in flight ([`Gate::stop_and_wait`]) and calls [`TtyProgress::finish`].
+    /// Takes the screen's lock, which waits for the draw in flight, stops the screen and takes the bars off under that
+    /// lock: nothing is drawn after it, and the cursor is where the first bar was. A screen that a panic poisoned is
+    /// left as it is.
     pub(crate) fn stop(&self) {
         self.shared.pace.stop();
-        self.shared.gate.stop();
-    }
-
-    /// Leaves the cursor below the bars, once the screen is stopped and no draw is in flight, without waiting for
-    /// anything: with `clear`, the bars are taken off if the lock is free; otherwise, or if it is not (a thread is
-    /// panicking inside a draw, or a hook is on it), a fresh line starts for each row drawn.
-    pub(crate) fn finish(&self, clear: bool) {
-        let shared = &*self.shared;
-        if clear && let Ok(mut screen) = shared.screen.try_lock() {
-            if let Some(screen) = screen.as_mut() {
-                let _ = screen.multi.clear();
-                screen.multi.set_draw_target(ProgressDrawTarget::hidden());
-            }
-            shared.rows.store(0, Ordering::SeqCst);
+        let Ok(mut screen) = self.shared.screen.lock() else {
             return;
+        };
+        if let Some(screen) = screen.as_mut() {
+            screen.stopped = true;
+            let _ = screen.multi.clear();
+            screen.multi.set_draw_target(ProgressDrawTarget::hidden());
         }
-        shared.newlines();
     }
 }
 
-/// The terminal's draw target, with no rate limit: every report is drawn, so the rows drawn are known. Reports are
-/// throttled where they are made.
+/// The terminal's draw target, with no rate limit: every report is drawn. Reports are throttled where they are made.
 fn stderr_target() -> ProgressDrawTarget {
     let term = console::Term::buffered_stderr();
     if term.is_term() {
@@ -562,6 +516,5 @@ impl Progress for TtyProgress {
             // Finished or not, the task leaves no line: an error is reported below the bars.
             Event::End { id, .. } => screen.end(*id),
         }
-        self.shared.rows.store(screen.order.len(), Ordering::SeqCst);
     }
 }

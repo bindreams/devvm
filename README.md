@@ -85,10 +85,11 @@ devvm rm dev
 - `NO_COLOR` turns colour off. With colour, `pass`, `fail` and `warning:` are coloured, and so is the `devvm-error:`
   prefix of the final error line; piped, that line is plain text.
 - Every run writes a log with all the detail to `logs` in the state directory (`~/.local/state/devvm/logs` unless
-  `XDG_STATE_HOME` says otherwise, on every OS). A failed command prints `log: <path>` before its error line, with `(incomplete: <error>)` after it
-  when a write to the log failed. Only the user can read a log, and logs older than 14 days are removed when a new one
-  is made, unless their command is still running.
-- A Ctrl-C or a panic can leave the last frame of the progress bars on screen above the error line.
+  `XDG_STATE_HOME` says otherwise, on every OS). A failed command prints `log: <path>` before its error line, with
+  `(incomplete: <error>)` after it when a write to the log failed. Only the user can read a log, and logs older than 14
+  days are removed when a new one is made, unless their command is still running.
+- A Ctrl-C or a panic can leave the last frame of the progress bars on screen above the error line. After a panic
+  (devvm itself crashed) the exit code is 125, and the status file and the log's error record are written.
 
 ### A project in a recipe
 
