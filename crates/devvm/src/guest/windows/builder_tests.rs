@@ -230,14 +230,21 @@ fn the_blank_disk_is_the_larger_of_64_gib_and_the_recipes_disk(#[fixture(unicode
 
 #[skuld::test]
 fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(#[fixture(unicode_home)] home: &Path) {
+    // Each edition gets its own key, so a key taken from another image's root fails the assertion below.
+    let keys = [
+        "AB12C-DE34F-GH56J-KL78M-NP90Q",
+        "BC23D-EF45G-HJ67K-LM89N-PQ01R",
+        "CD34E-FG56H-JK78L-MN90P-QR12S",
+    ];
     for (edition, index) in [
         ("Windows 11 Enterprise LTSC 2024", 1),
         ("Windows 11 IoT Enterprise LTSC 2024", 2),
         ("Windows 11 IoT Enterprise Subscription LTSC 2024", 3),
     ] {
         let rig = rig_without_a_machine(home, "three-images.iso");
+        let own = keys[index - 1];
 
-        rig.build_keyed(Some(edition), Some(KEY)).unwrap_err();
+        rig.build_keyed(Some(edition), Some(own)).unwrap_err();
 
         let files = read_files(&rig.work().join("answer.img"), &["Autounattend.xml"]).unwrap();
         let answer = String::from_utf8(files[0].bytes.clone()).unwrap();
@@ -248,7 +255,10 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
             "{edition}: {answer}"
         );
         // The key and the image index are of the one image the build was keyed for.
-        assert_eq!(answer.matches(KEY).count(), 1, "{edition}: {answer}");
+        assert_eq!(answer.matches(own).count(), 1, "{edition}: {answer}");
+        for other in keys.iter().filter(|key| **key != own) {
+            assert!(!answer.contains(other), "{edition}: {answer}");
+        }
         assert!(answer.contains("<UILanguage>en-US</UILanguage>"), "{edition}");
         let _ = std::fs::remove_dir_all(rig.work());
     }
