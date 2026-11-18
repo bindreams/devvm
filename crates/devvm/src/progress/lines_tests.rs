@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use crate::progress::lines::{LineProgress, Look, verbose_in};
-use crate::progress::{Progress, Task, Total};
+use crate::progress::{Event, Progress, Task, Total};
 use crate::test_support::fixtures::MemoryProgress;
 
 const MIB: u64 = 1 << 20;
@@ -255,9 +255,11 @@ fn two_threads_never_interleave_inside_a_line() {
 }
 
 #[skuld::test]
-fn an_escape_in_step_output_is_written_escaped() {
+fn an_escape_in_an_output_event_is_written_escaped() {
     let (progress, out) = sink(VERBOSE);
-    progress.output("\u{1b}[32mgreen\u{1b}[0m text");
+    progress.event(&Event::Output {
+        line: "\u{1b}[32mgreen\u{1b}[0m text".to_owned(),
+    });
     assert_eq!(out.lines(), ["\\u{1b}[32mgreen\\u{1b}[0m text"]);
 }
 

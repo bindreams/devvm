@@ -273,3 +273,17 @@ fn strip_ansi_drops_whole_sequences_and_keeps_the_text() {
     assert_eq!(strip_ansi("\u{1b}[1;32mok\u{1b}[0m \u{1b}[2Kdone"), "ok done");
     assert_eq!(strip_ansi("plain"), "plain");
 }
+
+/// An output event is built in one place, where its escapes are dropped: every sink gets plain text.
+#[skuld::test]
+fn a_step_output_line_loses_its_ansi_escapes_in_the_event() {
+    let progress = MemoryProgress::default();
+    let sink: &dyn Progress = &progress;
+    sink.output("\u{1b}[1;32mok\u{1b}[0m \u{1b}[2Kdone");
+    assert_eq!(
+        progress.events(),
+        [Event::Output {
+            line: "ok done".to_owned()
+        }]
+    );
+}

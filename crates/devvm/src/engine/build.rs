@@ -505,7 +505,7 @@ impl Tail {
         if lines.len() == TAIL_LINES {
             lines.pop_front();
         }
-        lines.push_back(line.to_owned());
+        lines.push_back(strip_ansi(line).into_owned());
     }
 
     fn text(&self) -> String {
@@ -538,8 +538,7 @@ impl<'a> Lines<'a> {
 
     fn report(&self, line: &[u8]) {
         let line = String::from_utf8_lossy(line);
-        // The one place step output loses its escapes: the screen, the log and the error's tail all get plain text.
-        let line = strip_ansi(&line);
+        // The progress strips the escapes from what it gets; the tail strips what it keeps.
         self.progress.output(&line);
         self.tail.push(&line);
     }

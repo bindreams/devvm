@@ -62,7 +62,7 @@ pub enum Event {
         level: Level,
         text: String,
     },
-    /// A line a step's command printed, without ANSI escapes: its one source strips them.
+    /// A line a step's command printed, without ANSI escapes: [`Progress::output`] strips them.
     Output {
         line: String,
     },
@@ -116,9 +116,12 @@ pub trait Progress: Send + Sync {
         });
     }
 
-    /// A line a step's command printed.
+    /// A line a step's command printed. This is the one place an [`Event::Output`] is built: the line loses its ANSI
+    /// escapes here, so every sink gets plain text.
     fn output(&self, line: &str) {
-        self.event(&Event::Output { line: line.to_owned() });
+        self.event(&Event::Output {
+            line: strip_ansi(line).into_owned(),
+        });
     }
 }
 
@@ -286,7 +289,7 @@ pub fn paint(on: bool, colour: Colour, text: &str) -> String {
 }
 
 /// `text` without ANSI escape sequences (colours, cursor moves), which a tool prints for a terminal. Step output goes
-/// through it once, where it is read from the step, before any sink or error tail gets it.
+/// through it where an output event is built ([`Progress::output`]) and where the error's tail is kept.
 pub fn strip_ansi(text: &str) -> Cow<'_, str> {
     console::strip_ansi_codes(text)
 }

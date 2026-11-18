@@ -228,7 +228,9 @@ fn step_output_is_hidden_unless_verbose_and_its_controls_are_escaped() {
             verbose: true,
         },
     );
-    loud.output("\u{1b}[32mgreen text\rredraw\0");
+    loud.event(&Event::Output {
+        line: "\u{1b}[32mgreen text\rredraw\0".to_owned(),
+    });
     loud.debug("detail");
     assert_eq!(lines(&term), ["\\u{1b}[32mgreen text\\rredraw\\0", "detail"]);
 }

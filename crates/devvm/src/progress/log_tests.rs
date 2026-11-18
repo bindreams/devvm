@@ -6,7 +6,7 @@ use crate::error::{Error, ErrorKind};
 use crate::exit::format_error_line;
 use crate::host::Host;
 use crate::progress::log::FileLog;
-use crate::progress::{Progress, Task, Total};
+use crate::progress::{Event, Progress, Task, Total};
 use crate::store::layers::Clock;
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
@@ -120,7 +120,9 @@ fn output_lines_are_complete_and_controls_are_escaped(#[fixture(unicode_home)] h
     let log = open(&home.join("logs"));
     let long = "x".repeat(100_000);
     log.output(&long);
-    log.output("redraw\r10%\u{1b}[31m red\0 nul");
+    log.event(&Event::Output {
+        line: "redraw\r10%\u{1b}[31m red\0 nul".to_owned(),
+    });
     log.warn("two\nlines");
     let records = records(&log);
     assert_eq!(records.len(), 3, "{records:?}");
