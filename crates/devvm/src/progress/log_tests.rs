@@ -242,8 +242,5 @@ fn a_record_attempted_on_the_thread_that_holds_the_log_is_skipped(#[fixture(unic
     log.warn("outer");
     log.failed("later");
 
-    assert_eq!(
-        records(&log),
-        [format!("{AT} WARN outer"), format!("{AT} ERROR later")]
-    );
+    assert_eq!(records(&log), [format!("{AT} WARN outer"), format!("{AT} ERROR later")]);
 }

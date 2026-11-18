@@ -605,6 +605,89 @@ fn end_with_error(run: &Run, term: &InMemoryTerm) -> i32 {
     )
 }
 
+/// The draws in flight on `tty`.
+fn in_flight(tty: &TtyProgress) -> usize {
+    *tty.shared.flight.count.lock().unwrap()
+}
+
+/// Every report is drawn, so the rows the screen says it drew are the bars on the terminal.
+#[skuld::test]
+fn the_rows_drawn_are_the_lines_on_the_terminal_after_every_report() {
+    let (tty, term) = screen(8, 60, PLAIN);
+    let on_screen = || term.contents().lines().filter(|line| !line.trim().is_empty()).count();
+    let [root, child, grandchild, spinner] = [(); 4].map(|()| id());
+    let steps: [&dyn Fn(); 8] = [
+        &|| begin(&tty, root, None, "building", Total::Items(3)),
+        &|| begin(&tty, child, Some(root), "copying", Total::Bytes(GIB)),
+        &|| advance(&tty, child, MIB),
+        &|| begin(&tty, grandchild, Some(child), "hashing", Total::Bytes(GIB)),
+        &|| begin(&tty, spinner, None, "waiting", Total::Unknown),
+        &|| end(&tty, grandchild, Outcome::Finished),
+        &|| end(&tty, child, Outcome::Abandoned),
+        &|| end(&tty, root, Outcome::Finished),
+    ];
+    for (n, step) in steps.iter().enumerate() {
+        step();
+        assert_eq!(tty.shared.rows.load(Ordering::SeqCst), on_screen(), "after step {n}");
+    }
+}
+
+/// The ender waits for a draw in flight: the frame that draw writes is above the error line, never over it.
+#[skuld::test]
+fn the_ender_waits_for_a_draw_in_flight_before_it_writes() {
+    let (run, tty, term, probe) = run_with_screen(None);
+    let [spinner, bar] = [(); 2].map(|()| id());
+    begin(&tty, spinner, None, "waiting", Total::Unknown);
+    begin(&tty, bar, None, "copying", Total::Bytes(GIB));
+    let (in_draw, seen) = mpsc::channel();
+    let watched = tty.clone();
+    probe.hold_next_draw(move || {
+        in_draw.send(()).unwrap();
+        // The hook has set the quiet flag; the ender is to wait for this draw.
+        while !watched.shared.is_quiet() {
+            std::thread::yield_now();
+        }
+    });
+    std::thread::scope(|scope| {
+        scope.spawn(|| advance(&tty, bar, MIB));
+        seen.recv().unwrap();
+        // Another thread's hook, with the draw in flight on the first.
+        let ender = scope.spawn(|| hook(&run, &term, "boom"));
+        assert!(ender.join().unwrap());
+    });
+    let shown = lines(&term);
+    assert_eq!(
+        shown.last().map(String::as_str),
+        Some("devvm-error: panic: boom"),
+        "{shown:?}"
+    );
+    assert!(shown.iter().any(|line| line.contains("1.0 MiB/1.0 GiB")), "{shown:?}");
+    assert_eq!(in_flight(&tty), 0);
+}
+
+#[skuld::test]
+fn a_draw_that_panics_leaves_no_draw_in_flight() {
+    let (_run, tty, _term, probe) = run_with_screen(None);
+    begin(&tty, id(), None, "working", Total::Unknown);
+    probe.trap_next_draw(|| {});
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        begin(&tty, id(), None, "next", Total::Unknown);
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(in_flight(&tty), 0);
+}
+
+/// A thread that is not in a draw has nothing to release.
+#[skuld::test]
+fn releasing_a_draw_on_a_thread_that_is_not_in_one_does_nothing() {
+    let (tty, _term) = screen(4, 60, PLAIN);
+    crate::tty::release_draw();
+    begin(&tty, id(), None, "a", Total::Unknown);
+    assert_eq!(in_flight(&tty), 0);
+    crate::tty::release_draw();
+    assert_eq!(in_flight(&tty), 0);
+}
+
 #[skuld::test]
 fn the_rows_drawn_follow_the_open_tasks() {
     let (tty, _term) = screen(6, 60, PLAIN);
@@ -646,6 +729,7 @@ fn after_a_panic_in_a_draw_the_error_line_is_the_last_line() {
     begin(&tty, id(), None, "late", Total::Unknown);
     tty.warn("late note");
     assert_eq!(lines(&term), shown);
+    assert_eq!(in_flight(&tty), 0, "the hook released its own thread's draw");
     drop(run);
     drop(tty);
 }
@@ -690,6 +774,7 @@ fn a_panic_on_the_spinner_thread_during_the_ending_is_reported_by_the_ending() {
         &mut TermWriter::new(&term),
     );
     assert_eq!(code, 125);
+    assert_eq!(in_flight(&tty), 0, "the hook released its own thread's draw");
     assert!(!was_the_ending.load(Ordering::SeqCst), "the hook ended the run");
     let shown = lines(&term);
     assert_eq!(

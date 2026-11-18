@@ -193,8 +193,9 @@ impl Run {
     }
 
     /// The panic hook's part, on the panicking thread. Never takes the screen's lock (the thread may hold it) and never
-    /// drops the screen or the log: it stops the screen drawing, starts a line below what it drew, and prints. A bar of
-    /// the last frame can stay above the error line; the error line is the last.
+    /// drops the screen or the log. It first releases the draw its own thread is in, then stops the screen drawing,
+    /// waits out the draws in flight, starts a line below what was drawn, and prints. A bar of the last frame can stay
+    /// above the error line; the error line is the last.
     pub(crate) fn on_panic(
         &self,
         message: String,
@@ -203,6 +204,8 @@ impl Run {
         width: ExitWidth,
         stderr: &mut dyn Write,
     ) -> Panicked<'_> {
+        // First: a thread that panicked inside a draw is no longer in it, whatever the hook does next.
+        crate::tty::release_draw();
         let mut state = self.state();
         // A panic on the ending's own thread cannot be left to it: the ending is what failed.
         if let State::Ending { thread, panic, sealed } = &mut *state
