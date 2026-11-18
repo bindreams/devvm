@@ -119,13 +119,12 @@ impl crate::store::layers::Clock for FakeClock {
 /// A progress sink the test reads back.
 #[derive(Default)]
 pub struct MemoryProgress {
-    lines: std::sync::Mutex<Vec<(std::time::SystemTime, String)>>,
+    events: std::sync::Mutex<Vec<(std::time::SystemTime, crate::progress::Event)>>,
     echo: bool,
 }
 
 impl MemoryProgress {
-    /// A sink that also prints each message to stderr, for a test that runs long enough for its progress to be read
-    /// live.
+    /// A sink that also prints each note to stderr, for a test that runs long enough for its progress to be read live.
     pub fn echoing() -> MemoryProgress {
         MemoryProgress {
             echo: true,
@@ -133,13 +132,30 @@ impl MemoryProgress {
         }
     }
 
+    /// The text of every note and output line, at every level, in order.
     pub fn messages(&self) -> Vec<String> {
         self.messages_at().into_iter().map(|(_, text)| text).collect()
     }
 
-    /// The messages, each with the time it arrived.
+    /// The notes and output lines, each with the time it arrived.
     pub fn messages_at(&self) -> Vec<(std::time::SystemTime, String)> {
-        self.lines
+        self.events_at()
+            .into_iter()
+            .filter_map(|(at, event)| match event {
+                crate::progress::Event::Note { text, .. } | crate::progress::Event::Output { line: text } => {
+                    Some((at, text))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn events(&self) -> Vec<crate::progress::Event> {
+        self.events_at().into_iter().map(|(_, event)| event).collect()
+    }
+
+    fn events_at(&self) -> Vec<(std::time::SystemTime, crate::progress::Event)> {
+        self.events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -147,18 +163,19 @@ impl MemoryProgress {
 }
 
 impl crate::progress::Progress for MemoryProgress {
-    fn message(&self, text: &str) {
+    fn event(&self, event: &crate::progress::Event) {
         if self.echo {
-            crate::progress::StderrProgress.message(text);
+            crate::progress::StderrProgress.event(event);
         }
-        self.lines
+        self.events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((std::time::SystemTime::now(), text.to_owned()));
+            .push((std::time::SystemTime::now(), event.clone()));
     }
 }
 
-/// A progress sink that sends every message down a channel, so a test can wait for "waiting for ..." as an event.
+/// A progress sink that sends the text of every note down a channel, so a test can wait for "waiting for ..." as an
+/// event.
 pub struct ChannelProgress(std::sync::Mutex<std::sync::mpsc::Sender<String>>);
 
 impl ChannelProgress {
@@ -172,7 +189,9 @@ impl ChannelProgress {
 }
 
 impl crate::progress::Progress for ChannelProgress {
-    fn message(&self, text: &str) {
-        let _ = self.0.lock().unwrap().send(text.to_owned());
+    fn event(&self, event: &crate::progress::Event) {
+        if let crate::progress::Event::Note { text, .. } = event {
+            let _ = self.0.lock().unwrap().send(text.clone());
+        }
     }
 }

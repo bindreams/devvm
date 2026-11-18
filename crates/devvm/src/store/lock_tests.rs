@@ -1,14 +1,12 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Mutex;
-use std::sync::mpsc;
 
 use crate::host::Comparison;
 use crate::progress::Progress;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, symlinks};
-use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::helper;
 use crate::test_support::name_change::NameChange;
 use crate::test_support::symlink::symlink;
@@ -44,24 +42,15 @@ fn shared_locks_coexist(#[fixture(unicode_home)] home: &Path) {
     assert!(second.try_lock(Mode::Shared).unwrap());
 }
 
-struct Capture(Mutex<mpsc::Sender<String>>);
-
-impl Progress for Capture {
-    fn message(&self, text: &str) {
-        self.0.lock().unwrap().send(text.to_owned()).unwrap();
-    }
-}
-
 #[skuld::test]
 fn contention_message_is_emitted_before_blocking(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("a.lock");
     let mut holder = FileLock::open(&path).unwrap();
     assert!(holder.try_lock(Mode::Exclusive).unwrap());
-    let (sender, receiver) = mpsc::channel();
+    let (progress, receiver) = ChannelProgress::new();
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
             let mut lock = FileLock::open(&path).unwrap();
-            let progress = Capture(Mutex::new(sender));
             lock.lock(Mode::Exclusive, "layer K", &mut |m| progress.message(m))
                 .unwrap();
         });
@@ -74,8 +63,7 @@ fn contention_message_is_emitted_before_blocking(#[fixture(unicode_home)] home: 
 
 #[skuld::test]
 fn uncontended_lock_emits_no_message(#[fixture(unicode_home)] home: &Path) {
-    let (sender, receiver) = mpsc::channel();
-    let progress = Capture(Mutex::new(sender));
+    let (progress, receiver) = ChannelProgress::new();
     FileLock::open(&home.join("a.lock"))
         .unwrap()
         .lock(Mode::Exclusive, "x", &mut |m| progress.message(m))

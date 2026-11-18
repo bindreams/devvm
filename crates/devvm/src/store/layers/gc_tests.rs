@@ -2,14 +2,13 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::mpsc;
 
-use crate::progress::{NullProgress, Progress};
+use crate::progress::NullProgress;
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Clock, GcReport, Generation, LayerRef, LayerStore, Reachability, SystemClock};
 use crate::store::lock::Mode;
 use crate::test_groups::{Group, symlinks};
-use crate::test_support::fixtures::{FakeClock, unicode_home};
+use crate::test_support::fixtures::{ChannelProgress, FakeClock, unicode_home};
 use crate::test_support::helper;
 use crate::test_support::symlink::symlink;
 use crate::{Dirs, Error, ErrorKind, Result};
@@ -257,25 +256,12 @@ fn lease_chain_works_for_an_expired_layer(#[fixture(unicode_home)] home: &Path) 
     );
 }
 
-struct ChannelProgress(std::sync::Mutex<mpsc::Sender<String>>);
-
-impl Progress for ChannelProgress {
-    fn message(&self, text: &str) {
-        self.0.lock().unwrap().send(text.to_owned()).unwrap();
-    }
-}
-
 #[skuld::test]
 fn record_guard_blocks_gc_until_dropped(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let clock = Arc::new(FakeClock::new(t0()));
-    let (messages, waiting) = mpsc::channel();
-    let store = LayerStore::open(
-        &dirs,
-        clock.clone() as Arc<dyn Clock>,
-        Arc::new(ChannelProgress(std::sync::Mutex::new(messages))),
-    )
-    .unwrap();
+    let (progress, waiting) = ChannelProgress::new();
+    let store = LayerStore::open(&dirs, clock.clone() as Arc<dyn Clock>, progress).unwrap();
     let probe_env = Env {
         dirs: dirs.clone(),
         store,

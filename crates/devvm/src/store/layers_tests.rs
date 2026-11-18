@@ -9,7 +9,7 @@ use crate::store::layers::{
     BuildRequest, Built, ChainLease, Clock, Generation, IdSource, LayerMeta, LayerRef, LayerStore,
 };
 use crate::store::lock::{FileLock, Mode};
-use crate::test_support::fixtures::{FakeClock, MemoryProgress, unicode_home};
+use crate::test_support::fixtures::{ChannelProgress, FakeClock, MemoryProgress, unicode_home};
 use crate::{Dirs, ErrorKind};
 
 pub struct Env {
@@ -476,25 +476,12 @@ fn a_layer_expiring_between_the_stamp_and_the_read_back_is_still_returned(#[fixt
     assert_eq!(lease.tip().meta().expires, Some(expires));
 }
 
-struct ChannelProgress(std::sync::Mutex<std::sync::mpsc::Sender<String>>);
-
-impl Progress for ChannelProgress {
-    fn message(&self, text: &str) {
-        self.0.lock().unwrap().send(text.to_owned()).unwrap();
-    }
-}
-
 #[skuld::test]
 fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let clock = Arc::new(FakeClock::new(t0()));
-    let (messages, waiting) = std::sync::mpsc::channel();
-    let store = LayerStore::open(
-        &dirs,
-        clock.clone() as Arc<dyn Clock>,
-        Arc::new(ChannelProgress(std::sync::Mutex::new(messages))),
-    )
-    .unwrap();
+    let (progress, waiting) = ChannelProgress::new();
+    let store = LayerStore::open(&dirs, clock.clone() as Arc<dyn Clock>, progress).unwrap();
     let (building_tx, building_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let waiter_builds = std::sync::atomic::AtomicUsize::new(0);
@@ -547,13 +534,8 @@ fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(unicode_home)] home: &
 #[skuld::test]
 fn waiter_whose_layer_was_built_meanwhile_does_not_build_again(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
-    let (messages, waiting) = std::sync::mpsc::channel();
-    let store = LayerStore::open(
-        &dirs,
-        Arc::new(FakeClock::new(t0())),
-        Arc::new(ChannelProgress(std::sync::Mutex::new(messages))),
-    )
-    .unwrap();
+    let (progress, waiting) = ChannelProgress::new();
+    let store = LayerStore::open(&dirs, Arc::new(FakeClock::new(t0())), progress).unwrap();
     let (building_tx, building_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let waiter_builds = std::sync::atomic::AtomicUsize::new(0);
