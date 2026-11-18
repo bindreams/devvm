@@ -27,8 +27,8 @@ use crate::host::{Host, is_absent};
 use crate::instance::record::InstanceId;
 use crate::iso::{HeldIso, InstallIso, read_install_iso};
 use crate::media::{SeedFile, read_files, write_cidata_image};
+use crate::recipe::Source;
 use crate::recipe::hash::LayerKey;
-use crate::recipe::{ProductKey, Source};
 use crate::store::fetch::Fetcher;
 use crate::store::layers::{Generation, LayerDir, LayerMeta};
 use crate::vm::{DEFAULT_CPUS, DEFAULT_MEMORY};
@@ -124,9 +124,12 @@ impl BaseBuilder for WindowsBuilder {
             .unwrap_or_else(PoisonError::into_inner)
             .take()
             .ok_or_else(|| Error::new(ErrorKind::Internal, "the build has no held ISO to install Windows from"))?;
-        let evaluation = root.image.is_evaluation();
         let install = read_install_iso(root)?;
-        let expires = Build::prepare(self, ctx, staging, &install, evaluation, product_key.as_ref())?.run(install)?;
+        debug_assert!(
+            product_key.is_none() || product_key.as_ref() == install.product_key(),
+            "the build installs the recipe's product key when it gives one"
+        );
+        let expires = Build::prepare(self, ctx, staging, &install)?.run(install)?;
         // The store owns the key, the generation and the creation time; it reads only the expiry from what a base
         // builder returns.
         Ok(LayerMeta {
@@ -389,8 +392,6 @@ struct Build<'a> {
     launches: Launches,
     /// The last `DEVVM-LICENSE=` line and when it was observed: the license's grace counts from the read.
     license: Option<(String, SystemTime)>,
-    /// The image is an evaluation edition: the guest activates an unlicensed one, and an unlicensed one ends the build.
-    evaluation: bool,
     watch: Watch,
 }
 
@@ -401,8 +402,6 @@ impl<'a> Build<'a> {
         ctx: &'a BuildCtx,
         staging: &LayerDir,
         install: &InstallIso,
-        evaluation: bool,
-        product_key: Option<&ProductKey>,
     ) -> Result<Build<'a>> {
         let work = ctx.work.join(WORK_DIR);
         let machine_dir = work.join(MACHINE_DIR);
@@ -412,9 +411,9 @@ impl<'a> Build<'a> {
 
         let storage = builder.backend.storage();
         // QEMU is given the held file's own path: the name the ISO was opened by could be pointed elsewhere meanwhile.
-        let backing = install.iso.final_path(builder.host)?;
+        let backing = install.iso().final_path(builder.host)?;
         let patches: Vec<Patch> = install
-            .boot_patches
+            .boot_patches()
             .iter()
             .map(|patch| Patch {
                 offset: patch.offset,
@@ -432,11 +431,11 @@ impl<'a> Build<'a> {
         let password = random_password();
         let files = templates::answer_disk_files(&AnswerInputs {
             password: &password,
-            image_index: install.image.index,
-            language: &install.image.language,
+            image_index: install.image().index,
+            language: &install.image().language,
             time_zone: TIME_ZONE,
-            evaluation,
-            product_key,
+            evaluation: install.evaluation(),
+            product_key: install.product_key(),
         })?;
         let answer = write_cidata_image(
             builder.host,
@@ -456,15 +455,16 @@ impl<'a> Build<'a> {
             overlay,
             launches: Launches::default(),
             license: None,
-            evaluation,
             watch: Watch::new(Instant::now()),
         })
     }
 
     /// Launches the guest until it has finished, and returns when the base ends.
     fn run(mut self, install: InstallIso) -> Result<Option<SystemTime>> {
+        // The guest activates an unlicensed evaluation edition, and an unlicensed one ends the build.
+        let evaluation = install.evaluation();
         // The ISO is held until QEMU has opened it, which the first `resume` returning says.
-        let mut held = Some(install.iso);
+        let mut held = Some(install.into_iso());
         let mut number = 0;
         let log = loop {
             number += 1;
@@ -486,7 +486,7 @@ impl<'a> Build<'a> {
             ));
         };
         // The serial log may say more than the read does, whatever the kind of the error.
-        expiry_from(read, self.evaluation, *read_at).map_err(|error| {
+        expiry_from(read, evaluation, *read_at).map_err(|error| {
             let kind = error.kind();
             with_log_tail(
                 error.with_context(kind, "the Windows base's license read"),

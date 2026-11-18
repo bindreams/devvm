@@ -12,6 +12,7 @@ pub mod model;
 pub mod product_key;
 
 pub use model::{CopyFrom, PerArch, Pin, Recipe, Resources, Setting, Shell, Source, Step, UacMode};
+pub(crate) use product_key::GenericKey;
 pub use product_key::ProductKey;
 
 #[cfg(test)]

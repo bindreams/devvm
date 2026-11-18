@@ -9,7 +9,7 @@ use super::build_dir::BuildDir;
 use crate::copy::{self, Snapshot};
 use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
-use crate::iso::{IsoMemo, IsoRoot, check_product_key, key_iso};
+use crate::iso::{IsoMemo, IsoRoot, key_iso};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
@@ -53,8 +53,8 @@ impl Engine {
         self.backend()?;
         let store = self.store()?;
         let memo = IsoMemo::new(&self.dirs);
-        let (root, base) = root_of(&flat.root, arch, &|iso, edition| {
-            key_iso(self.host, &memo, iso, edition, self.progress.as_ref())
+        let (root, base) = root_of(&flat.root, arch, &|iso, edition, product_key| {
+            key_iso(self.host, &memo, iso, edition, product_key, self.progress.as_ref())
         })?;
 
         let build_dir = BuildDir::create(self)?;
@@ -80,7 +80,7 @@ impl Engine {
             resources: flat.resources,
             work: build_dir.path().to_owned(),
             iso: Mutex::new(match root {
-                BuildRoot::Iso { root, .. } => Some(root),
+                BuildRoot::Iso(root) => Some(root),
                 BuildRoot::Pinned(_) => None,
             }),
         };
@@ -180,11 +180,8 @@ fn step_command(guest: &dyn GuestOs, step: &Step, copy_paths: (&str, &str)) -> R
 enum BuildRoot {
     /// A disk image or an OCI image, which the key hashes as it is.
     Pinned(RootContent),
-    /// A Windows ISO, held, with what a key is made from.
-    Iso {
-        root: IsoRoot,
-        product_key: Option<ProductKey>,
-    },
+    /// A Windows ISO, held, with the product key it is installed with.
+    Iso(IsoRoot),
 }
 
 impl BuildRoot {
@@ -192,23 +189,24 @@ impl BuildRoot {
     fn content(&self) -> RootContent {
         match self {
             BuildRoot::Pinned(content) => content.clone(),
-            BuildRoot::Iso { root, product_key } => RootContent::Iso {
-                sha256: root.sha256,
-                image_index: root.image.index,
-                image_name: root.image.name.clone(),
-                product_key: product_key.clone(),
-            },
+            BuildRoot::Iso(root) => {
+                let image = root.image();
+                RootContent::Iso {
+                    sha256: root.sha256(),
+                    image_index: image.index,
+                    image_name: image.name.clone(),
+                    product_key: root.product_key().cloned(),
+                }
+            }
         }
     }
 }
 
+type KeyIso<'a> = dyn Fn(&std::path::Path, Option<&str>, Option<&ProductKey>) -> Result<IsoRoot> + 'a;
+
 /// The root of a build, and the base in the words of an `expired-base` error. `iso_root` gives the content hash of an
-/// ISO and the image an edition selects in it, with the ISO held.
-fn root_of(
-    source: &Source,
-    arch: Arch,
-    iso_root: &dyn Fn(&std::path::Path, Option<&str>) -> Result<IsoRoot>,
-) -> Result<(BuildRoot, String)> {
+/// ISO, the image an edition selects in it and the key that image is installed with, with the ISO held.
+fn root_of(source: &Source, arch: Arch, iso_root: &KeyIso) -> Result<(BuildRoot, String)> {
     match source {
         Source::DiskImage(pins) => {
             let pin = pins.get(arch).ok_or_else(|| {
@@ -231,15 +229,8 @@ fn root_of(
             edition,
             product_key,
         } => {
-            let root = iso_root(path, edition.as_deref())?;
-            check_product_key(&root.image, product_key.as_ref())?;
-            Ok((
-                BuildRoot::Iso {
-                    root,
-                    product_key: product_key.clone(),
-                },
-                format!("Windows ISO {}", path.display()),
-            ))
+            let root = iso_root(path, edition.as_deref(), product_key.as_ref())?;
+            Ok((BuildRoot::Iso(root), format!("Windows ISO {}", path.display())))
         }
         Source::Recipe(_) | Source::Embedded(_) => Err(Error::new(
             ErrorKind::Internal,
