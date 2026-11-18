@@ -130,11 +130,7 @@ pub(crate) fn take(from: &Path, read_only: bool, scratch: &Path) -> crate::Resul
     Ok(Taken {
         snapshot,
         warnings,
-        notes: progress
-            .messages()
-            .into_iter()
-            .filter(|note| !note.starts_with(UNSET_NOTE_PREFIX))
-            .collect(),
+        notes: progress.warnings(),
     })
 }
 

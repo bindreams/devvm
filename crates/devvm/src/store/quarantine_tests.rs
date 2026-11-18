@@ -29,9 +29,9 @@ fn a_quarantined_file_keeps_its_name_in_a_fresh_directory_under_the_root_and_is_
     assert_eq!(std::fs::read(&target).unwrap(), b"junk");
     assert!(!file.exists());
     assert!(
-        progress.messages().iter().any(|message| message.contains("unreadable")),
+        progress.warnings().iter().any(|message| message.contains("unreadable")),
         "{:?}",
-        progress.messages()
+        progress.warnings()
     );
 }
 

@@ -227,11 +227,11 @@ fn a_corrupt_memo_is_quarantined_and_rebuilt(#[fixture(unicode_home)] home: &Pat
     );
     assert!(
         fx.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|message| message.contains("unreadable")),
         "{:?}",
-        fx.progress.messages()
+        fx.progress.warnings()
     );
     fx.sha256(&iso).unwrap();
     assert_eq!(hashings(&fx.progress), 2, "the memo made again is used");
@@ -354,11 +354,11 @@ fn an_iso_with_a_non_unicode_name_is_hashed_each_time_and_the_build_is_told(#[fi
     assert_eq!(fx.memo.known().unwrap(), []);
     assert!(
         fx.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|message| message.contains("not remembered") && message.contains("not Unicode")),
         "{:?}",
-        fx.progress.messages()
+        fx.progress.warnings()
     );
 }
 
@@ -373,11 +373,11 @@ fn an_iso_whose_final_path_cannot_be_found_is_used_and_not_remembered(#[fixture(
     assert_eq!(fx.memo.known().unwrap(), []);
     assert!(
         fx.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|message| message.contains("not remembered") && message.contains("no DOS path")),
         "{:?}",
-        fx.progress.messages()
+        fx.progress.warnings()
     );
 }
 
@@ -392,11 +392,11 @@ fn a_memo_that_cannot_be_written_is_reported_and_the_iso_is_used(#[fixture(unico
     assert_eq!(fx.memo.known().unwrap(), []);
     assert!(
         fx.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|message| message.contains("not remembered") && message.contains(".lock")),
         "{:?}",
-        fx.progress.messages()
+        fx.progress.warnings()
     );
 }
 

@@ -197,7 +197,7 @@ fn sweep_reports_a_directory_it_cannot_list(#[fixture(unicode_home)] home: &Path
     let not_a_dir = home.join("plain-file");
     std::fs::write(&not_a_dir, b"x").unwrap();
     assert_eq!(env.store.sweep_leftovers(&not_a_dir), 0);
-    let messages = env.progress.messages();
+    let messages = env.progress.warnings();
     assert!(
         messages
             .iter()

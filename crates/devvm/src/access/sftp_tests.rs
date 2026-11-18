@@ -1469,7 +1469,7 @@ fn a_tilde_user_guest_path_is_a_usage_error_before_any_transfer(#[fixture(unicod
     assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
     assert!(tree(env.root()).is_empty(), "nothing reached the guest");
     assert!(!env.local.join("o").exists());
-    assert!(env.progress.messages().is_empty(), "no transfer was announced");
+    assert!(copy_tasks(&env).is_empty(), "no transfer began");
 }
 
 /// `(label, total)` of each task begun, the positions each advanced to, and how each ended, in `env`'s progress.
@@ -1908,7 +1908,7 @@ fn a_time_sftp_cannot_carry_is_named_and_the_copy_goes_on(#[fixture(unicode_home
     assert_eq!(env.guest_tree("/t"), ["d/", "early.txt", "late.txt", "ok.txt"]);
     let notes: Vec<String> = env
         .progress
-        .messages()
+        .warnings()
         .into_iter()
         .filter(|line| line.contains("modification time"))
         .collect();
@@ -1934,7 +1934,7 @@ fn a_guest_time_the_server_does_not_show_is_named_and_the_copy_goes_on(#[fixture
     assert_eq!(tree(&out), ["a.txt", "sub/", "sub/b.txt"]);
     let notes: Vec<String> = env
         .progress
-        .messages()
+        .warnings()
         .into_iter()
         .filter(|line| line.contains("modification time"))
         .collect();
@@ -2427,7 +2427,7 @@ fn a_guest_time_before_1970_is_named_and_the_copy_goes_on(#[fixture(unicode_home
     assert_eq!(tree(&out), ["d/", "early.txt", "ok.txt"]);
     let notes: Vec<String> = env
         .progress
-        .messages()
+        .warnings()
         .into_iter()
         .filter(|line| line.contains("modification time"))
         .collect();

@@ -693,11 +693,11 @@ fn gc_quarantines_an_unkept_generation_with_a_corrupt_record_instead_of_deleting
     );
     assert!(
         env.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|m| m.contains("unreadable") && m.contains(&oldest.generation.to_string())),
         "{:?}",
-        env.progress.messages()
+        env.progress.warnings()
     );
 }
 

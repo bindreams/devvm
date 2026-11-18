@@ -308,6 +308,15 @@ fn doctor_piped_has_no_escape_bytes_on_either_stream() {
     );
 }
 
+/// The logs of the runs in `home`; each run's lock file is beside its log.
+fn log_files(home: &Home) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(home.state().join("logs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+        .collect()
+}
+
 #[skuld::test]
 fn doctor_leaves_a_log_file_in_the_state_dir() {
     let home = home();
@@ -315,10 +324,7 @@ fn doctor_leaves_a_log_file_in_the_state_dir() {
 
     let output = devvm_coloured(&home, &cwd, &["doctor"], &[]);
 
-    let logs: Vec<_> = std::fs::read_dir(home.state().join("logs"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
+    let logs = log_files(&home);
     assert_eq!(logs.len(), 1, "{logs:?}");
     let name = logs[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(name.starts_with("devvm-") && name.ends_with(".log"), "{name}");
@@ -338,6 +344,19 @@ fn doctor_with_git_variables_set_prints_no_unset_note_on_stderr() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("have been unset"), "{stderr}");
+    // Doctor ran: the git check printed its line, and the exit is the one its lines say.
+    let lines = stdout_lines(&output);
+    assert!(lines.iter().any(|line| line[5..].starts_with("git:")), "{lines:?}");
+    let failed = lines.iter().filter(|line| line.starts_with("fail ")).count();
+    assert_eq!(output.status.code(), Some(if failed == 0 { 0 } else { 125 }), "{stderr:?}");
+    // The note is kept in the log.
+    let logs = log_files(&home);
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    let text = std::fs::read_to_string(&logs[0]).unwrap();
+    assert!(
+        text.contains(" DEBUG The following variables have been unset: GIT_DIR, GIT_TRACE\n"),
+        "{text}"
+    );
 }
 
 #[skuld::test]

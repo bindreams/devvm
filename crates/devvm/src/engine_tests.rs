@@ -438,8 +438,8 @@ fn list_ignores_a_directory_that_is_not_an_instance_name(#[fixture(unicode_home)
     instance_in(&fx, "ok", home);
     std::fs::create_dir_all(fx.env.dirs.instances().join("Not Valid")).unwrap();
     assert_eq!(info_names(&fx.engine.list(ListFilter::All).unwrap()), ["ok"]);
-    assert_eq!(memory.messages().len(), 1, "{:?}", memory.messages());
-    assert!(memory.messages()[0].contains("Not Valid"));
+    assert_eq!(memory.warnings().len(), 1, "{:?}", memory.warnings());
+    assert!(memory.warnings()[0].contains("Not Valid"));
     assert_eq!(names(&fx.env.dirs.instances()).len(), 2, "nothing is deleted");
 }
 
@@ -469,7 +469,7 @@ fn list_still_warns_about_an_instance_with_an_unreadable_marker(#[fixture(unicod
     std::fs::remove_file(dir.path().join("owner.json")).unwrap();
 
     assert!(fx.engine.list(ListFilter::All).unwrap().is_empty());
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(
         messages[0].contains("foo") && messages[0].contains("owner.json"),
@@ -488,7 +488,7 @@ fn list_names_why_a_marker_is_unusable(#[fixture(unicode_home)] home: &Path) {
 
     assert!(fx.engine.list(ListFilter::All).unwrap().is_empty());
 
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert_eq!(messages.len(), 2, "{messages:?}");
     let about = |name: &str| {
         messages
@@ -575,7 +575,7 @@ fn list_cannot_tell_when_the_backend_cannot_look(#[fixture(unicode_home)] home: 
         fx.engine.list(ListFilter::All).unwrap()[0].state,
         InstanceState::Unknown
     );
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages
             .iter()
@@ -595,7 +595,7 @@ fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixtu
     let infos = engine.list(ListFilter::All).unwrap();
 
     assert_eq!(infos[0].state, InstanceState::Unknown);
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages
             .iter()
@@ -848,7 +848,7 @@ fn the_sweep_warns_and_keeps_the_conf_of_an_instance_whose_record_cannot_be_read
         is_there(&conf),
         "a record that cannot be read does not make its instance gone"
     );
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages
             .iter()
@@ -868,7 +868,7 @@ fn the_sweeps_warnings_reach_the_progress_channel(#[fixture(unicode_home)] home:
 
     fx.engine.sweep_ssh_configs();
 
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(messages.iter().any(|m| m.contains("gone.conf")), "{messages:?}");
 }
 

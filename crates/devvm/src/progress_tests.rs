@@ -236,6 +236,7 @@ fn the_note_helpers_carry_their_level() {
     );
     // Existing readers of `messages` see every note and output line, whatever its level.
     assert_eq!(sink.messages(), ["a", "b", "c", "d"]);
+    assert_eq!(sink.warnings(), ["b"]);
 }
 
 #[skuld::test]

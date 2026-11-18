@@ -149,6 +149,20 @@ impl MemoryProgress {
         self.messages_at().into_iter().map(|(_, text)| text).collect()
     }
 
+    /// The text of every warning, in order.
+    pub fn warnings(&self) -> Vec<String> {
+        self.events()
+            .into_iter()
+            .filter_map(|event| match event {
+                crate::progress::Event::Note {
+                    level: crate::progress::Level::Warn,
+                    text,
+                } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The notes and output lines, each with the time it arrived.
     pub fn messages_at(&self) -> Vec<(std::time::SystemTime, String)> {
         self.events_at()

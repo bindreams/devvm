@@ -206,7 +206,7 @@ fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(un
 
     destroyed.expect("the instance is removed, so rm succeeds");
     assert!(!fx.env.dirs.instances().join("foo").exists());
-    let messages = fx.progress.messages();
+    let messages = fx.progress.warnings();
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(
         messages[0].contains("foo") && messages[0].contains("lock files could not be deleted"),
