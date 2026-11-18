@@ -7,7 +7,6 @@ use devvm::exit::ExitWidth;
 use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
 use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
-use crate::output::output_tests::own_run;
 use crate::output::{Active, Run, Shown};
 use crate::tty::{Pace, TtyProgress};
 
@@ -556,7 +555,7 @@ fn run_with_screen() -> (Arc<Run>, Arc<TtyProgress>, InMemoryTerm, Probe) {
         None,
         || 60,
     ));
-    let run = Arc::new(own_run());
+    let run = Arc::new(Run::new());
     run.begin(Active {
         log: None,
         screen: Some(Shown::Tty(tty.clone())),
@@ -631,6 +630,29 @@ fn the_ending_waits_for_a_draw_in_flight_and_what_is_drawn_after_it_draws_nothin
     advance(&tty, bar, 2 * MIB);
     tty.warn("late");
     assert_eq!(lines(&term), ["devvm-error: io: bad"]);
+}
+
+/// Every call into indicatif holds stderr's lock, the one an ending holds while it writes: a cursor move on a Windows
+/// console is a call that takes no lock of its own, and this keeps it from landing in the middle of the ending.
+#[skuld::test]
+fn a_report_draws_only_when_stderrs_lock_is_free() {
+    let (tty, _term, probe) = probed(4, 80);
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let drawn = order.clone();
+    probe.hold_next_draw(move || drawn.lock().unwrap().push("drew"));
+    let ending = std::io::stderr().lock();
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| begin(&tty, id(), None, "working", Total::Unknown));
+        // The report holds the screen's lock; it draws after the ending's.
+        while tty.shared.screen.try_lock().is_ok() {
+            std::thread::yield_now();
+        }
+        order.lock().unwrap().push("released");
+        drop(ending);
+    });
+
+    assert_eq!(*order.lock().unwrap(), ["released", "drew"]);
 }
 
 /// A panic hook does not touch the screen: the last frame stays, and the error line follows it.

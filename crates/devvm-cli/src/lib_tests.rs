@@ -1,13 +1,10 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use devvm::exit::{ExitStatus, ExitWidth};
-
+use devvm::exit::ExitStatus;
 use devvm::{Error, ErrorKind};
 
-use crate::output::output_tests::own_run;
-use crate::{Deps, flushed, run_ended, status_file_hint};
+use crate::{flushed, status_file_hint};
 
 fn args(items: &[&str]) -> Vec<OsString> {
     items.iter().map(OsString::from).collect()
@@ -80,62 +77,6 @@ fn an_empty_status_file_value_is_the_same_as_none() {
 fn a_double_dash_is_never_the_status_file_value() {
     assert_eq!(status_file_hint(&args(&["--status-file", "--", "run"]), &no_env), None);
     assert_eq!(status_file_hint(&args(&["--status-file", "--"]), &no_env), None);
-}
-
-/// A writer that fails the test if it is written to before `released` is set.
-struct AfterRelease<'a>(&'a AtomicBool);
-
-impl std::io::Write for AfterRelease<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        assert!(
-            self.0.load(Ordering::SeqCst),
-            "the hook wrote while the ending held the lock"
-        );
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// A panic on another thread must not interleave with the normal ending: from its start until the process exits, the
-/// hook waits for the one-ending lock the ending holds. The hook has noted its panic, and so is waiting on the lock,
-/// before the ending is released.
-#[skuld::test]
-fn the_normal_ending_holds_off_the_panic_hook_until_the_exit() {
-    let run = own_run();
-    let ended = run_ended(
-        &run,
-        ExitWidth::LowByte,
-        args(&["build", "x"]),
-        Deps::real(),
-        &|_, _, _| Ok(ExitStatus::Code(3)),
-    );
-    assert_eq!(ended.code, 3);
-    let released = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        let hook = scope.spawn(|| {
-            run.on_panic(
-                "late".to_owned(),
-                false,
-                None,
-                ExitWidth::Full32,
-                &mut AfterRelease(&released),
-            )
-            .code
-        });
-        while run.panicked().is_none() {
-            std::thread::yield_now();
-        }
-        released.store(true, Ordering::SeqCst);
-        drop(ended);
-        assert_eq!(
-            hook.join().unwrap(),
-            125,
-            "after the ending the hook ends the run again"
-        );
-    });
 }
 
 /// A writer whose flush fails.

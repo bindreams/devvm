@@ -1,14 +1,13 @@
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread::ThreadId;
+use std::sync::{Arc, Mutex};
 
 use devvm::exit::{ExitStatus, ExitWidth};
 use devvm::progress::{FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Error, ErrorKind};
 
-use crate::output::{Active, Facts, Held, OneEnding, Run, Screen, Shown, choose, compose, end_with};
+use crate::output::{Active, Facts, Run, Screen, Shown, choose, compose, end_with};
 
 #[derive(Clone, Default)]
 struct Buffer(Arc<Mutex<Vec<u8>>>);
@@ -129,7 +128,7 @@ fn log_in(dir: &Path) -> FileLog {
 
 fn ended(log: Option<&FileLog>, outcome: devvm::Result<ExitStatus>, colour: bool) -> (i32, String) {
     let mut stderr = Vec::new();
-    let (code, _) = end_with(log, colour, None, outcome, ExitWidth::Full32, &mut stderr);
+    let code = end_with(log, colour, None, outcome, ExitWidth::Full32, &mut stderr);
     (code, String::from_utf8(stderr).unwrap())
 }
 
@@ -189,7 +188,7 @@ fn unwritable(tmp: &Path) -> std::path::PathBuf {
 
 fn ended_with_file(log: &FileLog, status_file: &Path, outcome: devvm::Result<ExitStatus>) -> (i32, String) {
     let mut stderr = Vec::new();
-    let (code, _) = end_with(
+    let code = end_with(
         Some(log),
         false,
         Some(status_file),
@@ -249,7 +248,7 @@ fn failure() -> devvm::Result<ExitStatus> {
 #[skuld::test]
 fn each_run_ends_with_its_own_log_and_leaves_nothing_for_the_next() {
     let tmp = skuld::TempDir::new().unwrap();
-    let run = own_run();
+    let run = Run::new();
     let first = Arc::new(log_in(&tmp.path().join("first")));
     let second = Arc::new(log_in(&tmp.path().join("second")));
 
@@ -271,79 +270,6 @@ fn each_run_ends_with_its_own_log_and_leaves_nothing_for_the_next() {
     assert_eq!(run_ending(&run, failure()), "devvm-error: io: bad\n");
 }
 
-// A run of a test =====================================================================================================
-
-/// A re-entrant lock of one run.
-#[derive(Default)]
-struct Own {
-    owner: Mutex<Option<(ThreadId, usize)>>,
-    free: Condvar,
-}
-
-struct PerRun(Arc<Own>);
-
-struct OwnGuard(Arc<Own>);
-
-impl OneEnding for PerRun {
-    fn hold(&self) -> Held {
-        let me = std::thread::current().id();
-        let mut owner = self.0.owner.lock().unwrap();
-        loop {
-            match &mut *owner {
-                None => {
-                    *owner = Some((me, 1));
-                    break;
-                }
-                Some((id, depth)) if *id == me => {
-                    *depth += 1;
-                    break;
-                }
-                Some(_) => owner = self.0.free.wait(owner).unwrap(),
-            }
-        }
-        Box::new(OwnGuard(self.0.clone()))
-    }
-}
-
-impl Drop for OwnGuard {
-    fn drop(&mut self) {
-        let mut owner = self.0.owner.lock().unwrap();
-        let (_, depth) = owner.as_mut().unwrap();
-        *depth -= 1;
-        if *depth == 0 {
-            *owner = None;
-            self.0.free.notify_one();
-        }
-    }
-}
-
-/// A run with a one-ending lock of its own, so that tests running in parallel do not wait on one another's endings.
-pub(crate) fn own_run() -> Run {
-    Run {
-        lock: Some(Box::new(PerRun(Arc::default()))),
-        ..Run::new()
-    }
-}
-
-#[skuld::test]
-fn runs_with_locks_of_their_own_do_not_wait_for_each_others_endings() {
-    let (first, second) = (own_run(), own_run());
-    let _held = first.end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut Vec::new());
-
-    let code = std::thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                second
-                    .end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut Vec::new())
-                    .code
-            })
-            .join()
-            .unwrap()
-    });
-
-    assert_eq!(code, 0);
-}
-
 // Who ends the run ====================================================================================================
 
 /// What a panic hook prints for `message`.
@@ -357,7 +283,7 @@ fn panic_hook(run: &Run, message: &str) -> String {
 #[skuld::test]
 fn a_panic_with_no_ending_under_way_ends_the_run_and_names_the_log() {
     let tmp = skuld::TempDir::new().unwrap();
-    let run = own_run();
+    let run = Run::new();
     let log = Arc::new(log_in(&tmp.path().join("logs")));
     run.begin(Active {
         log: Some(log.clone()),
@@ -383,7 +309,7 @@ fn a_panic_writes_the_status_file() {
     let status = tmp.path().join("status.json");
     let mut stderr = Vec::new();
 
-    let run = own_run();
+    let run = Run::new();
     let ended = run.on_panic("boom".to_owned(), false, Some(&status), ExitWidth::Full32, &mut stderr);
 
     assert_eq!(ended.code, 125);
@@ -396,7 +322,7 @@ fn a_panic_writes_the_status_file() {
 /// kept waiting for it.
 #[skuld::test]
 fn a_panic_on_the_endings_own_thread_ends_the_run() {
-    let run = own_run();
+    let run = Run::new();
     let _ended = run.end(false, None, Ok(ExitStatus::Code(0)), ExitWidth::Full32, &mut Vec::new());
 
     assert_eq!(panic_hook(&run, "boom"), "devvm-error: panic: boom\n");
@@ -405,7 +331,7 @@ fn a_panic_on_the_endings_own_thread_ends_the_run() {
 #[skuld::test]
 fn each_ending_leaves_the_run_empty_for_the_next_panic() {
     let tmp = skuld::TempDir::new().unwrap();
-    let run = own_run();
+    let run = Run::new();
     let log = Arc::new(log_in(&tmp.path().join("logs")));
     run.begin(Active {
         log: Some(log),
@@ -416,181 +342,11 @@ fn each_ending_leaves_the_run_empty_for_the_next_panic() {
     assert_eq!(panic_hook(&run, "boom"), "devvm-error: panic: boom\n");
 }
 
-// A panic that the ending did not see begin ===========================================================================
-
-/// A panic whose hook has run before the ending takes the lock is the ending's outcome, in the status file too.
-#[skuld::test]
-fn a_panic_noted_before_the_ending_makes_the_ending_the_panic() {
-    let tmp = skuld::TempDir::new().unwrap();
-    let status = tmp.path().join("status.json");
-    let run = own_run();
-    let _hook = run.on_panic("boom".to_owned(), false, None, ExitWidth::Full32, &mut Vec::new());
-    let mut stderr = Vec::new();
-
-    let ended = run.end(
-        false,
-        Some(&status),
-        Ok(ExitStatus::Code(0)),
-        ExitWidth::Full32,
-        &mut stderr,
-    );
-
-    assert_eq!(ended.code, 125);
-    assert_eq!(
-        String::from_utf8(stderr).unwrap(),
-        "devvm-error: panic: boom
-"
-    );
-    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&status).unwrap()).unwrap();
-    assert_eq!(json["devvm"]["kind"], "panic");
-}
-
-/// A panic on another thread after the ending took the lock: the hook is waiting for the lock, and the ending's last
-/// check before the exit reports the panic.
-#[skuld::test]
-fn a_panic_after_the_ending_took_the_lock_is_the_outcome_at_the_exit() {
-    let tmp = skuld::TempDir::new().unwrap();
-    let status = tmp.path().join("status.json");
-    let log = Arc::new(log_in(&tmp.path().join("logs")));
-    let run = own_run();
-    run.begin(Active {
-        log: Some(log.clone()),
-        screen: None,
-    });
-    let ended = run.end(
-        false,
-        Some(&status),
-        Ok(ExitStatus::Code(0)),
-        ExitWidth::Full32,
-        &mut Vec::new(),
-    );
-    assert_eq!(ended.code, 0);
-    let hook_out = Buffer::default();
-
-    std::thread::scope(|scope| {
-        let hook = scope.spawn(|| {
-            run.on_panic("late".to_owned(), false, None, ExitWidth::Full32, &mut hook_out.clone())
-                .code
-        });
-        while run.panicked().is_none() {
-            std::thread::yield_now();
-        }
-        let mut stderr = Vec::new();
-
-        let settled = ended.settle(&mut stderr);
-
-        assert_eq!(settled.code, 125);
-        assert_eq!(
-            String::from_utf8(stderr).unwrap(),
-            format!(
-                "log: {}
-devvm-error: panic: late
-",
-                log.path().display()
-            )
-        );
-        assert_eq!(hook_out.text(), "", "the hook wrote while the ending held the lock");
-        let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&status).unwrap()).unwrap();
-        assert_eq!(json["devvm"]["kind"], "panic");
-        assert!(
-            std::fs::read_to_string(log.path())
-                .unwrap()
-                .contains(" ERROR devvm-error: panic: late")
-        );
-        drop(settled);
-        assert_eq!(hook.join().unwrap(), 125);
-        assert_eq!(
-            hook_out.text(),
-            "devvm-error: panic: late
-"
-        );
-    });
-}
-
-#[skuld::test]
-fn a_last_check_with_no_panic_changes_nothing_and_does_not_repeat_a_panic() {
-    let run = own_run();
-    let mut stderr = Vec::new();
-    let ended = run.end(false, None, Ok(ExitStatus::Code(3)), ExitWidth::Full32, &mut stderr);
-    assert_eq!(ended.settle(&mut stderr).code, 3);
-    assert!(stderr.is_empty());
-
-    let run = own_run();
-    let ended = run.on_panic("boom".to_owned(), false, None, ExitWidth::Full32, &mut stderr);
-    assert_eq!(ended.code, 125);
-    let before = stderr.len();
-    assert_eq!(ended.settle(&mut stderr).code, 125);
-    assert_eq!(stderr.len(), before);
-}
-
-/// The hook names the log and records the error while `active` is held, by its own thread or by another.
-#[skuld::test]
-fn a_hook_while_the_runs_state_is_held_still_names_and_records_the_log() {
-    let tmp = skuld::TempDir::new().unwrap();
-    let run = own_run();
-    let log = Arc::new(log_in(&tmp.path().join("logs")));
-    run.begin(Active {
-        log: Some(log.clone()),
-        screen: None,
-    });
-    let expected = format!(
-        "log: {}
-devvm-error: panic: boom
-",
-        log.path().display()
-    );
-    let state = run.active();
-
-    assert_eq!(panic_hook(&run, "boom"), expected);
-    assert_eq!(
-        std::thread::scope(|scope| scope.spawn(|| panic_hook(&run, "boom")).join().unwrap()),
-        expected
-    );
-    drop(state);
-    assert_eq!(
-        std::fs::read_to_string(log.path())
-            .unwrap()
-            .matches(" ERROR devvm-error: panic: boom")
-            .count(),
-        2
-    );
-}
-
-/// A panic that comes after a failing ending printed its error line changes the exit code and the status file, and
-/// prints nothing more.
-#[skuld::test]
-fn a_late_panic_after_a_failing_ending_prints_no_second_ending() {
-    let tmp = skuld::TempDir::new().unwrap();
-    let status = tmp.path().join("status.json");
-    let log = Arc::new(log_in(&tmp.path().join("logs")));
-    let run = own_run();
-    run.begin(Active {
-        log: Some(log.clone()),
-        screen: None,
-    });
-    let mut stderr = Vec::new();
-    let ended = run.end(false, Some(&status), failure(), ExitWidth::Full32, &mut stderr);
-    assert_eq!(ended.code, 125);
-    let printed = stderr.clone();
-    run.panicked.lock().unwrap().replace("late".to_owned());
-
-    let settled = ended.settle(&mut stderr);
-
-    assert_eq!(settled.code, 125);
-    assert_eq!(stderr, printed);
-    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&status).unwrap()).unwrap();
-    assert_eq!(json["devvm"]["kind"], "panic");
-    assert_eq!(
-        std::fs::read_to_string(log.path()).unwrap().matches(" ERROR ").count(),
-        1
-    );
-}
-
 // The line screen =====================================================================================================
 
 fn run_with_lines(out: &Buffer) -> (Run, Arc<LineProgress>) {
     let lines = Arc::new(LineProgress::to(Box::new(out.clone()), Look::default()));
-    let run = own_run();
+    let run = Run::new();
     run.begin(Active {
         log: None,
         screen: Some(Shown::Lines(lines.clone())),
@@ -619,7 +375,7 @@ devvm-error: io: bad
 #[skuld::test]
 fn the_ending_stops_the_log_before_it_records_the_error() {
     let tmp = skuld::TempDir::new().unwrap();
-    let run = own_run();
+    let run = Run::new();
     let log = Arc::new(log_in(&tmp.path().join("logs")));
     run.begin(Active {
         log: Some(log.clone()),
@@ -665,7 +421,7 @@ impl Write for PanicsOnFirstWrite<'_> {
 #[skuld::test]
 fn a_panic_while_the_ending_writes_finds_the_log_of_the_run() {
     let tmp = skuld::TempDir::new().unwrap();
-    let run = own_run();
+    let run = Run::new();
     let log = Arc::new(log_in(&tmp.path().join("logs")));
     run.begin(Active {
         log: Some(log.clone()),
@@ -750,7 +506,7 @@ fn a_hook_inside_a_line_write_ends_the_run_without_the_screens_lock() {
         }),
         Look::default(),
     ));
-    let run = Arc::new(own_run());
+    let run = Arc::new(Run::new());
     run.begin(Active {
         log: None,
         screen: Some(Shown::Lines(lines.clone())),
@@ -774,7 +530,7 @@ fn a_hook_inside_a_log_record_records_the_error() {
     let tmp = skuld::TempDir::new().unwrap();
     let inside = Inside::default();
     let log = Arc::new(FileLog::create(&tmp.path().join("logs"), Arc::new(PanickingClock(inside.clone()))).unwrap());
-    let run = Arc::new(own_run());
+    let run = Arc::new(Run::new());
     run.begin(Active {
         log: Some(log.clone()),
         screen: None,

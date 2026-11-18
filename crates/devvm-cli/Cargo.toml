@@ -18,7 +18,6 @@ name = "devvm"
 path = "src/main.rs"
 
 [dependencies]
-arc-swap = "1.9.5"
 bytesize = "2.7.0"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 console = "0.16"

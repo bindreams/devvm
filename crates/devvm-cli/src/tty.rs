@@ -1,6 +1,7 @@
 //! Progress bars and a task tree on a terminal.
 
 use std::collections::{HashMap, HashSet};
+use std::io::StderrLock;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -22,11 +23,12 @@ const BAR_COLUMNS: u16 = 50;
 /// whose parent this screen never saw is drawn as a root. Each label is cut to the terminal's width when its line is
 /// set: at each report of its task.
 ///
-/// Every call into indicatif is made holding one lock, the screen's, and nothing else draws: the spinners are ticked
-/// by a thread of this screen that takes the same lock. Every report checks the screen's `stopped` flag under it, so a
-/// stopped screen ([`TtyProgress::stop`]) draws nothing more. A thread that panics inside a draw leaves the lock
-/// poisoned, and the screen is then never touched again: what indicatif holds may be half changed, and dropping it
-/// would panic.
+/// Every call into indicatif is made holding the screen's lock and then stderr's, and nothing else draws: the spinners
+/// are ticked by a thread of this screen that takes the same locks. Stderr's is the lock an ending writes under, and a
+/// cursor move on a Windows console takes none of its own. Every report checks the screen's `stopped` flag under the
+/// screen's lock, so a stopped screen ([`TtyProgress::stop`]) draws nothing more. A thread that panics inside a draw
+/// leaves the lock poisoned, and the screen is then never touched again: what indicatif holds may be half changed, and
+/// dropping it would panic.
 pub(crate) struct TtyProgress {
     /// Stops the spinners' thread when this screen is dropped. Declared first, so that it ends before the rest.
     _ticker: Option<Ticker>,
@@ -87,29 +89,36 @@ impl Slot {
 
 // Locking =============================================================================================================
 
-/// The screen, locked and not stopped.
-struct Locked<'a>(MutexGuard<'a, Option<Screen>>);
+/// The screen, locked and not stopped, and stderr's lock with it.
+struct Locked<'a> {
+    screen: MutexGuard<'a, Option<Screen>>,
+    _stderr: StderrLock<'static>,
+}
 
 impl std::ops::Deref for Locked<'_> {
     type Target = Screen;
 
     fn deref(&self) -> &Screen {
-        self.0.as_ref().expect("the screen is there until it is dropped")
+        self.screen.as_ref().expect("the screen is there until it is dropped")
     }
 }
 
 impl std::ops::DerefMut for Locked<'_> {
     fn deref_mut(&mut self) -> &mut Screen {
-        self.0.as_mut().expect("the screen is there until it is dropped")
+        self.screen.as_mut().expect("the screen is there until it is dropped")
     }
 }
 
 impl Shared {
-    /// The screen, locked; `None` when a thread panicked inside a draw, and when the screen is stopped.
+    /// The screen, locked; `None` when a thread panicked inside a draw, and when the screen is stopped. Stderr's lock is
+    /// taken after the screen's.
     fn lock(&self) -> Option<Locked<'_>> {
         let screen = self.screen.lock().ok()?;
         let open = screen.as_ref().is_some_and(|screen| !screen.stopped);
-        open.then(|| Locked(screen))
+        open.then(|| Locked {
+            screen,
+            _stderr: std::io::stderr().lock(),
+        })
     }
 
     /// Turns each spinner once.
@@ -263,6 +272,7 @@ impl TtyProgress {
         let Ok(mut screen) = self.shared.screen.lock() else {
             return;
         };
+        let _stderr = std::io::stderr().lock();
         if let Some(screen) = screen.as_mut() {
             screen.stopped = true;
             let _ = screen.multi.clear();
