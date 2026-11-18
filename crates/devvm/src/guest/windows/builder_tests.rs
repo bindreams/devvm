@@ -76,12 +76,13 @@ impl Rig {
             edition,
             &*self.env.progress,
         )
-        .unwrap();
+        .unwrap()
+        .with_product_key(product_key.map(|text| ProductKey::parse(text).unwrap()));
         *self.ctx.iso.lock().unwrap() = Some(root);
         let source = Source::Iso {
             path: self.iso.clone(),
             edition: edition.map(Into::into),
-            product_key: product_key.map(|text| ProductKey::parse(text).unwrap()),
+            product_key: None,
         };
         self.env.store.build(&request(key(1)), None, |staging| {
             self.builder

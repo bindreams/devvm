@@ -237,10 +237,19 @@ fn an_iso_root_is_keyed_by_content_and_the_image_selected(#[fixture(unicode_home
         key(&three, Some(first), Some(b)),
         "the product key is an input of the base"
     );
+    // An edition devvm knows a generic key for, with no key in the recipe, is keyed as it is with that key written out.
+    let generic = "M7XTQ-FN8P6-TTKYV-9D4CC-J462D";
+    assert_eq!(
+        key(&three, Some(first), None),
+        key(&three, Some(first), Some(generic)),
+        "the generic key is an input of the base, as the recipe's is"
+    );
+    assert_ne!(key(&three, Some(first), None), key(&three, Some(first), Some(a)));
+    assert_ne!(key(&three, Some(first), None), key(&three, Some(second), None));
 }
 
 #[skuld::test]
-fn an_iso_root_is_refused_when_its_product_key_does_not_fit_the_edition(#[fixture(unicode_home)] home: &Path) {
+fn an_iso_root_is_refused_when_its_edition_has_no_key_or_the_key_does_not_fit_it(#[fixture(unicode_home)] home: &Path) {
     use crate::iso::IsoMemo;
     let memo = IsoMemo::new(&Dirs::under(home));
     let fixture = crate::test_support::fixtures::iso_fixture;
@@ -249,15 +258,19 @@ fn an_iso_root_is_refused_when_its_product_key_does_not_fit_the_edition(#[fixtur
     std::fs::copy(fixture("three-images.iso"), &three).unwrap();
     let root =
         |path: &Path, edition: Option<&str>, product_key: Option<&str>| iso_root(&memo, path, edition, product_key);
-    let (only, first) = ("Windows 11 Enterprise Evaluation", "Windows 11 Enterprise LTSC 2024");
+    let (only, subscription) = (
+        "Windows 11 Enterprise Evaluation",
+        "Windows 11 IoT Enterprise Subscription LTSC 2024",
+    );
     let a = "AB12C-DE34F-GH56J-KL78M-NP90Q";
     // Before anything boots.
-    let error = root(&three, Some(first), None).err().unwrap();
+    let error = root(&three, Some(subscription), None).err().unwrap();
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(
-        error.message().contains(first) && error.message().contains("`product-key`"),
+        error.message().contains(subscription) && error.message().contains("`product-key`"),
         "{error}"
     );
+    root(&three, Some(subscription), Some(a)).unwrap();
     let error = root(&one, None, Some(a)).err().unwrap();
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(

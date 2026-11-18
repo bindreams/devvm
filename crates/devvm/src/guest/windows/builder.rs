@@ -112,7 +112,7 @@ impl WindowsBuilder {
 
 impl BaseBuilder for WindowsBuilder {
     fn build_base(&self, src: &Source, ctx: &BuildCtx, staging: &LayerDir) -> Result<LayerMeta> {
-        let Source::Iso { product_key, .. } = src else {
+        let Source::Iso { .. } = src else {
             return Err(Error::new(
                 ErrorKind::NotSupported,
                 "a Windows base is built from an ISO, which the recipe's `from` must name",
@@ -125,6 +125,7 @@ impl BaseBuilder for WindowsBuilder {
             .take()
             .ok_or_else(|| Error::new(ErrorKind::Internal, "the build has no held ISO to install Windows from"))?;
         let evaluation = root.image.is_evaluation();
+        let product_key = root.product_key.clone();
         let install = read_install_iso(root)?;
         let expires = Build::prepare(self, ctx, staging, &install, evaluation, product_key.as_ref())?.run(install)?;
         // The store owns the key, the generation and the creation time; it reads only the expiry from what a base

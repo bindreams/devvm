@@ -170,12 +170,15 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
 
 - `edition` is the image's name in the ISO's `install.wim` (or `install.esd`). An ISO with one image does not need it;
   with several, the error lists their names.
-- A non-evaluation edition needs `product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` in `from:`, and an evaluation edition takes
-  none; the build is refused, before anything boots, when a non-evaluation edition has none or an evaluation edition has
-  one. devvm checks the key's shape only, not which edition it is for.
-- Microsoft publishes generic KMS client setup keys for its volume editions: see
+- devvm installs a non-evaluation edition with Microsoft's generic KMS client setup key when it knows one for the
+  edition: Windows 10 and 11 volume editions, Enterprise LTSC and LTSB, IoT Enterprise LTSC, and Windows Server 2016 and
+  later (Standard and Datacenter). The keys are on Microsoft's page
   [Key Management Services (KMS) client activation and product keys](https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys).
-- Windows installs unactivated with one of those keys; activate it however you are licensed.
+- `product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` in `from:` installs with another key instead: your own, or one for an
+  edition devvm does not know. An edition with neither is refused before anything boots, naming `product-key`. An
+  evaluation edition takes no key, and a recipe that gives it one is refused. devvm checks the key's shape only, not
+  which edition it is for.
+- Windows installs unactivated; activate it however you are licensed.
 - x64 images only. The install language is the image's default language.
 - Keep the ISO at the recipe's path. devvm never copies it, and a rebuild before the base expires reads it again.
   The layer is keyed by the ISO's content, so moving or renaming it does not rebuild.

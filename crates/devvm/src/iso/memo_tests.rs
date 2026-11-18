@@ -26,6 +26,7 @@ fn only_image() -> Vec<WimImage> {
         index: 1,
         name: "Windows 11 Enterprise Evaluation".to_owned(),
         edition_id: "EnterpriseEval".to_owned(),
+        build: Some(26100),
         arch: WimArch::X64,
         language: "en-US".to_owned(),
     }]
@@ -211,6 +212,37 @@ fn a_corrupt_memo_is_quarantined_and_rebuilt(#[fixture(unicode_home)] home: &Pat
     );
     fx.sha256(&iso).unwrap();
     assert_eq!(hashings(&fx.progress), 2, "the memo made again is used");
+}
+
+#[skuld::test]
+fn a_memo_whose_images_have_no_build_is_read_again_not_taken_for_an_image_with_none(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dirs = Dirs::under(home);
+    let fx = Fixture::new(home);
+    let iso = iso_with(home, "a.iso", b"windows");
+    fx.sha256(&iso).unwrap();
+    let [file] = memo_files(&dirs).try_into().unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    let old = text
+        .lines()
+        .filter(|line| !line.contains("\"build\""))
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    assert_ne!(old, text, "the memo has a build to remove");
+    std::fs::write(&file, &old).unwrap();
+
+    fx.sha256(&iso).unwrap();
+
+    assert_eq!(
+        fx.reads.get(),
+        2,
+        "the old memo's image list was read from the ISO again"
+    );
+    assert_eq!(quarantined_files(&dirs).len(), 1);
 }
 
 #[skuld::test]

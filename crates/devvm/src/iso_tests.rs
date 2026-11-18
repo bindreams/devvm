@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256 as Sha2};
 use super::udf::udf_tests::{image, read_at};
 use super::{
     BootPatch, HeldIso, InstallIso, IsoMemo, IsoRoot, NO_PROMPT_IMAGE, PROMPTING_IMAGE, SECTOR, WimArch, WimImage,
-    check_product_key, efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, select_image, total,
+    efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, resolve_product_key, select_image, total,
 };
 use crate::recipe::ProductKey;
 use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
@@ -55,6 +55,7 @@ fn image_of(index: u32, name: &str, arch: WimArch) -> WimImage {
         index,
         name: name.to_owned(),
         edition_id: String::new(),
+        build: None,
         arch,
         language: "en-US".to_owned(),
     }
@@ -71,33 +72,97 @@ fn edition_of(id: &str, name: &str) -> WimImage {
     }
 }
 
-#[skuld::test]
-fn a_product_key_is_required_by_an_edition_that_is_not_an_evaluation_and_refused_on_one_that_is() {
-    let key = ProductKey::parse(KEY).unwrap();
-    let eval = edition_of("EnterpriseEval", "Windows 11 Enterprise Evaluation");
-    let retail = edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024");
-    check_product_key(&eval, None).unwrap();
-    check_product_key(&retail, Some(&key)).unwrap();
+fn built(build: u32, image: WimImage) -> WimImage {
+    WimImage {
+        build: Some(build),
+        ..image
+    }
+}
 
-    let error = check_product_key(&retail, None).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert_eq!(
-        error.message(),
-        "the edition `Windows 11 IoT Enterprise LTSC 2024` is not an evaluation edition; `product-key` in `from:` is required"
+const KMS_PAGE: &str = "https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys";
+
+#[skuld::test]
+fn the_recipes_product_key_is_used_for_any_edition_that_is_not_an_evaluation() {
+    let key = ProductKey::parse(KEY).unwrap();
+    for image in [
+        built(
+            26100,
+            edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024"),
+        ),
+        built(
+            26100,
+            edition_of("IoTEnterpriseSK", "an edition the table does not have"),
+        ),
+        edition_of("", "No id"),
+    ] {
+        assert_eq!(
+            resolve_product_key(&image, Some(&key)).unwrap(),
+            Some(key.clone()),
+            "{image:?}"
+        );
+    }
+}
+
+#[skuld::test]
+fn an_edition_with_no_key_in_the_recipe_gets_the_generic_key_of_its_edition_and_build() {
+    let ltsc = built(
+        26100,
+        edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024"),
     );
-    let error = check_product_key(&eval, Some(&key)).unwrap_err();
+    let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100)).unwrap();
+    assert_eq!(resolve_product_key(&ltsc, None).unwrap(), Some(generic));
+    // The key follows the build: one edition id, three keys.
+    let key = |build| resolve_product_key(&built(build, edition_of("EnterpriseS", "e")), None).unwrap();
+    assert!(key(10240).is_some() && key(14393).is_some() && key(17763).is_some());
+    assert_ne!(key(10240), key(14393));
+    assert_ne!(key(14393), key(17763));
+}
+
+#[skuld::test]
+fn an_evaluation_edition_takes_no_key_from_the_recipe_or_the_table() {
+    let key = ProductKey::parse(KEY).unwrap();
+    let eval = built(26100, edition_of("EnterpriseEval", "Windows 11 Enterprise Evaluation"));
+    assert_eq!(resolve_product_key(&eval, None).unwrap(), None);
+
+    let error = resolve_product_key(&eval, Some(&key)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert_eq!(
         error.message(),
         "the edition `Windows 11 Enterprise Evaluation` is an evaluation edition; `product-key` in `from:` must not be set"
     );
     assert!(!format!("{error:?} {error}").contains(KEY));
-    let error = check_product_key(&edition_of("", "No id"), None).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert_eq!(
-        error.message(),
-        "the edition `No id` names no edition id, so it is not known to be an evaluation edition; `product-key` in `from:` is required"
-    );
+}
+
+#[skuld::test]
+fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_page() {
+    for (image, detail) in [
+        (
+            built(
+                26100,
+                edition_of("IoTEnterpriseSK", "Windows 11 IoT Enterprise Subscription LTSC 2024"),
+            ),
+            "edition id `IoTEnterpriseSK`, build 26100",
+        ),
+        (
+            built(28000, edition_of("EnterpriseS", "Windows 12 Enterprise LTSC")),
+            "edition id `EnterpriseS`, build 28000",
+        ),
+        (
+            edition_of("EnterpriseS", "No build"),
+            "edition id `EnterpriseS`, no build",
+        ),
+        (edition_of("", "No id"), "no edition id"),
+    ] {
+        let error = resolve_product_key(&image, None).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Recipe);
+        assert_eq!(
+            error.message(),
+            format!(
+                "devvm has no generic product key for the edition `{}` ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_PAGE}",
+                image.name
+            )
+        );
+    }
 }
 
 // The boot patch ======================================================================================================

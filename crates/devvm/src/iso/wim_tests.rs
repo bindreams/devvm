@@ -30,11 +30,12 @@ fn images(fixture_name: &str) -> Vec<WimImage> {
     read_image_list(&mut Cursor::new(wim_with(&fixture(fixture_name), 2)), "install.wim").unwrap()
 }
 
-fn image(index: u32, name: &str, edition_id: &str, arch: WimArch, language: &str) -> WimImage {
+fn image(index: u32, name: &str, edition_id: &str, build: Option<u32>, arch: WimArch, language: &str) -> WimImage {
     WimImage {
         index,
         name: name.to_owned(),
         edition_id: edition_id.to_owned(),
+        build,
         arch,
         language: language.to_owned(),
     }
@@ -49,6 +50,7 @@ fn the_three_images_of_an_ltsc_iso_are_listed() {
                 1,
                 "Windows 11 Enterprise LTSC 2024",
                 "EnterpriseS",
+                Some(26100),
                 WimArch::X64,
                 "en-US"
             ),
@@ -56,6 +58,7 @@ fn the_three_images_of_an_ltsc_iso_are_listed() {
                 2,
                 "Windows 11 IoT Enterprise LTSC 2024",
                 "IoTEnterpriseS",
+                Some(26100),
                 WimArch::X64,
                 "en-US"
             ),
@@ -63,6 +66,7 @@ fn the_three_images_of_an_ltsc_iso_are_listed() {
                 3,
                 "Windows 11 IoT Enterprise Subscription LTSC 2024",
                 "IoTEnterpriseSK",
+                Some(26100),
                 WimArch::X64,
                 "en-US"
             ),
@@ -85,6 +89,7 @@ fn the_ltsc_evaluation_image_is_listed() {
             1,
             "Windows 11 IoT Enterprise LTSC 2024 Evaluation",
             "IoTEnterpriseSEval",
+            Some(26100),
             WimArch::X64,
             "en-US"
         )]
@@ -92,8 +97,35 @@ fn the_ltsc_evaluation_image_is_listed() {
 }
 
 #[skuld::test]
+fn the_build_is_the_one_of_the_images_own_version() {
+    assert_eq!(images("wim-win11-eval-en-us.xml")[0].build, Some(26200));
+    assert_eq!(images("wim-win11-eval-de-de.xml")[0].build, Some(26200));
+    let builds: Vec<Option<u32>> = images("wim-ltsc-2024-three-images.xml")
+        .iter()
+        .map(|image| image.build)
+        .collect();
+    assert_eq!(builds, [Some(26100); 3]);
+}
+
+#[skuld::test]
+fn an_image_with_no_version_has_no_build() {
+    let list = "<WIM><IMAGE INDEX=\"1\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><LANGUAGES><DEFAULT>en-US</DEFAULT>                </LANGUAGES></WINDOWS></IMAGE></WIM>";
+    assert_eq!(parse_image_list(list.as_bytes(), "install.wim").unwrap()[0].build, None);
+}
+
+#[skuld::test]
+fn a_build_that_is_not_a_number_is_refused_naming_the_image() {
+    let list = "<WIM><IMAGE INDEX=\"4\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><VERSION><BUILD>abc</BUILD></VERSION>                <LANGUAGES><DEFAULT>en-US</DEFAULT></LANGUAGES></WINDOWS></IMAGE></WIM>";
+    let error = parse_image_list(list.as_bytes(), "install.wim").unwrap_err();
+    assert!(
+        error.message().contains("image 4 of install.wim has no numeric BUILD"),
+        "{error}"
+    );
+}
+
+#[skuld::test]
 fn an_edition_id_ending_in_eval_is_an_evaluation_image() {
-    let with = |id: &str| image(1, "n", id, WimArch::X64, "en-US").is_evaluation();
+    let with = |id: &str| image(1, "n", id, None, WimArch::X64, "en-US").is_evaluation();
     assert!(with("EnterpriseEval"));
     assert!(with("IoTEnterpriseSEval"));
     assert!(with("professionaleval"));

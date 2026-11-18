@@ -71,6 +71,12 @@ pub(crate) struct WimImage {
     pub name: String,
     /// `EDITIONID`, such as `EnterpriseS`; empty when the image has none.
     pub edition_id: String,
+    /// `VERSION`'s `BUILD`, such as `26100`; `None` when the image has no version. An edition id alone does not say
+    /// which generation of Windows the image is (`EnterpriseS` is five of them), so a key follows both.
+    ///
+    /// A list from before this field was kept is not read as an image with no build (the field has no default).
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub build: Option<u32>,
     pub arch: WimArch,
     /// The image's default language, such as `en-US`.
     pub language: String,
@@ -317,6 +323,7 @@ struct Partial {
     index: u32,
     name: Option<String>,
     edition_id: Option<String>,
+    build: Option<String>,
     arch: Option<String>,
     language: Option<String>,
 }
@@ -327,6 +334,7 @@ impl Partial {
             index,
             name: None,
             edition_id: None,
+            build: None,
             arch: None,
             language: None,
         }
@@ -351,6 +359,11 @@ impl Partial {
             .trim()
             .parse::<u32>()
             .map_err(|_| missing("numeric ARCH"))?;
+        let build = self
+            .build
+            .as_deref()
+            .map(|text| text.trim().parse::<u32>().map_err(|_| missing("numeric BUILD")))
+            .transpose()?;
         let language = self
             .language
             .clone()
@@ -360,6 +373,7 @@ impl Partial {
             index: self.index,
             name,
             edition_id: self.edition_id.unwrap_or_default(),
+            build,
             arch: WimArch::from_code(code),
             language,
         })
@@ -373,6 +387,7 @@ fn add_text(images: &mut [Partial], path: &[String], text: &str) {
     let field = match path.as_slice() {
         ["WIM", "IMAGE", "NAME"] => &mut image.name,
         ["WIM", "IMAGE", "WINDOWS", "EDITIONID"] => &mut image.edition_id,
+        ["WIM", "IMAGE", "WINDOWS", "VERSION", "BUILD"] => &mut image.build,
         ["WIM", "IMAGE", "WINDOWS", "ARCH"] => &mut image.arch,
         ["WIM", "IMAGE", "WINDOWS", "LANGUAGES", "DEFAULT"] => &mut image.language,
         _ => return,

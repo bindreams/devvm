@@ -31,6 +31,8 @@ const INSTALL_FILES: [&str; 2] = ["install.wim", "install.esd"];
 /// The boot image that waits for a key press (`Press any key to boot from CD or DVD`), and the one that does not.
 const PROMPTING_IMAGE: &str = "/efi/microsoft/boot/efisys.bin";
 const NO_PROMPT_IMAGE: &str = "/efi/microsoft/boot/efisys_noprompt.bin";
+/// Where Microsoft lists the generic key of each edition it has one for.
+const KMS_KEYS_PAGE: &str = "https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys";
 
 /// Bytes to write at an offset of the ISO's image: the same shape as `backend::Patch`, which the build hands to
 /// `Storage::overlay_with_patches`.
@@ -114,7 +116,16 @@ pub(crate) struct IsoRoot {
     pub sha256: Sha256,
     /// The image the recipe's `edition` selects: what the build installs, so what the key says.
     pub image: WimImage,
+    /// The key Setup installs with: [`resolve_product_key`]'s, which [`IsoRoot::with_product_key`] sets. `None` for an
+    /// evaluation edition, and until it is set.
+    pub product_key: Option<ProductKey>,
     iso: HeldIso,
+}
+
+impl IsoRoot {
+    pub(crate) fn with_product_key(self, product_key: Option<ProductKey>) -> IsoRoot {
+        IsoRoot { product_key, ..self }
+    }
 }
 
 /// The content hash of the installer ISO at `iso` and the image `edition` selects in it (refusing one that is not x64),
@@ -129,7 +140,12 @@ pub(crate) fn key_iso(
 ) -> Result<IsoRoot> {
     let HashedIso { iso, sha256, images } = memo.open(host, iso, progress, &read_images)?;
     let image = select_image(&images, edition)?.clone();
-    Ok(IsoRoot { sha256, image, iso })
+    Ok(IsoRoot {
+        sha256,
+        image,
+        product_key: None,
+        iso,
+    })
 }
 
 /// What the build installs from the ISO that `root` keyed: the no-prompt boot image and where the boot catalog loads its
@@ -234,28 +250,39 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
     Ok(chosen)
 }
 
-/// Whether `product_key` fits the edition `image` is: a non-evaluation edition needs one (Setup stops on its key page
-/// otherwise), an evaluation edition takes none. An image with no edition id is not known to be an evaluation edition, so it needs a key.
-pub(crate) fn check_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<()> {
+/// The key the build installs `image` with: the recipe's `product_key`, else the generic key devvm knows for the
+/// image's edition and build ([`ProductKey::generic_for`]). An evaluation edition takes none, and a recipe that gives it
+/// one is refused; an image that is not an evaluation edition and has no key either way is refused (Setup stops on its
+/// key page otherwise), naming `product-key` and where Microsoft lists generic keys.
+pub(crate) fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<Option<ProductKey>> {
     let name = &image.name;
-    match (image.is_evaluation(), product_key) {
-        (false, None) => {
-            let why = if image.edition_id.is_empty() {
-                "names no edition id, so it is not known to be an evaluation edition"
-            } else {
-                "is not an evaluation edition"
-            };
-            Err(Error::new(
+    if image.is_evaluation() {
+        return match product_key {
+            None => Ok(None),
+            Some(_) => Err(Error::new(
                 ErrorKind::Recipe,
-                format!("the edition `{name}` {why}; `product-key` in `from:` is required"),
-            ))
-        }
-        (true, Some(_)) => Err(Error::new(
-            ErrorKind::Recipe,
-            format!("the edition `{name}` is an evaluation edition; `product-key` in `from:` must not be set"),
-        )),
-        _ => Ok(()),
+                format!("the edition `{name}` is an evaluation edition; `product-key` in `from:` must not be set"),
+            )),
+        };
     }
+    if let Some(key) = product_key {
+        return Ok(Some(key.clone()));
+    }
+    ProductKey::generic_for(&image.edition_id, image.build)
+        .map(Some)
+        .ok_or_else(|| {
+            let detail = match (image.edition_id.as_str(), image.build) {
+                ("", _) => "no edition id".to_owned(),
+                (id, None) => format!("edition id `{id}`, no build"),
+                (id, Some(build)) => format!("edition id `{id}`, build {build}"),
+            };
+            Error::new(
+                ErrorKind::Recipe,
+                format!(
+                    "devvm has no generic product key for the edition `{name}` ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_KEYS_PAGE}"
+                ),
+            )
+        })
 }
 
 /// The patch that puts the no-prompt boot image where the UEFI entry of the boot catalog loads its image. The image
