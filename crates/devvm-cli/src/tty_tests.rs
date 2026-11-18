@@ -354,7 +354,8 @@ fn a_resize_refits_the_line_at_the_next_report() {
 
 // Ancestry ============================================================================================================
 
-/// An ancestor that ended leaves a blank column. The task before it at that depth, an uncle, is not the ancestor.
+/// An ancestor that ended leaves a column that goes on while its parent has later children, and is blank after. The task
+/// before it at that depth, an uncle, is not the ancestor.
 #[skuld::test]
 fn an_uncle_is_not_taken_for_an_ancestor_that_ended() {
     let (tty, term) = screen(8, 60, PLAIN);
@@ -366,7 +367,7 @@ fn an_uncle_is_not_taken_for_an_ancestor_that_ended() {
     begin(&tty, later, Some(root), "L", Total::Unknown);
     assert_eq!(lines(&term), ["- R", "- ├─ U", "- ├─ P", "- │  └─ C", "- └─ L"]);
     end(&tty, parent, Outcome::Finished);
-    assert_eq!(lines(&term), ["- R", "- ├─ U", "-    └─ C", "- └─ L"]);
+    assert_eq!(lines(&term), ["- R", "- ├─ U", "- │  └─ C", "- └─ L"]);
 }
 
 /// A child begun under a parent goes below all the parent's descendants, even one whose middle ancestor ended.
@@ -381,7 +382,7 @@ fn a_child_goes_below_the_descendants_of_its_parent() {
     end(&tty, middle, Outcome::Finished);
     begin(&tty, sibling, Some(parent), "S", Total::Unknown);
     begin(&tty, other, Some(root), "O", Total::Unknown);
-    assert_eq!(lines(&term), ["- R", "- ├─ P", "- │     └─ G", "- │  └─ S", "- └─ O"]);
+    assert_eq!(lines(&term), ["- R", "- ├─ P", "- │  │  └─ G", "- │  └─ S", "- └─ O"]);
 }
 
 // Caching =============================================================================================================

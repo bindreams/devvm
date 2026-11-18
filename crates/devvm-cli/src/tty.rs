@@ -1,6 +1,6 @@
 //! Progress bars and a task tree on a terminal.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -358,9 +358,7 @@ impl Screen {
         // The new line is styled before any other line's change draws the screen: it has no style of its own yet, and
         // the default one fills the width of the terminal.
         let columns = (self.columns)();
-        self.set_prefix(index);
-        self.refresh(id, columns);
-        self.relabel(columns);
+        self.relabel(columns, Some(index));
     }
 
     fn end(&mut self, id: TaskId) {
@@ -372,58 +370,48 @@ impl Screen {
         slot.bar.finish_and_clear();
         self.multi.remove(&slot.bar);
         // A sibling that ends changes its elder's glyph.
-        self.relabel((self.columns)());
+        self.relabel((self.columns)(), None);
     }
 
-    /// Sets each line's tree prefix from the order and the ancestry, and refreshes it.
-    fn relabel(&mut self, columns: u16) {
-        for index in 0..self.order.len() {
-            self.set_prefix(index);
+    /// Sets each line's tree prefix from the order and the ancestry, and refreshes it. The line at `first` goes first.
+    fn relabel(&mut self, columns: u16, first: Option<usize>) {
+        let prefixes = self.prefixes();
+        let rest = (0..prefixes.len()).filter(|index| Some(*index) != first);
+        for index in first.into_iter().chain(rest) {
             let id = self.order[index];
+            let slot = self.tasks.get_mut(&id).expect("an open task has a slot");
+            if slot.prefix != prefixes[index] {
+                slot.prefix_width = console::measure_text_width(&prefixes[index]);
+                slot.prefix.clone_from(&prefixes[index]);
+                slot.stale = true;
+            }
             self.refresh(id, columns);
         }
     }
 
-    fn set_prefix(&mut self, index: usize) {
-        let prefix = self.prefix(index);
-        let slot = self.tasks.get_mut(&self.order[index]).expect("an open task has a slot");
-        if slot.prefix != prefix {
-            slot.prefix_width = console::measure_text_width(&prefix);
-            slot.prefix = prefix;
-            slot.stale = true;
+    /// The tree glyphs before each open task: `│  ` or spaces for each ancestor below the root, then `├─ ` or `└─ `. A
+    /// column goes on (`│`) while a row below has the same parent as that ancestor, so an ancestor that has ended keeps
+    /// its column for the siblings it left. One pass from the bottom, with the parents of the rows below.
+    fn prefixes(&self) -> Vec<String> {
+        let mut below: HashSet<Option<TaskId>> = HashSet::new();
+        let mut prefixes = vec![String::new(); self.order.len()];
+        for (index, id) in self.order.iter().enumerate().rev() {
+            let slot = &self.tasks[id];
+            if !slot.ancestors.is_empty() {
+                let mut text = String::new();
+                for elder in &slot.ancestors[..slot.ancestors.len() - 1] {
+                    text.push_str(if below.contains(&Some(*elder)) { "│  " } else { "   " });
+                }
+                text.push_str(if below.contains(&slot.parent()) {
+                    "├─ "
+                } else {
+                    "└─ "
+                });
+                prefixes[index] = text;
+            }
+            below.insert(slot.parent());
         }
-    }
-
-    /// Whether the task at `index` has a later sibling: a later task with the same parent.
-    fn has_later_sibling(&self, index: usize) -> bool {
-        let parent = self.tasks[&self.order[index]].parent();
-        self.order[index + 1..]
-            .iter()
-            .any(|open| self.tasks[open].parent() == parent)
-    }
-
-    /// The tree glyphs before the task at `index`: `│  ` or spaces for each ancestor below the root, then `├─ ` or
-    /// `└─ `. An ancestor that has ended leaves a blank column.
-    fn prefix(&self, index: usize) -> String {
-        let slot = &self.tasks[&self.order[index]];
-        if slot.ancestors.is_empty() {
-            return String::new();
-        }
-        let mut text = String::new();
-        for ancestor in &slot.ancestors[1..] {
-            let continues = self
-                .order
-                .iter()
-                .position(|open| open == ancestor)
-                .is_some_and(|at| self.has_later_sibling(at));
-            text.push_str(if continues { "│  " } else { "   " });
-        }
-        text.push_str(if self.has_later_sibling(index) {
-            "├─ "
-        } else {
-            "└─ "
-        });
-        text
+        prefixes
     }
 
     /// Gives the bar of `id` the style and the text that fit a terminal `columns` wide, where something changed. The
