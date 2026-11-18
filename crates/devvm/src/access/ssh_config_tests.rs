@@ -11,6 +11,8 @@ use crate::store::lock::{FileLock, Mode};
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::host::TestHost;
+#[cfg(windows)]
+use crate::test_support::private_files::{assert_is_the_users_alone, let_other_accounts_write_below};
 
 const ID: &str = "0123456789abcdef0123456789abcdef";
 const KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderPlaceholderPlaceholderPlace";
@@ -405,27 +407,6 @@ fn system_ssh_accepts_the_generated_config(#[fixture(unicode_home)] home: &Path)
     check_system_ssh(home, home);
 }
 
-/// Makes `dir` hand `Authenticated Users` full access to everything created below it, as the root of a fresh NTFS
-/// volume does. Returns the user's SID.
-#[cfg(windows)]
-fn let_other_accounts_write_below(dir: &Path) -> String {
-    use crate::host::windows::user::current_sid;
-    use crate::test_support::file_security::{Security, set_protected_dacl};
-    const AUTHENTICATED_USERS: &str = "S-1-5-11";
-
-    let me = current_sid().unwrap();
-    set_protected_dacl(dir, &format!("D:P(A;OICI;FA;;;{me})(A;OICI;FA;;;AU)"));
-    let probe = dir.join("probe");
-    std::fs::write(&probe, "x").unwrap();
-    let inherited = Security::of(&probe).allowed_sids();
-    assert!(
-        inherited.iter().any(|sid| sid == AUTHENTICATED_USERS),
-        "a new file in the directory must inherit Authenticated Users write: {inherited:?}"
-    );
-    std::fs::remove_file(&probe).unwrap();
-    me
-}
-
 /// OpenSSH for Windows refuses an `Include`d conf that an account other than the user, Administrators or SYSTEM can
 /// write ("Bad owner or permissions"), which fails every `ssh -F <config>`.
 #[cfg(windows)]
@@ -460,25 +441,6 @@ fn the_generated_files_are_the_users_alone_whatever_the_directory_hands_down(#[f
         #[cfg(windows)]
         assert_is_the_users_alone(&path, &me);
     }
-}
-
-/// The owner may be Administrators as well as the user: OpenSSH accepts both.
-#[cfg(windows)]
-fn assert_is_the_users_alone(path: &Path, me: &str) {
-    use crate::test_support::file_security::Security;
-    let security = Security::of(path);
-    assert!(
-        security.dacl_is_protected(),
-        "{}: the DACL must be protected",
-        path.display()
-    );
-    assert_eq!(security.allowed_sids(), vec![me.to_owned()], "{}", path.display());
-    let owner = security.owner();
-    assert!(
-        owner == me || owner == "S-1-5-32-544",
-        "{}: the owner must be the user or Administrators, not {owner}",
-        path.display()
-    );
 }
 
 /// `[` and `]` are glob syntax and `$` starts a variable to ssh; a state directory can hold them (`*` and `?` cannot

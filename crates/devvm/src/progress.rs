@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod lines;
+mod log;
 pub use lines::{LineProgress, Look};
+pub use log::FileLog;
 
 #[cfg(test)]
 #[path = "progress_tests.rs"]
@@ -39,6 +41,12 @@ pub enum Total {
 /// Names a task in the events it emits. Unique within the process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TaskId(u64);
+
+impl std::fmt::Display for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// How a task ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
