@@ -226,6 +226,8 @@ fn the_blank_disk_is_the_larger_of_64_gib_and_the_recipes_disk(#[fixture(unicode
 
 #[skuld::test]
 fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(#[fixture(unicode_home)] home: &Path) {
+    // A key, so an image devvm knows no generic key for (the subscription edition) is still built.
+    const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
     for (edition, index) in [
         ("Windows 11 Enterprise LTSC 2024", 1),
         ("Windows 11 IoT Enterprise LTSC 2024", 2),
@@ -233,7 +235,7 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
     ] {
         let rig = rig_without_a_machine(home, "three-images.iso");
 
-        rig.build(Some(edition)).unwrap_err();
+        rig.build_keyed(Some(edition), Some(KEY)).unwrap_err();
 
         let files = read_files(&rig.work().join("answer.img"), &["Autounattend.xml"]).unwrap();
         let answer = String::from_utf8(files[0].bytes.clone()).unwrap();
