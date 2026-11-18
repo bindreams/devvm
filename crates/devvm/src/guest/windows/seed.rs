@@ -15,7 +15,7 @@ mod seed_tests;
 struct MetaData<'a> {
     #[serde(rename = "instance-id")]
     instance_id: String,
-    /// The computer name; the boot task renames the computer to it, as cloud-init does a Linux guest.
+    /// The computer name the boot task renames to.
     #[serde(rename = "local-hostname")]
     local_hostname: &'a str,
 }

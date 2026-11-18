@@ -91,11 +91,12 @@ fn restart_in_place(engine: &Arc<Engine>, instance: &Instance) {
     .unwrap();
 }
 
-/// A new instance called `name`, `check` on its first boot and again after each restart, with the way it began named.
+/// A new instance called `name`, `check` on the first boot that answers and again after each restart, with the way it
+/// began named.
 fn across_restarts(base: &WindowsBase, name: &str, mut check: impl FnMut(&Up, &str)) {
     step(&format!("booting {name}"));
     let up = Up::new(&base.image, name, &windows_options()).unwrap();
-    check(&up, "first boot");
+    check(&up, "the first boot that answers");
     for kind in RESTARTS {
         restart(&base.engine, &up, kind);
         step(&format!("checking after {kind:?}"));
@@ -113,19 +114,16 @@ fn windows_the_first_command_after_start_stop_start_and_reboot_is_in_session_1(
 }
 
 /// The computer's name as the guest says it to a program (`hostname`), to a new session of the user
-/// (`$env:COMPUTERNAME`) and to .NET: all three read it from the running system, so a rename that has not taken effect
-/// shows in each.
+/// (`$env:COMPUTERNAME`) and to .NET: all three read it from the running system.
 const NAMES: &str = "\"$(hostname) $env:COMPUTERNAME $([Environment]::MachineName)\"";
 
-/// The domain autologon logs on to. Only the base build writes it (`.`); whether Winlogon rewrites it at an autologon is
-/// what this run measures. The boot that renames reaches no command (sshd starts after the rename), so a rewrite at its
-/// autologon is not read here: the second boot's autologon then fails, and the run ends as a boot timeout whose serial
-/// log shows the failure. A rewrite at the second boot's autologon, or later, is read by the assert.
+/// The domain autologon logs on to; the base build writes `.`. The assert reads whether Winlogon rewrote it after the
+/// rename.
 const WINLOGON_DOMAIN: &str =
     r"(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon').DefaultDomainName";
 
 #[skuld::test]
-fn windows_the_computer_is_named_after_the_instance_id_from_the_first_boot_and_through_every_restart(
+fn windows_the_computer_is_named_after_the_instance_id_from_the_first_boot_that_answers_and_through_every_restart(
     #[fixture(windows_base)] base: &WindowsBase,
 ) {
     across_restarts(base, "w-hostname", |up, after| {
