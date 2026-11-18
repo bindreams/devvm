@@ -72,8 +72,10 @@ fn a_program_that_does_not_name_cmd_carries_no_cmd_command_line() {
 #[skuld::test]
 fn wrap_resolves_argv0_as_an_application_never_a_cmdlet() {
     let text = script(&["Get-ChildItem", "x"]);
-    assert!(text.contains("$program = 'Get-ChildItem'\n$full = if ("), "{text}");
-    assert!(text.contains("$app = Find-Program $program $full\n"), "{text}");
+    assert!(
+        text.contains("$program = 'Get-ChildItem'\n$app = Find-Program $program\n"),
+        "{text}"
+    );
     // The name is looked up as the file it is: PATH and PATHEXT, with no wildcard reading of `[` or `*`.
     assert!(text.contains("[IO.File]::Exists("), "{text}");
     // `Get-Command` is only in the branch that explains a name that is not found; it never decides what runs.
@@ -152,16 +154,8 @@ fn a_name_that_is_a_powershell_command_exits_127_naming_pwsh_c() {
         text.contains("Get-Command ([WildcardPattern]::Escape($program))"),
         "{text}"
     );
-    assert!(
-        text.contains("($full -like '*.ps1' -and [IO.File]::Exists($full)) -or [IO.File]::Exists($full + '.ps1')"),
-        "{text}"
-    );
-    // The full path is computed once, after any profile, and both the search and this block use it: a variable of a
-    // profile is overwritten, and none is read that the script did not assign.
-    assert_eq!(text.matches("GetFullPath").count(), 1, "{text}");
-    assert_eq!(text.matches("$full = ").count(), 1, "{text}");
-    assert!(text.find("$full = ").unwrap() < text.find("$app = ").unwrap(), "{text}");
-    assert!(!text.contains("$script:"), "{text}");
+    // No variable of the search is read: a profile's own, or none under `Set-StrictMode`, cannot change the answer.
+    assert!(!text.contains("$full") && !text.contains("$script:"), "{text}");
     // The hint is the shared text, once, with no example command or guest name.
     assert_eq!(text.matches(POWERSHELL_COMMAND).count(), 1, "{text}");
     assert!(

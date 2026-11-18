@@ -272,7 +272,14 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
     // absolute.
     let named = scripts.join("proj[1]");
     std::fs::create_dir(&named).unwrap();
-    for name in ["a[1].ps1", "b`c.ps1", "TOOL.PS1", "note.txt"] {
+    for name in [
+        "a[1].ps1",
+        "b`c.ps1",
+        "TOOL.PS1",
+        "note.txt",
+        "note.txt.ps1",
+        "other.txt",
+    ] {
         std::fs::write(scripts.join(name), "'ran'").unwrap();
     }
     std::fs::write(named.join("tool.ps1"), "'ran'").unwrap();
@@ -288,7 +295,9 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         r".\b`c.ps1",
         "./TOOL.PS1",
         r".\proj[1]\tool.ps1",
-        // The extension left out, as PowerShell takes it: `.ps1` is added.
+        // The extension left out, as PowerShell takes it: `.ps1` is added to every name by path, also to one with
+        // another extension.
+        r".\note.txt",
         r".\tool",
         "./TOOL",
         r".\a[1]",
@@ -299,7 +308,7 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         hinted(&by_path(name), name);
     }
     // A name by path that is no script, or a script that is not there, is not found.
-    for name in [r".\note.txt", r".\note", r".\a[2].ps1", r".\proj[1]"] {
+    for name in [r".\other.txt", r".\note", r".\a[2].ps1", r".\proj[1]"] {
         let output = by_path(name);
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
         assert!(
@@ -400,10 +409,10 @@ fn a_lookup_that_throws_is_127_and_the_message_says_so(#[fixture(pwsh_wrap)] _gr
     );
 }
 
-/// A profile of the guest user runs before the script: its `Set-StrictMode` and its variables are the script's too. A
-/// variable of the profile cannot change what the block answers.
+/// A profile of the guest user runs before the script: its `Set-StrictMode` and its variables are the script's too. One
+/// that sets strict mode and assigns `$full`, naming a script or not, leaves the answer for a bare name as it is.
 #[skuld::test]
-fn a_variable_of_a_profile_cannot_change_what_the_not_found_block_answers(
+fn a_profile_with_strict_mode_and_a_full_variable_leaves_the_answer_for_a_bare_name_as_it_is(
     #[fixture(unicode_home)] home: &Path,
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
@@ -703,4 +712,69 @@ fn a_line_at_the_limit_runs_and_one_over_is_refused(#[fixture(pwsh_wrap)] _group
     );
     let error = wrap(&pad(low + 1)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
+}
+
+/// A read-only `$full` in a profile, which no assignment of the script can overwrite: a program runs and a name that
+/// is none is 127, and neither is an error of the script.
+#[skuld::test]
+fn a_read_only_full_variable_of_a_profile_stops_nothing(#[fixture(pwsh_wrap)] _group: &Group) {
+    let profile = "Set-Variable full -Option ReadOnly -Value 'x'\n";
+    let exe = test_binary();
+    let output = run_with(
+        "pwsh",
+        &format!("{profile}{}", wrapped(&[&exe, "ok"])),
+        Some("wrap-argv"),
+        Search::Caller,
+    );
+    assert_eq!(echoed(&output), ["ok"], "{}", shown(&output));
+    for (name, expected) in [
+        ("Get-Date", hint("Get-Date")),
+        (r".\none.ps1", r"devvm: .\none.ps1: command not found".to_owned()),
+    ] {
+        let output = run_with(
+            "pwsh",
+            &format!("{profile}{}", wrapped(&[name])),
+            Some("wrap-argv"),
+            Search::Only(None),
+        );
+        assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
+        assert!(stderr(&output).starts_with(&expected), "{name}: {}", shown(&output));
+    }
+}
+
+/// A location that is no directory (`HKCU:`) has no path to resolve a name against: a name with a path that is fully
+/// qualified is found as it is, and one relative to the location is not found. Neither is an error of the script.
+#[skuld::test]
+fn a_location_that_is_no_directory_stops_nothing(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let location = "Set-Location HKCU:\n";
+    let script = home.join("registry.ps1");
+    std::fs::write(&script, "'ran'").unwrap();
+    let exe = test_binary();
+    let run_at = |argv: &[&str], search: Search| {
+        run_with(
+            "pwsh",
+            &format!("{location}{}", wrapped(argv)),
+            Some("wrap-argv"),
+            search,
+        )
+    };
+    let output = run_at(&[&exe, "ok"], Search::Caller);
+    assert_eq!(echoed(&output), ["ok"], "{}", shown(&output));
+    let script = script.display().to_string();
+    let output = run_at(&[&script], Search::Only(None));
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert!(stderr(&output).starts_with(&hint(&script)), "{}", shown(&output));
+    let missing = home.join("none.ps1").display().to_string();
+    for name in [missing.as_str(), r".\registry.ps1"] {
+        let output = run_at(&[name], Search::Only(None));
+        assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
+        assert!(
+            stderr(&output).starts_with(&format!("devvm: {name}: command not found")),
+            "{name}: {}",
+            shown(&output)
+        );
+    }
 }
