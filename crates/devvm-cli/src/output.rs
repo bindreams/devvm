@@ -16,7 +16,6 @@ use crate::tty::TtyProgress;
 #[path = "output_tests.rs"]
 mod output_tests;
 
-/// What `choose` reads about stderr.
 pub(crate) struct Facts {
     pub is_terminal: bool,
     /// The columns of the terminal, where the platform can tell; `None` for a pty with no console size (mintty).
@@ -37,9 +36,7 @@ impl Facts {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Screen {
-    /// Bars and a task tree, redrawn in place.
     Tty,
-    /// One concise line per event.
     Lines,
 }
 
@@ -224,9 +221,7 @@ impl Run {
     }
 
     /// The panic hook's part, on the panicking thread. Never takes the screen's lock (the thread may hold it) and never
-    /// drops the screen or the log. It first releases the draw its own thread is in, then stops the screen drawing,
-    /// waits out the draws in flight, starts a line below what was drawn, and prints. A bar of the last frame can stay
-    /// above the error line; the error line is the last.
+    /// drops the screen or the log. A bar of the last frame can stay above the error line; the error line is the last.
     pub(crate) fn on_panic(
         &self,
         message: String,
@@ -288,8 +283,7 @@ impl Ending<'_> {
     /// never through the sinks: the screen would print it as a warning above its own line.
     ///
     /// The terminal screen is stopped and cleared first, so that nothing it draws can erase what is written here. A
-    /// panic a hook stored while this waited for the screen is the outcome, whatever `outcome` was. The run is over
-    /// afterwards.
+    /// panic a hook stored while this waited for the screen is the outcome, whatever `outcome` was.
     pub(crate) fn end(
         &self,
         colour: bool,

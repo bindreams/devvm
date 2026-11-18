@@ -435,7 +435,6 @@ enum StepFailure {
         what: String,
         kind: ErrorKind,
         status: ExitStatus,
-        /// What the command printed last.
         output: String,
     },
 }
@@ -514,10 +513,8 @@ impl Tail {
     }
 }
 
-/// A writer that reports each complete line it is given as step output and keeps it in a [`Tail`]; the rest goes out
-/// when it is dropped. A line ends at `\n`, at `\r` (a tool that redraws its progress on one line) or at `\r\n`, which
-/// is one end however the writes split it. A `\r` with nothing pending ends no line, so a redraw's leading `\r` reports
-/// no blank one.
+/// A writer that reports each complete line as step output and keeps it in a [`Tail`]; the rest goes out when it is
+/// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress).
 struct Lines<'a> {
     progress: &'a dyn Progress,
     tail: &'a Tail,
@@ -538,7 +535,6 @@ impl<'a> Lines<'a> {
 
     fn report(&self, line: &[u8]) {
         let line = String::from_utf8_lossy(line);
-        // The progress strips the escapes from what it gets; the tail strips what it keeps.
         self.progress.output(&line);
         self.tail.push(&line);
     }

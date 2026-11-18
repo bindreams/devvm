@@ -84,12 +84,8 @@ fn set_status_file(path: Option<PathBuf>) {
 
 /// Makes a panic on any thread print one `devvm-error: panic:` line, write the status file if one is set, and exit 125.
 ///
-/// Exactly one ending prints, [`output::Run`] decides which. A panic while no command's ending is under way ends the
-/// process; a second panic then waits for the exit. A panic on another thread while the command's own ending is under
-/// way is stored and the hook returns, so that the panicking thread unwinds and lets go of what the ending waits for
-/// (the screen's lock); the ending reports it. A panic on the ending's own thread ends the process, since the ending
-/// itself failed. A panic after the ending has decided its outcome is dropped: the process is exiting. The hook never
-/// panics itself: it ignores write errors and tolerates a poisoned lock.
+/// Exactly one ending prints; see [`output::Run`] for which. The hook never panics: it ignores write errors and
+/// tolerates a poisoned lock.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let payload = info.payload();
@@ -206,15 +202,14 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
 /// Runs the command line `args` (without the program name) and returns the process exit code.
 ///
 /// Installs the panic hook and points it at the status file before anything else runs. An interactive `ssh` leaves
-/// console interrupts ignored for the rest of the process. One command runs at a time per process: the status file,
-/// the panic hook and the run's screen and log are the process's own, and a second concurrent call is not supported.
+/// console interrupts ignored for the rest of the process. One command runs at a time per process; a concurrent second
+/// call is not supported.
 pub fn main_entry(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> i32 {
     main_entry_with(width, args, deps, &dispatch)
 }
 
 /// `main_entry` with the dispatch replaced; hook installation, status-file setup, parsing and the ending are the real
-/// code. The action gets whether the run is verbose (`-v` or `DEVVM_VERBOSE`). Tests use it to put a fault in a real
-/// code path.
+/// code. The action gets whether the run is verbose (`-v` or `DEVVM_VERBOSE`).
 pub fn main_entry_with(
     width: ExitWidth,
     args: Vec<OsString>,

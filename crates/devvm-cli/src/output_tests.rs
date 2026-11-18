@@ -99,9 +99,12 @@ fn a_state_directory_that_cannot_be_found_is_one_warning_and_a_working_sink() {
     sinks.progress.message("still works");
 
     assert!(sinks.log.is_none());
-    assert_eq!(out.text(), "warning: no state directory
+    assert_eq!(
+        out.text(),
+        "warning: no state directory
 still works
-");
+"
+    );
 }
 
 #[skuld::test]
@@ -425,7 +428,7 @@ fn a_panic_on_the_endings_own_thread_ends_the_run() {
     );
 }
 
-// The line screen ====================================================================================================
+// The line screen =====================================================================================================
 
 fn run_with_lines(out: &Buffer) -> (Run, Arc<LineProgress>) {
     let lines = Arc::new(LineProgress::to(Box::new(out.clone()), Look::default()));
@@ -448,9 +451,12 @@ fn the_ending_stops_the_line_screen_before_it_writes_the_error() {
     lines.message("late");
     lines.warn("late");
 
-    assert_eq!(out.text(), "before
+    assert_eq!(
+        out.text(),
+        "before
 devvm-error: io: bad
-");
+"
+    );
 }
 
 #[skuld::test]
@@ -463,9 +469,12 @@ fn a_panic_hook_stops_the_line_screen_so_that_the_error_line_is_the_last() {
     assert!(matches!(panicked, Panicked::Ended { .. }));
     lines.message("late");
 
-    assert_eq!(out.text(), "before
+    assert_eq!(
+        out.text(),
+        "before
 devvm-error: panic: boom
-");
+"
+    );
 }
 
 // The ending's own failure ============================================================================================
@@ -513,9 +522,12 @@ fn a_panic_while_the_ending_writes_finds_the_log_of_the_run() {
     let hook_text = stderr.hook_text.expect("the hook ended the run");
     assert_eq!(
         hook_text,
-        format!("log: {}
+        format!(
+            "log: {}
 devvm-error: panic: boom
-", log.path().display())
+",
+            log.path().display()
+        )
     );
     let text = std::fs::read_to_string(log.path()).unwrap();
     assert!(text.contains(" ERROR devvm-error: panic: boom"), "{text}");

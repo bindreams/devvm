@@ -348,7 +348,11 @@ fn doctor_with_git_variables_set_prints_no_unset_note_on_stderr() {
     let lines = stdout_lines(&output);
     assert!(lines.iter().any(|line| line[5..].starts_with("git:")), "{lines:?}");
     let failed = lines.iter().filter(|line| line.starts_with("fail ")).count();
-    assert_eq!(output.status.code(), Some(if failed == 0 { 0 } else { 125 }), "{stderr:?}");
+    assert_eq!(
+        output.status.code(),
+        Some(if failed == 0 { 0 } else { 125 }),
+        "{stderr:?}"
+    );
     // The note is kept in the log.
     let logs = log_files(&home);
     assert_eq!(logs.len(), 1, "{logs:?}");

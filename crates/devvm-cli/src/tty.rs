@@ -35,8 +35,7 @@ pub(crate) struct TtyProgress {
 }
 
 struct Shared {
-    /// Every call into indicatif is made holding this. `None` only for [`Shared`]'s drop, which leaves a poisoned
-    /// screen as it is.
+    /// `None` only for [`Shared`]'s drop, which leaves a poisoned screen as it is.
     screen: Mutex<Option<Screen>>,
     /// Nothing is drawn any more: set before `screen` is taken, so a draw that waits for it draws nothing.
     quiet: AtomicBool,
@@ -46,7 +45,6 @@ struct Shared {
     rows: AtomicUsize,
     /// The draws in progress, which a panic hook waits out before it writes.
     flight: Arc<Flight>,
-    /// Starts a fresh line below the bars.
     newline: Box<dyn Fn() + Send + Sync>,
     pace: Arc<Pace>,
 }
@@ -54,7 +52,6 @@ struct Shared {
 struct Screen {
     multi: MultiProgress,
     look: Look,
-    /// The terminal's width now.
     columns: Box<dyn Fn() -> u16 + Send + Sync>,
     /// The open tasks in the order they are drawn: a parent, then each of its children with their own.
     order: Vec<TaskId>,
@@ -169,11 +166,9 @@ struct Flight {
 }
 
 thread_local! {
-    /// The draw this thread is in, if it is in one.
     static MID_DRAW: RefCell<Option<Arc<Flight>>> = const { RefCell::new(None) };
 }
 
-/// A draw in flight, until dropped, on unwinding too.
 struct Drawing;
 
 impl Flight {
@@ -342,7 +337,6 @@ impl TtyProgress {
                     .map_or(80, |(_rows, columns)| columns)
             },
             || {
-                // A terminal that cannot be written has nobody to tell.
                 let _ = console::Term::stderr().write_line("");
             },
         )
@@ -360,7 +354,6 @@ impl TtyProgress {
         match shared.screen.lock() {
             Ok(mut screen) => {
                 if let Some(screen) = screen.as_mut() {
-                    // A terminal that cannot be written has nobody to tell.
                     let _ = screen.multi.clear();
                     screen.multi.set_draw_target(ProgressDrawTarget::hidden());
                 }
@@ -396,15 +389,12 @@ fn stderr_target() -> ProgressDrawTarget {
 
 /// The most columns the bar and the position of a task of `total` take after its label, with the task at `position`.
 fn suffix_width(total: Total, wide: bool, position: u64) -> usize {
-    // A position and a total of a count, `12/3456`: the most digits either has.
     let pair = |items: u64| 2 * digits(items.max(position)) + 1;
+    // The widest of each: ` [bar] 1023.9 MiB/1023.9 GiB`, ` 100%`, ` 12/3456`.
     match (total, wide) {
-        // ` 5.0 MiB`, once the task has counted bytes.
         (Total::Unknown, _) if position > 0 => 1 + human_bytes(position).len(),
         (Total::Unknown, _) => 0,
-        // ` [` bar `] ` and `1023.9 MiB/1023.9 GiB`.
         (Total::Bytes(_), true) => 14 + 21,
-        // ` 100%`.
         (Total::Bytes(_), false) => 5,
         (Total::Items(items), true) => 14 + pair(items),
         (Total::Items(items), false) => 1 + pair(items),
@@ -533,7 +523,7 @@ impl Screen {
 
     /// The tree glyphs before each open task: `│  ` or spaces for each ancestor below the root, then `├─ ` or `└─ `. A
     /// column goes on (`│`) while a row below has the same parent as that ancestor, so an ancestor that has ended keeps
-    /// its column for the siblings it left. One pass from the bottom, with the parents of the rows below.
+    /// its column for the siblings it left.
     fn prefixes(&self) -> Vec<String> {
         let mut below: HashSet<Option<TaskId>> = HashSet::new();
         let mut prefixes = vec![String::new(); self.order.len()];

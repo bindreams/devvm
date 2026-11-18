@@ -7,7 +7,9 @@ use std::process::Output;
 pub fn one_error_line(output: &Output, kind: &str) -> String {
     let stderr = String::from_utf8(output.stderr.clone()).unwrap();
     let lines: Vec<&str> = stderr.lines().collect();
-    let (line, before) = lines.split_last().unwrap_or_else(|| panic!("no error line: {stderr:?}"));
+    let (line, before) = lines
+        .split_last()
+        .unwrap_or_else(|| panic!("no error line: {stderr:?}"));
     assert!(line.starts_with(&format!("devvm-error: {kind}: ")), "{stderr:?}");
     if let Some(log) = before.last() {
         assert!(log.starts_with("log: "), "{stderr:?}");

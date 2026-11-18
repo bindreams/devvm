@@ -176,7 +176,6 @@ pub fn write_status_file(path: &Path, report: &Report<'_>) -> Result<()> {
     Ok(())
 }
 
-/// What every error line starts with.
 pub const ERROR_PREFIX: &str = "devvm-error:";
 
 /// `devvm-error: <kind>: <message>` on one line: control characters are escaped, so the line has no newline inside.

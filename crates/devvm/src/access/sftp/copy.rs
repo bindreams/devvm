@@ -165,8 +165,7 @@ fn put_dir<D: CopySide>(dst: &D, path: &D::Path, follow: bool, what: &str) -> Re
     }
 }
 
-/// Makes `to` the tree entry `kind` copied from `from`, telling `moved` the size of each chunk of a file. Returns
-/// whether it made a directory.
+/// Makes `to` the tree entry `kind` copied from `from`. Returns whether it made a directory.
 fn put_item<S, D>(
     src: &S,
     dst: &D,

@@ -88,7 +88,7 @@ enum Failed {
     Write(std::io::Error),
 }
 
-/// Copies `reader` to `writer` in chunks of [`CHUNK`], telling `moved` the size of each. The SFTP library reports a
+/// Copies `reader` to `writer` in chunks of [`CHUNK`]. The SFTP library reports a
 /// failed guest read or write as a plain `io::Error` with no mark of whose fault it was, so the end that failed is
 /// known by where the call was.
 async fn pump<R, W>(mut reader: R, mut writer: W, moved: &Moved) -> std::result::Result<(), Failed>
@@ -103,7 +103,6 @@ where
             return Ok(());
         }
         writer.write_all(&chunk[..read]).await.map_err(Failed::Write)?;
-        // Nobody listening is the caller having stopped counting.
         let _ = moved.send(read as u64);
     }
 }
@@ -158,7 +157,7 @@ impl Sftp {
         )?
     }
 
-    /// [`Sftp::call`], where the step also reports the bytes it moves, each count handed to `moved` as it arrives.
+    /// [`Sftp::call`], where the step also reports the bytes it moves.
     fn call_counting<T, F, Fut>(&self, awaiting: &str, moved: &mut dyn FnMut(u64), step: F) -> Result<T>
     where
         T: Send + 'static,

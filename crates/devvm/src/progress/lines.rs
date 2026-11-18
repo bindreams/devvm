@@ -46,8 +46,6 @@ impl Look {
     }
 }
 
-/// Writes one concise line per event worth a person's attention.
-///
 /// A sized task prints its size, then each quarter it passes, then `done`; an item count prints no quarters. Whole
 /// lines go out under one lock, so threads never interleave inside a line. Controls in any text are escaped, so a
 /// record is one line.
@@ -69,7 +67,6 @@ struct Open {
     label: String,
     depth: usize,
     total: Total,
-    /// The highest quarter (25, 50 or 75) already printed.
     quarter: u64,
 }
 
@@ -107,7 +104,6 @@ impl State {
         let mut line = " ".repeat(2 * depth);
         line.push_str(text);
         line.push('\n');
-        // A closed stderr has nobody to tell.
         let _ = self.out.write_all(line.as_bytes());
     }
 }

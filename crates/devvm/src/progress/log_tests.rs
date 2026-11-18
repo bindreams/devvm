@@ -275,7 +275,9 @@ fn a_log_that_could_not_be_written_says_so_with_the_first_error(#[fixture(unicod
 }
 
 #[skuld::test]
-fn the_log_of_a_run_that_is_alive_is_kept_however_old_and_removed_once_it_is_gone(#[fixture(unicode_home)] home: &Path) {
+fn the_log_of_a_run_that_is_alive_is_kept_however_old_and_removed_once_it_is_gone(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let dir = home.join("logs");
     let live = open(&dir);
     let (path, lock) = (live.path().to_owned(), lock_path(live.path()));

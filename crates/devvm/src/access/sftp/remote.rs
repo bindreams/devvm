@@ -521,7 +521,7 @@ impl Remote {
         }
     }
 
-    /// Streams `local` to the guest file `target`, telling `moved` how much goes at a time.
+    /// Streams `local` to the guest file `target`.
     pub(super) async fn put_file(
         self,
         local: PathBuf,
@@ -671,7 +671,7 @@ impl Remote {
 // Reading =============================================================================================================
 
 impl Remote {
-    /// Streams the guest file `remote` into the new host file `temp`, telling `moved` how much comes at a time.
+    /// Streams the guest file `remote` into the new host file `temp`.
     pub(super) async fn download(self, remote: String, temp: PathBuf, moved: Moved) -> Result<()> {
         let awaiting = format!("cannot read the guest file {remote}", remote = self.shown(&remote));
         let file = self

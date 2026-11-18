@@ -1,7 +1,6 @@
 //! What a running command tells the person: notes, waits and tasks with a position.
 //!
-//! The library reports [`Event`]s to a [`Progress`] sink and never draws anything itself. A sink decides how an event
-//! looks (lines, a terminal, a log file) and [`Fanout`] joins several.
+//! The library reports [`Event`]s to a [`Progress`] sink and never draws anything itself.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -63,7 +62,7 @@ pub enum Event {
         level: Level,
         text: String,
     },
-    /// A line a step's command printed, without ANSI escapes: [`Progress::output`] strips them.
+    /// A line a step's command printed, without ANSI escapes.
     Output {
         line: String,
     },
@@ -95,7 +94,6 @@ pub enum Event {
 pub trait Progress: Send + Sync {
     fn event(&self, event: &Event);
 
-    /// A note at [`Level::Info`].
     fn message(&self, text: &str) {
         self.event(&Event::Note {
             level: Level::Info,
@@ -214,9 +212,8 @@ impl<'a> Task<'a> {
         self.id
     }
 
-    /// Reports the position so far. It never goes back. The first position is reported as it is; after that, bytes (a
-    /// [`Total::Bytes`] or [`Total::Unknown`] task) are reported once per MiB crossed and at the total, items each time
-    /// they grow.
+    /// Reports the position, which never goes back. Bytes are reported once per MiB crossed and at the total; items
+    /// each time they grow.
     pub fn set(&self, position: u64) {
         let last = self.last.get();
         if position <= last {
@@ -241,7 +238,6 @@ impl<'a> Task<'a> {
         });
     }
 
-    /// Ends the task as [`Outcome::Finished`].
     pub fn finish(mut self) {
         self.outcome = Outcome::Finished;
     }
@@ -289,8 +285,7 @@ pub fn paint(on: bool, colour: Colour, text: &str) -> String {
     format!("\u{1b}[{code}m{text}\u{1b}[0m")
 }
 
-/// `text` without ANSI escape sequences (colours, cursor moves), which a tool prints for a terminal. Step output goes
-/// through it where an output event is built ([`Progress::output`]) and where the error's tail is kept.
+/// `text` without ANSI escape sequences (colours, cursor moves), which a tool prints for a terminal.
 pub fn strip_ansi(text: &str) -> Cow<'_, str> {
     console::strip_ansi_codes(text)
 }

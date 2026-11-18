@@ -16,14 +16,12 @@ mod doctor_tests;
 /// `config.yaml` is a failed line, not an early exit.
 pub(crate) fn doctor(transport: Arc<dyn Transport>, progress: Arc<dyn Progress>) -> Result<ExitStatus> {
     let checks = Engine::doctor_checks(progress.clone(), transport)?;
-    // The log keeps what the checks found; stdout has its own copy.
     for check in &checks {
         progress.debug(&line(check, false));
     }
     doctor_to(&mut std::io::stdout().lock(), checks, console::colors_enabled())
 }
 
-/// Prints `checks` to `out`, with `pass` and `fail` coloured when `colour`.
 pub(crate) fn doctor_to(out: &mut dyn Write, checks: Vec<Check>, colour: bool) -> Result<ExitStatus> {
     let mut failed = 0;
     for check in &checks {

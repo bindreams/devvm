@@ -135,8 +135,7 @@ impl Error {
         }
     }
 
-    /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, after its message. Empty text adds
-    /// nothing.
+    /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, after its message.
     pub(crate) fn with_tail(mut self, what: &str, text: &str) -> Error {
         let tail = last_lines(text);
         if !tail.is_empty() {
@@ -166,7 +165,6 @@ impl std::error::Error for Error {
     }
 }
 
-/// How many lines of a log or of a step's output an error carries.
 pub(crate) const TAIL_LINES: usize = 20;
 
 /// The last [`TAIL_LINES`] lines of `text`, with the line ends of a Windows file taken off.

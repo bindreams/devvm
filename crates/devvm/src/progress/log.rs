@@ -21,13 +21,12 @@ mod log_tests;
 /// A log older than this is removed when a new one is made, unless its run is alive.
 const KEEP: Duration = Duration::from_secs(14 * 24 * 3600);
 
-/// How many advances a task counted in bytes logs: one per 5%.
 const ADVANCES: u128 = 20;
 
 const TIME: &str = "%Y-%m-%dT%H:%M:%S%.3fZ";
 
-/// Every event of one run, one record per line: `<UTC timestamp to ms> <KIND> <text>`, with each control character in
-/// the text written as an escape so a record is one line.
+/// Every event of one run: `<UTC timestamp to ms> <KIND> <text>`, one record per line (controls in the text are
+/// escaped).
 ///
 /// Kinds: `DEBUG`, `INFO` and `WARN` for notes, `OUTPUT` for a step's output line, `ERROR` for [`FileLog::failed`], and
 /// `TASK <id> <what>` for a task: `begin parent=<id|-> <unknown|bytes=N|items=N> <label>`, `status <text>`,
@@ -256,7 +255,10 @@ fn remove_lock_unless_held(host: &dyn Host, path: &Path, warnings: &mut Vec<Stri
             }
         }
         Ok(HoldOutcome::Busy | HoldOutcome::Absent) => {}
-        Err(e) => warnings.push(format!("cannot tell whether the lock {} is in use: {e}", path.display())),
+        Err(e) => warnings.push(format!(
+            "cannot tell whether the lock {} is in use: {e}",
+            path.display()
+        )),
     }
 }
 
