@@ -609,15 +609,16 @@ fn nothing_the_base_records_carries_the_computers_name_at_the_build() {
         "-UserId $userSid",
     );
     assert!(!bootstrap.contains("-UserId 'user'"));
-    // Nothing in the base reads or writes the computer's name, so nothing keeps the name it has at the build. Comment
-    // lines say things, they do not do them.
-    let code = bootstrap
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    for name in ["computername", "machinename", "rename-computer", "hostname"] {
+    // Nothing in the base reads or writes the computer's name, so nothing keeps the name it has at the build.
+    let code = bootstrap.to_lowercase();
+    for name in [
+        "computername",
+        "machinename",
+        "rename-computer",
+        "hostname",
+        "userdomain",
+        "win32_computersystem",
+    ] {
         assert!(!code.contains(name), "the base records the computer's name ({name})");
     }
 }
@@ -910,20 +911,29 @@ fn the_boot_task_restarts_again_while_the_system_refuses_as_not_ready_and_fails_
     // Refused for now: ERROR_NOT_READY (21), RPC_S_SERVER_UNAVAILABLE (1722), ERROR_SHUTDOWN_IS_SCHEDULED (1190).
     assert_before(restart, "-in 0, 1115) { return }", "-notin 21, 1722, 1190) { throw");
     assert_before(restart, "-notin 21, 1722, 1190) { throw", "Start-Sleep");
-    // A refusal that goes on is visible in the log: one line each time the status differs from the previous attempt's.
-    assert_before(restart, "-notin 21, 1722, 1190) { throw", "if ($status -ne $previous)");
+    // A refusal is visible in the log: one line for each distinct status of this call, never one per attempt, so
+    // alternating statuses do not flood it. The set is made before the loop.
+    assert_before(restart, "$seen = @()", "while ($true)");
+    assert_before(restart, "-notin 21, 1722, 1190) { throw", "if ($status -notin $seen)");
     assert_before(
         restart,
-        "if ($status -ne $previous)",
+        "if ($status -notin $seen)",
         "Send-Line \"DEVVM-RESTART-REFUSED=$status\"",
     );
     assert_before(
         restart,
         "Send-Line \"DEVVM-RESTART-REFUSED=$status\"",
-        "$previous = $status",
+        "$seen += $status",
     );
-    assert_before(restart, "$previous = $status", "Start-Sleep");
-    assert!(restart.contains("$previous = $null"), "{restart}");
+    assert_before(restart, "$seen += $status", "Start-Sleep");
+    assert!(!restart.contains("$previous"), "{restart}");
+    // A scheduled shutdown (1190) refuses until its schedule fires: it is aborted, and this boot restarts anyway.
+    assert_before(
+        restart,
+        "-notin 21, 1722, 1190) { throw",
+        "if ($status -eq 1190) { shutdown.exe /a }",
+    );
+    assert_before(restart, "if ($status -eq 1190) { shutdown.exe /a }", "Start-Sleep");
     assert!(restart.contains("status $status"), "the refusal is named: {restart}");
     for bound in ["$tries", "$attempt", "-lt ", "-gt ", "Stopwatch", "Get-Date", "timeout"] {
         assert!(!restart.contains(bound), "the retry has no cap ({bound}): {restart}");

@@ -42,21 +42,23 @@ function Write-Whole([string]$Target, [byte[]]$Bytes, [string[]]$ReadSids = @())
 }
 
 # Restarts now. While the system is still starting it refuses: ERROR_NOT_READY (21), RPC_S_SERVER_UNAVAILABLE (1722), or
-# ERROR_SHUTDOWN_IS_SCHEDULED (1190). The request is made again until it is accepted, and each refusal that differs from
-# the previous attempt's is sent, so a persistent one shows in the log; any other refusal ends the boot. A shutdown
-# already in progress (1115), a restart or a power-off, is as good as an accepted request: the name applies at the next
-# boot either way. shutdown.exe ends with the Win32 error as its status, so no text, which is localized, is read.
+# ERROR_SHUTDOWN_IS_SCHEDULED (1190). The request is made again until it is accepted, and each distinct refusal is sent
+# once, so a persistent one shows in the log; any other refusal ends the boot. A scheduled shutdown is aborted first: it
+# would refuse every request until it fires, and this boot restarts anyway. A shutdown already in progress (1115), a
+# restart or a power-off, is as good as an accepted request: the name applies at the next boot either way. shutdown.exe
+# ends with the Win32 error as its status, so no text, which is localized, is read.
 function Restart-Now {
-    $previous = $null
+    $seen = @()
     while ($true) {
         shutdown.exe /r /f /t 0
         $status = $LASTEXITCODE
         if ($status -in 0, 1115) { return }
         if ($status -notin 21, 1722, 1190) { throw "shutdown.exe /r ended with status $status" }
-        if ($status -ne $previous) {
+        if ($status -notin $seen) {
             Send-Line "DEVVM-RESTART-REFUSED=$status"
-            $previous = $status
+            $seen += $status
         }
+        if ($status -eq 1190) { shutdown.exe /a }
         Start-Sleep -Milliseconds 200
     }
 }

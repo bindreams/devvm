@@ -22,7 +22,7 @@ fn the_hostname_is_devvm_and_the_first_eight_hex_digits_of_the_id() {
     assert_eq!(id().hostname(), "devvm-00010203");
     let other: InstanceId = "ffeeddccbbaa99887766554433221100".parse().unwrap();
     assert_eq!(other.hostname(), "devvm-ffeeddcc");
-    // Under the 15 characters of a Windows computer name.
+    // At most the 15 characters of a Windows computer name.
     assert_eq!(other.hostname().len(), HOSTNAME_LEN);
 }
 

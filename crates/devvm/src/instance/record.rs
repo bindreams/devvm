@@ -35,7 +35,7 @@ const HOSTNAME_PREFIX: &str = "devvm-";
 /// The hex digits of the id in a hostname: its first 4 bytes.
 const HOSTNAME_BYTES: usize = 4;
 
-/// The length of a hostname made by [`InstanceId::hostname`]: under the 15 characters of a Windows computer name.
+/// The length of a hostname made by [`InstanceId::hostname`]: at most the 15 characters of a Windows computer name.
 pub const HOSTNAME_LEN: usize = HOSTNAME_PREFIX.len() + 2 * HOSTNAME_BYTES;
 
 // Windows' NetBIOS limit on a computer name.

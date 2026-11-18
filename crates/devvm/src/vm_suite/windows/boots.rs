@@ -118,8 +118,9 @@ fn windows_the_first_command_after_start_stop_start_and_reboot_is_in_session_1(
 const NAMES: &str = "\"$(hostname) $env:COMPUTERNAME $([Environment]::MachineName)\"";
 
 /// The domain autologon logs on to. Only the base build writes it (`.`); whether Winlogon rewrites it at an autologon is
-/// what this run measures. The boot that renames reaches no command (sshd starts after the rename), so the first read is
-/// after the autologons of both of its boots, and a rewrite at either shows: nothing sets the value back to `.`.
+/// what this run measures. The boot that renames reaches no command (sshd starts after the rename), so a rewrite at its
+/// autologon is not read here: the second boot's autologon then fails, and the run ends as a boot timeout whose serial
+/// log shows the failure. A rewrite at the second boot's autologon, or later, is read by the assert.
 const WINLOGON_DOMAIN: &str =
     r"(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon').DefaultDomainName";
 
