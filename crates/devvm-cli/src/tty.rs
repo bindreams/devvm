@@ -1,13 +1,14 @@
 //! Progress bars and a task tree on a terminal.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use devvm::progress::{Colour, Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint};
+use devvm::progress::{
+    Colour, Event, Flying, Gate, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint,
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 
 #[cfg(test)]
@@ -25,7 +26,7 @@ const BAR_COLUMNS: u16 = 50;
 /// set: at each report of its task.
 ///
 /// Every call into indicatif is made holding one lock, the screen's, and nothing else draws: the spinners are ticked
-/// by a thread of this screen that takes the same lock. So [`TtyProgress::quiet`] ends all drawing at once. A thread
+/// by a thread of this screen that takes the same lock. So a stopped screen ([`TtyProgress::stop`]) draws nothing more. A thread
 /// that panics inside a draw leaves the lock poisoned, and the screen is then never touched again: what indicatif
 /// holds may be half changed, and dropping it would panic.
 pub(crate) struct TtyProgress {
@@ -37,14 +38,12 @@ pub(crate) struct TtyProgress {
 struct Shared {
     /// `None` only for [`Shared`]'s drop, which leaves a poisoned screen as it is.
     screen: Mutex<Option<Screen>>,
-    /// Nothing is drawn any more: set before `screen` is taken, so a draw that waits for it draws nothing.
-    quiet: AtomicBool,
+    /// Stopped, nothing is drawn any more; a draw is in flight while it holds `screen`.
+    gate: Gate,
     /// The rows the screen has drawn: the open tasks, set under `screen` once a report is drawn. Every report is drawn,
     /// so this is what is on the terminal. A thread that cannot take `screen` reads it to know how far to start a fresh
     /// line below the bars.
     rows: AtomicUsize,
-    /// The draws in progress, which a panic hook waits out before it writes.
-    flight: Arc<Flight>,
     newline: Box<dyn Fn() + Send + Sync>,
     pace: Arc<Pace>,
 }
@@ -95,31 +94,37 @@ impl Slot {
 
 // Locking =============================================================================================================
 
-/// The screen, locked.
-struct Locked<'a>(MutexGuard<'a, Option<Screen>>);
+/// The screen, locked, and a draw in flight when the screen is drawn on.
+struct Locked<'a> {
+    screen: MutexGuard<'a, Option<Screen>>,
+    // After `screen`, so that a draw is in flight until the lock is free: whoever sees none can take it.
+    _drawing: Option<Flying>,
+}
 
 impl std::ops::Deref for Locked<'_> {
     type Target = Screen;
 
     fn deref(&self) -> &Screen {
-        self.0.as_ref().expect("the screen is there until it is dropped")
+        self.screen.as_ref().expect("the screen is there until it is dropped")
     }
 }
 
 impl std::ops::DerefMut for Locked<'_> {
     fn deref_mut(&mut self) -> &mut Screen {
-        self.0.as_mut().expect("the screen is there until it is dropped")
+        self.screen.as_mut().expect("the screen is there until it is dropped")
     }
 }
 
 impl Shared {
-    /// The screen, locked; `None` when a thread panicked inside a draw.
+    /// The screen, locked, with a draw in flight; `None` when a thread panicked inside a draw, and when the screen is
+    /// stopped.
     fn lock(&self) -> Option<Locked<'_>> {
-        self.screen.lock().ok().map(Locked)
-    }
-
-    fn is_quiet(&self) -> bool {
-        self.quiet.load(Ordering::SeqCst)
+        let screen = self.screen.lock().ok()?;
+        let drawing = self.gate.enter()?;
+        Some(Locked {
+            screen,
+            _drawing: Some(drawing),
+        })
     }
 
     /// Starts a fresh line for each row the screen has drawn: below the bars wherever the cursor is among them.
@@ -132,10 +137,6 @@ impl Shared {
     /// Turns each spinner once.
     fn tick(&self) {
         let Some(screen) = self.lock() else { return };
-        let _drawing = self.flight.enter();
-        if self.is_quiet() {
-            return;
-        }
         for slot in screen.tasks.values() {
             if matches!(slot.total, Total::Unknown) {
                 slot.bar.tick();
@@ -152,60 +153,6 @@ impl Drop for Shared {
         {
             std::mem::forget(screen);
         }
-    }
-}
-
-// Draws in flight =====================================================================================================
-
-/// The draws of one screen that have started and not ended. A thread that panics inside a draw releases its own with
-/// [`release_draw`] before the hook waits, so that it never waits for itself.
-#[derive(Default)]
-struct Flight {
-    count: Mutex<usize>,
-    idle: Condvar,
-}
-
-thread_local! {
-    static MID_DRAW: RefCell<Option<Arc<Flight>>> = const { RefCell::new(None) };
-}
-
-struct Drawing;
-
-impl Flight {
-    fn enter(self: &Arc<Self>) -> Drawing {
-        *self.count.lock().unwrap_or_else(PoisonError::into_inner) += 1;
-        let before = MID_DRAW.with(|mid| mid.replace(Some(self.clone())));
-        debug_assert!(before.is_none(), "a draw began inside another");
-        Drawing
-    }
-
-    fn leave(&self) {
-        let mut count = self.count.lock().unwrap_or_else(PoisonError::into_inner);
-        *count -= 1;
-        if *count == 0 {
-            self.idle.notify_all();
-        }
-    }
-
-    /// Waits until no draw is in flight.
-    fn wait_idle(&self) {
-        let mut count = self.count.lock().unwrap_or_else(PoisonError::into_inner);
-        while *count > 0 {
-            count = self.idle.wait(count).unwrap_or_else(PoisonError::into_inner);
-        }
-    }
-}
-
-impl Drop for Drawing {
-    fn drop(&mut self) {
-        release_draw();
-    }
-}
-
-/// Ends the draw this thread is in, if it is in one; the draw is never resumed. Every panic hook calls it first.
-pub(crate) fn release_draw() {
-    if let Some(flight) = MID_DRAW.try_with(RefCell::take).ok().flatten() {
-        flight.leave();
     }
 }
 
@@ -313,9 +260,8 @@ impl TtyProgress {
                 spinners: 0,
                 pace: pace.clone(),
             })),
-            quiet: AtomicBool::new(false),
+            gate: Gate::default(),
             rows: AtomicUsize::new(0),
-            flight: Arc::default(),
             newline: Box::new(newline),
             pace,
         });
@@ -342,37 +288,31 @@ impl TtyProgress {
         )
     }
 
-    /// Stops drawing and takes the bars off the screen, so that what is written below next stays: no later draw, a
-    /// spinner's tick included, can erase it. The spinners' thread is told to stop, and a draw of another thread is
-    /// over when this returns.
-    ///
-    /// When a thread panicked inside a draw the screen is left as it is, and a fresh line starts below the bars.
-    pub(crate) fn quiet(&self) {
-        let shared = &*self.shared;
-        shared.pace.stop();
-        shared.quiet.store(true, Ordering::SeqCst);
-        match shared.screen.lock() {
-            Ok(mut screen) => {
-                if let Some(screen) = screen.as_mut() {
-                    let _ = screen.multi.clear();
-                    screen.multi.set_draw_target(ProgressDrawTarget::hidden());
-                }
-                shared.rows.store(0, Ordering::SeqCst);
-            }
-            Err(_poisoned) => shared.newlines(),
-        }
+    pub(crate) fn gate(&self) -> &Gate {
+        &self.shared.gate
     }
 
-    /// For a panic hook, which may be on a thread that holds the screen's lock and so cannot take it: nothing new is
-    /// drawn from now on, the draws in flight are waited out, and a fresh line starts below the bars. The bars stay as
-    /// they were.
-    ///
-    /// The hook has released its own thread's draw ([`release_draw`]), and a thread in a draw holds only the screen's
-    /// lock and indicatif's, which this never takes, so the draws end.
-    pub(crate) fn panicked(&self) {
-        self.shared.quiet.store(true, Ordering::SeqCst);
-        self.shared.flight.wait_idle();
-        self.shared.newlines();
+    /// Stops drawing: no report or spinner turn draws from now on, and the spinners' thread is told to stop. The
+    /// ending then waits for the draws in flight ([`Gate::stop_and_wait`]) and calls [`TtyProgress::finish`].
+    pub(crate) fn stop(&self) {
+        self.shared.pace.stop();
+        self.shared.gate.stop();
+    }
+
+    /// Leaves the cursor below the bars, once the screen is stopped and no draw is in flight, without waiting for
+    /// anything: with `clear`, the bars are taken off if the lock is free; otherwise, or if it is not (a thread is
+    /// panicking inside a draw, or a hook is on it), a fresh line starts for each row drawn.
+    pub(crate) fn finish(&self, clear: bool) {
+        let shared = &*self.shared;
+        if clear && let Ok(mut screen) = shared.screen.try_lock() {
+            if let Some(screen) = screen.as_mut() {
+                let _ = screen.multi.clear();
+                screen.multi.set_draw_target(ProgressDrawTarget::hidden());
+            }
+            shared.rows.store(0, Ordering::SeqCst);
+            return;
+        }
+        shared.newlines();
     }
 }
 
@@ -577,11 +517,6 @@ impl Screen {
 impl Progress for TtyProgress {
     fn event(&self, event: &Event) {
         let Some(mut screen) = self.shared.lock() else { return };
-        // In flight before the quiet flag is read: whoever sets the flag waits for this draw, or this draw sees the flag.
-        let _drawing = self.shared.flight.enter();
-        if self.shared.is_quiet() {
-            return;
-        }
         let screen = &mut *screen;
         match event {
             Event::Note { level, text } => {

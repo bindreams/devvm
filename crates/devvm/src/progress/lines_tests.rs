@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use crate::progress::lines::{LineProgress, Look, verbose_in};
-use crate::progress::{Event, Progress, Task, Total};
+use crate::progress::{Event, Gate, Progress, Task, Total, release_in_flight};
 use crate::test_support::fixtures::MemoryProgress;
 
 const MIB: u64 = 1 << 20;
@@ -292,7 +292,7 @@ fn devvm_verbose_says_whether_the_environment_asks_for_step_output() {
 fn a_stopped_screen_writes_nothing_more() {
     let (progress, out) = sink(PLAIN);
     progress.message("before");
-    progress.stop();
+    progress.gate().stop();
     progress.message("after");
     progress.warn("after");
     assert_eq!(out.lines(), ["before"]);
@@ -340,26 +340,29 @@ fn stopping_waits_for_the_line_being_written_and_drops_every_later_one() {
     *inside.lock().unwrap() = Some(Box::new(move || {
         in_write.send(()).unwrap();
         // The stop has set its flag; it is to wait for this write.
-        while !watched.is_stopped() {
+        while !watched.gate().is_stopped() {
             std::thread::yield_now();
         }
     }));
     std::thread::scope(|scope| {
         scope.spawn(|| progress.message("in flight"));
         seen.recv().unwrap();
-        progress.stop();
+        Gate::stop_and_wait(&[progress.gate()]);
         assert_eq!(out.lines(), ["in flight"], "the stop came after the write");
     });
     progress.message("later");
     assert_eq!(out.lines(), ["in flight"]);
 }
 
-/// A panic inside a write reaches the hook on the writing thread, which holds the screen's lock.
+/// A panic inside a write reaches the hook on the writing thread, which holds the screen's lock and a mark.
 #[skuld::test]
 fn stopping_on_the_thread_that_is_writing_does_not_wait_for_itself() {
     let (progress, out, inside) = slow(PLAIN);
     let hook = Arc::clone(&progress);
-    *inside.lock().unwrap() = Some(Box::new(move || hook.stop()));
+    *inside.lock().unwrap() = Some(Box::new(move || {
+        release_in_flight();
+        Gate::stop_and_wait(&[hook.gate()]);
+    }));
     progress.message("the write that panics");
     progress.message("later");
     assert_eq!(out.lines(), ["the write that panics"]);

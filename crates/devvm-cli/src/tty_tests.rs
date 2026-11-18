@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use devvm::exit::{ExitStatus, ExitWidth};
-use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
+use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total, release_in_flight};
 use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
 use crate::output::{Active, Panicked, Run, Shown};
@@ -607,7 +607,7 @@ fn end_with_error(run: &Run, term: &InMemoryTerm) -> i32 {
 
 /// The draws in flight on `tty`.
 fn in_flight(tty: &TtyProgress) -> usize {
-    *tty.shared.flight.count.lock().unwrap()
+    tty.gate().in_flight()
 }
 
 /// The ending writes the error itself, below the bars it has taken off: what the screen is told afterwards draws
@@ -661,7 +661,7 @@ fn the_ender_waits_for_a_draw_in_flight_before_it_writes() {
     probe.hold_next_draw(move || {
         in_draw.send(()).unwrap();
         // The hook has set the quiet flag; the ender is to wait for this draw.
-        while !watched.shared.is_quiet() {
+        while !watched.gate().is_stopped() {
             std::thread::yield_now();
         }
     });
@@ -698,10 +698,10 @@ fn a_draw_that_panics_leaves_no_draw_in_flight() {
 #[skuld::test]
 fn releasing_a_draw_on_a_thread_that_is_not_in_one_does_nothing() {
     let (tty, _term) = screen(4, 60, PLAIN);
-    crate::tty::release_draw();
+    release_in_flight();
     begin(&tty, id(), None, "a", Total::Unknown);
     assert_eq!(in_flight(&tty), 0);
-    crate::tty::release_draw();
+    release_in_flight();
     assert_eq!(in_flight(&tty), 0);
 }
 
@@ -819,7 +819,7 @@ fn quiet_waits_for_a_draw_in_flight_and_what_is_written_after_it_stays() {
     probe.hold_next_draw(move || {
         in_draw.send(()).unwrap();
         // The ending has begun to stop the screen; its lock is what it waits for.
-        while !watched.shared.is_quiet() {
+        while !watched.gate().is_stopped() {
             std::thread::yield_now();
         }
     });

@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use crate::error::{Error, ErrorKind};
 use crate::exit::format_error_line;
 use crate::host::Host;
-use crate::progress::log::{FileLog, lock_path};
+use crate::progress::log::FileLog;
 use crate::progress::{Event, Progress, Task, Total};
 use crate::store::layers::Clock;
 use crate::test_support::file_mode;
@@ -29,6 +29,11 @@ impl Clock for FixedClock {
 
 fn open(dir: &Path) -> FileLog {
     FileLog::create(dir, Arc::new(FixedClock(noon()))).unwrap()
+}
+
+/// A log made where the processes in `alive` are the running ones.
+fn open_where(dir: &Path, alive: &[u32]) -> FileLog {
+    FileLog::create_with(dir, Arc::new(FixedClock(noon())), &|pid| alive.contains(&pid)).unwrap()
 }
 
 /// The records of the log after its first (the header), as text.
@@ -150,7 +155,7 @@ fn files_older_than_14_days_are_removed_and_newer_ones_kept(#[fixture(unicode_ho
     let recent = put("devvm-20261105T000000Z-1-bbbb.log", 13);
     // Not a log of ours, however old.
     let other = put("notes.txt", 40);
-    let log = open(&dir);
+    let log = open_where(&dir, &[]);
     assert!(!old.exists(), "a log of 15 days is removed");
     assert!(recent.exists() && other.exists());
     assert!(log.path().exists());
@@ -230,10 +235,9 @@ impl Clock for HookClock {
     }
 }
 
-/// A panic inside the log's lock reaches the panic hook on the same thread, whose record is skipped: waiting for the
-/// lock would wait for itself.
+/// A panic inside the log's lock reaches the panic hook on the same thread, whose record needs no lock: it is written.
 #[skuld::test]
-fn a_record_attempted_on_the_thread_that_holds_the_log_is_skipped(#[fixture(unicode_home)] home: &Path) {
+fn a_record_made_by_a_hook_on_the_thread_inside_the_log_is_written(#[fixture(unicode_home)] home: &Path) {
     let clock = Arc::new(HookClock::default());
     let log = Arc::new(FileLog::create(&home.join("logs"), clock.clone()).unwrap());
     let again = log.clone();
@@ -242,7 +246,27 @@ fn a_record_attempted_on_the_thread_that_holds_the_log_is_skipped(#[fixture(unic
     log.warn("outer");
     log.failed("later");
 
-    assert_eq!(records(&log), [format!("{AT} WARN outer"), format!("{AT} ERROR later")]);
+    assert_eq!(
+        records(&log),
+        [
+            format!("{AT} ERROR from the hook"),
+            format!("{AT} WARN outer"),
+            format!("{AT} ERROR later")
+        ]
+    );
+}
+
+#[skuld::test]
+fn a_stopped_log_records_no_event_and_still_takes_the_error(#[fixture(unicode_home)] home: &Path) {
+    let log = open(&home.join("logs"));
+    log.message("before");
+    log.gate().stop();
+    log.message("after");
+    log.failed("the end");
+    assert_eq!(
+        records(&log),
+        [format!("{AT} INFO before"), format!("{AT} ERROR the end")]
+    );
 }
 
 /// A file that cannot be written: the disk is full.
@@ -275,34 +299,38 @@ fn a_log_that_could_not_be_written_says_so_with_the_first_error(#[fixture(unicod
 }
 
 #[skuld::test]
-fn the_log_of_a_run_that_is_alive_is_kept_however_old_and_removed_once_it_is_gone(
-    #[fixture(unicode_home)] home: &Path,
-) {
+fn a_log_whose_process_is_running_is_kept_however_old_and_the_others_are_removed(#[fixture(unicode_home)] home: &Path) {
     let dir = home.join("logs");
-    let live = open(&dir);
-    let (path, lock) = (live.path().to_owned(), lock_path(live.path()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let put = |name: &str| -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, "x").unwrap();
+        age(&path, 60);
+        path
+    };
+    let running = put("devvm-20260101T000000Z-7-aaaa.log");
+    let gone = put("devvm-20260101T000000Z-8-bbbb.log");
+    let nameless = put("devvm-old.log");
+
+    let _next = open_where(&dir, &[7]);
+
+    assert!(running.exists(), "the process 7 is running");
+    assert!(!gone.exists(), "the process 8 is not");
+    assert!(
+        !nameless.exists(),
+        "a log with no pid in its name is removed by its age"
+    );
+}
+
+/// The check the command line uses, on the pid of this very process.
+#[skuld::test]
+fn the_log_of_this_process_is_not_pruned_however_old(#[fixture(unicode_home)] home: &Path) {
+    let dir = home.join("logs");
+    let mine = open(&dir);
+    let path = mine.path().to_owned();
     age(&path, 15);
 
     let _next = open(&dir);
-    assert!(path.exists() && lock.exists(), "a live run's log is not pruned");
 
-    drop(live);
-    let _after = open(&dir);
-    assert!(!path.exists(), "the log of a run that has ended is pruned");
-    assert!(!lock.exists(), "and so is its lock");
-}
-
-#[skuld::test]
-fn a_lock_whose_log_is_gone_is_removed_unless_a_run_holds_it(#[fixture(unicode_home)] home: &Path) {
-    let dir = home.join("logs");
-    std::fs::create_dir_all(&dir).unwrap();
-    let orphan = lock_path(&dir.join("devvm-20261101T000000Z-1-aaaa.log"));
-    let held = lock_path(&dir.join("devvm-20261101T000000Z-1-bbbb.log"));
-    drop(TestHost.hold_new(&orphan).unwrap());
-    let _alive = TestHost.hold_new(&held).unwrap();
-
-    let _log = open(&dir);
-
-    assert!(!orphan.exists());
-    assert!(held.exists(), "a creating run holds its lock before its log is there");
+    assert!(path.exists());
 }

@@ -8,9 +8,10 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod gate;
 mod lines;
 mod log;
-mod owned;
+pub use gate::{Flying, Gate, release_in_flight};
 pub use lines::{LineProgress, Look, VERBOSE_VAR, verbose_from_env};
 pub use log::FileLog;
 

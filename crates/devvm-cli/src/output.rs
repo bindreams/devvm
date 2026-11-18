@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread::{self, ThreadId};
 
 use devvm::exit::{ExitStatus, ExitWidth, conclude, print_error_line};
-use devvm::progress::{Fanout, FileLog, LineProgress, Look, Progress};
+use devvm::progress::{Fanout, FileLog, Gate, LineProgress, Look, Progress, release_in_flight};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Error, ErrorKind, Result};
 
@@ -132,19 +132,39 @@ pub(crate) enum Shown {
 }
 
 impl Shown {
-    /// Stops drawing and takes what was drawn off the screen.
-    fn quiet(&self) {
+    fn gate(&self) -> &Gate {
         match self {
-            Shown::Tty(tty) => tty.quiet(),
-            Shown::Lines(lines) => lines.stop(),
+            Shown::Tty(tty) => tty.gate(),
+            Shown::Lines(lines) => lines.gate(),
         }
     }
 
-    /// Stops drawing, for a panic hook that may be on a thread that holds the screen's lock.
-    fn panicked(&self) {
+    fn stop(&self) {
         match self {
-            Shown::Tty(tty) => tty.panicked(),
-            Shown::Lines(lines) => lines.stop(),
+            Shown::Tty(tty) => tty.stop(),
+            Shown::Lines(lines) => lines.gate().stop(),
+        }
+    }
+}
+
+impl Active {
+    /// Stops every sink, waits until none has a write in flight, and leaves the cursor below the bars (`clear` takes
+    /// them off). Nothing here takes a sink's lock, so it ends whichever thread is inside a sink, once that thread has
+    /// released its mark ([`release_in_flight`]).
+    fn quiesce(&self, clear: bool) {
+        let gates: Vec<&Gate> = [
+            self.screen.as_ref().map(Shown::gate),
+            self.log.as_deref().map(FileLog::gate),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if let Some(screen) = &self.screen {
+            screen.stop();
+        }
+        Gate::stop_and_wait(&gates);
+        if let Some(Shown::Tty(tty)) = &self.screen {
+            tty.finish(clear);
         }
     }
 }
@@ -155,8 +175,8 @@ impl Shown {
 /// Exactly one ending prints. Either the command's own [`Ending`] does, or a panic hook does when no ending is under
 /// way ([`Run::on_panic`]). The state mutex decides which: a hook that ends the run keeps it locked until the process
 /// exits, so another panic or an ending waits there. A hook on another thread that finds an ending under way stores its
-/// message and returns, so that its thread unwinds and lets go of what the ending waits for; the ending reports it. A
-/// hook on the ending's own thread ends the run: the ending itself failed.
+/// message and returns, so that its thread unwinds; the ending reports it. A hook on the ending's own thread ends the
+/// run: the ending itself failed.
 pub(crate) struct Run {
     active: Mutex<Option<Active>>,
     state: Mutex<State>,
@@ -220,8 +240,9 @@ impl Run {
         Ending { run: self }
     }
 
-    /// The panic hook's part, on the panicking thread. Never takes the screen's lock (the thread may hold it) and never
-    /// drops the screen or the log. A bar of the last frame can stay above the error line; the error line is the last.
+    /// The panic hook's part, on the panicking thread. It releases the thread's writes in flight, takes no sink's lock
+    /// (the thread may hold it) and never drops a sink. A bar of the last frame can stay above the error line; the
+    /// error line is the last.
     pub(crate) fn on_panic(
         &self,
         message: String,
@@ -230,9 +251,17 @@ impl Run {
         width: ExitWidth,
         stderr: &mut dyn Write,
     ) -> Panicked<'_> {
-        // First: a thread that panicked inside a draw is no longer in it, whatever the hook does next.
-        crate::tty::release_draw();
-        let mut state = self.state();
+        // A thread that panicked inside a sink is no longer in it, whatever the hook does next. A hook that deferred
+        // stores its message first, so that an ending waiting for this thread finds it; a hook that cannot take the
+        // state at once lets go first, since what holds it may be waiting for this thread.
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                release_in_flight();
+                self.state()
+            }
+        };
         // A panic on the ending's own thread cannot be left to it: the ending is what failed.
         if let State::Ending { thread, panic, sealed } = &mut *state
             && *thread != thread::current().id()
@@ -240,8 +269,10 @@ impl Run {
             if !*sealed && panic.is_none() {
                 *panic = Some(message);
             }
+            release_in_flight();
             return Panicked::Deferred;
         }
+        release_in_flight();
         *state = State::Panicking;
         // A lock that is busy is held by a thread in the middle of `begin`: there is no screen to tell.
         let active = match self.active.try_lock() {
@@ -250,8 +281,8 @@ impl Run {
             Err(TryLockError::WouldBlock) => None,
         };
         let active = active.as_deref().and_then(Option::as_ref);
-        if let Some(screen) = active.and_then(|active| active.screen.as_ref()) {
-            screen.panicked();
+        if let Some(active) = active {
+            active.quiesce(false);
         }
         let log = active.and_then(|active| active.log.as_deref());
         let code = end_with(
@@ -282,8 +313,8 @@ impl Ending<'_> {
     /// failure also names the log file on the line before it and is recorded there. The error goes to the log alone,
     /// never through the sinks: the screen would print it as a warning above its own line.
     ///
-    /// The terminal screen is stopped and cleared first, so that nothing it draws can erase what is written here. A
-    /// panic a hook stored while this waited for the screen is the outcome, whatever `outcome` was.
+    /// The sinks are stopped first and the terminal screen is cleared, so that nothing they write can come after what is
+    /// written here. A panic a hook stored while this waited for them is the outcome, whatever `outcome` was.
     pub(crate) fn end(
         &self,
         colour: bool,
@@ -295,8 +326,8 @@ impl Ending<'_> {
         // The run stays in `RUN` until the ending is written: a panic on this thread finds it, and its hook ends the run
         // with the screen and the log.
         let active = self.run.active.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        if let Some(screen) = active.as_ref().and_then(|active| active.screen.as_ref()) {
-            screen.quiet();
+        if let Some(active) = &active {
+            active.quiesce(true);
         }
         let outcome = match self.seal() {
             Some(message) => Err(Error::new(ErrorKind::Panic, message)),

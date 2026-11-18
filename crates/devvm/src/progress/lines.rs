@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
-use crate::progress::owned::Owned;
-use crate::progress::{Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint};
+use crate::progress::{
+    Colour, Event, Gate, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint,
+};
 
 #[cfg(test)]
 #[path = "lines_tests.rs"]
@@ -50,11 +51,8 @@ impl Look {
 /// lines go out under one lock, so threads never interleave inside a line. Controls in any text are escaped, so a
 /// record is one line.
 pub struct LineProgress {
-    /// An event that a thread sends while it holds this is skipped: a panic inside a write reaches the panic hook on
-    /// that thread, which stops the screen.
-    state: Owned<State>,
-    /// Set by [`LineProgress::stop`]; read under `state`, so no line is written after the stop returns.
-    stopped: AtomicBool,
+    state: Mutex<State>,
+    gate: Gate,
     look: Look,
 }
 
@@ -77,25 +75,19 @@ impl LineProgress {
 
     pub fn to(out: Box<dyn Write + Send>, look: Look) -> LineProgress {
         LineProgress {
-            state: Owned::new(State {
+            state: Mutex::new(State {
                 out,
                 tasks: HashMap::new(),
             }),
-            stopped: AtomicBool::new(false),
+            gate: Gate::default(),
             look,
         }
     }
 
-    /// Writes nothing from now on, and returns once a line being written by another thread is out. On the thread
-    /// that is writing one, it does not wait. For the command line's ending and its panic hook, which write below the
-    /// last line.
-    pub fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        drop(self.state.lock());
-    }
-
-    fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::SeqCst)
+    /// Stopped, this writes nothing more; the command line's ending and its panic hook stop it, wait out a line in
+    /// flight, and write below the last line.
+    pub fn gate(&self) -> &Gate {
+        &self.gate
     }
 }
 
@@ -111,10 +103,8 @@ impl State {
 impl Progress for LineProgress {
     fn event(&self, event: &Event) {
         let look = self.look;
-        let Some(mut state) = self.state.lock() else { return };
-        if self.is_stopped() {
-            return;
-        }
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(_flying) = self.gate.enter() else { return };
         match event {
             Event::Note { level, text } => {
                 let text = escape_controls(text);
