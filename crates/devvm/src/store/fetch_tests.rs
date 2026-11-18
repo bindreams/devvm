@@ -356,7 +356,10 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unico
     );
     let resuming = resumed.iter().position(|e| matches!(e, Event::Status { .. })).unwrap();
     let first_advance = resumed.iter().position(|e| matches!(e, Event::Advance { .. })).unwrap();
-    assert!(resuming < first_advance, "\"resuming\" is said before the first position: {resumed:?}");
+    assert!(
+        resuming < first_advance,
+        "\"resuming\" is said before the first position: {resumed:?}"
+    );
     assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
 }
 

@@ -22,6 +22,7 @@ use crate::backend::{
     PRINTED_NOTHING, Patch,
 };
 use crate::contain::Lifetime;
+use crate::error::last_lines;
 use crate::guest::{BaseBuilder, BuildCtx, GuestOs};
 use crate::host::{Host, is_absent};
 use crate::instance::record::InstanceId;
@@ -714,9 +715,9 @@ fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
 /// the error is read. A log that is missing or empty adds nothing, and one that cannot be read says so.
 fn with_log_tail(error: Error, what: &str, path: &Path) -> Error {
     match std::fs::read(path) {
-        Ok(bytes) => with_tail(error, what, &String::from_utf8_lossy(&bytes)),
+        Ok(bytes) => error.with_tail(what, &String::from_utf8_lossy(&bytes)),
         Err(e) if is_absent(&e) => error,
-        Err(e) => with_tail(error, what, &format!("(cannot be read: {e})")),
+        Err(e) => error.with_tail(what, &format!("(cannot be read: {e})")),
     }
 }
 
@@ -729,22 +730,7 @@ fn with_qemu_output(error: Error, output: &str) -> Error {
             format!("{}\nQEMU's output:\n{PRINTED_NOTHING}", error.message()),
         );
     }
-    with_tail(error, "QEMU's output", output)
-}
-
-/// `error`, with the last lines of `text`, which `what` names. Empty text adds nothing.
-fn with_tail(error: Error, what: &str, text: &str) -> Error {
-    let tail = last_lines(text);
-    if tail.is_empty() {
-        return error;
-    }
-    Error::new(error.kind(), format!("{}\nthe end of {what}:\n{tail}", error.message()))
-}
-
-/// The last 20 lines of a log, with the line ends of a Windows file taken off.
-fn last_lines(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(20)..].join("\n")
+    error.with_tail("QEMU's output", output)
 }
 
 /// The password of the guest's account and its autologon: random for each build and never stored by devvm (the guest

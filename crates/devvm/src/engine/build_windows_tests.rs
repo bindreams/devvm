@@ -43,10 +43,19 @@ fn build_runs_each_step_once_in_order_and_publishes_one_layer_per_step(#[fixture
 
     assert_eq!(ran(&fx), ["echo one", "echo two", "echo three"]);
     assert_eq!(layer_keys(&image), keys_of(&recipe), "the base and one layer per step");
-    let messages = fx.progress.messages();
+    let events = fx.progress.events();
     for output in ["one", "two", "three"] {
-        assert!(messages.iter().any(|message| message == output), "{messages:?}");
+        let line = Event::Output {
+            line: output.to_owned(),
+        };
+        assert!(events.contains(&line), "{events:?}");
     }
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Note { text, .. } if text == "one")),
+        "step output is not a note: {events:?}"
+    );
 
     // Every layer exists now, so building again runs nothing.
     let again = fx.engine.build(&recipe, &BuildOptions::default()).unwrap();
@@ -68,12 +77,31 @@ fn a_failing_run_step_names_its_index_command_and_status_and_publishes_nothing(#
     assert!(message.contains("step 2 of 3"), "{message}");
     assert!(message.contains("`exit 3`"), "{message}");
     assert!(message.contains("exit code 3"), "{message}");
+    assert!(
+        !message.contains("the end of"),
+        "a step that printed nothing adds no tail: {message}"
+    );
     assert_eq!(ran(&fx), ["echo one", "exit 3"], "the steps after it never ran");
     let store = fx.engine.store().unwrap();
     assert!(store.lookup(&keys[1]).unwrap().is_some(), "the step before it is kept");
     assert!(store.lookup(&keys[2]).unwrap().is_none(), "nothing is published for it");
     assert!(store.lookup(&keys[3]).unwrap().is_none());
     no_instance_or_build_is_left(&fx);
+}
+
+#[skuld::test]
+fn a_failed_step_error_ends_with_what_the_step_printed(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = recipe(home, &["run: say-error-and-exit-125"]);
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert!(
+        error
+            .message()
+            .ends_with("\nthe end of the step's output:\ndevvm-error: x: y"),
+        "{error}"
+    );
 }
 
 /// `(label, parent's label, outcome)` of every task in `events`, in the order the tasks ended.
