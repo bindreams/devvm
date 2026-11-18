@@ -15,6 +15,9 @@ use devvm::{Dirs, Error, ErrorKind, Result, Sha256};
 use devvm_cli::Deps;
 use serde_json::Value;
 
+#[path = "support/error_line.rs"]
+mod error_line;
+use error_line::one_error_line;
 #[path = "support/unicode.rs"]
 mod unicode;
 use unicode::UNICODE_DIR;
@@ -179,20 +182,6 @@ fn devvm(cwd: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 
 fn status(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-}
-
-/// The `devvm-error:` line, which is stderr's last. A command that got as far as running names its log on the line
-/// before it, and nothing else.
-fn one_error_line(output: &Output, kind: &str) -> String {
-    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
-    let lines: Vec<&str> = stderr.lines().collect();
-    assert!(matches!(lines.len(), 1 | 2), "{stderr:?}");
-    if lines.len() == 2 {
-        assert!(lines[0].starts_with("log: "), "{stderr:?}");
-    }
-    let line = lines.last().unwrap();
-    assert!(line.starts_with(&format!("devvm-error: {kind}: ")), "{stderr:?}");
-    format!("{line}\n")
 }
 
 // Tests ===============================================================================================================

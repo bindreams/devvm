@@ -137,17 +137,3 @@ pub fn stdout_lines(output: &Output) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
-
-/// The `devvm-error:` line of a failed command: stderr's last line, after at most the `log: <path>` line that a
-/// command which got as far as running names its log by.
-pub fn one_error_line(output: &Output, kind: &str) -> String {
-    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
-    let lines: Vec<&str> = stderr.lines().collect();
-    assert!(matches!(lines.len(), 1 | 2), "{stderr:?}");
-    if lines.len() == 2 {
-        assert!(lines[0].starts_with("log: "), "{stderr:?}");
-    }
-    let line = lines.last().unwrap();
-    assert!(line.starts_with(&format!("devvm-error: {kind}: ")), "{stderr:?}");
-    format!("{line}\n")
-}
