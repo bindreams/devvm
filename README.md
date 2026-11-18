@@ -156,9 +156,8 @@ devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/pr
   commands reuse the base. An evaluation edition's base is rebuilt from the ISO 10 days before its evaluation ends; a
   base built with a product key does not expire.
 - `ssh win` opens PowerShell 7; the home (`~`, and where relative guest paths start) is the user's profile.
-- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127, and the message says
-  to run it through `pwsh -c`: `dir` is also a PowerShell alias of `Get-ChildItem`. For `cmd`'s, use
-  `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
+- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127 (it is also a PowerShell alias: run
+  it through `pwsh -c`). For `cmd`'s, use `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
 - [Windows guests](#windows-guests) has how programs, shells, paths and `copy` work in a Windows guest.
 
 ## Windows ISOs
