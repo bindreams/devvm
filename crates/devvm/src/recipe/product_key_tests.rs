@@ -48,7 +48,6 @@ fn an_edition_has_the_key_of_its_edition_and_version_on_microsofts_page() {
         ("Professional", 10240, "W269N-WFGWX-YVC9B-4J6C9-T83GX"),
         ("Professional", 22631, "W269N-WFGWX-YVC9B-4J6C9-T83GX"),
         ("Enterprise", 26200, "NPPR9-FWDCX-D2C8J-H872K-2YT43"),
-        // A client release newer than any the table was copied at has its edition's key.
         ("Enterprise", 30000, "NPPR9-FWDCX-D2C8J-H872K-2YT43"),
         ("ServerStandard", 14393, "WC2BQ-8NRM3-FDDYY-2BFGV-KHKQY"),
         ("ServerDatacenter", 17763, "WMDGN-G9PQG-XVVXX-R3X43-63DFG"),

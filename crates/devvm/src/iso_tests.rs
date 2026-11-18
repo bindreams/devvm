@@ -112,7 +112,6 @@ fn an_edition_with_no_key_in_the_recipe_gets_the_generic_key_of_its_edition_and_
     );
     let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100)).unwrap();
     assert_eq!(resolve_product_key(&ltsc, None).unwrap(), Some(generic));
-    // The key follows the build: one edition id, three keys.
     let key = |build| resolve_product_key(&built(build, edition_of("EnterpriseS", "e")), None).unwrap();
     assert!(key(10240).is_some() && key(14393).is_some() && key(17763).is_some());
     assert_ne!(key(10240), key(14393));

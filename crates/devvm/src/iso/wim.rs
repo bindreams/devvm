@@ -75,8 +75,6 @@ pub(crate) struct WimImage {
     /// does not say which generation of Windows the image is (`EnterpriseS` is five of them), so a key follows both.
     /// Read it with [`WimImage::build_number`]: a text that is not a number must not fail the image list, only the key
     /// of an image that needs one.
-    ///
-    /// A list from before this field was kept is not read as an image with no build (the field has no default).
     #[serde(deserialize_with = "Option::deserialize")]
     pub build: Option<String>,
     pub arch: WimArch,

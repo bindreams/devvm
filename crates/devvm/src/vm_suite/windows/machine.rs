@@ -174,7 +174,7 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
             !family.is_empty() && !names_an_evaluation(&family),
             "the guest reads the license family `{family}`, which is an evaluation's or none"
         );
-        // Setup installed the key the build resolved: the guest keeps its last five characters.
+        // The guest keeps only the last five characters of the installed key.
         let key = base
             .product_key
             .as_ref()

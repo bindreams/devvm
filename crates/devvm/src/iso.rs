@@ -98,8 +98,8 @@ impl HeldIso {
 }
 
 /// What a build reads from an ISO: the keyed [`IsoRoot`] and the boot patch. Built only by [`read_install_iso`], so the
-/// image, the key Setup installs it with and the evaluation flag are of the one image the root keyed; an evaluation
-/// image never has a key, because [`key_iso`] refuses a recipe that gives it one.
+/// image, the key Setup installs it with and the evaluation flag are of the one image the root keyed. The key is `None`
+/// only for an evaluation edition: [`key_iso`] refuses a recipe that gives one a key, and any other image has one.
 #[derive(Debug)]
 pub(crate) struct InstallIso {
     root: IsoRoot,
@@ -123,7 +123,7 @@ impl InstallIso {
         self.root.image()
     }
 
-    /// The key Setup installs [`InstallIso::image`] with: `None` only for an evaluation edition.
+    /// The key Setup installs [`InstallIso::image`] with.
     pub(crate) fn product_key(&self) -> Option<&ProductKey> {
         self.root.product_key()
     }
@@ -161,8 +161,7 @@ impl IsoRoot {
         &self.image
     }
 
-    /// The key Setup installs [`IsoRoot::image`] with, as [`resolve_product_key`] resolved it when the ISO was keyed:
-    /// `None` only for an evaluation edition.
+    /// The key Setup installs [`IsoRoot::image`] with, as [`resolve_product_key`] resolved it when the ISO was keyed.
     pub(crate) fn product_key(&self) -> Option<&ProductKey> {
         self.product_key.as_ref()
     }
@@ -194,9 +193,10 @@ pub(crate) fn key_iso(
 /// What the build installs from the ISO that `root` keyed: the no-prompt boot image and where the boot catalog loads its
 /// UEFI image.
 pub(crate) fn read_install_iso(root: IsoRoot) -> Result<InstallIso> {
-    debug_assert!(
-        !(root.image.is_evaluation() && root.product_key.is_some()),
-        "an evaluation image is keyed without a product key"
+    debug_assert_eq!(
+        root.image.is_evaluation(),
+        root.product_key.is_none(),
+        "a root has no product key exactly when its image is an evaluation edition"
     );
     let boot_patches = vec![no_prompt_patch(&mount(&root.iso)?, root.iso.path())?];
     Ok(InstallIso { root, boot_patches })

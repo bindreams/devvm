@@ -254,12 +254,32 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
             )),
             "{edition}: {answer}"
         );
-        // The key and the image index are of the one image the build was keyed for.
         assert_eq!(answer.matches(own).count(), 1, "{edition}: {answer}");
         for other in keys.iter().filter(|key| **key != own) {
             assert!(!answer.contains(other), "{edition}: {answer}");
         }
         assert!(answer.contains("<UILanguage>en-US</UILanguage>"), "{edition}");
+        let _ = std::fs::remove_dir_all(rig.work());
+    }
+}
+
+#[skuld::test]
+fn a_recipe_with_no_product_key_installs_the_generic_key_of_the_image_edition_and_build(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (edition, edition_id) in [
+        ("Windows 11 Enterprise LTSC 2024", "EnterpriseS"),
+        ("Windows 11 IoT Enterprise LTSC 2024", "IoTEnterpriseS"),
+    ] {
+        let rig = rig_without_a_machine(home, "three-images.iso");
+        let generic = ProductKey::generic_for(edition_id, Some(26100)).unwrap();
+
+        rig.build_keyed(Some(edition), None).unwrap_err();
+
+        let files = read_files(&rig.work().join("answer.img"), &["Autounattend.xml"]).unwrap();
+        let answer = String::from_utf8(files[0].bytes.clone()).unwrap();
+        assert_eq!(answer.matches(generic.expose()).count(), 1, "{edition}: {answer}");
+        assert_eq!(answer.matches("<ProductKey>").count(), 1, "{edition}: {answer}");
         let _ = std::fs::remove_dir_all(rig.work());
     }
 }

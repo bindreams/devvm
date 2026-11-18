@@ -202,7 +202,6 @@ impl BuildRoot {
     }
 }
 
-/// Keys an ISO: its path, the recipe's `edition` and `product-key`.
 type KeyIso<'a> = dyn Fn(&std::path::Path, Option<&str>, Option<&ProductKey>) -> Result<IsoRoot> + 'a;
 
 /// The root of a build, and the base in the words of an `expired-base` error. `iso_root` gives the content hash of an
