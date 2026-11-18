@@ -89,12 +89,7 @@ fn spellings_that_differ_in_case_or_by_a_junction_are_one_iso_with_one_memo(#[fi
 
     assert!(roots.windows(2).all(|pair| pair[0] == pair[1]), "{roots:?}");
     assert_eq!(memo.known().unwrap().len(), 1);
-    let hashings = progress
-        .messages()
-        .iter()
-        .filter(|message| message.starts_with("hashing ") && message.contains(": 0 of "))
-        .count();
-    assert_eq!(hashings, 1);
+    assert_eq!(progress.tasks_begun("hashing "), 1);
 }
 
 #[skuld::test]

@@ -195,14 +195,7 @@ fn a_root_keyed_from_the_memo_prepares_the_same_boot_patch_as_one_keyed_by_readi
     let read = patch(key_iso(&TestHost, &memo, &iso, None, &progress).unwrap());
     let remembered = patch(key_iso(&TestHost, &memo, &iso, None, &progress).unwrap());
     assert_eq!(read, remembered);
-    assert_eq!(
-        progress
-            .messages()
-            .iter()
-            .filter(|message| message.starts_with("hashing ") && message.contains(": 0 of "))
-            .count(),
-        1
-    );
+    assert_eq!(progress.tasks_begun("hashing "), 1);
 }
 
 #[skuld::test]

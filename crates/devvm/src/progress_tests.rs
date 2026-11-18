@@ -124,7 +124,7 @@ fn a_task_that_ended_is_not_the_parent_of_the_next() {
 }
 
 #[skuld::test]
-fn set_emits_only_when_a_mib_is_crossed_for_bytes_and_never_goes_back() {
+fn bytes_are_reported_per_mib_after_the_first_position_and_never_go_back() {
     let sink = MemoryProgress::default();
     let progress: &dyn Progress = &sink;
     let task = progress.task("download", Total::Bytes(10 * MIB));
@@ -144,7 +144,8 @@ fn set_emits_only_when_a_mib_is_crossed_for_bytes_and_never_goes_back() {
     // The total is reported even when it is not a whole MiB past the last report.
     task.set(10 * MIB);
     task.finish();
-    assert_eq!(advances(&sink.events()), vec![MIB, 3 * MIB, 10 * MIB]);
+    // The first position is reported whatever it is: a resumed download starts somewhere.
+    assert_eq!(advances(&sink.events()), vec![100, MIB, 3 * MIB, 10 * MIB]);
 }
 
 #[skuld::test]

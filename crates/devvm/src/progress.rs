@@ -164,6 +164,7 @@ pub struct Task<'a> {
     id: TaskId,
     total: Total,
     last: Cell<u64>,
+    reported: Cell<bool>,
     outcome: Outcome,
     _same_thread: PhantomData<*const ()>,
 }
@@ -188,6 +189,7 @@ impl<'a> Task<'a> {
             id,
             total,
             last: Cell::new(0),
+            reported: Cell::new(false),
             outcome: Outcome::Abandoned,
             _same_thread: PhantomData,
         }
@@ -197,19 +199,20 @@ impl<'a> Task<'a> {
         self.id
     }
 
-    /// Reports the position so far. It never goes back. For bytes it is reported once per MiB crossed and at the total;
-    /// for anything else, each time it grows.
+    /// Reports the position so far. It never goes back. The first position is reported as it is; after that, bytes are
+    /// reported once per MiB crossed and at the total, anything else each time it grows.
     pub fn set(&self, position: u64) {
         let last = self.last.get();
         if position <= last {
             return;
         }
         let due = match self.total {
-            Total::Bytes(total) => position / MIB > last / MIB || position >= total,
+            Total::Bytes(total) => !self.reported.get() || position / MIB > last / MIB || position >= total,
             Total::Items(_) | Total::Unknown => true,
         };
         if due {
             self.last.set(position);
+            self.reported.set(true);
             self.progress.event(&Event::Advance { id: self.id, position });
         }
     }

@@ -162,6 +162,14 @@ impl MemoryProgress {
             .collect()
     }
 
+    /// How many tasks began with a label that starts with `prefix`.
+    pub fn tasks_begun(&self, prefix: &str) -> usize {
+        self.events()
+            .iter()
+            .filter(|event| matches!(event, crate::progress::Event::Begin { label, .. } if label.starts_with(prefix)))
+            .count()
+    }
+
     pub fn events(&self) -> Vec<crate::progress::Event> {
         self.events_at().into_iter().map(|(_, event)| event).collect()
     }

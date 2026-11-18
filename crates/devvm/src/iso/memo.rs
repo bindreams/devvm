@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256 as Sha2};
 
 use super::{HeldIso, WimImage};
 use crate::host::{FileId, Host, is_absent, remove_if_present, sweep};
-use crate::progress::Progress;
+use crate::progress::{Progress, Total};
 use crate::store::fetch::hash_reader;
 use crate::store::lock::{FileLock, Mode};
 use crate::store::quarantine::quarantine_file;
@@ -34,9 +34,6 @@ use crate::{Dirs, Error, ErrorKind, Result, Sha256, random};
 #[cfg(test)]
 #[path = "memo_tests.rs"]
 mod memo_tests;
-
-/// Progress is reported each time the byte count crosses a multiple of this.
-const PROGRESS_STEP: u64 = 256 << 20;
 
 /// What an ISO looked like when it was hashed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -399,18 +396,15 @@ fn identity_of(host: &dyn Host, file: &File, iso: &Path) -> Result<Identity> {
     })
 }
 
-/// The SHA-256 of all of `held`, from its start; `size` is for the progress lines.
+/// The SHA-256 of all of `held`, from its start; `size` is the total the task reports.
 fn hash_held(held: &HeldIso, size: u64, progress: &dyn Progress) -> Result<Sha256> {
     let iso = held.path();
     let mut file = held.file();
     file.seek(SeekFrom::Start(0)).map_err(|e| io(iso, "read", e))?;
-    progress.message(&format!("hashing {}: 0 of {size} bytes", iso.display()));
-    let mut reported = 0;
-    let hasher = hash_reader(file, iso, &mut |done| {
-        if done / PROGRESS_STEP > reported / PROGRESS_STEP {
-            progress.message(&format!("hashing {}: {done} of {size} bytes", iso.display()));
-        }
-        reported = done;
-    })?;
+    let name = iso.file_name().unwrap_or(iso.as_os_str()).to_string_lossy();
+    let task = progress.task(format!("hashing {name}"), Total::Bytes(size));
+    progress.debug(&format!("hashing {}", iso.display()));
+    let hasher = hash_reader(file, iso, &mut |done| task.set(done))?;
+    task.finish();
     Ok(Sha256::from_bytes(hasher.finalize().into()))
 }
