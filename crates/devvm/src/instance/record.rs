@@ -38,6 +38,9 @@ const HOSTNAME_BYTES: usize = 4;
 /// The length of a hostname made by [`InstanceId::hostname`]: under the 15 characters of a Windows computer name.
 pub const HOSTNAME_LEN: usize = HOSTNAME_PREFIX.len() + 2 * HOSTNAME_BYTES;
 
+// Windows' NetBIOS limit on a computer name.
+const _: () = assert!(HOSTNAME_LEN <= 15);
+
 impl InstanceId {
     pub(crate) fn random() -> InstanceId {
         InstanceId(random::bytes())
