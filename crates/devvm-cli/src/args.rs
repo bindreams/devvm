@@ -17,6 +17,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH", env = "DEVVM_STATUS_FILE")]
     pub(crate) status_file: Option<PathBuf>,
 
+    /// Also show step output and debug notes (also: DEVVM_VERBOSE).
+    #[arg(short, long, global = true, env = "DEVVM_VERBOSE")]
+    pub(crate) verbose: bool,
+
     #[command(subcommand)]
     pub(crate) command: Cmd,
 }

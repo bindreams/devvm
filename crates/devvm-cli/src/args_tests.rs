@@ -243,3 +243,20 @@ fn an_interactive_shell_takes_no_elevated_flag() {
     assert!(Cli::try_parse_from(["devvm", "ssh", "box", "--elevated"]).is_err());
     assert!(Cli::try_parse_from(["devvm", "ssh", "box", "--elevated", "--", "id"]).is_ok());
 }
+
+#[skuld::test]
+fn verbose_parses_before_and_after_the_subcommand() {
+    let verbose = |args: &[&str]| {
+        let full = std::iter::once("devvm").chain(args.iter().copied());
+        Cli::try_parse_from(full)
+            .unwrap_or_else(|e| panic!("{args:?}: {e}"))
+            .verbose
+    };
+    assert!(!verbose(&["doctor"]));
+    assert!(verbose(&["-v", "doctor"]));
+    assert!(verbose(&["--verbose", "doctor"]));
+    assert!(verbose(&["doctor", "-v"]));
+    assert!(verbose(&["build", "x.devvm.yaml", "--verbose"]));
+    // After `--` it belongs to the guest command.
+    assert!(!verbose(&["run", "x", "--", "ls", "-v"]));
+}

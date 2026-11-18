@@ -270,3 +270,124 @@ fn stop_of_a_stopped_instance_does_nothing() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 }
+
+// Output =============================================================================================================
+
+/// `devvm <args>` with the colour variables cleared, then `env` set.
+fn devvm_coloured(home: &Home, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = home.command(cwd, args);
+    command
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("CLICOLOR");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    command.output().unwrap()
+}
+
+#[skuld::test]
+fn doctor_piped_has_no_escape_bytes_on_either_stream() {
+    let home = home();
+    let cwd = home.project("a");
+
+    let output = devvm_coloured(&home, &cwd, &["doctor"], &[]);
+
+    assert!(
+        !output.stdout.contains(&0x1b),
+        "{:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        !output.stderr.contains(&0x1b),
+        "{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[skuld::test]
+fn doctor_leaves_a_log_file_in_the_state_dir() {
+    let home = home();
+    let cwd = home.project("a");
+
+    let output = devvm_coloured(&home, &cwd, &["doctor"], &[]);
+
+    let logs: Vec<_> = std::fs::read_dir(home.state().join("logs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    let name = logs[0].file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with("devvm-") && name.ends_with(".log"), "{name}");
+    let text = std::fs::read_to_string(&logs[0]).unwrap();
+    // Each check line on stdout is in the log too.
+    for line in stdout_lines(&output) {
+        assert!(text.contains(&format!(" DEBUG {line}\n")), "{line} not in {text}");
+    }
+}
+
+#[skuld::test]
+fn doctor_with_git_variables_set_prints_no_unset_note_on_stderr() {
+    let home = home();
+    let cwd = home.project("a");
+
+    let output = devvm_coloured(&home, &cwd, &["doctor"], &[("GIT_DIR", "x"), ("GIT_TRACE", "0")]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("have been unset"), "{stderr}");
+}
+
+#[skuld::test]
+fn a_failing_command_with_colour_forced_has_a_red_prefix() {
+    let home = home();
+    let cwd = home.project("a");
+    let plain = devvm_coloured(&home, &cwd, &["stop", "ghost"], &[]);
+    let forced = devvm_coloured(&home, &cwd, &["stop", "ghost"], &[("CLICOLOR_FORCE", "1")]);
+
+    let stderr = String::from_utf8(forced.stderr.clone()).unwrap();
+    let last = stderr.lines().last().unwrap();
+    assert!(
+        last.starts_with("\u{1b}[31mdevvm-error:\u{1b}[0m not-found: "),
+        "{stderr:?}"
+    );
+    let plain_line = one_error_line(&plain, "not-found");
+    assert_eq!(
+        last.replace("\u{1b}[31m", "").replace("\u{1b}[0m", ""),
+        plain_line.trim_end()
+    );
+    assert_eq!(forced.status.code(), plain.status.code());
+}
+
+#[skuld::test]
+fn a_failing_command_piped_has_no_escape_byte_on_stderr() {
+    let home = home();
+    let cwd = home.project("a");
+
+    let output = devvm_coloured(&home, &cwd, &["stop", "ghost"], &[]);
+
+    assert!(
+        !output.stderr.contains(&0x1b),
+        "{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    one_error_line(&output, "not-found");
+}
+
+#[skuld::test]
+fn a_failing_command_names_its_log_and_records_the_error() {
+    let home = home();
+    let cwd = home.project("a");
+
+    let output = devvm_coloured(&home, &cwd, &["stop", "ghost"], &[]);
+
+    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "{stderr:?}");
+    let path = lines[0].strip_prefix("log: ").unwrap_or_else(|| panic!("{stderr:?}"));
+    assert!(lines[1].starts_with("devvm-error: not-found: "), "{stderr:?}");
+    assert!(!stderr.contains("warning:"), "{stderr:?}");
+    let log = std::fs::read_to_string(path).unwrap();
+    let last = log.lines().last().unwrap();
+    assert!(last.contains(" ERROR devvm-error: not-found: "), "{log}");
+    assert_eq!(log.matches(" ERROR ").count(), 1, "{log}");
+}

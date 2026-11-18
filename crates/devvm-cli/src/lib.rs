@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use clap::{CommandFactory, Parser};
-use devvm::exit::{ExitStatus, ExitWidth, finish};
+use devvm::exit::{ExitStatus, ExitWidth};
 use devvm::store::fetch::{LazyHttp, Transport};
 use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
 
@@ -17,6 +17,7 @@ mod doctor;
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod lib_tests;
+mod output;
 mod run;
 
 use args::Cli;
@@ -97,12 +98,11 @@ pub fn install_panic_hook() {
             None => text,
         };
         let status_file = STATUS_FILE.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        let code = finish(
+        let code = output::end(
             status_file.as_deref(),
             Err(Error::new(ErrorKind::Panic, message)),
             ExitWidth::Full32,
             &mut std::io::stderr(),
-            false,
         );
         std::process::exit(code);
     }));
@@ -111,11 +111,12 @@ pub fn install_panic_hook() {
 // Entry points ========================================================================================================
 
 fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
+    let progress = output::sinks().progress;
     // `doctor` builds its own engine, one that does not fail on config.yaml; no engine is built twice.
     if let Cmd::Doctor = command {
-        return doctor::doctor(deps.transport.clone());
+        return doctor::doctor(deps.transport.clone(), progress);
     }
-    let engine = Engine::from_env_stderr(deps.transport.clone());
+    let engine = Engine::from_env(progress, deps.transport.clone());
     match command {
         Cmd::Ls { all, json } => list(&engine?, all, json),
         Cmd::Rm { name } => {
@@ -250,7 +251,7 @@ fn run_locked(
             let printed = e.print().map_err(stdout_error);
             let code = match flushed(printed.map(|()| ExitStatus::Code(0)), &mut std::io::stdout()) {
                 Ok(_) => 0,
-                Err(error) => finish(status_file.as_deref(), Err(error), width, &mut std::io::stderr(), false),
+                Err(error) => output::end(status_file.as_deref(), Err(error), width, &mut std::io::stderr()),
             };
             return Exit {
                 code,
@@ -260,12 +261,11 @@ fn run_locked(
         Err(e) => {
             drop(deps);
             let guard = ending();
-            let code = finish(
+            let code = output::end(
                 status_file.as_deref(),
                 Err(usage_error(&e)),
                 width,
                 &mut std::io::stderr(),
-                false,
             );
             return Exit {
                 code,
@@ -273,11 +273,12 @@ fn run_locked(
             };
         }
     };
+    output::set_verbose(cli.verbose);
     let outcome = action(&deps, cli.command);
     drop(deps);
     let guard = ending();
     let outcome = flushed(outcome, &mut std::io::stdout());
-    let code = finish(status_file.as_deref(), outcome, width, &mut std::io::stderr(), false);
+    let code = output::end(status_file.as_deref(), outcome, width, &mut std::io::stderr());
     Exit {
         code,
         _only_one_ending: guard,
