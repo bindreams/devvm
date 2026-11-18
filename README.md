@@ -137,8 +137,8 @@ devvm rm win
 ```
 
 A project's recipe can start from it and add steps. `proj/proj-win.devvm.yaml`, where `proj/` is the root of the
-project's git repository and `win/` sits beside it, outside the repository, so the recipe holding the key is neither
-committed nor copied in by `copy` (Windows Setup still installs the key in the guest):
+project's git repository and `win/` sits beside it, outside the repository, because the ISO's path is per user and so
+does not belong in a committed recipe:
 
 ```yaml
 from: ../win/windows.devvm.yaml
