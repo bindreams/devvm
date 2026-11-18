@@ -201,6 +201,8 @@ struct Rename<'a> {
     meta: Option<&'a str>,
     marker: Option<&'a str>,
     statuses: &'a [i32],
+    /// Every replaced function also writes a line to its output stream, as a real command might.
+    noisy: bool,
 }
 
 const SEED_NAME: &str = "devvm-0a1b2c3d";
@@ -212,14 +214,15 @@ impl Default for Rename<'_> {
             meta: Some(r#"{"local-hostname": "devvm-0a1b2c3d"}"#),
             marker: None,
             statuses: &[0],
+            noisy: false,
         }
     }
 }
 
 /// `call` run, in PowerShell 7, against the functions of the boot task as shipped (`Restart-Now` and
 /// `Set-ComputerNameFromSeed`), with everything that changes the system replaced by a function that logs its call:
-/// `Rename-Computer`, the flush of the name, `Write-Whole`, `Send-Line` and `shutdown.exe` (a function outranks the
-/// application of that name). Returns the log, one entry per call, then `call`'s own entries; an error of `call` is the
+/// `Rename-Computer`, the flush of the name, `Write-Whole`, `Send-Line`, `Start-Sleep` and `shutdown.exe` (a function
+/// outranks the application of that name). Returns the log, one entry per call, then `call`'s own entries; an error of `call` is the
 /// entry `threw:<message>`. `$disk` and `$marker` are the paths the script reads.
 fn boot_task(start: &Rename, call: &str) -> Vec<String> {
     let dir = tempfile::tempdir().unwrap();
@@ -242,19 +245,25 @@ $log = [Collections.Generic.List[string]]::new()
 $statuses = [Collections.Generic.Queue[int]]::new([int[]]@(@@STATUSES@@))
 $tokens = $null; $errors = $null
 $tree = [Management.Automation.Language.Parser]::ParseFile(@@TASK@@, [ref]$tokens, [ref]$errors)
+if ($errors) { throw "the boot task does not parse: $($errors | Out-String)" }
+$noisy = @@NOISY@@
+function Stray { if ($noisy) { 'stray output' } }
 $shipped = 'Restart-Now', 'Set-ComputerNameFromSeed'
 $found = @($tree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false))
 foreach ($function in $found) { if ($function.Name -in $shipped) { Invoke-Expression $function.Extent.Text } }
 if (@($found | Where-Object { $_.Name -in $shipped }).Count -ne $shipped.Count) { throw "the boot task lacks one of: $shipped" }
-function Rename-Computer { param([string]$NewName, [switch]$Force) $log.Add("rename:$NewName") }
-function Save-ComputerName { $log.Add('flush') }
+function Rename-Computer { param([string]$NewName, [switch]$Force) $log.Add("rename:$NewName"); Stray }
+function Save-ComputerName { $log.Add('flush'); Stray }
 function Write-Whole([string]$Target, [byte[]]$Bytes, [string[]]$ReadSids = @()) {
     $log.Add('marker:' + [Text.Encoding]::UTF8.GetString($Bytes))
     [IO.File]::WriteAllBytes($Target, $Bytes)
+    Stray
 }
-function Send-Line([string]$Text) { $log.Add("line:$Text") }
+function Send-Line([string]$Text) { $log.Add("line:$Text"); Stray }
+function Start-Sleep { param([int]$Milliseconds) $log.Add('sleep') }
 function shutdown.exe {
     $log.Add("shutdown:$args")
+    Stray
     if ($args[0] -eq '/a') { $global:LASTEXITCODE = 0; return }
     if ($statuses.Count -eq 0) { throw 'the stub ran out of statuses' }
     $global:LASTEXITCODE = $statuses.Dequeue()
@@ -266,6 +275,7 @@ try { @@CALL@@ } catch { $log.Add("threw:$($_.Exception.Message)") }
 $log
 "#
     .replace("@@STATUSES@@", &statuses)
+    .replace("@@NOISY@@", if start.noisy { "$true" } else { "$false" })
     .replace("@@TASK@@", &literal(&script_path.display().to_string()))
     .replace("@@COMPUTER@@", &literal(start.computer))
     .replace("@@DISK@@", &literal(&disk.display().to_string()))
@@ -293,6 +303,31 @@ fn a_computer_that_has_the_seeds_name_is_left_alone(#[fixture(pwsh_wrap)] _group
         DECIDE,
     );
     assert_eq!(log, ["returned:False"]);
+}
+
+#[skuld::test]
+fn a_computer_whose_name_differs_from_the_seeds_only_in_case_is_left_alone(#[fixture(pwsh_wrap)] _group: &Group) {
+    // Windows reports a computer name in capitals.
+    let log = boot_task(
+        &Rename {
+            computer: "DEVVM-0A1B2C3D",
+            ..Rename::default()
+        },
+        DECIDE,
+    );
+    assert_eq!(log, ["returned:False"]);
+}
+
+#[skuld::test]
+fn the_decision_is_one_bool_whatever_the_commands_it_runs_write_to_their_output(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename {
+            noisy: true,
+            ..Rename::default()
+        },
+        r#"$result = @(Set-ComputerNameFromSeed $disk $marker); $log.Add("count:$($result.Count) $($result[0] -is [bool]) $($result[0])")"#,
+    );
+    assert_eq!(log.last().map(String::as_str), Some("count:1 True True"), "{log:?}");
 }
 
 #[skuld::test]
@@ -366,20 +401,28 @@ fn a_restart_is_requested_again_while_it_is_refused_as_not_ready_and_each_refusa
         RESTART,
     );
     let request = "shutdown:/r /f /t 0";
+    let refused = |status: i32| format!("line:DEVVM-RESTART-REFUSED={status}");
+    // Each refusal is followed by a wait before the next request; 1190 aborts the scheduled shutdown first.
     assert_eq!(
         log,
         [
             request,
-            "line:DEVVM-RESTART-REFUSED=21",
+            &refused(21),
+            "sleep",
             request,
-            "line:DEVVM-RESTART-REFUSED=1722",
+            &refused(1722),
+            "sleep",
             request,
+            "sleep",
             request,
-            "line:DEVVM-RESTART-REFUSED=1190",
+            &refused(1190),
             "shutdown:/a",
+            "sleep",
             request,
+            "sleep",
             request,
             "shutdown:/a",
+            "sleep",
             request,
             "returned",
         ]
@@ -412,6 +455,7 @@ fn any_other_refusal_of_the_restart_ends_the_boot_naming_the_status(#[fixture(pw
         [
             "shutdown:/r /f /t 0",
             "line:DEVVM-RESTART-REFUSED=21",
+            "sleep",
             "shutdown:/r /f /t 0",
             "threw:shutdown.exe /r ended with status 5",
         ]

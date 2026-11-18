@@ -42,8 +42,8 @@ function Write-Whole([string]$Target, [byte[]]$Bytes, [string[]]$ReadSids = @())
 }
 
 # Restarts now, retrying while the system refuses as not ready (21, 1722, 1190; each distinct status logged once). Any
-# other refusal ends the boot. A pending shutdown is aborted first; one already in progress (1115) counts as accepted.
-# Status codes, not localized text, are read.
+# other refusal ends the boot. 1190 means a shutdown is scheduled: it is aborted, then the request is retried. One
+# already in progress (1115) counts as accepted. Status codes, not localized text, are read.
 function Restart-Now {
     $seen = @()
     while ($true) {
@@ -67,8 +67,8 @@ function Save-ComputerName {
 }
 
 # Names the computer after the seed's `local-hostname`, the one in the disk's meta.json. A name takes effect at a restart:
-# a computer with another name is renamed and restarted, and the result is $true (the boot ends there). $Marker holds the
-# name the last boot restarted for.
+# a computer with another name is renamed and restarted, and the result is $true (the boot ends there). The result is
+# the function's only output. $Marker holds the name the last boot restarted for.
 function Set-ComputerNameFromSeed([string]$Disk, [string]$Marker) {
     $hostname = (Get-Content -LiteralPath (Join-Path $Disk 'meta.json') -Raw | ConvertFrom-Json).'local-hostname'
     if (-not $hostname) { throw "the seed's meta.json has no local-hostname" }
@@ -76,12 +76,12 @@ function Set-ComputerNameFromSeed([string]$Disk, [string]$Marker) {
     if ((Test-Path -LiteralPath $Marker) -and ((Get-Content -LiteralPath $Marker -Raw) -eq $hostname)) {
         throw "the computer is still named $env:COMPUTERNAME after the rename to $hostname and a restart"
     }
-    Rename-Computer -NewName $hostname -Force
+    $null = Rename-Computer -NewName $hostname -Force
     # The pending name is on the disk before the marker says a restart is owed for it.
-    Save-ComputerName
-    Write-Whole $Marker ([Text.Encoding]::UTF8.GetBytes($hostname))
-    Send-Line "DEVVM-RENAMED=$hostname"
-    Restart-Now
+    $null = Save-ComputerName
+    $null = Write-Whole $Marker ([Text.Encoding]::UTF8.GetBytes($hostname))
+    $null = Send-Line "DEVVM-RENAMED=$hostname"
+    $null = Restart-Now
     return $true
 }
 
@@ -109,7 +109,9 @@ try {
     while (-not ($disk = Find-VolumeRoot 'CIDATA')) { Start-Sleep -Milliseconds 200 }
 
     # A boot that renames restarts and ends here: the seed, the boot id and sshd are the next boot's, which has the name.
-    if (Set-ComputerNameFromSeed $disk $renamedFile) { exit 0 }
+    $restarting = Set-ComputerNameFromSeed $disk $renamedFile
+    if ($restarting -isnot [bool]) { throw "Set-ComputerNameFromSeed answered $restarting, not a bool" }
+    if ($restarting) { exit 0 }
 
     New-Item -ItemType Directory -Force -Path $ssh | Out-Null
     foreach ($name in $seed.Keys) {

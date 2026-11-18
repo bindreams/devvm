@@ -855,7 +855,7 @@ fn the_boot_task_starts_sshd_last_after_the_agent() {
 #[skuld::test]
 fn the_boot_task_names_the_computer_from_the_seed_and_restarts_before_anything_else_of_the_boot() {
     let task = rendered("boot-task.ps1");
-    let call = "if (Set-ComputerNameFromSeed $disk $renamedFile) { exit 0 }";
+    let call = "$restarting = Set-ComputerNameFromSeed $disk $renamedFile";
     assert_before(&task, "Find-VolumeRoot 'CIDATA'", call);
     assert_before(&task, call, "DEVVM-SEED-WRITTEN");
     assert_before(&task, call, "Start-Service");
@@ -868,7 +868,16 @@ fn the_boot_task_names_the_computer_from_the_seed_and_restarts_before_anything_e
     );
     assert_before(&task, call, "} catch {");
     assert_before(&task, "} catch {", "DEVVM-BOOT-FAILED=");
-    assert_eq!(task.matches("Rename-Computer -NewName").count(), 1);
+    // The answer is checked as the one bool it is before it ends the boot.
+    assert_before(&task, call, "if ($restarting -isnot [bool])");
+    assert_before(&task, "if ($restarting -isnot [bool])", "if ($restarting) { exit 0 }");
+    assert_before(&task, "if ($restarting) { exit 0 }", "DEVVM-SEED-WRITTEN");
+    // One call, not counting a comment's mention of it.
+    let calls = task
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#') && line.contains("Rename-Computer "))
+        .count();
+    assert_eq!(calls, 1);
     assert!(
         task.contains(&format!("$renamedFile = Join-Path '{DEVVM_DIR}' 'renamed-to'")),
         "{task}"
