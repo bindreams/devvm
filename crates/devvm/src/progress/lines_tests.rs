@@ -255,10 +255,10 @@ fn two_threads_never_interleave_inside_a_line() {
 }
 
 #[skuld::test]
-fn colour_escapes_in_step_output_are_dropped() {
+fn an_escape_in_step_output_is_written_escaped() {
     let (progress, out) = sink(VERBOSE);
-    progress.output("\u{1b}[32mgreen\u{1b}[0m text\u{1b}[2K");
-    assert_eq!(out.lines(), ["green text"]);
+    progress.output("\u{1b}[32mgreen\u{1b}[0m text");
+    assert_eq!(out.lines(), ["\\u{1b}[32mgreen\\u{1b}[0m text"]);
 }
 
 #[skuld::test]

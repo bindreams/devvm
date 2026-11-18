@@ -627,11 +627,12 @@ fn a_base_that_ends_now_is_expired_base(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn the_tail_has_no_colour_escapes() {
+fn step_output_has_no_colour_escapes_for_the_progress_or_the_tail() {
     let progress = MemoryProgress::default();
     let tail = Tail::default();
     let mut lines = Lines::new(&progress, &tail);
     lines.write_all(b"\x1b[31merror\x1b[0m: boom\n").unwrap();
     drop(lines);
     assert_eq!(tail.text(), "error: boom");
+    assert_eq!(progress.messages(), ["error: boom"]);
 }

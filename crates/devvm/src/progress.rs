@@ -1,7 +1,7 @@
 //! What a running command tells the person: notes, waits and tasks with a position.
 //!
-//! The library reports [`Event`]s to a [`Progress`] sink and never draws anything itself. A sink decides how an event looks
-//! (lines, a terminal, a log file) and [`Fanout`] joins several.
+//! The library reports [`Event`]s to a [`Progress`] sink and never draws anything itself. A sink decides how an event
+//! looks (lines, a terminal, a log file) and [`Fanout`] joins several.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -62,7 +62,7 @@ pub enum Event {
         level: Level,
         text: String,
     },
-    /// A line a step's command printed.
+    /// A line a step's command printed, without ANSI escapes: its one source strips them.
     Output {
         line: String,
     },
@@ -89,8 +89,8 @@ pub enum Event {
 
 /// Receives what a command reports while it runs.
 ///
-/// A sink that receives a `Begin` whose `parent` it never saw (it was attached after the parent began) treats the task as
-/// a root.
+/// A sink that receives a `Begin` whose `parent` it never saw (it was attached after the parent began) treats the task
+/// as a root.
 pub trait Progress: Send + Sync {
     fn event(&self, event: &Event);
 
@@ -164,8 +164,9 @@ thread_local! {
 
 const MIB: u64 = 1 << 20;
 
-/// An open task. Nesting follows the call stack: a task begun while another is open on the same thread is its child, and
-/// a task begun on a thread with none open is a root. Ends [`Outcome::Abandoned`] when dropped without [`Task::finish`].
+/// An open task. Nesting follows the call stack: a task begun while another is open on the same thread is its child,
+/// and a task begun on a thread with none open is a root. Ends [`Outcome::Abandoned`] when dropped without
+/// [`Task::finish`].
 ///
 /// Not `Send`: a guard ends on the thread that began it. Guards held in one struct drop in field order, so declare the
 /// inner task first; out of order, a debug build panics on drop (never while already unwinding from another panic).
@@ -285,7 +286,7 @@ pub fn paint(on: bool, colour: Colour, text: &str) -> String {
 }
 
 /// `text` without ANSI escape sequences (colours, cursor moves), which a tool prints for a terminal. Step output goes
-/// through it before it is shown or put in an error.
+/// through it once, where it is read from the step, before any sink or error tail gets it.
 pub fn strip_ansi(text: &str) -> Cow<'_, str> {
     console::strip_ansi_codes(text)
 }

@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 
-use crate::progress::{
-    Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint, strip_ansi,
-};
+use crate::progress::{Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint};
 
 #[cfg(test)]
 #[path = "lines_tests.rs"]
@@ -49,8 +47,9 @@ impl Look {
 
 /// Writes one concise line per event worth a person's attention.
 ///
-/// A sized task prints its size, then each quarter it passes, then `done`; an item count prints no quarters. Whole lines go out under one lock, so threads
-/// never interleave inside a line. Controls in any text are escaped, so a record is one line.
+/// A sized task prints its size, then each quarter it passes, then `done`; an item count prints no quarters. Whole
+/// lines go out under one lock, so threads never interleave inside a line. Controls in any text are escaped, so a
+/// record is one line.
 pub struct LineProgress {
     state: Mutex<State>,
     look: Look,
@@ -113,7 +112,7 @@ impl Progress for LineProgress {
             }
             Event::Output { line } => {
                 if look.verbose {
-                    state.line(0, &escape_controls(&strip_ansi(line)));
+                    state.line(0, &escape_controls(line));
                 }
             }
             Event::Begin {
