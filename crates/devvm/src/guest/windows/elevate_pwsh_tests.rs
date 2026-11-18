@@ -7,17 +7,24 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use super::{ROOT, caller_script, literal};
+use crate::guest::windows::wrap::wrap;
 use crate::guest::windows::wrap::wrap_pwsh_tests::{run, shown};
+use crate::guest::windows::wrap::wrap_tests::hint;
 use crate::test_groups::{Group, pwsh_wrap};
 use crate::test_support::fixtures::unicode_home;
+use crate::{Command, RunAs};
 
-/// `caller_script` with the scheduled task and the requests' root replaced. `run` is the body of the task's `Run` (it
-/// has the request's id as `$id` and the root as `$root`); it starts the instance whose `Refresh` runs the body
-/// `refresh` and whose `State` is read by the body `state`.
+/// [`standin_for`] the caller script of the command `inner`.
+fn standin(root: &Path, run: &str, refresh: &str, state: &str) -> String {
+    standin_for(&caller_script("inner"), root, run, refresh, state)
+}
+
+/// `text` (a caller script) with the scheduled task and the requests' root replaced. `run` is the body of the task's
+/// `Run` (it has the request's id as `$id` and the root as `$root`); it starts the instance whose `Refresh` runs the
+/// body `refresh` and whose `State` is read by the body `state`.
 /// The task's own `State` is running, as it is while another request's instance runs: nothing in the caller may take it
 /// for its instance's.
-fn standin(root: &Path, run: &str, refresh: &str, state: &str) -> String {
-    let text = caller_script("inner");
+fn standin_for(text: &str, root: &Path, run: &str, refresh: &str, state: &str) -> String {
     let task = format!(
         "$started = New-Object psobject
 Add-Member -InputObject $started -MemberType ScriptProperty -Name State -Value {{ {state} }}
@@ -26,7 +33,7 @@ $task = New-Object psobject -Property @{{ State = 4 }}
 Add-Member -InputObject $task -MemberType ScriptMethod -Name Run -Value {{ param($id) {run}
 $started }}"
     );
-    let mut text = text;
+    let mut text = text.to_owned();
     // A replacement that finds nothing would leave the real task and root in use: it is a failure.
     for (from, to) in [
         (
@@ -431,4 +438,25 @@ fn a_request_that_is_gone_ends_the_wait_with_126_instead_of_waiting_for_ever(
         "{}",
         shown(&output)
     );
+}
+
+/// The runner plays the real one for the elevated form of a command: it starts the request's script as the runner does
+/// (`pwsh -File`) and hands back what it wrote.
+#[skuld::test]
+fn an_elevated_powershell_command_gets_the_hint_through_the_request(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let runner = "$r = Join-Path $root $id
+[IO.File]::WriteAllText(\"$r/claim\", '')
+& pwsh -NoProfile -NonInteractive -File \"$r/script.ps1\" > \"$r/stdout\" 2> \"$r/stderr\"
+[IO.File]::WriteAllText(\"$r/exit\", [string]$LASTEXITCODE)
+[IO.File]::WriteAllText(\"$r/done\", '')";
+    let mut command = Command::new(["Get-ChildItem"]);
+    command.run_as = RunAs::Elevated;
+    let script = standin_for(&wrap(&command).unwrap(), &root, runner, "", ENDED);
+    let output = run(&script, "none", None);
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert!(stderr(&output).contains(&hint("Get-ChildItem")), "{}", shown(&output));
 }

@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Output, Stdio};
 
-use super::wrap_tests::longest_fit;
+use super::wrap_tests::{hint, longest_fit};
 use super::{LINE_LIMIT, wrap};
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
@@ -32,14 +32,14 @@ pub(in crate::guest::windows) fn run(script: &str, helper: &str, path: Option<&P
 
 /// Where the script finds programs.
 pub(in crate::guest::windows) enum Search<'a> {
-    /// The caller's PATH and PATHEXT.
     Caller,
-    /// The caller's PATH with a directory in front.
     First(&'a Path),
     /// A PATH of its own: the directory (if any), then the directory of `pwsh.exe` and the system directory, and
     /// nothing the caller has (Git's `usr\bin` has a `dir.exe` and a `mkdir.exe`, which are programs); and a PATHEXT
     /// that is a subset of the stock one (`.COM;.EXE;.BAT;.CMD`), so it has no `.PS1`.
     Only(Option<&'a Path>),
+    /// [`Search::Only`] with no directory, and `modules` first on the `PSModulePath`.
+    Modules(&'a Path),
 }
 
 /// [`run`] in the PowerShell `exe` (`powershell.exe` is Windows PowerShell 5.1, which the guest's own scripts run in),
@@ -53,20 +53,29 @@ pub(in crate::guest::windows) fn run_with(exe: &str, script: &str, helper: Optio
             let paths = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&caller));
             process.env("PATH", std::env::join_paths(paths).unwrap());
         }
-        Search::Only(first) => {
-            let caller = std::env::var_os("PATH").unwrap();
-            // An entry is read as `Find-Program` reads it: without its double quotes.
-            let pwsh_dir = std::env::split_paths(&caller)
-                .map(|dir| PathBuf::from(dir.to_string_lossy().trim_matches('"')))
-                .find(|dir| dir.join("pwsh.exe").is_file())
-                .expect("pwsh.exe is on the PATH");
-            let system = Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32");
-            let paths = first.map(Path::to_path_buf).into_iter().chain([pwsh_dir, system]);
-            process.env("PATH", std::env::join_paths(paths).unwrap());
-            process.env("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+        Search::Only(first) => only(&mut process, first),
+        Search::Modules(modules) => {
+            only(&mut process, None);
+            let caller = std::env::var_os("PSModulePath").unwrap_or_default();
+            let paths = std::iter::once(modules.to_path_buf()).chain(std::env::split_paths(&caller));
+            process.env("PSModulePath", std::env::join_paths(paths).unwrap());
         }
     }
     process.output().unwrap_or_else(|error| panic!("{exe} runs: {error}"))
+}
+
+/// The PATH and PATHEXT of [`Search::Only`].
+fn only(process: &mut Process, first: Option<&Path>) {
+    let caller = std::env::var_os("PATH").unwrap();
+    // An entry is read as `Find-Program` reads it: without its double quotes.
+    let pwsh_dir = std::env::split_paths(&caller)
+        .map(|dir| PathBuf::from(dir.to_string_lossy().trim_matches('"')))
+        .find(|dir| dir.join("pwsh.exe").is_file())
+        .expect("pwsh.exe is on the PATH");
+    let system = Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32");
+    let paths = first.map(Path::to_path_buf).into_iter().chain([pwsh_dir, system]);
+    process.env("PATH", std::env::join_paths(paths).unwrap());
+    process.env("PATHEXT", ".COM;.EXE;.BAT;.CMD");
 }
 
 /// The process of `script` in `exe`, with the helper variable of `helper` (none when it is `None`).
@@ -196,7 +205,6 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
     let output = run(&wrapped(&["no-such-program-xyz"]), "wrap-argv", None);
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
     assert!(String::from_utf8_lossy(&output.stderr).contains("no-such-program-xyz: command not found"));
-    // A cmdlet's name is not a program, and neither is an alias's or a function's: the message says how to run it.
     for name in ["Get-ChildItem", "dir", "mkdir"] {
         let output = run_with("pwsh", &wrapped(&[name]), Some("wrap-argv"), Search::Only(None));
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
@@ -206,7 +214,6 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
             shown(&output)
         );
     }
-    // The advice works: `pwsh -c` runs the cmdlet.
     let output = run_with(
         "pwsh",
         &wrapped(&["pwsh", "-c", "Get-Location"]),
@@ -225,11 +232,6 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
             shown(&output)
         );
     }
-}
-
-/// What the message says for `name`, a PowerShell command.
-fn hint(name: &str) -> String {
-    format!("devvm: {name}: a PowerShell command, not a program; run it through pwsh -c")
 }
 
 #[skuld::test]
@@ -251,7 +253,6 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
             shown(output)
         );
     };
-    // A script of PATH, one with a space in its name, and one named by a path.
     hinted(
         &run_with(
             "pwsh",
@@ -270,12 +271,40 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         ),
         "my script",
     );
-    let mut by_path = Command::new([r".\tool.ps1"]);
-    by_path.cwd = Some(scripts.display().to_string());
-    hinted(
-        &run_with("pwsh", &wrap(&by_path).unwrap(), Some("wrap-argv"), Search::Only(None)),
+    // Named by a path, in which `[`, `]` and a backtick are not a pattern: relative to the working directory, and
+    // absolute.
+    let named = scripts.join("proj[1]");
+    std::fs::create_dir(&named).unwrap();
+    for name in ["a[1].ps1", "b`c.ps1", "TOOL.PS1", "note.txt"] {
+        std::fs::write(scripts.join(name), "'ran'").unwrap();
+    }
+    std::fs::write(named.join("tool.ps1"), "'ran'").unwrap();
+    let by_path = |name: &str| {
+        let mut command = Command::new([name]);
+        command.cwd = Some(scripts.display().to_string());
+        run_with("pwsh", &wrap(&command).unwrap(), Some("wrap-argv"), Search::Only(None))
+    };
+    let absolute = named.join("tool.ps1").display().to_string();
+    for name in [
         r".\tool.ps1",
-    );
+        r".\a[1].ps1",
+        r".\b`c.ps1",
+        "./TOOL.PS1",
+        r".\proj[1]\tool.ps1",
+        absolute.as_str(),
+    ] {
+        hinted(&by_path(name), name);
+    }
+    // A name by path that is no script, or a script that is not there, is not found.
+    for name in [r".\note.txt", r".\a[2].ps1", r".\proj[1]"] {
+        let output = by_path(name);
+        assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&format!("devvm: {name}: command not found")),
+            "{name}: {}",
+            shown(&output)
+        );
+    }
     // The advice works: `pwsh -c` runs the script of PATH.
     let output = run_with(
         "pwsh",
@@ -290,7 +319,6 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         "{}",
         shown(&output)
     );
-    // The wrapper's own function is not a command of the user's.
     let output = run_with(
         "pwsh",
         &wrapped(&["Find-Program"]),
@@ -300,6 +328,67 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("devvm: Find-Program: command not found"),
+        "{}",
+        shown(&output)
+    );
+}
+
+/// A module of `PSModulePath` is where a command that is neither a file of PATH nor a script comes from.
+#[skuld::test]
+fn a_filter_of_a_module_gets_the_hint_and_a_module_that_will_not_load_is_not_found(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let modules = home.join("modules");
+    for (module, text) in [
+        (
+            "Filt",
+            "filter Invoke-Filt { $_ }\nExport-ModuleMember -Function Invoke-Filt\n",
+        ),
+        ("Broken", "throw 'does not load'\n"),
+    ] {
+        std::fs::create_dir_all(modules.join(module)).unwrap();
+        std::fs::write(modules.join(module).join(format!("{module}.psm1")), text).unwrap();
+    }
+    let output = run_with(
+        "pwsh",
+        &wrapped(&["Invoke-Filt"]),
+        Some("wrap-argv"),
+        Search::Modules(&modules),
+    );
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&hint("Invoke-Filt")),
+        "{}",
+        shown(&output)
+    );
+    // Measured: a module that throws does not make `Get-Command` throw, so the name is not found.
+    let output = run_with(
+        "pwsh",
+        &wrapped(&["Invoke-Nothing"]),
+        Some("wrap-argv"),
+        Search::Modules(&modules),
+    );
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).starts_with("devvm: Invoke-Nothing: command not found"),
+        "{}",
+        shown(&output)
+    );
+}
+
+#[skuld::test]
+fn a_lookup_that_throws_is_127_and_the_message_says_so(#[fixture(pwsh_wrap)] _group: &Group) {
+    // A `Get-Command` of the user's that throws, in front of the script.
+    let script = format!(
+        "function Get-Command {{ throw 'no lookup' }}\n{}",
+        wrapped(&["Get-Date"])
+    );
+    let output = run_with("pwsh", &script, Some("wrap-argv"), Search::Only(None));
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .starts_with("devvm: Get-Date: command not found (lookup failed: no lookup)"),
         "{}",
         shown(&output)
     );

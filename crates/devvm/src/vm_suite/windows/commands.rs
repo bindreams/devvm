@@ -11,7 +11,7 @@ use crate::access::sftp::sftp_tests::tree;
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::wrap::LINE_LIMIT;
-use crate::guest::windows::wrap::wrap_tests::{longest_fit, padded};
+use crate::guest::windows::wrap::wrap_tests::{hint, longest_fit, padded};
 use crate::test_support::fixtures::unicode_home;
 use crate::vm_suite::exec::InGuest;
 use crate::vm_suite::exec::cases::{self, Case, Ended, ExecTarget, Os};
@@ -52,9 +52,7 @@ fn windows_a_powershell_command_as_argv0_exits_127_naming_pwsh_c(
         let seen = target.run(&Case::new(&[name]));
         assert_eq!(seen.ended, Ended::Code(127), "{name}: {}", seen.stderr_text());
         assert!(
-            seen.stderr_text().contains(&format!(
-                "devvm: {name}: a PowerShell command, not a program; run it through pwsh -c"
-            )),
+            seen.stderr_text().contains(&hint(name)),
             "{name}: {}",
             seen.stderr_text()
         );

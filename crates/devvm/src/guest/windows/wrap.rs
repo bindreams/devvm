@@ -36,6 +36,9 @@ pub(crate) const BROKER_EXE: &str = r"C:\ProgramData\ssh-broker\ssh-broker.exe";
 pub(super) const PWSH_EXE: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 
 /// The longest command line `CreateProcess` takes, in UTF-16 units: its 32,767 include the terminating NUL.
+///
+/// The fixed text of a script is about 2,450 units, and each character of an argument is in it twice: one argument of
+/// at most about 15,100 characters fits a command of a short name.
 pub(crate) const LINE_LIMIT: usize = 32_766;
 
 /// What a command prints in session 0, with status 126.
@@ -54,11 +57,11 @@ pub(super) fn session_check() -> String {
 
 /// The file `name` names, or nothing: `name` is the file itself when it has a path (relative to the working directory)
 /// and a file of PATH otherwise, as it is or with an extension of PATHEXT. It is a plain name: no wildcard reads its
-/// `[` or `*`, and no cmdlet or alias answers to it.
+/// `[` or `*`, and no cmdlet or alias answers to it. A name with a path leaves its full path in `$full`.
 const RESOLVE: &str = "function Find-Program([string]$name) {
     $exts = @($env:PATHEXT -split ';' | Where-Object { $_ })
     $named = $exts -contains [IO.Path]::GetExtension($name)
-    $stems = if ($name.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { @([IO.Path]::GetFullPath($name, (Get-Location).ProviderPath)) } else { @($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) }) }
+    $stems = if ($name.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { $script:full = [IO.Path]::GetFullPath($name, (Get-Location).ProviderPath); @($full) } else { @($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) }) }
     foreach ($stem in $stems) {
         if ($named -and [IO.File]::Exists($stem)) { return $stem }
         foreach ($ext in $exts) { if ([IO.File]::Exists($stem + $ext)) { return $stem + $ext } }
@@ -82,24 +85,29 @@ $p.WaitForExit()
 const EXIT: &str = "exit $p.ExitCode
 ";
 
-/// What the script does when `$program` names no file: the whole block, ending with 127 and the message `devvm: <name>`
-/// and `$why`. A name that is a cmdlet, function, alias or script of PowerShell gets the way to run it (`dir` is an alias:
-/// `cmd`'s builtin of that name is not a program either); the advice is fixed text after the name as typed.
+/// What the message says of a name that is a command of PowerShell and no program, after the name as typed.
+pub(crate) const POWERSHELL_COMMAND: &str = ": a PowerShell command, not a program; run it through pwsh -c";
+
+/// What the script does when `$program` names no file: ends with 127 and `devvm: <name>` and the reason. A name that is
+/// a cmdlet, function, alias or script of PowerShell gets the way to run it (`dir` is an alias: `cmd`'s builtin of that
+/// name is not a program either); a lookup that throws is said and is no answer.
 ///
-/// The lookup is in the script because only the guest knows its commands, and on this branch only: a program that is
-/// found runs none of it, but the script is longer by it for every command, and a name that is not found pays a
-/// `Get-Command`, which also scans `PSModulePath` for a module that exports it. The name is escaped: it is a name, not a
-/// wildcard. `Find-Program` is removed first, so the script's own function is not an answer, and an error of the lookup
-/// (a module that fails to load) is no answer either: nothing after the `catch` can throw, so the status is 127.
+/// The lookup is in the script because only the guest knows its commands, and runs only when no program is found. A
+/// name with a path is a script by its file (`$full`, which `Find-Program` set); a bare name is looked up by
+/// `Get-Command`, escaped because it is a name and not a wildcard. `Find-Program` is removed first, so the script's own
+/// function is not an answer.
+///
+/// The block makes every script about 470 units longer, which is about 235 characters off the longest argument (it
+/// is in the script twice); a name written once and not three times gives back 2 units per character of it.
 fn not_found() -> String {
     format!(
         r#"if (-not $app) {{
-$command = $false
-try {{ Remove-Item -LiteralPath Function:Find-Program; $command = [bool](Get-Command -Name ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction SilentlyContinue) }} catch {{ }}
-$why = if ($command) {{ ': a PowerShell command, not a program; run it through pwsh -c' }} else {{ ': command not found' }}
+Remove-Item Function:Find-Program
+$w = ': command not found'
+try {{ $c = if ($full) {{ [IO.File]::Exists($full) -and $full -like '*.ps1' }} else {{ Get-Command ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction Ignore }}; if ($c) {{ $w = '{POWERSHELL_COMMAND}' }} }} catch {{ $w += ' (lookup failed: ' + $_.Exception.Message + ')' }}
 {} }}
 "#,
-        failure("'devvm: ' + $program + $why", 127)
+        failure("'devvm: ' + $program + $w", 127)
     )
 }
 
