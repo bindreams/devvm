@@ -30,19 +30,20 @@ fn images(fixture_name: &str) -> Vec<WimImage> {
     read_image_list(&mut Cursor::new(wim_with(&fixture(fixture_name), 2)), "install.wim").unwrap()
 }
 
-/// An image as the fixtures list it: the `SPBUILD` that goes with `build` there (`26100.1742`, `26200.6584`).
-fn image(index: u32, name: &str, edition_id: &str, build: Option<u32>, arch: WimArch, language: &str) -> WimImage {
-    let spbuild = match build {
-        Some(26100) => Some("1742".to_owned()),
-        Some(26200) => Some("6584".to_owned()),
-        _ => None,
-    };
+fn image(
+    index: u32,
+    name: &str,
+    edition_id: &str,
+    (build, spbuild): (Option<u32>, Option<u32>),
+    arch: WimArch,
+    language: &str,
+) -> WimImage {
     WimImage {
         index,
         name: name.to_owned(),
         edition_id: edition_id.to_owned(),
         build: build.map(|build| build.to_string()),
-        spbuild,
+        spbuild: spbuild.map(|spbuild| spbuild.to_string()),
         arch,
         language: language.to_owned(),
     }
@@ -57,7 +58,7 @@ fn the_three_images_of_an_ltsc_iso_are_listed() {
                 1,
                 "Windows 11 Enterprise LTSC 2024",
                 "EnterpriseS",
-                Some(26100),
+                (Some(26100), Some(1742)),
                 WimArch::X64,
                 "en-US"
             ),
@@ -65,7 +66,7 @@ fn the_three_images_of_an_ltsc_iso_are_listed() {
                 2,
                 "Windows 11 IoT Enterprise LTSC 2024",
                 "IoTEnterpriseS",
-                Some(26100),
+                (Some(26100), Some(1742)),
                 WimArch::X64,
                 "en-US"
             ),
@@ -73,7 +74,7 @@ fn the_three_images_of_an_ltsc_iso_are_listed() {
                 3,
                 "Windows 11 IoT Enterprise Subscription LTSC 2024",
                 "IoTEnterpriseSK",
-                Some(26100),
+                (Some(26100), Some(1742)),
                 WimArch::X64,
                 "en-US"
             ),
@@ -96,7 +97,7 @@ fn the_ltsc_evaluation_image_is_listed() {
             1,
             "Windows 11 IoT Enterprise LTSC 2024 Evaluation",
             "IoTEnterpriseSEval",
-            Some(26100),
+            (Some(26100), Some(1742)),
             WimArch::X64,
             "en-US"
         )]
@@ -144,7 +145,7 @@ fn a_build_and_an_spbuild_that_are_not_numbers_keep_their_text_and_do_not_refuse
 #[skuld::test]
 fn a_build_and_an_spbuild_are_numbers_only_when_written_as_plain_decimal_digits() {
     let number = |text: &str| {
-        let image = image(1, "n", "EnterpriseS", None, WimArch::X64, "en-US");
+        let image = image(1, "n", "EnterpriseS", (None, None), WimArch::X64, "en-US");
         let build = WimImage {
             build: Some(text.to_owned()),
             ..image.clone()
@@ -177,7 +178,7 @@ fn a_build_and_an_spbuild_are_numbers_only_when_written_as_plain_decimal_digits(
 
 #[skuld::test]
 fn an_edition_id_ending_in_eval_is_an_evaluation_image() {
-    let with = |id: &str| image(1, "n", id, None, WimArch::X64, "en-US").is_evaluation();
+    let with = |id: &str| image(1, "n", id, (None, None), WimArch::X64, "en-US").is_evaluation();
     assert!(with("EnterpriseEval"));
     assert!(with("IoTEnterpriseSEval"));
     assert!(with("professionaleval"));

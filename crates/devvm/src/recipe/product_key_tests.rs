@@ -113,6 +113,23 @@ fn a_range_of_builds_has_its_key_from_its_first_build_to_its_last() {
 }
 
 #[skuld::test]
+fn the_first_spbuild_of_a_gated_row_is_the_one_media_must_reach() {
+    for (edition_id, build, first) in [
+        ("IoTEnterpriseS", 19044, Some(2905)),
+        ("IoTEnterpriseS", 26100, None),
+        ("IoTEnterpriseS", 19045, None),
+        ("EnterpriseS", 19044, None),
+        ("Nothing", 19044, None),
+    ] {
+        assert_eq!(
+            ProductKey::generic_first_spbuild(edition_id, build),
+            first,
+            "{edition_id} build {build}"
+        );
+    }
+}
+
+#[skuld::test]
 fn iot_ltsc_2021_has_its_key_from_image_19044_2905_on() {
     // The page's IoT tab: the key works on 19044.2905 or later. Other editions have no such condition.
     for (build, spbuild, has_key) in [

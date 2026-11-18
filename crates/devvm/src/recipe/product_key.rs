@@ -31,14 +31,27 @@ impl ProductKey {
 
     /// The generic key Microsoft publishes for the Windows edition `edition_id` (`EDITIONID` of the image, in any case)
     /// at `build` and `spbuild` (`BUILD` and `SPBUILD` of its version), or `None` when [`GENERIC_KEYS`] has none: an
-    /// edition, build or `SPBUILD` it does not list, or an image that names no build. `spbuild` matters only where a
-    /// row's builds name a first one.
+    /// edition, build or `SPBUILD` it does not list, or an image that names no build. `spbuild` matters only for a row
+    /// gated on a minimum `SPBUILD` (today IoT Enterprise LTSC 2021); `None` matches every other row.
     pub(crate) fn generic_for(edition_id: &str, build: Option<u32>, spbuild: Option<u32>) -> Option<ProductKey> {
         let build = build?;
         GENERIC_KEYS
             .iter()
             .find(|row| row.matches(edition_id, build, spbuild))
             .map(|row| ProductKey::parse(row.key).expect("every key in GENERIC_KEYS parses"))
+    }
+
+    /// The first `SPBUILD` of `build` that has the generic key of `edition_id`, when [`GENERIC_KEYS`] gates that row on
+    /// one: `19044.2905` is the first image of IoT Enterprise LTSC 2021 with a key. `None` for a row with no gate, and
+    /// for an edition or build it does not list.
+    pub(crate) fn generic_first_spbuild(edition_id: &str, build: u32) -> Option<u32> {
+        GENERIC_KEYS
+            .iter()
+            .filter(|row| row.matches(edition_id, build, Some(u32::MAX)))
+            .flat_map(|row| row.builds)
+            .find(|span| span.contains(build, Some(u32::MAX)))
+            .map(|span| span.spbuild_from)
+            .filter(|&first| first > 0)
     }
 
     pub(crate) fn expose(&self) -> &str {
@@ -75,6 +88,15 @@ const fn builds(first: u32, last: u32) -> Span {
     }
 }
 
+/// The images of build `build` whose `SPBUILD` is at least `spbuild_from`.
+const fn build_from(build: u32, spbuild_from: u32) -> Span {
+    Span {
+        first: build,
+        last: build,
+        spbuild_from,
+    }
+}
+
 /// The builds of Windows a [`Generic`] key is for.
 type Builds = &'static [Span];
 
@@ -106,14 +128,7 @@ const WINDOWS_10_AND_11: Builds = &[builds(10240, u32::MAX)];
 /// matches the whole 19041 to 19045 build family.
 const LTSC_2019_ON: Builds = &[builds(17763, 17763), builds(19041, 19045), builds(26100, 26100)];
 /// Windows IoT Enterprise LTSC 2021 (build 19044, from image 19044.2905: the page's IoT tab) and 2024.
-const IOT_LTSC_2021_ON: Builds = &[
-    Span {
-        first: 19044,
-        last: 19044,
-        spbuild_from: 2905,
-    },
-    builds(26100, 26100),
-];
+const IOT_LTSC_2021_ON: Builds = &[build_from(19044, 2905), builds(26100, 26100)];
 const LTSB_2016: Builds = &[builds(14393, 14393)];
 const LTSB_2015: Builds = &[builds(10240, 10240)];
 const SERVER_2016: Builds = &[builds(14393, 14393)];

@@ -201,14 +201,31 @@ fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_
                     edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
                 )
             },
-            "edition id `IoTEnterpriseS`, build 19044.2904",
+            "edition id `IoTEnterpriseS`, build 19044.2904; its generic key needs media of 19044.2905 or later",
+        ),
+        (
+            WimImage {
+                spbuild: Some("2\"\n".to_owned()),
+                ..built(
+                    19044,
+                    edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
+                )
+            },
+            r#"edition id `IoTEnterpriseS`, build 19044, SPBUILD `2"\n` is not a build number devvm can read; its generic key needs media of 19044.2905 or later"#,
+        ),
+        (
+            WimImage {
+                spbuild: Some("x".to_owned()),
+                ..built(28000, edition_of("EnterpriseS", "Windows 12 Enterprise LTSC"))
+            },
+            "edition id `EnterpriseS`, build 28000, SPBUILD `x` is not a build number devvm can read",
         ),
         (
             built(
                 19044,
                 edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
             ),
-            "edition id `IoTEnterpriseS`, build 19044",
+            "edition id `IoTEnterpriseS`, build 19044; its generic key needs media of 19044.2905 or later",
         ),
     ] {
         let error = resolve_product_key(&image, None).unwrap_err();

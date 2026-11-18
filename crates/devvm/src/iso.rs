@@ -319,15 +319,20 @@ fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Re
             let detail = match (image.edition_id.as_str(), image.build.as_deref(), image.build_number()) {
                 ("", ..) => "no edition id".to_owned(),
                 (id, None, _) => format!("edition id `{}`, no build", escape_controls(id)),
-                (id, Some(_), Some(build)) => format!(
-                    "edition id `{}`, build {build}{}",
-                    escape_controls(id),
-                    image
-                        .spbuild
-                        .as_deref()
-                        .map(|text| format!(".{}", escape_controls(text)))
-                        .unwrap_or_default()
-                ),
+                (id, Some(_), Some(build)) => {
+                    let version = match (image.spbuild.as_deref(), image.spbuild_number()) {
+                        (None, _) => build.to_string(),
+                        (Some(_), Some(spbuild)) => format!("{build}.{spbuild}"),
+                        (Some(text), None) => format!(
+                            "{build}, SPBUILD `{}` is not a build number devvm can read",
+                            escape_controls(text)
+                        ),
+                    };
+                    let gate = ProductKey::generic_first_spbuild(id, build)
+                        .map(|first| format!("; its generic key needs media of {build}.{first} or later"))
+                        .unwrap_or_default();
+                    format!("edition id `{}`, build {version}{gate}", escape_controls(id))
+                }
                 (id, Some(text), None) => format!(
                     "edition id `{}`, BUILD `{}` is not a build number devvm can read",
                     escape_controls(id),
