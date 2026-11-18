@@ -115,6 +115,9 @@ pub(super) fn text_of(path: &Path) -> String {
 
 // The install media ===================================================================================================
 
+// A key, so an image devvm knows no generic key for (the subscription edition) is still built.
+const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
+
 #[skuld::test]
 fn boot_patches_become_overlay_patches_with_the_same_offsets_and_bytes(#[fixture(unicode_home)] home: &Path) {
     let rig = rig_without_a_machine(home, "single-image.iso");
@@ -226,8 +229,6 @@ fn the_blank_disk_is_the_larger_of_64_gib_and_the_recipes_disk(#[fixture(unicode
 
 #[skuld::test]
 fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(#[fixture(unicode_home)] home: &Path) {
-    // A key, so an image devvm knows no generic key for (the subscription edition) is still built.
-    const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
     for (edition, index) in [
         ("Windows 11 Enterprise LTSC 2024", 1),
         ("Windows 11 IoT Enterprise LTSC 2024", 2),
@@ -254,7 +255,6 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
 fn the_bootstrap_is_told_whether_the_chosen_image_is_an_evaluation_and_a_keyed_edition_gets_its_key(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
     // `single-image.iso` holds an evaluation edition, which takes no key; `three-images.iso` volume editions, which need one.
     for (iso, edition, product_key, evaluation) in [
         ("single-image.iso", None, None, "$true"),
