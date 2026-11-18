@@ -1,6 +1,11 @@
-//! The Windows product key of a recipe's ISO.
+//! The Windows product key of a recipe's ISO: the key a recipe gives, and the generic key devvm knows for an edition
+//! when it gives none.
 
 use secrecy::{ExposeSecret, SecretString};
+
+#[cfg(test)]
+#[path = "product_key_tests.rs"]
+mod product_key_tests;
 
 /// A Windows product key: five groups of five ASCII letters and digits, such as `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`.
 ///
@@ -24,6 +29,27 @@ impl ProductKey {
         shaped.then(|| ProductKey(SecretString::from(text.to_ascii_uppercase())))
     }
 
+    /// What [`GENERIC_KEYS`] holds for the Windows edition `edition_id` (`EDITIONID` of the image, in any case) at
+    /// `build` and `spbuild` (`BUILD` and `SPBUILD` of its version): the key, or why there is none. `spbuild` matters
+    /// only for a row gated on a minimum `SPBUILD` (today IoT Enterprise LTSC 2021); `None` there is gated, and any
+    /// other row ignores it.
+    pub(crate) fn generic_for(edition_id: &str, build: u32, spbuild: Option<u32>) -> GenericKey {
+        let mut gate = None;
+        for row in GENERIC_KEYS {
+            match row.reach(edition_id, build, spbuild) {
+                Reach::Key => {
+                    let key = ProductKey::parse(row.key).expect("every key in GENERIC_KEYS parses");
+                    return GenericKey::Found(key);
+                }
+                Reach::Gate(first_spbuild) => gate = gate.or(Some(first_spbuild)),
+                Reach::Out => {}
+            }
+        }
+        gate.map_or(GenericKey::Unlisted, |first_spbuild| GenericKey::Gated {
+            first_spbuild,
+        })
+    }
+
     pub(crate) fn expose(&self) -> &str {
         self.0.expose_secret()
     }
@@ -36,3 +62,171 @@ impl PartialEq for ProductKey {
 }
 
 impl Eq for ProductKey {}
+
+/// What [`ProductKey::generic_for`] found for an image.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GenericKey {
+    /// The generic key of the image's edition and version.
+    Found(ProductKey),
+    /// The table lists the edition and build, but only from `SPBUILD` `first_spbuild`; the image's is lower or unknown.
+    Gated { first_spbuild: u32 },
+    /// The table has no key for the edition at this build.
+    Unlisted,
+}
+
+#[cfg(test)]
+impl GenericKey {
+    pub(crate) fn found(self) -> Option<ProductKey> {
+        match self {
+            GenericKey::Found(key) => Some(key),
+            GenericKey::Gated { .. } | GenericKey::Unlisted => None,
+        }
+    }
+}
+
+/// How a row or a span of the table reaches an image.
+#[derive(Debug, PartialEq, Eq)]
+enum Reach {
+    /// It has the image's key.
+    Key,
+    /// It has the build, but only from this `SPBUILD`, which the image lacks.
+    Gate(u32),
+    /// It does not have the image.
+    Out,
+}
+
+/// Builds of Windows from `first` to `last`, inclusive, whose `SPBUILD` is at least `spbuild_from` (`None`: any).
+struct Span {
+    first: u32,
+    last: u32,
+    spbuild_from: Option<u32>,
+}
+
+impl Span {
+    fn reach(&self, build: u32, spbuild: Option<u32>) -> Reach {
+        match self.spbuild_from {
+            _ if !(self.first..=self.last).contains(&build) => Reach::Out,
+            Some(from) if spbuild.is_none_or(|spbuild| spbuild < from) => Reach::Gate(from),
+            _ => Reach::Key,
+        }
+    }
+}
+
+const fn builds(first: u32, last: u32) -> Span {
+    Span {
+        first,
+        last,
+        spbuild_from: None,
+    }
+}
+
+/// The images of build `build` whose `SPBUILD` is at least `spbuild_from`.
+const fn build_from(build: u32, spbuild_from: u32) -> Span {
+    Span {
+        first: build,
+        last: build,
+        spbuild_from: Some(spbuild_from),
+    }
+}
+
+/// The builds of Windows a [`Generic`] key is for.
+type Builds = &'static [Span];
+
+/// A generic volume license key (GVLK) of an edition: the key a KMS client installs with. Setup takes it for a volume
+/// edition, which is installed unactivated.
+struct Generic {
+    edition_id: &'static str,
+    builds: Builds,
+    key: &'static str,
+}
+
+impl Generic {
+    fn reach(&self, edition_id: &str, build: u32, spbuild: Option<u32>) -> Reach {
+        if !self.edition_id.eq_ignore_ascii_case(edition_id) {
+            return Reach::Out;
+        }
+        let mut gate = Reach::Out;
+        for span in self.builds {
+            match span.reach(build, spbuild) {
+                Reach::Key => return Reach::Key,
+                Reach::Gate(from) if gate == Reach::Out => gate = Reach::Gate(from),
+                Reach::Gate(_) | Reach::Out => {}
+            }
+        }
+        gate
+    }
+}
+
+const fn row(edition_id: &'static str, builds: Builds, key: &'static str) -> Generic {
+    Generic {
+        edition_id,
+        builds,
+        key,
+    }
+}
+
+/// Windows 10 (build 10240) and every release since: the page lists one key per client edition, not one per release.
+const WINDOWS_10_AND_11: Builds = &[builds(10240, u32::MAX)];
+/// Windows Enterprise LTSC 2019 (17763), 2021 and 2024 (26100), which share their keys. LTSC 2021 (Windows 10 21H2)
+/// matches the whole 19041 to 19045 build family.
+const LTSC_2019_ON: Builds = &[builds(17763, 17763), builds(19041, 19045), builds(26100, 26100)];
+/// Windows IoT Enterprise LTSC 2021 (build 19044, from image 19044.2905: the page's IoT tab) and 2024.
+const IOT_LTSC_2021_ON: Builds = &[build_from(19044, 2905), builds(26100, 26100)];
+const LTSB_2016: Builds = &[builds(14393, 14393)];
+const LTSB_2015: Builds = &[builds(10240, 10240)];
+const SERVER_2016: Builds = &[builds(14393, 14393)];
+const SERVER_2019: Builds = &[builds(17763, 17763)];
+const SERVER_2022: Builds = &[builds(20348, 20348)];
+const SERVER_2025: Builds = &[builds(26100, 26100)];
+
+/// The generic keys of the editions devvm can install. Copied on 2026-11-18 from
+/// <https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys>. Nothing checks it against
+/// the page. A missing edition needs `product-key`.
+const GENERIC_KEYS: &[Generic] = &[
+    // Windows 11 and Windows 10 Semi-Annual Channel
+    row("Professional", WINDOWS_10_AND_11, "W269N-WFGWX-YVC9B-4J6C9-T83GX"),
+    row("ProfessionalN", WINDOWS_10_AND_11, "MH37W-N47XK-V7XM9-C7227-GCQG9"),
+    row(
+        "ProfessionalWorkstation",
+        WINDOWS_10_AND_11,
+        "NRG8B-VKK3Q-CXVCJ-9G2XF-6Q84J",
+    ),
+    row(
+        "ProfessionalWorkstationN",
+        WINDOWS_10_AND_11,
+        "9FNHH-K3HBT-3W4TD-6383H-6XYWF",
+    ),
+    row(
+        "ProfessionalEducation",
+        WINDOWS_10_AND_11,
+        "6TP4R-GNPTD-KYYHQ-7B7DP-J447Y",
+    ),
+    row(
+        "ProfessionalEducationN",
+        WINDOWS_10_AND_11,
+        "YVWGF-BXNMC-HTQYQ-CPQ99-66QFC",
+    ),
+    row("Education", WINDOWS_10_AND_11, "NW6C2-QMPVW-D7KKK-3GKT6-VCFB2"),
+    row("EducationN", WINDOWS_10_AND_11, "2WH4N-8QGBV-H22JP-CT43Q-MDWWJ"),
+    row("Enterprise", WINDOWS_10_AND_11, "NPPR9-FWDCX-D2C8J-H872K-2YT43"),
+    row("EnterpriseN", WINDOWS_10_AND_11, "DPH2V-TTNVB-4X9Q3-TJR4H-KHJW4"),
+    row("EnterpriseG", WINDOWS_10_AND_11, "YYVX9-NTFWV-6MDM3-9PT4T-4M68B"),
+    row("EnterpriseGN", WINDOWS_10_AND_11, "44RPN-FTY23-9VTTB-MP9BX-T84FV"),
+    // Windows Enterprise LTSC and LTSB
+    row("EnterpriseS", LTSC_2019_ON, "M7XTQ-FN8P6-TTKYV-9D4CC-J462D"),
+    row("EnterpriseSN", LTSC_2019_ON, "92NFX-8DJQP-P6BBQ-THF9C-7CG2H"),
+    row("IoTEnterpriseS", IOT_LTSC_2021_ON, "KBN8V-HFGQ4-MGXVD-347P6-PDQGT"),
+    row("EnterpriseS", LTSB_2016, "DCPHK-NFMTC-H88MJ-PFHPY-QJ4BJ"),
+    row("EnterpriseSN", LTSB_2016, "QFFDN-GRT3P-VKWWX-X7T3R-8B639"),
+    row("EnterpriseS", LTSB_2015, "WNMTR-4C88C-JK8YV-HQ7T2-76DF9"),
+    row("EnterpriseSN", LTSB_2015, "2F77B-TNFGY-69QQF-B8YKP-D69TJ"),
+    // Windows Server LTSC
+    row("ServerStandard", SERVER_2025, "TVRH6-WHNXV-R9WG3-9XRFY-MY832"),
+    row("ServerDatacenter", SERVER_2025, "D764K-2NDRG-47T6Q-P8T8W-YP6DF"),
+    row("ServerStandard", SERVER_2022, "VDYBN-27WPP-V4HQT-9VMD4-VMK7H"),
+    row("ServerDatacenter", SERVER_2022, "WX4NM-KYWYW-QJJR4-XV3QB-6VM33"),
+    row("ServerStandard", SERVER_2019, "N69G4-B89J2-4G8F4-WWYCC-J464C"),
+    row("ServerDatacenter", SERVER_2019, "WMDGN-G9PQG-XVVXX-R3X43-63DFG"),
+    row("ServerStandard", SERVER_2016, "WC2BQ-8NRM3-FDDYY-2BFGV-KHKQY"),
+    row("ServerDatacenter", SERVER_2016, "CB7KF-BWN84-R7R2Y-793K2-8XDDG"),
+];

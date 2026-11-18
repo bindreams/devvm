@@ -69,11 +69,13 @@ impl Rig {
 
     /// The same, with the recipe's `product-key`.
     pub(super) fn build_keyed(&self, edition: Option<&str>, product_key: Option<&str>) -> Result<ChainLease> {
+        let product_key = product_key.map(|text| ProductKey::parse(text).unwrap());
         let root = key_iso(
             &TestHost,
             &IsoMemo::new(&self.dirs),
             &self.iso,
             edition,
+            product_key.as_ref(),
             &*self.env.progress,
         )
         .unwrap();
@@ -81,7 +83,7 @@ impl Rig {
         let source = Source::Iso {
             path: self.iso.clone(),
             edition: edition.map(Into::into),
-            product_key: product_key.map(|text| ProductKey::parse(text).unwrap()),
+            product_key,
         };
         self.env.store.build(&request(key(1)), None, |staging| {
             self.builder
@@ -113,13 +115,25 @@ pub(super) fn text_of(path: &Path) -> String {
 
 // The install media ===================================================================================================
 
+// A recipe's `product-key`: it overrides the generic key devvm knows for an edition, and an edition devvm knows none
+// for (the subscription LTSC) needs one.
+const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
+
 #[skuld::test]
 fn boot_patches_become_overlay_patches_with_the_same_offsets_and_bytes(#[fixture(unicode_home)] home: &Path) {
     let rig = rig_without_a_machine(home, "single-image.iso");
-    let held = key_iso(&TestHost, &IsoMemo::new(&rig.dirs), &rig.iso, None, &*rig.env.progress).unwrap();
+    let held = key_iso(
+        &TestHost,
+        &IsoMemo::new(&rig.dirs),
+        &rig.iso,
+        None,
+        None,
+        &*rig.env.progress,
+    )
+    .unwrap();
     let expected: Vec<String> = crate::iso::read_install_iso(held)
         .unwrap()
-        .boot_patches
+        .boot_patches()
         .iter()
         .map(|patch| format!("{}+{}", patch.offset, patch.bytes.len()))
         .collect();
@@ -185,7 +199,14 @@ fn the_blank_disk_is_the_larger_of_64_gib_and_the_recipes_disk(#[fixture(unicode
             .env
             .store
             .build(&request(key(2)), None, |staging| {
-                let root = key_iso(&TestHost, &IsoMemo::new(&rig.dirs), &rig.iso, None, &*rig.env.progress)?;
+                let root = key_iso(
+                    &TestHost,
+                    &IsoMemo::new(&rig.dirs),
+                    &rig.iso,
+                    None,
+                    None,
+                    &*rig.env.progress,
+                )?;
                 *rig.ctx.iso.lock().unwrap() = Some(root);
                 let source = Source::Iso {
                     path: rig.iso.clone(),
@@ -209,14 +230,21 @@ fn the_blank_disk_is_the_larger_of_64_gib_and_the_recipes_disk(#[fixture(unicode
 
 #[skuld::test]
 fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(#[fixture(unicode_home)] home: &Path) {
+    // Each edition gets its own key, so a key taken from another image's root fails the assertion below.
+    let keys = [
+        "AB12C-DE34F-GH56J-KL78M-NP90Q",
+        "BC23D-EF45G-HJ67K-LM89N-PQ01R",
+        "CD34E-FG56H-JK78L-MN90P-QR12S",
+    ];
     for (edition, index) in [
         ("Windows 11 Enterprise LTSC 2024", 1),
         ("Windows 11 IoT Enterprise LTSC 2024", 2),
         ("Windows 11 IoT Enterprise Subscription LTSC 2024", 3),
     ] {
         let rig = rig_without_a_machine(home, "three-images.iso");
+        let own = keys[index - 1];
 
-        rig.build(Some(edition)).unwrap_err();
+        rig.build_keyed(Some(edition), Some(own)).unwrap_err();
 
         let files = read_files(&rig.work().join("answer.img"), &["Autounattend.xml"]).unwrap();
         let answer = String::from_utf8(files[0].bytes.clone()).unwrap();
@@ -226,7 +254,32 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
             )),
             "{edition}: {answer}"
         );
+        assert_eq!(answer.matches(own).count(), 1, "{edition}: {answer}");
+        for other in keys.iter().filter(|key| **key != own) {
+            assert!(!answer.contains(other), "{edition}: {answer}");
+        }
         assert!(answer.contains("<UILanguage>en-US</UILanguage>"), "{edition}");
+        let _ = std::fs::remove_dir_all(rig.work());
+    }
+}
+
+#[skuld::test]
+fn a_recipe_with_no_product_key_installs_the_generic_key_of_the_image_edition_and_build(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    for (edition, edition_id) in [
+        ("Windows 11 Enterprise LTSC 2024", "EnterpriseS"),
+        ("Windows 11 IoT Enterprise LTSC 2024", "IoTEnterpriseS"),
+    ] {
+        let rig = rig_without_a_machine(home, "three-images.iso");
+        let generic = ProductKey::generic_for(edition_id, 26100, Some(1742)).found().unwrap();
+
+        rig.build_keyed(Some(edition), None).unwrap_err();
+
+        let files = read_files(&rig.work().join("answer.img"), &["Autounattend.xml"]).unwrap();
+        let answer = String::from_utf8(files[0].bytes.clone()).unwrap();
+        assert_eq!(answer.matches(generic.expose()).count(), 1, "{edition}: {answer}");
+        assert_eq!(answer.matches("<ProductKey>").count(), 1, "{edition}: {answer}");
         let _ = std::fs::remove_dir_all(rig.work());
     }
 }
@@ -235,8 +288,8 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
 fn the_bootstrap_is_told_whether_the_chosen_image_is_an_evaluation_and_a_keyed_edition_gets_its_key(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
-    // `single-image.iso` holds an evaluation edition, which takes no key; `three-images.iso` volume editions, which need one.
+    // An evaluation edition takes no key; Setup would reject one. `three-images.iso` holds volume editions, which get a
+    // key.
     for (iso, edition, product_key, evaluation) in [
         ("single-image.iso", None, None, "$true"),
         (

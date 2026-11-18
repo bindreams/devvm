@@ -26,6 +26,8 @@ fn only_image() -> Vec<WimImage> {
         index: 1,
         name: "Windows 11 Enterprise Evaluation".to_owned(),
         edition_id: "EnterpriseEval".to_owned(),
+        build: Some("26100".to_owned()),
+        spbuild: Some("1742".to_owned()),
         arch: WimArch::X64,
         language: "en-US".to_owned(),
     }]
@@ -211,6 +213,37 @@ fn a_corrupt_memo_is_quarantined_and_rebuilt(#[fixture(unicode_home)] home: &Pat
     );
     fx.sha256(&iso).unwrap();
     assert_eq!(hashings(&fx.progress), 2, "the memo made again is used");
+}
+
+#[skuld::test]
+fn a_memo_whose_images_lack_a_version_field_is_read_again_not_taken_for_an_image_with_none(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dirs = Dirs::under(home);
+    let fx = Fixture::new(home);
+    let iso = iso_with(home, "a.iso", b"windows");
+    fx.sha256(&iso).unwrap();
+    for (round, field) in ["build", "spbuild"].into_iter().enumerate() {
+        let [file] = memo_files(&dirs).try_into().unwrap();
+        let mut memo: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        for image in memo["images"].as_array_mut().unwrap() {
+            assert!(
+                image.as_object_mut().unwrap().remove(field).is_some(),
+                "the memo has a {field}"
+            );
+        }
+        std::fs::write(&file, serde_json::to_vec_pretty(&memo).unwrap()).unwrap();
+        let reads = fx.reads.get();
+
+        fx.sha256(&iso).unwrap();
+
+        assert_eq!(
+            fx.reads.get(),
+            reads + 1,
+            "the old memo's image list was read from the ISO again: {field}"
+        );
+        assert_eq!(quarantined_files(&dirs).len(), round + 1, "{field}");
+    }
 }
 
 #[skuld::test]

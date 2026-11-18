@@ -209,7 +209,7 @@ fn no_iso_line_exists_while_no_iso_was_keyed(#[fixture(unicode_home)] home: &Pat
 /// A copy of the fixture ISO `name` at `iso`, keyed into `memo`.
 fn keyed(memo: &IsoMemo, iso: &Path, name: &str) {
     std::fs::copy(iso_fixture(name), iso).unwrap();
-    key_iso(&TestHost, memo, iso, None, &MemoryProgress::default()).unwrap();
+    key_iso(&TestHost, memo, iso, None, None, &MemoryProgress::default()).unwrap();
 }
 
 #[skuld::test]
