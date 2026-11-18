@@ -126,6 +126,30 @@ fn a_build_that_is_not_a_number_keeps_its_text_and_does_not_refuse_the_list() {
 }
 
 #[skuld::test]
+fn a_build_is_a_number_only_when_it_is_written_as_plain_decimal_digits() {
+    let number = |build: &str| {
+        WimImage {
+            build: Some(build.to_owned()),
+            ..image(1, "n", "EnterpriseS", None, WimArch::X64, "en-US")
+        }
+        .build_number()
+    };
+    assert_eq!(number("26100"), Some(26100));
+    assert_eq!(number("0"), Some(0));
+    for refused in [
+        "+26100",
+        "026100",
+        "-26100",
+        "26100 ",
+        "",
+        "4294967296",
+        "\u{0662}\u{0666}",
+    ] {
+        assert_eq!(number(refused), None, "BUILD {refused:?}");
+    }
+}
+
+#[skuld::test]
 fn an_edition_id_ending_in_eval_is_an_evaluation_image() {
     let with = |id: &str| image(1, "n", id, None, WimArch::X64, "en-US").is_evaluation();
     assert!(with("EnterpriseEval"));

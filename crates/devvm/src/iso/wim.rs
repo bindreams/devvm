@@ -85,9 +85,11 @@ pub(crate) struct WimImage {
 }
 
 impl WimImage {
-    /// The image's build as a number; `None` when it has none or its text is not a number that fits `u32`.
+    /// The image's build as a number; `None` when it has none or its text is not plain decimal digits (no sign, no
+    /// leading zero) of a number that fits `u32`.
     pub(crate) fn build_number(&self) -> Option<u32> {
-        self.build.as_deref().and_then(|text| text.parse().ok())
+        let text = self.build.as_deref()?;
+        text.parse().ok().filter(|number: &u32| number.to_string() == text)
     }
 
     /// Whether the image is an evaluation edition: its edition id names an evaluation.
