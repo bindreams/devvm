@@ -83,9 +83,9 @@ const fn row(edition_id: &'static str, builds: Builds, key: &'static str) -> Gen
 
 /// Windows 10 (build 10240) and every release since: the page lists one key per client edition, not one per release.
 const WINDOWS_10_AND_11: Builds = &[(10240, u32::MAX)];
-/// Windows Enterprise LTSC 2019 (17763), 2021 and 2024 (26100), which share their keys. LTSC 2021 is Windows 10 21H2: the
-/// system reports build 19044, but an `install.wim` is the 2004 image that 21H2 turns on by an enablement package, so
-/// it most likely records 19041. The whole family 19041 to 19045 is one release.
+/// Windows Enterprise LTSC 2019 (17763), 2021 and 2024 (26100), which share their keys. LTSC 2021 is Windows 10 21H2:
+/// the system reports build 19044, but an `install.wim` is the 2004 image that 21H2 turns on by an enablement package,
+/// so it most likely records 19041. The whole family 19041 to 19045 is one release.
 const LTSC_2019_ON: Builds = &[(17763, 17763), (19041, 19045), (26100, 26100)];
 /// Windows IoT Enterprise LTSC 2021 (the 19041 to 19045 family, as above) and 2024.
 const IOT_LTSC_2021_ON: Builds = &[(19041, 19045), (26100, 26100)];
@@ -102,9 +102,9 @@ const SERVER_2025: Builds = &[(26100, 26100)];
 ///
 /// What is not here has no key and is refused, so a recipe names one with `product-key`: the Windows versions the guest
 /// cannot be built from (before Windows 10 and Server 2016), the retired Semi-Annual Channel servers, an edition the
-/// page does not list (Home, Enterprise multi-session, the IoT Enterprise subscription LTSC), and the two it lists whose edition id no image
-/// devvm has read shows (Server Essentials and Datacenter: Azure Edition). A new LTSC or Server release is added when
-/// the page lists it, and an edition with an image that shows its edition id.
+/// page does not list (Home, Enterprise multi-session, the IoT Enterprise subscription LTSC), and the two it lists
+/// whose edition id no image devvm has read shows (Server Essentials and Datacenter: Azure Edition). A new LTSC or
+/// Server release is added when the page lists it, and an edition with an image that shows its edition id.
 const GENERIC_KEYS: &[Generic] = &[
     // Windows 11 and Windows 10 Semi-Annual Channel
     row("Professional", WINDOWS_10_AND_11, "W269N-WFGWX-YVC9B-4J6C9-T83GX"),

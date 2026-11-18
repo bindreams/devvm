@@ -76,8 +76,8 @@ fn an_edition_or_a_build_the_table_does_not_have_has_no_key() {
     ] {
         assert_eq!(generic(edition_id, 26100), None, "{edition_id}");
     }
-    // A build the edition has no key for: an LTSC release that is not on the page, a build between LTSC 2021's family and
-    // 2024, a client older than Windows 10, a server build the page does not name.
+    // A build the edition has no key for: an LTSC release that is not on the page, a build between LTSC 2021's family
+    // and 2024, a client older than Windows 10, a server build the page does not name.
     assert_eq!(generic("EnterpriseS", 28000), None);
     assert_eq!(generic("EnterpriseS", 22621), None);
     assert_eq!(generic("EnterpriseS", 19040), None);
