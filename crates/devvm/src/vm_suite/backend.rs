@@ -32,11 +32,11 @@ use crate::host::{self, HoldOutcome, Host, ProcessWatch};
 use crate::instance::name::InstanceName;
 use crate::instance::record::InstanceId;
 use crate::media::{SeedFile, write_cidata_image};
-use crate::progress::StderrProgress;
 use crate::recipe::Recipe;
 use crate::store::layers::layers_tests::{key, request};
 use crate::store::layers::{Built, ChainLease, LayerStore};
 use crate::test_groups::{Group, unicode_socket_dir, vm_group};
+use crate::test_support::fixtures::stderr_progress;
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::qemu::{ScratchRun, assert_unicode_socket_path, lazy_at, qemu_img, qemu_sidecar, scratch_run};
@@ -104,7 +104,7 @@ impl Backend for Observing {
 fn backend_over(bin: &Path, host: &'static dyn Host, run: &Path) -> QemuBackend {
     let install = lazy_at(bin);
     let storage = Arc::new(QemuStorage::new(install.clone(), host));
-    QemuBackend::new(install, storage, host, Ok(run.to_path_buf()), Arc::new(StderrProgress))
+    QemuBackend::new(install, storage, host, Ok(run.to_path_buf()), stderr_progress())
 }
 
 /// A spec for a firmware-only machine in `dir`, on the host's accelerator.

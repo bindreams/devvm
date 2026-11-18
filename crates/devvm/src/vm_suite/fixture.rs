@@ -19,12 +19,13 @@ use crate::config::Config;
 use crate::engine::engine_tests::engine_with_bound;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, LaunchHooks, LaunchStep};
 use crate::host;
-use crate::progress::{Progress, StderrProgress};
+use crate::progress::Progress;
 use crate::recipe::Recipe;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_groups::{Group, unicode_base};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::UNICODE_DIR;
+use crate::test_support::fixtures::stderr_progress;
 use crate::test_support::qemu::{qemu_sidecar, socket_dir, write_config};
 use crate::{BuildOptions, Command, Dirs, Error, ExitStatus, Guest, Image, Instance, RunAs, StartOptions, Vm};
 
@@ -137,7 +138,7 @@ impl LaunchHooks for Launches {
 
 /// An engine over `dirs` on the QEMU of `install`, whose launches `hooks` sees.
 pub(super) fn engine_in(dirs: &Dirs, install: &QemuInstall, hooks: Arc<dyn LaunchHooks>) -> Arc<Engine> {
-    engine_reporting_to(dirs, install, hooks, Arc::new(StderrProgress))
+    engine_reporting_to(dirs, install, hooks, stderr_progress())
 }
 
 /// [`engine_in`] with the progress channel `progress`.

@@ -57,7 +57,8 @@ use std::sync::mpsc;
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::{Artifact, Fetcher, HttpTransport};
-use crate::progress::{NullProgress, StderrProgress};
+use crate::progress::NullProgress;
+use crate::test_support::fixtures::stderr_progress;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::test_support::http::{Behavior, TestServer};
@@ -84,7 +85,7 @@ pub fn fetch_artifact(args: &[String]) {
         sha256: args[2].parse().unwrap(),
     };
     let transport = Arc::new(HttpTransport::new().unwrap());
-    let fetcher = Fetcher::new(args[0].clone().into(), transport, Arc::new(StderrProgress));
+    let fetcher = Fetcher::new(args[0].clone().into(), transport, stderr_progress());
     let path = fetcher.fetch(&artifact).unwrap();
     println!("done {}", path.display());
 }

@@ -116,18 +116,30 @@ impl crate::store::layers::Clock for FakeClock {
     }
 }
 
+fn chatty_stderr() -> crate::progress::LineProgress {
+    crate::progress::LineProgress::stderr(crate::progress::Look {
+        colour: false,
+        verbose: true,
+    })
+}
+
+/// A sink that prints everything to stderr, for a test that runs long enough for its progress to be read live.
+pub fn stderr_progress() -> std::sync::Arc<crate::progress::LineProgress> {
+    std::sync::Arc::new(chatty_stderr())
+}
+
 /// A progress sink the test reads back.
 #[derive(Default)]
 pub struct MemoryProgress {
     events: std::sync::Mutex<Vec<(std::time::SystemTime, crate::progress::Event)>>,
-    echo: bool,
+    echo: Option<crate::progress::LineProgress>,
 }
 
 impl MemoryProgress {
     /// A sink that also prints each note to stderr, for a test that runs long enough for its progress to be read live.
     pub fn echoing() -> MemoryProgress {
         MemoryProgress {
-            echo: true,
+            echo: Some(chatty_stderr()),
             ..MemoryProgress::default()
         }
     }
@@ -164,8 +176,8 @@ impl MemoryProgress {
 
 impl crate::progress::Progress for MemoryProgress {
     fn event(&self, event: &crate::progress::Event) {
-        if self.echo {
-            crate::progress::StderrProgress.event(event);
+        if let Some(echo) = &self.echo {
+            echo.event(event);
         }
         self.events
             .lock()

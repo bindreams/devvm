@@ -19,7 +19,7 @@ use crate::instance::registry::registry_tests::lock_files_in;
 use crate::store::layers::layers_tests::names;
 use crate::test_support::claimed::claimed;
 use crate::test_support::fake_vm::{connect_when_up, started_port};
-use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
+use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, stderr_progress, unicode_home};
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, TestHost};
 use crate::test_support::sshd::TestSshd;
 use crate::test_support::stub_backend::Attach;
@@ -486,7 +486,7 @@ pub(crate) fn helper_engine(home: &Path, hooks: Arc<dyn LaunchHooks>) -> Arc<Eng
         backend: Some(Arc::new(FakeBackend::new(&TestHost).with_ssh_endpoint(server.addr()))),
         guests: Arc::new(ServedGuests::new(server)),
         clock: Arc::new(crate::store::layers::SystemClock),
-        progress: Arc::new(crate::progress::StderrProgress),
+        progress: stderr_progress(),
         hooks,
         boot_bound: crate::engine::DEFAULT_BOOT_BOUND,
     })

@@ -22,7 +22,7 @@ use crate::instance::name::InstanceName;
 use crate::instance::record::{MarkerRead, Owner, RecordRead};
 use crate::instance::registry::Registry;
 use crate::lazy::Lazy;
-use crate::progress::{Progress, StderrProgress};
+use crate::progress::{LineProgress, Look, Progress};
 use crate::store::fetch::{Fetcher, Transport};
 use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
@@ -145,7 +145,7 @@ impl Engine {
 
     /// `from_env` reporting progress on stderr.
     pub fn from_env_stderr(transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
-        Engine::from_env(Arc::new(StderrProgress), transport)
+        Engine::from_env(Arc::new(LineProgress::stderr(Look::default())), transport)
     }
 
     pub(crate) fn with_parts(parts: EngineParts) -> Arc<Engine> {

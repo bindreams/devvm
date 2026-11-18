@@ -3,11 +3,14 @@
 //! The library reports [`Event`]s to a [`Progress`] sink and never draws anything itself. A sink decides how an event looks
 //! (lines, a terminal, a log file) and [`Fanout`] joins several.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::io::Write;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+mod lines;
+pub use lines::{LineProgress, Look};
 
 #[cfg(test)]
 #[path = "progress_tests.rs"]
@@ -114,18 +117,6 @@ impl dyn Progress + '_ {
     /// Begins a task; it ends when the guard is finished or dropped.
     pub fn task(&self, label: impl Into<String>, total: Total) -> Task<'_> {
         Task::begin(self, label, total)
-    }
-}
-
-/// Prints each note and output line on its own stderr line; tasks print nothing.
-pub struct StderrProgress;
-
-impl Progress for StderrProgress {
-    fn event(&self, event: &Event) {
-        if let Event::Note { text, .. } | Event::Output { line: text } = event {
-            let mut stderr = std::io::stderr().lock();
-            let _ = writeln!(stderr, "{text}");
-        }
     }
 }
 
@@ -253,4 +244,21 @@ impl Drop for Task<'_> {
 /// A byte count in binary units, as every renderer shows it: `512.0 MiB`, `4.8 GiB`.
 pub fn human_bytes(bytes: u64) -> String {
     bytesize::ByteSize(bytes).display().iec().to_string()
+}
+
+/// `text` with each control character written as an escape (`\r`, `\u{1b}`), so it stays on one line and cannot move a
+/// terminal's cursor. Everything else, a backslash included, is unchanged.
+pub fn escape_controls(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return Cow::Borrowed(text);
+    }
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            escaped.extend(c.escape_debug());
+        } else {
+            escaped.push(c);
+        }
+    }
+    Cow::Owned(escaped)
 }

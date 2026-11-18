@@ -17,12 +17,13 @@ use crate::backend::qemu::storage::QemuStorage;
 use crate::backend::{FileClaim, Storage};
 use crate::config::Config;
 use crate::host::{self, ProcessWatch, symlink_metadata_if_present};
-use crate::progress::{NullProgress, StderrProgress};
+use crate::progress::NullProgress;
 use crate::random;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::store::layers::ChainLease;
 use crate::test_groups::{Group, vm_group};
 use crate::test_support::fixtures::MemoryProgress;
+use crate::test_support::fixtures::stderr_progress;
 use crate::test_support::roots;
 use crate::{Dirs, ErrorKind};
 
@@ -61,7 +62,7 @@ pub fn qemu_sidecar(#[fixture(vm_group)] _group: &Group) -> Result<Arc<QemuInsta
     dirs.cache = cache.join("devvm");
     write_config(&dirs, &config);
     let transport = HttpTransport::new().map_err(|e| format!("cannot build the HTTP client: {e}"))?;
-    let progress = Arc::new(StderrProgress);
+    let progress = stderr_progress();
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
     LazyInstall::new(dirs, fetcher, progress, host::current())
         .get()
@@ -306,7 +307,7 @@ pub fn lazy_at(bin: &Path) -> Arc<LazyInstall> {
             qemu_path: Some(bin.to_path_buf()),
         },
     );
-    let progress = Arc::new(StderrProgress);
+    let progress = stderr_progress();
     let transport = HttpTransport::new().expect("an HTTP client");
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), Arc::new(transport), progress.clone()));
     let install = Arc::new(LazyInstall::new(dirs, fetcher, progress, host::current()));
