@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Stdio};
 use std::sync::Arc;
 
-use crate::exit::StderrProgress;
+use crate::progress::StderrProgress;
 use crate::store::layers::{BuildRequest, Built, LayerStore, SystemClock};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;

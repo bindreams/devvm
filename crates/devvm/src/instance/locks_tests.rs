@@ -5,10 +5,10 @@ use std::process::Stdio;
 
 use super::is_there;
 use crate::ErrorKind;
-use crate::exit::NullProgress;
 use crate::host::{self, Comparison};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::record::InstanceId;
+use crate::progress::NullProgress;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};

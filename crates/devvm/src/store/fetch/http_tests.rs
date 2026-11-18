@@ -57,7 +57,7 @@ use std::sync::mpsc;
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::{Artifact, Fetcher, HttpTransport};
-use crate::exit::{NullProgress, StderrProgress};
+use crate::progress::{NullProgress, StderrProgress};
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::test_support::http::{Behavior, TestServer};

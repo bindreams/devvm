@@ -5,12 +5,12 @@ use sha2::{Digest, Sha256 as Sha2};
 
 use super::{LinuxBuilder, definition_hash_of, probe_spec};
 use crate::backend::fake::FakeStorage;
-use crate::exit::NullProgress;
 use crate::guest::BaseBuilder;
 use crate::guest::GuestOs;
 use crate::guest::linux::LinuxGuest;
 use crate::guest::linux::seed::seed_files;
 use crate::media::SeedFile;
+use crate::progress::NullProgress;
 use crate::recipe::{PerArch, Pin, Source};
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::store::layers::Built;

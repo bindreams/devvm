@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::exit::Progress;
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result, random};
 
 #[cfg(test)]

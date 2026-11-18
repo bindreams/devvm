@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Barrier};
 
-use devvm::exit::{ExitStatus, ExitWidth, NullProgress};
+use devvm::exit::{ExitStatus, ExitWidth};
 use devvm::host_exit_width;
+use devvm::progress::NullProgress;
 use devvm::recipe::hash::LayerKey;
 use devvm::store::fetch::{Artifact, Fetcher, Response, Resume, Transport};
 use devvm::store::layers::{BuildRequest, Built, LayerStore, SystemClock};

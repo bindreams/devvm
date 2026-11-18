@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::{HeldIso, WimImage};
-use crate::exit::Progress;
 use crate::host::{FileId, Host, is_absent, remove_if_present, sweep};
+use crate::progress::Progress;
 use crate::store::fetch::hash_reader;
 use crate::store::lock::{FileLock, Mode};
 use crate::store::quarantine::quarantine_file;

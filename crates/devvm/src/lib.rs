@@ -22,6 +22,7 @@ pub(crate) mod instance;
 pub(crate) mod iso;
 pub(crate) mod lazy;
 pub(crate) mod media;
+pub mod progress;
 pub(crate) mod random;
 pub mod recipe;
 pub mod store;

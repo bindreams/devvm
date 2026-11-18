@@ -16,10 +16,10 @@ use crate::engine::engine_tests::{
 };
 use crate::engine::keys::read_target;
 use crate::engine::{LaunchHooks, LaunchStep};
-use crate::exit::NullProgress;
 use crate::host::symlink_metadata_if_present;
 use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
+use crate::progress::NullProgress;
 use crate::store::layers::layers_tests::{build_expiring, days, key, names, t0};
 use crate::test_support::claimed::claimed;
 use crate::test_support::fake_vm::{STARTED, answer, connect_when_up, started_port};

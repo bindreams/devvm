@@ -486,7 +486,7 @@ pub(crate) fn helper_engine(home: &Path, hooks: Arc<dyn LaunchHooks>) -> Arc<Eng
         backend: Some(Arc::new(FakeBackend::new(&TestHost).with_ssh_endpoint(server.addr()))),
         guests: Arc::new(ServedGuests::new(server)),
         clock: Arc::new(crate::store::layers::SystemClock),
-        progress: Arc::new(crate::exit::StderrProgress),
+        progress: Arc::new(crate::progress::StderrProgress),
         hooks,
         boot_bound: crate::engine::DEFAULT_BOOT_BOUND,
     })

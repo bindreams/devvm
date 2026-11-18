@@ -4,8 +4,8 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::sync::mpsc;
 
-use crate::exit::Progress;
 use crate::host::Comparison;
+use crate::progress::Progress;
 use crate::store::lock::{FileLock, Mode};
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};

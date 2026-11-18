@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use crate::exit::{NullProgress, Progress};
+use crate::progress::{NullProgress, Progress};
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Clock, GcReport, Generation, LayerRef, LayerStore, Reachability, SystemClock};
 use crate::store::lock::Mode;

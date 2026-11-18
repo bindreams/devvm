@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use crate::exit::Progress;
+use crate::progress::Progress;
 use crate::recipe::hash::LayerKey;
 use crate::store::lock::{FileLock, Mode};
 use crate::store::quarantine::{quarantine_file, quarantine_path};

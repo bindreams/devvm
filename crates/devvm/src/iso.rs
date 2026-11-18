@@ -8,8 +8,8 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::exit::Progress;
 use crate::host::{Host, is_absent};
+use crate::progress::Progress;
 use crate::recipe::ProductKey;
 use crate::{Error, ErrorKind, Result, Sha256};
 

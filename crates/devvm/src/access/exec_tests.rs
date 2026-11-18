@@ -7,7 +7,8 @@ use futures::FutureExt;
 use super::{Event, run_exec};
 use crate::ErrorKind;
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
-use crate::exit::{ExitStatus, ExitWidth, NullProgress, Report, status_json};
+use crate::exit::{ExitStatus, ExitWidth, Report, status_json};
+use crate::progress::NullProgress;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::sshd::Rig;
 

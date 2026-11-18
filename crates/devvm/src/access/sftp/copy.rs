@@ -3,7 +3,7 @@
 //! the copy is in [`plan`] or here; a side supplies how its own file system is read and written, and its wording.
 
 use super::plan::{self, Beyond, Conflict, Item, Kind, Place, Present, Rules, Source};
-use crate::exit::Progress;
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]

@@ -10,9 +10,9 @@ use std::sync::Arc;
 use super::Engine;
 use crate::backend::{Check, Detail};
 use crate::copy::Git;
-use crate::exit::Progress;
 use crate::host::Host;
 use crate::iso::{IsoMemo, Known, QuarantineOutcome};
+use crate::progress::Progress;
 use crate::store::fetch::Transport;
 use crate::{Arch, Dirs, ErrorKind, Result, Sha256, Unavailable};
 

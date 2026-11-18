@@ -50,9 +50,9 @@ use self::typed::Typed;
 use crate::access::paths::{check_guest_path, expand_guest_path};
 use crate::access::runtime;
 use crate::access::session::Inner;
-use crate::exit::Progress;
 use crate::guest::GuestOs;
 use crate::host::Host;
+use crate::progress::Progress;
 use crate::random;
 use crate::{Error, ErrorKind, Result};
 

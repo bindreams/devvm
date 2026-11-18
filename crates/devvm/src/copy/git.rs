@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use os_str_bytes::OsStringBytes;
 
-use crate::exit::Progress;
 use crate::host::{Host, is_absent};
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]

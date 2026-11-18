@@ -9,8 +9,8 @@ use tar::{Builder, EntryType, Header};
 
 use super::FULL_DISK_HINT;
 use super::git::{self, Git, Kind, Tracked};
-use crate::exit::Progress;
 use crate::host::{Entry, is_absent};
+use crate::progress::Progress;
 use crate::recipe::hash::{EntryContent, ManifestEntry};
 use crate::{Error, ErrorKind, Result, Sha256};
 

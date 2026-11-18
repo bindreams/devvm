@@ -2,8 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use crate::exit::Progress;
 use crate::host::symlink_metadata_if_present;
+use crate::progress::Progress;
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{
     BuildRequest, Built, ChainLease, Clock, Generation, IdSource, LayerMeta, LayerRef, LayerStore,
@@ -313,7 +313,7 @@ fn generation_ids_are_allocated_only_under_the_build_lock(#[fixture(unicode_home
         next: std::sync::atomic::AtomicU8::new(0xa0),
     });
     let clock = Arc::new(FakeClock::new(t0()));
-    let store = LayerStore::open_with_ids(&dirs, clock, Arc::new(crate::exit::NullProgress), ids).unwrap();
+    let store = LayerStore::open_with_ids(&dirs, clock, Arc::new(crate::progress::NullProgress), ids).unwrap();
     let lease = store
         .build(&request(key(1)), None, |staging| {
             assert_eq!(staging.generation, Generation::from_bytes([0xa0; 16]));
@@ -465,7 +465,7 @@ fn a_layer_expiring_between_the_stamp_and_the_read_back_is_still_returned(#[fixt
     let store = LayerStore::open(
         &dirs,
         Arc::new(StepClock(std::sync::Mutex::new(t0()))),
-        Arc::new(crate::exit::NullProgress),
+        Arc::new(crate::progress::NullProgress),
     )
     .unwrap();
     // The stamp is the third clock read (t0 + 2h); the read-back after publishing would be a fourth (t0 + 3h).

@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::backend::MachineRecord;
-use crate::exit::Progress;
 use crate::host::{Host, remove_tree};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
+use crate::progress::Progress;
 use crate::store::lock::FileLock;
 use crate::{Error, ErrorKind, Result};
 

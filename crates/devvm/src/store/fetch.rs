@@ -14,7 +14,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256 as Sha2};
 
-use crate::exit::Progress;
+use crate::progress::Progress;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result, Sha256};
 

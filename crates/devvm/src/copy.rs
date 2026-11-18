@@ -3,8 +3,8 @@
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use crate::exit::Progress;
 use crate::host::Host;
+use crate::progress::Progress;
 use crate::recipe::hash::CopyManifest;
 use crate::{Error, ErrorKind, Result};
 

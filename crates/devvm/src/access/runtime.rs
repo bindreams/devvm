@@ -10,8 +10,8 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use tokio::runtime::{Builder, Runtime};
 
-use crate::exit::Progress;
 use crate::lazy::Lazy;
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]

@@ -3,7 +3,8 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use devvm::exit::{ExitStatus, StderrProgress};
+use devvm::exit::ExitStatus;
+use devvm::progress::StderrProgress;
 use devvm::store::fetch::Transport;
 use devvm::{Check, Engine, Error, ErrorKind, Result};
 

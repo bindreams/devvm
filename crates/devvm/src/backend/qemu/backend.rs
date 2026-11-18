@@ -11,8 +11,8 @@ use super::sidecar::{LazyInstall, QemuInstall};
 use super::storage::QemuStorage;
 use crate::backend::{Backend, Check, Detail, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::{VmCommand, VmProcess};
-use crate::exit::Progress;
 use crate::host::{Hold, Host, is_absent, remove_tree};
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]

@@ -41,7 +41,7 @@ pub fn build_ctx(home: &Path, arch: crate::Arch) -> crate::guest::BuildCtx {
     crate::guest::BuildCtx {
         dirs: crate::Dirs::under(home),
         arch,
-        progress: std::sync::Arc::new(crate::exit::NullProgress),
+        progress: std::sync::Arc::new(crate::progress::NullProgress),
         clock: std::sync::Arc::new(crate::store::layers::SystemClock),
         resources: crate::recipe::Resources::default(),
         work: home.join("build"),
@@ -146,10 +146,10 @@ impl MemoryProgress {
     }
 }
 
-impl crate::exit::Progress for MemoryProgress {
+impl crate::progress::Progress for MemoryProgress {
     fn message(&self, text: &str) {
         if self.echo {
-            crate::exit::StderrProgress.message(text);
+            crate::progress::StderrProgress.message(text);
         }
         self.lines
             .lock()
@@ -171,7 +171,7 @@ impl ChannelProgress {
     }
 }
 
-impl crate::exit::Progress for ChannelProgress {
+impl crate::progress::Progress for ChannelProgress {
     fn message(&self, text: &str) {
         let _ = self.0.lock().unwrap().send(text.to_owned());
     }

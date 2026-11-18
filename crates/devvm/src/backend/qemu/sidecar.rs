@@ -16,9 +16,9 @@ use serde::Deserialize;
 
 use super::args::ArchFiles;
 use crate::config::Config;
-use crate::exit::Progress;
 use crate::host::{Host, SystemDirs};
 use crate::lazy::Lazy;
+use crate::progress::Progress;
 use crate::store::fetch::{Artifact, Fetcher};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Dirs, Error, ErrorKind, Result, Sha256};
