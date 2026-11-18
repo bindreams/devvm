@@ -42,15 +42,21 @@ function Write-Whole([string]$Target, [byte[]]$Bytes, [string[]]$ReadSids = @())
 }
 
 # Restarts now. While the system is still starting it refuses: ERROR_NOT_READY (21), RPC_S_SERVER_UNAVAILABLE (1722), or
-# ERROR_SHUTDOWN_IS_SCHEDULED (1190). The request is made again until it is accepted; any other refusal ends the boot. A
-# shutdown already in progress (1115) is the restart under way, as an accepted request is. shutdown.exe ends with the
-# Win32 error as its status, so no text, which is localized, is read.
+# ERROR_SHUTDOWN_IS_SCHEDULED (1190). The request is made again until it is accepted, and each refusal that differs from
+# the previous attempt's is sent, so a persistent one shows in the log; any other refusal ends the boot. A shutdown
+# already in progress (1115), a restart or a power-off, is as good as an accepted request: the name applies at the next
+# boot either way. shutdown.exe ends with the Win32 error as its status, so no text, which is localized, is read.
 function Restart-Now {
+    $previous = $null
     while ($true) {
         shutdown.exe /r /f /t 0
         $status = $LASTEXITCODE
         if ($status -in 0, 1115) { return }
         if ($status -notin 21, 1722, 1190) { throw "shutdown.exe /r ended with status $status" }
+        if ($status -ne $previous) {
+            Send-Line "DEVVM-RESTART-REFUSED=$status"
+            $previous = $status
+        }
         Start-Sleep -Milliseconds 200
     }
 }
@@ -87,12 +93,9 @@ try {
         if ((Test-Path -LiteralPath $renamedFile) -and ((Get-Content -LiteralPath $renamedFile -Raw) -eq $hostname)) {
             throw "the computer is still named $env:COMPUTERNAME after the rename to $hostname and a restart"
         }
-        # Autologon's domain is the local machine, whatever the computer is called, so the logon after the restart does not
-        # look for an account of the old name.
-        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultDomainName -Value '.'
         Rename-Computer -NewName $hostname -Force
         # The pending name is on the disk before the marker says a restart is owed for it.
-        $names = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName', $true)
+        $names = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName')
         try { $names.Flush() } finally { $names.Dispose() }
         Write-Whole $renamedFile ([Text.Encoding]::UTF8.GetBytes($hostname))
         Send-Line "DEVVM-RENAMED=$hostname"

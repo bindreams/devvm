@@ -609,10 +609,16 @@ fn nothing_the_base_records_carries_the_computers_name_at_the_build() {
         "-UserId $userSid",
     );
     assert!(!bootstrap.contains("-UserId 'user'"));
-    // Nothing in the base reads or writes the computer's name, so nothing keeps the name it has at the build.
-    let lowered = bootstrap.to_lowercase();
-    for name in ["computername", "machinename", "rename-computer"] {
-        assert!(!lowered.contains(name), "the base records the computer's name ({name})");
+    // Nothing in the base reads or writes the computer's name, so nothing keeps the name it has at the build. Comment
+    // lines say things, they do not do them.
+    let code = bootstrap
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    for name in ["computername", "machinename", "rename-computer", "hostname"] {
+        assert!(!code.contains(name), "the base records the computer's name ({name})");
     }
 }
 
@@ -898,11 +904,26 @@ fn the_boot_task_restarts_again_while_the_system_refuses_as_not_ready_and_fails_
         restart.contains("while ($true)") && restart.contains("shutdown.exe /r /f /t 0"),
         "{restart}"
     );
-    // Accepted, or a shutdown already under way (ERROR_SHUTDOWN_IN_PROGRESS, 1115): the restart is coming.
+    // Accepted, or a shutdown already under way (ERROR_SHUTDOWN_IN_PROGRESS, 1115: a restart or a power-off): the rename
+    // applies at the next boot either way.
     assert_before(restart, "$status = $LASTEXITCODE", "-in 0, 1115) { return }");
     // Refused for now: ERROR_NOT_READY (21), RPC_S_SERVER_UNAVAILABLE (1722), ERROR_SHUTDOWN_IS_SCHEDULED (1190).
     assert_before(restart, "-in 0, 1115) { return }", "-notin 21, 1722, 1190) { throw");
     assert_before(restart, "-notin 21, 1722, 1190) { throw", "Start-Sleep");
+    // A refusal that goes on is visible in the log: one line each time the status differs from the previous attempt's.
+    assert_before(restart, "-notin 21, 1722, 1190) { throw", "if ($status -ne $previous)");
+    assert_before(
+        restart,
+        "if ($status -ne $previous)",
+        "Send-Line \"DEVVM-RESTART-REFUSED=$status\"",
+    );
+    assert_before(
+        restart,
+        "Send-Line \"DEVVM-RESTART-REFUSED=$status\"",
+        "$previous = $status",
+    );
+    assert_before(restart, "$previous = $status", "Start-Sleep");
+    assert!(restart.contains("$previous = $null"), "{restart}");
     assert!(restart.contains("status $status"), "the refusal is named: {restart}");
     for bound in ["$tries", "$attempt", "-lt ", "-gt ", "Stopwatch", "Get-Date", "timeout"] {
         assert!(!restart.contains(bound), "the retry has no cap ({bound}): {restart}");
@@ -926,27 +947,9 @@ fn the_boot_task_flushes_the_pending_computer_name_before_it_records_the_rename(
     assert_before(rename, "Rename-Computer", r"Control\ComputerName\ComputerName'");
     assert_before(rename, r"Control\ComputerName\ComputerName'", ".Flush()");
     assert_before(rename, ".Flush()", "Write-Whole $renamedFile");
-}
-
-#[skuld::test]
-fn the_boot_task_sets_the_autologon_domain_to_the_local_machine_in_the_step_of_the_rename() {
-    let task = rendered("boot-task.ps1");
-    let rename = section(
-        &task,
-        "if ($env:COMPUTERNAME -ne $hostname) {",
-        "
-    }
-",
-    );
-    // The domain of the autologon is `.`, whatever the computer is called: the logon after the restart does not look for
-    // an account of the old name.
-    assert!(
-        rename.contains(
-            r"Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultDomainName -Value '.'"
-        ),
-        "{rename}"
-    );
-    assert_before(rename, "-Name DefaultDomainName", "Restart-Now");
+    // The key is opened read-only: a flush needs no write access.
+    assert!(rename.contains(r"Control\ComputerName\ComputerName')"), "{rename}");
+    assert!(!rename.contains(r"ComputerName', $true)"), "{rename}");
 }
 
 #[skuld::test]
