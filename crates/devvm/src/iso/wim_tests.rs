@@ -35,7 +35,7 @@ fn image(index: u32, name: &str, edition_id: &str, build: Option<u32>, arch: Wim
         index,
         name: name.to_owned(),
         edition_id: edition_id.to_owned(),
-        build,
+        build: build.map(|build| build.to_string()),
         arch,
         language: language.to_owned(),
     }
@@ -98,11 +98,11 @@ fn the_ltsc_evaluation_image_is_listed() {
 
 #[skuld::test]
 fn the_build_is_the_one_of_the_images_own_version() {
-    assert_eq!(images("wim-win11-eval-en-us.xml")[0].build, Some(26200));
-    assert_eq!(images("wim-win11-eval-de-de.xml")[0].build, Some(26200));
+    assert_eq!(images("wim-win11-eval-en-us.xml")[0].build_number(), Some(26200));
+    assert_eq!(images("wim-win11-eval-de-de.xml")[0].build_number(), Some(26200));
     let builds: Vec<Option<u32>> = images("wim-ltsc-2024-three-images.xml")
         .iter()
-        .map(|image| image.build)
+        .map(WimImage::build_number)
         .collect();
     assert_eq!(builds, [Some(26100); 3]);
 }
@@ -114,13 +114,14 @@ fn an_image_with_no_version_has_no_build() {
 }
 
 #[skuld::test]
-fn a_build_that_is_not_a_number_is_no_build_and_does_not_refuse_the_list() {
-    for build in ["abc", "", "  "] {
+fn a_build_that_is_not_a_number_keeps_its_text_and_does_not_refuse_the_list() {
+    for (build, text) in [("abc", Some("abc")), (" 12x ", Some("12x")), ("", None), ("  ", None)] {
         let list = format!(
             "<WIM><IMAGE INDEX=\"4\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><VERSION><BUILD>{build}</BUILD></VERSION><LANGUAGES><DEFAULT>en-US</DEFAULT></LANGUAGES></WINDOWS></IMAGE></WIM>"
         );
         let images = parse_image_list(list.as_bytes(), "install.wim").unwrap();
-        assert_eq!(images[0].build, None, "BUILD `{build}`");
+        assert_eq!(images[0].build.as_deref(), text, "BUILD `{build}`");
+        assert_eq!(images[0].build_number(), None, "BUILD `{build}`");
     }
 }
 

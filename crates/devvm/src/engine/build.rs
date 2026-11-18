@@ -193,7 +193,7 @@ impl BuildRoot {
                 sha256: root.sha256,
                 image_index: root.image.index,
                 image_name: root.image.name.clone(),
-                product_key: root.product_key.clone(),
+                product_key: root.product_key().cloned(),
             },
         }
     }

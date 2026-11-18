@@ -26,7 +26,7 @@ fn only_image() -> Vec<WimImage> {
         index: 1,
         name: "Windows 11 Enterprise Evaluation".to_owned(),
         edition_id: "EnterpriseEval".to_owned(),
-        build: Some(26100),
+        build: Some("26100".to_owned()),
         arch: WimArch::X64,
         language: "en-US".to_owned(),
     }]

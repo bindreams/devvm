@@ -74,7 +74,7 @@ fn edition_of(id: &str, name: &str) -> WimImage {
 
 fn built(build: u32, image: WimImage) -> WimImage {
     WimImage {
-        build: Some(build),
+        build: Some(build.to_string()),
         ..image
     }
 }
@@ -151,6 +151,13 @@ fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_
             edition_of("EnterpriseS", "No build"),
             "edition id `EnterpriseS`, no build",
         ),
+        (
+            WimImage {
+                build: Some("26x".to_owned()),
+                ..edition_of("EnterpriseS", "Malformed build")
+            },
+            "edition id `EnterpriseS`, BUILD `26x` is not a number",
+        ),
         (edition_of("", "No id"), "no edition id"),
     ] {
         let error = resolve_product_key(&image, None).unwrap_err();
@@ -178,17 +185,27 @@ fn a_keyed_iso_root_has_the_key_its_image_is_installed_with(#[fixture(unicode_ho
     let given = ProductKey::parse(KEY).unwrap();
     let ltsc = Some("Windows 11 IoT Enterprise LTSC 2024");
     let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100));
-    assert_eq!(root(&three, ltsc, None).unwrap().product_key, generic);
-    assert_eq!(
-        root(&three, ltsc, Some(&given)).unwrap().product_key,
-        Some(given.clone())
-    );
-    assert_eq!(root(&one, None, None).unwrap().product_key, None);
+    assert_eq!(root(&three, ltsc, None).unwrap().product_key(), generic.as_ref());
+    assert_eq!(root(&three, ltsc, Some(&given)).unwrap().product_key(), Some(&given));
+    assert_eq!(root(&one, None, None).unwrap().product_key(), None);
+
+    let error = root(&one, None, Some(&given)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(
-        root(&one, None, Some(&given)).is_err(),
-        "an evaluation edition takes no key"
+        error
+            .message()
+            .contains("an evaluation edition; `product-key` in `from:` must not be set"),
+        "{error}"
     );
-    assert!(root(&three, Some("Windows 11 IoT Enterprise Subscription LTSC 2024"), None).is_err());
+
+    let error = root(&three, Some("Windows 11 IoT Enterprise Subscription LTSC 2024"), None).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(
+        error.message().contains(
+            "devvm has no generic product key for the edition `Windows 11 IoT Enterprise Subscription LTSC 2024`"
+        ) && error.message().contains("set `product-key` in `from:`"),
+        "{error}"
+    );
 }
 
 // The boot patch ======================================================================================================

@@ -116,16 +116,23 @@ pub(crate) struct IsoRoot {
     pub sha256: Sha256,
     /// The image the recipe's `edition` selects: what the build installs, so what the key says.
     pub image: WimImage,
-    /// The key Setup installs `image` with, as [`resolve_product_key`] resolved it when the ISO was keyed: `None` only
-    /// for an evaluation edition.
-    pub product_key: Option<ProductKey>,
+    /// The key Setup installs `image` with; only [`key_iso`] sets it.
+    product_key: Option<ProductKey>,
     iso: HeldIso,
 }
 
-/// The content hash of the installer ISO at `iso`, the image `edition` selects in it (refusing one that is not x64) and
-/// the key that image is installed with ([`resolve_product_key`] of the recipe's `product_key`), with the ISO held. A
-/// hash and an image list the memo has for the ISO are used while the ISO is unchanged; otherwise
-/// the ISO is read once, and the memo remembers both.
+impl IsoRoot {
+    /// The key Setup installs `image` with, as [`resolve_product_key`] resolved it when the ISO was keyed: `None` only
+    /// for an evaluation edition.
+    pub(crate) fn product_key(&self) -> Option<&ProductKey> {
+        self.product_key.as_ref()
+    }
+}
+
+/// The content hash of the installer ISO at `iso`, the image `edition` selects in it (refusing one that is not x64)
+/// and the key that image is installed with ([`resolve_product_key`] of the recipe's `product_key`), with the ISO
+/// held. A hash and an image list the memo has for the ISO are used while the ISO is unchanged; otherwise the ISO is
+/// read once, and the memo remembers both.
 pub(crate) fn key_iso(
     host: &dyn Host,
     memo: &IsoMemo,
@@ -265,13 +272,14 @@ fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Re
     if let Some(key) = product_key {
         return Ok(Some(key.clone()));
     }
-    ProductKey::generic_for(&image.edition_id, image.build)
+    ProductKey::generic_for(&image.edition_id, image.build_number())
         .map(Some)
         .ok_or_else(|| {
-            let detail = match (image.edition_id.as_str(), image.build) {
-                ("", _) => "no edition id".to_owned(),
-                (id, None) => format!("edition id `{id}`, no build"),
-                (id, Some(build)) => format!("edition id `{id}`, build {build}"),
+            let detail = match (image.edition_id.as_str(), image.build.as_deref(), image.build_number()) {
+                ("", ..) => "no edition id".to_owned(),
+                (id, None, _) => format!("edition id `{id}`, no build"),
+                (id, Some(_), Some(build)) => format!("edition id `{id}`, build {build}"),
+                (id, Some(text), None) => format!("edition id `{id}`, BUILD `{text}` is not a number"),
             };
             Error::new(
                 ErrorKind::Recipe,

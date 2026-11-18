@@ -71,18 +71,25 @@ pub(crate) struct WimImage {
     pub name: String,
     /// `EDITIONID`, such as `EnterpriseS`; empty when the image has none.
     pub edition_id: String,
-    /// `VERSION`'s `BUILD`, such as `26100`; `None` when the image has no version or one that is not a number. An edition id alone does not say
-    /// which generation of Windows the image is (`EnterpriseS` is five of them), so a key follows both.
+    /// `VERSION`'s `BUILD` as the image has it, such as `26100`; `None` when the image has none. An edition id alone
+    /// does not say which generation of Windows the image is (`EnterpriseS` is five of them), so a key follows both.
+    /// Read it with [`WimImage::build_number`]: a text that is not a number must not fail the image list, only the key
+    /// of an image that needs one.
     ///
     /// A list from before this field was kept is not read as an image with no build (the field has no default).
     #[serde(deserialize_with = "Option::deserialize")]
-    pub build: Option<u32>,
+    pub build: Option<String>,
     pub arch: WimArch,
     /// The image's default language, such as `en-US`.
     pub language: String,
 }
 
 impl WimImage {
+    /// The image's build as a number; `None` when it has none or its text is not a number.
+    pub(crate) fn build_number(&self) -> Option<u32> {
+        self.build.as_deref().and_then(|text| text.parse().ok())
+    }
+
     /// Whether the image is an evaluation edition: its edition id names an evaluation.
     pub(crate) fn is_evaluation(&self) -> bool {
         names_an_evaluation(&self.edition_id)
@@ -359,8 +366,12 @@ impl Partial {
             .trim()
             .parse::<u32>()
             .map_err(|_| missing("numeric ARCH"))?;
-        // A build that is not a number is no build: only an image that needs a key by its build is refused for it.
-        let build = self.build.as_deref().and_then(|text| text.trim().parse::<u32>().ok());
+        let build = self
+            .build
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
         let language = self
             .language
             .clone()

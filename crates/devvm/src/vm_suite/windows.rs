@@ -54,8 +54,8 @@ pub(super) struct WindowsBase {
     pub roots: Roots,
     /// Whether the image the recipe selects is an evaluation edition: what the ISO's image list says, as the build read it.
     pub evaluation: bool,
-    /// The key the build installed the base with: the recipe's, or else the generic key devvm knows for the image. `None`
-    /// for an evaluation edition.
+    /// The key the build installed the base with: the recipe's, or else the generic key devvm knows for the image.
+    /// `None` for an evaluation edition.
     pub product_key: Option<ProductKey>,
 }
 
@@ -108,7 +108,7 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
     let image = engine
         .build(&recipe, &BuildOptions::default())
         .map_err(|e| format!("cannot build the Windows base from {}: {e}", iso.display()))?;
-    let (evaluation, product_key) = installed_with(&roots.dirs, &recipe, iso)?;
+    let (evaluation, product_key) = installed_with(&roots.dirs, &recipe)?;
     let (license_read_at, _) = progress
         .messages_at()
         .into_iter()
@@ -127,12 +127,14 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
     })
 }
 
-/// Whether the image of `iso` that the tests build from is an evaluation edition, and the key the build installs it
-/// with: what the build's own keying of the recipe's ISO resolves, by the image list the build left in the memo of
-/// `dirs`.
-fn installed_with(dirs: &Dirs, recipe: &Recipe, iso: &Path) -> Result<(bool, Option<ProductKey>), String> {
+/// Whether the image of the recipe's ISO that the tests build from is an evaluation edition, and the key the build
+/// installs it with: what the build's own keying of the recipe's ISO resolves, by the image list the build left in the
+/// memo of `dirs`.
+fn installed_with(dirs: &Dirs, recipe: &Recipe) -> Result<(bool, Option<ProductKey>), String> {
     let Source::Iso {
-        edition, product_key, ..
+        path: iso,
+        edition,
+        product_key,
     } = recipe.flatten().map_err(|e| e.to_string())?.root
     else {
         return Err("the Windows recipe does not start from an ISO".to_owned());
@@ -140,13 +142,13 @@ fn installed_with(dirs: &Dirs, recipe: &Recipe, iso: &Path) -> Result<(bool, Opt
     let root = key_iso(
         host::current(),
         &IsoMemo::new(dirs),
-        iso,
+        &iso,
         edition.as_deref(),
         product_key.as_ref(),
         &MemoryProgress::default(),
     )
     .map_err(|e| format!("cannot read the edition of {}: {e}", iso.display()))?;
-    Ok((root.image.is_evaluation(), root.product_key.clone()))
+    Ok((root.image.is_evaluation(), root.product_key().cloned()))
 }
 
 /// One instance of the base, started once per test process; it runs until the process ends.
