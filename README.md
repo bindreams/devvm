@@ -46,7 +46,7 @@ from a recipe, starts it and prints its name; `ssh`, `cp`, `stop`, `start` and `
 A guest's hostname is `devvm-` plus the first 8 hex digits of the instance id (`devvm-0a1b2c3d`; `ls` shows it as
 HOSTNAME), not the name. It is set at first boot and kept across `stop`/`start`; a Windows guest restarts once to take
 it. Two instances collide with chance 2^-32; devvm does not check. A Windows base built before this version keeps
-`DEVVM`; `rm` the instance and `up` again.
+`DEVVM` while `ls` shows `devvm-` and 8 hex digits for it; `rm` the instance and `up` again.
 
 Examples are for Git Bash. Git Bash rewrites arguments that look like paths (`/tmp/x`, `/c`), also after `--`: set
 `MSYS_NO_PATHCONV=1` for such a command, and write its local paths as `C:/x` or relative ones.

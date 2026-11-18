@@ -118,7 +118,8 @@ fn windows_the_first_command_after_start_stop_start_and_reboot_is_in_session_1(
 const NAMES: &str = "\"$(hostname) $env:COMPUTERNAME $([Environment]::MachineName)\"";
 
 /// The domain autologon logs on to; the base build writes `.`. The assert reads whether Winlogon rewrote it after the
-/// rename.
+/// rename. A rewrite at the renaming boot's autologon shows as a boot timeout, not as this assert (measured 2026-11-18
+/// on CI: no rewrite).
 const WINLOGON_DOMAIN: &str =
     r"(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon').DefaultDomainName";
 
