@@ -52,8 +52,9 @@ fn windows_a_powershell_command_as_argv0_exits_127_naming_pwsh_c(
         let seen = target.run(&Case::new(&[name]));
         assert_eq!(seen.ended, Ended::Code(127), "{name}: {}", seen.stderr_text());
         assert!(
-            seen.stderr_text()
-                .contains(&format!("run it with `pwsh -c {name} ...`")),
+            seen.stderr_text().contains(&format!(
+                "run it with pwsh -c, e.g. devvm ssh <guest> -- pwsh -c \"{name} ...\""
+            )),
             "{name}: {}",
             seen.stderr_text()
         );

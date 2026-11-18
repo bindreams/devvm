@@ -96,7 +96,7 @@ fn a_program_that_cannot_start_and_a_directory_that_cannot_be_entered_exit_126_n
     let text = wrap(&cmd).unwrap();
     assert!(
         text.contains(
-            "try { Set-Location -LiteralPath 'C:/x' } catch { [Console]::Error.WriteLine('devvm: working directory C:/x: ' + $_.Exception.Message); exit 126 }"
+            "try { Set-Location -LiteralPath $cwd } catch { [Console]::Error.WriteLine('devvm: working directory ' + $cwd + ': ' + $_.Exception.Message); exit 126 }"
         ),
         "{text}"
     );
@@ -114,10 +114,8 @@ fn wrap_sets_the_working_directory_literally() {
     let mut cmd = command(&["tool"]);
     cmd.cwd = Some("C:\\a b\\it's [x]*".to_owned());
     let text = wrap(&cmd).unwrap();
-    assert!(
-        text.contains("Set-Location -LiteralPath 'C:\\a b\\it''s [x]*'"),
-        "{text}"
-    );
+    assert!(text.contains("$cwd = 'C:\\a b\\it''s [x]*'\n"), "{text}");
+    assert!(text.contains("Set-Location -LiteralPath $cwd"), "{text}");
     assert!(
         text.contains("$psi.WorkingDirectory = (Get-Location).ProviderPath"),
         "{text}"
@@ -136,7 +134,11 @@ fn wrap_sets_the_working_directory_literally() {
 fn wrap_exits_127_naming_a_missing_program() {
     let text = script(&["no such tool"]);
     assert!(
-        text.contains("[Console]::Error.WriteLine('devvm: ' + $program + ': command not found'); exit 127 }"),
+        text.contains(
+            "': command not found' }
+[Console]::Error.WriteLine('devvm: ' + $program + $why); exit 127 }
+"
+        ),
         "{text}"
     );
     assert!(text.contains("$program = 'no such tool'\n"), "{text}");
@@ -153,14 +155,19 @@ fn a_name_that_is_a_powershell_command_exits_127_naming_pwsh_c() {
         ),
         "{text}"
     );
+    // The hint is fixed text around the name as typed: nothing is computed from it.
     assert!(
         text.contains(
-            "[Console]::Error.WriteLine('devvm: ' + $program + ': a PowerShell command, not a program; run it with `pwsh -c ' + $run + ' ...`'); exit 127"
+            r#"': a PowerShell command, not a program; run it with pwsh -c, e.g. devvm ssh <guest> -- pwsh -c "' + $program + ' ..."'"#
         ),
         "{text}"
     );
-    // Either way the status is 127, and the lookup is on the branch that already exits 127.
-    assert_eq!(text.matches("exit 127").count(), 2, "{text}");
+    assert!(
+        !text.contains("$run") && !text.contains("-replace") && !text.contains("-match"),
+        "{text}"
+    );
+    // Either way the status is 127, from one place, on the branch that already exits 127.
+    assert_eq!(text.matches("exit 127").count(), 1, "{text}");
     assert_eq!(text.matches("Get-Command").count(), 1, "{text}");
 }
 
@@ -178,39 +185,41 @@ fn the_lookup_finds_no_function_of_the_script_and_cannot_end_it_by_an_error() {
         at("} catch { }"),
     );
     assert!(try_at < remove && remove < get && get < catch, "{lookup}");
-    // Both ends are after the `catch`: 127 holds whatever the lookup did.
-    assert!(lookup.match_indices("exit 127").all(|(end, _)| end > catch), "{lookup}");
+    // The end is after the `catch`, and what lies between is two statements that only join strings: nothing there can
+    // throw, so 127 holds whatever the lookup did.
+    assert_eq!(lookup.matches("exit 127").count(), 1, "{lookup}");
+    let after = &lookup[catch + "} catch { }".len()..];
+    let after = &after[..after.find("exit 127").unwrap()];
+    assert!(
+        after.lines().all(|line| {
+            line.is_empty()
+                || line.starts_with("$why = if ($command) { ': a PowerShell command, ")
+                || line.starts_with("[Console]::Error.WriteLine('devvm: ' + $program + $why); ")
+        }),
+        "{lookup}"
+    );
 }
 
 #[skuld::test]
-fn the_pwsh_hint_names_the_command_as_powershell_needs_it() {
-    let text = script(&["it's"]);
-    assert!(text.contains("$program = 'it''s'\n"), "{text}");
-    // A bare word stays one; anything else is run as a single-quoted literal, with `&`, a quote doubled in each of the
-    // four spellings PowerShell reads as one.
-    let run = [
-        r"$run = if ($program -match '^[\w.\\/:-]+\z') { $program } else { '& ''' + ($program -replace '([''",
-        "\u{2018}-\u{201b}",
-        r"])', '$1$1') + '''' }",
-    ]
-    .concat();
-    assert!(text.contains(&run), "{text}");
-}
-
-#[skuld::test]
-fn argv0_is_in_the_script_once_for_a_user_and_for_an_elevated_command() {
+fn argv0_and_the_working_directory_are_in_the_script_once_for_a_user_and_for_an_elevated_command() {
     for run_as in [RunAs::User, RunAs::Elevated] {
         let mut cmd = command(&["zqzqzqzq", "arg"]);
+        cmd.cwd = Some(r"C:\wxwxwxwx".to_owned());
         cmd.run_as = run_as;
         let text = wrap(&cmd).unwrap();
         assert_eq!(text.matches("zqzqzqzq").count(), 1, "{run_as:?}: {text}");
+        assert_eq!(text.matches("wxwxwxwx").count(), 1, "{run_as:?}: {text}");
     }
 }
 
 #[skuld::test]
-fn a_command_whose_program_name_fit_before_the_lookup_still_wraps() {
+fn a_command_with_a_long_program_name_or_working_directory_still_wraps() {
     // The script held argv[0] three times before the lookup: a name of 9,000 characters was 27,000 units of it and fit.
     assert!(wrap(&command(&[&"x".repeat(9_000), "arg"])).is_ok());
+    // The working directory is written once: twice, 16,000 characters would be 32,000 units and over the limit.
+    let mut cmd = command(&["tool"]);
+    cmd.cwd = Some(format!(r"C:\{}", "d".repeat(16_000)));
+    assert!(wrap(&cmd).is_ok());
 }
 
 #[skuld::test]
