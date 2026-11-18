@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::progress::owned::Owned;
 use crate::progress::{Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint};
 
 #[cfg(test)]
@@ -51,7 +52,11 @@ impl Look {
 /// lines go out under one lock, so threads never interleave inside a line. Controls in any text are escaped, so a
 /// record is one line.
 pub struct LineProgress {
-    state: Mutex<State>,
+    /// An event that a thread sends while it holds this is skipped: a panic inside a write reaches the panic hook on
+    /// that thread, which stops the screen.
+    state: Owned<State>,
+    /// Set by [`LineProgress::stop`]; read under `state`, so no line is written after the stop returns.
+    stopped: AtomicBool,
     look: Look,
 }
 
@@ -75,12 +80,25 @@ impl LineProgress {
 
     pub fn to(out: Box<dyn Write + Send>, look: Look) -> LineProgress {
         LineProgress {
-            state: Mutex::new(State {
+            state: Owned::new(State {
                 out,
                 tasks: HashMap::new(),
             }),
+            stopped: AtomicBool::new(false),
             look,
         }
+    }
+
+    /// Writes nothing from now on, and returns once a line being written by another thread is out. On the thread
+    /// that is writing one, it does not wait. For the command line's ending and its panic hook, which write below the
+    /// last line.
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        drop(self.state.lock());
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
     }
 }
 
@@ -97,7 +115,10 @@ impl State {
 impl Progress for LineProgress {
     fn event(&self, event: &Event) {
         let look = self.look;
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut state) = self.state.lock() else { return };
+        if self.is_stopped() {
+            return;
+        }
         match event {
             Event::Note { level, text } => {
                 let text = escape_controls(text);

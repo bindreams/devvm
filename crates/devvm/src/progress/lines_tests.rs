@@ -287,3 +287,80 @@ fn devvm_verbose_says_whether_the_environment_asks_for_step_output() {
         assert_eq!(says(value), expected, "{value:?}");
     }
 }
+
+#[skuld::test]
+fn a_stopped_screen_writes_nothing_more() {
+    let (progress, out) = sink(PLAIN);
+    progress.message("before");
+    progress.stop();
+    progress.message("after");
+    progress.warn("after");
+    assert_eq!(out.lines(), ["before"]);
+}
+
+/// What a [`Slow`] writer runs inside its next write.
+type Inside = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+
+/// A writer that runs one closure inside its next write, as a write that is in flight when the hook stops the screen.
+struct Slow {
+    inside: Inside,
+    written: Buffer,
+}
+
+impl Write for Slow {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let inside = self.inside.lock().unwrap().take();
+        if let Some(inside) = inside {
+            inside();
+        }
+        self.written.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn slow(look: Look) -> (Arc<LineProgress>, Buffer, Inside) {
+    let (written, inside) = (Buffer::default(), Arc::default());
+    let writer = Slow {
+        inside: Arc::clone(&inside),
+        written: written.clone(),
+    };
+    (Arc::new(LineProgress::to(Box::new(writer), look)), written, inside)
+}
+
+/// The panic hook stops the screen while a thread is writing a line: the stop returns once that line is out, and
+/// nothing is written after it.
+#[skuld::test]
+fn stopping_waits_for_the_line_being_written_and_drops_every_later_one() {
+    let (progress, out, inside) = slow(PLAIN);
+    let (in_write, seen) = std::sync::mpsc::channel();
+    let watched = Arc::clone(&progress);
+    *inside.lock().unwrap() = Some(Box::new(move || {
+        in_write.send(()).unwrap();
+        // The stop has set its flag; it is to wait for this write.
+        while !watched.is_stopped() {
+            std::thread::yield_now();
+        }
+    }));
+    std::thread::scope(|scope| {
+        scope.spawn(|| progress.message("in flight"));
+        seen.recv().unwrap();
+        progress.stop();
+        assert_eq!(out.lines(), ["in flight"], "the stop came after the write");
+    });
+    progress.message("later");
+    assert_eq!(out.lines(), ["in flight"]);
+}
+
+/// A panic inside a write reaches the hook on the writing thread, which holds the screen's lock.
+#[skuld::test]
+fn stopping_on_the_thread_that_is_writing_does_not_wait_for_itself() {
+    let (progress, out, inside) = slow(PLAIN);
+    let hook = Arc::clone(&progress);
+    *inside.lock().unwrap() = Some(Box::new(move || hook.stop()));
+    progress.message("the write that panics");
+    progress.message("later");
+    assert_eq!(out.lines(), ["the write that panics"]);
+}

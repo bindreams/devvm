@@ -7,7 +7,7 @@ use devvm::exit::{ExitStatus, ExitWidth};
 use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
 use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
-use crate::output::{Active, Panicked, Run};
+use crate::output::{Active, Panicked, Run, Shown};
 use crate::tty::{Pace, TtyProgress};
 
 const MIB: u64 = 1 << 20;
@@ -501,7 +501,7 @@ fn a_report_that_changes_no_text_draws_once() {
         let before = probe.draws.load(Ordering::SeqCst);
         advance(&tty, task, position);
         let drew = probe.draws.load(Ordering::SeqCst) - before;
-        assert!(drew <= 1, "{drew} draws for one report");
+        assert_eq!(drew, 1, "draws for one report");
     }
 }
 
@@ -577,7 +577,7 @@ fn run_with_screen(tick: Option<Duration>) -> (Arc<Run>, Arc<TtyProgress>, InMem
     let run = Arc::new(Run::new());
     run.begin(Active {
         log: None,
-        tty: Some(tty.clone()),
+        screen: Some(Shown::Tty(tty.clone())),
     });
     (run, tty, term, probe)
 }
@@ -608,6 +608,23 @@ fn end_with_error(run: &Run, term: &InMemoryTerm) -> i32 {
 /// The draws in flight on `tty`.
 fn in_flight(tty: &TtyProgress) -> usize {
     *tty.shared.flight.count.lock().unwrap()
+}
+
+/// The ending writes the error itself, below the bars it has taken off: what the screen is told afterwards draws
+/// nothing over it.
+#[skuld::test]
+fn the_ending_stops_the_screen_before_it_writes_the_error() {
+    let (run, tty, term, _probe) = run_with_screen(None);
+    let progress: &dyn Progress = &*tty;
+    let _task = progress.task("building x", Total::Unknown);
+    assert_eq!(lines(&term), ["- building x"]);
+
+    end_with_error(&run, &term);
+    let late = progress.task("late", Total::Items(2));
+    late.set(1);
+    progress.message("a note");
+
+    assert_eq!(lines(&term), ["devvm-error: io: bad"]);
 }
 
 /// Every report is drawn, so the rows the screen says it drew are the bars on the terminal.

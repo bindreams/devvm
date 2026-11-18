@@ -76,32 +76,37 @@ pub(crate) fn sinks(verbose: bool) -> Sinks {
         colour: stderr_colour(),
         verbose,
     };
-    let (screen, tty): (Arc<dyn Progress>, Option<Arc<TtyProgress>>) = match choose(&Facts::of_stderr()) {
+    let (screen, shown): (Arc<dyn Progress>, Shown) = match choose(&Facts::of_stderr()) {
         Screen::Tty => {
             let tty = Arc::new(TtyProgress::stderr(look));
-            (tty.clone(), Some(tty))
+            (tty.clone(), Shown::Tty(tty))
         }
-        Screen::Lines => (Arc::new(LineProgress::stderr(look)), None),
+        Screen::Lines => {
+            let lines = Arc::new(LineProgress::stderr(look));
+            (lines.clone(), Shown::Lines(lines))
+        }
     };
-    let dirs = Dirs::from_env().ok();
-    let sinks = compose(screen, dirs.as_ref());
+    let sinks = compose(screen, Dirs::from_env().as_ref());
     RUN.begin(Active {
         log: sinks.log.clone(),
-        tty,
+        screen: Some(shown),
     });
     sinks
 }
 
-/// `screen` and the log in `dirs`. A log that cannot be made is one warning on the screen, and the command goes on
-/// without it.
-fn compose(screen: Arc<dyn Progress>, dirs: Option<&Dirs>) -> Sinks {
-    let log = dirs.and_then(|dirs| match FileLog::create(&dirs.logs(), Arc::new(SystemClock)) {
+/// `screen` and the log in `dirs`. A log that cannot be made, or a state directory that cannot be found, is one warning
+/// on the screen, and the command goes on without it.
+fn compose(screen: Arc<dyn Progress>, dirs: std::result::Result<&Dirs, &Error>) -> Sinks {
+    let made = dirs
+        .map_err(Error::clone)
+        .and_then(|dirs| FileLog::create(&dirs.logs(), Arc::new(SystemClock)));
+    let log = match made {
         Ok(log) => Some(Arc::new(log)),
         Err(e) => {
             screen.warn(e.message());
             None
         }
-    });
+    };
     let mut all = vec![screen];
     if let Some(log) = &log {
         all.push(log.clone());
@@ -114,11 +119,37 @@ fn compose(screen: Arc<dyn Progress>, dirs: Option<&Dirs>) -> Sinks {
 
 // Ending ==============================================================================================================
 
-/// What the run in progress holds that its ending needs: the log to name and record in, and the terminal screen to stop
-/// before anything is written below it.
+/// What the run in progress holds that its ending needs: the log to name and record in, and the screen to stop before
+/// anything is written below it.
+#[derive(Clone)]
 pub(crate) struct Active {
     pub(crate) log: Option<Arc<FileLog>>,
-    pub(crate) tty: Option<Arc<TtyProgress>>,
+    pub(crate) screen: Option<Shown>,
+}
+
+/// The screen of a run, which is stopped before the error is written.
+#[derive(Clone)]
+pub(crate) enum Shown {
+    Tty(Arc<TtyProgress>),
+    Lines(Arc<LineProgress>),
+}
+
+impl Shown {
+    /// Stops drawing and takes what was drawn off the screen.
+    fn quiet(&self) {
+        match self {
+            Shown::Tty(tty) => tty.quiet(),
+            Shown::Lines(lines) => lines.stop(),
+        }
+    }
+
+    /// Stops drawing, for a panic hook that may be on a thread that holds the screen's lock.
+    fn panicked(&self) {
+        match self {
+            Shown::Tty(tty) => tty.panicked(),
+            Shown::Lines(lines) => lines.stop(),
+        }
+    }
 }
 
 /// The run in progress, and who ends it. The command line runs one command at a time per process: a run replaces
@@ -224,8 +255,8 @@ impl Run {
             Err(TryLockError::WouldBlock) => None,
         };
         let active = active.as_deref().and_then(Option::as_ref);
-        if let Some(tty) = active.and_then(|active| active.tty.as_deref()) {
-            tty.panicked();
+        if let Some(screen) = active.and_then(|active| active.screen.as_ref()) {
+            screen.panicked();
         }
         let log = active.and_then(|active| active.log.as_deref());
         let code = end_with(
@@ -267,16 +298,20 @@ impl Ending<'_> {
         width: ExitWidth,
         stderr: &mut dyn Write,
     ) -> i32 {
-        let active = self.run.active.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(tty) = active.as_ref().and_then(|active| active.tty.as_ref()) {
-            tty.quiet();
+        // The run stays in `RUN` until the ending is written: a panic on this thread finds it, and its hook ends the run
+        // with the screen and the log.
+        let active = self.run.active.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(screen) = active.as_ref().and_then(|active| active.screen.as_ref()) {
+            screen.quiet();
         }
         let outcome = match self.seal() {
             Some(message) => Err(Error::new(ErrorKind::Panic, message)),
             None => outcome,
         };
         let log = active.as_ref().and_then(|active| active.log.as_deref());
-        end_with(log, colour, status_file, outcome, width, stderr)
+        let code = end_with(log, colour, status_file, outcome, width, stderr);
+        self.run.active.lock().unwrap_or_else(PoisonError::into_inner).take();
+        code
     }
 
     /// [`Ending::end`] for a command that succeeded and needs no status file: `0`, unless a hook stored a panic.
@@ -323,8 +358,8 @@ fn end_with(
     if let Some(line) = &ending.error_line {
         // The line printed is the line recorded: the status file can turn a success into a failure.
         if let Some(log) = log {
-            let _ = writeln!(stderr, "log: {}", log.path().display());
             log.failed(line);
+            let _ = writeln!(stderr, "log: {}", log.describe());
         }
         print_error_line(stderr, line, colour);
     }

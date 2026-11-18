@@ -3,13 +3,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use devvm::exit::{ExitStatus, ExitWidth};
-use devvm::progress::{FileLog, LineProgress, Look, Progress, Total};
+use devvm::progress::{FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Error, ErrorKind};
 
-use crate::output::{Active, Facts, Panicked, Run, Screen, choose, compose, end_with};
-use crate::tty::TtyProgress;
-use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
+use crate::output::{Active, Facts, Panicked, Run, Screen, Shown, choose, compose, end_with};
 
 #[derive(Clone, Default)]
 struct Buffer(Arc<Mutex<Vec<u8>>>);
@@ -78,7 +76,7 @@ fn an_unwritable_log_dir_gives_a_warning_and_a_working_sink() {
     std::fs::write(&dirs.state, "x").unwrap();
     let out = Buffer::default();
 
-    let sinks = compose(screen(&out), Some(&dirs));
+    let sinks = compose(screen(&out), Ok(&dirs));
     sinks.progress.message("still works");
 
     assert!(sinks.log.is_none());
@@ -93,12 +91,26 @@ fn an_unwritable_log_dir_gives_a_warning_and_a_working_sink() {
 }
 
 #[skuld::test]
+fn a_state_directory_that_cannot_be_found_is_one_warning_and_a_working_sink() {
+    let out = Buffer::default();
+    let error = Error::new(ErrorKind::Io, "no state directory");
+
+    let sinks = compose(screen(&out), Err(&error));
+    sinks.progress.message("still works");
+
+    assert!(sinks.log.is_none());
+    assert_eq!(out.text(), "warning: no state directory
+still works
+");
+}
+
+#[skuld::test]
 fn a_writable_log_dir_gives_a_log_that_gets_what_the_screen_gets() {
     let tmp = skuld::TempDir::new().unwrap();
     let dirs = dirs_under(tmp.path());
     let out = Buffer::default();
 
-    let sinks = compose(screen(&out), Some(&dirs));
+    let sinks = compose(screen(&out), Ok(&dirs));
     sinks.progress.message("hello");
 
     assert_eq!(out.text(), "hello\n");
@@ -240,13 +252,13 @@ fn each_run_ends_with_its_own_log_and_leaves_nothing_for_the_next() {
 
     run.begin(Active {
         log: Some(first.clone()),
-        tty: None,
+        screen: None,
     });
     assert!(run_ending(&run, failure()).contains(&first.path().display().to_string()));
 
     run.begin(Active {
         log: Some(second.clone()),
-        tty: None,
+        screen: None,
     });
     let text = run_ending(&run, failure());
     assert!(text.contains(&second.path().display().to_string()), "{text}");
@@ -254,36 +266,6 @@ fn each_run_ends_with_its_own_log_and_leaves_nothing_for_the_next() {
 
     // A run that never began has no log to name.
     assert_eq!(run_ending(&run, failure()), "devvm-error: io: bad\n");
-}
-
-#[skuld::test]
-fn ending_stops_the_terminal_screen_before_the_error_is_written() {
-    let term = InMemoryTerm::new(5, 60);
-    let tty = Arc::new(TtyProgress::new(
-        ProgressDrawTarget::term_like(Box::new(term.clone())),
-        Look::default(),
-        None,
-        || 60,
-        || {},
-    ));
-    let run = Run::new();
-    run.begin(Active {
-        log: None,
-        tty: Some(tty.clone()),
-    });
-    let progress: &dyn Progress = &*tty;
-    let _task = progress.task("building x", Total::Unknown);
-    assert_eq!(term.contents().lines().count(), 1);
-
-    run_ending(&run, failure());
-    assert_eq!(term.contents().trim(), "", "the bars are off the screen");
-
-    // Whatever is written next stays: a report or a tick of a task still open draws nothing.
-    term.write_line("devvm-error: io: bad").unwrap();
-    let late = progress.task("late", Total::Items(2));
-    late.set(1);
-    progress.message("a note");
-    assert_eq!(term.contents().trim(), "devvm-error: io: bad");
 }
 
 // Who ends the run ====================================================================================================
@@ -316,7 +298,7 @@ fn a_panic_with_no_ending_under_way_ends_the_run_and_names_the_log() {
     let log = Arc::new(log_in(&tmp.path().join("logs")));
     run.begin(Active {
         log: Some(log.clone()),
-        tty: None,
+        screen: None,
     });
 
     let text = panic_hook(&run, "boom").expect("the hook ends the run");
@@ -441,4 +423,100 @@ fn a_panic_on_the_endings_own_thread_ends_the_run() {
 "
         )
     );
+}
+
+// The line screen ====================================================================================================
+
+fn run_with_lines(out: &Buffer) -> (Run, Arc<LineProgress>) {
+    let lines = Arc::new(LineProgress::to(Box::new(out.clone()), Look::default()));
+    let run = Run::new();
+    run.begin(Active {
+        log: None,
+        screen: Some(Shown::Lines(lines.clone())),
+    });
+    (run, lines)
+}
+
+#[skuld::test]
+fn the_ending_stops_the_line_screen_before_it_writes_the_error() {
+    let out = Buffer::default();
+    let (run, lines) = run_with_lines(&out);
+    lines.message("before");
+
+    run.begin_ending()
+        .end(false, None, failure(), ExitWidth::Full32, &mut out.clone());
+    lines.message("late");
+    lines.warn("late");
+
+    assert_eq!(out.text(), "before
+devvm-error: io: bad
+");
+}
+
+#[skuld::test]
+fn a_panic_hook_stops_the_line_screen_so_that_the_error_line_is_the_last() {
+    let out = Buffer::default();
+    let (run, lines) = run_with_lines(&out);
+    lines.message("before");
+
+    let panicked = run.on_panic("boom".to_owned(), false, None, ExitWidth::Full32, &mut out.clone());
+    assert!(matches!(panicked, Panicked::Ended { .. }));
+    lines.message("late");
+
+    assert_eq!(out.text(), "before
+devvm-error: panic: boom
+");
+}
+
+// The ending's own failure ============================================================================================
+
+/// A writer that runs the panic hook on its first write, as a panic inside the ending's own write would.
+struct PanicsOnFirstWrite<'a> {
+    run: &'a Run,
+    hook_text: Option<String>,
+    first: bool,
+}
+
+impl Write for PanicsOnFirstWrite<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if std::mem::take(&mut self.first) {
+            self.hook_text = panic_hook(self.run, "boom");
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The run is still there when the ending writes, so the hook of a panic on the ending's thread names the log and
+/// records the error in it.
+#[skuld::test]
+fn a_panic_while_the_ending_writes_finds_the_log_of_the_run() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let run = Run::new();
+    let log = Arc::new(log_in(&tmp.path().join("logs")));
+    run.begin(Active {
+        log: Some(log.clone()),
+        screen: None,
+    });
+    let mut stderr = PanicsOnFirstWrite {
+        run: &run,
+        hook_text: None,
+        first: true,
+    };
+
+    run.begin_ending()
+        .end(false, None, failure(), ExitWidth::Full32, &mut stderr);
+
+    let hook_text = stderr.hook_text.expect("the hook ended the run");
+    assert_eq!(
+        hook_text,
+        format!("log: {}
+devvm-error: panic: boom
+", log.path().display())
+    );
+    let text = std::fs::read_to_string(log.path()).unwrap();
+    assert!(text.contains(" ERROR devvm-error: panic: boom"), "{text}");
 }
