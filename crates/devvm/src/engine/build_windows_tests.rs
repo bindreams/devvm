@@ -158,14 +158,34 @@ fn a_build_nests_its_steps_under_one_building_task(#[fixture(unicode_home)] home
         })
         .collect();
     assert_eq!(positions, [1, 2, 3]);
-    let statuses: Vec<&str> = events
+    let steps: Vec<TaskId> = events
         .iter()
         .filter_map(|event| match event {
-            Event::Status { text, .. } => Some(text.as_str()),
+            Event::Begin { id, label, .. } if label.starts_with("step ") => Some(*id),
             _ => None,
         })
         .collect();
-    assert_eq!(statuses, ["echo one", "echo two"]);
+    let statuses_of = |task: &dyn Fn(TaskId) -> bool| -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Status { id, text } if task(*id) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(statuses_of(&|id| steps.contains(&id)), ["echo one", "echo two"]);
+    // Each step has a task of its own below it for the wait for the guest.
+    for step in &steps {
+        let waits: Vec<TaskId> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Begin { id, parent, .. } if *parent == Some(*step) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(statuses_of(&|id| waits.contains(&id)), ["waiting for SSH"], "{step:?}");
+    }
 }
 
 #[skuld::test]
