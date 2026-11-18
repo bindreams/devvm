@@ -3,8 +3,9 @@
 use std::any::Any;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use arc_swap::ArcSwapOption;
 use devvm::exit::{ExitStatus, ExitWidth, conclude, print_error_line};
 use devvm::progress::{Fanout, FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
@@ -159,13 +160,16 @@ impl Active {
 /// before it concludes and again before the process exits ([`Ended::settle`]), so a panic on another thread is the
 /// outcome whenever it began before that last check; one that begins after it is the process exiting.
 ///
-/// A hook never stops, clears or waits for a sink: the thread that panicked may hold a sink's lock. If devvm itself
+/// A hook never stops, clears or waits for a sink: the thread that panicked may hold a sink's lock. It reads the log
+/// from `log`, which no lock guards, and never takes `active`. If devvm itself
 /// panics, progress from other threads can still appear around the error line, and a bar redraw can overwrite it: the
 /// lock keeps the error last on a pipe and on a VT terminal, but a Windows console moves the cursor and clears lines
 /// through calls that do not take it, and the normal ending's clear can race a hook the same way. The exit code, the
 /// status file and the log's `ERROR` record are right.
 pub(crate) struct Run {
     active: Mutex<Option<Active>>,
+    /// The log of the run, for the ending and the hook alike: read without a lock.
+    log: ArcSwapOption<FileLog>,
     /// The message of the first panic of the process, set before its hook waits for the one-ending lock.
     panicked: Mutex<Option<String>>,
     /// The one-ending lock; `None` is `std::io::stderr()`'s. A test gives each run its own, so that parallel tests do
@@ -192,23 +196,31 @@ pub(crate) struct Ended<'a> {
     width: ExitWidth,
     /// Whether the outcome written is a panic.
     panicked: bool,
+    /// Whether the ending printed an error line: nothing more is printed after it.
+    printed: bool,
     _held: Held,
 }
 
 impl Ended<'_> {
-    /// The last check before the exit: a panic noted since the ending began is the outcome.
+    /// The last check before the exit: a panic noted since the ending began is the outcome. An ending that has printed
+    /// its error line prints no second one: the exit code and the status file become the panic's.
     pub(crate) fn settle(mut self, stderr: &mut dyn Write) -> Self {
         if !self.panicked
             && let Some(message) = self.run.panicked()
         {
-            self.code = end_with(
-                self.log.as_deref(),
-                self.colour,
-                self.status_file.as_deref(),
-                Err(Error::new(ErrorKind::Panic, message)),
-                self.width,
-                stderr,
-            );
+            let outcome = Err(Error::new(ErrorKind::Panic, message));
+            if self.printed {
+                self.code = conclude(self.status_file.as_deref(), &outcome, self.width).exit;
+            } else {
+                (self.code, self.printed) = end_with(
+                    self.log.as_deref(),
+                    self.colour,
+                    self.status_file.as_deref(),
+                    outcome,
+                    self.width,
+                    stderr,
+                );
+            }
             self.panicked = true;
         }
         self
@@ -227,6 +239,7 @@ impl Run {
     pub(crate) const fn new() -> Run {
         Run {
             active: Mutex::new(None),
+            log: ArcSwapOption::const_empty(),
             panicked: Mutex::new(None),
             lock: None,
         }
@@ -234,16 +247,6 @@ impl Run {
 
     fn active(&self) -> MutexGuard<'_, Option<Active>> {
         self.active.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The run, if it can be read now. A hook gets none rather than wait: a thread that panicked while it held `active`
-    /// would be waited for by its own hook.
-    fn try_active(&self) -> Option<Active> {
-        match self.active.try_lock() {
-            Ok(active) => active.clone(),
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().clone(),
-            Err(TryLockError::WouldBlock) => None,
-        }
     }
 
     /// The message of the first panic noted, if any.
@@ -259,6 +262,7 @@ impl Run {
     }
 
     pub(crate) fn begin(&self, active: Active) {
+        self.log.store(active.log.clone());
         let before = self.active().replace(active);
         debug_assert!(before.is_none(), "a command began while another had not ended");
     }
@@ -310,24 +314,22 @@ impl Run {
         width: ExitWidth,
         stderr: &mut dyn Write,
     ) -> Ended<'_> {
-        let active = if stop {
+        if stop {
             let active = self.active().clone();
-            if let Some(active) = &active {
+            if let Some(active) = active {
                 active.stop();
             }
-            active
-        } else {
-            self.try_active()
-        };
+        }
         let held = self.hold();
         let (outcome, panicked) = match self.panicked() {
             Some(message) => (Err(Error::new(ErrorKind::Panic, message)), true),
             None => (outcome, false),
         };
-        let log = active.and_then(|active| active.log);
-        let code = end_with(log.as_deref(), colour, status_file, outcome, width, stderr);
+        let log = self.log.load_full();
+        let (code, printed) = end_with(log.as_deref(), colour, status_file, outcome, width, stderr);
         if stop {
             self.active().take();
+            self.log.store(None);
         }
         Ended {
             code,
@@ -337,6 +339,7 @@ impl Run {
             status_file: status_file.map(Path::to_owned),
             width,
             panicked,
+            printed,
             _held: held,
         }
     }
@@ -349,7 +352,7 @@ fn end_with(
     outcome: Result<ExitStatus>,
     width: ExitWidth,
     stderr: &mut dyn Write,
-) -> i32 {
+) -> (i32, bool) {
     let ending = conclude(status_file, &outcome, width);
     if let Some(line) = &ending.error_line {
         // The line printed is the line recorded: the status file can turn a success into a failure.
@@ -359,5 +362,5 @@ fn end_with(
         }
         print_error_line(stderr, line, colour);
     }
-    ending.exit
+    (ending.exit, ending.error_line.is_some())
 }

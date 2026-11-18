@@ -129,7 +129,7 @@ fn log_in(dir: &Path) -> FileLog {
 
 fn ended(log: Option<&FileLog>, outcome: devvm::Result<ExitStatus>, colour: bool) -> (i32, String) {
     let mut stderr = Vec::new();
-    let code = end_with(log, colour, None, outcome, ExitWidth::Full32, &mut stderr);
+    let (code, _) = end_with(log, colour, None, outcome, ExitWidth::Full32, &mut stderr);
     (code, String::from_utf8(stderr).unwrap())
 }
 
@@ -189,7 +189,7 @@ fn unwritable(tmp: &Path) -> std::path::PathBuf {
 
 fn ended_with_file(log: &FileLog, status_file: &Path, outcome: devvm::Result<ExitStatus>) -> (i32, String) {
     let mut stderr = Vec::new();
-    let code = end_with(
+    let (code, _) = end_with(
         Some(log),
         false,
         Some(status_file),
@@ -523,21 +523,66 @@ fn a_last_check_with_no_panic_changes_nothing_and_does_not_repeat_a_panic() {
     assert_eq!(stderr.len(), before);
 }
 
-/// A thread that panicked while it held the run's state has nothing to wait for: the hook ends the run without it.
+/// The hook names the log and records the error while `active` is held, by its own thread or by another.
 #[skuld::test]
-fn a_hook_on_a_thread_that_holds_the_runs_state_ends_the_run_without_it() {
+fn a_hook_while_the_runs_state_is_held_still_names_and_records_the_log() {
     let tmp = skuld::TempDir::new().unwrap();
     let run = own_run();
+    let log = Arc::new(log_in(&tmp.path().join("logs")));
     run.begin(Active {
-        log: Some(Arc::new(log_in(&tmp.path().join("logs")))),
+        log: Some(log.clone()),
         screen: None,
     });
-    let _state = run.active();
+    let expected = format!(
+        "log: {}
+devvm-error: panic: boom
+",
+        log.path().display()
+    );
+    let state = run.active();
 
+    assert_eq!(panic_hook(&run, "boom"), expected);
     assert_eq!(
-        panic_hook(&run, "boom"),
-        "devvm-error: panic: boom
-"
+        std::thread::scope(|scope| scope.spawn(|| panic_hook(&run, "boom")).join().unwrap()),
+        expected
+    );
+    drop(state);
+    assert_eq!(
+        std::fs::read_to_string(log.path())
+            .unwrap()
+            .matches(" ERROR devvm-error: panic: boom")
+            .count(),
+        2
+    );
+}
+
+/// A panic that comes after a failing ending printed its error line changes the exit code and the status file, and
+/// prints nothing more.
+#[skuld::test]
+fn a_late_panic_after_a_failing_ending_prints_no_second_ending() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let status = tmp.path().join("status.json");
+    let log = Arc::new(log_in(&tmp.path().join("logs")));
+    let run = own_run();
+    run.begin(Active {
+        log: Some(log.clone()),
+        screen: None,
+    });
+    let mut stderr = Vec::new();
+    let ended = run.end(false, Some(&status), failure(), ExitWidth::Full32, &mut stderr);
+    assert_eq!(ended.code, 125);
+    let printed = stderr.clone();
+    run.panicked.lock().unwrap().replace("late".to_owned());
+
+    let settled = ended.settle(&mut stderr);
+
+    assert_eq!(settled.code, 125);
+    assert_eq!(stderr, printed);
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&status).unwrap()).unwrap();
+    assert_eq!(json["devvm"]["kind"], "panic");
+    assert_eq!(
+        std::fs::read_to_string(log.path()).unwrap().matches(" ERROR ").count(),
+        1
     );
 }
 
