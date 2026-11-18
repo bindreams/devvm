@@ -1,7 +1,9 @@
-use super::{GENERIC_KEYS, ProductKey};
+use super::{GENERIC_KEYS, GenericKey, ProductKey, Reach};
 
 fn generic_at(edition_id: &str, build: u32, spbuild: Option<u32>) -> Option<String> {
-    ProductKey::generic_for(edition_id, Some(build), spbuild).map(|key| key.expose().to_owned())
+    ProductKey::generic_for(edition_id, build, spbuild)
+        .found()
+        .map(|key| key.expose().to_owned())
 }
 
 /// The key of an image whose `SPBUILD` is the newest any row asks for.
@@ -27,7 +29,7 @@ fn no_image_matches_two_rows() {
             for build in [span.first, span.last] {
                 let matching = GENERIC_KEYS
                     .iter()
-                    .filter(|other| other.matches(row.edition_id, build, Some(span.spbuild_from)))
+                    .filter(|other| other.reach(row.edition_id, build, span.spbuild_from) == Reach::Key)
                     .count();
                 assert_eq!(matching, 1, "{} build {build}", row.edition_id);
             }
@@ -87,8 +89,6 @@ fn an_edition_or_a_build_the_table_does_not_have_has_no_key() {
     assert_eq!(generic("EnterpriseS", 22621), None);
     assert_eq!(generic("Professional", 9600), None);
     assert_eq!(generic("ServerStandard", 22000), None);
-    // The image names no build.
-    assert!(ProductKey::generic_for("EnterpriseS", None, Some(1742)).is_none());
 }
 
 #[skuld::test]
@@ -113,19 +113,40 @@ fn a_range_of_builds_has_its_key_from_its_first_build_to_its_last() {
 }
 
 #[skuld::test]
-fn the_first_spbuild_of_a_gated_row_is_the_one_media_must_reach() {
-    for (edition_id, build, first) in [
-        ("IoTEnterpriseS", 19044, Some(2905)),
-        ("IoTEnterpriseS", 26100, None),
-        ("IoTEnterpriseS", 19045, None),
-        ("EnterpriseS", 19044, None),
-        ("Nothing", 19044, None),
+fn one_lookup_says_found_gated_or_unlisted() {
+    // A gated row without its SPBUILD, or with one below the gate, is gated: the answer carries the gate.
+    for (edition_id, spbuild) in [
+        ("IoTEnterpriseS", Some(2904)),
+        ("IoTEnterpriseS", Some(1)),
+        ("IoTEnterpriseS", None),
+        ("iotenterprises", None),
     ] {
         assert_eq!(
-            ProductKey::generic_first_spbuild(edition_id, build),
-            first,
-            "{edition_id} build {build}"
+            ProductKey::generic_for(edition_id, 19044, spbuild),
+            GenericKey::Gated { first_spbuild: 2905 },
+            "{edition_id} 19044.{spbuild:?}"
         );
+    }
+    // An ungated row, a build outside the row, and an edition the table lacks are unlisted whatever the SPBUILD is.
+    for (edition_id, build, spbuild) in [
+        ("IoTEnterpriseS", 19045, None),
+        ("IoTEnterpriseS", 19043, Some(2905)),
+        ("EnterpriseS", 28000, None),
+        ("EnterpriseS", 28000, Some(1)),
+        ("Nothing", 19044, Some(2905)),
+        ("", 19044, None),
+    ] {
+        assert_eq!(
+            ProductKey::generic_for(edition_id, build, spbuild),
+            GenericKey::Unlisted,
+            "{edition_id} {build}.{spbuild:?}"
+        );
+    }
+    // A key is found at the gate, and for any SPBUILD where the row has no gate.
+    assert!(generic_at("IoTEnterpriseS", 19044, Some(2905)).is_some());
+    for spbuild in [None, Some(1), Some(u32::MAX)] {
+        assert!(generic_at("EnterpriseS", 19044, spbuild).is_some(), "{spbuild:?}");
+        assert!(generic_at("IoTEnterpriseS", 26100, spbuild).is_some(), "{spbuild:?}");
     }
 }
 

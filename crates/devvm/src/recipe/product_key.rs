@@ -29,29 +29,25 @@ impl ProductKey {
         shaped.then(|| ProductKey(SecretString::from(text.to_ascii_uppercase())))
     }
 
-    /// The generic key Microsoft publishes for the Windows edition `edition_id` (`EDITIONID` of the image, in any case)
-    /// at `build` and `spbuild` (`BUILD` and `SPBUILD` of its version), or `None` when [`GENERIC_KEYS`] has none: an
-    /// edition, build or `SPBUILD` it does not list, or an image that names no build. `spbuild` matters only for a row
-    /// gated on a minimum `SPBUILD` (today IoT Enterprise LTSC 2021); `None` matches every other row.
-    pub(crate) fn generic_for(edition_id: &str, build: Option<u32>, spbuild: Option<u32>) -> Option<ProductKey> {
-        let build = build?;
-        GENERIC_KEYS
-            .iter()
-            .find(|row| row.matches(edition_id, build, spbuild))
-            .map(|row| ProductKey::parse(row.key).expect("every key in GENERIC_KEYS parses"))
-    }
-
-    /// The first `SPBUILD` of `build` that has the generic key of `edition_id`, when [`GENERIC_KEYS`] gates that row on
-    /// one: `19044.2905` is the first image of IoT Enterprise LTSC 2021 with a key. `None` for a row with no gate, and
-    /// for an edition or build it does not list.
-    pub(crate) fn generic_first_spbuild(edition_id: &str, build: u32) -> Option<u32> {
-        GENERIC_KEYS
-            .iter()
-            .filter(|row| row.matches(edition_id, build, Some(u32::MAX)))
-            .flat_map(|row| row.builds)
-            .find(|span| span.contains(build, Some(u32::MAX)))
-            .map(|span| span.spbuild_from)
-            .filter(|&first| first > 0)
+    /// What [`GENERIC_KEYS`] holds for the Windows edition `edition_id` (`EDITIONID` of the image, in any case) at
+    /// `build` and `spbuild` (`BUILD` and `SPBUILD` of its version): the key, or why there is none. `spbuild` matters
+    /// only for a row gated on a minimum `SPBUILD` (today IoT Enterprise LTSC 2021); `None` there is gated, and any
+    /// other row ignores it.
+    pub(crate) fn generic_for(edition_id: &str, build: u32, spbuild: Option<u32>) -> GenericKey {
+        let mut gate = None;
+        for row in GENERIC_KEYS {
+            match row.reach(edition_id, build, spbuild) {
+                Reach::Key => {
+                    let key = ProductKey::parse(row.key).expect("every key in GENERIC_KEYS parses");
+                    return GenericKey::Found(key);
+                }
+                Reach::Gate(first_spbuild) => gate = gate.or(Some(first_spbuild)),
+                Reach::Out => {}
+            }
+        }
+        gate.map_or(GenericKey::Unlisted, |first_spbuild| GenericKey::Gated {
+            first_spbuild,
+        })
     }
 
     pub(crate) fn expose(&self) -> &str {
@@ -67,16 +63,52 @@ impl PartialEq for ProductKey {
 
 impl Eq for ProductKey {}
 
-/// Builds of Windows from `first` to `last`, inclusive, whose `SPBUILD` is at least `spbuild_from` (0: any).
+/// What [`ProductKey::generic_for`] found for an image.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GenericKey {
+    /// The generic key of the image's edition and version.
+    Found(ProductKey),
+    /// The table lists the edition and build, but only from `SPBUILD` `first_spbuild`; the image's is lower or unknown.
+    Gated { first_spbuild: u32 },
+    /// The table has no key for the edition at this build.
+    Unlisted,
+}
+
+#[cfg(test)]
+impl GenericKey {
+    pub(crate) fn found(self) -> Option<ProductKey> {
+        match self {
+            GenericKey::Found(key) => Some(key),
+            GenericKey::Gated { .. } | GenericKey::Unlisted => None,
+        }
+    }
+}
+
+/// How a row or a span of the table reaches an image.
+#[derive(Debug, PartialEq, Eq)]
+enum Reach {
+    /// It has the image's key.
+    Key,
+    /// It has the build, but only from this `SPBUILD`, which the image lacks.
+    Gate(u32),
+    /// It does not have the image.
+    Out,
+}
+
+/// Builds of Windows from `first` to `last`, inclusive, whose `SPBUILD` is at least `spbuild_from` (`None`: any).
 struct Span {
     first: u32,
     last: u32,
-    spbuild_from: u32,
+    spbuild_from: Option<u32>,
 }
 
 impl Span {
-    fn contains(&self, build: u32, spbuild: Option<u32>) -> bool {
-        (self.first..=self.last).contains(&build) && spbuild.unwrap_or(0) >= self.spbuild_from
+    fn reach(&self, build: u32, spbuild: Option<u32>) -> Reach {
+        match self.spbuild_from {
+            _ if !(self.first..=self.last).contains(&build) => Reach::Out,
+            Some(from) if spbuild.is_none_or(|spbuild| spbuild < from) => Reach::Gate(from),
+            _ => Reach::Key,
+        }
     }
 }
 
@@ -84,7 +116,7 @@ const fn builds(first: u32, last: u32) -> Span {
     Span {
         first,
         last,
-        spbuild_from: 0,
+        spbuild_from: None,
     }
 }
 
@@ -93,7 +125,7 @@ const fn build_from(build: u32, spbuild_from: u32) -> Span {
     Span {
         first: build,
         last: build,
-        spbuild_from,
+        spbuild_from: Some(spbuild_from),
     }
 }
 
@@ -109,8 +141,19 @@ struct Generic {
 }
 
 impl Generic {
-    fn matches(&self, edition_id: &str, build: u32, spbuild: Option<u32>) -> bool {
-        self.edition_id.eq_ignore_ascii_case(edition_id) && self.builds.iter().any(|span| span.contains(build, spbuild))
+    fn reach(&self, edition_id: &str, build: u32, spbuild: Option<u32>) -> Reach {
+        if !self.edition_id.eq_ignore_ascii_case(edition_id) {
+            return Reach::Out;
+        }
+        let mut gate = Reach::Out;
+        for span in self.builds {
+            match span.reach(build, spbuild) {
+                Reach::Key => return Reach::Key,
+                Reach::Gate(from) if gate == Reach::Out => gate = Reach::Gate(from),
+                Reach::Gate(_) | Reach::Out => {}
+            }
+        }
+        gate
     }
 }
 

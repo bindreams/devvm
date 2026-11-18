@@ -172,8 +172,7 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
 - devvm installs a non-evaluation edition with Microsoft's generic KMS client setup key when it knows one for the
   edition: Windows 10 and 11 volume editions, Enterprise LTSC and LTSB, IoT Enterprise LTSC 2024 and LTSC 2021 (media
   of build 19044.2905 or later), and Windows Server 2016 and later (Standard and Datacenter). The keys are on
-  Microsoft's page
-  [Key Management Services (KMS) client activation and product keys](https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys).
+  Microsoft's page [Key Management Services (KMS) client activation and product keys](https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys).
 - `product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` in `from:` installs with another key instead: your own, or one for an
   edition devvm does not know. An edition with neither is refused before anything boots, naming `product-key`. An
   evaluation edition takes no key, and a recipe that gives it one is refused. devvm checks the key's shape only, not

@@ -272,7 +272,7 @@ fn a_recipe_with_no_product_key_installs_the_generic_key_of_the_image_edition_an
         ("Windows 11 IoT Enterprise LTSC 2024", "IoTEnterpriseS"),
     ] {
         let rig = rig_without_a_machine(home, "three-images.iso");
-        let generic = ProductKey::generic_for(edition_id, Some(26100), Some(1742)).unwrap();
+        let generic = ProductKey::generic_for(edition_id, 26100, Some(1742)).found().unwrap();
 
         rig.build_keyed(Some(edition), None).unwrap_err();
 

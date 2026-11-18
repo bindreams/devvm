@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::exit::Progress;
 use crate::host::{Host, is_absent};
-use crate::recipe::ProductKey;
+use crate::recipe::{GenericKey, ProductKey};
 use crate::text::escape_controls;
 use crate::{Error, ErrorKind, Result, Sha256};
 
@@ -313,39 +313,38 @@ fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Re
     if let Some(key) = product_key {
         return Ok(Some(key.clone()));
     }
-    ProductKey::generic_for(&image.edition_id, image.build_number(), image.spbuild_number())
-        .map(Some)
-        .ok_or_else(|| {
-            let detail = match (image.edition_id.as_str(), image.build.as_deref(), image.build_number()) {
-                ("", ..) => "no edition id".to_owned(),
-                (id, None, _) => format!("edition id `{}`, no build", escape_controls(id)),
-                (id, Some(_), Some(build)) => {
-                    let version = match (image.spbuild.as_deref(), image.spbuild_number()) {
-                        (None, _) => build.to_string(),
-                        (Some(_), Some(spbuild)) => format!("{build}.{spbuild}"),
-                        (Some(text), None) => format!(
-                            "{build}, SPBUILD `{}` is not a build number devvm can read",
-                            escape_controls(text)
-                        ),
-                    };
-                    let gate = ProductKey::generic_first_spbuild(id, build)
-                        .map(|first| format!("; its generic key needs media of {build}.{first} or later"))
-                        .unwrap_or_default();
-                    format!("edition id `{}`, build {version}{gate}", escape_controls(id))
-                }
-                (id, Some(text), None) => format!(
-                    "edition id `{}`, BUILD `{}` is not a build number devvm can read",
-                    escape_controls(id),
+    let build = image.build_number();
+    let lookup = build.map(|build| ProductKey::generic_for(&image.edition_id, build, image.spbuild_number()));
+    let id = escape_controls(&image.edition_id);
+    let detail = match (&image.edition_id[..], image.build.as_deref(), build, lookup) {
+        (_, _, _, Some(GenericKey::Found(key))) => return Ok(Some(key)),
+        ("", ..) => "no edition id".to_owned(),
+        (_, None, ..) => format!("edition id `{id}`, no build"),
+        (_, Some(text), None, _) => format!(
+            "edition id `{id}`, BUILD `{}` is not a build number devvm can read",
+            escape_controls(text)
+        ),
+        (_, Some(_), Some(build), Some(GenericKey::Gated { first_spbuild })) => {
+            let spbuild = match (image.spbuild.as_deref(), image.spbuild_number()) {
+                (None, _) => ", the image names no SPBUILD".to_owned(),
+                (Some(_), Some(spbuild)) => format!(".{spbuild}"),
+                (Some(text), None) => format!(
+                    ", SPBUILD `{}` is not a build number devvm can read",
                     escape_controls(text)
                 ),
             };
-            Error::new(
-                ErrorKind::Recipe,
-                format!(
-                    "devvm has no generic product key for the edition `{name}` ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_KEYS_PAGE}"
-                ),
+            format!(
+                "edition id `{id}`, build {build}{spbuild}; its generic key needs media of {build}.{first_spbuild} or later"
             )
-        })
+        }
+        (_, Some(_), Some(build), _) => format!("edition id `{id}`, build {build}"),
+    };
+    Err(Error::new(
+        ErrorKind::Recipe,
+        format!(
+            "devvm has no generic product key for the edition `{name}` ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_KEYS_PAGE}"
+        ),
+    ))
 }
 
 /// The patch that puts the no-prompt boot image where the UEFI entry of the boot catalog loads its image. The image

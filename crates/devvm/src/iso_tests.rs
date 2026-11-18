@@ -111,7 +111,9 @@ fn an_edition_with_no_key_in_the_recipe_gets_the_generic_key_of_its_edition_and_
         26100,
         edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024"),
     );
-    let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100), Some(1742)).unwrap();
+    let generic = ProductKey::generic_for("IoTEnterpriseS", 26100, Some(1742))
+        .found()
+        .unwrap();
     assert_eq!(resolve_product_key(&ltsc, None).unwrap(), Some(generic));
     let key = |build| resolve_product_key(&built(build, edition_of("EnterpriseS", "e")), None).unwrap();
     assert!(key(10240).is_some() && key(14393).is_some() && key(17763).is_some());
@@ -145,7 +147,7 @@ fn iot_ltsc_2021_media_from_19044_2905_on_gets_the_generic_key() {
     };
     assert_eq!(
         resolve_product_key(&image, None).unwrap(),
-        ProductKey::generic_for("IoTEnterpriseS", Some(19044), Some(2905))
+        ProductKey::generic_for("IoTEnterpriseS", 19044, Some(2905)).found()
     );
 }
 
@@ -218,14 +220,14 @@ fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_
                 spbuild: Some("x".to_owned()),
                 ..built(28000, edition_of("EnterpriseS", "Windows 12 Enterprise LTSC"))
             },
-            "edition id `EnterpriseS`, build 28000, SPBUILD `x` is not a build number devvm can read",
+            "edition id `EnterpriseS`, build 28000",
         ),
         (
             built(
                 19044,
                 edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
             ),
-            "edition id `IoTEnterpriseS`, build 19044; its generic key needs media of 19044.2905 or later",
+            "edition id `IoTEnterpriseS`, build 19044, the image names no SPBUILD; its generic key needs media of 19044.2905 or later",
         ),
     ] {
         let error = resolve_product_key(&image, None).unwrap_err();
@@ -252,7 +254,7 @@ fn a_keyed_iso_root_has_the_key_its_image_is_installed_with(#[fixture(unicode_ho
     };
     let given = ProductKey::parse(KEY).unwrap();
     let ltsc = Some("Windows 11 IoT Enterprise LTSC 2024");
-    let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100), Some(1742));
+    let generic = ProductKey::generic_for("IoTEnterpriseS", 26100, Some(1742)).found();
     assert_eq!(root(&three, ltsc, None).unwrap().product_key(), generic.as_ref());
     assert_eq!(root(&three, ltsc, Some(&given)).unwrap().product_key(), Some(&given));
     assert_eq!(root(&one, None, None).unwrap().product_key(), None);
@@ -380,7 +382,9 @@ fn what_a_build_installs_carries_the_image_its_key_and_its_evaluation_flag_from_
     assert_eq!(ltsc.image().index, 2);
     assert_eq!(
         ltsc.product_key(),
-        ProductKey::generic_for("IoTEnterpriseS", Some(26100), Some(1742)).as_ref()
+        ProductKey::generic_for("IoTEnterpriseS", 26100, Some(1742))
+            .found()
+            .as_ref()
     );
     assert!(!ltsc.evaluation());
 
