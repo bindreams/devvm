@@ -278,7 +278,7 @@ impl IsoMemo {
     /// [`IsoMemo::write`], where a failure is reported: the memo is a cache, and the ISO is used without it.
     fn remember(&self, host: &dyn Host, entry: &Entry, progress: &dyn Progress) {
         if let Err(e) = self.write(host, entry, progress) {
-            progress.message(&format!("{}: not remembered, {}", entry.path, e.message()));
+            progress.warn(&format!("{}: not remembered, {}", entry.path, e.message()));
         }
     }
 
@@ -290,8 +290,8 @@ impl IsoMemo {
             progress.message(m)
         })?;
         let report = |swept: Result<Vec<String>>| match swept {
-            Ok(warnings) => warnings.iter().for_each(|warning| progress.message(warning)),
-            Err(e) => progress.message(e.message()),
+            Ok(warnings) => warnings.iter().for_each(|warning| progress.warn(warning)),
+            Err(e) => progress.warn(e.message()),
         };
         report(sweep(&self.dir, &|name| name.ends_with(".tmp"), &remove_if_present));
         let file = self.file_of(&entry.key);
@@ -345,7 +345,7 @@ fn names_of(host: &dyn Host, identity: &Identity, held: &HeldIso, progress: &dyn
         Ok(Names { key, path, final_path })
     };
     named()
-        .inspect_err(|why| progress.message(&format!("{}: not remembered, {why}", held.path().display())))
+        .inspect_err(|why| progress.warn(&format!("{}: not remembered, {why}", held.path().display())))
         .ok()
 }
 

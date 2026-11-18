@@ -73,7 +73,7 @@ impl Entries {
 
 impl ReapReport {
     pub(super) fn warn(&mut self, registry: &Registry, text: String) {
-        registry.progress().message(&text);
+        registry.progress().warn(&text);
         self.warnings.push(text);
     }
 }

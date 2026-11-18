@@ -191,7 +191,7 @@ fn wait_ready(engine: &Engine, guest: &dyn GuestOs, name: &InstanceName, session
     if let Readiness::Degraded(what) = guest.wait_ready(session)? {
         engine
             .progress()
-            .message(&format!("instance {name}: the boot finished with problems: {what}"));
+            .warn(&format!("instance {name}: the boot finished with problems: {what}"));
     }
     Ok(())
 }

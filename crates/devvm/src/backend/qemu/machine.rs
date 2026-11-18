@@ -230,7 +230,7 @@ impl QemuMachine {
     }
 
     fn remove_leftovers(&self) {
-        let mut warn = |text: String| self.progress.message(&text);
+        let mut warn = |text: String| self.progress.warn(&text);
         self.record.remove_leftovers(self.host, &mut warn);
     }
 

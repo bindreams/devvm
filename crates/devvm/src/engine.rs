@@ -197,13 +197,13 @@ impl Engine {
                 Ok(_) => true,
                 Err(e) => {
                     self.progress
-                        .message(&format!("instance {name}: cannot read its record: {}", e.message()));
+                        .warn(&format!("instance {name}: cannot read its record: {}", e.message()));
                     true
                 }
             }
         };
         for warning in self.ssh_configs().sweep(&live) {
-            self.progress.message(&warning);
+            self.progress.warn(&warning);
         }
     }
 
@@ -262,7 +262,7 @@ impl Engine {
                 Err(e) if e.kind() == ErrorKind::NotFound => continue,
                 Err(e) => {
                     self.progress
-                        .message(&format!("skipping instance {}: {}", dir.name(), e.message()));
+                        .warn(&format!("skipping instance {}: {}", dir.name(), e.message()));
                     continue;
                 }
             };
@@ -288,7 +288,7 @@ impl Engine {
                         Err(e) => format!("unreadable ({})", e.message()),
                     };
                     self.progress
-                        .message(&format!("skipping instance {}: its owner.json is {why}", dir.name()));
+                        .warn(&format!("skipping instance {}: its owner.json is {why}", dir.name()));
                     continue;
                 }
             };
@@ -315,7 +315,7 @@ impl Engine {
             Ok(Some(_)) => InstanceState::Running,
             Ok(None) => InstanceState::Stopped,
             Err(e) => {
-                self.progress.message(&format!(
+                self.progress.warn(&format!(
                     "cannot tell whether instance {name} is running: {}",
                     e.message()
                 ));

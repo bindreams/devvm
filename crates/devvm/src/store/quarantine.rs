@@ -43,7 +43,7 @@ pub(crate) fn quarantine_file(
             ));
         }
     }
-    progress.message(&format!(
+    progress.warn(&format!(
         "moved the unreadable {} to {}",
         file.display(),
         target.display()

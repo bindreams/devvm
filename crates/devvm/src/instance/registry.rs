@@ -183,7 +183,7 @@ impl Registry {
                 Err(e) if e.kind() == ErrorKind::NotFound => {}
                 Err(e) => self
                     .progress
-                    .message(&format!("skipping instance {name}: {}", e.message())),
+                    .warn(&format!("skipping instance {name}: {}", e.message())),
             }
         }
         found.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
@@ -208,7 +208,7 @@ impl Registry {
             Ok(_) => {}
             Err(e) => {
                 self.progress
-                    .message(&format!("skipping {}: cannot tell what it is ({e})", path.display()));
+                    .warn(&format!("skipping {}: cannot tell what it is ({e})", path.display()));
                 return None;
             }
         }
@@ -216,7 +216,7 @@ impl Registry {
             Ok(name) => Some(name),
             Err(_) => {
                 self.progress
-                    .message(&format!("ignoring {}: not an instance name", path.display()));
+                    .warn(&format!("ignoring {}: not an instance name", path.display()));
                 None
             }
         }
@@ -263,7 +263,7 @@ impl Registry {
             Ok(dir) => Ok(Owned { dir, owner }),
             Err(e) => {
                 if let Err(left) = remove_tree(&temp) {
-                    self.progress.message(&format!(
+                    self.progress.warn(&format!(
                         "the half-built instance {} could not be deleted ({left}); the next devvm \
                          command deletes it",
                         temp.display()

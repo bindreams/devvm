@@ -79,7 +79,7 @@ impl<'a> Git<'a> {
         let cleared = cleared_names(host, names);
         if !cleared.is_empty() {
             let list: Vec<_> = cleared.iter().map(|name| name.to_string_lossy()).collect();
-            progress.message(&format!("{UNSET_NOTE_PREFIX}{}", list.join(", ")));
+            progress.debug(&format!("{UNSET_NOTE_PREFIX}{}", list.join(", ")));
         }
         Git { host, cleared }
     }

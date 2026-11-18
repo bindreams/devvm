@@ -184,20 +184,20 @@ impl LayerStore {
         if exclusive {
             match std::fs::rename(&source, &dir) {
                 Ok(()) => {
-                    self.progress.message(&format!(
+                    self.progress.warn(&format!(
                         "moved the unreadable layer {} to {}",
                         source.display(),
                         dir.display()
                     ));
                     return Ok(());
                 }
-                Err(e) => self.progress.message(&format!(
+                Err(e) => self.progress.warn(&format!(
                     "cannot move {} to quarantine: {e}; keeping a copy of its record",
                     source.display()
                 )),
             }
         } else {
-            self.progress.message(&format!(
+            self.progress.warn(&format!(
                 "layer {} is in use; leaving it in place and keeping a copy of its record in {}",
                 source.display(),
                 dir.display()
@@ -269,7 +269,7 @@ impl LayerStore {
         let mut seen = HashSet::new();
         loop {
             if !seen.insert(wanted) {
-                self.progress.message(&format!(
+                self.progress.warn(&format!(
                     "layer record of {} refers back to itself; ignoring it",
                     wanted.key
                 ));
@@ -301,7 +301,7 @@ impl LayerStore {
             MetaRead::Absent => Ok(None),
             MetaRead::Newer(e) => Err(e),
             MetaRead::Corrupt(why) => {
-                self.progress.message(&format!(
+                self.progress.warn(&format!(
                     "layer record {} is unreadable ({why}); treating it as missing",
                     dir.display()
                 ));
@@ -312,7 +312,7 @@ impl LayerStore {
                 Ok(None)
             }
             MetaRead::Valid(meta) if !meta.is_of(layer) => {
-                self.progress.message(&format!(
+                self.progress.warn(&format!(
                     "layer record {} names another layer; treating it as missing",
                     dir.display()
                 ));
@@ -331,7 +331,7 @@ impl LayerStore {
             CurrentFile::Absent => Ok(None),
             CurrentFile::Generation(generation) => Ok(Some(generation)),
             CurrentFile::Unreadable(path) => {
-                self.progress.message(&format!(
+                self.progress.warn(&format!(
                     "{} is unreadable; treating the layer as missing",
                     path.display()
                 ));
@@ -469,7 +469,7 @@ impl LayerStore {
             Ok(entries) => entries,
             Err(e) => {
                 self.progress
-                    .message(&format!("cannot list {} for leftovers: {e}", key_dir.display()));
+                    .warn(&format!("cannot list {} for leftovers: {e}", key_dir.display()));
                 return 0;
             }
         };
@@ -479,7 +479,7 @@ impl LayerStore {
                 Ok(entry) => entry,
                 Err(e) => {
                     self.progress
-                        .message(&format!("cannot list an entry of {}: {e}", key_dir.display()));
+                        .warn(&format!("cannot list an entry of {}: {e}", key_dir.display()));
                     continue;
                 }
             };
@@ -493,7 +493,7 @@ impl LayerStore {
             };
             if let Err(e) = result {
                 self.progress
-                    .message(&format!("cannot remove leftover {}: {e}", entry.path().display()));
+                    .warn(&format!("cannot remove leftover {}: {e}", entry.path().display()));
             }
         }
         staging_removed
@@ -589,7 +589,7 @@ impl Drop for RemoveOnDrop {
             && let Err(e) = std::fs::remove_dir_all(&self.path)
         {
             self.progress
-                .message(&format!("cannot remove staging directory {}: {e}", self.path.display()));
+                .warn(&format!("cannot remove staging directory {}: {e}", self.path.display()));
         }
     }
 }

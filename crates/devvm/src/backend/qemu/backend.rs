@@ -72,7 +72,7 @@ impl QemuBackend {
         }
         // Only this launch's own files: nobody else draws its name while its claim file is there.
         remove_files(self.host, &endpoint.launch_files(), Some(claim), &mut |message| {
-            self.progress.message(&message)
+            self.progress.warn(&message)
         });
         error
     }

@@ -71,7 +71,7 @@ pub(crate) fn remove_ssh_entry(engine: &Engine, dir: &InstanceDir) {
 
 /// Reports a problem with the files of a dead machine of `dir` on the progress channel, naming the instance.
 pub(crate) fn warn_for<'a>(engine: &'a Engine, dir: &'a InstanceDir) -> impl FnMut(String) + 'a {
-    move |text| engine.progress().message(&format!("instance {}: {text}", dir.name()))
+    move |text| engine.progress().warn(&format!("instance {}: {text}", dir.name()))
 }
 
 /// A named VM that stays until it is removed.

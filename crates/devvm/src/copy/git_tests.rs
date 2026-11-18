@@ -3,6 +3,7 @@ use std::path::Path;
 
 use super::{Git, adds_to_configuration, cleared_names};
 use crate::copy::copy_tests::git_command;
+use crate::progress::{Event, Level};
 use crate::test_support::fixtures::MemoryProgress;
 use crate::test_support::host::TestHost;
 
@@ -111,6 +112,19 @@ fn the_snapshot_says_which_variables_it_ignores_without_their_values() {
         ["The following variables have been unset: GIT_DIR, GIT_TRACE"]
     );
     assert_eq!(git.cleared, names(&["GIT_DIR", "GIT_TRACE"]));
+}
+
+#[skuld::test]
+fn a_git_environment_scrub_is_debug_not_info() {
+    let progress = MemoryProgress::default();
+    Git::from_names(&TestHost, names(&["GIT_DIR"]), &progress);
+    assert_eq!(
+        progress.events(),
+        [Event::Note {
+            level: Level::Debug,
+            text: "The following variables have been unset: GIT_DIR".to_owned()
+        }]
+    );
 }
 
 #[skuld::test]

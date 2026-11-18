@@ -266,7 +266,7 @@ where
         }
     };
     for note in plan::time_notes(&rules, &top, &items, &created, &source_path) {
-        progress.message(&note);
+        progress.warn(&note);
     }
     match placed {
         Place::Root => {

@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::instance::registry::registry_tests::{create, fixture};
+use crate::progress::{Event, Level};
 use crate::store::layers::Reachability;
 use crate::test_support::fixtures::unicode_home;
 
@@ -210,6 +211,14 @@ fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(un
     assert!(
         messages[0].contains("foo") && messages[0].contains("lock files could not be deleted"),
         "{messages:?}"
+    );
+    assert!(
+        matches!(
+            fx.progress.events().as_slice(),
+            [Event::Note { level: Level::Warn, .. }]
+        ),
+        "a failed removal is a warning: {:?}",
+        fx.progress.events()
     );
 }
 
