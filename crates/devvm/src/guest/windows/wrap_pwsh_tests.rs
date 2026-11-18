@@ -5,7 +5,7 @@
 //! The boundary of the command line the guest's sshd and broker build is not measured here: the host's `pwsh` has
 //! neither of them (the guest tests measure it).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Output, Stdio};
 
 use super::wrap_tests::longest_fit;
@@ -37,8 +37,8 @@ pub(in crate::guest::windows) enum Search<'a> {
     /// The caller's PATH with a directory in front.
     First(&'a Path),
     /// A PATH of its own: the directory (if any), then the directory of `pwsh.exe` and the system directory, and
-    /// nothing the caller has (Git's `usr\bin` has a `dir.exe` and a `mkdir.exe`, which are programs); and a stock
-    /// PATHEXT, which has no `.PS1`.
+    /// nothing the caller has (Git's `usr\bin` has a `dir.exe` and a `mkdir.exe`, which are programs); and a PATHEXT
+    /// that is a subset of the stock one (`.COM;.EXE;.BAT;.CMD`), so it has no `.PS1`.
     Only(Option<&'a Path>),
 }
 
@@ -46,15 +46,18 @@ pub(in crate::guest::windows) enum Search<'a> {
 /// with no helper variable when `helper` is `None`, and the programs found by `search`.
 pub(in crate::guest::windows) fn run_with(exe: &str, script: &str, helper: Option<&str>, search: Search) -> Output {
     let mut process = process(exe, script, helper);
-    let caller = std::env::var_os("PATH").unwrap();
     match search {
         Search::Caller => {}
         Search::First(dir) => {
+            let caller = std::env::var_os("PATH").unwrap();
             let paths = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&caller));
             process.env("PATH", std::env::join_paths(paths).unwrap());
         }
         Search::Only(first) => {
+            let caller = std::env::var_os("PATH").unwrap();
+            // An entry is read as `Find-Program` reads it: without its double quotes.
             let pwsh_dir = std::env::split_paths(&caller)
+                .map(|dir| PathBuf::from(dir.to_string_lossy().trim_matches('"')))
                 .find(|dir| dir.join("pwsh.exe").is_file())
                 .expect("pwsh.exe is on the PATH");
             let system = Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32");

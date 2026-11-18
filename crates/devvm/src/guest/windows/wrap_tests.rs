@@ -288,23 +288,21 @@ fn wrap_refuses_an_empty_argv_a_nul_and_an_oversize_line() {
     }
 }
 
-/// `pwsh -Command` of a comment of `n` characters: the command of the guest test of the limit.
+/// `pwsh -Command` of a comment, run in `C:\` or `C:\.`: the command of the guest test of the limit, which makes the
+/// script (and so a command line of the guest) exactly `n` units longer than it is for `n` = 0. The comment is in the script
+/// twice (the list and the batch form), so each of its characters moves the line by 2; the working directory is there
+/// once, and the one character that tells the two directories apart makes the line odd. Both exist in a guest.
 pub(crate) fn padded(n: usize) -> Command {
-    let text = format!("'ok' # {}", "a".repeat(n));
-    command(&["pwsh", "-NoProfile", "-NonInteractive", "-Command", &text])
+    let text = format!("'ok' # {}", "a".repeat(n / 2));
+    let mut cmd = command(&["pwsh", "-NoProfile", "-NonInteractive", "-Command", &text]);
+    cmd.cwd = Some(if n.is_multiple_of(2) { r"C:\" } else { r"C:\." }.to_owned());
+    cmd
 }
 
 /// `CreateProcess` takes 32,767 units of command line including the terminating NUL, so a line of 32,767 units is
 /// refused.
 #[skuld::test]
 fn a_line_of_the_limit_plus_the_terminating_null_is_refused() {
-    // The text is in the script twice (the list and the batch form), so the text moves the line by 2 a character; the
-    // working directory is there once, and a character of it makes the line odd, so every length is reachable.
-    let padded = |n: usize| {
-        let mut cmd = padded(n / 2);
-        cmd.cwd = Some("d".repeat(1 + n % 2));
-        cmd
-    };
     let longer = |n: usize| {
         let (sshd, broker) = command_line_lengths(&super::script_unchecked(&padded(n)).unwrap());
         sshd.max(broker)
