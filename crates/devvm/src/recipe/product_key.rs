@@ -34,7 +34,7 @@ impl ProductKey {
     /// not list, or an image that names no build.
     ///
     /// This is the one place that maps an image to a key.
-    pub fn generic_for(edition_id: &str, build: Option<u32>) -> Option<ProductKey> {
+    pub(crate) fn generic_for(edition_id: &str, build: Option<u32>) -> Option<ProductKey> {
         let build = build?;
         GENERIC_KEYS
             .iter()
@@ -55,13 +55,8 @@ impl PartialEq for ProductKey {
 
 impl Eq for ProductKey {}
 
-/// The builds of Windows a [`Generic`] key is for.
-enum Builds {
-    /// Every build from the first to the last, which is how the page lists Windows 10 and 11: one key per edition.
-    Range(u32, u32),
-    /// These builds only: a key that is one generation's, such as an LTSC release.
-    Only(&'static [u32]),
-}
+/// The builds of Windows a [`Generic`] key is for: inclusive ranges, `(first, last)`.
+type Builds = &'static [(u32, u32)];
 
 /// A generic volume license key (GVLK) of an edition: the key a KMS client installs with. Setup takes it for a volume
 /// edition, which is installed unactivated.
@@ -74,10 +69,7 @@ struct Generic {
 impl Generic {
     fn matches(&self, edition_id: &str, build: u32) -> bool {
         self.edition_id.eq_ignore_ascii_case(edition_id)
-            && match self.builds {
-                Builds::Range(first, last) => (first..=last).contains(&build),
-                Builds::Only(builds) => builds.contains(&build),
-            }
+            && self.builds.iter().any(|&(first, last)| (first..=last).contains(&build))
     }
 }
 
@@ -89,18 +81,20 @@ const fn row(edition_id: &'static str, builds: Builds, key: &'static str) -> Gen
     }
 }
 
-/// Windows 10 (build 10240) to Windows 11 25H2 (build 26200). A later build has no key here until the page names it.
-const WINDOWS_10_AND_11: Builds = Builds::Range(10240, 26200);
-/// Windows Enterprise LTSC 2019 (17763), 2021 (19044) and 2024 (26100), which share their keys.
-const LTSC_2019_ON: Builds = Builds::Only(&[17763, 19044, 26100]);
-/// Windows IoT Enterprise LTSC 2021 and 2024.
-const IOT_LTSC_2021_ON: Builds = Builds::Only(&[19044, 26100]);
-const LTSB_2016: Builds = Builds::Only(&[14393]);
-const LTSB_2015: Builds = Builds::Only(&[10240]);
-const SERVER_2016: Builds = Builds::Only(&[14393]);
-const SERVER_2019: Builds = Builds::Only(&[17763]);
-const SERVER_2022: Builds = Builds::Only(&[20348]);
-const SERVER_2025: Builds = Builds::Only(&[26100]);
+/// Windows 10 (build 10240) and every release since: the page lists one key per client edition, not one per release.
+const WINDOWS_10_AND_11: Builds = &[(10240, u32::MAX)];
+/// Windows Enterprise LTSC 2019 (17763), 2021 and 2024 (26100), which share their keys. LTSC 2021 is Windows 10 21H2: the
+/// system reports build 19044, but an `install.wim` is the 2004 image that 21H2 turns on by an enablement package, so
+/// it most likely records 19041. The whole family 19041 to 19045 is one release.
+const LTSC_2019_ON: Builds = &[(17763, 17763), (19041, 19045), (26100, 26100)];
+/// Windows IoT Enterprise LTSC 2021 (the 19041 to 19045 family, as above) and 2024.
+const IOT_LTSC_2021_ON: Builds = &[(19041, 19045), (26100, 26100)];
+const LTSB_2016: Builds = &[(14393, 14393)];
+const LTSB_2015: Builds = &[(10240, 10240)];
+const SERVER_2016: Builds = &[(14393, 14393)];
+const SERVER_2019: Builds = &[(17763, 17763)];
+const SERVER_2022: Builds = &[(20348, 20348)];
+const SERVER_2025: Builds = &[(26100, 26100)];
 
 /// The generic keys of the editions devvm can install, copied on 2026-11-18 from Microsoft's page
 /// <https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys> (last updated by Microsoft
@@ -108,9 +102,9 @@ const SERVER_2025: Builds = Builds::Only(&[26100]);
 ///
 /// What is not here has no key and is refused, so a recipe names one with `product-key`: the Windows versions the guest
 /// cannot be built from (before Windows 10 and Server 2016), the retired Semi-Annual Channel servers, an edition the
-/// page does not list (Home, the IoT Enterprise subscription LTSC), and the two it lists whose edition id no image
-/// devvm has read shows (Server Essentials and Datacenter: Azure Edition). A new release is added when the page lists
-/// it, and an edition with an image that shows its edition id.
+/// page does not list (Home, Enterprise multi-session, the IoT Enterprise subscription LTSC), and the two it lists whose edition id no image
+/// devvm has read shows (Server Essentials and Datacenter: Azure Edition). A new LTSC or Server release is added when
+/// the page lists it, and an edition with an image that shows its edition id.
 const GENERIC_KEYS: &[Generic] = &[
     // Windows 11 and Windows 10 Semi-Annual Channel
     row("Professional", WINDOWS_10_AND_11, "W269N-WFGWX-YVC9B-4J6C9-T83GX"),
