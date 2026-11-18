@@ -17,6 +17,15 @@ fn id() -> InstanceId {
     "000102030405060708090a0b0c0d0e0f".parse().unwrap()
 }
 
+#[skuld::test]
+fn the_hostname_is_devvm_and_the_first_eight_hex_digits_of_the_id() {
+    assert_eq!(id().hostname(), "devvm-00010203");
+    let other: InstanceId = "ffeeddccbbaa99887766554433221100".parse().unwrap();
+    assert_eq!(other.hostname(), "devvm-ffeeddcc");
+    // Under the 15 characters of a Windows computer name.
+    assert_eq!(other.hostname().len(), 14);
+}
+
 fn layer(n: u8) -> LayerRef {
     LayerRef {
         key: LayerKey::from_bytes([n; 16]),

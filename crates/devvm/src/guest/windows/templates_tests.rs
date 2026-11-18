@@ -23,7 +23,6 @@ pub(super) fn inputs() -> AnswerInputs<'static> {
         image_index: 2,
         language: "de-DE",
         time_zone: "UTC",
-        computer_name: "DEVVM",
         evaluation: true,
         product_key: None,
     }
@@ -97,7 +96,6 @@ fn the_answer_file_renders_deterministically_and_escapes_xml() {
         image_index: 3,
         language: "x<y",
         time_zone: "t&z",
-        computer_name: "n\"m",
         evaluation: false,
         product_key: None,
     };
@@ -115,7 +113,8 @@ fn the_answer_file_renders_deterministically_and_escapes_xml() {
     assert!(!text.contains("a<b>"), "the password is escaped");
     assert!(text.contains("<UILanguage>x&lt;y</UILanguage>"));
     assert!(text.contains("<TimeZone>t&amp;z</TimeZone>"));
-    assert!(text.contains("<ComputerName>n&quot;m</ComputerName>"));
+    // The computer name is not the answer file's: the boot task names each instance at its first boot.
+    assert!(!text.contains("ComputerName"));
     assert!(text.contains("<Key>/IMAGE/INDEX</Key>") && text.contains("<Value>3</Value>"));
     assert!(!text.contains("@@"), "every placeholder is filled");
 
@@ -822,6 +821,29 @@ fn the_boot_task_starts_sshd_last_after_the_agent() {
     assert_eq!(task.matches("Start-Service").count(), 1);
     let after = &task[at(&task, "Start-Service -Name sshd")..];
     assert!(after.trim_end().ends_with('}') && !after.contains("Resize") && !after.contains("Send-Line \"DEVVM-SEED"));
+}
+
+#[skuld::test]
+fn the_boot_task_names_the_computer_from_the_seed_and_restarts_before_anything_else_of_the_boot() {
+    let task = rendered("boot-task.ps1");
+    // The name is the seed's `local-hostname`, as the Linux seed's; a boot that has another name renames and restarts,
+    // and ends there: the seed, the boot id and sshd are the next boot's.
+    assert!(task.contains("'meta.json'") && task.contains("'local-hostname'"));
+    assert_before(&task, "Find-VolumeRoot 'CIDATA'", "'local-hostname'");
+    assert_before(&task, "'local-hostname'", "Rename-Computer");
+    assert_before(&task, "Rename-Computer", "Restart-Computer");
+    let ends = section(
+        &task,
+        "Restart-Computer",
+        "
+    }",
+    );
+    assert!(ends.contains("exit 0"), "the boot that restarts ends there: {ends}");
+    assert_before(&task, "Restart-Computer", "DEVVM-SEED-WRITTEN");
+    assert_before(&task, "Restart-Computer", "Start-Service");
+    assert_eq!(task.matches("Rename-Computer").count(), 1);
+    // A name already right is not renamed again: only a boot that finds another name restarts.
+    assert!(task.contains("$env:COMPUTERNAME -ne $hostname"));
 }
 
 #[skuld::test]

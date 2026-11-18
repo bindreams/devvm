@@ -1,6 +1,6 @@
-# The boot task: PowerShell 7 as SYSTEM, at every boot. It applies the instance's seed (the CIDATA disk), makes C: as large
-# as the disk, and starts sshd last, once the agent of ssh-broker answers. sshd is a Manual service, so a failed step
-# leaves it stopped (fail closed).
+# The boot task: PowerShell 7 as SYSTEM, at every boot. It names the computer after the instance (a restart, at its first
+# boot), applies the instance's seed (the CIDATA disk), makes C: as large as the disk, and starts sshd last, once the
+# agent of ssh-broker answers. sshd is a Manual service, so a failed step leaves it stopped (fail closed).
 $ErrorActionPreference = 'Stop'
 @@!UTF8_OUTPUT@@
 . (Join-Path $PSScriptRoot 'lib.ps1')
@@ -61,6 +61,16 @@ try {
 
     # The disk may appear after the boot has started.
     while (-not ($disk = Find-VolumeRoot 'CIDATA')) { Start-Sleep -Milliseconds 200 }
+
+    # The computer's name is the seed's `local-hostname`. A name takes effect at a restart, so a boot that finds another
+    # name renames, restarts and ends here: the seed, the boot id and sshd are the next boot's, which has the name.
+    $hostname = (Get-Content -LiteralPath (Join-Path $disk 'meta.json') -Raw | ConvertFrom-Json).'local-hostname'
+    if ($env:COMPUTERNAME -ne $hostname) {
+        Rename-Computer -NewName $hostname -Force
+        Send-Line "DEVVM-RENAMED=$hostname"
+        Restart-Computer -Force
+        exit 0
+    }
 
     New-Item -ItemType Directory -Force -Path $ssh | Out-Null
     foreach ($name in $seed.Keys) {

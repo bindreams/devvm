@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use super::bounds::BOOT_BOUND;
-use super::{WindowsBase, elevated_facts, facts, ran, user_facts, windows_base, windows_options};
+use super::{WindowsBase, elevated_facts, facts, printed, ran, user_facts, windows_base, windows_options};
 use crate::engine::Engine;
 use crate::engine::keys::{read_record, running_of};
 use crate::engine::ready::reconnect_after_reset;
@@ -109,6 +109,26 @@ fn windows_the_first_command_after_start_stop_start_and_reboot_is_in_session_1(
 ) {
     across_restarts(base, "w-first", |up, after| {
         assert_eq!(facts(&**up, RunAs::User), user_facts(), "after {after}");
+    });
+}
+
+/// The computer's name as the guest says it to a program (`hostname`), to a new session of the user
+/// (`$env:COMPUTERNAME`) and to .NET: all three read it from the running system, so a rename that has not taken effect
+/// shows in each.
+const NAMES: &str = "\"$(hostname) $env:COMPUTERNAME $([Environment]::MachineName)\"";
+
+#[skuld::test]
+fn windows_the_computer_is_named_after_the_instance_id_from_the_first_boot_and_through_every_restart(
+    #[fixture(windows_base)] base: &WindowsBase,
+) {
+    across_restarts(base, "w-hostname", |up, after| {
+        let want = up.dir().id().hostname();
+        let said = printed(&**up, NAMES);
+        let names: Vec<&str> = said.split(' ').collect();
+        assert_eq!(names.len(), 3, "after {after}: {said}");
+        for name in names {
+            assert!(name.eq_ignore_ascii_case(&want), "after {after}: {said} is not {want}");
+        }
     });
 }
 

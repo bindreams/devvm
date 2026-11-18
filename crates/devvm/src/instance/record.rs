@@ -35,6 +35,13 @@ impl InstanceId {
     pub(crate) fn random() -> InstanceId {
         InstanceId(random::bytes())
     }
+
+    /// The name of the machine in its guest, Linux or Windows: `devvm-` and the first 8 hex digits of the id. It is under
+    /// the 15 characters of a Windows computer name, and is neither the label (which a user chooses and can reuse) nor
+    /// one shared by every machine.
+    pub(crate) fn hostname(&self) -> String {
+        format!("devvm-{}", hex::encode(&self.0[..4]))
+    }
 }
 
 impl fmt::Display for InstanceId {

@@ -15,7 +15,7 @@ use self::serial::{Launches, LogReader, Serial};
 use super::WindowsGuest;
 use super::expiry::{describe, expiry_from};
 use super::pins::VIRTIO_WIN;
-use super::templates::{self, AnswerInputs, COMPUTER_NAME, TIME_ZONE};
+use super::templates::{self, AnswerInputs, TIME_ZONE};
 use crate::access::session::humanly;
 use crate::backend::{
     Backend, DeviceProfile, LAYER_DISK, Machine, MachineExit, MachineSpec, Media, MediaFormat, MediaKind,
@@ -435,7 +435,6 @@ impl<'a> Build<'a> {
             image_index: install.image.index,
             language: &install.image.language,
             time_zone: TIME_ZONE,
-            computer_name: COMPUTER_NAME,
             evaluation,
             product_key,
         })?;
