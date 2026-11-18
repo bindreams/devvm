@@ -124,7 +124,7 @@ impl BaseBuilder for WindowsBuilder {
             .unwrap_or_else(PoisonError::into_inner)
             .take()
             .ok_or_else(|| Error::new(ErrorKind::Internal, "the build has no held ISO to install Windows from"))?;
-        let evaluation = root.image.is_evaluation();
+        let evaluation = root.image().is_evaluation();
         let product_key = root.product_key().cloned();
         let install = read_install_iso(root)?;
         let expires = Build::prepare(self, ctx, staging, &install, evaluation, product_key.as_ref())?.run(install)?;

@@ -148,7 +148,7 @@ fn installed_with(dirs: &Dirs, recipe: &Recipe) -> Result<(bool, Option<ProductK
         &MemoryProgress::default(),
     )
     .map_err(|e| format!("cannot read the edition of {}: {e}", iso.display()))?;
-    Ok((root.image.is_evaluation(), root.product_key().cloned()))
+    Ok((root.image().is_evaluation(), root.product_key().cloned()))
 }
 
 /// One instance of the base, started once per test process; it runs until the process ends.
