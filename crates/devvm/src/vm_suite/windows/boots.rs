@@ -117,7 +117,9 @@ fn windows_the_first_command_after_start_stop_start_and_reboot_is_in_session_1(
 /// shows in each.
 const NAMES: &str = "\"$(hostname) $env:COMPUTERNAME $([Environment]::MachineName)\"";
 
-/// The domain autologon logs on to.
+/// The domain autologon logs on to. Only the base build writes it (`.`); whether Winlogon rewrites it at an autologon is
+/// what this run measures. The boot that renames reaches no command (sshd starts after the rename), so the first read is
+/// after the autologons of both of its boots, and a rewrite at either shows: nothing sets the value back to `.`.
 const WINLOGON_DOMAIN: &str =
     r"(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon').DefaultDomainName";
 
@@ -137,7 +139,11 @@ fn windows_the_computer_is_named_after_the_instance_id_from_the_first_boot_and_t
         // exists only if the logon at this boot succeeded) and the elevated runner's task.
         assert_eq!(facts(&**up, RunAs::User), user_facts(), "after {after}");
         assert_eq!(facts(&**up, RunAs::Elevated), elevated_facts(), "after {after}");
-        assert_eq!(printed(&**up, WINLOGON_DOMAIN), ".", "after {after}");
+        assert_eq!(
+            printed(&**up, WINLOGON_DOMAIN),
+            ".",
+            "Winlogon rewrote DefaultDomainName at an autologon, after {after}"
+        );
     });
 }
 
