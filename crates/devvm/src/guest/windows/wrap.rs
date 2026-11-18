@@ -4,11 +4,11 @@
 //! session. The script, in this order:
 //!
 //! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High; the rest is
-//!    one child scope, so a variable of the user's profile that is read-only or a constant stops no assignment of it;
+//!    one child scope with its own `$ErrorActionPreference`;
 //! 2. sets the working directory, if the command has one, and finds argv[0] as a **file**: the file itself for a name
 //!    with a path, a file of `PATH` otherwise, as it is or with an extension of `PATHEXT`, never a cmdlet or an alias
-//!    and never read as a wildcard; a name that is not found is 127, and one that PowerShell knows as a cmdlet, function,
-//!    alias or script says to run it through `pwsh -c`;
+//!    and never read as a wildcard; a name that is not found is 127, and one that PowerShell knows as a cmdlet,
+//!    function, alias or script says to run it through `pwsh -c`;
 //! 3. starts the file found with `System.Diagnostics.Process`, copies the standard streams as raw bytes and ends with
 //!    the child's status (every byte of stdout and stderr and every 32-bit status is carried exactly). A directory that
 //!    cannot be entered and a program that cannot start end with 126 and the reason: the command did not run.
@@ -16,6 +16,12 @@
 //!    list for a program, the batch-file command line of [`cmdquote`] for a `.cmd` or `.bat` file, and, when argv[0]
 //!    names `cmd`, the command line of `cmd.exe /c <text>` for `cmd.exe` (a text of several lines is refused, as any
 //!    argument with a line break is). No output encoding is set here: it would re-encode every user program's output.
+//!
+//! The script runs after the guest user's PowerShell profile, which the broker does not skip. The child scope covers a
+//! profile that makes a variable the script assigns read-only, a constant or typed. It does not cover an `AllScope`
+//! variable, an alias or function that shadows a command the script calls (`Find-Program`, `Where-Object`,
+//! `ForEach-Object`, `Remove-Item`, `Get-Command`, `Set-Location`), or the variables of the elevated caller script
+//! ([`elevate`]): those are one class, and its fix is to isolate the script from the profile.
 //!
 //! An elevated command is the same script run by the helper of [`elevate`].
 
@@ -130,10 +136,12 @@ pub(crate) const POWERSHELL_COMMAND: &str = ": a PowerShell command, not a progr
 /// name is not a program either); a lookup that throws is said and is no answer.
 ///
 /// The lookup is in the script because only the guest knows its commands, and runs only when no program is found. A
-/// name with a path is a script by its file: the file named when it is a `.ps1`, and when it is not there, the file
-/// with `.ps1` added, as PowerShell adds it to every such name (a file that is there and is no script is not one, even
-/// when a file of its name and `.ps1` is there too: PowerShell runs the file named). A bare name is looked up by `Get-Command`, escaped because it is a name and
-/// not a wildcard. The block works from `$program` alone: no variable of the search is read. `Find-Program` is
+/// name with a path is a script by its file. When it has an extension, the file named is the script if it is a `.ps1`;
+/// a file that is there and is no script is not one, even when a file of its name and `.ps1` is there too, because
+/// PowerShell runs the file named. When it has none, PowerShell tries the name with `.ps1` first, so the script is
+/// there whether or not a file of the name itself is. A name with an extension and no file is a script when the name
+/// with `.ps1` added is one. A bare name is looked up by `Get-Command`, escaped because it is a name and not a
+/// wildcard. The block works from `$program` alone: no variable of the search is read. `Find-Program` is
 /// removed first, so the script's own function is not an answer; the removal is in the `try`, so a failure of it is
 /// said and the lookup is not made. A relative name in a location that is no directory (see `by_path!`) throws in the
 /// `try` too: the status is 127 and the message says why.
@@ -147,7 +155,7 @@ try {{ Remove-Item Function:Find-Program; $c = {}; if ($c) {{ $w = '{POWERSHELL_
         by_path!(
             "$program",
             "$f = ",
-            "; if ([IO.File]::Exists($f)) { $f -like '*.ps1' } else { [IO.File]::Exists($f + '.ps1') }",
+            "; if ([IO.Path]::GetExtension($f) -and [IO.File]::Exists($f)) { $f -like '*.ps1' } else { [IO.File]::Exists($f + '.ps1') }",
             "Get-Command ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction Ignore"
         ),
         failure("'devvm: ' + $program + $w", 127)
@@ -230,12 +238,12 @@ fn user_script(cmd: &Command) -> Result<String> {
 
     let program = &cmd.argv[0];
     let args = &cmd.argv[1..];
-    let mut script = String::from("$ErrorActionPreference = 'Stop'\n");
-    script.push_str(&session_check());
+    let mut script = session_check();
     // A child scope: a variable the guest user's profile made read-only, constant or typed does not stop an assignment
-    // of the command, which makes a local over it.
+    // of the command, which makes a local over it; the preference is one of them.
     script.push_str(
         "& {
+$ErrorActionPreference = 'Stop'
 ",
     );
     if let Some(cwd) = &cmd.cwd {

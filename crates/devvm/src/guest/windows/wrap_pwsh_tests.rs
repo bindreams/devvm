@@ -280,6 +280,10 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         "note.txt.ps1",
         "only.txt.ps1",
         "other.txt",
+        // A name without an extension whose own file is there, next to its script and without it.
+        "both",
+        "both.ps1",
+        "plain",
     ] {
         std::fs::write(scripts.join(name), "'ran'").unwrap();
     }
@@ -299,6 +303,8 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         // The extension left out, as PowerShell takes it: `.ps1` is added to every name by path, also to one with
         // another extension, when the file of that name is not there.
         r".\only.txt",
+        // A name without an extension gets `.ps1` first, whether or not a file of the name itself is there.
+        r".\both",
         r".\tool",
         "./TOOL",
         r".\a[1]",
@@ -309,8 +315,15 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         hinted(&by_path(name), name);
     }
     // A name by path that is no script, or a script that is not there, is not found; so is a file that is there and no
-    // script, even with a script of the name plus `.ps1`: PowerShell runs the file named.
-    for name in [r".\other.txt", r".\note.txt", r".\note", r".\a[2].ps1", r".\proj[1]"] {
+    // script, even with a script of the name plus `.ps1`: PowerShell runs the file named, if the name has an extension.
+    for name in [
+        r".\other.txt",
+        r".\note.txt",
+        r".\note",
+        r".\plain",
+        r".\a[2].ps1",
+        r".\proj[1]",
+    ] {
         let output = by_path(name);
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
         assert!(
@@ -725,10 +738,15 @@ fn a_profile_that_makes_the_scripts_variables_read_only_or_constant_stops_nothin
 ) {
     let exe = test_binary();
     for option in ["ReadOnly", "Constant"] {
-        let profile: String = ["app", "w", "f", "c", "program", "psi", "p"]
+        let mut profile: String = ["app", "w", "f", "c", "program", "psi", "p"]
             .iter()
             .map(|name| format!("Set-Variable {name} -Option {option} -Value 'x'\n"))
             .collect();
+        // `ErrorActionPreference` is a variable of the profile too, and the script sets it. It exists before the
+        // profile runs, so it can be made read-only and no constant.
+        if option == "ReadOnly" {
+            profile.push_str("Set-Variable ErrorActionPreference -Option ReadOnly -Value 'Continue'\n");
+        }
         let output = run_with(
             "pwsh",
             &format!("{profile}{}", wrapped(&[&exe, "ok"])),
@@ -800,11 +818,9 @@ fn a_location_that_is_no_directory_stops_nothing(
     // A relative name has no directory to be relative to: 127, with the reason of the lookup.
     let output = run_at(&[r".\registry.ps1"], Search::Only(None));
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
-    assert_eq!(
-        stderr(&output).lines().next(),
-        Some(
-            r#"devvm: .\registry.ps1: command not found (lookup failed: Exception calling "GetFullPath" with "2" argument(s): "Basepath argument is not fully qualified. (Parameter 'basePath')")"#
-        ),
+    // The reason is the runtime's own text, which depends on the culture: the prefix is the contract.
+    assert!(
+        stderr(&output).starts_with(r"devvm: .\registry.ps1: command not found (lookup failed: "),
         "{}",
         shown(&output)
     );
