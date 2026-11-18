@@ -67,7 +67,10 @@ fn a_program_that_does_not_name_cmd_carries_no_cmd_command_line() {
 #[skuld::test]
 fn wrap_resolves_argv0_as_an_application_never_a_cmdlet() {
     let text = script(&["Get-ChildItem", "x"]);
-    assert!(text.contains("$app = Find-Program 'Get-ChildItem'\n"), "{text}");
+    assert!(
+        text.contains("$program = 'Get-ChildItem'\n$app = Find-Program $program\n"),
+        "{text}"
+    );
     // The name is looked up as the file it is: PATH and PATHEXT, with no wildcard reading of `[` or `*`.
     assert!(text.contains("[IO.File]::Exists("), "{text}");
     // `Get-Command` is only in the branch that explains a name that is not found; it never decides what runs.
@@ -99,10 +102,11 @@ fn a_program_that_cannot_start_and_a_directory_that_cannot_be_entered_exit_126_n
     );
     assert!(
         text.contains(
-            "try { $p = [Diagnostics.Process]::Start($psi) } catch { [Console]::Error.WriteLine('devvm: it''s a tool: ' + $_.Exception.Message); exit 126 }"
+            "try { $p = [Diagnostics.Process]::Start($psi) } catch { [Console]::Error.WriteLine('devvm: ' + $program + ': ' + $_.Exception.Message); exit 126 }"
         ),
         "{text}"
     );
+    assert!(text.contains("$program = 'it''s a tool'\n"), "{text}");
 }
 
 #[skuld::test]
@@ -132,24 +136,26 @@ fn wrap_sets_the_working_directory_literally() {
 fn wrap_exits_127_naming_a_missing_program() {
     let text = script(&["no such tool"]);
     assert!(
-        text.contains("[Console]::Error.WriteLine('devvm: no such tool: command not found'); exit 127 }"),
+        text.contains("[Console]::Error.WriteLine('devvm: ' + $program + ': command not found'); exit 127 }"),
         "{text}"
     );
+    assert!(text.contains("$program = 'no such tool'\n"), "{text}");
 }
 
 #[skuld::test]
 fn a_name_that_is_a_powershell_command_exits_127_naming_pwsh_c() {
     let text = script(&["Get-ComputerInfo", "-Property", "CsName"]);
-    // The lookup is of the name as a cmdlet, function or alias, and a wildcard in the name is not read as one.
+    // The lookup is of the name as a command PowerShell runs by name, a script included (it has no PATHEXT extension
+    // to be a program), and a wildcard in the name is not read as one.
     assert!(
         text.contains(
-            "if (Get-Command -Name ([WildcardPattern]::Escape('Get-ComputerInfo')) -CommandType Alias,Function,Cmdlet -ErrorAction SilentlyContinue) {"
+            "Get-Command -Name ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction SilentlyContinue"
         ),
         "{text}"
     );
     assert!(
         text.contains(
-            "[Console]::Error.WriteLine('devvm: Get-ComputerInfo: a PowerShell command, not a program; run it with `pwsh -c Get-ComputerInfo ...`'); exit 127 }"
+            "[Console]::Error.WriteLine('devvm: ' + $program + ': a PowerShell command, not a program; run it with `pwsh -c ' + $run + ' ...`'); exit 127"
         ),
         "{text}"
     );
@@ -159,11 +165,52 @@ fn a_name_that_is_a_powershell_command_exits_127_naming_pwsh_c() {
 }
 
 #[skuld::test]
-fn the_pwsh_hint_quotes_the_name_like_any_other_text() {
+fn the_lookup_finds_no_function_of_the_script_and_cannot_end_it_by_an_error() {
+    let text = script(&["Find-Program"]);
+    let (_, lookup) = text.split_once("if (-not $app) {").unwrap();
+    // The function the script defined is removed before the lookup, and both are in a `try` whose `catch` is empty,
+    // so an error of the lookup (a module that fails to load, under `$ErrorActionPreference = 'Stop'`) is no answer.
+    let at = |needle: &str| lookup.find(needle).unwrap_or_else(|| panic!("{needle} is in {lookup}"));
+    let (try_at, remove, get, catch) = (
+        at("try {"),
+        at("Remove-Item -LiteralPath Function:Find-Program"),
+        at("Get-Command"),
+        at("} catch { }"),
+    );
+    assert!(try_at < remove && remove < get && get < catch, "{lookup}");
+    // Both ends are after the `catch`: 127 holds whatever the lookup did.
+    assert!(lookup.match_indices("exit 127").all(|(end, _)| end > catch), "{lookup}");
+}
+
+#[skuld::test]
+fn the_pwsh_hint_names_the_command_as_powershell_needs_it() {
     let text = script(&["it's"]);
-    assert!(text.contains("Escape('it''s')"), "{text}");
-    assert!(text.contains("devvm: it''s: a PowerShell command"), "{text}");
-    assert!(text.contains("`pwsh -c it''s ...`"), "{text}");
+    assert!(text.contains("$program = 'it''s'\n"), "{text}");
+    // A bare word stays one; anything else is run as a single-quoted literal, with `&`, a quote doubled in each of the
+    // four spellings PowerShell reads as one.
+    let run = [
+        r"$run = if ($program -match '^[\w.\\/:-]+\z') { $program } else { '& ''' + ($program -replace '([''",
+        "\u{2018}-\u{201b}",
+        r"])', '$1$1') + '''' }",
+    ]
+    .concat();
+    assert!(text.contains(&run), "{text}");
+}
+
+#[skuld::test]
+fn argv0_is_in_the_script_once_for_a_user_and_for_an_elevated_command() {
+    for run_as in [RunAs::User, RunAs::Elevated] {
+        let mut cmd = command(&["zqzqzqzq", "arg"]);
+        cmd.run_as = run_as;
+        let text = wrap(&cmd).unwrap();
+        assert_eq!(text.matches("zqzqzqzq").count(), 1, "{run_as:?}: {text}");
+    }
+}
+
+#[skuld::test]
+fn a_command_whose_program_name_fit_before_the_lookup_still_wraps() {
+    // The script held argv[0] three times before the lookup: a name of 9,000 characters was 27,000 units of it and fit.
+    assert!(wrap(&command(&[&"x".repeat(9_000), "arg"])).is_ok());
 }
 
 #[skuld::test]

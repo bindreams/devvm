@@ -6,8 +6,8 @@
 //! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High;
 //! 2. sets the working directory, if the command has one, and finds argv[0] as a **file**: the file itself for a name
 //!    with a path, a file of `PATH` otherwise, as it is or with an extension of `PATHEXT`, never a cmdlet or an alias
-//!    and never read as a wildcard; a name that is not found is 127, and one that PowerShell knows as a cmdlet, function
-//!    or alias says to run it with `pwsh -c`;
+//!    and never read as a wildcard; a name that is not found is 127, and one that PowerShell knows as a cmdlet, function,
+//!    alias or script says to run it with `pwsh -c`;
 //! 3. starts the file found with `System.Diagnostics.Process`, copies the standard streams as raw bytes and ends with
 //!    the child's status (every byte of stdout and stderr and every 32-bit status is carried exactly). A directory that
 //!    cannot be entered and a program that cannot start end with 126 and the reason: the command did not run.
@@ -46,9 +46,9 @@ pub(super) const NOT_IN_SESSION: &str = "the command did not reach the user's se
 /// readiness probe matches.
 pub(super) fn session_check() -> String {
     format!(
-        "if ([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0) {{ [Console]::Error.WriteLine({}); exit 126 }}
+        "if ([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0) {{ {} }}
 ",
-        literal(&format!("devvm: {NOT_IN_SESSION}"))
+        failure(&literal(&format!("devvm: {NOT_IN_SESSION}")), 126)
     )
 }
 
@@ -164,12 +164,22 @@ fn user_script(cmd: &Command) -> Result<String> {
         script.push_str(&format!(
             "try {{ Set-Location -LiteralPath {} }} catch {{ {} }}\n",
             literal(cwd),
-            failure(&format!("working directory {cwd}"))
+            failure(
+                &format!(
+                    "{} + $_.Exception.Message",
+                    literal(&format!("devvm: working directory {cwd}: "))
+                ),
+                126
+            )
         ));
     }
     script.push_str(RESOLVE);
-    script.push_str(&format!("$app = Find-Program {}\n", literal(program)));
-    script.push_str(&not_found(program));
+    // The name is written once: every later use is the variable, so a long argv[0] costs the line limit once.
+    script.push_str(&format!(
+        "$program = {}\n$app = Find-Program $program\n",
+        literal(program)
+    ));
+    script.push_str(&not_found());
     script.push_str("$psi = [Diagnostics.ProcessStartInfo]::new($app)\n");
     if cmd.cwd.is_some() {
         script.push_str("$psi.WorkingDirectory = (Get-Location).ProviderPath\n");
@@ -196,26 +206,38 @@ fn user_script(cmd: &Command) -> Result<String> {
     script.push_str("}\n");
     script.push_str(&format!(
         "try {{ $p = [Diagnostics.Process]::Start($psi) }} catch {{ {} }}\n",
-        failure(program)
+        failure("'devvm: ' + $program + ': ' + $_.Exception.Message", 126)
     ));
     script.push_str(CARRY);
     script.push_str(EXIT);
     Ok(script)
 }
 
-/// What the script does when `program` names no file: ends with 127 and says so. A name that is a cmdlet, function or
-/// alias of PowerShell gets the way to run it (`dir` is one: `cmd`'s builtin of that name is not a program either). The
-/// lookup is in the script because only the guest knows its commands, and on this branch only, so a program that is
-/// found pays nothing. The name is escaped: it is a name, not a wildcard.
-fn not_found(program: &str) -> String {
-    let error = |message: String| format!("[Console]::Error.WriteLine({}); exit 127", literal(&message));
+/// What the script does when `$program` names no file: ends with 127 and says so. A name that is a cmdlet, function,
+/// alias or script of PowerShell gets the way to run it (`dir` is an alias: `cmd`'s builtin of that name is not a
+/// program either), quoted as PowerShell needs it when it has a space or a quote.
+///
+/// The lookup is in the script because only the guest knows its commands, and on this branch only: a program that is
+/// found runs none of it, but the script is longer by it for every command, and a name that is not found pays a
+/// `Get-Command`, which also scans `PSModulePath` for a module that exports it. The name is escaped: it is a name, not a
+/// wildcard. `Find-Program` is removed first, so the script's own function is not an answer, and an error of the lookup
+/// (a module that fails to load) is no answer either: the status is 127 whatever it does.
+fn not_found() -> String {
     format!(
-        "if (-not $app) {{\nif (Get-Command -Name ([WildcardPattern]::Escape({})) -CommandType Alias,Function,Cmdlet -ErrorAction SilentlyContinue) {{ {} }}\n{} }}\n",
-        literal(program),
-        error(format!(
-            "devvm: {program}: a PowerShell command, not a program; run it with `pwsh -c {program} ...`"
-        )),
-        error(format!("devvm: {program}: command not found")),
+        r"if (-not $app) {{
+$command = $false
+try {{ Remove-Item -LiteralPath Function:Find-Program; $command = [bool](Get-Command -Name ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction SilentlyContinue) }} catch {{ }}
+if ($command) {{
+$run = if ($program -match '^[\w.\\/:-]+\z') {{ $program }} else {{ '& ''' + ($program -replace '([''‘-‛])', '$1$1') + '''' }}
+{}
+}}
+{} }}
+",
+        failure(
+            "'devvm: ' + $program + ': a PowerShell command, not a program; run it with `pwsh -c ' + $run + ' ...`'",
+            127
+        ),
+        failure("'devvm: ' + $program + ': command not found'", 127),
     )
 }
 
@@ -231,19 +253,19 @@ fn batch_form(args: &[String]) -> String {
     }
 }
 
-/// What the script does when what it names (`what`) cannot be started or entered: says why and ends with 126, the status
-/// of a command that did not run.
-fn failure(what: &str) -> String {
-    format!(
-        "[Console]::Error.WriteLine({} + $_.Exception.Message); exit 126",
-        literal(&format!("devvm: {what}: "))
-    )
+/// What the script does to end without the command's own status: writes `message` (a PowerShell expression) to stderr
+/// and ends with `status`, 126 for a command that did not run and 127 for one that is not found.
+fn failure(message: &str, status: u32) -> String {
+    format!("[Console]::Error.WriteLine({message}); exit {status}")
 }
 
 /// What the script does for an argument `cmd.exe` cannot be given: says so and does not run the command.
 fn refusal(why: &str) -> String {
     format!(
-        "[Console]::Error.WriteLine({})\nexit 126\n",
-        literal(&format!("devvm: {why}, and the program is run by cmd.exe"))
+        "{}\n",
+        failure(
+            &literal(&format!("devvm: {why}, and the program is run by cmd.exe")),
+            126
+        )
     )
 }

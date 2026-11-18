@@ -58,8 +58,8 @@ fn windows_a_powershell_command_as_argv0_exits_127_naming_pwsh_c(
             seen.stderr_text()
         );
     }
-    // The advice works: with `pwsh -c` the cmdlet runs.
-    let seen = target.run(&Case::new(&["pwsh", "-c", "Get-ComputerInfo -Property CsName"]));
+    // The advice works: with `pwsh -c` a cmdlet runs (a cheap one: the hint above is the only use of the slow one).
+    let seen = target.run(&Case::new(&["pwsh", "-c", "Get-Date"]));
     assert_eq!(seen.ended, Ended::Code(0), "{}", seen.stderr_text());
     // A name that is not a command is not found, with the old message.
     let seen = target.run(&Case::new(&["no-such-program-xyz"]));

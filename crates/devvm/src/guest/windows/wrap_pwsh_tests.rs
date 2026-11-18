@@ -194,6 +194,45 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
 }
 
 #[skuld::test]
+fn a_script_gets_the_hint_quoted_as_powershell_needs_and_the_scripts_own_function_gets_none(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    // `.ps1` is not in the PATHEXT of a stock Windows, so a script is not a program but `pwsh -c` runs it.
+    let scripts = home.join("scripts");
+    std::fs::create_dir(&scripts).unwrap();
+    for name in ["tool.ps1", "my script.ps1"] {
+        std::fs::write(scripts.join(name), "'ran'").unwrap();
+    }
+    let hint = |output: &Output, advice: &str| {
+        assert_eq!(output.status.code(), Some(127), "{}", shown(output));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("run it with `pwsh -c {advice} ...`")),
+            "{}",
+            shown(output)
+        );
+    };
+    // A script of PATH, one that needs quoting, and one named by a path.
+    hint(&run(&wrapped(&["tool"]), "wrap-argv", Some(&scripts)), "tool");
+    hint(
+        &run(&wrapped(&["my script"]), "wrap-argv", Some(&scripts)),
+        "& 'my script'",
+    );
+    let mut by_path = Command::new([r".\tool.ps1"]);
+    by_path.cwd = Some(scripts.display().to_string());
+    hint(&run(&wrap(&by_path).unwrap(), "wrap-argv", None), r".\tool.ps1");
+    // The wrapper's own function is not a command of the user's.
+    let output = run(&wrapped(&["Find-Program"]), "wrap-argv", None);
+    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("devvm: Find-Program: command not found"),
+        "{}",
+        shown(&output)
+    );
+}
+
+#[skuld::test]
 fn a_status_over_i32_max_survives_a_real_pwsh(#[fixture(pwsh_wrap)] _group: &Group) {
     let exe = test_binary();
     for code in [
