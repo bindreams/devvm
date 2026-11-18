@@ -1,0 +1,27 @@
+From: devvm <https://github.com/bindreams/devvm>
+Subject: [PATCH] target/i386/whpx: take the SVM leaf from the hypervisor
+
+Experiment N1, hypothesis 1.
+---
+--- b/target/i386/whpx/whpx-all.c
++++ c/target/i386/whpx/whpx-all.c
+@@ -2671,6 +2671,19 @@
+                 }
+             }
+ 
++            /*
++             * CPUID[0x8000000A] describes the SVM the hypervisor offers a
++             * nested guest (ASID count, feature bits). Take it from the
++             * hypervisor wherever QEMU answered it from its own model.
++             */
++            if ((uint32_t)vcpu->exit_ctx.CpuidAccess.Rax == 0x8000000a
++                && (env->features[FEAT_8000_0001_ECX] & CPUID_EXT3_SVM)) {
++                reg_values[1].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
++                reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
++                reg_values[2].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
++                reg_values[3].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
++            }
++
+             /* OSXSAVE is dynamic. Do this instead of syncing CR4 */
+             if (vcpu->exit_ctx.CpuidAccess.Rax == 1) {
+                 if (vcpu->exit_ctx.CpuidAccess.DefaultResultRcx

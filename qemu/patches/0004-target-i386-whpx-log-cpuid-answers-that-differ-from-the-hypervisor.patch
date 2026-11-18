@@ -21,7 +21,7 @@ Experiment only; removed before any merge.
 +                uint32_t dc = (uint32_t)vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
 +                uint32_t dd = (uint32_t)vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
 +                bool differs = qa != da || qb != db || qc != dc || qd != dd;
-+                unsigned slot = (leaf * 31 + sub) & 1023;
++                unsigned slot = ((leaf * 0x9e3779b1u) ^ (sub * 0x85ebca6bu)) >> 22;
 +
 +                if (qatomic_fetch_inc(&whpx_n1_seen[slot]) < 16) {
 +                    fprintf(stderr,
