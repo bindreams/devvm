@@ -10,7 +10,7 @@ use crate::copy::{self, Snapshot};
 use crate::exit::ExitStatus;
 use crate::guest::{BuildCtx, GuestOs};
 use crate::iso::{IsoMemo, IsoRoot, check_product_key, key_iso};
-use crate::progress::Progress;
+use crate::progress::{Progress, Total};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
@@ -45,6 +45,11 @@ impl Engine {
     /// [`Engine::reap`].
     pub fn build(self: &Arc<Engine>, recipe: &Recipe, opts: &BuildOptions) -> Result<Image> {
         let flat = recipe.flatten()?;
+        // The base layer, then one per step; the hashing, the base and each step nest under it.
+        let task = self.progress.task(
+            format!("building {}", recipe.name),
+            Total::Items(1 + flat.steps.len() as u64),
+        );
         let arch = opts.arch.unwrap_or_else(Arch::host);
         let guest = self.guests.os(flat.guest)?;
         // Before anything is built or keyed: a setting the guest does not have, or a script its shell cannot carry, is the
@@ -96,6 +101,7 @@ impl Engine {
         })?;
         // The root layer is found or built, and no step reads the ISO.
         drop(build_ctx.iso.lock().unwrap_or_else(PoisonError::into_inner).take());
+        task.set(1);
         for (index, key) in keys[1..].iter().enumerate() {
             let step = StepRun {
                 engine: self,
@@ -106,7 +112,9 @@ impl Engine {
                 snapshot: snapshots[index].as_ref(),
             };
             chain = step.build_layer(store, &request(*key), &chain)?;
+            task.set(index as u64 + 2);
         }
+        task.finish();
         Ok(Image::from_chain(self.clone(), chain, &flat, arch))
     }
 
@@ -295,12 +303,11 @@ impl StepRun<'_> {
         drop(guard);
         let image = Image::from_chain(engine.clone(), chain, self.flat, self.arch);
         let step = &self.flat.steps[self.index].step;
-        engine.progress.message(&format!(
-            "step {} of {}: {}",
-            self.index + 1,
-            self.flat.steps.len(),
-            describe(step)
-        ));
+        let task = engine.progress.task(
+            format!("step {} of {}", self.index + 1, self.flat.steps.len()),
+            Total::Unknown,
+        );
+        task.status(describe(step));
         let vm = image
             .start(&StartOptions::default())
             .during("starting the step's guest")?;
@@ -317,6 +324,7 @@ impl StepRun<'_> {
             .storage()
             .commit_layer(&vm.instance().dir().disk(), staging.dir)
             .during("committing the step's layer")?;
+        task.finish();
         Ok(Built::default())
     }
 

@@ -13,6 +13,7 @@ use crate::engine::engine_tests::{EngineFixture, engine_fixture, gone_process, m
 use crate::engine::ready::{boot_id_unchanged, connect_ready, reconnect_after_reset};
 use crate::guest::GuestOs;
 use crate::instance::name::InstanceName;
+use crate::progress::{Event, Outcome};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::{Error, ErrorKind, GuestKind};
 
@@ -131,6 +132,93 @@ fn a_boot_id_that_cannot_be_read_yet_is_asked_again_after_the_retry_pause_each_t
     // Each failed read is followed by a pause before the next one: no read-and-connect loop runs free.
     assert!(started.elapsed() >= 3 * RETRY_PAUSE, "{:?}", started.elapsed());
     assert_eq!(session.exec_collect("echo up").unwrap().stdout, b"up\n");
+}
+
+/// The label, the statuses and the outcome of the one task `events` holds.
+fn the_task_of(events: &[Event]) -> (String, Vec<String>, Outcome) {
+    let label = events.iter().find_map(|event| match event {
+        Event::Begin { label, .. } => Some(label.clone()),
+        _ => None,
+    });
+    let statuses = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Status { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    let outcome = events.iter().find_map(|event| match event {
+        Event::End { outcome, .. } => Some(*outcome),
+        _ => None,
+    });
+    (label.expect("a task began"), statuses, outcome.expect("the task ended"))
+}
+
+#[skuld::test]
+fn the_boot_wait_is_a_task_that_names_the_instance_and_what_it_waits_for(#[fixture(unicode_home)] home: &Path) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    let target = target_at(&fx, home);
+
+    connect_ready(
+        &fx.engine,
+        &*linux(&fx),
+        &name(),
+        &target,
+        &running_machine(home, fx.server.addr()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        the_task_of(&progress.events()),
+        (
+            "starting foo".to_owned(),
+            vec!["waiting for SSH".to_owned()],
+            Outcome::Finished
+        )
+    );
+}
+
+#[skuld::test]
+fn the_wait_for_a_reset_guest_is_a_task_that_names_the_instance(#[fixture(unicode_home)] home: &Path) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    let target = target_at(&fx, home);
+    fx.fake.reset_counter().fetch_add(1, Ordering::SeqCst);
+
+    reconnect_after_reset(
+        &fx.engine,
+        &*linux(&fx),
+        &name(),
+        &target,
+        &running_machine(home, fx.server.addr()),
+        "boot-0",
+    )
+    .unwrap();
+
+    assert_eq!(
+        the_task_of(&progress.events()),
+        (
+            "restarting foo".to_owned(),
+            vec!["waiting for SSH".to_owned()],
+            Outcome::Finished
+        )
+    );
+}
+
+#[skuld::test]
+fn a_boot_wait_that_fails_ends_its_task_abandoned(#[fixture(unicode_home)] home: &Path) {
+    let progress = Arc::new(MemoryProgress::default());
+    let fx = engine_fixture(home, progress.clone());
+    let target = target_at(&fx, home);
+    let mut gone: MachineRecord = running_machine(home, fx.server.addr());
+    gone.process = gone_process();
+
+    connect_ready(&fx.engine, &*linux(&fx), &name(), &target, &gone)
+        .err()
+        .expect("there is no VM to wait for");
+
+    assert_eq!(the_task_of(&progress.events()).2, Outcome::Abandoned);
 }
 
 #[skuld::test]

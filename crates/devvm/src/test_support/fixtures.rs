@@ -170,6 +170,22 @@ impl MemoryProgress {
             .count()
     }
 
+    /// The text of every task status, in order.
+    pub fn statuses(&self) -> Vec<String> {
+        self.statuses_at().into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// The task statuses, each with the time it arrived.
+    pub fn statuses_at(&self) -> Vec<(std::time::SystemTime, String)> {
+        self.events_at()
+            .into_iter()
+            .filter_map(|(at, event)| match event {
+                crate::progress::Event::Status { text, .. } => Some((at, text)),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn events(&self) -> Vec<crate::progress::Event> {
         self.events_at().into_iter().map(|(_, event)| event).collect()
     }

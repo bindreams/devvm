@@ -5,6 +5,7 @@ use crate::backend::MachineRecord;
 use crate::exit::ExitStatus;
 use crate::guest::{GuestOs, Readiness};
 use crate::instance::name::InstanceName;
+use crate::progress::{Task, Total};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -23,10 +24,20 @@ pub(crate) fn connect_ready(
     target: &SshTarget,
     machine: &MachineRecord,
 ) -> Result<SshSession> {
+    let task = waiting_for_ssh(engine, "starting", name);
     let bound = BootBound::start(engine.boot_bound())?;
     let vm = engine.vm_exit(machine).map_err(|e| awaiting_ssh(e, target))?;
     let session = connect(engine, target, &vm, bound)?;
-    ready_session(engine, guest, name, target, &vm, bound, session)
+    let session = ready_session(engine, guest, name, target, &vm, bound, session)?;
+    task.finish();
+    Ok(session)
+}
+
+/// The task of a wait for the guest of `name` to answer, `verb`-ing it.
+fn waiting_for_ssh<'a>(engine: &'a Engine, verb: &str, name: &InstanceName) -> Task<'a> {
+    let task = engine.progress().task(format!("{verb} {name}"), Total::Unknown);
+    task.status("waiting for SSH");
+    task
 }
 
 /// A connection to the guest at `target` for the boot wait, which `vm` and `bound` end.
@@ -126,6 +137,7 @@ pub(crate) fn reconnect_after_reset(
     machine: &MachineRecord,
     old_id: &str,
 ) -> Result<SshSession> {
+    let task = waiting_for_ssh(engine, "restarting", name);
     let bound = BootBound::start(engine.boot_bound())?;
     let vm = engine.vm_exit(machine).map_err(|e| awaiting_ssh(e, target))?;
     let mut last_failed_read: Option<Error> = None;
@@ -136,7 +148,9 @@ pub(crate) fn reconnect_after_reset(
         })?;
         last_failed_read = match read_boot_id(guest, &session) {
             Ok(ReadBootIdOutcome::Id(id)) if id != old_id => {
-                return ready_session(engine, guest, name, target, &vm, bound, session);
+                let session = ready_session(engine, guest, name, target, &vm, bound, session)?;
+                task.finish();
+                return Ok(session);
             }
             Ok(ReadBootIdOutcome::Id(_)) => None,
             Ok(ReadBootIdOutcome::CommandFailed(e)) => Some(e),

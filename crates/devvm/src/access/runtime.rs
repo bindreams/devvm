@@ -100,7 +100,8 @@ where
     wait(spawn(task)?).map_err(|_| panicked(what))
 }
 
-/// [`run`], where the task also sends progress messages, which are handed to `progress` as they arrive.
+/// [`run`], where the task also sends notes of interest only to a log (`Level::Debug`), which are handed to `progress`
+/// as they arrive.
 pub(crate) fn run_reporting<T, F, Fut>(what: &str, progress: &dyn Progress, task: F) -> Result<T>
 where
     T: Send + 'static,
@@ -111,7 +112,7 @@ where
     let handle = spawn(task(sender))?;
     // The sender lives inside the task, so the channel closes exactly when the task is over or gone.
     while let Some(message) = wait(receiver.recv()) {
-        progress.message(&message);
+        progress.debug(&message);
     }
     wait(handle).map_err(|_| panicked(what))
 }

@@ -27,6 +27,7 @@ use crate::host::{Host, is_absent};
 use crate::instance::record::InstanceId;
 use crate::iso::{HeldIso, InstallIso, read_install_iso};
 use crate::media::{SeedFile, read_files, write_cidata_image};
+use crate::progress::{Task, Total};
 use crate::recipe::hash::LayerKey;
 use crate::recipe::{ProductKey, Source};
 use crate::store::fetch::Fetcher;
@@ -392,6 +393,10 @@ struct Build<'a> {
     /// The image is an evaluation edition: the guest activates an unlicensed one, and an unlicensed one ends the build.
     evaluation: bool,
     watch: Watch,
+    /// The build as the person sees it: one task, whose status names the launch and the guest's last marker.
+    task: Task<'a>,
+    /// The launch in progress, which `task`'s status names.
+    number: usize,
 }
 
 impl<'a> Build<'a> {
@@ -404,6 +409,7 @@ impl<'a> Build<'a> {
         evaluation: bool,
         product_key: Option<&ProductKey>,
     ) -> Result<Build<'a>> {
+        let task = ctx.progress.task("Windows base", Total::Unknown);
         let work = ctx.work.join(WORK_DIR);
         let machine_dir = work.join(MACHINE_DIR);
         std::fs::create_dir_all(&machine_dir)
@@ -459,6 +465,8 @@ impl<'a> Build<'a> {
             license: None,
             evaluation,
             watch: Watch::new(Instant::now()),
+            task,
+            number: 0,
         })
     }
 
@@ -487,20 +495,23 @@ impl<'a> Build<'a> {
             ));
         };
         // The serial log may say more than the read does, whatever the kind of the error.
-        expiry_from(read, self.evaluation, *read_at).map_err(|error| {
+        let expiry = expiry_from(read, self.evaluation, *read_at).map_err(|error| {
             let kind = error.kind();
             with_log_tail(
                 error.with_context(kind, "the Windows base's license read"),
                 "the serial log",
                 &log,
             )
-        })
+        })?;
+        self.task.finish();
+        Ok(expiry)
     }
 
     /// One launch of the machine, until its VM process exits.
     fn launch(&mut self, number: usize, log: &Path, held: &mut Option<HeldIso>) -> Result<Launched> {
         let spec = self.spec(number, log)?;
-        self.ctx.progress.message(&format!("Windows base: launch {number}"));
+        self.number = number;
+        self.task.status(format!("launch {number}"));
         let mut machine = self.builder.backend.launch(&spec)?;
         if let Err(error) = machine.resume() {
             return after_kill(Err(error), machine.kill());
@@ -632,13 +643,12 @@ impl<'a> Build<'a> {
     /// first-logon script's first one starts that phase.
     fn observe(&mut self, written: &Serial) {
         for phase in &written.progress {
-            self.ctx.progress.message(&format!("Windows base: {phase}"));
+            self.task.status(format!("launch {}: {phase}", self.number));
         }
         self.watch.observe(written, Instant::now());
         if let Some(license) = &written.license {
-            self.ctx
-                .progress
-                .message(&format!("Windows base: {}", describe(license)));
+            self.task
+                .status(format!("launch {}: {}", self.number, describe(license)));
             self.license = Some((license.clone(), self.ctx.clock.now()));
         }
     }
@@ -646,17 +656,16 @@ impl<'a> Build<'a> {
     /// Says how much of the answer disk's spare room the logs WinPE copied to it use: a log that did not fit is lost,
     /// never the build, so this is where the room is found too small.
     fn report_winpe_log_sizes(&self) {
-        let message = match self.winpe_logs() {
-            Ok(files) => format!(
+        match self.winpe_logs() {
+            Ok(files) => self.ctx.progress.debug(&format!(
                 "Windows base: WinPE logs use {} of {ANSWER_SPARE} bytes of the answer disk",
                 files.iter().map(|file| file.bytes.len()).sum::<usize>()
-            ),
-            Err(read) => format!(
+            )),
+            Err(read) => self.ctx.progress.warn(&format!(
                 "Windows base: cannot read the logs on the answer disk: {}",
                 read.message()
-            ),
-        };
-        self.ctx.progress.message(&message);
+            )),
+        }
     }
 
     /// The logs `winpe.cmd` copied to the answer disk, those that are there.

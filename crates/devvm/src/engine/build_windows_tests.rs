@@ -14,6 +14,7 @@ use crate::copy::copy_tests::{add_all, new_repo, put};
 use crate::engine::ListFilter;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
+use crate::progress::{Event, Outcome, TaskId, Total};
 use crate::recipe::Recipe;
 use crate::recipe::hash::LayerKey;
 use crate::test_support::fixtures::{iso_fixture, unicode_home};
@@ -73,6 +74,88 @@ fn a_failing_run_step_names_its_index_command_and_status_and_publishes_nothing(#
     assert!(store.lookup(&keys[2]).unwrap().is_none(), "nothing is published for it");
     assert!(store.lookup(&keys[3]).unwrap().is_none());
     no_instance_or_build_is_left(&fx);
+}
+
+/// `(label, parent's label, outcome)` of every task in `events`, in the order the tasks ended.
+fn tasks_ended(events: &[Event]) -> Vec<(String, Option<String>, Outcome)> {
+    let label_of = |wanted: TaskId| {
+        events.iter().find_map(|event| match event {
+            Event::Begin { id, label, .. } if *id == wanted => Some(label.clone()),
+            _ => None,
+        })
+    };
+    events
+        .iter()
+        .filter_map(|event| {
+            let Event::End { id, outcome } = event else { return None };
+            let parent = events.iter().find_map(|event| match event {
+                Event::Begin { id: begun, parent, .. } if begun == id => Some(*parent),
+                _ => None,
+            })?;
+            Some((label_of(*id)?, parent.and_then(label_of), *outcome))
+        })
+        .filter(|(label, _, _)| label.starts_with("building ") || label.starts_with("step "))
+        .collect()
+}
+
+#[skuld::test]
+fn a_build_nests_its_steps_under_one_building_task(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = recipe(home, &["run: echo one", "run: echo two"]);
+    let building = format!("building {}", recipe.name);
+
+    fx.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    let events = fx.progress.events();
+    assert_eq!(
+        tasks_ended(&events),
+        [
+            ("step 1 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
+            ("step 2 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
+            (building.clone(), None, Outcome::Finished),
+        ]
+    );
+    let Some(Event::Begin { id, total, .. }) = events
+        .iter()
+        .find(|event| matches!(event, Event::Begin { label, .. } if *label == building))
+    else {
+        panic!("{events:?}")
+    };
+    assert_eq!(*total, Total::Items(3), "the base and one layer per step");
+    let positions: Vec<u64> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Advance { id: advanced, position } if advanced == id => Some(*position),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(positions, [1, 2, 3]);
+    let statuses: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Status { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(statuses, ["echo one", "echo two"]);
+}
+
+#[skuld::test]
+fn a_failing_step_ends_every_open_task_abandoned(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = recipe(home, &["run: echo one", "run: exit 3"]);
+    let building = format!("building {}", recipe.name);
+
+    fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert_eq!(
+        tasks_ended(&fx.progress.events()),
+        [
+            ("step 1 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
+            ("step 2 of 2".to_owned(), Some(building.clone()), Outcome::Abandoned),
+            (building, None, Outcome::Abandoned),
+        ]
+    );
 }
 
 /// The commands the server was given that a step ran or that flushed it, in order.

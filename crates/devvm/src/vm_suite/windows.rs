@@ -107,9 +107,9 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
         .map_err(|e| format!("cannot build the Windows base from {}: {e}", iso.display()))?;
     let evaluation = selects_an_evaluation(&roots.dirs, iso)?;
     let (license_read_at, _) = progress
-        .messages_at()
+        .statuses_at()
         .into_iter()
-        .rfind(|(_, line)| line.starts_with("Windows base: license status"))
+        .rfind(|(_, line)| line.contains(": license status"))
         .ok_or("the build reported no license read")?;
     Ok(WindowsBase {
         engine,
@@ -273,10 +273,10 @@ fn the_base_is_reused_by_a_second_build(#[fixture(windows_base)] base: &WindowsB
 
 #[skuld::test]
 fn the_specialize_pass_writes_a_progress_marker_to_the_serial_port(#[fixture(windows_base)] base: &WindowsBase) {
-    let messages = base.progress.messages();
+    let statuses = base.progress.statuses();
     assert!(
-        messages.iter().any(|message| message == "Windows base: specialize"),
-        "the specialize pass wrote no marker; stop: COM1 is not writable there: {messages:?}"
+        statuses.iter().any(|status| status.ends_with(": specialize")),
+        "the specialize pass wrote no marker; stop: COM1 is not writable there: {statuses:?}"
     );
 }
 

@@ -9,6 +9,7 @@ use super::{LazyInstall, ManifestEntry, QemuInstall, Source, Verify, configured,
 use crate::backend::qemu::args::ArchFiles;
 use crate::config::Config;
 use crate::host::{self, SystemDirs};
+use crate::progress::{Event, Outcome as TaskOutcome};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::qemu::write_config;
@@ -283,6 +284,40 @@ fn a_tool_that_prints_another_version_is_refused_and_publishes_nothing(#[fixture
         "{error}"
     );
     assert!(visible(&world.dirs.qemu()).is_empty());
+}
+
+/// How the task named `label` ended; `None` when it never began or has not ended.
+fn outcome_of(progress: &MemoryProgress, label: &str) -> Option<TaskOutcome> {
+    let events = progress.events();
+    let id = events.iter().find_map(|event| match event {
+        Event::Begin { id, label: l, .. } if l == label => Some(*id),
+        _ => None,
+    })?;
+    events.iter().find_map(|event| match event {
+        Event::End { id: ended, outcome } if *ended == id => Some(*outcome),
+        _ => None,
+    })
+}
+
+#[skuld::test]
+fn extracting_the_archive_is_a_task_that_finishes_when_the_install_is_published(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    world.source.resolve().unwrap();
+    assert_eq!(
+        outcome_of(&world.progress, &format!("extracting QEMU {VERSION}")),
+        Some(TaskOutcome::Finished)
+    );
+}
+
+#[skuld::test]
+fn a_refused_extraction_ends_its_task_abandoned(#[fixture(unicode_home)] home: &Path) {
+    let good = zip_of(&files());
+    let world = world_with(home, good.clone(), sha_of(&good), Arc::default(), prints("9.0.0"));
+    world.source.resolve().unwrap_err();
+    assert_eq!(
+        outcome_of(&world.progress, &format!("extracting QEMU {VERSION}")),
+        Some(TaskOutcome::Abandoned)
+    );
 }
 
 #[skuld::test]
