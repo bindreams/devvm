@@ -49,7 +49,7 @@ pub(super) fn write(
         let entry = match (found, item.kind) {
             (Entry::Absent, _) => continue,
             (Entry::Directory, kind) => {
-                progress.message(&format!(
+                progress.warn(&format!(
                     "skipping `{}`: git tracks a {} there, but it is a directory now",
                     item.path.escape_debug(),
                     if kind == Kind::Symlink { "symlink" } else { "file" }

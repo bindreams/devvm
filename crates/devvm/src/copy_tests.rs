@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use crate::copy::git::{UNSET_NOTE_PREFIX, cleared_names};
 use crate::copy::{Snapshot, snapshot};
 use crate::host::Host;
+use crate::progress::{Event, Level};
 use crate::recipe::hash::{CopyManifest, EntryContent, KeyContext, LayerKey, RootContent, root_key, step_key};
 use crate::recipe::{CopyFrom, Step};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
@@ -104,6 +105,8 @@ fn track_as_symlink(repo: &Path, link: &str) {
 pub(crate) struct Taken {
     pub snapshot: Snapshot,
     pub notes: Vec<String>,
+    /// The notes that are warnings.
+    pub warnings: Vec<String>,
 }
 
 /// `snapshot` of `from` into a fresh directory `scratch/out`. `notes` drops the unset-variables note, which varies by
@@ -113,8 +116,20 @@ pub(crate) fn take(from: &Path, read_only: bool, scratch: &Path) -> crate::Resul
     std::fs::create_dir_all(&into).unwrap();
     let progress = MemoryProgress::default();
     let snapshot = snapshot(&TestHost, from, read_only, &into, &progress)?;
+    let warnings = progress
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Note {
+                level: Level::Warn,
+                text,
+            } => Some(text),
+            _ => None,
+        })
+        .collect();
     Ok(Taken {
         snapshot,
+        warnings,
         notes: progress
             .messages()
             .into_iter()
@@ -434,6 +449,7 @@ fn submodules_are_included_recursively_and_an_uninitialised_one_is_skipped_with_
     assert_eq!(paths(&skipped.snapshot), [".gitmodules", "top.txt"]);
     assert_eq!(skipped.notes.len(), 1, "{:?}", skipped.notes);
     assert!(skipped.notes[0].contains("vendor/inner"), "{:?}", skipped.notes);
+    assert_eq!(skipped.warnings, skipped.notes, "a skipped submodule is a warning");
 }
 
 #[skuld::test]
@@ -619,6 +635,7 @@ fn a_tracked_file_or_symlink_that_is_now_a_directory_is_skipped_with_a_note_nami
     let taken = take(&repo, false, home).unwrap();
     assert_eq!(paths(&taken.snapshot), ["keep"]);
     assert_eq!(taken.notes.len(), 2, "{:?}", taken.notes);
+    assert_eq!(taken.warnings, taken.notes, "a skipped entry is a warning");
     assert!(
         taken.notes[0].contains("`link`") && taken.notes[0].contains("directory"),
         "{:?}",

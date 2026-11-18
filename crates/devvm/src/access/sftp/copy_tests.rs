@@ -1,4 +1,4 @@
-use super::total;
+use super::{byte_total, total};
 use crate::access::sftp::plan::{Item, Kind};
 
 fn file(size: u64) -> Item {
@@ -45,4 +45,26 @@ fn a_sum_that_ends_exactly_at_u64_max_is_not_an_overflow() {
         total(&dir(), &items),
         format!("2 files ({max}), 0 symlinks, 0 directories")
     );
+}
+
+#[skuld::test]
+fn the_task_total_is_the_sum_of_the_file_sizes() {
+    let items = [file(1024), file(1), dir_item()];
+    assert_eq!(byte_total(&dir(), &items), 1025);
+    assert_eq!(byte_total(&file(7).kind, &[]), 7);
+    assert_eq!(byte_total(&dir(), &[]), 0);
+}
+
+#[skuld::test]
+fn a_copy_past_u64_max_total_still_reports() {
+    // A guest reports these sizes; the task's total is the largest there is, not a wrapped or refused one.
+    let items = [file(1 << 63), file(1 << 63), file(1)];
+    assert_eq!(byte_total(&dir(), &items), u64::MAX);
+}
+
+fn dir_item() -> Item {
+    Item {
+        rel: vec!["d".to_owned()],
+        kind: dir(),
+    }
 }

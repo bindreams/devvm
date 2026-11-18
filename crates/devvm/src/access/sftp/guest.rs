@@ -167,7 +167,7 @@ impl Receives<HostSide<'_>> for GuestSide<'_> {
         )
     }
 
-    fn announce(&self, from: &str, to: &str, total: &str) -> String {
-        format!("copying {from} to the guest ({to}): {total}")
+    fn describe(&self, from: &str, to: &str) -> String {
+        format!("copying {from} to the guest ({to})")
     }
 }

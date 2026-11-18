@@ -443,7 +443,7 @@ impl Receives<GuestSide<'_>> for HostSide<'_> {
         }
     }
 
-    fn announce(&self, from: &str, to: &str, total: &str) -> String {
-        format!("copying the guest path {from} to {to}: {total}")
+    fn describe(&self, from: &str, to: &str) -> String {
+        format!("copying the guest path {from} to {to}")
     }
 }

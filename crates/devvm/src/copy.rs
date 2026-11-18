@@ -71,7 +71,7 @@ pub(crate) fn snapshot(
     let root = git::work_tree_root(&git, from_dir)?;
     let mut listing = git::list(&git, &root)?;
     for submodule in &listing.uninitialized_submodules {
-        progress.message(&format!(
+        progress.warn(&format!(
             "skipping uninitialized submodule `{}`",
             submodule.escape_debug()
         ));

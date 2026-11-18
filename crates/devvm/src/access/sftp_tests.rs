@@ -9,6 +9,7 @@ use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
+use crate::progress::{Event, Level, Outcome, Total};
 use crate::test_groups::{Group, openssh_sftp, symlinks};
 use crate::test_harness::SFTP;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
@@ -1469,6 +1470,82 @@ fn a_tilde_user_guest_path_is_a_usage_error_before_any_transfer(#[fixture(unicod
     assert!(tree(env.root()).is_empty(), "nothing reached the guest");
     assert!(!env.local.join("o").exists());
     assert!(env.progress.messages().is_empty(), "no transfer was announced");
+}
+
+/// `(label, total)` of each task begun, the positions each advanced to, and how each ended, in `env`'s progress.
+fn copy_tasks(env: &Env) -> Vec<(String, Total, Vec<u64>, Option<Outcome>)> {
+    let events = env.progress.events();
+    events
+        .iter()
+        .filter_map(|event| {
+            let Event::Begin { id, label, total, .. } = event else {
+                return None;
+            };
+            let positions = events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Advance { id: at, position } if at == id => Some(*position),
+                    _ => None,
+                })
+                .collect();
+            let ended = events.iter().find_map(|event| match event {
+                Event::End { id: at, outcome } if at == id => Some(*outcome),
+                _ => None,
+            });
+            Some((label.clone(), *total, positions, ended))
+        })
+        .collect()
+}
+
+#[skuld::test]
+fn a_copy_in_is_one_task_that_ends_at_the_bytes_it_moved(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("t/a.txt", b"abc");
+    env.host_file("t/sub/b.txt", b"defgh");
+    env.copy_in(&env.local.join("t"), "/t").unwrap();
+    let tasks = copy_tasks(&env);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let (label, total, positions, ended) = &tasks[0];
+    assert!(label.starts_with("copying ") && label.contains("/t"), "{label}");
+    assert_eq!(*total, Total::Bytes(8));
+    assert_eq!(positions.last(), Some(&8), "{positions:?}");
+    assert_eq!(*ended, Some(Outcome::Finished));
+    let notes: Vec<_> = env
+        .progress
+        .events()
+        .into_iter()
+        .filter(|e| matches!(e, Event::Note { level: Level::Info, .. }))
+        .collect();
+    assert!(notes.is_empty(), "the announcement is the task: {notes:?}");
+}
+
+#[skuld::test]
+fn a_copy_out_is_one_task_that_ends_at_the_bytes_it_moved(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("g/a.txt", b"abc");
+    env.guest_file("g/sub/b.txt", b"defgh");
+    env.copy_out("/g", &env.local.join("out")).unwrap();
+    let tasks = copy_tasks(&env);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let (label, total, positions, ended) = &tasks[0];
+    assert!(label.starts_with("copying the guest path /g"), "{label}");
+    assert_eq!(*total, Total::Bytes(8));
+    assert_eq!(positions.last(), Some(&8), "{positions:?}");
+    assert_eq!(*ended, Some(Outcome::Finished));
+}
+
+#[skuld::test]
+fn a_copy_with_no_bytes_to_count_is_announced_as_a_note(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    std::fs::create_dir_all(env.local.join("empty")).unwrap();
+    env.copy_in(&env.local.join("empty"), "/empty").unwrap();
+    assert!(copy_tasks(&env).is_empty());
+    let messages = env.progress.messages();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("copying ") && messages[0].contains("0 files"),
+        "{messages:?}"
+    );
 }
 
 /// A guest whose user's home is not the root: `~` is what the server says it is, and the copy lands there.
