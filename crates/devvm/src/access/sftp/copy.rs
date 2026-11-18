@@ -3,7 +3,7 @@
 //! the copy is in [`plan`] or here; a side supplies how its own file system is read and written, and its wording.
 
 use super::plan::{self, Beyond, Conflict, Item, Kind, Place, Present, Rules, Source};
-use crate::progress::Progress;
+use crate::progress::{Progress, human_bytes};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -116,8 +116,8 @@ fn total(top: &Kind, items: &[Item]) -> String {
         }
     }
     let size = match bytes {
-        Some(bytes) => bytesize::ByteSize(bytes).to_string(),
-        None => format!("more than {}", bytesize::ByteSize(u64::MAX)),
+        Some(bytes) => human_bytes(bytes),
+        None => format!("more than {}", human_bytes(u64::MAX)),
     };
     format!(
         "{files} files ({size}), {links} symlinks, {} directories",

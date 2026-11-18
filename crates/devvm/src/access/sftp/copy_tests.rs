@@ -26,7 +26,7 @@ fn the_total_counts_what_the_walk_found() {
 fn sizes_that_sum_past_u64_are_announced_as_more_than_the_largest_total() {
     // A guest reports these sizes; none of them is checked against the others.
     let items = [file(1 << 63), file(1 << 63), file(1)];
-    let max = bytesize::ByteSize(u64::MAX);
+    let max = crate::progress::human_bytes(u64::MAX);
     assert_eq!(
         total(&dir(), &items),
         format!("3 files (more than {max}), 0 symlinks, 0 directories")
@@ -40,7 +40,7 @@ fn sizes_that_sum_past_u64_are_announced_as_more_than_the_largest_total() {
 #[skuld::test]
 fn a_sum_that_ends_exactly_at_u64_max_is_not_an_overflow() {
     let items = [file(u64::MAX - 1), file(1)];
-    let max = bytesize::ByteSize(u64::MAX);
+    let max = crate::progress::human_bytes(u64::MAX);
     assert_eq!(
         total(&dir(), &items),
         format!("2 files ({max}), 0 symlinks, 0 directories")

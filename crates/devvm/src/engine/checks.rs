@@ -12,7 +12,7 @@ use crate::backend::{Check, Detail};
 use crate::copy::Git;
 use crate::host::Host;
 use crate::iso::{IsoMemo, Known, QuarantineOutcome};
-use crate::progress::Progress;
+use crate::progress::{Progress, human_bytes};
 use crate::store::fetch::Transport;
 use crate::{Arch, Dirs, ErrorKind, Result, Sha256, Unavailable};
 
@@ -94,7 +94,7 @@ fn space_check(host: &dyn Host, what: &str, dir: &Path) -> Check {
     Check {
         name: format!("free space ({what})"),
         outcome: match host.free_space(dir) {
-            Ok(bytes) => Ok(format!("{} free in {}", bytesize::ByteSize(bytes), dir.display())),
+            Ok(bytes) => Ok(format!("{} free in {}", human_bytes(bytes), dir.display())),
             Err(e) => Err(format!("cannot tell the free space in {}: {e}", dir.display())),
         },
     }
