@@ -189,12 +189,15 @@ impl BuildRoot {
     fn content(&self) -> RootContent {
         match self {
             BuildRoot::Pinned(content) => content.clone(),
-            BuildRoot::Iso(root) => RootContent::Iso {
-                sha256: root.sha256,
-                image_index: root.image().index,
-                image_name: root.image().name.clone(),
-                product_key: root.product_key().cloned(),
-            },
+            BuildRoot::Iso(root) => {
+                let image = root.image();
+                RootContent::Iso {
+                    sha256: root.sha256(),
+                    image_index: image.index,
+                    image_name: image.name.clone(),
+                    product_key: root.product_key().cloned(),
+                }
+            }
         }
     }
 }

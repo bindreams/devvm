@@ -96,40 +96,73 @@ impl HeldIso {
     }
 }
 
-/// What a build reads from an ISO.
+/// What a build reads from an ISO. Built only by [`read_install_iso`] from a keyed [`IsoRoot`], so the image, the key
+/// Setup installs it with and the evaluation flag are of one image.
 #[derive(Debug)]
 pub(crate) struct InstallIso {
-    /// The ISO, still held until the guest's disk has opened it. Reopen it by [`HeldIso::final_path`], not the recipe's
-    /// path.
-    pub iso: HeldIso,
-    /// The image the recipe's `edition` selected (the only one when the ISO has one).
-    pub image: WimImage,
-    /// Writing these over the ISO makes it boot the installer without a key press: the no-prompt UEFI boot image goes
-    /// where the boot catalog's UEFI entry loads its image.
-    pub boot_patches: Vec<BootPatch>,
+    iso: HeldIso,
+    image: WimImage,
+    product_key: Option<ProductKey>,
+    boot_patches: Vec<BootPatch>,
 }
 
-/// What a layer key is made from, of an ISO, and the ISO held.
+impl InstallIso {
+    /// The ISO, still held until the guest's disk has opened it. Reopen it by [`HeldIso::final_path`], not the recipe's
+    /// path.
+    pub(crate) fn iso(&self) -> &HeldIso {
+        &self.iso
+    }
+
+    /// Gives up the held ISO, for the build to hold until the guest's disk has opened it.
+    pub(crate) fn into_iso(self) -> HeldIso {
+        self.iso
+    }
+
+    /// The image the recipe's `edition` selected (the only one when the ISO has one).
+    pub(crate) fn image(&self) -> &WimImage {
+        &self.image
+    }
+
+    /// The key Setup installs [`InstallIso::image`] with: `None` only for an evaluation edition.
+    pub(crate) fn product_key(&self) -> Option<&ProductKey> {
+        self.product_key.as_ref()
+    }
+
+    /// Whether [`InstallIso::image`] is an evaluation edition.
+    pub(crate) fn evaluation(&self) -> bool {
+        self.image.is_evaluation()
+    }
+
+    /// Writing these over the ISO makes it boot the installer without a key press: the no-prompt UEFI boot image goes
+    /// where the boot catalog's UEFI entry loads its image.
+    pub(crate) fn boot_patches(&self) -> &[BootPatch] {
+        &self.boot_patches
+    }
+}
+
+/// What a layer key is made from, of an ISO, and the ISO held. Built only by [`key_iso`], which resolves the key for the
+/// image it selects, so the two cannot drift.
 #[derive(Debug)]
 pub(crate) struct IsoRoot {
-    /// The SHA-256 of the ISO's content.
-    pub sha256: Sha256,
-    /// The image the recipe's `edition` selects: what the build installs, so what the key says. Read it with
-    /// [`IsoRoot::image`]; only [`key_iso`] sets it, together with `product_key`.
+    sha256: Sha256,
     image: WimImage,
-    /// The key Setup installs `image` with.
     product_key: Option<ProductKey>,
     iso: HeldIso,
 }
 
 impl IsoRoot {
-    /// The image the key was resolved for.
+    /// The SHA-256 of the ISO's content.
+    pub(crate) fn sha256(&self) -> Sha256 {
+        self.sha256
+    }
+
+    /// The image the recipe's `edition` selects: what the build installs, so what the key says.
     pub(crate) fn image(&self) -> &WimImage {
         &self.image
     }
 
-    /// The key Setup installs `image` with, as [`resolve_product_key`] resolved it when the ISO was keyed: `None` only
-    /// for an evaluation edition.
+    /// The key Setup installs [`IsoRoot::image`] with, as [`resolve_product_key`] resolved it when the ISO was keyed:
+    /// `None` only for an evaluation edition.
     pub(crate) fn product_key(&self) -> Option<&ProductKey> {
         self.product_key.as_ref()
     }
@@ -161,11 +194,17 @@ pub(crate) fn key_iso(
 /// What the build installs from the ISO that `root` keyed: the no-prompt boot image and where the boot catalog loads its
 /// UEFI image.
 pub(crate) fn read_install_iso(root: IsoRoot) -> Result<InstallIso> {
-    let IsoRoot { image, iso, .. } = root;
+    let IsoRoot {
+        image,
+        product_key,
+        iso,
+        ..
+    } = root;
     let boot_patches = vec![no_prompt_patch(&mount(&iso)?, iso.path())?];
     Ok(InstallIso {
         iso,
         image,
+        product_key,
         boot_patches,
     })
 }
@@ -283,14 +322,14 @@ fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Re
         .ok_or_else(|| {
             let detail = match (image.edition_id.as_str(), image.build.as_deref(), image.build_number()) {
                 ("", ..) => "no edition id".to_owned(),
-                (id, None, _) => format!("edition id `{id}`, no build"),
-                (id, Some(_), Some(build)) => format!("edition id `{id}`, build {build}"),
-                (id, Some(text), None) => format!("edition id `{id}`, BUILD {text:?} is not a build number devvm can read"),
+                (id, None, _) => format!("edition id {id:?}, no build"),
+                (id, Some(_), Some(build)) => format!("edition id {id:?}, build {build}"),
+                (id, Some(text), None) => format!("edition id {id:?}, BUILD {text:?} is not a build number devvm can read"),
             };
             Error::new(
                 ErrorKind::Recipe,
                 format!(
-                    "devvm has no generic product key for the edition `{name}` ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_KEYS_PAGE}"
+                    "devvm has no generic product key for the edition {name:?} ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_KEYS_PAGE}"
                 ),
             )
         })

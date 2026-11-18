@@ -115,7 +115,8 @@ pub(super) fn text_of(path: &Path) -> String {
 
 // The install media ===================================================================================================
 
-// A key, so an image devvm knows no generic key for (the subscription edition) is still built.
+// A recipe's `product-key`: it overrides the generic key devvm knows for an edition, and an edition devvm knows none
+// for (the subscription LTSC) needs one.
 const KEY: &str = "AB12C-DE34F-GH56J-KL78M-NP90Q";
 
 #[skuld::test]
@@ -132,7 +133,7 @@ fn boot_patches_become_overlay_patches_with_the_same_offsets_and_bytes(#[fixture
     .unwrap();
     let expected: Vec<String> = crate::iso::read_install_iso(held)
         .unwrap()
-        .boot_patches
+        .boot_patches()
         .iter()
         .map(|patch| format!("{}+{}", patch.offset, patch.bytes.len()))
         .collect();
@@ -246,6 +247,8 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
             )),
             "{edition}: {answer}"
         );
+        // The key and the image index are of the one image the build was keyed for.
+        assert_eq!(answer.matches(KEY).count(), 1, "{edition}: {answer}");
         assert!(answer.contains("<UILanguage>en-US</UILanguage>"), "{edition}");
         let _ = std::fs::remove_dir_all(rig.work());
     }
@@ -255,7 +258,8 @@ fn the_answer_file_for_each_image_of_the_owners_iso_selects_that_image_by_index(
 fn the_bootstrap_is_told_whether_the_chosen_image_is_an_evaluation_and_a_keyed_edition_gets_its_key(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    // `single-image.iso` holds an evaluation edition, which takes no key; `three-images.iso` volume editions, which need one.
+    // `single-image.iso` holds an evaluation edition, which takes no key; `three-images.iso` volume editions, which are
+    // installed with a key.
     for (iso, edition, product_key, evaluation) in [
         ("single-image.iso", None, None, "$true"),
         (

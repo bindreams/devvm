@@ -34,7 +34,7 @@ fn an_iso_is_held_from_the_key_until_the_install_that_carries_it_is_dropped(#[fi
 
     let install = read_install_iso(root).unwrap();
     assert_cannot_be_changed(home, &iso);
-    assert_eq!(install.iso.path(), iso);
+    assert_eq!(install.iso().path(), iso);
 
     drop(install);
     std::fs::rename(&iso, home.join("moved.iso")).unwrap();
@@ -129,7 +129,7 @@ fn the_final_path_of_a_held_iso_still_leads_to_it_after_a_junction_in_its_path_i
     junction::create(&other, &link).unwrap();
 
     let held = TestHost.file_id(&real.join("win.iso")).unwrap();
-    let final_path = install.iso.final_path(&TestHost).unwrap();
+    let final_path = install.iso().final_path(&TestHost).unwrap();
     assert_eq!(TestHost.file_id(&final_path).unwrap(), held);
     assert_ne!(
         TestHost.file_id(&link.join("win.iso")).unwrap(),
