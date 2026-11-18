@@ -4,15 +4,11 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 
-use crate::progress::{Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes};
+use crate::progress::{Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint};
 
 #[cfg(test)]
 #[path = "lines_tests.rs"]
 mod lines_tests;
-
-const YELLOW: &str = "\u{1b}[33m";
-const GREEN: &str = "\u{1b}[32m";
-const RESET: &str = "\u{1b}[0m";
 
 /// How [`LineProgress`] writes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -81,7 +77,7 @@ impl Progress for LineProgress {
                 match level {
                     Level::Debug if !look.verbose => {}
                     Level::Warn => {
-                        let prefix = paint(look.colour, YELLOW, "warning:");
+                        let prefix = paint(look.colour, Colour::Yellow, "warning:");
                         state.line(0, &format!("{prefix} {text}"));
                     }
                     Level::Debug | Level::Info => state.line(0, &text),
@@ -140,18 +136,10 @@ impl Progress for LineProgress {
             Event::End { id, outcome } => {
                 let Some(open) = state.tasks.remove(id) else { return };
                 if *outcome == Outcome::Finished && !matches!(open.total, Total::Unknown) {
-                    let done = paint(look.colour, GREEN, "done");
+                    let done = paint(look.colour, Colour::Green, "done");
                     state.line(open.depth, &format!("{}: {done}", open.label));
                 }
             }
         }
-    }
-}
-
-fn paint(colour: bool, code: &str, text: &str) -> String {
-    if colour {
-        format!("{code}{text}{RESET}")
-    } else {
-        text.to_owned()
     }
 }

@@ -257,3 +257,12 @@ fn human_bytes_uses_iec_units() {
     assert_eq!(human_bytes(512 * MIB), "512.0 MiB");
     assert_eq!(human_bytes(0), "0 B");
 }
+
+#[skuld::test]
+fn paint_wraps_the_text_only_when_on() {
+    use crate::progress::{Colour, paint};
+    assert_eq!(paint(true, Colour::Red, "x"), "\u{1b}[31mx\u{1b}[0m");
+    assert_eq!(paint(true, Colour::Green, "x"), "\u{1b}[32mx\u{1b}[0m");
+    assert_eq!(paint(true, Colour::Yellow, "x"), "\u{1b}[33mx\u{1b}[0m");
+    assert_eq!(paint(false, Colour::Red, "x"), "x");
+}

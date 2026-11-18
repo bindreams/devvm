@@ -6,6 +6,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::progress::{Colour, paint};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -175,9 +176,12 @@ pub fn write_status_file(path: &Path, report: &Report<'_>) -> Result<()> {
     Ok(())
 }
 
+/// What every error line starts with.
+pub const ERROR_PREFIX: &str = "devvm-error:";
+
 /// `devvm-error: <kind>: <message>` on one line: control characters are escaped, so the line has no newline inside.
 pub fn format_error_line(error: &Error) -> String {
-    let mut line = format!("devvm-error: {}: ", error.kind().as_str());
+    let mut line = format!("{ERROR_PREFIX} {}: ", error.kind().as_str());
     for c in error.message().chars() {
         if c.is_control() {
             line.extend(c.escape_default());
@@ -188,12 +192,10 @@ pub fn format_error_line(error: &Error) -> String {
     line
 }
 
-const ERROR_PREFIX: &str = "devvm-error:";
-
 /// `line`, a [`format_error_line`], with its `devvm-error:` prefix alone in red.
 fn painted(line: &str) -> String {
     match line.strip_prefix(ERROR_PREFIX) {
-        Some(rest) => format!("\u{1b}[31m{ERROR_PREFIX}\u{1b}[0m{rest}"),
+        Some(rest) => format!("{}{rest}", paint(true, Colour::Red, ERROR_PREFIX)),
         None => line.to_owned(),
     }
 }

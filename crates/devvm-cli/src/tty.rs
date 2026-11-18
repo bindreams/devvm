@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use devvm::progress::{Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes};
+use devvm::progress::{Colour, Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 
 #[cfg(test)]
@@ -219,11 +219,7 @@ impl Progress for TtyProgress {
                 match level {
                     Level::Debug if !self.look.verbose => {}
                     Level::Warn => {
-                        let word = if self.look.colour {
-                            "\u{1b}[33mwarning:\u{1b}[0m"
-                        } else {
-                            "warning:"
-                        };
+                        let word = paint(self.look.colour, Colour::Yellow, "warning:");
                         self.print(&format!("{word} {text}"));
                     }
                     Level::Debug | Level::Info => self.print(&text),

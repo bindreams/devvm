@@ -263,6 +263,27 @@ pub fn human_bytes(bytes: u64) -> String {
     bytesize::ByteSize(bytes).display().iec().to_string()
 }
 
+/// A colour [`paint`] knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Colour {
+    Red,
+    Green,
+    Yellow,
+}
+
+/// `text` in `colour` when `on`, else as it is. The one place devvm writes a colour escape.
+pub fn paint(on: bool, colour: Colour, text: &str) -> String {
+    if !on {
+        return text.to_owned();
+    }
+    let code = match colour {
+        Colour::Red => "31",
+        Colour::Green => "32",
+        Colour::Yellow => "33",
+    };
+    format!("\u{1b}[{code}m{text}\u{1b}[0m")
+}
+
 /// `text` with each control character written as an escape (`\r`, `\u{1b}`), so it stays on one line and cannot move a
 /// terminal's cursor. Everything else, a backslash included, is unchanged.
 pub fn escape_controls(text: &str) -> Cow<'_, str> {

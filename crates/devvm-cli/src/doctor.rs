@@ -4,7 +4,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use devvm::exit::ExitStatus;
-use devvm::progress::{Progress, escape_controls};
+use devvm::progress::{Colour, Progress, escape_controls, paint};
 use devvm::store::fetch::Transport;
 use devvm::{Check, Engine, Error, ErrorKind, Result};
 
@@ -39,14 +39,10 @@ pub(crate) fn doctor_to(out: &mut dyn Write, checks: Vec<Check>, colour: bool) -
 /// `pass <name>: <what was found>` or `fail <name>: <what is wrong>`, on one line: a line break or any other control
 /// character in the text is written as its escape (`\n`). With `colour`, `pass` is green and `fail` red.
 pub(crate) fn line(check: &Check, colour: bool) -> String {
-    let (word, style, text) = match &check.outcome {
-        Ok(found) => ("pass", console::Style::new().green(), found),
-        Err(why) => ("fail", console::Style::new().red(), why),
+    let (word, shade, text) = match &check.outcome {
+        Ok(found) => ("pass", Colour::Green, found),
+        Err(why) => ("fail", Colour::Red, why),
     };
-    let word = if colour {
-        style.force_styling(true).apply_to(word).to_string()
-    } else {
-        word.to_owned()
-    };
+    let word = paint(colour, shade, word);
     format!("{word} {}: {}", check.name, escape_controls(text))
 }
