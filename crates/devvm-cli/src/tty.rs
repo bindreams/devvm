@@ -23,7 +23,7 @@ const BAR_COLUMNS: u16 = 50;
 ///
 /// A task that ends leaves no line. A sized task draws a bar and its position in the units of
 /// [`devvm::progress::human_bytes`]; a task of unknown size is a spinner, with the bytes it has counted. A `Begin`
-/// whose parent this screen never saw is drawn as a root. Each label is cut to the terminal's width as it is now.
+/// whose parent this screen never saw is drawn as a root. Each label is cut to the terminal's width when its line is set: at each report of its task.
 pub(crate) struct TtyProgress {
     multi: MultiProgress,
     look: Look,
