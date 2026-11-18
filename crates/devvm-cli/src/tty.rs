@@ -79,6 +79,15 @@ impl TtyProgress {
         )
     }
 
+    /// Stops drawing and takes the bars off the screen, so that what is written below next stays: no redraw, a spinner's
+    /// tick included, can erase it. It takes none of this screen's own locks, because it runs on a thread that panicked
+    /// inside [`Progress::event`] too. Later notes and tasks are not drawn.
+    pub(crate) fn quiet(&self) {
+        // A terminal that cannot be written has nobody to tell.
+        let _ = self.multi.clear();
+        self.multi.set_draw_target(ProgressDrawTarget::hidden());
+    }
+
     fn print(&self, line: &str) {
         // A terminal that cannot be written has nobody to tell.
         let _ = self.multi.println(line);

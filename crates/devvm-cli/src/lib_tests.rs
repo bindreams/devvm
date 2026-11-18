@@ -84,7 +84,7 @@ fn a_double_dash_is_never_the_status_file_value() {
 /// panic hook's lock stays taken.
 #[skuld::test]
 fn the_normal_finish_holds_the_panic_hooks_lock_until_the_exit() {
-    let exit = run_locked(ExitWidth::LowByte, args(&["build", "x"]), Deps::real(), &|_, _| {
+    let exit = run_locked(ExitWidth::LowByte, args(&["build", "x"]), Deps::real(), &|_, _, _| {
         Ok(ExitStatus::Code(3))
     });
     assert_eq!(exit.code, 3);

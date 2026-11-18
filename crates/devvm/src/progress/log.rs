@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use crate::error::{Error, ErrorKind, Result};
-use crate::exit::format_error_line;
 use crate::host::{self, remove_if_present};
 use crate::progress::{Event, Level, Outcome, Progress, TaskId, Total, escape_controls};
 use crate::random;
@@ -109,11 +108,11 @@ impl FileLog {
         &self.path
     }
 
-    /// Records `error`, the failure that ends the run, as one `ERROR` record with the text of the `devvm-error:` line.
-    /// It is not an event: no other sink sees it.
-    pub fn failed(&self, error: &Error) {
+    /// Records `line`, the `devvm-error:` line that ends the run, as one `ERROR` record. It is not an event: no other
+    /// sink sees it.
+    pub fn failed(&self, line: &str) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        self.record(&mut state, "ERROR", &format_error_line(error));
+        self.record(&mut state, "ERROR", line);
     }
 
     fn record(&self, state: &mut State, kind: &str, text: &str) {

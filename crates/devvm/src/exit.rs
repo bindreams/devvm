@@ -200,17 +200,18 @@ fn painted(line: &str) -> String {
     }
 }
 
-/// Ends a command: writes the status file (when asked), prints devvm's own error line, and returns the process exit
-/// code. A status file that cannot be written is itself a devvm failure (125). With `colour`, the prefix of the line is
-/// red; the status file never holds colour.
-pub fn finish(
-    status_file: Option<&Path>,
-    outcome: Result<ExitStatus>,
-    width: ExitWidth,
-    stderr: &mut dyn Write,
-    colour: bool,
-) -> i32 {
-    let (report, exit) = match &outcome {
+/// How a command ended: the process exit code, and the `devvm-error:` line when devvm itself failed, which is the line
+/// to print and to record.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Ending {
+    pub exit: i32,
+    pub error_line: Option<String>,
+}
+
+/// Ends a command: writes the status file (when asked) and returns how it ended. A status file that cannot be written
+/// is itself a devvm failure (125); when the command failed too, the line carries both.
+pub fn conclude(status_file: Option<&Path>, outcome: &Result<ExitStatus>, width: ExitWidth) -> Ending {
+    let (report, exit) = match outcome {
         Ok(status) => (Report::Guest(status), width.exit_code(status)),
         Err(error) => (Report::Devvm(error), DEVVM_ERROR_EXIT),
     };
@@ -219,10 +220,10 @@ pub fn finish(
         None => Ok(()),
     };
     // One line either way: when the status file fails, its line carries the original error too.
-    let (line, exit) = match (written, &outcome) {
-        (Ok(()), Ok(_)) => return exit,
-        (Ok(()), Err(error)) => (format_error_line(error), exit),
-        (Err(failure), Ok(_)) => (format_error_line(&failure), DEVVM_ERROR_EXIT),
+    let (error_line, exit) = match (written, outcome) {
+        (Ok(()), Ok(_)) => (None, exit),
+        (Ok(()), Err(error)) => (Some(format_error_line(error)), exit),
+        (Err(failure), Ok(_)) => (Some(format_error_line(&failure)), DEVVM_ERROR_EXIT),
         (Err(failure), Err(original)) => {
             let message = format!(
                 "{}; original: {}: {}",
@@ -231,12 +232,32 @@ pub fn finish(
                 original.message()
             );
             (
-                format_error_line(&Error::new(ErrorKind::StatusFile, message)),
+                Some(format_error_line(&Error::new(ErrorKind::StatusFile, message))),
                 DEVVM_ERROR_EXIT,
             )
         }
     };
-    let line = if colour { painted(&line) } else { line };
+    Ending { exit, error_line }
+}
+
+/// Writes the [`Ending::error_line`] `line` to `stderr`; with `colour`, its prefix is red.
+pub fn print_error_line(stderr: &mut dyn Write, line: &str, colour: bool) {
+    let line = if colour { painted(line) } else { line.to_owned() };
     let _ = writeln!(stderr, "{line}");
-    exit
+}
+
+/// Ends a command: [`conclude`]s it and prints devvm's own error line, if any, with its prefix red when `colour`. The
+/// status file never holds colour.
+pub fn finish(
+    status_file: Option<&Path>,
+    outcome: Result<ExitStatus>,
+    width: ExitWidth,
+    stderr: &mut dyn Write,
+    colour: bool,
+) -> i32 {
+    let ending = conclude(status_file, &outcome, width);
+    if let Some(line) = &ending.error_line {
+        print_error_line(stderr, line, colour);
+    }
+    ending.exit
 }

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use clap::{CommandFactory, Parser};
 use devvm::exit::{ExitStatus, ExitWidth};
+use devvm::progress::verbose_from_env;
 use devvm::store::fetch::{LazyHttp, Transport};
 use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
 
@@ -111,8 +112,8 @@ pub fn install_panic_hook() {
 
 // Entry points ========================================================================================================
 
-fn dispatch(deps: &Deps, command: Cmd) -> Result<ExitStatus> {
-    let progress = output::sinks().progress;
+fn dispatch(deps: &Deps, command: Cmd, verbose: bool) -> Result<ExitStatus> {
+    let progress = output::sinks(verbose).progress;
     // `doctor` builds its own engine, one that does not fail on config.yaml; no engine is built twice.
     if let Cmd::Doctor = command {
         return doctor::doctor(deps.transport.clone(), progress);
@@ -199,18 +200,20 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
 /// Runs the command line `args` (without the program name) and returns the process exit code.
 ///
 /// Installs the panic hook and points it at the status file before anything else runs. An interactive `ssh` leaves
-/// console interrupts ignored for the rest of the process.
+/// console interrupts ignored for the rest of the process. One command runs at a time per process: the status file,
+/// the panic hook and the run's screen and log are the process's own, and a second concurrent call is not supported.
 pub fn main_entry(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> i32 {
     main_entry_with(width, args, deps, &dispatch)
 }
 
 /// `main_entry` with the dispatch replaced; hook installation, status-file setup, parsing and `finish` are the real
-/// code. Tests use it to put a fault in a real code path.
+/// code. The action gets whether the run is verbose (`-v` or `DEVVM_VERBOSE`). Tests use it to put a fault in a real
+/// code path.
 pub fn main_entry_with(
     width: ExitWidth,
     args: Vec<OsString>,
     deps: Deps,
-    action: &dyn Fn(&Deps, Cmd) -> Result<ExitStatus>,
+    action: &dyn Fn(&Deps, Cmd, bool) -> Result<ExitStatus>,
 ) -> i32 {
     install_panic_hook();
     run_locked(width, args, deps, action).code
@@ -236,7 +239,7 @@ fn run_locked(
     width: ExitWidth,
     args: Vec<OsString>,
     deps: Deps,
-    action: &dyn Fn(&Deps, Cmd) -> Result<ExitStatus>,
+    action: &dyn Fn(&Deps, Cmd, bool) -> Result<ExitStatus>,
 ) -> Exit {
     let status_file = status_file_hint(&args, &|name| std::env::var_os(name));
     set_status_file(status_file.clone());
@@ -274,8 +277,7 @@ fn run_locked(
             };
         }
     };
-    output::set_verbose(cli.verbose);
-    let outcome = action(&deps, cli.command);
+    let outcome = action(&deps, cli.command, cli.verbose || verbose_from_env());
     drop(deps);
     let guard = ending();
     let outcome = flushed(outcome, &mut std::io::stdout());

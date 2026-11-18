@@ -18,7 +18,7 @@ pub(crate) struct Cli {
     pub(crate) status_file: Option<PathBuf>,
 
     /// Also show step output and debug notes (also: DEVVM_VERBOSE).
-    #[arg(short, long, global = true, env = "DEVVM_VERBOSE")]
+    #[arg(short, long, global = true)]
     pub(crate) verbose: bool,
 
     #[command(subcommand)]

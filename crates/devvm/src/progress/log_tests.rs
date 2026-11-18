@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::error::{Error, ErrorKind};
+use crate::exit::format_error_line;
 use crate::host::Host;
 use crate::progress::log::FileLog;
 use crate::progress::{Progress, Task, Total};
@@ -188,7 +189,7 @@ fn the_log_file_is_the_users_alone_whatever_the_directory_hands_down(#[fixture(u
 #[skuld::test]
 fn failed_writes_one_error_record_with_controls_escaped(#[fixture(unicode_home)] home: &Path) {
     let log = open(&home.join("logs"));
-    log.failed(&Error::new(ErrorKind::Io, "bad\nthing\u{1b}[0m"));
+    log.failed(&format_error_line(&Error::new(ErrorKind::Io, "bad\nthing\u{1b}[0m")));
     assert_eq!(
         records(&log),
         [format!("{AT} ERROR devvm-error: io: bad\\nthing\\u{{1b}}[0m")]

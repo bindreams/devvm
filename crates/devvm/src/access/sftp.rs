@@ -166,7 +166,7 @@ impl Sftp {
     {
         let remote = self.remote.clone();
         let awaiting = awaiting.to_owned();
-        runtime::run_handing(&awaiting.clone(), |bytes| moved(bytes), move |sender| {
+        runtime::run_handing(&awaiting.clone(), moved, move |sender| {
             let future = step(remote.clone(), sender);
             async move { remote.guarded(&awaiting, future).await }
         })?

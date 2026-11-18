@@ -233,3 +233,25 @@ fn status_file_replace_is_atomic_for_readers(#[fixture(unicode_home)] home: &Pat
         .collect();
     assert_eq!(names, ["s.json"]);
 }
+
+#[skuld::test]
+fn conclude_gives_the_exit_and_the_line_finish_would_print(#[fixture(unicode_home)] home: &Path) {
+    use crate::exit::conclude;
+    let ok = conclude(None, &Ok(ExitStatus::Code(3)), ExitWidth::Full32);
+    assert_eq!((ok.exit, ok.error_line), (3, None));
+
+    let failed = conclude(None, &Err(Error::new(ErrorKind::Io, "bad")), ExitWidth::Full32);
+    assert_eq!(failed.exit, 125);
+    assert_eq!(failed.error_line.as_deref(), Some("devvm-error: io: bad"));
+
+    let missing = home.join("missing").join("status.json");
+    let both = conclude(
+        Some(&missing),
+        &Err(Error::new(ErrorKind::Io, "bad")),
+        ExitWidth::Full32,
+    );
+    let line = both.error_line.unwrap();
+    assert_eq!(both.exit, 125);
+    assert!(line.starts_with("devvm-error: status-file: "), "{line}");
+    assert!(line.ends_with("original: io: bad"), "{line}");
+}

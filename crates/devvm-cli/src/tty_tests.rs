@@ -306,7 +306,11 @@ fn a_count_of_any_size_leaves_room_for_the_line() {
             advance(&tty, task, position);
             let shown: Vec<usize> = term.contents().lines().map(console::measure_text_width).collect();
             assert_eq!(shown.len(), 1, "{total:?}, {columns} columns: {:?}", term.contents());
-            assert!(shown[0] < usize::from(columns), "{total:?}, {columns} columns: {}", shown[0]);
+            assert!(
+                shown[0] < usize::from(columns),
+                "{total:?}, {columns} columns: {}",
+                shown[0]
+            );
         }
     }
 }

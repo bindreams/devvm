@@ -2,10 +2,9 @@
 
 use std::io::{IsTerminal, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use devvm::exit::{ExitStatus, ExitWidth, finish};
+use devvm::exit::{ExitStatus, ExitWidth, conclude, print_error_line};
 use devvm::progress::{Fanout, FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Result};
@@ -69,29 +68,54 @@ pub(crate) struct Sinks {
     pub log: Option<Arc<FileLog>>,
 }
 
-static VERBOSE: AtomicBool = AtomicBool::new(false);
-static LOG: OnceLock<Arc<FileLog>> = OnceLock::new();
-
-pub(crate) fn set_verbose(verbose: bool) {
-    VERBOSE.store(verbose, Ordering::Relaxed);
+/// What the run in progress holds that its ending needs, and that a panic on any thread must reach: the log to name and
+/// record in, and the terminal screen to stop before anything is written below it.
+struct Active {
+    log: Option<Arc<FileLog>>,
+    tty: Option<Arc<TtyProgress>>,
 }
 
-/// The screen for stderr and the log of this run in the state directory, both chosen from the process's facts. The log
-/// is also kept for [`end`].
-pub(crate) fn sinks() -> Sinks {
+/// The run in progress. The command line runs one command at a time per process: a run replaces this when it starts
+/// and [`end`] empties it, so a later run in the same process starts from nothing.
+struct Run(Mutex<Option<Active>>);
+
+impl Run {
+    const fn new() -> Run {
+        Run(Mutex::new(None))
+    }
+
+    fn begin(&self, active: Active) {
+        let before = self.0.lock().unwrap_or_else(PoisonError::into_inner).replace(active);
+        debug_assert!(before.is_none(), "a command began while another had not ended");
+    }
+
+    fn take(&self) -> Option<Active> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+}
+
+static RUN: Run = Run::new();
+
+/// The screen for stderr and the log of this run in the state directory, both chosen from the process's facts, with
+/// step output and debug notes when `verbose`. The run is kept for [`end`].
+pub(crate) fn sinks(verbose: bool) -> Sinks {
     let look = Look {
         colour: stderr_colour(),
-        verbose: VERBOSE.load(Ordering::Relaxed),
+        verbose,
     };
-    let screen: Arc<dyn Progress> = match choose(&Facts::of_stderr()) {
-        Screen::Tty => Arc::new(TtyProgress::stderr(look)),
-        Screen::Lines => Arc::new(LineProgress::stderr(look)),
+    let (screen, tty): (Arc<dyn Progress>, Option<Arc<TtyProgress>>) = match choose(&Facts::of_stderr()) {
+        Screen::Tty => {
+            let tty = Arc::new(TtyProgress::stderr(look));
+            (tty.clone(), Some(tty))
+        }
+        Screen::Lines => (Arc::new(LineProgress::stderr(look)), None),
     };
     let dirs = Dirs::from_env().ok();
     let sinks = compose(screen, dirs.as_ref());
-    if let Some(log) = &sinks.log {
-        let _ = LOG.set(log.clone());
-    }
+    RUN.begin(Active {
+        log: sinks.log.clone(),
+        tty,
+    });
     sinks
 }
 
@@ -117,23 +141,35 @@ fn compose(screen: Arc<dyn Progress>, dirs: Option<&Dirs>) -> Sinks {
 
 // Ending ==============================================================================================================
 
-/// Ends a command as [`finish`] does, with the error line red where stderr takes colour. A failure also names the log
-/// file on the line before it and is recorded there. The error goes to the log alone, never through the sinks: the
-/// screen would print it as a warning above its own line.
+/// Ends a command as [`devvm::exit::finish`] does, with the error line red where stderr takes colour. A failure also
+/// names the log file on the line before it and is recorded there. The error goes to the log alone, never through the
+/// sinks: the screen would print it as a warning above its own line.
+///
+/// The terminal screen is stopped and cleared first, so that nothing it draws can erase what is written here; this is
+/// also what the panic hook calls. The run is over afterwards.
 pub(crate) fn end(
     status_file: Option<&Path>,
     outcome: Result<ExitStatus>,
     width: ExitWidth,
     stderr: &mut dyn Write,
 ) -> i32 {
-    end_with(
-        LOG.get().map(|log| &**log),
-        stderr_colour(),
-        status_file,
-        outcome,
-        width,
-        stderr,
-    )
+    end_in(&RUN, stderr_colour(), status_file, outcome, width, stderr)
+}
+
+fn end_in(
+    run: &Run,
+    colour: bool,
+    status_file: Option<&Path>,
+    outcome: Result<ExitStatus>,
+    width: ExitWidth,
+    stderr: &mut dyn Write,
+) -> i32 {
+    let active = run.take();
+    if let Some(tty) = active.as_ref().and_then(|active| active.tty.as_ref()) {
+        tty.quiet();
+    }
+    let log = active.as_ref().and_then(|active| active.log.as_deref());
+    end_with(log, colour, status_file, outcome, width, stderr)
 }
 
 fn end_with(
@@ -144,9 +180,14 @@ fn end_with(
     width: ExitWidth,
     stderr: &mut dyn Write,
 ) -> i32 {
-    if let (Err(error), Some(log)) = (&outcome, log) {
-        let _ = writeln!(stderr, "log: {}", log.path().display());
-        log.failed(error);
+    let ending = conclude(status_file, &outcome, width);
+    if let Some(line) = &ending.error_line {
+        // The line printed is the line recorded: the status file can turn a success into a failure.
+        if let Some(log) = log {
+            let _ = writeln!(stderr, "log: {}", log.path().display());
+            log.failed(line);
+        }
+        print_error_line(stderr, line, colour);
     }
-    finish(status_file, outcome, width, stderr, colour)
+    ending.exit
 }

@@ -1541,7 +1541,10 @@ fn assert_reported_while_written(tasks: &[(String, Total, Vec<u64>, Option<Outco
     assert_eq!(tasks.len(), 1, "{tasks:?}");
     let (_, total, positions, ended) = &tasks[0];
     assert_eq!(*total, Total::Bytes(BIG as u64));
-    assert!(positions.iter().any(|at| *at < BIG as u64), "only at the end: {positions:?}");
+    assert!(
+        positions.iter().any(|at| *at < BIG as u64),
+        "only at the end: {positions:?}"
+    );
     assert_eq!(positions.last(), Some(&(BIG as u64)), "{positions:?}");
     assert_eq!(*ended, Some(Outcome::Finished));
 }

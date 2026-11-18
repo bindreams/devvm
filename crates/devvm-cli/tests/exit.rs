@@ -61,7 +61,7 @@ fn panic_on_workers(args: &[String], parties: usize) -> i32 {
     let deps = Deps {
         transport: Arc::new(PanickingTransport(Arc::new(Barrier::new(parties)))),
     };
-    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|deps, _command| {
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|deps, _command, _verbose| {
         let workers: Vec<_> = (0..parties)
             .map(|i| {
                 let fetcher = Fetcher::new(downloads.clone(), deps.transport.clone(), Arc::new(NullProgress));
@@ -88,7 +88,7 @@ fn panic_on_workers(args: &[String], parties: usize) -> i32 {
 fn panic_in_builder(args: &[String]) -> i32 {
     let dirs = Dirs::under(Path::new(&args[0]));
     let cli_args: Vec<OsString> = args[1..].iter().map(OsString::from).collect();
-    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, Deps::real(), &|_, _| {
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, Deps::real(), &|_, _, _| {
         let store = LayerStore::open(&dirs, Arc::new(SystemClock), Arc::new(NullProgress))?;
         store.build(&request(), None, |staging| {
             std::fs::write(staging.dir.path().join("half"), b"x").unwrap();
@@ -120,7 +120,7 @@ fn panic_on_drop(args: &[String]) -> i32 {
     let deps = Deps {
         transport: Arc::new(PanicOnDrop),
     };
-    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|_, _| Ok(ExitStatus::Code(0)))
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|_, _, _| Ok(ExitStatus::Code(0)))
 }
 
 /// Runs the real entry point, `dispatch` included, with a transport that panics when the engine fetches through it.
@@ -147,7 +147,7 @@ fn fixed_result(args: &[String]) -> i32 {
         other => panic!("unknown result {other:?}"),
     };
     // The width `main` uses: under `LowByte` a guest's 125 exits as 1; the status file still says 125.
-    devvm_cli::main_entry_with(host_exit_width(), cli_args, Deps::real(), &|_, _| result.clone())
+    devvm_cli::main_entry_with(host_exit_width(), cli_args, Deps::real(), &|_, _, _| result.clone())
 }
 
 fn request() -> BuildRequest {

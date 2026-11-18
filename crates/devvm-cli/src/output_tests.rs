@@ -3,11 +3,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use devvm::exit::{ExitStatus, ExitWidth};
-use devvm::progress::{FileLog, LineProgress, Look, Progress};
+use devvm::progress::{FileLog, LineProgress, Look, Progress, Total};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Error, ErrorKind};
 
-use crate::output::{Facts, Screen, choose, compose, end_with};
+use crate::output::{Active, Facts, Run, Screen, choose, compose, end_in, end_with};
+use crate::tty::TtyProgress;
+use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
 #[derive(Clone, Default)]
 struct Buffer(Arc<Mutex<Vec<u8>>>);
@@ -162,4 +164,122 @@ fn colour_reaches_the_error_line_and_not_the_log_line_or_the_log() {
     assert_eq!(lines[0], format!("log: {}", log.path().display()));
     assert_eq!(lines[1], "\u{1b}[31mdevvm-error:\u{1b}[0m io: bad");
     assert!(!std::fs::read_to_string(log.path()).unwrap().contains('\u{1b}'));
+}
+
+/// A status file that cannot be written: its directory is not there.
+fn unwritable(tmp: &Path) -> std::path::PathBuf {
+    tmp.join("missing").join("status.json")
+}
+
+fn ended_with_file(log: &FileLog, status_file: &Path, outcome: devvm::Result<ExitStatus>) -> (i32, String) {
+    let mut stderr = Vec::new();
+    let code = end_with(
+        Some(log),
+        false,
+        Some(status_file),
+        outcome,
+        ExitWidth::Full32,
+        &mut stderr,
+    );
+    (code, String::from_utf8(stderr).unwrap())
+}
+
+fn last_error_record(log: &FileLog) -> String {
+    let text = std::fs::read_to_string(log.path()).unwrap();
+    assert_eq!(text.matches(" ERROR ").count(), 1, "{text}");
+    let record = text.lines().find(|line| line.contains(" ERROR ")).unwrap();
+    record.split_once(" ERROR ").unwrap().1.to_owned()
+}
+
+#[skuld::test]
+fn a_success_turned_into_a_failure_by_the_status_file_names_the_log_and_records_the_printed_line() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let log = log_in(&tmp.path().join("logs"));
+
+    let (code, stderr) = ended_with_file(&log, &unwritable(tmp.path()), Ok(ExitStatus::Code(0)));
+
+    assert_eq!(code, 125);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert_eq!(lines[0], format!("log: {}", log.path().display()));
+    assert!(lines[1].starts_with("devvm-error: status-file: "), "{stderr}");
+    assert_eq!(last_error_record(&log), lines[1]);
+}
+
+#[skuld::test]
+fn a_failure_and_an_unwritable_status_file_record_the_combined_line_that_was_printed() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let log = log_in(&tmp.path().join("logs"));
+
+    let (code, stderr) = ended_with_file(&log, &unwritable(tmp.path()), Err(Error::new(ErrorKind::Io, "bad")));
+
+    assert_eq!(code, 125);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert!(lines[1].contains("original: io: bad"), "{stderr}");
+    assert_eq!(last_error_record(&log), lines[1]);
+}
+
+fn run_ending(run: &Run, outcome: devvm::Result<ExitStatus>) -> String {
+    let mut stderr = Vec::new();
+    end_in(run, false, None, outcome, ExitWidth::Full32, &mut stderr);
+    String::from_utf8(stderr).unwrap()
+}
+
+fn failure() -> devvm::Result<ExitStatus> {
+    Err(Error::new(ErrorKind::Io, "bad"))
+}
+
+#[skuld::test]
+fn each_run_ends_with_its_own_log_and_leaves_nothing_for_the_next() {
+    let tmp = skuld::TempDir::new().unwrap();
+    let run = Run::new();
+    let first = Arc::new(log_in(&tmp.path().join("first")));
+    let second = Arc::new(log_in(&tmp.path().join("second")));
+
+    run.begin(Active {
+        log: Some(first.clone()),
+        tty: None,
+    });
+    assert!(run_ending(&run, failure()).contains(&first.path().display().to_string()));
+
+    run.begin(Active {
+        log: Some(second.clone()),
+        tty: None,
+    });
+    let text = run_ending(&run, failure());
+    assert!(text.contains(&second.path().display().to_string()), "{text}");
+    assert!(!text.contains(&first.path().display().to_string()), "{text}");
+
+    // A run that never began has no log to name.
+    assert_eq!(run_ending(&run, failure()), "devvm-error: io: bad\n");
+}
+
+#[skuld::test]
+fn ending_stops_the_terminal_screen_before_the_error_is_written() {
+    let term = InMemoryTerm::new(5, 60);
+    let tty = Arc::new(TtyProgress::new(
+        ProgressDrawTarget::term_like(Box::new(term.clone())),
+        Look::default(),
+        None,
+        || 60,
+    ));
+    let run = Run::new();
+    run.begin(Active {
+        log: None,
+        tty: Some(tty.clone()),
+    });
+    let progress: &dyn Progress = &*tty;
+    let _task = progress.task("building x", Total::Unknown);
+    assert_eq!(term.contents().lines().count(), 1);
+
+    run_ending(&run, failure());
+    assert_eq!(term.contents().trim(), "", "the bars are off the screen");
+
+    // Whatever is written next stays: a report or a tick of a task still open draws nothing.
+    term.write_line("devvm-error: io: bad").unwrap();
+    let late = progress.task("late", Total::Items(2));
+    late.set(1);
+    progress.message("a note");
+    assert_eq!(term.contents().trim(), "devvm-error: io: bad");
 }
