@@ -31,8 +31,12 @@ const MARKER_FILE: &str = "owner.json";
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct InstanceId([u8; 16]);
 
+const HOSTNAME_PREFIX: &str = "devvm-";
+/// The hex digits of the id in a hostname: its first 4 bytes.
+const HOSTNAME_BYTES: usize = 4;
+
 /// The length of a hostname made by [`InstanceId::hostname`]: under the 15 characters of a Windows computer name.
-pub const HOSTNAME_LEN: usize = 14;
+pub const HOSTNAME_LEN: usize = HOSTNAME_PREFIX.len() + 2 * HOSTNAME_BYTES;
 
 impl InstanceId {
     pub(crate) fn random() -> InstanceId {
@@ -43,9 +47,7 @@ impl InstanceId {
     /// [`HOSTNAME_LEN`] characters. It is neither the label (which a user chooses and can reuse) nor one shared by
     /// every machine.
     pub(crate) fn hostname(&self) -> String {
-        let hostname = format!("devvm-{}", hex::encode(&self.0[..4]));
-        debug_assert_eq!(hostname.len(), HOSTNAME_LEN);
-        hostname
+        format!("{HOSTNAME_PREFIX}{}", hex::encode(&self.0[..HOSTNAME_BYTES]))
     }
 }
 

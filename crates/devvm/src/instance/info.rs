@@ -7,8 +7,6 @@ use serde::Serialize;
 
 use crate::{Arch, GuestKind};
 
-pub use super::record::HOSTNAME_LEN;
-
 /// Whether an instance's VM is running, judged by the recorded process identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstanceState {

@@ -24,7 +24,6 @@ fn the_hostname_is_devvm_and_the_first_eight_hex_digits_of_the_id() {
     assert_eq!(other.hostname(), "devvm-ffeeddcc");
     // Under the 15 characters of a Windows computer name.
     assert_eq!(other.hostname().len(), HOSTNAME_LEN);
-    assert_eq!(HOSTNAME_LEN, 14);
 }
 
 fn layer(n: u8) -> LayerRef {
