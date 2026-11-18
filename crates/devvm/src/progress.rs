@@ -30,6 +30,7 @@ pub enum Level {
 /// What a task counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Total {
+    /// The size is not known. A position such a task reports counts bytes.
     Unknown,
     Bytes(u64),
     Items(u64),
@@ -158,7 +159,8 @@ const MIB: u64 = 1 << 20;
 /// An open task. Nesting follows the call stack: a task begun while another is open on the same thread is its child, and
 /// a task begun on a thread with none open is a root. Ends [`Outcome::Abandoned`] when dropped without [`Task::finish`].
 ///
-/// Not `Send`: a guard ends on the thread that began it.
+/// Not `Send`: a guard ends on the thread that began it. Guards held in one struct drop in field order, so declare the
+/// inner task first; out of order, a debug build panics on drop (never while already unwinding from another panic).
 pub struct Task<'a> {
     progress: &'a dyn Progress,
     id: TaskId,
@@ -199,8 +201,9 @@ impl<'a> Task<'a> {
         self.id
     }
 
-    /// Reports the position so far. It never goes back. The first position is reported as it is; after that, bytes are
-    /// reported once per MiB crossed and at the total, anything else each time it grows.
+    /// Reports the position so far. It never goes back. The first position is reported as it is; after that, bytes (a
+    /// [`Total::Bytes`] or [`Total::Unknown`] task) are reported once per MiB crossed and at the total, items each time
+    /// they grow.
     pub fn set(&self, position: u64) {
         let last = self.last.get();
         if position <= last {
@@ -208,7 +211,8 @@ impl<'a> Task<'a> {
         }
         let due = match self.total {
             Total::Bytes(total) => !self.reported.get() || position / MIB > last / MIB || position >= total,
-            Total::Items(_) | Total::Unknown => true,
+            Total::Unknown => !self.reported.get() || position / MIB > last / MIB,
+            Total::Items(_) => true,
         };
         if due {
             self.last.set(position);
@@ -234,7 +238,9 @@ impl Drop for Task<'_> {
     fn drop(&mut self) {
         OPEN.with(|open| {
             let mut open = open.borrow_mut();
-            debug_assert_eq!(open.last(), Some(&self.id), "tasks end innermost first");
+            if !std::thread::panicking() {
+                debug_assert_eq!(open.last(), Some(&self.id), "tasks end innermost first");
+            }
             open.retain(|id| *id != self.id);
         });
         self.progress.event(&Event::End {

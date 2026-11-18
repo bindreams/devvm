@@ -149,6 +149,42 @@ fn bytes_are_reported_per_mib_after_the_first_position_and_never_go_back() {
 }
 
 #[skuld::test]
+fn a_download_of_unknown_size_is_reported_per_mib_too() {
+    let sink = MemoryProgress::default();
+    let progress: &dyn Progress = &sink;
+    let task = progress.task("download", Total::Unknown);
+    for chunk in 1..=(3 * MIB / (64 * 1024)) {
+        task.set(chunk * 64 * 1024);
+    }
+    task.finish();
+    assert_eq!(advances(&sink.events()), vec![64 * 1024, MIB, 2 * MIB, 3 * MIB]);
+}
+
+#[skuld::test]
+fn a_panic_with_guards_in_the_wrong_order_is_not_hidden_by_a_second_panic() {
+    struct OuterFirst<'a> {
+        _outer: Task<'a>,
+        _inner: Task<'a>,
+    }
+    let sink = MemoryProgress::default();
+    let progress: &dyn Progress = &sink;
+    let outcome = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _guards = OuterFirst {
+                    _outer: progress.task("outer", Total::Unknown),
+                    _inner: progress.task("inner", Total::Unknown),
+                };
+                panic!("the original failure");
+            })
+            .join()
+    });
+    let payload = outcome.unwrap_err();
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"the original failure"));
+    assert_eq!(ends(&sink.events()).len(), 2, "both tasks ended");
+}
+
+#[skuld::test]
 fn items_are_reported_each_time_they_grow() {
     let sink = MemoryProgress::default();
     let progress: &dyn Progress = &sink;
