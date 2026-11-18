@@ -7,6 +7,7 @@ use devvm::exit::ExitWidth;
 use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
 use indicatif::{InMemoryTerm, ProgressDrawTarget, TermLike};
 
+use crate::output::output_tests::own_run;
 use crate::output::{Active, Run, Shown};
 use crate::tty::{Pace, TtyProgress};
 
@@ -555,7 +556,7 @@ fn run_with_screen() -> (Arc<Run>, Arc<TtyProgress>, InMemoryTerm, Probe) {
         None,
         || 60,
     ));
-    let run = Arc::new(Run::new());
+    let run = Arc::new(own_run());
     run.begin(Active {
         log: None,
         screen: Some(Shown::Tty(tty.clone())),

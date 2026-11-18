@@ -1,8 +1,9 @@
 //! Where a command's progress and its final error go: the screen the person reads, and the log file of the run.
 
-use std::io::{IsTerminal, StderrLock, Write};
-use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::any::Any;
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use devvm::exit::{ExitStatus, ExitWidth, conclude, print_error_line};
 use devvm::progress::{Fanout, FileLog, LineProgress, Look, Progress};
@@ -13,7 +14,7 @@ use crate::tty::TtyProgress;
 
 #[cfg(test)]
 #[path = "output_tests.rs"]
-mod output_tests;
+pub(crate) mod output_tests;
 
 pub(crate) struct Facts {
     pub is_terminal: bool,
@@ -149,29 +150,74 @@ impl Active {
 /// `active` when it starts and its ending empties it, so a later run in the same process starts from nothing.
 ///
 /// Exactly one ending prints: the command's own ([`Run::end`]) or a panic hook's ([`Run::on_panic`]). Each writes
-/// under the process's stderr lock and keeps it until the process exits ([`Ended`]), so the other waits there. That is
-/// the lock because every screen writes through it too: the frames of indicatif (`console::Term` goes through
-/// `std::io::stderr()`, on Unix and on Windows) and [`LineProgress::stderr`]. A thread that draws or writes a line
-/// while an ending holds it waits, and what it writes comes after the error line only if the process lives on. The lock
-/// is re-entrant, so a hook on the thread of an ending, which the ending itself failed, ends the run instead of
-/// waiting for itself.
+/// under the one-ending lock, `std::io::stderr()`'s, and keeps it until the process exits ([`Ended`]), so the other
+/// waits there. Every screen writes through that lock too: indicatif's frames (`console::Term` goes through
+/// `std::io::stderr()`) and [`LineProgress::stderr`]. The lock is re-entrant, so a hook on the thread of an ending,
+/// which the ending itself failed, ends the run instead of waiting for itself.
 ///
-/// A hook never stops, clears or waits for a sink: the thread that panicked may hold a sink's lock. A frame that was
-/// drawn before the hook took the lock stays above the error line.
+/// A hook first notes its panic in `panicked`, then waits for the lock. An ending that holds the lock reads `panicked`
+/// before it concludes and again before the process exits ([`Ended::settle`]), so a panic on another thread is the
+/// outcome whenever it began before that last check; one that begins after it is the process exiting.
+///
+/// A hook never stops, clears or waits for a sink: the thread that panicked may hold a sink's lock. If devvm itself
+/// panics, progress from other threads can still appear around the error line, and a bar redraw can overwrite it: the
+/// lock keeps the error last on a pipe and on a VT terminal, but a Windows console moves the cursor and clears lines
+/// through calls that do not take it, and the normal ending's clear can race a hook the same way. The exit code, the
+/// status file and the log's `ERROR` record are right.
 pub(crate) struct Run {
     active: Mutex<Option<Active>>,
+    /// The message of the first panic of the process, set before its hook waits for the one-ending lock.
+    panicked: Mutex<Option<String>>,
+    /// The one-ending lock; `None` is `std::io::stderr()`'s. A test gives each run its own, so that parallel tests do
+    /// not wait on one another's endings.
+    lock: Option<Box<dyn OneEnding>>,
+}
+
+/// The one-ending lock's guard.
+type Held = Box<dyn Any>;
+
+/// A re-entrant lock: a thread that holds it can take it again.
+pub(crate) trait OneEnding: Send + Sync {
+    fn hold(&self) -> Held;
 }
 
 /// A command's ending or a panic hook's, written: the process exit code, with the one-ending lock still held. The
-/// process must exit before it is dropped.
-pub(crate) struct Ended {
+/// process must exit before it is dropped, through [`Ended::exit`].
+pub(crate) struct Ended<'a> {
     pub(crate) code: i32,
-    _held: StderrLock<'static>,
+    run: &'a Run,
+    log: Option<Arc<FileLog>>,
+    colour: bool,
+    status_file: Option<PathBuf>,
+    width: ExitWidth,
+    /// Whether the outcome written is a panic.
+    panicked: bool,
+    _held: Held,
 }
 
-/// The one-ending lock: re-entrant.
-fn one_ending() -> StderrLock<'static> {
-    std::io::stderr().lock()
+impl Ended<'_> {
+    /// The last check before the exit: a panic noted since the ending began is the outcome.
+    pub(crate) fn settle(mut self, stderr: &mut dyn Write) -> Self {
+        if !self.panicked
+            && let Some(message) = self.run.panicked()
+        {
+            self.code = end_with(
+                self.log.as_deref(),
+                self.colour,
+                self.status_file.as_deref(),
+                Err(Error::new(ErrorKind::Panic, message)),
+                self.width,
+                stderr,
+            );
+            self.panicked = true;
+        }
+        self
+    }
+
+    /// [`Ended::settle`], then exits the process with the lock still held.
+    pub(crate) fn exit(self, stderr: &mut dyn Write) -> ! {
+        std::process::exit(self.settle(stderr).code)
+    }
 }
 
 /// The run of this process.
@@ -181,6 +227,8 @@ impl Run {
     pub(crate) const fn new() -> Run {
         Run {
             active: Mutex::new(None),
+            panicked: Mutex::new(None),
+            lock: None,
         }
     }
 
@@ -188,14 +236,36 @@ impl Run {
         self.active.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The run, if it can be read now. A hook gets none rather than wait: a thread that panicked while it held `active`
+    /// would be waited for by its own hook.
+    fn try_active(&self) -> Option<Active> {
+        match self.active.try_lock() {
+            Ok(active) => active.clone(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().clone(),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
+    /// The message of the first panic noted, if any.
+    pub(crate) fn panicked(&self) -> Option<String> {
+        self.panicked.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn hold(&self) -> Held {
+        match &self.lock {
+            Some(lock) => lock.hold(),
+            None => Box::new(std::io::stderr().lock()),
+        }
+    }
+
     pub(crate) fn begin(&self, active: Active) {
         let before = self.active().replace(active);
         debug_assert!(before.is_none(), "a command began while another had not ended");
     }
 
-    /// The panic hook's part, on the panicking thread: waits for an ending that is under way, then writes the `log:`
-    /// line and the error line, records the error and writes the status file, as an ending would. It takes no sink's
-    /// lock (the thread may hold it) and stops none.
+    /// The panic hook's part, on the panicking thread: notes the panic, waits for an ending that is under way, then
+    /// writes the `log:` line and the error line, records the error and writes the status file, as an ending would. It
+    /// takes no sink's lock (the thread may hold it) and stops none.
     pub(crate) fn on_panic(
         &self,
         message: String,
@@ -203,19 +273,13 @@ impl Run {
         status_file: Option<&Path>,
         width: ExitWidth,
         stderr: &mut dyn Write,
-    ) -> Ended {
-        let held = one_ending();
-        let active = self.active().clone();
-        let log = active.as_ref().and_then(|active| active.log.as_deref());
-        let code = end_with(
-            log,
-            colour,
-            status_file,
-            Err(Error::new(ErrorKind::Panic, message)),
-            width,
-            stderr,
-        );
-        Ended { code, _held: held }
+    ) -> Ended<'_> {
+        self.panicked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(|| message.clone());
+        let outcome = Err(Error::new(ErrorKind::Panic, message));
+        self.ending(false, colour, status_file, outcome, width, stderr)
     }
 
     /// The one ending of a command: stops the sinks, takes the one-ending lock, [`conclude`]s, and prints the error
@@ -231,16 +295,50 @@ impl Run {
         outcome: Result<ExitStatus>,
         width: ExitWidth,
         stderr: &mut dyn Write,
-    ) -> Ended {
-        let active = self.active().clone();
-        if let Some(active) = &active {
-            active.stop();
+    ) -> Ended<'_> {
+        self.ending(true, colour, status_file, outcome, width, stderr)
+    }
+
+    /// The tail of both endings: the sinks are stopped first when `stop`, then the lock is taken, and a panic noted by
+    /// now is the outcome.
+    fn ending(
+        &self,
+        stop: bool,
+        colour: bool,
+        status_file: Option<&Path>,
+        outcome: Result<ExitStatus>,
+        width: ExitWidth,
+        stderr: &mut dyn Write,
+    ) -> Ended<'_> {
+        let active = if stop {
+            let active = self.active().clone();
+            if let Some(active) = &active {
+                active.stop();
+            }
+            active
+        } else {
+            self.try_active()
+        };
+        let held = self.hold();
+        let (outcome, panicked) = match self.panicked() {
+            Some(message) => (Err(Error::new(ErrorKind::Panic, message)), true),
+            None => (outcome, false),
+        };
+        let log = active.and_then(|active| active.log);
+        let code = end_with(log.as_deref(), colour, status_file, outcome, width, stderr);
+        if stop {
+            self.active().take();
         }
-        let held = one_ending();
-        let log = active.as_ref().and_then(|active| active.log.as_deref());
-        let code = end_with(log, colour, status_file, outcome, width, stderr);
-        self.active().take();
-        Ended { code, _held: held }
+        Ended {
+            code,
+            run: self,
+            log,
+            colour,
+            status_file: status_file.map(Path::to_owned),
+            width,
+            panicked,
+            _held: held,
+        }
     }
 }
 

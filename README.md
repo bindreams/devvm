@@ -88,8 +88,10 @@ devvm rm dev
   `XDG_STATE_HOME` says otherwise, on every OS). A failed command prints `log: <path>` before its error line, with
   `(incomplete: <error>)` after it when a write to the log failed. Only the user can read a log, and logs older than 14
   days are removed when a new one is made, unless their command is still running.
-- A Ctrl-C or a panic can leave the last frame of the progress bars on screen above the error line. After a panic
-  (devvm itself crashed) the exit code is 125, and the status file and the log's error record are written.
+- A Ctrl-C can leave the last frame of the progress bars on screen above the error line. If devvm itself crashes (a
+  panic), progress from other threads can still appear around its error line, and a bar redraw can overwrite it (the
+  error line stays last on a pipe and on a VT terminal, not against a Windows console's cursor moves); the exit code
+  125, the status file and the log's error record are right.
 
 ### A project in a recipe
 

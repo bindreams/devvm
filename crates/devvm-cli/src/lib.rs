@@ -86,8 +86,8 @@ fn set_status_file(path: Option<PathBuf>) {
 ///
 /// Exactly one ending prints; see [`output::Run`] for which. The hook never panics: it ignores write errors and
 /// tolerates a poisoned lock. If devvm itself panics, progress from other threads can still appear around the error
-/// line, and a bar of the last frame can stay above it; the exit code, the status file and the log's `ERROR` record
-/// are right.
+/// line, and a bar redraw can overwrite it (on a Windows console the stderr lock does not keep the error last); the
+/// exit code, the status file and the log's `ERROR` record are right.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let payload = info.payload();
@@ -217,27 +217,29 @@ pub fn main_entry_with(
     action: &dyn Fn(&Deps, Cmd, bool) -> Result<ExitStatus>,
 ) -> i32 {
     install_panic_hook();
-    run_ended(&output::RUN, width, args, deps, action).code
+    run_ended(&output::RUN, width, args, deps, action)
+        .settle(&mut std::io::stderr())
+        .code
 }
 
 /// Like [`main_entry`], but ends the process while the ending holds the one-ending lock, so that no panic on another
-/// thread can print a second line or rewrite the status file between the normal ending and the exit.
+/// thread can print a second line or rewrite the status file between the normal ending and the exit; a panic noted
+/// before the last check is the outcome.
 pub fn run(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> ! {
     install_panic_hook();
-    let ended = run_ended(&output::RUN, width, args, deps, &dispatch);
-    std::process::exit(ended.code)
+    run_ended(&output::RUN, width, args, deps, &dispatch).exit(&mut std::io::stderr())
 }
 
 /// The command line from status-file setup to the ending, which holds the one-ending lock until `Ended` is dropped. The
 /// ending starts once the action is over and `deps` is dropped, not before: a panic in either must end the process by
 /// its hook, and a drop may wait on the thread that panics.
-fn run_ended(
-    run: &Run,
+fn run_ended<'a>(
+    run: &'a Run,
     width: ExitWidth,
     args: Vec<OsString>,
     deps: Deps,
     action: &dyn Fn(&Deps, Cmd, bool) -> Result<ExitStatus>,
-) -> Ended {
+) -> Ended<'a> {
     let status_file = status_file_hint(&args, &|name| std::env::var_os(name));
     set_status_file(status_file.clone());
     let colour = output::stderr_colour();

@@ -6,7 +6,7 @@ use devvm::exit::{ExitStatus, ExitWidth};
 
 use devvm::{Error, ErrorKind};
 
-use crate::output::Run;
+use crate::output::output_tests::own_run;
 use crate::{Deps, flushed, run_ended, status_file_hint};
 
 fn args(items: &[&str]) -> Vec<OsString> {
@@ -100,10 +100,11 @@ impl std::io::Write for AfterRelease<'_> {
 }
 
 /// A panic on another thread must not interleave with the normal ending: from its start until the process exits, the
-/// hook waits for the one-ending lock the ending holds.
+/// hook waits for the one-ending lock the ending holds. The hook has noted its panic, and so is waiting on the lock,
+/// before the ending is released.
 #[skuld::test]
 fn the_normal_ending_holds_off_the_panic_hook_until_the_exit() {
-    let run = Run::new();
+    let run = own_run();
     let ended = run_ended(
         &run,
         ExitWidth::LowByte,
@@ -124,6 +125,9 @@ fn the_normal_ending_holds_off_the_panic_hook_until_the_exit() {
             )
             .code
         });
+        while run.panicked().is_none() {
+            std::thread::yield_now();
+        }
         released.store(true, Ordering::SeqCst);
         drop(ended);
         assert_eq!(
