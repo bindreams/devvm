@@ -588,11 +588,28 @@ fn the_guest_activates_an_unlicensed_product_when_the_host_or_its_license_family
 #[skuld::test]
 fn the_license_is_read_after_the_installs_and_the_tasks_and_before_the_work_directory_goes() {
     let bootstrap = rendered("bootstrap.ps1");
-    let tasks = "-Principal (New-ScheduledTaskPrincipal -UserId 'user'";
+    let tasks = "-Principal (New-ScheduledTaskPrincipal -UserId $userSid";
     assert_before(&bootstrap, "ssh-broker.exe\" apply", "$filter = ");
     assert_before(&bootstrap, tasks, "$filter = ");
     assert_before(&bootstrap, "$filter = ", "Remove-Item -LiteralPath $work");
     assert_before(&bootstrap, "Send-Line \"DEVVM-LICENSE=", "Send-Line 'DEVVM-BASE-DONE'");
+}
+
+#[skuld::test]
+fn nothing_the_base_records_carries_the_computers_name_at_the_build() {
+    let bootstrap = rendered("bootstrap.ps1");
+    // Each instance renames the computer at its first boot. Autologon's domain is the local machine, so the logon that
+    // follows the restart does not look for an account of the old name.
+    assert!(bootstrap.contains("Set-ItemProperty -Path $winlogon -Name DefaultDomainName -Value '.'"));
+    assert_before(&bootstrap, "-Name AutoAdminLogon", "-Name DefaultDomainName");
+    // The elevated runner's task is `user`'s by its SID, which no rename changes; a name would record the old computer.
+    assert_before(
+        &bootstrap,
+        "$userSid = ([Security.Principal.NTAccount]::new('user')).Translate(",
+        "-UserId $userSid",
+    );
+    assert!(!bootstrap.contains("-UserId 'user'"));
+    assert!(!bootstrap.contains("$env:COMPUTERNAME") && !bootstrap.contains("hostname"));
 }
 
 #[skuld::test]
@@ -831,19 +848,115 @@ fn the_boot_task_names_the_computer_from_the_seed_and_restarts_before_anything_e
     assert!(task.contains("'meta.json'") && task.contains("'local-hostname'"));
     assert_before(&task, "Find-VolumeRoot 'CIDATA'", "'local-hostname'");
     assert_before(&task, "'local-hostname'", "Rename-Computer");
-    assert_before(&task, "Rename-Computer", "Restart-Computer");
+    assert_before(
+        &task,
+        "Rename-Computer",
+        "Restart-Now
+",
+    );
     let ends = section(
         &task,
-        "Restart-Computer",
+        "        Restart-Now
+",
         "
     }",
     );
     assert!(ends.contains("exit 0"), "the boot that restarts ends there: {ends}");
-    assert_before(&task, "Restart-Computer", "DEVVM-SEED-WRITTEN");
-    assert_before(&task, "Restart-Computer", "Start-Service");
+    assert_before(
+        &task,
+        "        Restart-Now
+",
+        "DEVVM-SEED-WRITTEN",
+    );
+    assert_before(
+        &task,
+        "        Restart-Now
+",
+        "Start-Service",
+    );
     assert_eq!(task.matches("Rename-Computer").count(), 1);
     // A name already right is not renamed again: only a boot that finds another name restarts.
     assert!(task.contains("$env:COMPUTERNAME -ne $hostname"));
+}
+
+#[skuld::test]
+fn the_boot_task_restarts_again_while_the_system_refuses_as_not_ready_and_fails_on_any_other_refusal() {
+    let task = rendered("boot-task.ps1");
+    let restart = section(
+        &task,
+        "function Restart-Now",
+        "
+}
+",
+    );
+    // The request is made until it is accepted: a loop that re-checks the answer, with no count and no clock.
+    assert!(
+        restart.contains("while ($true)") && restart.contains("shutdown.exe /r /f /t 0"),
+        "{restart}"
+    );
+    assert_before(restart, "-eq 0) { return }", "-ne 21) { throw");
+    assert_before(restart, "-ne 21) { throw", "Start-Sleep");
+    assert!(
+        restart.contains("status $LASTEXITCODE"),
+        "the refusal is named: {restart}"
+    );
+    for bound in ["$tries", "$attempt", "-lt ", "-gt ", "Stopwatch", "Get-Date", "timeout"] {
+        assert!(!restart.contains(bound), "the retry has no cap ({bound}): {restart}");
+    }
+    // The restart of the rename is this one; there is no other way out of it.
+    assert_eq!(task.matches("shutdown.exe /r /f /t 0").count(), 1);
+    assert!(!task.contains("Restart-Computer"));
+}
+
+#[skuld::test]
+fn the_boot_task_fails_naming_a_seed_without_a_local_hostname() {
+    let task = rendered("boot-task.ps1");
+    // Inside the try: the catch sends DEVVM-BOOT-FAILED. Before the name is compared and before it reaches
+    // Rename-Computer, whose binding error would name nothing.
+    assert_before(
+        &task,
+        "'local-hostname'",
+        "throw \"the seed's meta.json has no local-hostname\"",
+    );
+    assert_before(&task, "has no local-hostname", "$env:COMPUTERNAME -ne $hostname");
+    assert_before(
+        &task,
+        "try {
+    # Requests the last boot",
+        "has no local-hostname",
+    );
+    assert_before(&task, "has no local-hostname", "} catch {");
+    assert_before(&task, "} catch {", "DEVVM-BOOT-FAILED=");
+}
+
+#[skuld::test]
+fn the_boot_task_records_the_name_it_restarts_for_and_fails_instead_of_restarting_for_it_twice() {
+    let task = rendered("boot-task.ps1");
+    let rename = section(
+        &task,
+        "if ($env:COMPUTERNAME -ne $hostname) {",
+        "
+    }
+",
+    );
+    // A boot that still has another name, after a restart for this one, fails naming the rename.
+    assert_before(
+        rename,
+        "Test-Path -LiteralPath $renamedFile",
+        "throw \"the computer is still named",
+    );
+    assert_before(rename, "throw \"the computer is still named", "Rename-Computer");
+    assert!(
+        rename.contains("-eq $hostname)") && rename.contains("$hostname and a restart"),
+        "{rename}"
+    );
+    // The name is on the disk before the restart, and in a file the boot task's own cleanup does not remove.
+    assert_before(rename, "Rename-Computer", "Write-Whole $renamedFile");
+    assert_before(rename, "Write-Whole $renamedFile", "Restart-Now");
+    assert!(
+        task.contains(r"$renamedFile = Join-Path 'C:\ProgramData\devvm' 'renamed-to'"),
+        "{task}"
+    );
 }
 
 #[skuld::test]
@@ -1175,7 +1288,7 @@ fn the_eb_task_is_registered_for_user_with_an_interactive_token_the_highest_run_
         registration.contains("eb-runner.ps1\" $(Arg0)'"),
         "the request id is the task's first argument"
     );
-    assert!(registration.contains("-UserId 'user' -LogonType Interactive -RunLevel Highest"));
+    assert!(registration.contains("-UserId $userSid -LogonType Interactive -RunLevel Highest"));
     assert!(registration.contains(&format!("Register-ScheduledTask -TaskName {}", literal(elevate::TASK))));
     assert!(
         !bootstrap.contains("S4U"),

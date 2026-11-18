@@ -8,6 +8,8 @@ Add-Type -LiteralPath (Join-Path $PSScriptRoot @@NATIVE_DLL@@)
 
 $root = @@EB_ROOT@@
 $bootIdFile = @@BOOT_ID_FILE@@
+# The name the last boot restarted for: a boot that still has another name finds that the rename did not take.
+$renamedFile = Join-Path @@DEVVM_DIR@@ 'renamed-to'
 $ssh = 'C:\ProgramData\ssh'
 # The seed's files and where each goes; an administrator's keys are read from administrators_authorized_keys.
 $seed = [ordered]@{
@@ -39,6 +41,18 @@ function Write-Whole([string]$Target, [byte[]]$Bytes, [string[]]$ReadSids = @())
     [Devvm.Disk]::FlushDirectory((Split-Path -Parent $Target))
 }
 
+# Restarts now. The system refuses with ERROR_NOT_READY (21) while it is still starting; the request is made again until
+# it is accepted, and any other refusal ends the boot. shutdown.exe ends with the Win32 error as its status, so no text,
+# which is localized, is read.
+function Restart-Now {
+    while ($true) {
+        shutdown.exe /r /f /t 0
+        if ($LASTEXITCODE -eq 0) { return }
+        if ($LASTEXITCODE -ne 21) { throw "shutdown.exe /r ended with status $LASTEXITCODE" }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
 # Whether the agent of `user` accepts a connection on its socket, which is in the user's profile (found by SID: the
 # profile list names it). A connect that succeeds is the condition under which the shim does not fail open.
 function Test-AgentSocket([string]$Sid) {
@@ -63,12 +77,18 @@ try {
     while (-not ($disk = Find-VolumeRoot 'CIDATA')) { Start-Sleep -Milliseconds 200 }
 
     # The computer's name is the seed's `local-hostname`. A name takes effect at a restart, so a boot that finds another
-    # name renames, restarts and ends here: the seed, the boot id and sshd are the next boot's, which has the name.
+    # name renames, restarts and ends here: the seed, the boot id and sshd are the next boot's, which has the name. A
+    # boot that finds another name after a restart for this one fails instead of restarting again.
     $hostname = (Get-Content -LiteralPath (Join-Path $disk 'meta.json') -Raw | ConvertFrom-Json).'local-hostname'
+    if (-not $hostname) { throw "the seed's meta.json has no local-hostname" }
     if ($env:COMPUTERNAME -ne $hostname) {
+        if ((Test-Path -LiteralPath $renamedFile) -and ((Get-Content -LiteralPath $renamedFile -Raw) -eq $hostname)) {
+            throw "the computer is still named $env:COMPUTERNAME after the rename to $hostname and a restart"
+        }
         Rename-Computer -NewName $hostname -Force
+        Write-Whole $renamedFile ([Text.Encoding]::UTF8.GetBytes($hostname))
         Send-Line "DEVVM-RENAMED=$hostname"
-        Restart-Computer -Force
+        Restart-Now
         exit 0
     }
 

@@ -117,6 +117,10 @@ fn windows_the_first_command_after_start_stop_start_and_reboot_is_in_session_1(
 /// shows in each.
 const NAMES: &str = "\"$(hostname) $env:COMPUTERNAME $([Environment]::MachineName)\"";
 
+/// The domain autologon logs on to.
+const WINLOGON_DOMAIN: &str =
+    r"(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon').DefaultDomainName";
+
 #[skuld::test]
 fn windows_the_computer_is_named_after_the_instance_id_from_the_first_boot_and_through_every_restart(
     #[fixture(windows_base)] base: &WindowsBase,
@@ -129,6 +133,11 @@ fn windows_the_computer_is_named_after_the_instance_id_from_the_first_boot_and_t
         for name in names {
             assert!(name.eq_ignore_ascii_case(&want), "after {after}: {said} is not {want}");
         }
+        // The rename leaves what was recorded at the build working: autologon (a command in the user's session 1, which
+        // exists only if the logon at this boot succeeded) and the elevated runner's task.
+        assert_eq!(facts(&**up, RunAs::User), user_facts(), "after {after}");
+        assert_eq!(facts(&**up, RunAs::Elevated), elevated_facts(), "after {after}");
+        assert_eq!(printed(&**up, WINLOGON_DOMAIN), ".", "after {after}");
     });
 }
 
