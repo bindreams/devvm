@@ -41,14 +41,16 @@ function Write-Whole([string]$Target, [byte[]]$Bytes, [string[]]$ReadSids = @())
     [Devvm.Disk]::FlushDirectory((Split-Path -Parent $Target))
 }
 
-# Restarts now. The system refuses with ERROR_NOT_READY (21) while it is still starting; the request is made again until
-# it is accepted, and any other refusal ends the boot. shutdown.exe ends with the Win32 error as its status, so no text,
-# which is localized, is read.
+# Restarts now. While the system is still starting it refuses: ERROR_NOT_READY (21), RPC_S_SERVER_UNAVAILABLE (1722), or
+# ERROR_SHUTDOWN_IS_SCHEDULED (1190). The request is made again until it is accepted; any other refusal ends the boot. A
+# shutdown already in progress (1115) is the restart under way, as an accepted request is. shutdown.exe ends with the
+# Win32 error as its status, so no text, which is localized, is read.
 function Restart-Now {
     while ($true) {
         shutdown.exe /r /f /t 0
-        if ($LASTEXITCODE -eq 0) { return }
-        if ($LASTEXITCODE -ne 21) { throw "shutdown.exe /r ended with status $LASTEXITCODE" }
+        $status = $LASTEXITCODE
+        if ($status -in 0, 1115) { return }
+        if ($status -notin 21, 1722, 1190) { throw "shutdown.exe /r ended with status $status" }
         Start-Sleep -Milliseconds 200
     }
 }
@@ -85,7 +87,13 @@ try {
         if ((Test-Path -LiteralPath $renamedFile) -and ((Get-Content -LiteralPath $renamedFile -Raw) -eq $hostname)) {
             throw "the computer is still named $env:COMPUTERNAME after the rename to $hostname and a restart"
         }
+        # Autologon's domain is the local machine, whatever the computer is called, so the logon after the restart does not
+        # look for an account of the old name.
+        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultDomainName -Value '.'
         Rename-Computer -NewName $hostname -Force
+        # The pending name is on the disk before the marker says a restart is owed for it.
+        $names = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName', $true)
+        try { $names.Flush() } finally { $names.Dispose() }
         Write-Whole $renamedFile ([Text.Encoding]::UTF8.GetBytes($hostname))
         Send-Line "DEVVM-RENAMED=$hostname"
         Restart-Now

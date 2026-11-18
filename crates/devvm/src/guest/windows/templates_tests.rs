@@ -609,7 +609,11 @@ fn nothing_the_base_records_carries_the_computers_name_at_the_build() {
         "-UserId $userSid",
     );
     assert!(!bootstrap.contains("-UserId 'user'"));
-    assert!(!bootstrap.contains("$env:COMPUTERNAME") && !bootstrap.contains("hostname"));
+    // Nothing in the base reads or writes the computer's name, so nothing keeps the name it has at the build.
+    let lowered = bootstrap.to_lowercase();
+    for name in ["computername", "machinename", "rename-computer"] {
+        assert!(!lowered.contains(name), "the base records the computer's name ({name})");
+    }
 }
 
 #[skuld::test]
@@ -894,18 +898,55 @@ fn the_boot_task_restarts_again_while_the_system_refuses_as_not_ready_and_fails_
         restart.contains("while ($true)") && restart.contains("shutdown.exe /r /f /t 0"),
         "{restart}"
     );
-    assert_before(restart, "-eq 0) { return }", "-ne 21) { throw");
-    assert_before(restart, "-ne 21) { throw", "Start-Sleep");
-    assert!(
-        restart.contains("status $LASTEXITCODE"),
-        "the refusal is named: {restart}"
-    );
+    // Accepted, or a shutdown already under way (ERROR_SHUTDOWN_IN_PROGRESS, 1115): the restart is coming.
+    assert_before(restart, "$status = $LASTEXITCODE", "-in 0, 1115) { return }");
+    // Refused for now: ERROR_NOT_READY (21), RPC_S_SERVER_UNAVAILABLE (1722), ERROR_SHUTDOWN_IS_SCHEDULED (1190).
+    assert_before(restart, "-in 0, 1115) { return }", "-notin 21, 1722, 1190) { throw");
+    assert_before(restart, "-notin 21, 1722, 1190) { throw", "Start-Sleep");
+    assert!(restart.contains("status $status"), "the refusal is named: {restart}");
     for bound in ["$tries", "$attempt", "-lt ", "-gt ", "Stopwatch", "Get-Date", "timeout"] {
         assert!(!restart.contains(bound), "the retry has no cap ({bound}): {restart}");
     }
     // The restart of the rename is this one; there is no other way out of it.
     assert_eq!(task.matches("shutdown.exe /r /f /t 0").count(), 1);
     assert!(!task.contains("Restart-Computer"));
+}
+
+#[skuld::test]
+fn the_boot_task_flushes_the_pending_computer_name_before_it_records_the_rename() {
+    let task = rendered("boot-task.ps1");
+    let rename = section(
+        &task,
+        "if ($env:COMPUTERNAME -ne $hostname) {",
+        "
+    }
+",
+    );
+    // The marker says a restart is owed for the name; a kill between the two must not leave the marker without the name.
+    assert_before(rename, "Rename-Computer", r"Control\ComputerName\ComputerName'");
+    assert_before(rename, r"Control\ComputerName\ComputerName'", ".Flush()");
+    assert_before(rename, ".Flush()", "Write-Whole $renamedFile");
+}
+
+#[skuld::test]
+fn the_boot_task_sets_the_autologon_domain_to_the_local_machine_in_the_step_of_the_rename() {
+    let task = rendered("boot-task.ps1");
+    let rename = section(
+        &task,
+        "if ($env:COMPUTERNAME -ne $hostname) {",
+        "
+    }
+",
+    );
+    // The domain of the autologon is `.`, whatever the computer is called: the logon after the restart does not look for
+    // an account of the old name.
+    assert!(
+        rename.contains(
+            r"Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultDomainName -Value '.'"
+        ),
+        "{rename}"
+    );
+    assert_before(rename, "-Name DefaultDomainName", "Restart-Now");
 }
 
 #[skuld::test]
@@ -954,7 +995,7 @@ fn the_boot_task_records_the_name_it_restarts_for_and_fails_instead_of_restartin
     assert_before(rename, "Rename-Computer", "Write-Whole $renamedFile");
     assert_before(rename, "Write-Whole $renamedFile", "Restart-Now");
     assert!(
-        task.contains(r"$renamedFile = Join-Path 'C:\ProgramData\devvm' 'renamed-to'"),
+        task.contains(&format!("$renamedFile = Join-Path '{DEVVM_DIR}' 'renamed-to'")),
         "{task}"
     );
 }
