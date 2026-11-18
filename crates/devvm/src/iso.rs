@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use crate::exit::Progress;
 use crate::host::{Host, is_absent};
 use crate::recipe::ProductKey;
+use crate::text::escape_controls;
 use crate::{Error, ErrorKind, Result, Sha256};
 
 mod memo;
@@ -96,13 +97,12 @@ impl HeldIso {
     }
 }
 
-/// What a build reads from an ISO. Built only by [`read_install_iso`] from a keyed [`IsoRoot`], so the image, the key
-/// Setup installs it with and the evaluation flag are of one image.
+/// What a build reads from an ISO: the keyed [`IsoRoot`] and the boot patch. Built only by [`read_install_iso`], so the
+/// image, the key Setup installs it with and the evaluation flag are of the one image the root keyed; an evaluation
+/// image never has a key, because [`key_iso`] refuses a recipe that gives it one.
 #[derive(Debug)]
 pub(crate) struct InstallIso {
-    iso: HeldIso,
-    image: WimImage,
-    product_key: Option<ProductKey>,
+    root: IsoRoot,
     boot_patches: Vec<BootPatch>,
 }
 
@@ -110,27 +110,27 @@ impl InstallIso {
     /// The ISO, still held until the guest's disk has opened it. Reopen it by [`HeldIso::final_path`], not the recipe's
     /// path.
     pub(crate) fn iso(&self) -> &HeldIso {
-        &self.iso
+        &self.root.iso
     }
 
     /// Gives up the held ISO, for the build to hold until the guest's disk has opened it.
     pub(crate) fn into_iso(self) -> HeldIso {
-        self.iso
+        self.root.iso
     }
 
     /// The image the recipe's `edition` selected (the only one when the ISO has one).
     pub(crate) fn image(&self) -> &WimImage {
-        &self.image
+        self.root.image()
     }
 
     /// The key Setup installs [`InstallIso::image`] with: `None` only for an evaluation edition.
     pub(crate) fn product_key(&self) -> Option<&ProductKey> {
-        self.product_key.as_ref()
+        self.root.product_key()
     }
 
     /// Whether [`InstallIso::image`] is an evaluation edition.
     pub(crate) fn evaluation(&self) -> bool {
-        self.image.is_evaluation()
+        self.root.image().is_evaluation()
     }
 
     /// Writing these over the ISO makes it boot the installer without a key press: the no-prompt UEFI boot image goes
@@ -194,19 +194,12 @@ pub(crate) fn key_iso(
 /// What the build installs from the ISO that `root` keyed: the no-prompt boot image and where the boot catalog loads its
 /// UEFI image.
 pub(crate) fn read_install_iso(root: IsoRoot) -> Result<InstallIso> {
-    let IsoRoot {
-        image,
-        product_key,
-        iso,
-        ..
-    } = root;
-    let boot_patches = vec![no_prompt_patch(&mount(&iso)?, iso.path())?];
-    Ok(InstallIso {
-        iso,
-        image,
-        product_key,
-        boot_patches,
-    })
+    debug_assert!(
+        !(root.image.is_evaluation() && root.product_key.is_some()),
+        "an evaluation image is keyed without a product key"
+    );
+    let boot_patches = vec![no_prompt_patch(&mount(&root.iso)?, root.iso.path())?];
+    Ok(InstallIso { root, boot_patches })
 }
 
 /// The UDF tree of `iso`, read through its handle.
@@ -246,7 +239,7 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
     let names = || {
         images
             .iter()
-            .map(|image| format!("`{}`", image.name))
+            .map(|image| format!("`{}`", escape_controls(&image.name)))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -268,7 +261,11 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
                 [] => {
                     return Err(Error::new(
                         ErrorKind::Recipe,
-                        format!("the ISO has no edition `{edition}`; its editions are {}", names()),
+                        format!(
+                            "the ISO has no edition `{}`; its editions are {}",
+                            escape_controls(edition),
+                            names()
+                        ),
                     ));
                 }
                 [one] => one,
@@ -277,7 +274,8 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
                     return Err(Error::new(
                         ErrorKind::Recipe,
                         format!(
-                            "the ISO has several images named `{edition}` (images {}); devvm cannot tell them apart",
+                            "the ISO has several images named `{}` (images {}); devvm cannot tell them apart",
+                            escape_controls(edition),
                             indexes.join(", ")
                         ),
                     ));
@@ -291,7 +289,7 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
             format!(
                 "image {} `{}` is {}; devvm builds x64 Windows guests only",
                 chosen.index,
-                chosen.name,
+                escape_controls(&chosen.name),
                 chosen.arch.describe()
             ),
         ));
@@ -304,7 +302,7 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
 /// one is refused; an image that is not an evaluation edition and has no key either way is refused (Setup stops on its
 /// key page otherwise), naming `product-key` and where Microsoft lists generic keys.
 fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<Option<ProductKey>> {
-    let name = &image.name;
+    let name = escape_controls(&image.name);
     if image.is_evaluation() {
         return match product_key {
             None => Ok(None),
@@ -322,14 +320,18 @@ fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Re
         .ok_or_else(|| {
             let detail = match (image.edition_id.as_str(), image.build.as_deref(), image.build_number()) {
                 ("", ..) => "no edition id".to_owned(),
-                (id, None, _) => format!("edition id {id:?}, no build"),
-                (id, Some(_), Some(build)) => format!("edition id {id:?}, build {build}"),
-                (id, Some(text), None) => format!("edition id {id:?}, BUILD {text:?} is not a build number devvm can read"),
+                (id, None, _) => format!("edition id `{}`, no build", escape_controls(id)),
+                (id, Some(_), Some(build)) => format!("edition id `{}`, build {build}", escape_controls(id)),
+                (id, Some(text), None) => format!(
+                    "edition id `{}`, BUILD `{}` is not a build number devvm can read",
+                    escape_controls(id),
+                    escape_controls(text)
+                ),
             };
             Error::new(
                 ErrorKind::Recipe,
                 format!(
-                    "devvm has no generic product key for the edition {name:?} ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_KEYS_PAGE}"
+                    "devvm has no generic product key for the edition `{name}` ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_KEYS_PAGE}"
                 ),
             )
         })

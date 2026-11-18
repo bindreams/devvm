@@ -125,7 +125,7 @@ impl BaseBuilder for WindowsBuilder {
             .take()
             .ok_or_else(|| Error::new(ErrorKind::Internal, "the build has no held ISO to install Windows from"))?;
         let install = read_install_iso(root)?;
-        let expires = Build::prepare(self, ctx, staging, &install)?.run(install.into_iso())?;
+        let expires = Build::prepare(self, ctx, staging, &install)?.run(install)?;
         // The store owns the key, the generation and the creation time; it reads only the expiry from what a base
         // builder returns.
         Ok(LayerMeta {
@@ -388,8 +388,6 @@ struct Build<'a> {
     launches: Launches,
     /// The last `DEVVM-LICENSE=` line and when it was observed: the license's grace counts from the read.
     license: Option<(String, SystemTime)>,
-    /// The image is an evaluation edition: the guest activates an unlicensed one, and an unlicensed one ends the build.
-    evaluation: bool,
     watch: Watch,
 }
 
@@ -454,15 +452,16 @@ impl<'a> Build<'a> {
             overlay,
             launches: Launches::default(),
             license: None,
-            evaluation: install.evaluation(),
             watch: Watch::new(Instant::now()),
         })
     }
 
     /// Launches the guest until it has finished, and returns when the base ends.
-    fn run(mut self, iso: HeldIso) -> Result<Option<SystemTime>> {
+    fn run(mut self, install: InstallIso) -> Result<Option<SystemTime>> {
+        // The guest activates an unlicensed evaluation edition, and an unlicensed one ends the build.
+        let evaluation = install.evaluation();
         // The ISO is held until QEMU has opened it, which the first `resume` returning says.
-        let mut held = Some(iso);
+        let mut held = Some(install.into_iso());
         let mut number = 0;
         let log = loop {
             number += 1;
@@ -484,7 +483,7 @@ impl<'a> Build<'a> {
             ));
         };
         // The serial log may say more than the read does, whatever the kind of the error.
-        expiry_from(read, self.evaluation, *read_at).map_err(|error| {
+        expiry_from(read, evaluation, *read_at).map_err(|error| {
             let kind = error.kind();
             with_log_tail(
                 error.with_context(kind, "the Windows base's license read"),

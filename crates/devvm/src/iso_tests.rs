@@ -11,6 +11,7 @@ use crate::recipe::ProductKey;
 use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
 use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
+use crate::text::escape_controls;
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
 #[cfg(windows)]
@@ -141,40 +142,40 @@ fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_
                 26100,
                 edition_of("IoTEnterpriseSK", "Windows 11 IoT Enterprise Subscription LTSC 2024"),
             ),
-            r#"edition id "IoTEnterpriseSK", build 26100"#,
+            "edition id `IoTEnterpriseSK`, build 26100",
         ),
         (
             built(28000, edition_of("EnterpriseS", "Windows 12 Enterprise LTSC")),
-            r#"edition id "EnterpriseS", build 28000"#,
+            "edition id `EnterpriseS`, build 28000",
         ),
         (
             edition_of("EnterpriseS", "No build"),
-            r#"edition id "EnterpriseS", no build"#,
+            "edition id `EnterpriseS`, no build",
         ),
         (
             WimImage {
                 build: Some("26x".to_owned()),
                 ..edition_of("EnterpriseS", "Malformed build")
             },
-            r#"edition id "EnterpriseS", BUILD "26x" is not a build number devvm can read"#,
+            "edition id `EnterpriseS`, BUILD `26x` is not a build number devvm can read",
         ),
         (
             WimImage {
                 build: Some("4294967296".to_owned()),
                 ..edition_of("EnterpriseS", "Huge build")
             },
-            r#"edition id "EnterpriseS", BUILD "4294967296" is not a build number devvm can read"#,
+            "edition id `EnterpriseS`, BUILD `4294967296` is not a build number devvm can read",
         ),
         (
             WimImage {
                 build: Some("26\"</BUILD>\n".to_owned()),
                 ..edition_of("EnterpriseS", "Raw XML build")
             },
-            r#"edition id "EnterpriseS", BUILD "26\"</BUILD>\n" is not a build number devvm can read"#,
+            r#"edition id `EnterpriseS`, BUILD `26"</BUILD>\n` is not a build number devvm can read"#,
         ),
         (
             built(26100, edition_of("Id\"</EDITIONID>\n", "Name\"</NAME>\n")),
-            r#"edition id "Id\"</EDITIONID>\n", build 26100"#,
+            r#"edition id `Id"</EDITIONID>\n`, build 26100"#,
         ),
         (edition_of("", "No id"), "no edition id"),
     ] {
@@ -183,8 +184,8 @@ fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_
         assert_eq!(
             error.message(),
             format!(
-                "devvm has no generic product key for the edition {:?} ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_PAGE}",
-                image.name
+                "devvm has no generic product key for the edition `{}` ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_PAGE}",
+                escape_controls(&image.name)
             )
         );
     }
@@ -220,7 +221,7 @@ fn a_keyed_iso_root_has_the_key_its_image_is_installed_with(#[fixture(unicode_ho
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert!(
         error.message().contains(
-            r#"devvm has no generic product key for the edition "Windows 11 IoT Enterprise Subscription LTSC 2024""#
+            "devvm has no generic product key for the edition `Windows 11 IoT Enterprise Subscription LTSC 2024`"
         ) && error.message().contains("set `product-key` in `from:`"),
         "{error}"
     );
@@ -496,6 +497,74 @@ fn an_arm64_image_is_refused_naming_arch_and_the_x64_scope() {
     assert_eq!(select_image(&images, Some("Intel")).unwrap().index, 2);
     let error = select_image(&images[..1], None).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NotSupported);
+}
+
+// WIM text in a refusal ===============================================================================================
+
+/// Every refusal that quotes a name from the image list, built from images named `name`.
+fn refusals_naming(name: &str) -> Vec<(&'static str, crate::Error)> {
+    let key = ProductKey::parse(KEY).unwrap();
+    let twin = |index| image_of(index, name, WimArch::X64);
+    let other = image_of(9, "Other", WimArch::X64);
+    let eval = built(26100, edition_of("EnterpriseEval", name));
+    let volume = built(28000, edition_of("EnterpriseS", name));
+    vec![
+        (
+            "several editions",
+            select_image(&[twin(1), other.clone()], None).unwrap_err(),
+        ),
+        (
+            "no such edition",
+            select_image(&[twin(1), other.clone()], Some("Nope")).unwrap_err(),
+        ),
+        (
+            "several images of one name",
+            select_image(&[twin(1), twin(2)], Some(name)).unwrap_err(),
+        ),
+        (
+            "not x64",
+            select_image(&[image_of(1, name, WimArch::Arm64)], None).unwrap_err(),
+        ),
+        (
+            "evaluation with a key",
+            resolve_product_key(&eval, Some(&key)).unwrap_err(),
+        ),
+        ("no generic key", resolve_product_key(&volume, None).unwrap_err()),
+    ]
+}
+
+#[skuld::test]
+fn a_name_with_control_characters_is_quoted_escaped_in_every_refusal_that_names_it() {
+    let name = "Evil\n\u{1b}[2J\tname\r\u{85}";
+    for (refusal, error) in refusals_naming(name) {
+        assert!(!error.message().chars().any(char::is_control), "{refusal}: {error:?}");
+        assert!(
+            error.message().contains(r"`Evil\n\u{1b}[2J\tname\r\u{85}`"),
+            "{refusal}: {error}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_name_with_a_quote_and_a_combining_mark_is_quoted_unchanged_in_every_refusal_that_names_it() {
+    let name = "Na\"me 'x' e\u{301} \\";
+    for (refusal, error) in refusals_naming(name) {
+        assert!(error.message().contains(&format!("`{name}`")), "{refusal}: {error}");
+    }
+}
+
+#[skuld::test]
+fn an_edition_id_and_a_build_with_control_characters_are_quoted_escaped() {
+    let image = WimImage {
+        build: Some("26\n1".to_owned()),
+        ..edition_of("Id\n\u{1b}", "Name")
+    };
+    let error = resolve_product_key(&image, None).unwrap_err();
+    assert!(!error.message().chars().any(char::is_control), "{error:?}");
+    assert!(
+        error.message().contains(r"edition id `Id\n\u{1b}`, BUILD `26\n1`"),
+        "{error}"
+    );
 }
 
 // The Windows ISO CI builds from ======================================================================================

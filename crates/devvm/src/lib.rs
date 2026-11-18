@@ -25,6 +25,7 @@ pub(crate) mod media;
 pub(crate) mod random;
 pub mod recipe;
 pub mod store;
+pub(crate) mod text;
 pub mod types;
 pub mod vm;
 
