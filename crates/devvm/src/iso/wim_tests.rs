@@ -114,13 +114,14 @@ fn an_image_with_no_version_has_no_build() {
 }
 
 #[skuld::test]
-fn a_build_that_is_not_a_number_is_refused_naming_the_image() {
-    let list = "<WIM><IMAGE INDEX=\"4\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><VERSION><BUILD>abc</BUILD></VERSION>                <LANGUAGES><DEFAULT>en-US</DEFAULT></LANGUAGES></WINDOWS></IMAGE></WIM>";
-    let error = parse_image_list(list.as_bytes(), "install.wim").unwrap_err();
-    assert!(
-        error.message().contains("image 4 of install.wim has no numeric BUILD"),
-        "{error}"
-    );
+fn a_build_that_is_not_a_number_is_no_build_and_does_not_refuse_the_list() {
+    for build in ["abc", "", "  "] {
+        let list = format!(
+            "<WIM><IMAGE INDEX=\"4\"><NAME>x</NAME><WINDOWS><ARCH>9</ARCH><VERSION><BUILD>{build}</BUILD></VERSION><LANGUAGES><DEFAULT>en-US</DEFAULT></LANGUAGES></WINDOWS></IMAGE></WIM>"
+        );
+        let images = parse_image_list(list.as_bytes(), "install.wim").unwrap();
+        assert_eq!(images[0].build, None, "BUILD `{build}`");
+    }
 }
 
 #[skuld::test]

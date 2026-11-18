@@ -71,7 +71,7 @@ pub(crate) struct WimImage {
     pub name: String,
     /// `EDITIONID`, such as `EnterpriseS`; empty when the image has none.
     pub edition_id: String,
-    /// `VERSION`'s `BUILD`, such as `26100`; `None` when the image has no version. An edition id alone does not say
+    /// `VERSION`'s `BUILD`, such as `26100`; `None` when the image has no version or one that is not a number. An edition id alone does not say
     /// which generation of Windows the image is (`EnterpriseS` is five of them), so a key follows both.
     ///
     /// A list from before this field was kept is not read as an image with no build (the field has no default).
@@ -359,11 +359,8 @@ impl Partial {
             .trim()
             .parse::<u32>()
             .map_err(|_| missing("numeric ARCH"))?;
-        let build = self
-            .build
-            .as_deref()
-            .map(|text| text.trim().parse::<u32>().map_err(|_| missing("numeric BUILD")))
-            .transpose()?;
+        // A build that is not a number is no build: only an image that needs a key by its build is refused for it.
+        let build = self.build.as_deref().and_then(|text| text.trim().parse::<u32>().ok());
         let language = self
             .language
             .clone()
