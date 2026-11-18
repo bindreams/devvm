@@ -188,13 +188,25 @@ pub fn format_error_line(error: &Error) -> String {
     line
 }
 
+const ERROR_PREFIX: &str = "devvm-error:";
+
+/// `line`, a [`format_error_line`], with its `devvm-error:` prefix alone in red.
+fn painted(line: &str) -> String {
+    match line.strip_prefix(ERROR_PREFIX) {
+        Some(rest) => format!("\u{1b}[31m{ERROR_PREFIX}\u{1b}[0m{rest}"),
+        None => line.to_owned(),
+    }
+}
+
 /// Ends a command: writes the status file (when asked), prints devvm's own error line, and returns the process exit
-/// code. A status file that cannot be written is itself a devvm failure (125).
+/// code. A status file that cannot be written is itself a devvm failure (125). With `colour`, the prefix of the line is
+/// red; the status file never holds colour.
 pub fn finish(
     status_file: Option<&Path>,
     outcome: Result<ExitStatus>,
     width: ExitWidth,
     stderr: &mut dyn Write,
+    colour: bool,
 ) -> i32 {
     let (report, exit) = match &outcome {
         Ok(status) => (Report::Guest(status), width.exit_code(status)),
@@ -222,6 +234,7 @@ pub fn finish(
             )
         }
     };
+    let line = if colour { painted(&line) } else { line };
     let _ = writeln!(stderr, "{line}");
     exit
 }

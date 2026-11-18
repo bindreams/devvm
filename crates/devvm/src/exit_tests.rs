@@ -93,8 +93,54 @@ fn error_line_is_one_line(#[fixture(unicode_home)] home: &Path) {
 
 fn run_finish(status_file: Option<&Path>, outcome: crate::Result<ExitStatus>, width: ExitWidth) -> (i32, String) {
     let mut stderr = Vec::new();
-    let exit = finish(status_file, outcome, width, &mut stderr);
+    let exit = finish(status_file, outcome, width, &mut stderr, false);
     (exit, String::from_utf8(stderr).unwrap())
+}
+
+const RED: &str = "\u{1b}[31m";
+const RESET: &str = "\u{1b}[0m";
+
+fn run_coloured(status_file: Option<&Path>, outcome: crate::Result<ExitStatus>) -> (i32, String) {
+    let mut stderr = Vec::new();
+    let exit = finish(status_file, outcome, ExitWidth::Full32, &mut stderr, true);
+    (exit, String::from_utf8(stderr).unwrap())
+}
+
+#[skuld::test]
+fn a_coloured_error_line_has_only_its_prefix_in_red(#[fixture(unicode_home)] home: &Path) {
+    let (plain_file, coloured_file) = (home.join("plain.json"), home.join("coloured.json"));
+    let error = || Err(Error::new(ErrorKind::Io, "bad"));
+    let (plain_exit, plain) = run_finish(Some(&plain_file), error(), ExitWidth::Full32);
+    let (exit, coloured) = run_coloured(Some(&coloured_file), error());
+    assert_eq!(coloured, format!("{RED}devvm-error:{RESET} io: bad\n"));
+    assert_eq!(coloured.replace(RED, "").replace(RESET, ""), plain);
+    assert_eq!(exit, plain_exit);
+    assert_eq!(
+        std::fs::read_to_string(&coloured_file).unwrap(),
+        std::fs::read_to_string(&plain_file).unwrap()
+    );
+}
+
+#[skuld::test]
+fn the_status_file_never_holds_colour(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("s.json");
+    run_coloured(Some(&path), Err(Error::new(ErrorKind::Io, "bad")));
+    assert!(!std::fs::read_to_string(&path).unwrap().contains('\u{1b}'));
+}
+
+#[skuld::test]
+fn a_success_prints_nothing_even_when_colour_is_on() {
+    assert_eq!(run_coloured(None, Ok(ExitStatus::Code(0))), (0, String::new()));
+}
+
+#[skuld::test]
+fn the_line_of_an_unwritable_status_file_is_coloured_the_same_way(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("missing dir").join("s.json");
+    let (_, stderr) = run_coloured(Some(&path), Ok(ExitStatus::Code(0)));
+    assert!(
+        stderr.starts_with(&format!("{RED}devvm-error:{RESET} status-file: ")),
+        "{stderr}"
+    );
 }
 
 #[skuld::test]

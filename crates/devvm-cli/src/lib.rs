@@ -102,6 +102,7 @@ pub fn install_panic_hook() {
             Err(Error::new(ErrorKind::Panic, message)),
             ExitWidth::Full32,
             &mut std::io::stderr(),
+            false,
         );
         std::process::exit(code);
     }));
@@ -249,7 +250,7 @@ fn run_locked(
             let printed = e.print().map_err(stdout_error);
             let code = match flushed(printed.map(|()| ExitStatus::Code(0)), &mut std::io::stdout()) {
                 Ok(_) => 0,
-                Err(error) => finish(status_file.as_deref(), Err(error), width, &mut std::io::stderr()),
+                Err(error) => finish(status_file.as_deref(), Err(error), width, &mut std::io::stderr(), false),
             };
             return Exit {
                 code,
@@ -264,6 +265,7 @@ fn run_locked(
                 Err(usage_error(&e)),
                 width,
                 &mut std::io::stderr(),
+                false,
             );
             return Exit {
                 code,
@@ -275,7 +277,7 @@ fn run_locked(
     drop(deps);
     let guard = ending();
     let outcome = flushed(outcome, &mut std::io::stdout());
-    let code = finish(status_file.as_deref(), outcome, width, &mut std::io::stderr());
+    let code = finish(status_file.as_deref(), outcome, width, &mut std::io::stderr(), false);
     Exit {
         code,
         _only_one_ending: guard,
