@@ -690,6 +690,7 @@ name = "devvm"
 version = "0.1.0"
 dependencies = [
  "bytesize",
+ "console",
  "cosca",
  "fatfs",
  "filetime",

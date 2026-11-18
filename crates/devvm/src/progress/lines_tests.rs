@@ -253,3 +253,10 @@ fn two_threads_never_interleave_inside_a_line() {
     assert_eq!(lines.len(), 400);
     assert!(lines.iter().all(|line| *line == long_a || *line == long_b));
 }
+
+#[skuld::test]
+fn colour_escapes_in_step_output_are_dropped() {
+    let (progress, out) = sink(VERBOSE);
+    progress.output("\u{1b}[32mgreen\u{1b}[0m text\u{1b}[2K");
+    assert_eq!(out.lines(), ["green text"]);
+}

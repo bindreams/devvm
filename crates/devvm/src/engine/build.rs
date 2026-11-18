@@ -12,7 +12,7 @@ use crate::error::TAIL_LINES;
 use crate::exit::ExitStatus;
 use crate::guest::{BuildCtx, GuestOs};
 use crate::iso::{IsoMemo, IsoRoot, check_product_key, key_iso};
-use crate::progress::{Progress, Total};
+use crate::progress::{Progress, Total, strip_ansi};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
@@ -505,7 +505,7 @@ impl Tail {
         if lines.len() == TAIL_LINES {
             lines.pop_front();
         }
-        lines.push_back(line.to_owned());
+        lines.push_back(strip_ansi(line).into_owned());
     }
 
     fn text(&self) -> String {

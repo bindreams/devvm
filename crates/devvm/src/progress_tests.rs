@@ -266,3 +266,10 @@ fn paint_wraps_the_text_only_when_on() {
     assert_eq!(paint(true, Colour::Yellow, "x"), "\u{1b}[33mx\u{1b}[0m");
     assert_eq!(paint(false, Colour::Red, "x"), "x");
 }
+
+#[skuld::test]
+fn strip_ansi_drops_whole_sequences_and_keeps_the_text() {
+    use crate::progress::strip_ansi;
+    assert_eq!(strip_ansi("\u{1b}[1;32mok\u{1b}[0m \u{1b}[2Kdone"), "ok done");
+    assert_eq!(strip_ansi("plain"), "plain");
+}

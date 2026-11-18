@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use devvm::progress::{Colour, Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint};
+use devvm::progress::{Colour, Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint, strip_ansi};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 
 #[cfg(test)]
@@ -227,8 +227,7 @@ impl Progress for TtyProgress {
             }
             Event::Output { line } => {
                 if self.look.verbose {
-                    let plain = console::strip_ansi_codes(line);
-                    self.print(&escape_controls(&plain));
+                    self.print(&escape_controls(&strip_ansi(line)));
                 }
             }
             Event::Begin {

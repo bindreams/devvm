@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 
-use crate::progress::{Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint};
+use crate::progress::{Colour, Event, Level, Outcome, Progress, TaskId, Total, escape_controls, human_bytes, paint, strip_ansi};
 
 #[cfg(test)]
 #[path = "lines_tests.rs"]
@@ -85,7 +85,7 @@ impl Progress for LineProgress {
             }
             Event::Output { line } => {
                 if look.verbose {
-                    state.line(0, &escape_controls(line));
+                    state.line(0, &escape_controls(&strip_ansi(line)));
                 }
             }
             Event::Begin {

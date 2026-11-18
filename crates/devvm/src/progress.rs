@@ -284,6 +284,12 @@ pub fn paint(on: bool, colour: Colour, text: &str) -> String {
     format!("\u{1b}[{code}m{text}\u{1b}[0m")
 }
 
+/// `text` without ANSI escape sequences (colours, cursor moves), which a tool prints for a terminal. Step output goes
+/// through it before it is shown or put in an error.
+pub fn strip_ansi(text: &str) -> Cow<'_, str> {
+    console::strip_ansi_codes(text)
+}
+
 /// `text` with each control character written as an escape (`\r`, `\u{1b}`), so it stays on one line and cannot move a
 /// terminal's cursor. Everything else, a backslash included, is unchanged.
 pub fn escape_controls(text: &str) -> Cow<'_, str> {
