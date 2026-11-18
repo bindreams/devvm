@@ -9,9 +9,9 @@ use super::build_dir::BuildDir;
 use crate::copy::{self, Snapshot};
 use crate::exit::{ExitStatus, Progress};
 use crate::guest::{BuildCtx, GuestOs};
-use crate::iso::{IsoMemo, IsoRoot, key_iso, resolve_product_key};
+use crate::iso::{IsoMemo, IsoRoot, key_iso};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
-use crate::recipe::{CopyFrom, Flattened, Recipe, Source, Step};
+use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
 use crate::vm::{Image, Vm};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, StartOptions, random};
@@ -53,8 +53,8 @@ impl Engine {
         self.backend()?;
         let store = self.store()?;
         let memo = IsoMemo::new(&self.dirs);
-        let (root, base) = root_of(&flat.root, arch, &|iso, edition| {
-            key_iso(self.host, &memo, iso, edition, self.progress.as_ref())
+        let (root, base) = root_of(&flat.root, arch, &|iso, edition, product_key| {
+            key_iso(self.host, &memo, iso, edition, product_key, self.progress.as_ref())
         })?;
 
         let build_dir = BuildDir::create(self)?;
@@ -199,13 +199,12 @@ impl BuildRoot {
     }
 }
 
+/// Keys an ISO: its path, the recipe's `edition` and `product-key`.
+type KeyIso<'a> = dyn Fn(&std::path::Path, Option<&str>, Option<&ProductKey>) -> Result<IsoRoot> + 'a;
+
 /// The root of a build, and the base in the words of an `expired-base` error. `iso_root` gives the content hash of an
-/// ISO and the image an edition selects in it, with the ISO held.
-fn root_of(
-    source: &Source,
-    arch: Arch,
-    iso_root: &dyn Fn(&std::path::Path, Option<&str>) -> Result<IsoRoot>,
-) -> Result<(BuildRoot, String)> {
+/// ISO, the image an edition selects in it and the key that image is installed with, with the ISO held.
+fn root_of(source: &Source, arch: Arch, iso_root: &KeyIso) -> Result<(BuildRoot, String)> {
     match source {
         Source::DiskImage(pins) => {
             let pin = pins.get(arch).ok_or_else(|| {
@@ -228,12 +227,8 @@ fn root_of(
             edition,
             product_key,
         } => {
-            let root = iso_root(path, edition.as_deref())?;
-            let installed_with = resolve_product_key(&root.image, product_key.as_ref())?;
-            Ok((
-                BuildRoot::Iso(root.with_product_key(installed_with)),
-                format!("Windows ISO {}", path.display()),
-            ))
+            let root = iso_root(path, edition.as_deref(), product_key.as_ref())?;
+            Ok((BuildRoot::Iso(root), format!("Windows ISO {}", path.display())))
         }
         Source::Recipe(_) | Source::Embedded(_) => Err(Error::new(
             ErrorKind::Internal,

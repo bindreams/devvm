@@ -19,8 +19,8 @@ use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::elevate::TASK;
 use crate::guest::windows::wrap::BROKER_EXE;
 use crate::host;
-use crate::iso::{IsoMemo, key_iso, resolve_product_key};
-use crate::recipe::{ProductKey, Recipe, Shell};
+use crate::iso::{IsoMemo, key_iso};
+use crate::recipe::{ProductKey, Recipe, Shell, Source};
 use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_edition, windows_guest, windows_product_key};
 use crate::test_harness::GUEST;
 use crate::test_support::fixtures::MemoryProgress;
@@ -108,7 +108,7 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
     let image = engine
         .build(&recipe, &BuildOptions::default())
         .map_err(|e| format!("cannot build the Windows base from {}: {e}", iso.display()))?;
-    let (evaluation, product_key) = installed_with(&roots.dirs, iso)?;
+    let (evaluation, product_key) = installed_with(&roots.dirs, &recipe, iso)?;
     let (license_read_at, _) = progress
         .messages_at()
         .into_iter()
@@ -127,23 +127,26 @@ fn build_windows_base(install: &Arc<QemuInstall>, iso: &Path) -> Result<WindowsB
     })
 }
 
-/// Whether the image of `iso` that the tests build from is an evaluation edition, and the key the build installs it with,
-/// by the image list the build left in the memo of `dirs`.
-fn installed_with(dirs: &Dirs, iso: &Path) -> Result<(bool, Option<ProductKey>), String> {
-    let edition = windows_edition()?;
+/// Whether the image of `iso` that the tests build from is an evaluation edition, and the key the build installs it
+/// with: what the build's own keying of the recipe's ISO resolves, by the image list the build left in the memo of
+/// `dirs`.
+fn installed_with(dirs: &Dirs, recipe: &Recipe, iso: &Path) -> Result<(bool, Option<ProductKey>), String> {
+    let Source::Iso {
+        edition, product_key, ..
+    } = recipe.flatten().map_err(|e| e.to_string())?.root
+    else {
+        return Err("the Windows recipe does not start from an ISO".to_owned());
+    };
     let root = key_iso(
         host::current(),
         &IsoMemo::new(dirs),
         iso,
         edition.as_deref(),
+        product_key.as_ref(),
         &MemoryProgress::default(),
     )
     .map_err(|e| format!("cannot read the edition of {}: {e}", iso.display()))?;
-    let given = windows_product_key()?
-        .map(|text| ProductKey::parse(&text).ok_or("the product key is not five groups of five"))
-        .transpose()?;
-    let key = resolve_product_key(&root.image, given.as_ref()).map_err(|e| e.to_string())?;
-    Ok((root.image.is_evaluation(), key))
+    Ok((root.image.is_evaluation(), root.product_key.clone()))
 }
 
 /// One instance of the base, started once per test process; it runs until the process ends.

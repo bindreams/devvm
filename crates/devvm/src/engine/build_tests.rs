@@ -88,7 +88,7 @@ pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
 /// The keys of the layers `recipe` builds, root first, when it has no `copy` step.
 pub(super) fn keys_of(recipe: &Recipe) -> Vec<LayerKey> {
     let flat = recipe.flatten().unwrap();
-    let (root, _) = root_of(&flat.root, Arch::host(), &|_, _| unreachable!("no ISO here")).unwrap();
+    let (root, _) = root_of(&flat.root, Arch::host(), &|_, _, _| unreachable!("no ISO here")).unwrap();
     let ctx = KeyContext {
         arch: Arch::host(),
         disk: flat.resources.disk,
@@ -185,8 +185,8 @@ fn iso_root(
         edition: edition.map(Into::into),
         product_key: product_key.map(|text| ProductKey::parse(text).unwrap()),
     };
-    root_of(&source, Arch::host(), &|iso, edition| {
-        crate::iso::key_iso(&TestHost, memo, iso, edition, &MemoryProgress::default())
+    root_of(&source, Arch::host(), &|iso, edition, product_key| {
+        crate::iso::key_iso(&TestHost, memo, iso, edition, product_key, &MemoryProgress::default())
     })
 }
 

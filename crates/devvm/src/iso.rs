@@ -116,34 +116,31 @@ pub(crate) struct IsoRoot {
     pub sha256: Sha256,
     /// The image the recipe's `edition` selects: what the build installs, so what the key says.
     pub image: WimImage,
-    /// The key Setup installs with: [`resolve_product_key`]'s, which [`IsoRoot::with_product_key`] sets. `None` for an
-    /// evaluation edition, and until it is set.
+    /// The key Setup installs `image` with, as [`resolve_product_key`] resolved it when the ISO was keyed: `None` only
+    /// for an evaluation edition.
     pub product_key: Option<ProductKey>,
     iso: HeldIso,
 }
 
-impl IsoRoot {
-    pub(crate) fn with_product_key(self, product_key: Option<ProductKey>) -> IsoRoot {
-        IsoRoot { product_key, ..self }
-    }
-}
-
-/// The content hash of the installer ISO at `iso` and the image `edition` selects in it (refusing one that is not x64),
-/// with the ISO held. A hash and an image list the memo has for the ISO are used while the ISO is unchanged; otherwise
+/// The content hash of the installer ISO at `iso`, the image `edition` selects in it (refusing one that is not x64) and
+/// the key that image is installed with ([`resolve_product_key`] of the recipe's `product_key`), with the ISO held. A
+/// hash and an image list the memo has for the ISO are used while the ISO is unchanged; otherwise
 /// the ISO is read once, and the memo remembers both.
 pub(crate) fn key_iso(
     host: &dyn Host,
     memo: &IsoMemo,
     iso: &Path,
     edition: Option<&str>,
+    product_key: Option<&ProductKey>,
     progress: &dyn Progress,
 ) -> Result<IsoRoot> {
     let HashedIso { iso, sha256, images } = memo.open(host, iso, progress, &read_images)?;
     let image = select_image(&images, edition)?.clone();
+    let product_key = resolve_product_key(&image, product_key)?;
     Ok(IsoRoot {
         sha256,
         image,
-        product_key: None,
+        product_key,
         iso,
     })
 }
@@ -254,7 +251,7 @@ pub(crate) fn select_image<'a>(images: &'a [WimImage], edition: Option<&str>) ->
 /// image's edition and build ([`ProductKey::generic_for`]). An evaluation edition takes none, and a recipe that gives it
 /// one is refused; an image that is not an evaluation edition and has no key either way is refused (Setup stops on its
 /// key page otherwise), naming `product-key` and where Microsoft lists generic keys.
-pub(crate) fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<Option<ProductKey>> {
+fn resolve_product_key(image: &WimImage, product_key: Option<&ProductKey>) -> Result<Option<ProductKey>> {
     let name = &image.name;
     if image.is_evaluation() {
         return match product_key {

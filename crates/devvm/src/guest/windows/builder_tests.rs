@@ -69,20 +69,21 @@ impl Rig {
 
     /// The same, with the recipe's `product-key`.
     pub(super) fn build_keyed(&self, edition: Option<&str>, product_key: Option<&str>) -> Result<ChainLease> {
+        let product_key = product_key.map(|text| ProductKey::parse(text).unwrap());
         let root = key_iso(
             &TestHost,
             &IsoMemo::new(&self.dirs),
             &self.iso,
             edition,
+            product_key.as_ref(),
             &*self.env.progress,
         )
-        .unwrap()
-        .with_product_key(product_key.map(|text| ProductKey::parse(text).unwrap()));
+        .unwrap();
         *self.ctx.iso.lock().unwrap() = Some(root);
         let source = Source::Iso {
             path: self.iso.clone(),
             edition: edition.map(Into::into),
-            product_key: None,
+            product_key,
         };
         self.env.store.build(&request(key(1)), None, |staging| {
             self.builder
@@ -117,7 +118,15 @@ pub(super) fn text_of(path: &Path) -> String {
 #[skuld::test]
 fn boot_patches_become_overlay_patches_with_the_same_offsets_and_bytes(#[fixture(unicode_home)] home: &Path) {
     let rig = rig_without_a_machine(home, "single-image.iso");
-    let held = key_iso(&TestHost, &IsoMemo::new(&rig.dirs), &rig.iso, None, &*rig.env.progress).unwrap();
+    let held = key_iso(
+        &TestHost,
+        &IsoMemo::new(&rig.dirs),
+        &rig.iso,
+        None,
+        None,
+        &*rig.env.progress,
+    )
+    .unwrap();
     let expected: Vec<String> = crate::iso::read_install_iso(held)
         .unwrap()
         .boot_patches
@@ -186,7 +195,14 @@ fn the_blank_disk_is_the_larger_of_64_gib_and_the_recipes_disk(#[fixture(unicode
             .env
             .store
             .build(&request(key(2)), None, |staging| {
-                let root = key_iso(&TestHost, &IsoMemo::new(&rig.dirs), &rig.iso, None, &*rig.env.progress)?;
+                let root = key_iso(
+                    &TestHost,
+                    &IsoMemo::new(&rig.dirs),
+                    &rig.iso,
+                    None,
+                    None,
+                    &*rig.env.progress,
+                )?;
                 *rig.ctx.iso.lock().unwrap() = Some(root);
                 let source = Source::Iso {
                     path: rig.iso.clone(),

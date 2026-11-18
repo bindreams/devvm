@@ -30,7 +30,7 @@ fn copy_of(home: &Path, name: &str, edit: impl FnOnce(&Path)) -> PathBuf {
 
 fn key(home: &Path, iso: &Path, edition: Option<&str>) -> Result<IsoRoot> {
     let memo = IsoMemo::new(&Dirs::under(home));
-    key_iso(&TestHost, &memo, iso, edition, &MemoryProgress::default())
+    key_iso(&TestHost, &memo, iso, edition, None, &MemoryProgress::default())
 }
 
 /// The ISO fixture `name` keyed and prepared: what a build does with it.
@@ -165,6 +165,32 @@ fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_
     }
 }
 
+#[skuld::test]
+fn a_keyed_iso_root_has_the_key_its_image_is_installed_with(#[fixture(unicode_home)] home: &Path) {
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let (three, one) = (
+        copy_of(home, "three-images.iso", |_| {}),
+        copy_of(home, "single-image.iso", |_| {}),
+    );
+    let root = |iso: &Path, edition: Option<&str>, key: Option<&ProductKey>| {
+        key_iso(&TestHost, &memo, iso, edition, key, &MemoryProgress::default())
+    };
+    let given = ProductKey::parse(KEY).unwrap();
+    let ltsc = Some("Windows 11 IoT Enterprise LTSC 2024");
+    let generic = ProductKey::generic_for("IoTEnterpriseS", Some(26100));
+    assert_eq!(root(&three, ltsc, None).unwrap().product_key, generic);
+    assert_eq!(
+        root(&three, ltsc, Some(&given)).unwrap().product_key,
+        Some(given.clone())
+    );
+    assert_eq!(root(&one, None, None).unwrap().product_key, None);
+    assert!(
+        root(&one, None, Some(&given)).is_err(),
+        "an evaluation edition takes no key"
+    );
+    assert!(root(&three, Some("Windows 11 IoT Enterprise Subscription LTSC 2024"), None).is_err());
+}
+
 // The boot patch ======================================================================================================
 
 #[skuld::test]
@@ -257,8 +283,8 @@ fn a_root_keyed_from_the_memo_prepares_the_same_boot_patch_as_one_keyed_by_readi
     let memo = IsoMemo::new(&Dirs::under(home));
     let progress = MemoryProgress::default();
     let patch = |root: IsoRoot| read_install_iso(root).unwrap().boot_patches;
-    let read = patch(key_iso(&TestHost, &memo, &iso, None, &progress).unwrap());
-    let remembered = patch(key_iso(&TestHost, &memo, &iso, None, &progress).unwrap());
+    let read = patch(key_iso(&TestHost, &memo, &iso, None, None, &progress).unwrap());
+    let remembered = patch(key_iso(&TestHost, &memo, &iso, None, None, &progress).unwrap());
     assert_eq!(read, remembered);
     assert_eq!(
         progress
