@@ -245,19 +245,3 @@ pub fn print_error_line(stderr: &mut dyn Write, line: &str, colour: bool) {
     let line = if colour { painted(line) } else { line.to_owned() };
     let _ = writeln!(stderr, "{line}");
 }
-
-/// Ends a command: [`conclude`]s it and prints devvm's own error line, if any, with its prefix red when `colour`. The
-/// status file never holds colour.
-pub fn finish(
-    status_file: Option<&Path>,
-    outcome: Result<ExitStatus>,
-    width: ExitWidth,
-    stderr: &mut dyn Write,
-    colour: bool,
-) -> i32 {
-    let ending = conclude(status_file, &outcome, width);
-    if let Some(line) = &ending.error_line {
-        print_error_line(stderr, line, colour);
-    }
-    ending.exit
-}

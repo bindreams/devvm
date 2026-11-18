@@ -84,8 +84,9 @@ fn set_status_file(path: Option<PathBuf>) {
 
 /// Makes a panic on any thread print one `devvm-error: panic:` line, write the status file if one is set, and exit 125.
 ///
-/// Concurrent panics queue on a process-wide lock, which the normal finish takes too; the first to get it ends the
-/// process, so exactly one line is printed. The hook never panics itself: it ignores write errors and tolerates a poisoned lock.
+/// Concurrent panics queue on a process-wide lock, which the normal ending takes too; the first to get it ends the
+/// process, so exactly one line is printed. The hook never panics itself: it ignores write errors and tolerates a
+/// poisoned lock.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let _only_one_at_a_time = PANICKING.lock().unwrap_or_else(PoisonError::into_inner);
@@ -206,7 +207,7 @@ pub fn main_entry(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> i32 {
     main_entry_with(width, args, deps, &dispatch)
 }
 
-/// `main_entry` with the dispatch replaced; hook installation, status-file setup, parsing and `finish` are the real
+/// `main_entry` with the dispatch replaced; hook installation, status-file setup, parsing and the ending are the real
 /// code. The action gets whether the run is verbose (`-v` or `DEVVM_VERBOSE`). Tests use it to put a fault in a real
 /// code path.
 pub fn main_entry_with(
@@ -220,7 +221,7 @@ pub fn main_entry_with(
 }
 
 /// Like [`main_entry`], but ends the process, so that no panic on another thread can print a second line or rewrite
-/// the status file between the normal finish and the exit.
+/// the status file between the normal ending and the exit.
 pub fn run(width: ExitWidth, args: Vec<OsString>, deps: Deps) -> ! {
     install_panic_hook();
     let exit = run_locked(width, args, deps, &dispatch);
@@ -233,7 +234,7 @@ struct Exit {
     _only_one_ending: MutexGuard<'static, ()>,
 }
 
-/// The command line from status-file setup to `finish`. The lock is taken once the action is over and `deps` is
+/// The command line from status-file setup to the ending. The lock is taken once the action is over and `deps` is
 /// dropped, not before: a panic in either must still reach the hook, and a drop may wait on the thread that panics.
 fn run_locked(
     width: ExitWidth,
