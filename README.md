@@ -156,7 +156,8 @@ devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/pr
   commands reuse the base. An evaluation edition's base is rebuilt from the ISO 10 days before its evaluation ends; a
   base built with a product key does not expire.
 - `ssh win` opens PowerShell 7; the home (`~`, and where relative guest paths start) is the user's profile.
-- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127. Use
+- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127, and the message names
+  `pwsh -c dir`, which runs PowerShell's `dir` (an alias of `Get-ChildItem`). For `cmd`'s, use
   `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
 - [Windows guests](#windows-guests) has how programs, shells, paths and `copy` work in a Windows guest.
 
@@ -191,8 +192,9 @@ user, not elevated, through ssh-broker in the user's own session, so they see it
 The base has no Windows Recovery Environment.
 
 - **Programs.** `argv[0]` is looked up as a program on the guest's `PATH`, never as a PowerShell cmdlet or alias. A name
-  that is not found exits 127. A program's output reaches you byte for byte, and a status the guest ends with
-  (`0xC0000005`, say) is passed on in all 32 bits on a Windows host; a Unix host keeps the low byte.
+  that is not found exits 127, and when it is a PowerShell command the message names `pwsh -c` to run it with. A
+  program's output reaches you byte for byte, and a status the guest ends with (`0xC0000005`, say) is passed on in all
+  32 bits on a Windows host; a Unix host keeps the low byte.
 - **Shells.** A `run` step uses `pwsh` (PowerShell 7) unless it says `shell: cmd`. `sh` and `bash` do not exist in a
   Windows guest. A `cmd` script is one line, and a line break in it is refused before the build starts: use
   `shell: pwsh`, or `copy` a `.cmd` file in and run it.

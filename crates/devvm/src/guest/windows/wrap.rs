@@ -6,7 +6,8 @@
 //! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High;
 //! 2. sets the working directory, if the command has one, and finds argv[0] as a **file**: the file itself for a name
 //!    with a path, a file of `PATH` otherwise, as it is or with an extension of `PATHEXT`, never a cmdlet or an alias
-//!    and never read as a wildcard; a name that is not found is 127;
+//!    and never read as a wildcard; a name that is not found is 127, and one that PowerShell knows as a cmdlet, function
+//!    or alias says to run it with `pwsh -c`;
 //! 3. starts the file found with `System.Diagnostics.Process`, copies the standard streams as raw bytes and ends with
 //!    the child's status (every byte of stdout and stderr and every 32-bit status is carried exactly). A directory that
 //!    cannot be entered and a program that cannot start end with 126 and the reason: the command did not run.
@@ -168,10 +169,7 @@ fn user_script(cmd: &Command) -> Result<String> {
     }
     script.push_str(RESOLVE);
     script.push_str(&format!("$app = Find-Program {}\n", literal(program)));
-    script.push_str(&format!(
-        "if (-not $app) {{ [Console]::Error.WriteLine({}); exit 127 }}\n",
-        literal(&format!("devvm: {program}: command not found"))
-    ));
+    script.push_str(&not_found(program));
     script.push_str("$psi = [Diagnostics.ProcessStartInfo]::new($app)\n");
     if cmd.cwd.is_some() {
         script.push_str("$psi.WorkingDirectory = (Get-Location).ProviderPath\n");
@@ -203,6 +201,22 @@ fn user_script(cmd: &Command) -> Result<String> {
     script.push_str(CARRY);
     script.push_str(EXIT);
     Ok(script)
+}
+
+/// What the script does when `program` names no file: ends with 127 and says so. A name that is a cmdlet, function or
+/// alias of PowerShell gets the way to run it (`dir` is one: `cmd`'s builtin of that name is not a program either). The
+/// lookup is in the script because only the guest knows its commands, and on this branch only, so a program that is
+/// found pays nothing. The name is escaped: it is a name, not a wildcard.
+fn not_found(program: &str) -> String {
+    let error = |message: String| format!("[Console]::Error.WriteLine({}); exit 127", literal(&message));
+    format!(
+        "if (-not $app) {{\nif (Get-Command -Name ([WildcardPattern]::Escape({})) -CommandType Alias,Function,Cmdlet -ErrorAction SilentlyContinue) {{ {} }}\n{} }}\n",
+        literal(program),
+        error(format!(
+            "devvm: {program}: a PowerShell command, not a program; run it with `pwsh -c {program} ...`"
+        )),
+        error(format!("devvm: {program}: command not found")),
+    )
 }
 
 /// The arguments of a batch file: std's own command line, `cmd.exe /e:ON /v:OFF /d /c ""<file>" <arguments>"`, or the

@@ -167,9 +167,30 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
     let output = run(&wrapped(&["no-such-program-xyz"]), "wrap-argv", None);
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
     assert!(String::from_utf8_lossy(&output.stderr).contains("no-such-program-xyz: command not found"));
-    // A cmdlet's name is not a program.
-    let output = run(&wrapped(&["Get-ChildItem"]), "wrap-argv", None);
-    assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
+    // A cmdlet's name is not a program, and neither is an alias's or a function's: the message says how to run it.
+    for name in ["Get-ChildItem", "dir", "mkdir"] {
+        let output = run(&wrapped(&[name]), "wrap-argv", None);
+        assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "devvm: {name}: a PowerShell command, not a program; run it with `pwsh -c {name} ...`"
+            )),
+            "{name}: {}",
+            shown(&output)
+        );
+    }
+    // A wildcard in the name matches no command, and a name that is none is not found.
+    for name in ["Get-ChildIte[m]", "Get-*", "*"] {
+        let output = run(&wrapped(&[name]), "wrap-argv", None);
+        assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("devvm: {name}: command not found")),
+            "{name}: {}",
+            shown(&output)
+        );
+    }
 }
 
 #[skuld::test]

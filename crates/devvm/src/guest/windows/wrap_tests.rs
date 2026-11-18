@@ -70,8 +70,14 @@ fn wrap_resolves_argv0_as_an_application_never_a_cmdlet() {
     assert!(text.contains("$app = Find-Program 'Get-ChildItem'\n"), "{text}");
     // The name is looked up as the file it is: PATH and PATHEXT, with no wildcard reading of `[` or `*`.
     assert!(text.contains("[IO.File]::Exists("), "{text}");
+    // `Get-Command` is only in the branch that explains a name that is not found; it never decides what runs.
+    let (found, not_found) = text.split_once("if (-not $app) {").unwrap();
     assert!(
-        !text.contains("Get-Command") && !text.contains("WildcardPattern"),
+        !found.contains("Get-Command") && !found.contains("WildcardPattern"),
+        "{text}"
+    );
+    assert!(
+        !not_found.contains("& $app") && !not_found.contains("Invoke-Command"),
         "{text}"
     );
     assert!(
@@ -126,11 +132,38 @@ fn wrap_sets_the_working_directory_literally() {
 fn wrap_exits_127_naming_a_missing_program() {
     let text = script(&["no such tool"]);
     assert!(
+        text.contains("[Console]::Error.WriteLine('devvm: no such tool: command not found'); exit 127 }"),
+        "{text}"
+    );
+}
+
+#[skuld::test]
+fn a_name_that_is_a_powershell_command_exits_127_naming_pwsh_c() {
+    let text = script(&["Get-ComputerInfo", "-Property", "CsName"]);
+    // The lookup is of the name as a cmdlet, function or alias, and a wildcard in the name is not read as one.
+    assert!(
         text.contains(
-            "if (-not $app) { [Console]::Error.WriteLine('devvm: no such tool: command not found'); exit 127 }"
+            "if (Get-Command -Name ([WildcardPattern]::Escape('Get-ComputerInfo')) -CommandType Alias,Function,Cmdlet -ErrorAction SilentlyContinue) {"
         ),
         "{text}"
     );
+    assert!(
+        text.contains(
+            "[Console]::Error.WriteLine('devvm: Get-ComputerInfo: a PowerShell command, not a program; run it with `pwsh -c Get-ComputerInfo ...`'); exit 127 }"
+        ),
+        "{text}"
+    );
+    // Either way the status is 127, and the lookup is on the branch that already exits 127.
+    assert_eq!(text.matches("exit 127").count(), 2, "{text}");
+    assert_eq!(text.matches("Get-Command").count(), 1, "{text}");
+}
+
+#[skuld::test]
+fn the_pwsh_hint_quotes_the_name_like_any_other_text() {
+    let text = script(&["it's"]);
+    assert!(text.contains("Escape('it''s')"), "{text}");
+    assert!(text.contains("devvm: it''s: a PowerShell command"), "{text}");
+    assert!(text.contains("`pwsh -c it''s ...`"), "{text}");
 }
 
 #[skuld::test]
