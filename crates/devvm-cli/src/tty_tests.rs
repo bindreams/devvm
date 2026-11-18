@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
+
 use devvm::progress::{Event, Look, NullProgress, Outcome, Progress, Task, TaskId, Total};
 use indicatif::{InMemoryTerm, ProgressDrawTarget};
 
@@ -14,7 +17,17 @@ const PLAIN: Look = Look {
 fn screen(rows: u16, columns: u16, look: Look) -> (TtyProgress, InMemoryTerm) {
     let term = InMemoryTerm::new(rows, columns);
     let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
-    (TtyProgress::new(target, look, None, columns), term)
+    (TtyProgress::new(target, look, None, move || columns), term)
+}
+
+/// A screen whose width the test can change, as a person resizing the window does.
+fn resizable(rows: u16, columns: u16) -> (TtyProgress, InMemoryTerm, Arc<AtomicU16>) {
+    let term = InMemoryTerm::new(rows, columns);
+    let target = ProgressDrawTarget::term_like(Box::new(term.clone()));
+    let width = Arc::new(AtomicU16::new(columns));
+    let read = width.clone();
+    let tty = TtyProgress::new(target, PLAIN, None, move || read.load(Ordering::Relaxed));
+    (tty, term, width)
 }
 
 fn lines(term: &InMemoryTerm) -> Vec<String> {
@@ -78,7 +91,7 @@ fn a_nested_tree_draws_with_glyphs() {
     assert_eq!(
         lines(&term),
         [
-            "  building win.devvm.ya… [███░░░░░░░] 1/3",
+            "  building win.devvm.yaml [███░░░░░░░] 1/3",
             "  ├─ hashing windows.iso [█░░░░░░░░░] 512.0 MiB/5.0 GiB",
             "- └─ step 1 of 2: apt-get update",
             "     └─ downloading ubu… [█░░░░░░░░░] 100.0 MiB/600.0 MiB",
@@ -91,7 +104,7 @@ fn a_nested_tree_draws_with_glyphs() {
     assert_eq!(
         lines(&term),
         [
-            "  building win.devvm.ya… [███░░░░░░░] 1/3",
+            "  building win.devvm.yaml [███░░░░░░░] 1/3",
             "- └─ step 1 of 2: apt-get update",
             "- starting dev: waiting for SSH",
         ]
@@ -249,4 +262,66 @@ fn no_line_fills_the_width_of_the_terminal() {
             term.contents()
         );
     }
+}
+
+#[skuld::test]
+fn a_task_that_ends_before_its_child_leaves_the_child_drawn() {
+    let (tty, term) = screen(6, 60, PLAIN);
+    let [top, middle, bottom] = [(); 3].map(|()| id());
+    begin(&tty, top, None, "top", Total::Unknown);
+    begin(&tty, middle, Some(top), "middle", Total::Unknown);
+    begin(&tty, bottom, Some(middle), "bottom", Total::Unknown);
+    end(&tty, middle, Outcome::Finished);
+    assert_eq!(lines(&term), ["- top", "-    └─ bottom"]);
+    end(&tty, top, Outcome::Finished);
+    assert_eq!(lines(&term), ["-    └─ bottom"]);
+}
+
+#[skuld::test]
+fn a_task_of_unknown_size_shows_the_bytes_it_has_counted() {
+    let (tty, term) = screen(4, 60, PLAIN);
+    let task = id();
+    begin(&tty, task, None, "downloading a.img", Total::Unknown);
+    assert_eq!(lines(&term), ["- downloading a.img"]);
+    advance(&tty, task, 5 * MIB);
+    // The spinner's glyph turns with each report.
+    let shown = lines(&term);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(shown[0].ends_with(" downloading a.img 5.0 MiB"), "{shown:?}");
+}
+
+/// A line that fills the terminal wraps on a ConPTY, so the room kept for a count follows the digits of its total.
+#[skuld::test]
+fn a_count_of_any_size_leaves_room_for_the_line() {
+    let cases = [
+        (Total::Items(1_000_000), 999_999, vec![20, 49, 50, 60, 100]),
+        // Wider than any terminal below 60 columns can show with a bar.
+        (Total::Items(u64::MAX), u64::MAX - 1, vec![60, 100]),
+    ];
+    for (total, position, widths) in cases {
+        for columns in widths {
+            let (tty, term) = screen(4, columns, PLAIN);
+            let task = id();
+            begin(&tty, task, None, &"x".repeat(200), total);
+            advance(&tty, task, position);
+            let shown: Vec<usize> = term.contents().lines().map(console::measure_text_width).collect();
+            assert_eq!(shown.len(), 1, "{total:?}, {columns} columns: {:?}", term.contents());
+            assert!(shown[0] < usize::from(columns), "{total:?}, {columns} columns: {}", shown[0]);
+        }
+    }
+}
+
+#[skuld::test]
+fn a_resize_refits_the_line_at_the_next_report() {
+    let (tty, term, width) = resizable(4, 100);
+    let task = id();
+    begin(&tty, task, None, &"x".repeat(200), Total::Bytes(GIB));
+    advance(&tty, task, MIB);
+    let before = console::measure_text_width(term.contents().trim_end());
+    assert!(before > 60, "{before}");
+    width.store(40, Ordering::Relaxed);
+    advance(&tty, task, 2 * MIB);
+    let after = console::measure_text_width(term.contents().trim_end());
+    assert!(after < 40, "{after}: {:?}", term.contents());
+    assert_eq!(term.contents().lines().count(), 1, "{:?}", term.contents());
 }

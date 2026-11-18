@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use devvm::progress::{Colour, Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint, strip_ansi};
+use devvm::progress::{
+    Colour, Event, Level, Look, Progress, TaskId, Total, escape_controls, human_bytes, paint, strip_ansi,
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 
 #[cfg(test)]
@@ -20,13 +22,14 @@ const BAR_COLUMNS: u16 = 50;
 /// Draws one line per open task, children under their parent with `├─` and `└─`, and prints notes above them.
 ///
 /// A task that ends leaves no line. A sized task draws a bar and its position in the units of
-/// [`devvm::progress::human_bytes`]; a task of unknown size is a spinner. A `Begin` whose parent this screen never
-/// saw is drawn as a root.
+/// [`devvm::progress::human_bytes`]; a task of unknown size is a spinner, with the bytes it has counted. A `Begin`
+/// whose parent this screen never saw is drawn as a root. Each label is cut to the terminal's width as it is now.
 pub(crate) struct TtyProgress {
     multi: MultiProgress,
     look: Look,
     tick: Option<Duration>,
-    columns: u16,
+    /// The terminal's width now, read each time a line is set.
+    columns: Box<dyn Fn() -> u16 + Send + Sync>,
     state: Mutex<State>,
 }
 
@@ -46,27 +49,33 @@ struct Slot {
 }
 
 impl TtyProgress {
-    /// Draws to `target`, which is `columns` wide; spinners tick by themselves each `tick`, or only when their task
-    /// reports, with `None`.
-    pub(crate) fn new(target: ProgressDrawTarget, look: Look, tick: Option<Duration>, columns: u16) -> TtyProgress {
+    /// Draws to `target`, which `columns` says is that wide now; spinners tick by themselves each `tick`, or only when
+    /// their task reports, with `None`.
+    pub(crate) fn new(
+        target: ProgressDrawTarget,
+        look: Look,
+        tick: Option<Duration>,
+        columns: impl Fn() -> u16 + Send + Sync + 'static,
+    ) -> TtyProgress {
         TtyProgress {
             multi: MultiProgress::with_draw_target(target),
             look,
             tick,
-            columns,
+            columns: Box::new(columns),
             state: Mutex::new(State::default()),
         }
     }
 
     pub(crate) fn stderr(look: Look) -> TtyProgress {
-        let columns = console::Term::stderr()
-            .size_checked()
-            .map_or(80, |(_rows, columns)| columns);
         TtyProgress::new(
             ProgressDrawTarget::stderr_with_hz(REFRESH_HZ),
             look,
             Some(Duration::from_millis(120)),
-            columns,
+            || {
+                console::Term::stderr()
+                    .size_checked()
+                    .map_or(80, |(_rows, columns)| columns)
+            },
         )
     }
 
@@ -75,9 +84,9 @@ impl TtyProgress {
         let _ = self.multi.println(line);
     }
 
-    fn style(&self, total: Total) -> ProgressStyle {
-        let template = match (total, self.columns >= BAR_COLUMNS) {
-            (Total::Unknown, _) => "{spinner} {prefix}{msg}",
+    fn style(total: Total, columns: u16) -> ProgressStyle {
+        let template = match (total, columns >= BAR_COLUMNS) {
+            (Total::Unknown, _) => "{spinner} {prefix}{msg}{counted}",
             (Total::Bytes(_), true) => "  {prefix}{msg} [{bar:10}] {human}",
             (Total::Bytes(_), false) => "  {prefix}{msg} {percent:>3}%",
             (Total::Items(_), true) => "  {prefix}{msg} [{bar:10}] {pos}/{len}",
@@ -93,6 +102,12 @@ impl TtyProgress {
                     human_bytes(state.pos()),
                     human_bytes(state.len().unwrap_or(0))
                 );
+            })
+            // The bytes a task of unknown size has counted: nothing before its first position.
+            .with_key("counted", |state: &ProgressState, out: &mut dyn std::fmt::Write| {
+                if state.pos() > 0 {
+                    let _ = write!(out, " {}", human_bytes(state.pos()));
+                }
             })
     }
 
@@ -115,7 +130,7 @@ impl TtyProgress {
             Total::Unknown => ProgressBar::new_spinner(),
             Total::Bytes(size) | Total::Items(size) => ProgressBar::new(size),
         };
-        bar.set_style(self.style(total));
+        bar.set_style(TtyProgress::style(total, (self.columns)()));
         let bar = self.multi.insert(index, bar);
         if let (Total::Unknown, Some(tick)) = (total, self.tick) {
             bar.enable_steady_tick(tick);
@@ -137,35 +152,10 @@ impl TtyProgress {
     /// Sets each bar's tree prefix from the order and the depths, and its text to fit what is left of the line; a
     /// sibling that ends changes its elder's glyph.
     fn relabel(&self, state: &State) {
+        let columns = (self.columns)();
         for (at, id) in state.order.iter().enumerate() {
-            self.refresh(&state.tasks[id], &prefix(state, at));
-        }
-    }
-
-    /// Draws `slot` with the tree `prefix`. The label is cut so that the line is shorter than the terminal: a line that
-    /// fills it wraps on some terminals, and a redraw clears one row of the two.
-    fn refresh(&self, slot: &Slot, prefix: &str) {
-        let text = match &slot.status {
-            Some(status) => format!("{}: {status}", slot.label),
-            None => slot.label.clone(),
-        };
-        let used = 2 + console::measure_text_width(prefix) + self.suffix_width(slot.total) + 1;
-        let budget = usize::from(self.columns).saturating_sub(used).max(1);
-        slot.bar.set_prefix(prefix.to_owned());
-        slot.bar
-            .set_message(console::truncate_str(&text, budget, "…").into_owned());
-    }
-
-    /// The most columns the bar and the position take after the label.
-    fn suffix_width(&self, total: Total) -> usize {
-        match (total, self.columns >= BAR_COLUMNS) {
-            (Total::Unknown, _) => 0,
-            // ` [` bar `] ` and `1023.9 MiB/1023.9 GiB`.
-            (Total::Bytes(_), true) => 14 + 21,
-            (Total::Items(_), true) => 14 + 21,
-            // ` 100%`, ` 18446744073709551615/18446744073709551615`.
-            (Total::Bytes(_), false) => 5,
-            (Total::Items(_), false) => 42,
+            let slot = &state.tasks[id];
+            refresh(slot, &prefix(state, at), columns, slot.bar.position());
         }
     }
 
@@ -178,6 +168,39 @@ impl TtyProgress {
         slot.bar.finish_and_clear();
         self.multi.remove(&slot.bar);
         self.relabel(state);
+    }
+}
+
+/// Draws `slot` with the tree `prefix`, for a terminal `columns` wide, where the task is at `position`. The label is cut so that the line is shorter
+/// than the terminal: a line that fills it wraps on some terminals, and a redraw clears one row of the two.
+fn refresh(slot: &Slot, prefix: &str, columns: u16, position: u64) {
+    let text = match &slot.status {
+        Some(status) => format!("{}: {status}", slot.label),
+        None => slot.label.clone(),
+    };
+    let used = 2 + console::measure_text_width(prefix) + suffix_width(slot.total, columns, position) + 1;
+    let budget = usize::from(columns).saturating_sub(used).max(1);
+    slot.bar.set_style(TtyProgress::style(slot.total, columns));
+    slot.bar.set_prefix(prefix.to_owned());
+    slot.bar
+        .set_message(console::truncate_str(&text, budget, "…").into_owned());
+}
+
+/// The most columns the bar and the position of a task of `total` take after its label, on a terminal `columns` wide,
+/// with the task at `position`.
+fn suffix_width(total: Total, columns: u16, position: u64) -> usize {
+    // A position and a total of a count, `12/3456`: the most digits either has.
+    let pair = |items: u64| 2 * items.to_string().len() + 1;
+    match (total, columns >= BAR_COLUMNS) {
+        // ` 5.0 MiB`, once the task has counted bytes.
+        (Total::Unknown, _) if position > 0 => 1 + human_bytes(position).len(),
+        (Total::Unknown, _) => 0,
+        // ` [` bar `] ` and `1023.9 MiB/1023.9 GiB`.
+        (Total::Bytes(_), true) => 14 + 21,
+        // ` 100%`.
+        (Total::Bytes(_), false) => 5,
+        (Total::Items(items), true) => 14 + pair(items),
+        (Total::Items(items), false) => 1 + pair(items),
     }
 }
 
@@ -198,12 +221,13 @@ fn prefix(state: &State, at: usize) -> String {
     };
     let mut text = String::new();
     for level in 1..depth {
-        // The ancestor of the task at that level: the nearest earlier task of that depth.
-        let ancestor = (0..at)
+        // The ancestor of the task at that level: the nearest earlier task of that depth. One that already ended
+        // leaves a blank column.
+        let continues = (0..at)
             .rev()
             .find(|index| depth_of(*index) == level)
-            .expect("a parent precedes");
-        text.push_str(if has_later_sibling(ancestor) { "│  " } else { "   " });
+            .is_some_and(has_later_sibling);
+        text.push_str(if continues { "│  " } else { "   " });
     }
     text.push_str(if has_later_sibling(at) { "├─ " } else { "└─ " });
     text
@@ -242,11 +266,15 @@ impl Progress for TtyProgress {
                     if let Some(slot) = state.tasks.get_mut(id) {
                         slot.status = Some(status);
                     }
-                    self.refresh(&state.tasks[id], &prefix(state, at));
+                    let slot = &state.tasks[id];
+                    refresh(slot, &prefix(state, at), (self.columns)(), slot.bar.position());
                 }
             }
             Event::Advance { id, position } => {
-                if let Some(slot) = state.tasks.get(id) {
+                if let Some(at) = state.order.iter().position(|open| open == id) {
+                    let slot = &state.tasks[id];
+                    // The terminal may have been resized since the line was last set.
+                    refresh(slot, &prefix(state, at), (self.columns)(), *position);
                     slot.bar.set_position(*position);
                 }
             }
