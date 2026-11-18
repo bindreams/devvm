@@ -25,7 +25,7 @@ pub struct Look {
 
 /// Writes one concise line per event worth a person's attention.
 ///
-/// A sized task prints its size, then each quarter it passes, then `done`. Whole lines go out under one lock, so threads
+/// A sized task prints its size, then each quarter it passes, then `done`; an item count prints no quarters. Whole lines go out under one lock, so threads
 /// never interleave inside a line. Controls in any text are escaped, so a record is one line.
 pub struct LineProgress {
     state: Mutex<State>,
@@ -139,7 +139,7 @@ impl Progress for LineProgress {
             }
             Event::End { id, outcome } => {
                 let Some(open) = state.tasks.remove(id) else { return };
-                if *outcome == Outcome::Finished && matches!(open.total, Total::Bytes(_)) {
+                if *outcome == Outcome::Finished && !matches!(open.total, Total::Unknown) {
                     let done = paint(look.colour, GREEN, "done");
                     state.line(open.depth, &format!("{}: {done}", open.label));
                 }

@@ -102,14 +102,14 @@ fn an_unsized_task_prints_its_label_and_each_status() {
 }
 
 #[skuld::test]
-fn an_item_count_prints_no_advances() {
+fn an_item_count_prints_no_advances_and_done_at_its_end() {
     let (progress, out) = sink(PLAIN);
     let progress: &dyn Progress = &progress;
     let task = progress.task("building x", Total::Items(3));
     task.set(1);
     task.set(2);
     task.finish();
-    assert_eq!(out.lines(), ["building x"]);
+    assert_eq!(out.lines(), ["building x", "building x: done"]);
 }
 
 #[skuld::test]
@@ -132,8 +132,19 @@ fn children_are_indented_two_spaces_per_level() {
             "    downloading b.img (1.0 MiB)",
             "    downloading b.img: done",
             "  step 1 of 2: running",
+            "building: done",
         ]
     );
+}
+
+#[skuld::test]
+fn an_abandoned_item_count_prints_nothing_after_its_label() {
+    let (progress, out) = sink(PLAIN);
+    let progress: &dyn Progress = &progress;
+    let task = progress.task("building x", Total::Items(3));
+    task.set(1);
+    drop(task);
+    assert_eq!(out.lines(), ["building x"]);
 }
 
 #[skuld::test]
