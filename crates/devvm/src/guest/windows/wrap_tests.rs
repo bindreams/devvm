@@ -142,6 +142,10 @@ fn wrap_exits_127_naming_a_missing_program() {
         "{text}"
     );
     assert!(text.contains("$program = 'no such tool'\n"), "{text}");
+    // The block is whole: it opens with its `if`, closes its own brace, and ends with the 127 exit.
+    let from = text.find("if (-not $app) {\n").unwrap();
+    let block = &text[from..text.find("exit 127 }\n").unwrap() + "exit 127 }\n".len()];
+    assert_eq!(block.matches('{').count(), block.matches('}').count(), "{block}");
 }
 
 #[skuld::test]
@@ -155,10 +159,11 @@ fn a_name_that_is_a_powershell_command_exits_127_naming_pwsh_c() {
         ),
         "{text}"
     );
-    // The hint is fixed text around the name as typed: nothing is computed from it.
+    // The hint is fixed text after the name as typed: nothing is computed from it, and it holds no example command or
+    // guest name.
     assert!(
         text.contains(
-            r#"': a PowerShell command, not a program; run it with pwsh -c, e.g. devvm ssh <guest> -- pwsh -c "' + $program + ' ..."'"#
+            "': a PowerShell command, not a program; run it through pwsh -c' } else { ': command not found' }"
         ),
         "{text}"
     );
@@ -185,17 +190,15 @@ fn the_lookup_finds_no_function_of_the_script_and_cannot_end_it_by_an_error() {
         at("} catch { }"),
     );
     assert!(try_at < remove && remove < get && get < catch, "{lookup}");
-    // The end is after the `catch`, and what lies between is two statements that only join strings: nothing there can
-    // throw, so 127 holds whatever the lookup did.
+    // The end is after the `catch`, and what lies between is exactly two statements that only join strings: nothing
+    // there can throw, so 127 holds whatever the lookup did.
     assert_eq!(lookup.matches("exit 127").count(), 1, "{lookup}");
     let after = &lookup[catch + "} catch { }".len()..];
-    let after = &after[..after.find("exit 127").unwrap()];
-    assert!(
-        after.lines().all(|line| {
-            line.is_empty()
-                || line.starts_with("$why = if ($command) { ': a PowerShell command, ")
-                || line.starts_with("[Console]::Error.WriteLine('devvm: ' + $program + $why); ")
-        }),
+    assert_eq!(
+        after[..after.find("exit 127").unwrap() + "exit 127".len()],
+        *"
+$why = if ($command) { ': a PowerShell command, not a program; run it through pwsh -c' } else { ': command not found' }
+[Console]::Error.WriteLine('devvm: ' + $program + $why); exit 127",
         "{lookup}"
     );
 }
@@ -295,6 +298,13 @@ pub(crate) fn padded(n: usize) -> Command {
 /// refused.
 #[skuld::test]
 fn a_line_of_the_limit_plus_the_terminating_null_is_refused() {
+    // The text is in the script twice (the list and the batch form), so the text moves the line by 2 a character; the
+    // working directory is there once, and a character of it makes the line odd, so every length is reachable.
+    let padded = |n: usize| {
+        let mut cmd = padded(n / 2);
+        cmd.cwd = Some("d".repeat(1 + n % 2));
+        cmd
+    };
     let longer = |n: usize| {
         let (sshd, broker) = command_line_lengths(&super::script_unchecked(&padded(n)).unwrap());
         sshd.max(broker)

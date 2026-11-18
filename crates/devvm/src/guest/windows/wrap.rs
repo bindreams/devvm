@@ -7,7 +7,7 @@
 //! 2. sets the working directory, if the command has one, and finds argv[0] as a **file**: the file itself for a name
 //!    with a path, a file of `PATH` otherwise, as it is or with an extension of `PATHEXT`, never a cmdlet or an alias
 //!    and never read as a wildcard; a name that is not found is 127, and one that PowerShell knows as a cmdlet, function,
-//!    alias or script says to run it with `pwsh -c`;
+//!    alias or script says to run it through `pwsh -c`;
 //! 3. starts the file found with `System.Diagnostics.Process`, copies the standard streams as raw bytes and ends with
 //!    the child's status (every byte of stdout and stderr and every 32-bit status is carried exactly). A directory that
 //!    cannot be entered and a program that cannot start end with 126 and the reason: the command did not run.
@@ -82,20 +82,26 @@ $p.WaitForExit()
 const EXIT: &str = "exit $p.ExitCode
 ";
 
-/// The start of what the script does when `$program` names no file; [`failure`] ends it with 127, with `$why` after the
-/// name. A name that is a cmdlet, function, alias or script of PowerShell gets the way to run it (`dir` is an alias:
-/// `cmd`'s builtin of that name is not a program either); the advice is fixed text around the name as typed.
+/// What the script does when `$program` names no file: the whole block, ending with 127 and the message `devvm: <name>`
+/// and `$why`. A name that is a cmdlet, function, alias or script of PowerShell gets the way to run it (`dir` is an alias:
+/// `cmd`'s builtin of that name is not a program either); the advice is fixed text after the name as typed.
 ///
 /// The lookup is in the script because only the guest knows its commands, and on this branch only: a program that is
 /// found runs none of it, but the script is longer by it for every command, and a name that is not found pays a
 /// `Get-Command`, which also scans `PSModulePath` for a module that exports it. The name is escaped: it is a name, not a
 /// wildcard. `Find-Program` is removed first, so the script's own function is not an answer, and an error of the lookup
 /// (a module that fails to load) is no answer either: nothing after the `catch` can throw, so the status is 127.
-const NOT_FOUND: &str = r#"if (-not $app) {
+fn not_found() -> String {
+    format!(
+        r#"if (-not $app) {{
 $command = $false
-try { Remove-Item -LiteralPath Function:Find-Program; $command = [bool](Get-Command -Name ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction SilentlyContinue) } catch { }
-$why = if ($command) { ': a PowerShell command, not a program; run it with pwsh -c, e.g. devvm ssh <guest> -- pwsh -c "' + $program + ' ..."' } else { ': command not found' }
-"#;
+try {{ Remove-Item -LiteralPath Function:Find-Program; $command = [bool](Get-Command -Name ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction SilentlyContinue) }} catch {{ }}
+$why = if ($command) {{ ': a PowerShell command, not a program; run it through pwsh -c' }} else {{ ': command not found' }}
+{} }}
+"#,
+        failure("'devvm: ' + $program + $why", 127)
+    )
+}
 
 /// `text` as a PowerShell single-quoted string. PowerShell reads U+2018 to U+201B as a single quote too, so each is
 /// doubled like `'`.
@@ -188,12 +194,7 @@ fn user_script(cmd: &Command) -> Result<String> {
         "$program = {}\n$app = Find-Program $program\n",
         literal(program)
     ));
-    script.push_str(NOT_FOUND);
-    script.push_str(&failure("'devvm: ' + $program + $why", 127));
-    script.push_str(
-        " }
-",
-    );
+    script.push_str(&not_found());
     script.push_str("$psi = [Diagnostics.ProcessStartInfo]::new($app)\n");
     if cmd.cwd.is_some() {
         script.push_str("$psi.WorkingDirectory = (Get-Location).ProviderPath\n");

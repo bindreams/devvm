@@ -53,7 +53,7 @@ fn windows_a_powershell_command_as_argv0_exits_127_naming_pwsh_c(
         assert_eq!(seen.ended, Ended::Code(127), "{name}: {}", seen.stderr_text());
         assert!(
             seen.stderr_text().contains(&format!(
-                "run it with pwsh -c, e.g. devvm ssh <guest> -- pwsh -c \"{name} ...\""
+                "devvm: {name}: a PowerShell command, not a program; run it through pwsh -c"
             )),
             "{name}: {}",
             seen.stderr_text()

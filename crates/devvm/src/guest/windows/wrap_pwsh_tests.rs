@@ -26,36 +26,42 @@ pub(in crate::guest::windows) fn test_binary() -> String {
 
 /// `script` in `pwsh -c`, the test binary in `helper` mode, `path` (a directory) first on the PATH.
 pub(in crate::guest::windows) fn run(script: &str, helper: &str, path: Option<&Path>) -> Output {
-    run_with("pwsh", script, Some(helper), path)
+    let search = path.map_or(Search::Caller, Search::First);
+    run_with("pwsh", script, Some(helper), search)
 }
 
-/// [`run`] with a PATH of its own: `dir` (if any), then the directory of `pwsh.exe` and the system directory, and
-/// nothing the caller has (Git's `usrin` has a `dir.exe` and a `mkdir.exe`, which are programs).
-pub(in crate::guest::windows) fn run_alone(script: &str, helper: &str, dir: Option<&Path>) -> Output {
-    let caller = std::env::var_os("PATH").unwrap();
-    let pwsh = std::env::split_paths(&caller)
-        .find(|dir| dir.join("pwsh.exe").is_file())
-        .expect("pwsh.exe is on the PATH");
-    let system = Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32");
-    let paths: Vec<_> = dir.map(Path::to_path_buf).into_iter().chain([pwsh, system]).collect();
-    let mut process = process("pwsh", script, Some(helper));
-    process.env("PATH", std::env::join_paths(paths).unwrap());
-    process.output().unwrap_or_else(|error| panic!("pwsh runs: {error}"))
+/// Where the script finds programs.
+pub(in crate::guest::windows) enum Search<'a> {
+    /// The caller's PATH and PATHEXT.
+    Caller,
+    /// The caller's PATH with a directory in front.
+    First(&'a Path),
+    /// A PATH of its own: the directory (if any), then the directory of `pwsh.exe` and the system directory, and
+    /// nothing the caller has (Git's `usr\bin` has a `dir.exe` and a `mkdir.exe`, which are programs); and a stock
+    /// PATHEXT, which has no `.PS1`.
+    Only(Option<&'a Path>),
 }
 
 /// [`run`] in the PowerShell `exe` (`powershell.exe` is Windows PowerShell 5.1, which the guest's own scripts run in),
-/// with no helper variable when `helper` is `None`.
-pub(in crate::guest::windows) fn run_with(
-    exe: &str,
-    script: &str,
-    helper: Option<&str>,
-    path: Option<&Path>,
-) -> Output {
+/// with no helper variable when `helper` is `None`, and the programs found by `search`.
+pub(in crate::guest::windows) fn run_with(exe: &str, script: &str, helper: Option<&str>, search: Search) -> Output {
     let mut process = process(exe, script, helper);
-    if let Some(dir) = path {
-        let mut paths = vec![dir.to_path_buf()];
-        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-        process.env("PATH", std::env::join_paths(paths).unwrap());
+    let caller = std::env::var_os("PATH").unwrap();
+    match search {
+        Search::Caller => {}
+        Search::First(dir) => {
+            let paths = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&caller));
+            process.env("PATH", std::env::join_paths(paths).unwrap());
+        }
+        Search::Only(first) => {
+            let pwsh_dir = std::env::split_paths(&caller)
+                .find(|dir| dir.join("pwsh.exe").is_file())
+                .expect("pwsh.exe is on the PATH");
+            let system = Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32");
+            let paths = first.map(Path::to_path_buf).into_iter().chain([pwsh_dir, system]);
+            process.env("PATH", std::env::join_paths(paths).unwrap());
+            process.env("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+        }
     }
     process.output().unwrap_or_else(|error| panic!("{exe} runs: {error}"))
 }
@@ -189,7 +195,7 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
     assert!(String::from_utf8_lossy(&output.stderr).contains("no-such-program-xyz: command not found"));
     // A cmdlet's name is not a program, and neither is an alias's or a function's: the message says how to run it.
     for name in ["Get-ChildItem", "dir", "mkdir"] {
-        let output = run_alone(&wrapped(&[name]), "wrap-argv", None);
+        let output = run_with("pwsh", &wrapped(&[name]), Some("wrap-argv"), Search::Only(None));
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
         assert!(
             String::from_utf8_lossy(&output.stderr).contains(&hint(name)),
@@ -198,11 +204,16 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
         );
     }
     // The advice works: `pwsh -c` runs the cmdlet.
-    let output = run_alone(&wrapped(&["pwsh", "-c", "Get-Location"]), "wrap-argv", None);
+    let output = run_with(
+        "pwsh",
+        &wrapped(&["pwsh", "-c", "Get-Location"]),
+        Some("wrap-argv"),
+        Search::Only(None),
+    );
     assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
     // A wildcard in the name matches no command, and a name that is none is not found.
     for name in ["Get-ChildIte[m]", "Get-*", "*"] {
-        let output = run_alone(&wrapped(&[name]), "wrap-argv", None);
+        let output = run_with("pwsh", &wrapped(&[name]), Some("wrap-argv"), Search::Only(None));
         assert_eq!(output.status.code(), Some(127), "{name}: {}", shown(&output));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -215,9 +226,7 @@ fn a_windows_program_called_dash_x_or_a_equals_b_is_a_program_name(
 
 /// What the message says for `name`, a PowerShell command.
 fn hint(name: &str) -> String {
-    format!(
-        r#"devvm: {name}: a PowerShell command, not a program; run it with pwsh -c, e.g. devvm ssh <guest> -- pwsh -c "{name} ...""#
-    )
+    format!("devvm: {name}: a PowerShell command, not a program; run it through pwsh -c")
 }
 
 #[skuld::test]
@@ -240,16 +249,37 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         );
     };
     // A script of PATH, one with a space in its name, and one named by a path.
-    hinted(&run_alone(&wrapped(&["tool"]), "wrap-argv", Some(&scripts)), "tool");
     hinted(
-        &run_alone(&wrapped(&["my script"]), "wrap-argv", Some(&scripts)),
+        &run_with(
+            "pwsh",
+            &wrapped(&["tool"]),
+            Some("wrap-argv"),
+            Search::Only(Some(&scripts)),
+        ),
+        "tool",
+    );
+    hinted(
+        &run_with(
+            "pwsh",
+            &wrapped(&["my script"]),
+            Some("wrap-argv"),
+            Search::Only(Some(&scripts)),
+        ),
         "my script",
     );
     let mut by_path = Command::new([r".\tool.ps1"]);
     by_path.cwd = Some(scripts.display().to_string());
-    hinted(&run_alone(&wrap(&by_path).unwrap(), "wrap-argv", None), r".\tool.ps1");
+    hinted(
+        &run_with("pwsh", &wrap(&by_path).unwrap(), Some("wrap-argv"), Search::Only(None)),
+        r".\tool.ps1",
+    );
     // The advice works: `pwsh -c` runs the script of PATH.
-    let output = run_alone(&wrapped(&["pwsh", "-c", "tool"]), "wrap-argv", Some(&scripts));
+    let output = run_with(
+        "pwsh",
+        &wrapped(&["pwsh", "-c", "tool"]),
+        Some("wrap-argv"),
+        Search::Only(Some(&scripts)),
+    );
     assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
     // The script's output ends it: a profile of the PC that runs the test may print before.
     assert!(
@@ -258,7 +288,12 @@ fn a_script_gets_the_hint_and_the_scripts_own_function_gets_none(
         shown(&output)
     );
     // The wrapper's own function is not a command of the user's.
-    let output = run_alone(&wrapped(&["Find-Program"]), "wrap-argv", None);
+    let output = run_with(
+        "pwsh",
+        &wrapped(&["Find-Program"]),
+        Some("wrap-argv"),
+        Search::Only(None),
+    );
     assert_eq!(output.status.code(), Some(127), "{}", shown(&output));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("devvm: Find-Program: command not found"),
