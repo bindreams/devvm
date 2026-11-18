@@ -271,7 +271,7 @@ fn stop_of_a_stopped_instance_does_nothing() {
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 }
 
-// Output =============================================================================================================
+// Output ==============================================================================================================
 
 /// `devvm <args>` with the colour variables cleared, then `env` set.
 fn devvm_coloured(home: &Home, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
