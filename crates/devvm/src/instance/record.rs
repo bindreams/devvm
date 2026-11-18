@@ -31,16 +31,21 @@ const MARKER_FILE: &str = "owner.json";
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct InstanceId([u8; 16]);
 
+/// The length of a hostname made by [`InstanceId::hostname`]: under the 15 characters of a Windows computer name.
+pub const HOSTNAME_LEN: usize = 14;
+
 impl InstanceId {
     pub(crate) fn random() -> InstanceId {
         InstanceId(random::bytes())
     }
 
-    /// The name of the machine in its guest, Linux or Windows: `devvm-` and the first 8 hex digits of the id. It is under
-    /// the 15 characters of a Windows computer name, and is neither the label (which a user chooses and can reuse) nor
-    /// one shared by every machine.
+    /// The name of the machine in its guest, Linux or Windows: `devvm-` and the first 8 hex digits of the id,
+    /// [`HOSTNAME_LEN`] characters. It is neither the label (which a user chooses and can reuse) nor one shared by
+    /// every machine.
     pub(crate) fn hostname(&self) -> String {
-        format!("devvm-{}", hex::encode(&self.0[..4]))
+        let hostname = format!("devvm-{}", hex::encode(&self.0[..4]));
+        debug_assert_eq!(hostname.len(), HOSTNAME_LEN);
+        hostname
     }
 }
 

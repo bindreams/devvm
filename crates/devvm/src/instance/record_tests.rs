@@ -6,7 +6,7 @@ use cosca::identity::{Platform, ProcessIdRecord};
 use crate::backend::{Endpoint, MachineRecord, SshEndpoint};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{
-    InstanceId, InstanceRecord, Marker, MarkerRead, Owner, RecordRead, read_marker, write_marker,
+    HOSTNAME_LEN, InstanceId, InstanceRecord, Marker, MarkerRead, Owner, RecordRead, read_marker, write_marker,
 };
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
@@ -23,7 +23,8 @@ fn the_hostname_is_devvm_and_the_first_eight_hex_digits_of_the_id() {
     let other: InstanceId = "ffeeddccbbaa99887766554433221100".parse().unwrap();
     assert_eq!(other.hostname(), "devvm-ffeeddcc");
     // Under the 15 characters of a Windows computer name.
-    assert_eq!(other.hostname().len(), 14);
+    assert_eq!(other.hostname().len(), HOSTNAME_LEN);
+    assert_eq!(HOSTNAME_LEN, 14);
 }
 
 fn layer(n: u8) -> LayerRef {

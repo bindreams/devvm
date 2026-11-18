@@ -7,6 +7,8 @@ use serde::Serialize;
 
 use crate::{Arch, GuestKind};
 
+pub use super::record::HOSTNAME_LEN;
+
 /// Whether an instance's VM is running, judged by the recorded process identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstanceState {
@@ -61,8 +63,8 @@ fn time_text(time: SystemTime) -> String {
 }
 
 impl InstanceInfo {
-    /// One JSON object on one line, without a trailing newline. Keys: `name`, `hostname`, `state`, `guest`, `arch`, `created`,
-    /// `created_from`, `expires` (`null` when none), `owner` (`"process"` or `"none"`).
+    /// One JSON object on one line, without a trailing newline. Keys: `name`, `hostname`, `state`, `guest`, `arch`,
+    /// `created`, `created_from`, `expires` (`null` when none), `owner` (`"process"` or `"none"`).
     pub fn to_json_line(&self) -> String {
         let line = Line {
             name: &self.name,

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use clap::{CommandFactory, Parser};
 use devvm::exit::{ExitStatus, ExitWidth, finish};
 use devvm::store::fetch::{LazyHttp, Transport};
-use devvm::{Engine, Error, ErrorKind, ListFilter, Result};
+use devvm::{Engine, Error, ErrorKind, HOSTNAME_LEN, ListFilter, Result};
 
 mod args;
 mod doctor;
@@ -172,12 +172,7 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
             .max()
             .unwrap_or(0)
             .max("NAME".len());
-        let hostname_width = infos
-            .iter()
-            .map(|info| info.hostname.len())
-            .max()
-            .unwrap_or(0)
-            .max("HOSTNAME".len());
+        let hostname_width = HOSTNAME_LEN.max("HOSTNAME".len());
         write(
             &mut out,
             &format!(
