@@ -10,6 +10,8 @@ use devvm::progress::{Fanout, FileLog, LineProgress, Look, Progress};
 use devvm::store::layers::SystemClock;
 use devvm::{Dirs, Result};
 
+use crate::tty::TtyProgress;
+
 #[cfg(test)]
 #[path = "output_tests.rs"]
 mod output_tests;
@@ -81,9 +83,9 @@ pub(crate) fn sinks() -> Sinks {
         colour: stderr_colour(),
         verbose: VERBOSE.load(Ordering::Relaxed),
     };
-    // Bars come with `TtyProgress`; until then a terminal gets lines too.
     let screen: Arc<dyn Progress> = match choose(&Facts::of_stderr()) {
-        Screen::Tty | Screen::Lines => Arc::new(LineProgress::stderr(look)),
+        Screen::Tty => Arc::new(TtyProgress::stderr(look)),
+        Screen::Lines => Arc::new(LineProgress::stderr(look)),
     };
     let dirs = Dirs::from_env().ok();
     let sinks = compose(screen, dirs.as_ref());

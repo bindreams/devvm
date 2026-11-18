@@ -19,6 +19,7 @@ mod doctor;
 mod lib_tests;
 mod output;
 mod run;
+mod tty;
 
 use args::Cli;
 pub use args::{Cmd, CpSide, VmFlags, parse_cp_side};

@@ -74,6 +74,21 @@ devvm rm dev
 - `ls` lists the instances created from the current directory; `ls --all` lists every one.
 - `stop` keeps the disk; `start` boots it again. The guest's `/tmp` is empty after a restart: keep files under `~`.
 
+### Output
+
+- stdout carries what a program would read: `ls`, `doctor`, the name `up` prints and the guest's own output. Everything
+  devvm says about itself goes to stderr.
+- On a terminal, stderr shows progress bars and a task tree. Windows Terminal and the Windows console get bars; mintty
+  (Git Bash's own window) and any stream that is not a terminal get one concise line per event.
+- A failed step shows its last 20 lines in the error. `-v` (or `DEVVM_VERBOSE=1`) also shows step output and debug
+  notes as they happen.
+- `NO_COLOR` turns colour off. With colour, `pass`, `fail` and `warning:` are coloured, and so is the `devvm-error:`
+  prefix of the final error line; piped, that line is plain text.
+- Every run writes a log with all the detail to `logs` in the state directory (`~/.local/state/devvm/logs` unless
+  `XDG_STATE_HOME` says otherwise, on every OS). A failed command prints `log: <path>` before its error line. Only the
+  user can read a log, and logs older than 14 days are removed when a new one is made.
+- A Ctrl-C or a panic can leave the last frame of the progress bars on screen above the error line.
+
 ### A project in a recipe
 
 A recipe file ends in `.devvm.yaml`. Put this one in a git repository: it starts from the embedded recipe and copies
