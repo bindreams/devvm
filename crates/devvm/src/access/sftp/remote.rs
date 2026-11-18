@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::plan::{Beyond, Item, Kind, Present, base_name, check_listing, join, parent_of};
 use super::typed::Typed;
-use super::{Failed, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_name, pump};
+use super::{Failed, Moved, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_name, pump};
 use crate::access::session::watched::Watched;
 use crate::access::session::{Inner, Transport};
 use crate::guest::GuestOs;
@@ -521,19 +521,27 @@ impl Remote {
         }
     }
 
-    /// Streams `local` to the guest file `target`.
+    /// Streams `local` to the guest file `target`, telling `moved` how much goes at a time.
     pub(super) async fn put_file(
         self,
         local: PathBuf,
         target: String,
         executable: bool,
         mtime: Option<u32>,
+        moved: Moved,
     ) -> Result<()> {
-        self.replace_with(&target, |temp| self.upload_to(&local, temp, executable, mtime))
+        self.replace_with(&target, |temp| self.upload_to(&local, temp, executable, mtime, &moved))
             .await
     }
 
-    async fn upload_to(&self, local: &Path, temp: String, executable: bool, mtime: Option<u32>) -> Result<()> {
+    async fn upload_to(
+        &self,
+        local: &Path,
+        temp: String,
+        executable: bool,
+        mtime: Option<u32>,
+        moved: &Moved,
+    ) -> Result<()> {
         let awaiting = format!("cannot write the guest file {temp}", temp = self.shown(&temp));
         let attributes = FileAttributes {
             permissions: Some(if executable { 0o755 } else { 0o644 }),
@@ -551,7 +559,7 @@ impl Remote {
         let source = tokio::fs::File::open(local)
             .await
             .map_err(|e| local_error("cannot read", local.display(), e))?;
-        pump(source, &mut file).await.map_err(|failed| match failed {
+        pump(source, &mut file, moved).await.map_err(|failed| match failed {
             Failed::Read(e) => local_error("cannot read", local.display(), e),
             Failed::Write(e) => self.guest_io(&awaiting, e),
         })?;
@@ -663,8 +671,8 @@ impl Remote {
 // Reading =============================================================================================================
 
 impl Remote {
-    /// Streams the guest file `remote` into the new host file `temp`.
-    pub(super) async fn download(self, remote: String, temp: PathBuf) -> Result<()> {
+    /// Streams the guest file `remote` into the new host file `temp`, telling `moved` how much comes at a time.
+    pub(super) async fn download(self, remote: String, temp: PathBuf, moved: Moved) -> Result<()> {
         let awaiting = format!("cannot read the guest file {remote}", remote = self.shown(&remote));
         let file = self
             .session
@@ -677,7 +685,7 @@ impl Remote {
             .open(&temp)
             .await
             .map_err(|e| local_error("cannot create", temp.display(), e))?;
-        pump(file, &mut local).await.map_err(|failed| match failed {
+        pump(file, &mut local, &moved).await.map_err(|failed| match failed {
             Failed::Read(e) => self.guest_io(&awaiting, e),
             Failed::Write(e) => local_error("cannot write", temp.display(), e),
         })?;

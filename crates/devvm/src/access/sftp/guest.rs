@@ -21,11 +21,12 @@ pub(super) struct GuestSide<'a> {
 
 impl GuestSide<'_> {
     /// Streams the guest file `from` into the new host file `temp`, which becomes `to`.
-    pub(super) fn download(&self, from: &str, temp: &Path, to: &str) -> Result<()> {
+    pub(super) fn download(&self, from: &str, temp: &Path, to: &str, moved: &mut dyn FnMut(u64)) -> Result<()> {
         let (from, temp) = (from.to_owned(), temp.to_owned());
-        self.sftp.call(
+        self.sftp.call_counting(
             &format!("copying the guest file {} to {}", self.sftp.remote.shown(&from), to),
-            move |remote| remote.download(from, temp),
+            moved,
+            move |remote, bytes| remote.download(from, temp, bytes),
         )
     }
 }
@@ -157,12 +158,14 @@ impl Receives<HostSide<'_>> for GuestSide<'_> {
         executable: bool,
         mtime: Option<u32>,
         to: &String,
+        moved: &mut dyn FnMut(u64),
     ) -> Result<()> {
-        self.sftp.call(
+        self.sftp.call_counting(
             &format!("copying {} to the guest path {}", source.show(from), self.show(to)),
+            moved,
             {
                 let (from, to) = (from.clone(), to.clone());
-                move |remote| remote.put_file(from, to, executable, mtime)
+                move |remote, bytes| remote.put_file(from, to, executable, mtime, bytes)
             },
         )
     }

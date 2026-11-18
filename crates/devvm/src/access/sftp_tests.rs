@@ -1534,6 +1534,34 @@ fn a_copy_out_is_one_task_that_ends_at_the_bytes_it_moved(#[fixture(unicode_home
     assert_eq!(*ended, Some(Outcome::Finished));
 }
 
+/// One file of 3 MiB: its task reports positions before the file is whole.
+const BIG: usize = 3 << 20;
+
+fn assert_reported_while_written(tasks: &[(String, Total, Vec<u64>, Option<Outcome>)]) {
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let (_, total, positions, ended) = &tasks[0];
+    assert_eq!(*total, Total::Bytes(BIG as u64));
+    assert!(positions.iter().any(|at| *at < BIG as u64), "only at the end: {positions:?}");
+    assert_eq!(positions.last(), Some(&(BIG as u64)), "{positions:?}");
+    assert_eq!(*ended, Some(Outcome::Finished));
+}
+
+#[skuld::test]
+fn a_large_file_copied_in_reports_bytes_as_they_are_written(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let src = env.host_file("big.bin", &vec![7u8; BIG]);
+    env.copy_in(&src, "/big.bin").unwrap();
+    assert_reported_while_written(&copy_tasks(&env));
+}
+
+#[skuld::test]
+fn a_large_file_copied_out_reports_bytes_as_they_are_written(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("big.bin", &vec![7u8; BIG]);
+    env.copy_out("/big.bin", &env.local.join("big.bin")).unwrap();
+    assert_reported_while_written(&copy_tasks(&env));
+}
+
 #[skuld::test]
 fn a_copy_with_no_bytes_to_count_is_announced_as_a_note(#[fixture(unicode_home)] home: &Path) {
     let env = Env::new(home);
@@ -2560,9 +2588,10 @@ fn pump_tells_which_side_failed() {
     let data = vec![9u8; 3 * CHUNK + 5];
     let outcome = crate::access::runtime::run("pumping", async move {
         let mut copied = Vec::new();
-        let ok = pump(&data[..], &mut copied).await;
-        let read = pump(Broken, &mut Vec::new()).await;
-        let write = pump(&data[..], Broken).await;
+        let (moved, _unheard) = tokio::sync::mpsc::unbounded_channel();
+        let ok = pump(&data[..], &mut copied, &moved).await;
+        let read = pump(Broken, &mut Vec::new(), &moved).await;
+        let write = pump(&data[..], Broken, &moved).await;
         (ok.is_ok() && copied == data, read, write)
     })
     .unwrap();

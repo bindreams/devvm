@@ -71,9 +71,17 @@ pub(super) trait CopySide {
 /// A [`CopySide`] that can take files from the side `S`. The two directions move bytes differently, and each reports
 /// its own steps.
 pub(super) trait Receives<S: CopySide>: CopySide {
-    /// Writes the file `from` of `source` to `to` through a temporary file, with the given execute bit and time.
-    fn put_file(&self, source: &S, from: &S::Path, executable: bool, mtime: Option<u32>, to: &Self::Path)
-    -> Result<()>;
+    /// Writes the file `from` of `source` to `to` through a temporary file, with the given execute bit and time. Tells
+    /// `moved` how many bytes each chunk written was.
+    fn put_file(
+        &self,
+        source: &S,
+        from: &S::Path,
+        executable: bool,
+        mtime: Option<u32>,
+        to: &Self::Path,
+        moved: &mut dyn FnMut(u64),
+    ) -> Result<()>;
 
     /// A copy of `from` to `to` in a sentence, for its progress.
     fn describe(&self, from: &str, to: &str) -> String;
@@ -157,8 +165,16 @@ fn put_dir<D: CopySide>(dst: &D, path: &D::Path, follow: bool, what: &str) -> Re
     }
 }
 
-/// Makes `to` the tree entry `kind` copied from `from`. Returns whether it made a directory.
-fn put_item<S, D>(src: &S, dst: &D, kind: &Kind, from: &S::Path, to: &D::Path) -> Result<bool>
+/// Makes `to` the tree entry `kind` copied from `from`, telling `moved` the size of each chunk of a file. Returns
+/// whether it made a directory.
+fn put_item<S, D>(
+    src: &S,
+    dst: &D,
+    kind: &Kind,
+    from: &S::Path,
+    to: &D::Path,
+    moved: &mut dyn FnMut(u64),
+) -> Result<bool>
 where
     S: CopySide,
     D: Receives<S>,
@@ -167,7 +183,7 @@ where
     match kind {
         Kind::Dir { .. } => put_dir(dst, to, false, &what),
         Kind::Link { target, to_dir } => dst.put_link(target, *to_dir, to, &what).map(|()| false),
-        Kind::File { executable, mtime, .. } => dst.put_file(src, from, *executable, *mtime, to).map(|()| false),
+        Kind::File { executable, mtime, .. } => dst.put_file(src, from, *executable, *mtime, to, moved).map(|()| false),
     }
 }
 
@@ -258,11 +274,12 @@ where
         progress.debug(&announcement);
         Some(progress.task(what_moves, Total::Bytes(bytes)))
     };
-    let mut moved = 0u64;
-    let mut moved_by = |kind: &Kind| {
-        if let (Kind::File { size, .. }, Some(task)) = (kind, &task) {
-            moved = moved.saturating_add(*size);
-            task.set(moved);
+    // What the files have moved so far, as they are written; a file that grew since the walk does not pass the total.
+    let mut so_far = 0u64;
+    let mut moved = |chunk: u64| {
+        if let Some(task) = &task {
+            so_far = so_far.saturating_add(chunk);
+            task.set(so_far.min(bytes));
         }
     };
     for note in plan::time_notes(&rules, &top, &items, &created, &source_path) {
@@ -279,8 +296,7 @@ where
             }
             for item in &items {
                 let to = dest_path(&item.rel);
-                let item_made = put_item(src, dst, &item.kind, &src.join_all(from, &item.rel), &to)?;
-                moved_by(&item.kind);
+                let item_made = put_item(src, dst, &item.kind, &src.join_all(from, &item.rel), &to, &mut moved)?;
                 if let (true, Kind::Dir { mtime: Some(seconds) }) = (item_made, &item.kind) {
                     made.push((to, *seconds));
                 }
@@ -294,8 +310,7 @@ where
             if let Some(dir) = dst.parent(target) {
                 dst.create_dir(&dir)?;
             }
-            put_item(src, dst, &top, from, target)?;
-            moved_by(&top);
+            put_item(src, dst, &top, from, target, &mut moved)?;
         }
     }
     if let Some(task) = task {

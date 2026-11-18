@@ -435,9 +435,10 @@ impl Receives<GuestSide<'_>> for HostSide<'_> {
         executable: bool,
         mtime: Option<u32>,
         to: &PathBuf,
+        moved: &mut dyn FnMut(u64),
     ) -> Result<()> {
         let temp = temp_beside(to);
-        match source.download(from, &temp, &self.name(to)) {
+        match source.download(from, &temp, &self.name(to), moved) {
             Ok(()) => finish_file(&temp, to, executable, mtime, self),
             Err(e) => Err(without_temporary(e, &temp, self)),
         }
