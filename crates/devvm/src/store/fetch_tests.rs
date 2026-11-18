@@ -354,6 +354,9 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unico
             .any(|e| matches!(e, Event::Status { text, .. } if text == "resuming at 683.6 KiB")),
         "{resumed:?}"
     );
+    let resuming = resumed.iter().position(|e| matches!(e, Event::Status { .. })).unwrap();
+    let first_advance = resumed.iter().position(|e| matches!(e, Event::Advance { .. })).unwrap();
+    assert!(resuming < first_advance, "\"resuming\" is said before the first position: {resumed:?}");
     assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
 }
 

@@ -241,8 +241,8 @@ impl Fetcher {
             total.map_or(Total::Unknown, Total::Bytes),
         );
         if from > 0 {
-            task.set(from);
             task.status(format!("resuming at {}", human_bytes(from)));
+            task.set(from);
         }
 
         let mut buffer = vec![0u8; 64 * 1024];
