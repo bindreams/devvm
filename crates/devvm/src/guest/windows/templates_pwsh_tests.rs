@@ -10,13 +10,13 @@ use quick_xml::events::Event;
 use super::{NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, answer_file, disk_files};
 use crate::guest::windows::templates::templates_tests::inputs;
 use crate::guest::windows::wrap::literal;
-use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, run, run_with, shown};
+use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, Search, run, run_with, shown};
 use crate::test_groups::{Group, pwsh_wrap};
 
 /// `script` in Windows PowerShell 5.1 (`powershell.exe`), the PowerShell the guest's first-logon command and bootstrap
 /// run in.
 fn run_windows_powershell(script: &str) -> Output {
-    run_with("powershell.exe", script, None, None)
+    run_with("powershell.exe", script, None, Search::Caller)
 }
 
 /// The PowerShells that run each script on the guest: the first-logon command runs `bootstrap.ps1` (5.1); the tasks it
@@ -51,7 +51,7 @@ fn parse_errors(exe: &str, dir: &std::path::Path, name: &str, text: &[u8]) -> Ou
         exe,
         &parse_errors_script("ParseFile", &path.display().to_string()),
         None,
-        None,
+        Search::Caller,
     )
 }
 

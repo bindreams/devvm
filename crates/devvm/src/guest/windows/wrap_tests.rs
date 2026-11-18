@@ -1,7 +1,7 @@
 //! Golden tests of the script `wrap` builds. What the script does in a real PowerShell is checked in
 //! `wrap_pwsh_tests.rs`.
 
-use super::{LINE_LIMIT, NOT_IN_SESSION, command_line_lengths, literal, session_check, wrap};
+use super::{LINE_LIMIT, NOT_IN_SESSION, POWERSHELL_COMMAND, command_line_lengths, literal, session_check, wrap};
 use crate::{Command, ErrorKind, RunAs};
 
 fn command(argv: &[&str]) -> Command {
@@ -10,6 +10,11 @@ fn command(argv: &[&str]) -> Command {
 
 fn script(argv: &[&str]) -> String {
     wrap(&command(argv)).unwrap()
+}
+
+/// What the message says for `name`, a PowerShell command.
+pub(crate) fn hint(name: &str) -> String {
+    format!("devvm: {name}{POWERSHELL_COMMAND}")
 }
 
 #[skuld::test]
@@ -67,11 +72,20 @@ fn a_program_that_does_not_name_cmd_carries_no_cmd_command_line() {
 #[skuld::test]
 fn wrap_resolves_argv0_as_an_application_never_a_cmdlet() {
     let text = script(&["Get-ChildItem", "x"]);
-    assert!(text.contains("$app = Find-Program 'Get-ChildItem'\n"), "{text}");
+    assert!(
+        text.contains("$program = 'Get-ChildItem'\n$app = Find-Program $program\n"),
+        "{text}"
+    );
     // The name is looked up as the file it is: PATH and PATHEXT, with no wildcard reading of `[` or `*`.
     assert!(text.contains("[IO.File]::Exists("), "{text}");
+    // `Get-Command` is only in the branch that explains a name that is not found; it never decides what runs.
+    let (found, not_found) = text.split_once("if (-not $app) {").unwrap();
     assert!(
-        !text.contains("Get-Command") && !text.contains("WildcardPattern"),
+        !found.contains("Get-Command") && !found.contains("WildcardPattern"),
+        "{text}"
+    );
+    assert!(
+        !not_found.contains("& $app") && !not_found.contains("Invoke-Command"),
         "{text}"
     );
     assert!(
@@ -87,16 +101,17 @@ fn a_program_that_cannot_start_and_a_directory_that_cannot_be_entered_exit_126_n
     let text = wrap(&cmd).unwrap();
     assert!(
         text.contains(
-            "try { Set-Location -LiteralPath 'C:/x' } catch { [Console]::Error.WriteLine('devvm: working directory C:/x: ' + $_.Exception.Message); exit 126 }"
+            "try { Set-Location -LiteralPath $cwd } catch { [Console]::Error.WriteLine('devvm: working directory ' + $cwd + ': ' + $_.Exception.Message); exit 126 }"
         ),
         "{text}"
     );
     assert!(
         text.contains(
-            "try { $p = [Diagnostics.Process]::Start($psi) } catch { [Console]::Error.WriteLine('devvm: it''s a tool: ' + $_.Exception.Message); exit 126 }"
+            "try { $p = [Diagnostics.Process]::Start($psi) } catch { [Console]::Error.WriteLine('devvm: ' + $program + ': ' + $_.Exception.Message); exit 126 }"
         ),
         "{text}"
     );
+    assert!(text.contains("$program = 'it''s a tool'\n"), "{text}");
 }
 
 #[skuld::test]
@@ -104,10 +119,8 @@ fn wrap_sets_the_working_directory_literally() {
     let mut cmd = command(&["tool"]);
     cmd.cwd = Some("C:\\a b\\it's [x]*".to_owned());
     let text = wrap(&cmd).unwrap();
-    assert!(
-        text.contains("Set-Location -LiteralPath 'C:\\a b\\it''s [x]*'"),
-        "{text}"
-    );
+    assert!(text.contains("$cwd = 'C:\\a b\\it''s [x]*'\n"), "{text}");
+    assert!(text.contains("Set-Location -LiteralPath $cwd"), "{text}");
     assert!(
         text.contains("$psi.WorkingDirectory = (Get-Location).ProviderPath"),
         "{text}"
@@ -125,12 +138,79 @@ fn wrap_sets_the_working_directory_literally() {
 #[skuld::test]
 fn wrap_exits_127_naming_a_missing_program() {
     let text = script(&["no such tool"]);
+    assert!(text.contains("$program = 'no such tool'\n"), "{text}");
+    assert_eq!(text.matches("exit 127").count(), 1, "{text}");
+    let from = text.find("if (-not $app) {\n").unwrap();
+    let block = &text[from..text.find("exit 127 }\n").unwrap() + "exit 127 }\n".len()];
+    assert_eq!(block.matches('{').count(), block.matches('}').count(), "{block}");
+    assert!(block.contains("': command not found'"), "{block}");
+}
+
+#[skuld::test]
+fn a_name_that_is_a_powershell_command_exits_127_naming_pwsh_c() {
+    let text = script(&["Get-ComputerInfo", "-Property", "CsName"]);
+    // A bare name is looked up as a command, not read as a wildcard; a name with a path is a script by its file.
     assert!(
-        text.contains(
-            "if (-not $app) { [Console]::Error.WriteLine('devvm: no such tool: command not found'); exit 127 }"
-        ),
+        text.contains("Get-Command ([WildcardPattern]::Escape($program))"),
         "{text}"
     );
+    // No variable of the search is read: a profile's own, or none under `Set-StrictMode`, cannot change the answer.
+    assert!(!text.contains("$full") && !text.contains("$script:"), "{text}");
+    // The hint is the shared text, once, with no example command or guest name.
+    assert_eq!(text.matches(POWERSHELL_COMMAND).count(), 1, "{text}");
+    assert!(
+        !text.contains("$run") && !text.contains("-replace") && !text.contains("-match"),
+        "{text}"
+    );
+    assert_eq!(text.matches("exit 127").count(), 1, "{text}");
+    assert_eq!(text.matches("Get-Command").count(), 1, "{text}");
+}
+
+#[skuld::test]
+fn the_lookup_finds_no_function_of_the_script_and_a_lookup_that_throws_is_told() {
+    let text = script(&["Find-Program"]);
+    let (_, lookup) = text.split_once("if (-not $app) {").unwrap();
+    let at = |needle: &str| lookup.find(needle).unwrap_or_else(|| panic!("{needle} is in {lookup}"));
+    // The function the script defined is removed before the lookup, in the `try`: a failure of it is told by the `catch`
+    // and the lookup is not made.
+    let (try_at, remove, get, catch, end) = (
+        at("try {"),
+        at("Remove-Item"),
+        at("Get-Command"),
+        at("} catch {"),
+        at("exit 127"),
+    );
+    assert!(
+        try_at < remove && remove < get && get < catch && catch < end,
+        "{lookup}"
+    );
+    // A lookup that throws is said, and the status is still the one 127 after it.
+    assert!(lookup[catch..end].contains("lookup failed"), "{lookup}");
+    assert_eq!(lookup.matches("exit 127").count(), 1, "{lookup}");
+}
+
+#[skuld::test]
+fn argv0_and_the_working_directory_are_in_the_script_once_for_a_user_and_for_an_elevated_command() {
+    for run_as in [RunAs::User, RunAs::Elevated] {
+        let mut cmd = command(&["zqzqzqzq", "arg"]);
+        cmd.cwd = Some(r"C:\wxwxwxwx".to_owned());
+        cmd.run_as = run_as;
+        let text = wrap(&cmd).unwrap();
+        assert_eq!(text.matches("zqzqzqzq").count(), 1, "{run_as:?}: {text}");
+        assert_eq!(text.matches("wxwxwxwx").count(), 1, "{run_as:?}: {text}");
+    }
+}
+
+#[skuld::test]
+fn a_command_with_a_long_program_name_or_working_directory_still_wraps() {
+    // argv[0] is written once: written twice, 16,000 characters would be 32,000 units, which with the fixed text of the
+    // script is over the limit.
+    assert!(wrap(&command(&[&"x".repeat(16_000), "arg"])).is_ok());
+    // The working directory is written once: twice, 16,000 characters would be 32,000 units, which with the fixed text
+    // of the script is over the limit.
+    let mut cmd = command(&["tool"]);
+    cmd.cwd = Some(format!(r"C:\{}", "d".repeat(16_000)));
+    assert!(wrap(&cmd).is_ok());
 }
 
 #[skuld::test]
@@ -153,6 +233,22 @@ fn wrap_starts_with_a_session_check_that_exits_126_in_session_0() {
                 assert!(check < at, "{later} comes before the session check in {text}");
             }
         }
+    }
+}
+
+#[skuld::test]
+fn everything_the_command_assigns_is_in_a_child_scope_after_the_session_check() {
+    let text = script(&["tool", "arg"]);
+    let body = format!("{}& {{\n$ErrorActionPreference = 'Stop'\n", session_check());
+    assert!(text.starts_with(&body), "{text}");
+    // The block ends the script, so no assignment of the command is made outside it.
+    assert!(text.ends_with("exit $p.ExitCode\n}\n"), "{text}");
+    assert_eq!(text.matches("& {\n").count(), 1, "{text}");
+    for assigned in ["$program = ", "$app = ", "$psi = ", "$p = ", "$w = "] {
+        assert!(
+            text.find(assigned).unwrap() > body.len(),
+            "{assigned} is outside the block in {text}"
+        );
     }
 }
 
@@ -196,10 +292,15 @@ fn wrap_refuses_an_empty_argv_a_nul_and_an_oversize_line() {
     }
 }
 
-/// `pwsh -Command` of a comment of `n` characters: the command of the guest test of the limit.
+/// `pwsh -Command` of a comment, run in `C:\` or `C:\.`: the command of the guest test of the limit, which makes the
+/// script (and so a command line of the guest) exactly `n` units longer than it is for `n` = 0. The comment is in the script
+/// twice (the list and the batch form), so each of its characters moves the line by 2; the working directory is there
+/// once, and the one character that tells the two directories apart makes the line odd.
 pub(crate) fn padded(n: usize) -> Command {
-    let text = format!("'ok' # {}", "a".repeat(n));
-    command(&["pwsh", "-NoProfile", "-NonInteractive", "-Command", &text])
+    let text = format!("'ok' # {}", "a".repeat(n / 2));
+    let mut cmd = command(&["pwsh", "-NoProfile", "-NonInteractive", "-Command", &text]);
+    cmd.cwd = Some(if n.is_multiple_of(2) { r"C:\" } else { r"C:\." }.to_owned());
+    cmd
 }
 
 /// `CreateProcess` takes 32,767 units of command line including the terminating NUL, so a line of 32,767 units is

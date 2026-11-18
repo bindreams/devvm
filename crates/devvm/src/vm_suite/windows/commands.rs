@@ -11,10 +11,10 @@ use crate::access::sftp::sftp_tests::tree;
 use crate::guest::GuestOs;
 use crate::guest::windows::WindowsGuest;
 use crate::guest::windows::wrap::LINE_LIMIT;
-use crate::guest::windows::wrap::wrap_tests::{longest_fit, padded};
+use crate::guest::windows::wrap::wrap_tests::{hint, longest_fit, padded};
 use crate::test_support::fixtures::unicode_home;
 use crate::vm_suite::exec::InGuest;
-use crate::vm_suite::exec::cases::{self, Os};
+use crate::vm_suite::exec::cases::{self, Case, Ended, ExecTarget, Os};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{ANSWER_BOUND, awaiting, step};
 use crate::{BuildOptions, Error, ErrorKind, ExitStatus, Guest};
@@ -40,6 +40,34 @@ fn windows_argv_round_trips_hostile_arguments(#[fixture(shared_windows_guest)] g
 fn windows_cwd_and_elevated_cwd_are_honored(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
     cases::cwd_is_honored(&InGuest(&guest.vm, Os::Windows));
     cases::elevated_cwd_is_honored(&InGuest(&guest.vm, Os::Windows));
+}
+
+#[skuld::test]
+fn windows_a_powershell_command_as_argv0_exits_127_naming_pwsh_c(
+    #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
+) {
+    let target = InGuest(&guest.vm, Os::Windows);
+    // A cmdlet, and `dir`, which is a PowerShell alias and not the `cmd` builtin of the same name.
+    for name in ["Get-ComputerInfo", "dir"] {
+        let seen = target.run(&Case::new(&[name]));
+        assert_eq!(seen.ended, Ended::Code(127), "{name}: {}", seen.stderr_text());
+        assert!(
+            seen.stderr_text().contains(&hint(name)),
+            "{name}: {}",
+            seen.stderr_text()
+        );
+    }
+    // The advice works: with `pwsh -c` a cmdlet runs (a cheap one: the hint above is the only use of the slow one).
+    let seen = target.run(&Case::new(&["pwsh", "-c", "Get-Date"]));
+    assert_eq!(seen.ended, Ended::Code(0), "{}", seen.stderr_text());
+    // A name that is not a command is not found, with the old message.
+    let seen = target.run(&Case::new(&["no-such-program-xyz"]));
+    assert_eq!(seen.ended, Ended::Code(127), "{}", seen.stderr_text());
+    assert!(
+        seen.stderr_text().contains("no-such-program-xyz: command not found"),
+        "{}",
+        seen.stderr_text()
+    );
 }
 
 // cp ==================================================================================================================
