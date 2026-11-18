@@ -176,8 +176,9 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
 - `product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` in `from:` installs with another key instead: your own, or one for an
   edition devvm does not know. An edition with neither is refused before anything boots, naming `product-key`. An
   evaluation edition takes no key, and a recipe that gives it one is refused. devvm checks the key's shape only, not
-  which edition it is for. A key of your own (retail or MAK) is a secret: keep a recipe holding it outside the
-  repository, so it is neither committed nor copied in by `copy`.
+  which edition it is for. A key of your own (retail or MAK) is a secret: put it in a base recipe outside the
+  repository (the `../win/windows.devvm.yaml` of [A Windows guest](#a-windows-guest)) that the project's recipe
+  starts `from:`, so it is neither committed nor copied in by `copy: git-tracked`.
 - Windows installs unactivated; activate it however you are licensed.
 - x64 images only. The install language is the image's default language.
 - Keep the ISO at the recipe's path. devvm never copies it, and a rebuild before the base expires reads it again.
