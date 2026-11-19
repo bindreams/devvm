@@ -147,6 +147,34 @@ fn an_instance_whose_vm_cannot_be_looked_for_is_left_for_the_next_pass(#[fixture
 }
 
 #[skuld::test]
+fn an_unreadable_process_record_is_left_for_the_person_and_not_promised_to_the_next_command(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = fixture_with(home, Some(StubBackend::new(Attach::Process)));
+    let owned = create(&fx, Some("foo"));
+    let mut machine = dead_machine(Vec::new());
+    machine.process.version = cosca::identity::RECORD_VERSION + 1;
+    set_machine(owned.dir(), machine);
+    drop(owned);
+
+    let report = fx.registry.reap();
+
+    assert!(report.reaped.is_empty());
+    let [warning] = &report.warnings[..] else {
+        panic!("{:?}", report.warnings);
+    };
+    assert!(
+        warning.contains("cannot check the VM of instance foo") && warning.contains("clear the `machine` field"),
+        "{warning}"
+    );
+    assert!(
+        !warning.contains("next devvm command"),
+        "the next command fails the same way: {warning}"
+    );
+    assert_eq!(names(&root(&fx)), ["foo"]);
+}
+
+#[skuld::test]
 fn an_instance_with_a_recorded_vm_is_left_alone_when_the_build_has_no_backend(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture_with(home, None);
     let owned = create(&fx, Some("foo"));

@@ -174,7 +174,7 @@ fn await_ready(
     if let Err(e) = write_ssh_entry(engine, dir, &target) {
         warn_for(engine, dir)(format!("cannot write the ssh configuration: {}", e.message()));
     }
-    connect_ready(engine, guest, dir.name(), &target, running)
+    connect_ready(engine, guest, dir.name(), &target, running).map_err(|e| dir.with_recovery(e, running))
 }
 
 /// A recorded machine that must not run after all: kills it and clears the record that names it. `cause` is why the

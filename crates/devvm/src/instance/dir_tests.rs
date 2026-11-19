@@ -274,15 +274,62 @@ fn finding_a_machine_whose_process_record_cannot_be_read_says_how_to_recover(#[f
         .expect("a record this build cannot read is not read as not running");
 
     let text = error.to_string();
+    let pid = machine.process.pid;
+    let instance_dir = dir.path().display().to_string();
     for part in [
         "instance foo".to_owned(),
-        format!("end process {}", machine.process.pid),
+        format!("cannot tell whether the VM process {pid} is running"),
+        format!("check that process {pid}"),
+        instance_dir,
         "clear the `machine` field".to_owned(),
         dir.path().join("record.json").display().to_string(),
     ] {
         assert!(text.contains(&part), "{part:?} not in: {text}");
     }
-    for part in ["delete", "devvm rm"] {
+    let check = text.find("check that process").unwrap();
+    let end = text.find("end it").expect("it says to end the process");
+    assert!(check < end, "the process is checked before it is ended: {text}");
+    for part in ["delete", "devvm rm", "cannot be used here", "boot_id"] {
         assert!(!text.contains(part), "{part:?} in: {text}");
     }
+}
+
+/// Only a record that cannot be read has a way out by hand: a host that cannot read its own boot session says what it
+/// could not read and nothing about the record.
+#[skuld::test]
+fn only_a_record_that_cannot_be_read_gets_the_way_out_by_hand(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let sock = Sock::new();
+    let machine = MachineRecord {
+        process: cosca::identity::ProcessId::current().to_record().unwrap(),
+        qmp: sock.endpoint.path().display().to_string(),
+        ssh: Vec::new(),
+        serial_log: sock.endpoint.path().with_file_name("serial.log"),
+        leftovers: Vec::new(),
+        claim: Some(sock.claim.clone()),
+        no_reboot: false,
+    };
+    let host_failure = crate::contain::refused_record(
+        machine.process.pid,
+        cosca::error::Error::IdentityRecord {
+            kind: cosca::error::RecordErrorKind::ScopeUnreadable,
+            detail: "cannot read the boot id".into(),
+            source: None,
+        },
+    )
+    .err()
+    .unwrap();
+    let message = host_failure.message().to_owned();
+
+    let error = dir.with_recovery(host_failure, &machine);
+
+    assert_eq!(error.message(), message);
+    assert!(!error.has_next_step());
+    let unrelated = dir.with_recovery(
+        crate::Error::new(crate::ErrorKind::Io, "the OS refused the query"),
+        &machine,
+    );
+    assert_eq!(unrelated.message(), "the OS refused the query");
+    assert!(!unrelated.has_next_step());
 }

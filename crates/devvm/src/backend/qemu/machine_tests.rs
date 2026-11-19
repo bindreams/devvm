@@ -135,17 +135,24 @@ fn a_record_whose_version_this_build_does_not_know_is_an_error_from_attach_and_f
         let text = error.to_string();
         let pid = record.process.pid;
         assert!(
-            text.contains(&format!("cannot tell whether the VM process {pid} is running")),
+            text.contains(&format!(
+                "cannot tell whether the VM process {pid} is running: its record has a format this devvm does not read"
+            )),
             "{text}"
         );
+        for dump in [
+            "ProcessIdRecord",
+            "boot_id",
+            "record v",
+            "cannot be used here",
+            "not usable here",
+        ] {
+            assert!(!text.contains(dump), "{dump:?}, a dump of the record, in: {text}");
+        }
+        let source = std::error::Error::source(&error).expect("the cosca error is the source");
         assert!(
-            text.contains("unknown record format version"),
-            "cosca's own words are kept: {text}"
-        );
-        assert!(!text.contains("ProcessIdRecord"), "no dump of the record: {text}");
-        assert!(
-            std::error::Error::source(&error).is_some(),
-            "the cosca error is the source"
+            source.to_string().contains("unknown record format version"),
+            "cosca's own words are kept for debugging: {source}"
         );
     }
 }

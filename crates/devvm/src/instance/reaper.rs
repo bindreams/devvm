@@ -290,12 +290,15 @@ impl Registry {
                 // Not running, or the pid now belongs to another process: nothing of ours to kill.
                 Ok(None) => {}
                 Err(e) => {
+                    // A step by hand is not a retry: the next command fails the same way until it is taken.
+                    let left = if e.has_next_step() {
+                        ""
+                    } else {
+                        "; it is left for the next devvm command"
+                    };
                     report.warn(
                         self,
-                        format!(
-                            "cannot check the VM of instance {name}: {}; it is left for the next devvm command",
-                            e.message()
-                        ),
+                        format!("cannot check the VM of instance {name}: {}{left}", e.message()),
                     );
                     return;
                 }
