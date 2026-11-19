@@ -672,7 +672,9 @@ fn a_late_runner_on_a_request_whose_claim_is_there_leaves_it(#[fixture(native_he
 }
 
 #[skuld::test]
-fn the_sweep_removes_the_caller_and_the_claim_after_every_other_file(#[fixture(native_helper)] helper: &NativeHelper) {
+fn the_sweep_tries_a_held_request_once_and_leaves_it_for_the_next_sweep(
+    #[fixture(native_helper)] helper: &NativeHelper,
+) {
     let run = run_runner(
         helper,
         NO_REQUEST,
@@ -686,9 +688,9 @@ fn the_sweep_removes_the_caller_and_the_claim_after_every_other_file(#[fixture(n
             file: "stdout",
         }),
     );
-    // The removal that failed on `stdout` had removed the files before it, and neither `caller` nor `claim`.
-    assert_eq!(run.at_first_pause, ["caller", "claim", "stdout"]);
-    assert_eq!(run.left, Vec::<String>::new());
+    // The sweep tries once and does not wait on another request: what is left is the next sweep's.
+    assert_eq!(run.at_first_pause, Vec::<String>::new());
+    assert_eq!(run.left, ["swept"]);
 }
 
 #[skuld::test]

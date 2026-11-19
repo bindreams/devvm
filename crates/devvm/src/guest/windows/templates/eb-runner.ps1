@@ -28,8 +28,8 @@ Add-Type -LiteralPath (Join-Path $PSScriptRoot @@NATIVE_DLL@@)
 
 @@!EB_REMOVE_REQUEST@@
 # Removes a request, or says on stderr why it stays: what is left is the sweep's of the next runner, or the boot task's.
-function Remove-RequestOrWarn([string]$Dir) {
-    try { Remove-Request $Dir }
+function Remove-RequestOrWarn([string]$Dir, [switch]$Once) {
+    try { Remove-Request $Dir -Once:$Once }
     catch { [Console]::Error.WriteLine("devvm: the elevated runner could not remove $Dir`: $($_.Exception.Message)") }
 }
 # Whether a request's caller has ended: its process is gone, or the process of that id started at another time. A caller
@@ -64,7 +64,8 @@ foreach ($other in [IO.Directory]::GetDirectories($root)) {
     if ($name -eq $Id) { continue }
     if ($name.EndsWith('.tmp') -and -not [IO.File]::Exists((Join-Path $other $callerName))) { continue }
     if (-not (Test-CallerEnded $other) -or (Test-Held (Join-Path $other $claimName))) { continue }
-    Remove-RequestOrWarn $other
+    # Once: a request another runner or a scanner still holds must not hold up this runner's own.
+    Remove-RequestOrWarn $other -Once
 }
 
 $dir = Join-Path $root $Id

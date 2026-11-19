@@ -79,7 +79,8 @@ pub(super) const PAUSE_MILLISECONDS: u32 = 200;
 /// runner. `Remove-Request` returns when the directory is gone. It removes every file but `caller` and `claim`, then
 /// `caller`, then `claim`, then the directory; a try that fails because a file is open elsewhere (sharing violation 32,
 /// lock violation 33, directory not empty 145), or because an entry is already gone, is repeated from the top after a
-/// pause. Any other error (access denied included: measured permanent, not transient) is thrown.
+/// pause; with `-Once` it returns instead, and what is left is the next sweep's. Any other error (access denied
+/// included: measured permanent, not transient) is thrown.
 ///
 /// Every other removal of a request is this one, so a request that is removed only in part is in one of these states,
 /// and each is safe:
@@ -96,7 +97,7 @@ const REMOVE_REQUEST: &str = r#"function Test-RemovalPending($failure) {
     if ($failure -is [Management.Automation.ItemNotFoundException] -or $failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
     return ($failure -is [IO.IOException]) -and (($failure.HResult -band 0xFFFF) -in 32, 33, 145)
 }
-function Remove-Request([string]$path) {
+function Remove-Request([string]$path, [switch]$Once) {
     $last = (Join-Path $path {CALLER}), (Join-Path $path {CLAIM})
     while ([IO.Directory]::Exists($path)) {
         try {
@@ -107,6 +108,7 @@ function Remove-Request([string]$path) {
         }
         catch {
             if (-not (Test-RemovalPending $_.Exception)) { throw }
+            if ($Once) { return }
             Start-Sleep -Milliseconds {PAUSE}
         }
     }
