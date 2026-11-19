@@ -4,6 +4,9 @@ name: QEMU
 # A pull request runs it for checking. draft-release-qemu.yaml calls it, then drafts a release from its artifacts.
 
 on:
+  push:
+    branches:
+      - exp/n1-synth-mask
   pull_request:
     paths:
       - "qemu/**"
