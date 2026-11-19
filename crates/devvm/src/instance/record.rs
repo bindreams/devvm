@@ -31,9 +31,25 @@ const MARKER_FILE: &str = "owner.json";
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct InstanceId([u8; 16]);
 
+const HOSTNAME_PREFIX: &str = "devvm-";
+/// The hex digits of the id in a hostname: its first 4 bytes.
+const HOSTNAME_BYTES: usize = 4;
+
+/// The length of a hostname made by [`InstanceId::hostname`].
+const HOSTNAME_LEN: usize = HOSTNAME_PREFIX.len() + 2 * HOSTNAME_BYTES;
+
+// A Windows computer name has at most 15 characters.
+const _: () = assert!(HOSTNAME_LEN <= 15);
+
 impl InstanceId {
     pub(crate) fn random() -> InstanceId {
         InstanceId(random::bytes())
+    }
+
+    /// The name of the machine in its guest, Linux or Windows: `devvm-` and the first 8 hex digits of the id,
+    /// [`HOSTNAME_LEN`] characters.
+    pub(crate) fn hostname(&self) -> String {
+        format!("{HOSTNAME_PREFIX}{}", hex::encode(&self.0[..HOSTNAME_BYTES]))
     }
 }
 

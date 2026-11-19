@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use super::bounds::BOOT_BOUND;
-use super::{WindowsBase, elevated_facts, facts, ran, user_facts, windows_base, windows_options};
+use super::{WindowsBase, elevated_facts, facts, printed, ran, user_facts, windows_base, windows_options};
 use crate::engine::Engine;
 use crate::engine::keys::{read_record, running_of};
 use crate::engine::ready::reconnect_after_reset;
@@ -91,11 +91,12 @@ fn restart_in_place(engine: &Arc<Engine>, instance: &Instance) {
     .unwrap();
 }
 
-/// A new instance called `name`, `check` on its first boot and again after each restart, with the way it began named.
+/// A new instance called `name`, `check` on the first boot that answers and again after each restart, with the way it
+/// began named.
 fn across_restarts(base: &WindowsBase, name: &str, mut check: impl FnMut(&Up, &str)) {
     step(&format!("booting {name}"));
     let up = Up::new(&base.image, name, &windows_options()).unwrap();
-    check(&up, "first boot");
+    check(&up, "the first boot that answers");
     for kind in RESTARTS {
         restart(&base.engine, &up, kind);
         step(&format!("checking after {kind:?}"));
@@ -109,6 +110,40 @@ fn windows_the_first_command_after_start_stop_start_and_reboot_is_in_session_1(
 ) {
     across_restarts(base, "w-first", |up, after| {
         assert_eq!(facts(&**up, RunAs::User), user_facts(), "after {after}");
+    });
+}
+
+/// The computer's name as the guest says it to a program (`hostname`), to a new session of the user
+/// (`$env:COMPUTERNAME`) and to .NET: all three read it from the running system.
+const NAMES: &str = "\"$(hostname) $env:COMPUTERNAME $([Environment]::MachineName)\"";
+
+/// The domain autologon logs on to; the base build writes `.`. The assert reads whether Winlogon rewrote it after the
+/// rename. A rewrite at the renaming boot's autologon shows as a boot timeout, not as this assert (measured 2026-11-18
+/// on CI: no rewrite).
+const WINLOGON_DOMAIN: &str =
+    r"(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon').DefaultDomainName";
+
+#[skuld::test]
+fn windows_the_computer_is_named_after_the_instance_id_from_the_first_boot_that_answers_and_through_every_restart(
+    #[fixture(windows_base)] base: &WindowsBase,
+) {
+    across_restarts(base, "w-hostname", |up, after| {
+        let want = up.dir().id().hostname();
+        let said = printed(&**up, NAMES);
+        let names: Vec<&str> = said.split(' ').collect();
+        assert_eq!(names.len(), 3, "after {after}: {said}");
+        for name in names {
+            assert!(name.eq_ignore_ascii_case(&want), "after {after}: {said} is not {want}");
+        }
+        // The rename leaves what was recorded at the build working: autologon (a command in the user's session 1, which
+        // exists only if the logon at this boot succeeded) and the elevated runner's task.
+        assert_eq!(facts(&**up, RunAs::User), user_facts(), "after {after}");
+        assert_eq!(facts(&**up, RunAs::Elevated), elevated_facts(), "after {after}");
+        assert_eq!(
+            printed(&**up, WINLOGON_DOMAIN),
+            ".",
+            "Winlogon rewrote DefaultDomainName at an autologon, after {after}"
+        );
     });
 }
 

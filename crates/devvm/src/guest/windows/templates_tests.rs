@@ -23,7 +23,6 @@ pub(super) fn inputs() -> AnswerInputs<'static> {
         image_index: 2,
         language: "de-DE",
         time_zone: "UTC",
-        computer_name: "DEVVM",
         evaluation: true,
         product_key: None,
     }
@@ -97,7 +96,6 @@ fn the_answer_file_renders_deterministically_and_escapes_xml() {
         image_index: 3,
         language: "x<y",
         time_zone: "t&z",
-        computer_name: "n\"m",
         evaluation: false,
         product_key: None,
     };
@@ -115,7 +113,8 @@ fn the_answer_file_renders_deterministically_and_escapes_xml() {
     assert!(!text.contains("a<b>"), "the password is escaped");
     assert!(text.contains("<UILanguage>x&lt;y</UILanguage>"));
     assert!(text.contains("<TimeZone>t&amp;z</TimeZone>"));
-    assert!(text.contains("<ComputerName>n&quot;m</ComputerName>"));
+    // The computer name is not the answer file's: the boot task names each instance at its first boot.
+    assert!(!text.contains("ComputerName"));
     assert!(text.contains("<Key>/IMAGE/INDEX</Key>") && text.contains("<Value>3</Value>"));
     assert!(!text.contains("@@"), "every placeholder is filled");
 
@@ -589,11 +588,38 @@ fn the_guest_activates_an_unlicensed_product_when_the_host_or_its_license_family
 #[skuld::test]
 fn the_license_is_read_after_the_installs_and_the_tasks_and_before_the_work_directory_goes() {
     let bootstrap = rendered("bootstrap.ps1");
-    let tasks = "-Principal (New-ScheduledTaskPrincipal -UserId 'user'";
+    let tasks = "-Principal (New-ScheduledTaskPrincipal -UserId $userSid";
     assert_before(&bootstrap, "ssh-broker.exe\" apply", "$filter = ");
     assert_before(&bootstrap, tasks, "$filter = ");
     assert_before(&bootstrap, "$filter = ", "Remove-Item -LiteralPath $work");
     assert_before(&bootstrap, "Send-Line \"DEVVM-LICENSE=", "Send-Line 'DEVVM-BASE-DONE'");
+}
+
+#[skuld::test]
+fn nothing_the_base_records_carries_the_computers_name_at_the_build() {
+    let bootstrap = rendered("bootstrap.ps1");
+    // Each instance renames the computer at its first boot. Autologon's domain is the local machine, so the logon that
+    // follows the restart does not look for an account of the old name.
+    assert!(bootstrap.contains("Set-ItemProperty -Path $winlogon -Name DefaultDomainName -Value '.'"));
+    assert_before(&bootstrap, "-Name AutoAdminLogon", "-Name DefaultDomainName");
+    // The elevated runner's task is `user`'s by its SID, which no rename changes; a name would record the old computer.
+    assert_before(
+        &bootstrap,
+        "$userSid = ([Security.Principal.NTAccount]::new('user')).Translate(",
+        "-UserId $userSid",
+    );
+    assert!(!bootstrap.contains("-UserId 'user'"));
+    let code = bootstrap.to_lowercase();
+    for name in [
+        "computername",
+        "machinename",
+        "rename-computer",
+        "hostname",
+        "userdomain",
+        "win32_computersystem",
+    ] {
+        assert!(!code.contains(name), "the base records the computer's name ({name})");
+    }
 }
 
 #[skuld::test]
@@ -822,6 +848,76 @@ fn the_boot_task_starts_sshd_last_after_the_agent() {
     assert_eq!(task.matches("Start-Service").count(), 1);
     let after = &task[at(&task, "Start-Service -Name sshd")..];
     assert!(after.trim_end().ends_with('}') && !after.contains("Resize") && !after.contains("Send-Line \"DEVVM-SEED"));
+}
+
+// What the boot task's functions decide is run in `templates_pwsh_tests.rs`; these pin where the boot calls them.
+
+#[skuld::test]
+fn the_boot_task_names_the_computer_from_the_seed_and_restarts_before_anything_else_of_the_boot() {
+    let task = rendered("boot-task.ps1");
+    let call = "$restarting = Set-ComputerNameFromSeed $disk $renamedFile";
+    assert_before(&task, "Find-VolumeRoot 'CIDATA'", call);
+    assert_before(&task, call, "DEVVM-SEED-WRITTEN");
+    assert_before(&task, call, "Start-Service");
+    // Inside the try: a failure of the rename is sent as DEVVM-BOOT-FAILED.
+    assert_before(
+        &task,
+        "try {
+    # Requests the last boot",
+        call,
+    );
+    assert_before(&task, call, "} catch {");
+    assert_before(&task, "} catch {", "DEVVM-BOOT-FAILED=");
+    // The answer is checked as the one bool it is before it ends the boot.
+    assert_before(&task, call, "if ($restarting -isnot [bool])");
+    assert_before(&task, "if ($restarting -isnot [bool])", "if ($restarting) { exit 0 }");
+    assert_before(&task, "if ($restarting) { exit 0 }", "DEVVM-SEED-WRITTEN");
+    // One call, not counting a comment's mention of it.
+    let calls = task
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#') && line.contains("Rename-Computer "))
+        .count();
+    assert_eq!(calls, 1);
+    assert!(
+        task.contains(&format!("$renamedFile = Join-Path '{DEVVM_DIR}' 'renamed-to'")),
+        "{task}"
+    );
+}
+
+#[skuld::test]
+fn the_boot_task_restarts_with_no_cap_and_in_one_place() {
+    let task = rendered("boot-task.ps1");
+    let restart = section(
+        &task,
+        "function Restart-Now",
+        "
+}
+",
+    );
+    assert!(
+        restart.contains("while ($true)") && restart.contains("shutdown.exe /r /f /t 0"),
+        "{restart}"
+    );
+    for bound in ["$tries", "$attempt", "-lt ", "-gt ", "Stopwatch", "Get-Date", "timeout"] {
+        assert!(!restart.contains(bound), "the retry has no cap ({bound}): {restart}");
+    }
+    assert_eq!(task.matches("shutdown.exe /r /f /t 0").count(), 1);
+    assert!(!task.contains("Restart-Computer"));
+}
+
+#[skuld::test]
+fn the_boot_task_opens_the_computer_name_key_read_only_to_flush_it() {
+    let task = rendered("boot-task.ps1");
+    let save = section(
+        &task,
+        "function Save-ComputerName",
+        "
+}
+",
+    );
+    assert!(save.contains(r"Control\ComputerName\ComputerName')"), "{save}");
+    assert!(!save.contains(r"ComputerName', $true)"), "{save}");
+    assert!(save.contains(".Flush()"), "{save}");
 }
 
 #[skuld::test]
@@ -1153,7 +1249,7 @@ fn the_eb_task_is_registered_for_user_with_an_interactive_token_the_highest_run_
         registration.contains("eb-runner.ps1\" $(Arg0)'"),
         "the request id is the task's first argument"
     );
-    assert!(registration.contains("-UserId 'user' -LogonType Interactive -RunLevel Highest"));
+    assert!(registration.contains("-UserId $userSid -LogonType Interactive -RunLevel Highest"));
     assert!(registration.contains(&format!("Register-ScheduledTask -TaskName {}", literal(elevate::TASK))));
     assert!(
         !bootstrap.contains("S4U"),
