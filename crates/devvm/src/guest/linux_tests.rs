@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use crate::backend::fake::{FakeBackend, FakeStorage};
 use crate::backend::{DeviceProfile, DiskBus, NetModel, Video};
-use crate::exit::NullProgress;
 use crate::guest::linux::{LinuxBuilder, LinuxGuest, QemuGuests};
 use crate::guest::windows::builder::{Bounds, WindowsBuilder};
 use crate::guest::{GuestOs, Guests, Readiness};
+use crate::progress::NullProgress;
 use crate::recipe::{Setting, Shell, UacMode};
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_support::fixtures::unicode_home;

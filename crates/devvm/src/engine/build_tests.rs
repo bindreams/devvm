@@ -8,15 +8,15 @@ use std::sync::Arc;
 use crate::access::keys::InstanceKeys;
 use crate::backend::Backend;
 use crate::backend::fake::{FakeBackend, FakeStorage};
-use crate::engine::build::{Lines, guest_destination, root_of};
+use crate::engine::build::{Lines, Tail, guest_destination, root_of};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
-use crate::exit::NullProgress;
 use crate::guest::fake::{FakeGuests, ServedGuests};
 use crate::guest::linux::{LinuxBuilder, QemuGuests};
 use crate::guest::windows::builder::{Bounds, WindowsBuilder};
 use crate::guest::{GuestOs, Guests};
 use crate::host::symlink_metadata_if_present;
+use crate::progress::{Event, Level, NullProgress};
 use crate::recipe::hash::{KeyContext, LayerKey, chain_keys};
 use crate::recipe::{ProductKey, Recipe};
 use crate::store::fetch::{Fetcher, HttpTransport};
@@ -432,12 +432,55 @@ fn an_engine_without_a_backend_cannot_build_and_makes_nothing(#[fixture(unicode_
 /// What `Lines` reports for `chunks` written in turn, then dropped.
 fn lines_reported(chunks: &[&[u8]]) -> Vec<String> {
     let progress = MemoryProgress::default();
-    let mut lines = Lines::new(&progress);
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
     for chunk in chunks {
         lines.write_all(chunk).unwrap();
     }
     drop(lines);
     progress.messages()
+}
+
+#[skuld::test]
+fn step_output_arrives_as_output_events_not_notes() {
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    lines.write_all(b"one\ntwo\n").unwrap();
+    drop(lines);
+    assert_eq!(
+        progress.events(),
+        [
+            Event::Output { line: "one".to_owned() },
+            Event::Output { line: "two".to_owned() },
+        ]
+    );
+    assert!(!progress.events().iter().any(|event| matches!(
+        event,
+        Event::Note {
+            level: Level::Info | Level::Warn,
+            ..
+        }
+    )));
+}
+
+#[skuld::test]
+fn the_tail_keeps_the_last_20_lines_of_both_streams_in_order() {
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let (mut out, mut err) = (Lines::new(&progress, &tail), Lines::new(&progress, &tail));
+    for n in 1..=25 {
+        let stream = if n % 2 == 0 { &mut out } else { &mut err };
+        writeln!(stream, "line {n}").unwrap();
+    }
+    drop((out, err));
+    let expected: Vec<String> = (6..=25).map(|n| format!("line {n}")).collect();
+    assert_eq!(tail.text(), expected.join("\n"));
+}
+
+#[skuld::test]
+fn a_step_that_printed_nothing_has_an_empty_tail() {
+    assert_eq!(Tail::default().text(), "");
 }
 
 #[skuld::test]
@@ -596,4 +639,15 @@ fn a_base_that_ends_now_is_expired_base(#[fixture(unicode_home)] home: &Path) {
     let error = build_with_a_base_that_ends(home, std::time::SystemTime::now());
 
     assert_eq!(error.kind(), ErrorKind::ExpiredBase, "{error}");
+}
+
+#[skuld::test]
+fn step_output_has_no_colour_escapes_for_the_progress_or_the_tail() {
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    lines.write_all(b"\x1b[31merror\x1b[0m: boom\n").unwrap();
+    drop(lines);
+    assert_eq!(tail.text(), "error: boom");
+    assert_eq!(progress.messages(), ["error: boom"]);
 }

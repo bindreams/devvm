@@ -140,7 +140,7 @@ fn the_host_checks_name_the_accelerator_and_the_free_space_of_the_data_and_cache
     );
     assert_eq!(checks[0].outcome, Ok("tcg".to_owned()));
     let data = checks[1].outcome.as_ref().expect("the data directory has room");
-    assert!(data.contains(&bytesize::ByteSize(5 << 30).to_string()), "{data}");
+    assert!(data.contains(&crate::progress::human_bytes(5 << 30)), "{data}");
     assert!(data.contains(&dirs.data.display().to_string()), "{data}");
     let cache = checks[2]
         .outcome
@@ -149,7 +149,7 @@ fn the_host_checks_name_the_accelerator_and_the_free_space_of_the_data_and_cache
     assert!(cache.contains("the disk is gone"), "{cache}");
     assert!(cache.contains(&dirs.cache.display().to_string()), "{cache}");
     let state = checks[3].outcome.as_ref().expect("the state directory has room");
-    assert!(state.contains(&bytesize::ByteSize(7 << 30).to_string()), "{state}");
+    assert!(state.contains(&crate::progress::human_bytes(7 << 30)), "{state}");
     assert!(state.contains(&dirs.state.display().to_string()), "{state}");
 }
 

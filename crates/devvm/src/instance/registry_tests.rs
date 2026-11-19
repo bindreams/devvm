@@ -399,7 +399,7 @@ fn list_skips_dot_dirs_and_warns_about_an_unreadable_record(#[fixture(unicode_ho
     let listed = fx.registry.list().unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id(), good.dir().id());
-    let warnings = fx.progress.messages();
+    let warnings = fx.progress.warnings();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("broken"), "{}", warnings[0]);
     drop(broken);
@@ -738,7 +738,7 @@ fn an_entry_whose_type_cannot_be_read_is_skipped_with_a_warning_naming_it(#[fixt
     );
 
     assert!(listed.is_none());
-    let messages = fx.progress.messages();
+    let messages = fx.progress.warnings();
     assert!(
         messages
             .iter()

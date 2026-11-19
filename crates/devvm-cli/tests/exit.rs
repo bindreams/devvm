@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Barrier};
 
-use devvm::exit::{ExitStatus, ExitWidth, NullProgress};
+use devvm::exit::{ExitStatus, ExitWidth};
 use devvm::host_exit_width;
+use devvm::progress::NullProgress;
 use devvm::recipe::hash::LayerKey;
 use devvm::store::fetch::{Artifact, Fetcher, Response, Resume, Transport};
 use devvm::store::layers::{BuildRequest, Built, LayerStore, SystemClock};
@@ -14,6 +15,9 @@ use devvm::{Dirs, Error, ErrorKind, Result, Sha256};
 use devvm_cli::Deps;
 use serde_json::Value;
 
+#[path = "support/error_line.rs"]
+mod error_line;
+use error_line::one_error_line;
 #[path = "support/unicode.rs"]
 mod unicode;
 use unicode::UNICODE_DIR;
@@ -60,7 +64,7 @@ fn panic_on_workers(args: &[String], parties: usize) -> i32 {
     let deps = Deps {
         transport: Arc::new(PanickingTransport(Arc::new(Barrier::new(parties)))),
     };
-    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|deps, _command| {
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|deps, _command, _verbose| {
         let workers: Vec<_> = (0..parties)
             .map(|i| {
                 let fetcher = Fetcher::new(downloads.clone(), deps.transport.clone(), Arc::new(NullProgress));
@@ -87,7 +91,7 @@ fn panic_on_workers(args: &[String], parties: usize) -> i32 {
 fn panic_in_builder(args: &[String]) -> i32 {
     let dirs = Dirs::under(Path::new(&args[0]));
     let cli_args: Vec<OsString> = args[1..].iter().map(OsString::from).collect();
-    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, Deps::real(), &|_, _| {
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, Deps::real(), &|_, _, _| {
         let store = LayerStore::open(&dirs, Arc::new(SystemClock), Arc::new(NullProgress))?;
         store.build(&request(), None, |staging| {
             std::fs::write(staging.dir.path().join("half"), b"x").unwrap();
@@ -119,7 +123,7 @@ fn panic_on_drop(args: &[String]) -> i32 {
     let deps = Deps {
         transport: Arc::new(PanicOnDrop),
     };
-    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|_, _| Ok(ExitStatus::Code(0)))
+    devvm_cli::main_entry_with(ExitWidth::LowByte, cli_args, deps, &|_, _, _| Ok(ExitStatus::Code(0)))
 }
 
 /// Runs the real entry point, `dispatch` included, with a transport that panics when the engine fetches through it.
@@ -146,7 +150,7 @@ fn fixed_result(args: &[String]) -> i32 {
         other => panic!("unknown result {other:?}"),
     };
     // The width `main` uses: under `LowByte` a guest's 125 exits as 1; the status file still says 125.
-    devvm_cli::main_entry_with(host_exit_width(), cli_args, Deps::real(), &|_, _| result.clone())
+    devvm_cli::main_entry_with(host_exit_width(), cli_args, Deps::real(), &|_, _, _| result.clone())
 }
 
 fn request() -> BuildRequest {
@@ -178,13 +182,6 @@ fn devvm(cwd: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 
 fn status(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-}
-
-fn one_error_line(output: &Output, kind: &str) -> String {
-    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
-    assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
-    assert!(stderr.starts_with(&format!("devvm-error: {kind}: ")), "{stderr:?}");
-    stderr
 }
 
 // Tests ===============================================================================================================

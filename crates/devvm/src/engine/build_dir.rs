@@ -69,11 +69,11 @@ impl Drop for BuildDir<'_> {
     fn drop(&mut self) {
         let progress = self.engine.progress();
         if let Err(e) = remove_tree(&self.path) {
-            progress.message(&format!("cannot remove {}: {e}", self.path.display()));
+            progress.warn(&format!("cannot remove {}: {e}", self.path.display()));
             return;
         }
         if let Err(e) = self.engine.registry().locks().remove_build(&self.hex) {
-            progress.message(e.message());
+            progress.warn(e.message());
         }
     }
 }
@@ -90,7 +90,7 @@ pub(super) fn sweep(engine: &Engine) {
     let mut builds = BTreeSet::new();
     match locks.build_locks() {
         Ok(found) => builds.extend(found),
-        Err(e) => progress.message(e.message()),
+        Err(e) => progress.warn(e.message()),
     }
     list_directories(engine, &mut builds);
     for hex in builds {
@@ -100,16 +100,16 @@ pub(super) fn sweep(engine: &Engine) {
                 if remove_directory(engine, &hex)
                     && let Err(e) = locks.remove_build(&hex)
                 {
-                    progress.message(e.message());
+                    progress.warn(e.message());
                 }
             }
             // No lock file to serialize on: two sweeps removing one tree make each other fail on Windows, so the one that
             // does not hold `dead.lock` leaves it to the next sweep.
             Ok(Probe::Gone) => match locks.deleting(|| remove_directory(engine, &hex)) {
                 Ok(_) => {}
-                Err(e) => progress.message(&format!("cannot delete build {hex}: {}", e.message())),
+                Err(e) => progress.warn(&format!("cannot delete build {hex}: {}", e.message())),
             },
-            Err(e) => progress.message(&format!("cannot look at the lock of build {hex}: {}", e.message())),
+            Err(e) => progress.warn(&format!("cannot look at the lock of build {hex}: {}", e.message())),
         }
     }
 }
@@ -122,14 +122,14 @@ fn list_directories(engine: &Engine, into: &mut BTreeSet<String>) {
         Ok(Some(_)) => {}
         Ok(None) => return,
         Err(e) => {
-            progress.message(&format!("cannot look at {}: {e}", builds.display()));
+            progress.warn(&format!("cannot look at {}: {e}", builds.display()));
             return;
         }
     }
     let entries = match std::fs::read_dir(&builds) {
         Ok(entries) => entries,
         Err(e) => {
-            progress.message(&format!("cannot list {}: {e}", builds.display()));
+            progress.warn(&format!("cannot list {}: {e}", builds.display()));
             return;
         }
     };
@@ -137,7 +137,7 @@ fn list_directories(engine: &Engine, into: &mut BTreeSet<String>) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                progress.message(&format!("cannot list {}: {e}", builds.display()));
+                progress.warn(&format!("cannot list {}: {e}", builds.display()));
                 continue;
             }
         };
@@ -150,7 +150,7 @@ fn list_directories(engine: &Engine, into: &mut BTreeSet<String>) {
                 into.insert(name.to_owned());
             }
             Ok(false) => {}
-            Err(e) => progress.message(&format!("cannot tell what {} is: {e}", entry.path().display())),
+            Err(e) => progress.warn(&format!("cannot tell what {} is: {e}", entry.path().display())),
         }
     }
 }
@@ -168,7 +168,7 @@ fn remove_directory(engine: &Engine, hex: &str) -> bool {
         Err(e) => {
             engine
                 .progress()
-                .message(&format!("cannot remove {}: {e}", path.display()));
+                .warn(&format!("cannot remove {}: {e}", path.display()));
             false
         }
     }

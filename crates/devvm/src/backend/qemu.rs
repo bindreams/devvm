@@ -18,10 +18,10 @@ use self::backend::QemuBackend;
 use self::sidecar::LazyInstall;
 use self::storage::QemuStorage;
 use crate::Dirs;
-use crate::exit::Progress;
 use crate::guest::linux::{LinuxBuilder, QemuGuests};
 use crate::guest::windows::builder::{Bounds, WindowsBuilder};
 use crate::host::Host;
+use crate::progress::Progress;
 use crate::store::fetch::Fetcher;
 
 #[cfg(test)]

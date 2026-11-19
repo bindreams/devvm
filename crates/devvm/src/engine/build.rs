@@ -1,15 +1,18 @@
 //! Layer builds: [`Engine::build`] turns a recipe into a chain of cached layers.
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::Engine;
 use super::build_dir::BuildDir;
 use crate::copy::{self, Snapshot};
-use crate::exit::{ExitStatus, Progress};
+use crate::error::TAIL_LINES;
+use crate::exit::ExitStatus;
 use crate::guest::{BuildCtx, GuestOs};
 use crate::iso::{IsoMemo, IsoRoot, key_iso};
+use crate::progress::{Progress, Total, strip_ansi};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
@@ -44,6 +47,11 @@ impl Engine {
     /// [`Engine::reap`].
     pub fn build(self: &Arc<Engine>, recipe: &Recipe, opts: &BuildOptions) -> Result<Image> {
         let flat = recipe.flatten()?;
+        // The base layer, then one per step; the hashing, the base and each step nest under it.
+        let task = self.progress.task(
+            format!("building {}", recipe.name),
+            Total::Items(1 + flat.steps.len() as u64),
+        );
         let arch = opts.arch.unwrap_or_else(Arch::host);
         let guest = self.guests.os(flat.guest)?;
         // Before anything is built or keyed: a setting the guest does not have, or a script its shell cannot carry, is the
@@ -95,6 +103,7 @@ impl Engine {
         })?;
         // The root layer is found or built, and no step reads the ISO.
         drop(build_ctx.iso.lock().unwrap_or_else(PoisonError::into_inner).take());
+        task.set(1);
         for (index, key) in keys[1..].iter().enumerate() {
             let step = StepRun {
                 engine: self,
@@ -105,7 +114,9 @@ impl Engine {
                 snapshot: snapshots[index].as_ref(),
             };
             chain = step.build_layer(store, &request(*key), &chain)?;
+            task.set(index as u64 + 2);
         }
+        task.finish();
         Ok(Image::from_chain(self.clone(), chain, &flat, arch))
     }
 
@@ -285,12 +296,11 @@ impl StepRun<'_> {
         drop(guard);
         let image = Image::from_chain(engine.clone(), chain, self.flat, self.arch);
         let step = &self.flat.steps[self.index].step;
-        engine.progress.message(&format!(
-            "step {} of {}: {}",
-            self.index + 1,
-            self.flat.steps.len(),
-            describe(step)
-        ));
+        let task = engine.progress.task(
+            format!("step {} of {}", self.index + 1, self.flat.steps.len()),
+            Total::Unknown,
+        );
+        task.status(describe(step));
         let vm = image
             .start(&StartOptions::default())
             .during("starting the step's guest")?;
@@ -307,6 +317,7 @@ impl StepRun<'_> {
             .storage()
             .commit_layer(&vm.instance().dir().disk(), staging.dir)
             .during("committing the step's layer")?;
+        task.finish();
         Ok(Built::default())
     }
 
@@ -358,11 +369,18 @@ impl StepRun<'_> {
     }
 
     /// Runs `command`, reporting its output on the progress channel line by line. A status other than 0 fails the
-    /// build with an error of `kind`, as does a command that cannot be run; both name the step and `what` ran.
+    /// build with an error of `kind`, as does a command that cannot be run; both name the step and `what` ran, and end
+    /// with the last lines the command printed.
     fn execute(&self, vm: &Vm, command: &Command, what: &str, kind: ErrorKind) -> StepResult<()> {
         let progress = self.engine.progress.as_ref();
-        let (mut out, mut err) = (Lines::new(progress), Lines::new(progress));
-        let status = vm.run_to(command, &mut out, &mut err).during(what)?;
+        let tail = Tail::default();
+        let (mut out, mut err) = (Lines::new(progress, &tail), Lines::new(progress, &tail));
+        let ran = vm.run_to(command, &mut out, &mut err);
+        // The last line may have no line end: it is reported when its writer is dropped.
+        drop((out, err));
+        let status = ran
+            .map_err(|error| error.with_tail(STEP_OUTPUT, &tail.text()))
+            .during(what)?;
         if status == ExitStatus::Code(0) {
             return Ok(());
         }
@@ -370,6 +388,7 @@ impl StepRun<'_> {
             what: what.to_owned(),
             kind,
             status,
+            output: tail.text(),
         })
     }
 
@@ -407,6 +426,7 @@ enum StepFailure {
         what: String,
         kind: ErrorKind,
         status: ExitStatus,
+        output: String,
     },
 }
 
@@ -415,10 +435,16 @@ impl StepFailure {
     fn into_error(self, step: &StepRun<'_>) -> Error {
         match self {
             StepFailure::Failed { what, error } => step.in_step(error, &what),
-            StepFailure::Ended { what, kind, status } => Error::new(
+            StepFailure::Ended {
+                what,
+                kind,
+                status,
+                output,
+            } => Error::new(
                 kind,
                 format!("{} ended with {}", step.step_of(&what), status.describe()),
-            ),
+            )
+            .with_tail(STEP_OUTPUT, &output),
         }
     }
 }
@@ -456,27 +482,52 @@ fn guest_destination(guest: &dyn GuestOs, expanded: &str, home: &str) -> Result<
     Ok(expanded.to_owned())
 }
 
-/// A writer that reports each complete line it is given on the progress channel, and the rest when it is dropped. A
-/// line ends at `\n`, at `\r` (a tool that redraws its progress on one line) or at `\r\n`, which is one end however
-/// the writes split it. A `\r` with nothing pending ends no line, so a redraw's leading `\r` reports no blank one.
+/// What an error says the tail of a step's output is.
+const STEP_OUTPUT: &str = "the step's output";
+
+/// The last lines a step's command printed on either stream, for the error of a step that fails.
+#[derive(Default)]
+struct Tail(Mutex<VecDeque<String>>);
+
+impl Tail {
+    fn push(&self, line: &str) {
+        let mut lines = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if lines.len() == TAIL_LINES {
+            lines.pop_front();
+        }
+        lines.push_back(strip_ansi(line).into_owned());
+    }
+
+    fn text(&self) -> String {
+        let lines = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        lines.iter().map(String::as_str).collect::<Vec<_>>().join("\n")
+    }
+}
+
+/// A writer that reports each complete line as step output and keeps it in a [`Tail`]; the rest goes out when it is
+/// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress).
 struct Lines<'a> {
     progress: &'a dyn Progress,
+    tail: &'a Tail,
     pending: Vec<u8>,
     /// The last byte written was `\r`, so a `\n` that follows is the other half of its line end.
     after_cr: bool,
 }
 
 impl<'a> Lines<'a> {
-    fn new(progress: &'a dyn Progress) -> Lines<'a> {
+    fn new(progress: &'a dyn Progress, tail: &'a Tail) -> Lines<'a> {
         Lines {
             progress,
+            tail,
             pending: Vec::new(),
             after_cr: false,
         }
     }
 
     fn report(&self, line: &[u8]) {
-        self.progress.message(&String::from_utf8_lossy(line));
+        let line = String::from_utf8_lossy(line);
+        self.progress.output(&line);
+        self.tail.push(&line);
     }
 }
 

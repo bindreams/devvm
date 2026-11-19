@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::backend::{Backend, Storage};
-use crate::exit::Progress;
 use crate::host::{Host, remove_tree, symlink_metadata_if_present};
 use crate::instance::dir::InstanceDir;
 use crate::instance::locks::Locks;
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, Owner, RecordRead, write_marker};
+use crate::progress::Progress;
 use crate::store::layers::{ChainLease, RecordGuard};
 use crate::store::lock::FileLock;
 use crate::{Arch, Dirs, Error, ErrorKind, GuestKind, Network, Result};
@@ -183,7 +183,7 @@ impl Registry {
                 Err(e) if e.kind() == ErrorKind::NotFound => {}
                 Err(e) => self
                     .progress
-                    .message(&format!("skipping instance {name}: {}", e.message())),
+                    .warn(&format!("skipping instance {name}: {}", e.message())),
             }
         }
         found.sort_by(|a, b| a.name().as_str().cmp(b.name().as_str()));
@@ -208,7 +208,7 @@ impl Registry {
             Ok(_) => {}
             Err(e) => {
                 self.progress
-                    .message(&format!("skipping {}: cannot tell what it is ({e})", path.display()));
+                    .warn(&format!("skipping {}: cannot tell what it is ({e})", path.display()));
                 return None;
             }
         }
@@ -216,7 +216,7 @@ impl Registry {
             Ok(name) => Some(name),
             Err(_) => {
                 self.progress
-                    .message(&format!("ignoring {}: not an instance name", path.display()));
+                    .warn(&format!("ignoring {}: not an instance name", path.display()));
                 None
             }
         }
@@ -263,7 +263,7 @@ impl Registry {
             Ok(dir) => Ok(Owned { dir, owner }),
             Err(e) => {
                 if let Err(left) = remove_tree(&temp) {
-                    self.progress.message(&format!(
+                    self.progress.warn(&format!(
                         "the half-built instance {} could not be deleted ({left}); the next devvm \
                          command deletes it",
                         temp.display()

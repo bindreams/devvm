@@ -3,8 +3,8 @@
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use crate::exit::Progress;
 use crate::host::Host;
+use crate::progress::Progress;
 use crate::recipe::hash::CopyManifest;
 use crate::{Error, ErrorKind, Result};
 
@@ -71,7 +71,7 @@ pub(crate) fn snapshot(
     let root = git::work_tree_root(&git, from_dir)?;
     let mut listing = git::list(&git, &root)?;
     for submodule in &listing.uninitialized_submodules {
-        progress.message(&format!(
+        progress.warn(&format!(
             "skipping uninitialized submodule `{}`",
             submodule.escape_debug()
         ));

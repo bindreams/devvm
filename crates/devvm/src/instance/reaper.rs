@@ -73,7 +73,7 @@ impl Entries {
 
 impl ReapReport {
     pub(super) fn warn(&mut self, registry: &Registry, text: String) {
-        registry.progress().message(&text);
+        registry.progress().warn(&text);
         self.warnings.push(text);
     }
 }
@@ -274,7 +274,7 @@ impl Registry {
                 );
                 return;
             };
-            match dir.find_machine(&**backend, machine) {
+            match backend.find(machine) {
                 Ok(Some(mut running)) => {
                     if let Err(e) = running.kill() {
                         report.warn(

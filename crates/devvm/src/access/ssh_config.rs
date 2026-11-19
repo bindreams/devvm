@@ -11,10 +11,10 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use crate::exit::{NullProgress, Progress};
 use crate::host::Host;
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, is_write_file_temporary, write_file};
+use crate::progress::{NullProgress, Progress};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 

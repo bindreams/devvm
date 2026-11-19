@@ -16,10 +16,10 @@ use crate::engine::engine_tests::{
 };
 use crate::engine::keys::read_target;
 use crate::engine::{LaunchHooks, LaunchStep};
-use crate::exit::NullProgress;
 use crate::host::symlink_metadata_if_present;
 use crate::instance::record::{InstanceRecord, RecordRead};
 use crate::instance::registry::registry_tests::lock_files_in;
+use crate::progress::NullProgress;
 use crate::store::layers::layers_tests::{build_expiring, days, key, names, t0};
 use crate::test_support::claimed::claimed;
 use crate::test_support::fake_vm::{STARTED, answer, connect_when_up, started_port};
@@ -990,11 +990,11 @@ fn a_second_record_write_that_fails_kills_the_machine_and_deletes_its_leftovers(
     }
     assert!(
         progress
-            .messages()
+            .warnings()
             .iter()
             .any(|m| m.contains("foo") && m.contains("record still names")),
         "the record could not be cleared either, and the warning says so: {:?}",
-        progress.messages()
+        progress.warnings()
     );
     assert!(dir.try_op_exclusive().unwrap().is_some(), "the op lock is released");
     // The record names a dead machine, which the next command on the instance clears.
@@ -1345,7 +1345,7 @@ fn key_write_warnings_are_shown_as_progress_lines(#[fixture(unicode_home)] home:
 
     instance.start().unwrap();
 
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages
             .iter()
@@ -1369,7 +1369,7 @@ fn an_ssh_config_refusal_is_shown_and_the_instance_still_starts(#[fixture(unicod
         .start()
         .expect("the embedded client does not read the ssh configuration");
 
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages
             .iter()
@@ -1396,7 +1396,7 @@ fn an_ssh_config_refusal_and_a_failed_entry_write_are_both_shown(#[fixture(unico
         .start()
         .expect("the embedded client does not read the ssh configuration");
 
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages
             .iter()
@@ -1421,7 +1421,7 @@ fn a_degraded_first_boot_is_reported_on_the_progress_channel_and_the_start_succe
 
     instance.start().unwrap();
 
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages
             .iter()

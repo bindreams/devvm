@@ -221,7 +221,7 @@ impl Drop for Vm {
         let dead = match machine {
             Some(mut machine) => {
                 if let Err(e) = machine.kill() {
-                    progress.message(&format!(
+                    progress.warn(&format!(
                         "instance {} could not be removed: its VM could not be killed ({}); the next devvm command \
                          retries",
                         dir.name(),
@@ -245,7 +245,7 @@ impl Drop for Vm {
                 if let Some(dead) = &dead
                     && let Err(e) = dir.retire_machine(&op, dead, engine.host(), &mut warn_for(engine, dir))
                 {
-                    progress.message(&format!(
+                    progress.warn(&format!(
                         "instance {} still has a record naming its dead VM ({}); the next devvm command clears it",
                         dir.name(),
                         e.message()
@@ -253,7 +253,7 @@ impl Drop for Vm {
                 }
                 remove_ssh_entry(engine, dir);
                 if let Err(e) = dir.destroy(op) {
-                    progress.message(&format!(
+                    progress.warn(&format!(
                         "instance {} could not be removed ({}); the next devvm command retries",
                         dir.name(),
                         e.message()
@@ -262,7 +262,7 @@ impl Drop for Vm {
             }
             Ok(None) => {
                 leftovers_only();
-                progress.message(&format!(
+                progress.warn(&format!(
                     "instance {} is busy with another devvm command and was not removed; the next devvm command \
                      removes it",
                     dir.name()
@@ -272,7 +272,7 @@ impl Drop for Vm {
             Err(e) if e.kind() == ErrorKind::NotFound => leftovers_only(),
             Err(e) => {
                 leftovers_only();
-                progress.message(&format!(
+                progress.warn(&format!(
                     "instance {} could not be removed ({}); the next devvm command retries",
                     dir.name(),
                     e.message()

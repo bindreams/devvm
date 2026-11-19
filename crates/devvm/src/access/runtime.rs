@@ -10,8 +10,8 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use tokio::runtime::{Builder, Runtime};
 
-use crate::exit::Progress;
 use crate::lazy::Lazy;
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -100,18 +100,31 @@ where
     wait(spawn(task)?).map_err(|_| panicked(what))
 }
 
-/// [`run`], where the task also sends progress messages, which are handed to `progress` as they arrive.
+/// [`run`], where the task also sends notes of interest only to a log (`Level::Debug`), which are handed to `progress`
+/// as they arrive.
 pub(crate) fn run_reporting<T, F, Fut>(what: &str, progress: &dyn Progress, task: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce(tokio::sync::mpsc::UnboundedSender<String>) -> Fut,
     Fut: Future<Output = T> + Send + 'static,
 {
+    run_handing(what, |message: String| progress.debug(&message), task)
+}
+
+/// [`run`], where the task also sends messages, each of which is handed to `on_message` on the calling thread as it
+/// arrives, and all of them before the result.
+pub(crate) fn run_handing<M, T, F, Fut>(what: &str, mut on_message: impl FnMut(M), task: F) -> Result<T>
+where
+    M: Send + 'static,
+    T: Send + 'static,
+    F: FnOnce(tokio::sync::mpsc::UnboundedSender<M>) -> Fut,
+    Fut: Future<Output = T> + Send + 'static,
+{
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let handle = spawn(task(sender))?;
     // The sender lives inside the task, so the channel closes exactly when the task is over or gone.
     while let Some(message) = wait(receiver.recv()) {
-        progress.message(&message);
+        on_message(message);
     }
     wait(handle).map_err(|_| panicked(what))
 }

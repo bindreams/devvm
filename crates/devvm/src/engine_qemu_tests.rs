@@ -216,7 +216,7 @@ fn without_a_runtime_directory_the_reap_warns_and_a_launch_fails_naming_it(#[fix
 
     assert_eq!(qemu.engine.list(ListFilter::All).unwrap().len(), 1);
     qemu.engine.reap();
-    let told = qemu.progress.messages();
+    let told = qemu.progress.warnings();
     assert!(
         told.iter().any(|m| m.contains(RUN_DIR_ERROR)),
         "the reap does not name the cause: {told:?}"

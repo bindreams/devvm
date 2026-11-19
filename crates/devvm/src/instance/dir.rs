@@ -3,13 +3,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::backend::{Backend, Machine, MachineRecord};
-use crate::contain::is_unreadable_record;
-use crate::exit::Progress;
+use crate::backend::MachineRecord;
 use crate::host::{Host, remove_tree};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
+use crate::progress::Progress;
 use crate::store::lock::FileLock;
 use crate::{Error, ErrorKind, Result};
 
@@ -197,25 +196,6 @@ impl InstanceDir {
         Ok(record)
     }
 
-    /// `backend.find(machine)` for this instance's machine. When the machine's process record cannot be read, the
-    /// error says how to get out: `rm` and `stop` need the machine found, so they refuse too.
-    pub(crate) fn find_machine(
-        &self,
-        backend: &dyn Backend,
-        machine: &MachineRecord,
-    ) -> Result<Option<Box<dyn Machine>>> {
-        backend.find(machine).map_err(|e| {
-            if !is_unreadable_record(&e) {
-                return e;
-            }
-            e.with_next_step(format!(
-                "end process {} if it still runs, then delete the instance's directory {}",
-                machine.process.pid,
-                self.path.display()
-            ))
-        })
-    }
-
     /// The machine named by `machine` is dead: deletes what it left outside the instance directory (a file that
     /// cannot be deleted goes to `warn`) and clears the record that names it. Call it only once the machine is proven
     /// dead, by a kill or by the backend not finding it.
@@ -275,13 +255,13 @@ impl InstanceDir {
         // Deleting is done one tree at a time. This waits for a deletion in progress (it only deletes, so it ends) and
         // then deletes this tree: `rm` promises it is gone.
         match self.locks.deleting_waiting(before_delete_wait, || remove_tree(&dead)) {
-            Ok(Err(e)) => self.progress.message(&format!(
+            Ok(Err(e)) => self.progress.warn(&format!(
                 "instance {} is removed, but {} could not be deleted ({e}); the next devvm command retries",
                 self.name,
                 dead.display()
             )),
             Ok(Ok(())) => {}
-            Err(e) => self.progress.message(&format!(
+            Err(e) => self.progress.warn(&format!(
                 "instance {} is removed, but {} could not be deleted ({}); the next devvm command retries",
                 self.name,
                 dead.display(),
@@ -290,7 +270,7 @@ impl InstanceDir {
         }
         // The instance is gone either way; leftover lock files go in the next lock sweep.
         if let Err(e) = self.locks.remove(&self.id) {
-            self.progress.message(&format!(
+            self.progress.warn(&format!(
                 "instance {} is removed, but its lock files could not be deleted ({}); the next devvm command retries",
                 self.name,
                 e.message()

@@ -137,10 +137,3 @@ pub fn stdout_lines(output: &Output) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
-
-pub fn one_error_line(output: &Output, kind: &str) -> String {
-    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
-    assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
-    assert!(stderr.starts_with(&format!("devvm-error: {kind}: ")), "{stderr:?}");
-    stderr
-}

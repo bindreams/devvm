@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256 as Sha2};
 
+use crate::progress::{Event, Level, Outcome, Total};
 use crate::store::fetch::{Artifact, ContentRange, Fetcher, PartOpener, PartWriter, Response, Resume, Transport};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::{Dirs, ErrorKind, Result, Sha256};
@@ -137,6 +138,38 @@ fn setup(home: &Path, transport: Arc<Script>) -> Setup {
         downloads,
         progress,
     }
+}
+
+/// The task events of two fetches, split before the second download's `Begin`.
+fn split_at_second_begin(events: &[Event]) -> (&[Event], &[Event]) {
+    let begins: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| matches!(event, Event::Begin { .. }))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(begins.len(), 2, "{events:?}");
+    events.split_at(begins[1])
+}
+
+fn ends(events: &[Event]) -> Vec<Outcome> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::End { outcome, .. } => Some(*outcome),
+            _ => None,
+        })
+        .collect()
+}
+
+fn advances(events: &[Event]) -> Vec<u64> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Advance { position, .. } => Some(*position),
+            _ => None,
+        })
+        .collect()
 }
 
 fn listing(dir: &Path) -> Vec<String> {
@@ -301,12 +334,31 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unico
         })
     );
     assert_eq!(served.load(Ordering::SeqCst), data.len(), "every byte was served once");
+    let events = setup.progress.events();
+    let (interrupted, resumed) = split_at_second_begin(&events);
+    assert_eq!(
+        ends(interrupted),
+        [Outcome::Abandoned],
+        "the cut-off download's task ends with the error"
+    );
+    assert_eq!(ends(resumed), [Outcome::Finished]);
+    assert_eq!(
+        advances(resumed).first(),
+        Some(&700_000),
+        "a resume starts at what the part holds"
+    );
+    assert_eq!(advances(resumed).last(), Some(&2_000_000));
     assert!(
-        setup
-            .progress
-            .messages()
+        resumed
             .iter()
-            .any(|m| m.contains("resuming") && m.contains("700000"))
+            .any(|e| matches!(e, Event::Status { text, .. } if text == "resuming at 683.6 KiB")),
+        "{resumed:?}"
+    );
+    let resuming = resumed.iter().position(|e| matches!(e, Event::Status { .. })).unwrap();
+    let first_advance = resumed.iter().position(|e| matches!(e, Event::Advance { .. })).unwrap();
+    assert!(
+        resuming < first_advance,
+        "\"resuming\" is said before the first position: {resumed:?}"
     );
     assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
 }
@@ -468,9 +520,15 @@ fn a_part_from_another_url_is_not_resumed(#[fixture(unicode_home)] home: &Path) 
 fn abandonments(setup: &Setup) -> Vec<String> {
     setup
         .progress
-        .messages()
+        .events()
         .into_iter()
-        .filter(|m| m.starts_with("not resuming"))
+        .filter_map(|event| match event {
+            Event::Note { level, text } if text.starts_with("not resuming") => {
+                assert_eq!(level, Level::Warn, "{text}");
+                Some(text)
+            }
+            _ => None,
+        })
         .collect()
 }
 
@@ -584,12 +642,12 @@ fn header_oddities_the_transport_noticed_reach_the_progress_sink(#[fixture(unico
     );
     setup.fetcher.fetch(&artifact(&data)).unwrap();
     assert!(
-        setup
-            .progress
-            .messages()
-            .contains(&format!("{URL}: ignoring the malformed Content-Length `lots`")),
+        setup.progress.events().contains(&Event::Note {
+            level: Level::Warn,
+            text: format!("{URL}: ignoring the malformed Content-Length `lots`")
+        }),
         "{:?}",
-        setup.progress.messages()
+        setup.progress.events()
     );
 }
 
@@ -759,18 +817,46 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(unicode_home)] h
 // Progress ============================================================================================================
 
 #[skuld::test]
-fn progress_lines_name_the_url_and_bytes(#[fixture(unicode_home)] home: &Path) {
+fn a_download_is_a_sized_task_named_for_the_file(#[fixture(unicode_home)] home: &Path) {
     let data = bytes(2_621_440, 11);
     let setup = setup(home, Script::serving(data.clone()));
     setup.fetcher.fetch(&artifact(&data)).unwrap();
+    let events = setup.progress.events();
+    let Some(Event::Begin { id, label, total, .. }) = events.iter().find(|e| matches!(e, Event::Begin { .. })).cloned()
+    else {
+        panic!("{events:?}")
+    };
     assert_eq!(
-        setup.progress.messages(),
-        vec![
-            format!("downloading {URL}: 0 of 2621440 bytes"),
-            format!("downloading {URL}: 1048576 of 2621440 bytes"),
-            format!("downloading {URL}: 2097152 of 2621440 bytes"),
-        ]
+        (label.as_str(), total),
+        ("downloading disk.img", Total::Bytes(2_621_440))
     );
+    // The first chunk is reported where it lands; after it, each MiB and the end.
+    assert_eq!(advances(&events), [65_536, 1_048_576, 2_097_152, 2_621_440]);
+    assert_eq!(
+        events.last(),
+        Some(&Event::End {
+            id,
+            outcome: Outcome::Finished
+        })
+    );
+    // The URL is for the log, not the screen.
+    assert!(
+        events.contains(&Event::Note {
+            level: Level::Debug,
+            text: format!("downloading {URL}")
+        }),
+        "{events:?}"
+    );
+}
+
+#[skuld::test]
+fn a_failed_download_ends_its_task_abandoned(#[fixture(unicode_home)] home: &Path) {
+    let data = bytes(60_000, 7);
+    let short = data[..10_000].to_vec();
+    let transport = Script::new(move |_, _| Ok(response(200, short.clone(), Some(60_000), false)));
+    let setup = setup(home, transport);
+    setup.fetcher.fetch(&artifact(&data)).unwrap_err();
+    assert_eq!(ends(&setup.progress.events()), [Outcome::Abandoned]);
 }
 
 #[skuld::test]

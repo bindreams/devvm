@@ -5,7 +5,10 @@ use serde_json::Value;
 
 #[path = "support/home.rs"]
 mod home;
-use home::{Home, home, id, one_error_line, stdout_lines};
+use home::{Home, home, id, stdout_lines};
+#[path = "support/error_line.rs"]
+mod error_line;
+use error_line::one_error_line;
 #[path = "support/isolate.rs"]
 mod isolate;
 #[path = "support/unicode.rs"]

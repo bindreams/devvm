@@ -71,7 +71,7 @@ pub(crate) fn remove_ssh_entry(engine: &Engine, dir: &InstanceDir) {
 
 /// Reports a problem with the files of a dead machine of `dir` on the progress channel, naming the instance.
 pub(crate) fn warn_for<'a>(engine: &'a Engine, dir: &'a InstanceDir) -> impl FnMut(String) + 'a {
-    move |text| engine.progress().message(&format!("instance {}: {text}", dir.name()))
+    move |text| engine.progress().warn(&format!("instance {}: {text}", dir.name()))
 }
 
 /// A named VM that stays until it is removed.
@@ -151,7 +151,7 @@ impl Instance {
             return Ok(());
         };
         // A machine the backend does not find is not running: the record is stale.
-        if let Some(mut running) = dir.find_machine(&**self.engine.backend()?, &machine)? {
+        if let Some(mut running) = self.engine.backend()?.find(&machine)? {
             running.shutdown()?;
         }
         dir.retire_machine(&op, &machine, self.engine.host(), &mut warn_for(&self.engine, dir))
@@ -164,7 +164,7 @@ impl Instance {
         let op = dir.op_exclusive()?;
         let record = dir.record()?;
         if let Some(machine) = &record.machine {
-            if let Some(mut running) = dir.find_machine(&**self.engine.backend()?, machine)? {
+            if let Some(mut running) = self.engine.backend()?.find(machine)? {
                 running.kill()?;
             }
             // A destroy that fails below must not leave a record naming a dead machine.

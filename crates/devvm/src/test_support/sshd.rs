@@ -52,7 +52,7 @@ use crate::Error;
 use crate::access::keys::InstanceKeys;
 use crate::access::runtime;
 use crate::access::{BootBound, Keepalive, SshSession, SshTarget, VmExit};
-use crate::exit::NullProgress;
+use crate::progress::NullProgress;
 use crate::test_groups::openssh_sftp;
 
 pub use fs::{BIG_SIZE, big_file_digest, big_file_digest_from, expected_big_digest, pattern_byte, sample_windows};

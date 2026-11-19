@@ -68,7 +68,7 @@ fn launch_machine(
     let record = read_record(engine, dir, op)?;
     let backend = engine.backend()?;
     if let Some(machine) = &record.machine {
-        if dir.find_machine(&**backend, machine)?.is_some() {
+        if backend.find(machine)?.is_some() {
             return Ok(None);
         }
         // A stale record: the machine is dead, so its leftovers go.
@@ -195,7 +195,7 @@ pub(super) fn abandon(
         );
     }
     if let Err(clear) = dir.retire_machine(op, &machine.record(), engine.host(), &mut warn_for(engine, dir)) {
-        engine.progress().message(&format!(
+        engine.progress().warn(&format!(
             "instance {} could not be started, and its record still names the machine ({}); the next devvm \
              command on it clears that",
             dir.name(),

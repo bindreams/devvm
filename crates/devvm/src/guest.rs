@@ -7,10 +7,10 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::access::SshSession;
 use crate::backend::{DeviceProfile, Media};
-use crate::exit::Progress;
 use crate::host::Host;
 use crate::instance::record::InstanceId;
 use crate::iso::IsoRoot;
+use crate::progress::Progress;
 use crate::recipe::{Resources, Setting, Shell, Source};
 use crate::store::layers::{Clock, LayerDir, LayerMeta};
 use crate::{Arch, Command, Dirs, Error, ErrorKind, GuestKind, Result};

@@ -99,7 +99,7 @@ fn messages_of_each_call(engine: &Arc<Engine>, progress: &MemoryProgress) -> Vec
     let instance = Instance::open_in(engine, "foo").unwrap();
     let mut seen = 0;
     let mut since = |progress: &MemoryProgress| {
-        let all = progress.messages();
+        let all = progress.warnings();
         let new = all[seen..].to_vec();
         seen = all.len();
         new
@@ -193,7 +193,7 @@ fn a_warning_is_one_terse_progress_line_naming_the_date(#[fixture(unicode_home)]
 
     Instance::open_in(&engine, "foo").unwrap().start().unwrap_err();
     assert_eq!(
-        progress.messages(),
+        progress.warnings(),
         ["instance foo: the guest expired on 2027-02-04 (UTC)"]
     );
 }
@@ -215,7 +215,7 @@ fn the_date_is_the_expiry_s_date_in_utc_near_midnight(#[fixture(unicode_home)] h
 
         // The date written in the literal itself, which no zone has moved.
         assert_eq!(
-            progress.messages(),
+            progress.warnings(),
             [format!(
                 "instance {name}: the guest expired on {} (UTC)",
                 expires_text(at)
@@ -245,7 +245,7 @@ fn ls_warns_once_for_each_listed_expired_instance_and_for_no_other(#[fixture(uni
 
     engine.list(ListFilter::CreatedIn(home.to_path_buf())).unwrap();
 
-    let mut messages = progress.messages();
+    let mut messages = progress.warnings();
     messages.sort();
     assert_eq!(
         messages,
@@ -267,7 +267,7 @@ fn start_of_an_instance_whose_machine_runs_warns_once(#[fixture(unicode_home)] h
 
     Instance::open_in(&engine, "foo").unwrap().start().unwrap();
 
-    assert_eq!(progress.messages().len(), 1, "{:?}", progress.messages());
+    assert_eq!(progress.warnings().len(), 1, "{:?}", progress.warnings());
 }
 
 #[skuld::test]
@@ -279,7 +279,7 @@ fn an_expiry_that_is_now_is_past(#[fixture(unicode_home)] home: &Path) {
 
     engine.list(ListFilter::All).unwrap();
     assert_eq!(
-        progress.messages(),
+        progress.warnings(),
         ["instance foo: the guest expired on 2027-02-04 (UTC)"]
     );
 }

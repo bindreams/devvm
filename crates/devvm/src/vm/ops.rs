@@ -36,7 +36,7 @@ pub(super) fn run_to(
     match session.exec(&guest.wrap(cmd)?, out, err)? {
         ExecEnd::Finished(status) => Ok(status),
         ExecEnd::FinishedWithLoss { status, lost } => {
-            engine.progress().message(lost.message());
+            engine.progress().warn(lost.message());
             Ok(status)
         }
         ExecEnd::HostOutputClosed { error, status: None } => Err(Error::io(

@@ -1,11 +1,10 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::backend::MachineRecord;
 use crate::instance::registry::registry_tests::{create, fixture};
+use crate::progress::{Event, Level};
 use crate::store::layers::Reachability;
-use crate::test_support::fixtures::{MemoryProgress, unicode_home};
-use crate::test_support::qemu::{Sock, backend_in, socket_run};
+use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
 fn destroy_never_fails_because_other_devvm_readers_run(#[fixture(unicode_home)] home: &Path) {
@@ -207,11 +206,19 @@ fn destroy_warns_but_succeeds_when_the_lock_files_cannot_be_deleted(#[fixture(un
 
     destroyed.expect("the instance is removed, so rm succeeds");
     assert!(!fx.env.dirs.instances().join("foo").exists());
-    let messages = fx.progress.messages();
+    let messages = fx.progress.warnings();
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(
         messages[0].contains("foo") && messages[0].contains("lock files could not be deleted"),
         "{messages:?}"
+    );
+    assert!(
+        matches!(
+            fx.progress.events().as_slice(),
+            [Event::Note { level: Level::Warn, .. }]
+        ),
+        "a failed removal is a warning: {:?}",
+        fx.progress.events()
     );
 }
 
@@ -234,42 +241,4 @@ fn handing_over_an_instance_with_a_corrupt_record_reports_the_record_and_writes_
         error.message()
     );
     assert_eq!(std::fs::read(instance.join("owner.json")).unwrap(), marker_before);
-}
-
-/// `rm` and `stop` need the machine found, so a record that cannot be read stops them. The error names what to do by
-/// hand: end the process, then delete the instance's directory.
-#[skuld::test]
-fn finding_a_machine_whose_process_record_cannot_be_read_names_the_directory_to_delete(
-    #[fixture(unicode_home)] home: &Path,
-) {
-    let fx = fixture(home);
-    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
-    let sock = Sock::new();
-    let cosca::identity::Resolved::Found(id) = cosca::identity::ProcessId::of(std::process::id()) else {
-        panic!("the test process cannot be identified");
-    };
-    let mut process = id.to_record().unwrap();
-    process.version = cosca::identity::RECORD_VERSION + 1;
-    let machine = MachineRecord {
-        process,
-        qmp: sock.endpoint.path().display().to_string(),
-        ssh: Vec::new(),
-        serial_log: sock.endpoint.path().with_file_name("serial.log"),
-        leftovers: Vec::new(),
-        claim: Some(sock.claim.clone()),
-        no_reboot: false,
-    };
-    let backend = backend_in(&socket_run(), std::sync::Arc::<MemoryProgress>::default());
-
-    let error = dir
-        .find_machine(&*backend, &machine)
-        .err()
-        .expect("a record this build cannot read is not read as not running");
-
-    let text = error.to_string();
-    assert!(text.contains(&format!("end process {}", machine.process.pid)), "{text}");
-    assert!(
-        text.contains(&format!("delete the instance's directory {}", dir.path().display())),
-        "{text}"
-    );
 }

@@ -14,6 +14,7 @@ use super::builder_tests::{Rig, rig, text_of};
 use crate::backend::fake::{EXIT_OUTPUT, FakeBackend, GuestScript};
 use crate::backend::{MachineSpec, MediaFormat, MediaKind};
 use crate::contain::Lifetime;
+use crate::progress::{Event, Level, Outcome, Total};
 use crate::store::layers::Clock;
 use crate::store::layers::layers_tests::{days, t0};
 use crate::test_support::fixtures::{FakeClock, unicode_home};
@@ -25,8 +26,11 @@ impl Rig {
         self.work().join(format!("serial-{launch}.log"))
     }
 
+    /// Every note and every task status.
     fn progress(&self) -> Vec<String> {
-        self.env.progress.messages()
+        let mut lines = self.env.progress.messages();
+        lines.extend(self.env.progress.statuses());
+        lines
     }
 
     /// A failed build's directory goes with it, so its error names nothing in it and carries what it held.
@@ -781,7 +785,7 @@ fn progress_markers_are_echoed_as_progress_lines(#[fixture(unicode_home)] home: 
         "specialize",
         "first logon: x",
         "installing OpenSSH",
-        "Windows base: license status 1, 129600 minutes of grace",
+        "license status 1, 129600 minutes of grace",
     ] {
         let echoed = lines.iter().filter(|line| line.contains(phase)).count();
         assert_eq!(echoed, 1, "{phase} once in {lines:?}");
@@ -789,6 +793,82 @@ fn progress_markers_are_echoed_as_progress_lines(#[fixture(unicode_home)] home: 
     assert!(
         !lines.iter().any(|line| line.contains("DEVVM-LICENSE")),
         "the marker line is not echoed: {lines:?}"
+    );
+}
+
+#[skuld::test]
+fn windows_base_status_names_each_launch(#[fixture(unicode_home)] home: &Path) {
+    let backend = FakeBackend::new(&TestHost).with_guest(guest(vec![
+        Launch::off(""),
+        Launch::off(
+            "DEVVM-PROGRESS=specialize
+",
+        ),
+        finished(LICENSED),
+    ]));
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    rig.build(None).unwrap();
+
+    assert_eq!(
+        rig.env.progress.statuses(),
+        [
+            "launch 1",
+            "launch 2",
+            "launch 2: specialize",
+            "launch 3",
+            "launch 3: first logon: x",
+            "launch 3: installing OpenSSH",
+            "launch 3: license status 1, 129600 minutes of grace",
+        ]
+    );
+    let events = rig.env.progress.events();
+    let base: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Begin { id, label, total, .. } if label == "Windows base" => Some((*id, *total)),
+            _ => None,
+        })
+        .collect();
+    let [(id, total)] = base[..] else {
+        panic!("one Windows base task per build: {events:?}")
+    };
+    assert_eq!(total, Total::Unknown);
+    assert!(
+        events.contains(&Event::End {
+            id,
+            outcome: Outcome::Finished
+        }),
+        "{events:?}"
+    );
+}
+
+#[skuld::test]
+fn a_failed_windows_base_ends_its_task_abandoned(#[fixture(unicode_home)] home: &Path) {
+    let backend = FakeBackend::new(&TestHost)
+        .with_guest(guest(vec![Launch::running(
+            "DEVVM-PROGRESS=first logon: x
+",
+        )]))
+        .with_failing_try_wait();
+    let (rig, _) = rig(home, "single-image.iso", backend, Bounds::default());
+
+    rig.build(None).unwrap_err();
+
+    let events = rig.env.progress.events();
+    let id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::Begin { id, label, .. } if label == "Windows base" => Some(*id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert!(
+        events.contains(&Event::End {
+            id,
+            outcome: Outcome::Abandoned
+        }),
+        "{events:?}"
     );
 }
 
@@ -805,12 +885,18 @@ fn the_sizes_of_the_logs_winpe_left_on_the_answer_disk_are_reported_at_the_end_o
 
     rig.build(None).unwrap();
 
-    let lines = rig.progress();
-    let reported: Vec<_> = lines.iter().filter(|line| line.contains("WinPE logs")).collect();
+    let events = rig.env.progress.events();
+    let reported: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event, Event::Note { text, .. } if text.contains("WinPE logs")))
+        .collect();
     assert_eq!(
         reported,
-        ["Windows base: WinPE logs use 1234 of 8388608 bytes of the answer disk"],
-        "{lines:?}"
+        [&Event::Note {
+            level: Level::Debug,
+            text: "Windows base: WinPE logs use 1234 of 8388608 bytes of the answer disk".to_owned()
+        }],
+        "{events:?}"
     );
 }
 
