@@ -564,6 +564,8 @@ pub(crate) struct DeviceProfile {
     pub video: Video,
     /// Do not reboot after a guest-initiated reset (installs).
     pub no_reboot: bool,
+    /// Offer the guest the hypervisor's Hyper-V interface.
+    pub hyperv: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

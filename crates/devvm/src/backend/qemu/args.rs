@@ -117,7 +117,12 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
         }
         Arch::Arm64 => "virt,gic-version=3",
     };
-    args.pair("-accel", spec.accel.name());
+    // Only WHPX has the property: it decides what the guest's CPUID says about the Hyper-V interface.
+    if spec.accel == Accel::Whpx && !spec.profile.hyperv {
+        args.pair("-accel", format!("{},hyperv=off", spec.accel.name()));
+    } else {
+        args.pair("-accel", spec.accel.name());
+    }
     args.pair("-machine", machine);
     args.pair("-cpu", "max");
     args.pair("-smp", spec.cpus.to_string());

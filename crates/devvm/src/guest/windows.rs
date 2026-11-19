@@ -97,6 +97,7 @@ impl GuestOs for WindowsGuest {
             net: NetModel::Virtio,
             video: Video::Vga,
             no_reboot: false,
+            hyperv: false,
         }
     }
 

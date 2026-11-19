@@ -89,6 +89,7 @@ fn the_devices_are_virtio_with_a_vga_display_and_a_guest_that_reboots_inside_its
             net: NetModel::Virtio,
             video: Video::Vga,
             no_reboot: false,
+            hyperv: false,
         }
     );
     assert_eq!(WindowsGuest.semantics_version(), 1);

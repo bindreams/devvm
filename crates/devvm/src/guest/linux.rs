@@ -136,6 +136,7 @@ impl GuestOs for LinuxGuest {
             net: NetModel::Virtio,
             video: Video::None,
             no_reboot: false,
+            hyperv: true,
         }
     }
 
