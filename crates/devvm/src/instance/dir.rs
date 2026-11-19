@@ -209,12 +209,10 @@ impl InstanceDir {
             if !is_unreadable_record(&e) {
                 return e;
             }
-            let step = format!(
-                "{}; stop the VM by hand if it still runs, then clear the `machine` field in {}",
-                e.message(),
+            e.with_step(format_args!(
+                "stop the VM by hand if it still runs, then clear the `machine` field in {}",
                 self.path.join(RECORD_FILE).display()
-            );
-            e.with_message(step)
+            ))
         })
     }
 

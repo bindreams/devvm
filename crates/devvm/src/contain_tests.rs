@@ -162,12 +162,16 @@ fn a_host_that_cannot_freeze_a_process_is_not_supported_naming_the_host() {
         op: "spawn_suspended".into(),
         platform: "plan9",
         detail: "no gate before exec".into(),
-        source: None,
+        source: Some(std::sync::Arc::new(cosca::error::Error::Io(std::io::Error::other(
+            "no such call",
+        )))),
     };
     let error = frozen_spawn_error(refusal);
     assert_eq!(error.kind(), ErrorKind::NotSupported);
     assert!(
-        error.message().contains("frozen spawn needs Windows in 0.1.0") && error.message().contains("plan9"),
+        error.message().contains("frozen spawn needs Windows in 0.1.0")
+            && error.message().contains("plan9")
+            && error.message().contains("no such call"),
         "{}",
         error.message()
     );
@@ -286,8 +290,8 @@ fn a_host_that_cannot_read_its_own_boot_session_is_a_plain_error_not_a_bad_recor
     assert!(
         error
             .message()
-            .starts_with("this host's boot session could not be read"),
-        "reads on its own, with no lead: {error}"
+            .starts_with("cannot check the VM process 7: this host's boot session could not be read"),
+        "names the process it was checking, since the host's failure says nothing of the record: {error}"
     );
     assert!(!error.message().contains("cannot tell whether"), "{error}");
     for part in [

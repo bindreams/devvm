@@ -87,14 +87,20 @@ pub(crate) fn cosca_error(context: &str, source: cosca::error::Error) -> Error {
 
 /// How a failed frozen spawn is reported: a host that cannot freeze a process is `NotSupported`, anything else `Io`.
 pub(crate) fn frozen_spawn_error(error: cosca::error::Error) -> Error {
-    match error {
+    match &error {
         cosca::error::Error::Unsupported {
-            op, platform, detail, ..
-        } if op == "spawn_suspended" => Error::new(
-            ErrorKind::NotSupported,
-            format!("cannot start the VM: frozen spawn needs Windows in 0.1.0 (this host is {platform}: {detail})"),
-        ),
-        other => cosca_error("cannot start the VM process frozen", other),
+            op,
+            platform,
+            detail,
+            source,
+        } if op == "spawn_suspended" => {
+            let text = format!(
+                "cannot start the VM: frozen spawn needs Windows in 0.1.0 (this host is {platform}: {detail}{})",
+                caused_by(source)
+            );
+            Error::new(ErrorKind::NotSupported, text).with_source(error)
+        }
+        _ => cosca_error("cannot start the VM process frozen", error),
     }
 }
 
@@ -323,7 +329,8 @@ impl VmProcess {
 /// What follows from the identity layer refusing the record of process `pid`. A record from another boot or platform
 /// names nothing that exists now: `None`. A record that cannot be checked is an error, not "not running", which would
 /// let a second VM start on a disk the first may still hold; so is a host that cannot read its own boot session, which
-/// says nothing of the record. The error reads on its own: the pid of a record that cannot be checked is not named.
+/// says nothing of the record and names the process it was checking. The error for a record that cannot be checked
+/// reads on its own and does not name its pid, which may now be another process's.
 pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Option<VmProcess>> {
     use cosca::error::Error::IdentityRecord;
     let text = match &error {
@@ -336,11 +343,10 @@ pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Opt
             detail,
             source,
         } => {
-            let cause = source
-                .as_deref()
-                .map(|cause| format!(": {}", cosca::error::Report::new(cause)))
-                .unwrap_or_default();
-            format!("{kind}: {detail}{cause}")
+            format!(
+                "cannot check the VM process {pid}: {kind}: {detail}{}",
+                caused_by(source)
+            )
         }
         IdentityRecord { kind, .. } => {
             format!("{} ({})", record_fault(*kind), cosca::error::Report::new(&error))
@@ -348,6 +354,14 @@ pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Opt
         _ => return Err(cosca_error(&format!("cannot restore the VM process {pid}"), error)),
     };
     Err(Error::new(ErrorKind::Io, text).with_source(error))
+}
+
+/// `: <the cause and its causes>`, or nothing without one.
+fn caused_by(source: &Option<std::sync::Arc<cosca::error::Error>>) -> String {
+    source
+        .as_deref()
+        .map(|cause| format!(": {}", cosca::error::Report::new(cause)))
+        .unwrap_or_default()
 }
 
 /// Why a record cannot be checked, for the person who has to deal with it.

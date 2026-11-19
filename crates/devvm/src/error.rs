@@ -104,9 +104,9 @@ impl Error {
         }
     }
 
-    /// This error with another message and the same kind and source.
-    pub(crate) fn with_message(mut self, message: impl Into<String>) -> Error {
-        self.message = message.into();
+    /// This error with what the person can do about it named after it.
+    pub(crate) fn with_step(mut self, step: impl fmt::Display) -> Error {
+        self.message = format!("{}; {step}", self.message);
         self
     }
 
