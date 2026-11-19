@@ -13,8 +13,8 @@ use crate::backend::{
     Endpoint, FileClaim, Machine, MachineExit, MachineRecord, PRINTED_NOTHING, SshEndpoint, directory_of,
 };
 use crate::contain::VmProcess;
-use crate::exit::Progress;
 use crate::host::{Host, ProcessWatch, read_from};
+use crate::progress::Progress;
 use crate::{Arch, Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -230,7 +230,7 @@ impl QemuMachine {
     }
 
     fn remove_leftovers(&self) {
-        let mut warn = |text: String| self.progress.message(&text);
+        let mut warn = |text: String| self.progress.warn(&text);
         self.record.remove_leftovers(self.host, &mut warn);
     }
 

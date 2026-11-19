@@ -13,7 +13,8 @@ use crate::access::session::{BootGate, ClientHandler, Connect, Context, Failure,
 use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, SshTarget, VmExit};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
-use crate::exit::{ExitStatus, ExitWidth, NullProgress};
+use crate::exit::{ExitStatus, ExitWidth};
+use crate::progress::NullProgress;
 use crate::test_support::callers::in_every_caller_context;
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::sshd::{FAST_KEEPALIVE as FAST, Rig, TestSshd};

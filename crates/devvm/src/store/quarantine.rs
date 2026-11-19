@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::exit::Progress;
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result, random};
 
 #[cfg(test)]
@@ -43,7 +43,7 @@ pub(crate) fn quarantine_file(
             ));
         }
     }
-    progress.message(&format!(
+    progress.warn(&format!(
         "moved the unreadable {} to {}",
         file.display(),
         target.display()

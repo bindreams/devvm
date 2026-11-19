@@ -14,7 +14,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256 as Sha2};
 
-use crate::exit::Progress;
+use crate::progress::{Progress, Total, human_bytes};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result, Sha256};
 
@@ -33,9 +33,6 @@ pub(crate) mod fetch_tests;
 #[cfg(test)]
 #[path = "fetch/http_tests.rs"]
 pub(crate) mod http_tests;
-
-/// Progress is reported each time the byte count crosses a multiple of this.
-const PROGRESS_STEP: u64 = 1024 * 1024;
 
 // Transport ===========================================================================================================
 
@@ -216,8 +213,6 @@ impl Fetcher {
             }
             Plan::Append { response, from } => {
                 let total = total_size(&response, from);
-                self.progress
-                    .message(&format!("resuming {} at {from} bytes", artifact.url));
                 (Plan::Append { response, from }, total)
             }
             Plan::Fresh { response } => {
@@ -240,11 +235,15 @@ impl Fetcher {
             // After the truncation: a failed open must leave the old validator beside the old part.
             self.write_sidecar(artifact, response.validator.clone())?;
         }
-        self.progress.message(&format!(
-            "downloading {}: {from} of {} bytes",
-            artifact.url,
-            total.map_or_else(|| "unknown".to_owned(), |total| total.to_string())
-        ));
+        self.progress.debug(&format!("downloading {}", artifact.url));
+        let task = self.progress.task(
+            format!("downloading {}", name::file_name(&artifact.url)),
+            total.map_or(Total::Unknown, Total::Bytes),
+        );
+        if from > 0 {
+            task.status(format!("resuming at {}", human_bytes(from)));
+            task.set(from);
+        }
 
         let mut buffer = vec![0u8; 64 * 1024];
         let mut done = from;
@@ -268,15 +267,8 @@ impl Fetcher {
                 .write_all(&buffer[..read])
                 .map_err(|e| Error::write(&part, e, FULL_DISK_HINT))?;
             hasher.update(&buffer[..read]);
-            let before = done;
             done += read as u64;
-            if done / PROGRESS_STEP > before / PROGRESS_STEP {
-                self.progress.message(&format!(
-                    "downloading {}: {done} of {} bytes",
-                    artifact.url,
-                    total.map_or_else(|| "unknown".to_owned(), |total| total.to_string())
-                ));
-            }
+            task.set(done);
         }
         writer.sync().map_err(|e| Error::write(&part, e, FULL_DISK_HINT))?;
         drop(writer);
@@ -294,7 +286,9 @@ impl Fetcher {
             ));
         }
         let digest: [u8; 32] = hasher.finalize().into();
-        self.verify_and_publish(artifact, &part, entry, digest, done)
+        self.verify_and_publish(artifact, &part, entry, digest, done)?;
+        task.finish();
+        Ok(())
     }
 
     /// Decides where to start: a resume when a part from the same URL exists, else from zero.
@@ -364,7 +358,7 @@ impl Fetcher {
     }
 
     fn report_abandoned(&self, artifact: &Artifact, why: &str) {
-        self.progress.message(&format!(
+        self.progress.warn(&format!(
             "not resuming {}: {why}; downloading it from the start",
             artifact.url
         ));
@@ -374,7 +368,7 @@ impl Fetcher {
     fn get(&self, url: &str, resume: Option<Resume>) -> Result<Response> {
         let response = self.transport.get(url, resume)?;
         for warning in &response.warnings {
-            self.progress.message(&format!("{url}: {warning}"));
+            self.progress.warn(&format!("{url}: {warning}"));
         }
         Ok(response)
     }

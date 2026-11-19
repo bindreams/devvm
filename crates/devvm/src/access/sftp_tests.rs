@@ -9,6 +9,7 @@ use crate::access::sftp::{CHUNK, Failed, Sftp, pump};
 use crate::guest::GuestOs;
 use crate::guest::Guests;
 use crate::guest::fake::FakeGuests;
+use crate::progress::{Event, Level, Outcome, Total};
 use crate::test_groups::{Group, openssh_sftp, symlinks};
 use crate::test_harness::SFTP;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
@@ -1468,7 +1469,114 @@ fn a_tilde_user_guest_path_is_a_usage_error_before_any_transfer(#[fixture(unicod
     assert_eq!(error.kind(), ErrorKind::Usage, "{error}");
     assert!(tree(env.root()).is_empty(), "nothing reached the guest");
     assert!(!env.local.join("o").exists());
-    assert!(env.progress.messages().is_empty(), "no transfer was announced");
+    assert!(copy_tasks(&env).is_empty(), "no transfer began");
+}
+
+/// `(label, total)` of each task begun, the positions each advanced to, and how each ended, in `env`'s progress.
+fn copy_tasks(env: &Env) -> Vec<(String, Total, Vec<u64>, Option<Outcome>)> {
+    let events = env.progress.events();
+    events
+        .iter()
+        .filter_map(|event| {
+            let Event::Begin { id, label, total, .. } = event else {
+                return None;
+            };
+            let positions = events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Advance { id: at, position } if at == id => Some(*position),
+                    _ => None,
+                })
+                .collect();
+            let ended = events.iter().find_map(|event| match event {
+                Event::End { id: at, outcome } if at == id => Some(*outcome),
+                _ => None,
+            });
+            Some((label.clone(), *total, positions, ended))
+        })
+        .collect()
+}
+
+#[skuld::test]
+fn a_copy_in_is_one_task_that_ends_at_the_bytes_it_moved(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.host_file("t/a.txt", b"abc");
+    env.host_file("t/sub/b.txt", b"defgh");
+    env.copy_in(&env.local.join("t"), "/t").unwrap();
+    let tasks = copy_tasks(&env);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let (label, total, positions, ended) = &tasks[0];
+    assert!(label.starts_with("copying ") && label.contains("/t"), "{label}");
+    assert_eq!(*total, Total::Bytes(8));
+    assert_eq!(positions.last(), Some(&8), "{positions:?}");
+    assert_eq!(*ended, Some(Outcome::Finished));
+    let notes: Vec<_> = env
+        .progress
+        .events()
+        .into_iter()
+        .filter(|e| matches!(e, Event::Note { level: Level::Info, .. }))
+        .collect();
+    assert!(notes.is_empty(), "the announcement is the task: {notes:?}");
+}
+
+#[skuld::test]
+fn a_copy_out_is_one_task_that_ends_at_the_bytes_it_moved(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("g/a.txt", b"abc");
+    env.guest_file("g/sub/b.txt", b"defgh");
+    env.copy_out("/g", &env.local.join("out")).unwrap();
+    let tasks = copy_tasks(&env);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let (label, total, positions, ended) = &tasks[0];
+    assert!(label.starts_with("copying the guest path /g"), "{label}");
+    assert_eq!(*total, Total::Bytes(8));
+    assert_eq!(positions.last(), Some(&8), "{positions:?}");
+    assert_eq!(*ended, Some(Outcome::Finished));
+}
+
+/// One file of 3 MiB: its task reports positions before the file is whole.
+const BIG: usize = 3 << 20;
+
+fn assert_reported_while_written(tasks: &[(String, Total, Vec<u64>, Option<Outcome>)]) {
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let (_, total, positions, ended) = &tasks[0];
+    assert_eq!(*total, Total::Bytes(BIG as u64));
+    assert!(
+        positions.iter().any(|at| *at < BIG as u64),
+        "only at the end: {positions:?}"
+    );
+    assert_eq!(positions.last(), Some(&(BIG as u64)), "{positions:?}");
+    assert_eq!(*ended, Some(Outcome::Finished));
+}
+
+#[skuld::test]
+fn a_large_file_copied_in_reports_bytes_as_they_are_written(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    let src = env.host_file("big.bin", &vec![7u8; BIG]);
+    env.copy_in(&src, "/big.bin").unwrap();
+    assert_reported_while_written(&copy_tasks(&env));
+}
+
+#[skuld::test]
+fn a_large_file_copied_out_reports_bytes_as_they_are_written(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    env.guest_file("big.bin", &vec![7u8; BIG]);
+    env.copy_out("/big.bin", &env.local.join("big.bin")).unwrap();
+    assert_reported_while_written(&copy_tasks(&env));
+}
+
+#[skuld::test]
+fn a_copy_with_no_bytes_to_count_is_announced_as_a_note(#[fixture(unicode_home)] home: &Path) {
+    let env = Env::new(home);
+    std::fs::create_dir_all(env.local.join("empty")).unwrap();
+    env.copy_in(&env.local.join("empty"), "/empty").unwrap();
+    assert!(copy_tasks(&env).is_empty());
+    let messages = env.progress.messages();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].starts_with("copying ") && messages[0].contains("0 files"),
+        "{messages:?}"
+    );
 }
 
 /// A guest whose user's home is not the root: `~` is what the server says it is, and the copy lands there.
@@ -1800,7 +1908,7 @@ fn a_time_sftp_cannot_carry_is_named_and_the_copy_goes_on(#[fixture(unicode_home
     assert_eq!(env.guest_tree("/t"), ["d/", "early.txt", "late.txt", "ok.txt"]);
     let notes: Vec<String> = env
         .progress
-        .messages()
+        .warnings()
         .into_iter()
         .filter(|line| line.contains("modification time"))
         .collect();
@@ -1826,7 +1934,7 @@ fn a_guest_time_the_server_does_not_show_is_named_and_the_copy_goes_on(#[fixture
     assert_eq!(tree(&out), ["a.txt", "sub/", "sub/b.txt"]);
     let notes: Vec<String> = env
         .progress
-        .messages()
+        .warnings()
         .into_iter()
         .filter(|line| line.contains("modification time"))
         .collect();
@@ -2319,7 +2427,7 @@ fn a_guest_time_before_1970_is_named_and_the_copy_goes_on(#[fixture(unicode_home
     assert_eq!(tree(&out), ["d/", "early.txt", "ok.txt"]);
     let notes: Vec<String> = env
         .progress
-        .messages()
+        .warnings()
         .into_iter()
         .filter(|line| line.contains("modification time"))
         .collect();
@@ -2483,9 +2591,10 @@ fn pump_tells_which_side_failed() {
     let data = vec![9u8; 3 * CHUNK + 5];
     let outcome = crate::access::runtime::run("pumping", async move {
         let mut copied = Vec::new();
-        let ok = pump(&data[..], &mut copied).await;
-        let read = pump(Broken, &mut Vec::new()).await;
-        let write = pump(&data[..], Broken).await;
+        let (moved, _unheard) = tokio::sync::mpsc::unbounded_channel();
+        let ok = pump(&data[..], &mut copied, &moved).await;
+        let read = pump(Broken, &mut Vec::new(), &moved).await;
+        let write = pump(&data[..], Broken, &moved).await;
         (ok.is_ok() && copied == data, read, write)
     })
     .unwrap();

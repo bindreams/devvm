@@ -24,7 +24,8 @@ use tokio::time::{sleep, sleep_until, timeout};
 use self::watched::Watched;
 use crate::access::runtime;
 use crate::contain::VmProcess;
-use crate::exit::{Output, Progress};
+use crate::exit::Output;
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) use crate::access::exec::ExecEnd;

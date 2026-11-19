@@ -103,3 +103,24 @@ fn another_failed_write_is_io_naming_the_path() {
     assert_eq!(error.kind(), ErrorKind::Io);
     assert_eq!(error.message(), "cannot write out/x.part: access denied");
 }
+
+#[skuld::test]
+fn with_tail_ends_the_message_with_the_last_20_lines_of_the_text() {
+    let text: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+    let error = Error::new(ErrorKind::Recipe, "step 1 failed").with_tail("the step's output", &text.join("\r\n"));
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    let tail: Vec<String> = (6..=25).map(|n| format!("line {n}")).collect();
+    assert_eq!(
+        error.message(),
+        format!("step 1 failed\nthe end of the step's output:\n{}", tail.join("\n"))
+    );
+}
+
+#[skuld::test]
+fn with_tail_of_empty_text_adds_nothing_and_keeps_the_source() {
+    let source = std::io::Error::other("cause");
+    let error = Error::io(ErrorKind::Io, "cannot", source).with_tail("a log", "");
+    assert_eq!(error.message(), "cannot: cause");
+    let error = error.with_tail("a log", "x");
+    assert!(error.source().is_some(), "the source stays");
+}

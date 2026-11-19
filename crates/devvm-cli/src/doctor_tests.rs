@@ -12,15 +12,15 @@ fn check(name: &str, outcome: Result<&str, &str>) -> Check {
 
 fn printed(checks: Vec<Check>) -> (String, devvm::Result<ExitStatus>) {
     let mut out = Vec::new();
-    let result = doctor_to(&mut out, checks);
+    let result = doctor_to(&mut out, checks, false);
     (String::from_utf8(out).unwrap(), result)
 }
 
 #[skuld::test]
 fn a_line_says_pass_or_fail_then_the_check_and_what_was_found() {
-    assert_eq!(line(&check("qemu", Ok("QEMU 11.1.2"))), "pass qemu: QEMU 11.1.2");
+    assert_eq!(line(&check("qemu", Ok("QEMU 11.1.2")), false), "pass qemu: QEMU 11.1.2");
     assert_eq!(
-        line(&check("git", Err("cannot run `git`"))),
+        line(&check("git", Err("cannot run `git`")), false),
         "fail git: cannot run `git`"
     );
 }
@@ -28,10 +28,13 @@ fn a_line_says_pass_or_fail_then_the_check_and_what_was_found() {
 #[skuld::test]
 fn a_check_is_one_line_whatever_it_found() {
     assert_eq!(
-        line(&check("config", Err("bad yaml\r\n  at line 2\x1b[0m"))),
+        line(&check("config", Err("bad yaml\r\n  at line 2\x1b[0m")), false),
         r"fail config: bad yaml\r\n  at line 2\u{1b}[0m"
     );
-    assert_eq!(line(&check("ssh", Ok("OpenSSH\nsecond"))), r"pass ssh: OpenSSH\nsecond");
+    assert_eq!(
+        line(&check("ssh", Ok("OpenSSH\nsecond")), false),
+        r"pass ssh: OpenSSH\nsecond"
+    );
     let (out, _) = printed(vec![check("a", Err("one\ntwo")), check("b", Ok("fine"))]);
     assert_eq!(out.lines().count(), 2, "{out}");
 }
@@ -62,4 +65,16 @@ fn failures_are_all_printed_before_the_exit_says_how_many_checks_failed() {
     let error = result.expect_err("two checks failed");
     assert_eq!(error.kind(), ErrorKind::Unavailable);
     assert_eq!(error.message(), "2 check(s) failed");
+}
+
+#[skuld::test]
+fn colour_paints_only_the_word_pass_or_fail() {
+    assert_eq!(
+        line(&check("qemu", Ok("fine")), true),
+        "\u{1b}[32mpass\u{1b}[0m qemu: fine"
+    );
+    assert_eq!(
+        line(&check("git", Err("gone")), true),
+        "\u{1b}[31mfail\u{1b}[0m git: gone"
+    );
 }

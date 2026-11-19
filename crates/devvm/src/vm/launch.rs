@@ -195,7 +195,7 @@ pub(super) fn abandon(
         );
     }
     if let Err(clear) = dir.retire_machine(op, &machine.record(), engine.host(), &mut warn_for(engine, dir)) {
-        engine.progress().message(&format!(
+        engine.progress().warn(&format!(
             "instance {} could not be started, and its record still names the machine ({}); the next devvm \
              command on it clears that",
             dir.name(),

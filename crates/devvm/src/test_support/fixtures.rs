@@ -41,7 +41,7 @@ pub fn build_ctx(home: &Path, arch: crate::Arch) -> crate::guest::BuildCtx {
     crate::guest::BuildCtx {
         dirs: crate::Dirs::under(home),
         arch,
-        progress: std::sync::Arc::new(crate::exit::NullProgress),
+        progress: std::sync::Arc::new(crate::progress::NullProgress),
         clock: std::sync::Arc::new(crate::store::layers::SystemClock),
         resources: crate::recipe::Resources::default(),
         work: home.join("build"),
@@ -116,49 +116,112 @@ impl crate::store::layers::Clock for FakeClock {
     }
 }
 
+fn chatty_stderr() -> crate::progress::LineProgress {
+    crate::progress::LineProgress::stderr(crate::progress::Look {
+        colour: false,
+        verbose: true,
+    })
+}
+
+/// A sink that prints everything to stderr, for a test that runs long enough for its progress to be read live.
+pub fn stderr_progress() -> std::sync::Arc<crate::progress::LineProgress> {
+    std::sync::Arc::new(chatty_stderr())
+}
+
 /// A progress sink the test reads back.
 #[derive(Default)]
 pub struct MemoryProgress {
-    lines: std::sync::Mutex<Vec<(std::time::SystemTime, String)>>,
-    echo: bool,
+    events: std::sync::Mutex<Vec<(std::time::SystemTime, crate::progress::Event)>>,
+    echo: Option<crate::progress::LineProgress>,
 }
 
 impl MemoryProgress {
-    /// A sink that also prints each message to stderr, for a test that runs long enough for its progress to be read
-    /// live.
+    /// A sink that also prints each note to stderr, for a test that runs long enough for its progress to be read live.
     pub fn echoing() -> MemoryProgress {
         MemoryProgress {
-            echo: true,
+            echo: Some(chatty_stderr()),
             ..MemoryProgress::default()
         }
     }
 
+    /// The text of every note and output line, at every level, in order.
     pub fn messages(&self) -> Vec<String> {
         self.messages_at().into_iter().map(|(_, text)| text).collect()
     }
 
-    /// The messages, each with the time it arrived.
+    pub fn warnings(&self) -> Vec<String> {
+        self.events()
+            .into_iter()
+            .filter_map(|event| match event {
+                crate::progress::Event::Note {
+                    level: crate::progress::Level::Warn,
+                    text,
+                } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn messages_at(&self) -> Vec<(std::time::SystemTime, String)> {
-        self.lines
+        self.events_at()
+            .into_iter()
+            .filter_map(|(at, event)| match event {
+                crate::progress::Event::Note { text, .. } | crate::progress::Event::Output { line: text } => {
+                    Some((at, text))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How many tasks began with a label that starts with `prefix`.
+    pub fn tasks_begun(&self, prefix: &str) -> usize {
+        self.events()
+            .iter()
+            .filter(|event| matches!(event, crate::progress::Event::Begin { label, .. } if label.starts_with(prefix)))
+            .count()
+    }
+
+    pub fn statuses(&self) -> Vec<String> {
+        self.statuses_at().into_iter().map(|(_, text)| text).collect()
+    }
+
+    pub fn statuses_at(&self) -> Vec<(std::time::SystemTime, String)> {
+        self.events_at()
+            .into_iter()
+            .filter_map(|(at, event)| match event {
+                crate::progress::Event::Status { text, .. } => Some((at, text)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn events(&self) -> Vec<crate::progress::Event> {
+        self.events_at().into_iter().map(|(_, event)| event).collect()
+    }
+
+    fn events_at(&self) -> Vec<(std::time::SystemTime, crate::progress::Event)> {
+        self.events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
 
-impl crate::exit::Progress for MemoryProgress {
-    fn message(&self, text: &str) {
-        if self.echo {
-            crate::exit::StderrProgress.message(text);
+impl crate::progress::Progress for MemoryProgress {
+    fn event(&self, event: &crate::progress::Event) {
+        if let Some(echo) = &self.echo {
+            echo.event(event);
         }
-        self.lines
+        self.events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((std::time::SystemTime::now(), text.to_owned()));
+            .push((std::time::SystemTime::now(), event.clone()));
     }
 }
 
-/// A progress sink that sends every message down a channel, so a test can wait for "waiting for ..." as an event.
+/// A progress sink that sends the text of every note down a channel, so a test can wait for "waiting for ..." as an
+/// event.
 pub struct ChannelProgress(std::sync::Mutex<std::sync::mpsc::Sender<String>>);
 
 impl ChannelProgress {
@@ -171,8 +234,10 @@ impl ChannelProgress {
     }
 }
 
-impl crate::exit::Progress for ChannelProgress {
-    fn message(&self, text: &str) {
-        let _ = self.0.lock().unwrap().send(text.to_owned());
+impl crate::progress::Progress for ChannelProgress {
+    fn event(&self, event: &crate::progress::Event) {
+        if let crate::progress::Event::Note { text, .. } = event {
+            let _ = self.0.lock().unwrap().send(text.clone());
+        }
     }
 }

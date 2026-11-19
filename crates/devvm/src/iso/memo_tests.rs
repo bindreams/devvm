@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256 as Sha2};
 use super::{IsoMemo, Known, QuarantineOutcome};
 use crate::host::{Host, OtherHost};
 use crate::iso::{HeldIso, WimArch, WimImage};
+use crate::progress::{Event, Level, Outcome, Total};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::{RecordingHost, TestHost};
 use crate::{Dirs, ErrorKind, Result, Sha256};
@@ -64,11 +65,7 @@ impl Fixture {
 }
 
 fn hashings(progress: &MemoryProgress) -> usize {
-    progress
-        .messages()
-        .iter()
-        .filter(|message| message.starts_with("hashing ") && message.contains(": 0 of "))
-        .count()
+    progress.tasks_begun("hashing ")
 }
 
 /// Every file in quarantine, one directory deep, with its name and bytes.
@@ -91,6 +88,33 @@ fn memo_files(dirs: &Dirs) -> Vec<PathBuf> {
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
         .collect()
+}
+
+#[skuld::test]
+fn hashing_is_a_sized_task_that_reports_its_end_and_finishes(#[fixture(unicode_home)] home: &Path) {
+    let iso = iso_with(home, "win 😀.iso", b"windows");
+    let fx = Fixture::new(home);
+    fx.sha256(&iso).unwrap();
+    let events = fx.progress.events();
+    let Some(Event::Begin { id, label, total, .. }) = events.first().cloned() else {
+        panic!("{events:?}")
+    };
+    assert_eq!((label.as_str(), total), ("hashing win 😀.iso", Total::Bytes(7)));
+    assert!(events.contains(&Event::Advance { id, position: 7 }), "{events:?}");
+    assert!(
+        events.contains(&Event::End {
+            id,
+            outcome: Outcome::Finished
+        }),
+        "{events:?}"
+    );
+    // The full path is for the log.
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::Note { level: Level::Debug, text } if text.contains(&iso.display().to_string()))
+        ),
+        "{events:?}"
+    );
 }
 
 #[skuld::test]
@@ -205,11 +229,11 @@ fn a_corrupt_memo_is_quarantined_and_rebuilt(#[fixture(unicode_home)] home: &Pat
     );
     assert!(
         fx.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|message| message.contains("unreadable")),
         "{:?}",
-        fx.progress.messages()
+        fx.progress.warnings()
     );
     fx.sha256(&iso).unwrap();
     assert_eq!(hashings(&fx.progress), 2, "the memo made again is used");
@@ -363,11 +387,11 @@ fn an_iso_with_a_non_unicode_name_is_hashed_each_time_and_the_build_is_told(#[fi
     assert_eq!(fx.memo.known().unwrap(), []);
     assert!(
         fx.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|message| message.contains("not remembered") && message.contains("not Unicode")),
         "{:?}",
-        fx.progress.messages()
+        fx.progress.warnings()
     );
 }
 
@@ -382,11 +406,11 @@ fn an_iso_whose_final_path_cannot_be_found_is_used_and_not_remembered(#[fixture(
     assert_eq!(fx.memo.known().unwrap(), []);
     assert!(
         fx.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|message| message.contains("not remembered") && message.contains("no DOS path")),
         "{:?}",
-        fx.progress.messages()
+        fx.progress.warnings()
     );
 }
 
@@ -401,11 +425,11 @@ fn a_memo_that_cannot_be_written_is_reported_and_the_iso_is_used(#[fixture(unico
     assert_eq!(fx.memo.known().unwrap(), []);
     assert!(
         fx.progress
-            .messages()
+            .warnings()
             .iter()
             .any(|message| message.contains("not remembered") && message.contains(".lock")),
         "{:?}",
-        fx.progress.messages()
+        fx.progress.warnings()
     );
 }
 

@@ -2,14 +2,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use crate::exit::Progress;
 use crate::host::symlink_metadata_if_present;
+use crate::progress::Progress;
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{
     BuildRequest, Built, ChainLease, Clock, Generation, IdSource, LayerMeta, LayerRef, LayerStore,
 };
 use crate::store::lock::{FileLock, Mode};
-use crate::test_support::fixtures::{FakeClock, MemoryProgress, unicode_home};
+use crate::test_support::fixtures::{ChannelProgress, FakeClock, MemoryProgress, unicode_home};
 use crate::{Dirs, ErrorKind};
 
 pub struct Env {
@@ -197,7 +197,7 @@ fn sweep_reports_a_directory_it_cannot_list(#[fixture(unicode_home)] home: &Path
     let not_a_dir = home.join("plain-file");
     std::fs::write(&not_a_dir, b"x").unwrap();
     assert_eq!(env.store.sweep_leftovers(&not_a_dir), 0);
-    let messages = env.progress.messages();
+    let messages = env.progress.warnings();
     assert!(
         messages
             .iter()
@@ -313,7 +313,7 @@ fn generation_ids_are_allocated_only_under_the_build_lock(#[fixture(unicode_home
         next: std::sync::atomic::AtomicU8::new(0xa0),
     });
     let clock = Arc::new(FakeClock::new(t0()));
-    let store = LayerStore::open_with_ids(&dirs, clock, Arc::new(crate::exit::NullProgress), ids).unwrap();
+    let store = LayerStore::open_with_ids(&dirs, clock, Arc::new(crate::progress::NullProgress), ids).unwrap();
     let lease = store
         .build(&request(key(1)), None, |staging| {
             assert_eq!(staging.generation, Generation::from_bytes([0xa0; 16]));
@@ -465,7 +465,7 @@ fn a_layer_expiring_between_the_stamp_and_the_read_back_is_still_returned(#[fixt
     let store = LayerStore::open(
         &dirs,
         Arc::new(StepClock(std::sync::Mutex::new(t0()))),
-        Arc::new(crate::exit::NullProgress),
+        Arc::new(crate::progress::NullProgress),
     )
     .unwrap();
     // The stamp is the third clock read (t0 + 2h); the read-back after publishing would be a fourth (t0 + 3h).
@@ -476,25 +476,12 @@ fn a_layer_expiring_between_the_stamp_and_the_read_back_is_still_returned(#[fixt
     assert_eq!(lease.tip().meta().expires, Some(expires));
 }
 
-struct ChannelProgress(std::sync::Mutex<std::sync::mpsc::Sender<String>>);
-
-impl Progress for ChannelProgress {
-    fn message(&self, text: &str) {
-        self.0.lock().unwrap().send(text.to_owned()).unwrap();
-    }
-}
-
 #[skuld::test]
 fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let clock = Arc::new(FakeClock::new(t0()));
-    let (messages, waiting) = std::sync::mpsc::channel();
-    let store = LayerStore::open(
-        &dirs,
-        clock.clone() as Arc<dyn Clock>,
-        Arc::new(ChannelProgress(std::sync::Mutex::new(messages))),
-    )
-    .unwrap();
+    let (progress, waiting) = ChannelProgress::new();
+    let store = LayerStore::open(&dirs, clock.clone() as Arc<dyn Clock>, progress).unwrap();
     let (building_tx, building_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let waiter_builds = std::sync::atomic::AtomicUsize::new(0);
@@ -547,13 +534,8 @@ fn waiter_second_lookup_uses_a_fresh_clock_read(#[fixture(unicode_home)] home: &
 #[skuld::test]
 fn waiter_whose_layer_was_built_meanwhile_does_not_build_again(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
-    let (messages, waiting) = std::sync::mpsc::channel();
-    let store = LayerStore::open(
-        &dirs,
-        Arc::new(FakeClock::new(t0())),
-        Arc::new(ChannelProgress(std::sync::Mutex::new(messages))),
-    )
-    .unwrap();
+    let (progress, waiting) = ChannelProgress::new();
+    let store = LayerStore::open(&dirs, Arc::new(FakeClock::new(t0())), progress).unwrap();
     let (building_tx, building_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let waiter_builds = std::sync::atomic::AtomicUsize::new(0);

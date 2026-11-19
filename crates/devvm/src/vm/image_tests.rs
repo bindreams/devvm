@@ -215,7 +215,7 @@ fn dropping_a_vm_whose_machine_cannot_be_killed_leaves_the_instance_and_says_so(
         std::slice::from_ref(&name),
         "a VM that may run keeps its instance"
     );
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages
             .iter()
@@ -402,14 +402,14 @@ fn a_vm_warns_once_per_operation_whether_or_not_its_session_is_cached(#[fixture(
     assert!(progress.messages().is_empty(), "{:?}", progress.messages());
 
     vm.run(&cmd).unwrap();
-    assert_eq!(progress.messages().len(), 1, "run: {:?}", progress.messages());
+    assert_eq!(progress.warnings().len(), 1, "run: {:?}", progress.warnings());
     vm.run(&cmd).unwrap();
-    assert_eq!(progress.messages().len(), 2, "run again: {:?}", progress.messages());
+    assert_eq!(progress.warnings().len(), 2, "run again: {:?}", progress.warnings());
     vm.run_to(&cmd, &mut Vec::new(), &mut Vec::new()).unwrap();
-    assert_eq!(progress.messages().len(), 3, "run_to: {:?}", progress.messages());
+    assert_eq!(progress.warnings().len(), 3, "run_to: {:?}", progress.warnings());
     vm.reboot().unwrap();
-    assert_eq!(progress.messages().len(), 4, "reboot: {:?}", progress.messages());
-    for message in progress.messages() {
+    assert_eq!(progress.warnings().len(), 4, "reboot: {:?}", progress.warnings());
+    for message in progress.warnings() {
         assert_eq!(message, "instance foo: the guest expired on 2027-02-04 (UTC)");
     }
 }
@@ -423,11 +423,11 @@ fn an_instance_warns_once_per_operation_that_reaches_the_guest(#[fixture(unicode
     let cmd = Command::new(["echo", "x"]);
 
     instance.run(&cmd).unwrap();
-    assert_eq!(progress.messages().len(), 1, "run: {:?}", progress.messages());
+    assert_eq!(progress.warnings().len(), 1, "run: {:?}", progress.warnings());
     instance.run_to(&cmd, &mut Vec::new(), &mut Vec::new()).unwrap();
-    assert_eq!(progress.messages().len(), 2, "run_to: {:?}", progress.messages());
+    assert_eq!(progress.warnings().len(), 2, "run_to: {:?}", progress.warnings());
     instance.ssh_config().unwrap();
-    assert_eq!(progress.messages().len(), 3, "ssh_config: {:?}", progress.messages());
+    assert_eq!(progress.warnings().len(), 3, "ssh_config: {:?}", progress.warnings());
     instance.reboot().unwrap();
-    assert_eq!(progress.messages().len(), 4, "reboot: {:?}", progress.messages());
+    assert_eq!(progress.warnings().len(), 4, "reboot: {:?}", progress.warnings());
 }

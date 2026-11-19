@@ -6,6 +6,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::progress::{Colour, paint};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -175,9 +176,11 @@ pub fn write_status_file(path: &Path, report: &Report<'_>) -> Result<()> {
     Ok(())
 }
 
+pub const ERROR_PREFIX: &str = "devvm-error:";
+
 /// `devvm-error: <kind>: <message>` on one line: control characters are escaped, so the line has no newline inside.
 pub fn format_error_line(error: &Error) -> String {
-    let mut line = format!("devvm-error: {}: ", error.kind().as_str());
+    let mut line = format!("{ERROR_PREFIX} {}: ", error.kind().as_str());
     for c in error.message().chars() {
         if c.is_control() {
             line.extend(c.escape_default());
@@ -188,15 +191,26 @@ pub fn format_error_line(error: &Error) -> String {
     line
 }
 
-/// Ends a command: writes the status file (when asked), prints devvm's own error line, and returns the process exit
-/// code. A status file that cannot be written is itself a devvm failure (125).
-pub fn finish(
-    status_file: Option<&Path>,
-    outcome: Result<ExitStatus>,
-    width: ExitWidth,
-    stderr: &mut dyn Write,
-) -> i32 {
-    let (report, exit) = match &outcome {
+/// `line`, a [`format_error_line`], with its `devvm-error:` prefix alone in red.
+fn painted(line: &str) -> String {
+    match line.strip_prefix(ERROR_PREFIX) {
+        Some(rest) => format!("{}{rest}", paint(true, Colour::Red, ERROR_PREFIX)),
+        None => line.to_owned(),
+    }
+}
+
+/// How a command ended: the process exit code, and the `devvm-error:` line when devvm itself failed, which is the line
+/// to print and to record.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Ending {
+    pub exit: i32,
+    pub error_line: Option<String>,
+}
+
+/// Ends a command: writes the status file (when asked) and returns how it ended. A status file that cannot be written
+/// is itself a devvm failure (125); when the command failed too, the line carries both.
+pub fn conclude(status_file: Option<&Path>, outcome: &Result<ExitStatus>, width: ExitWidth) -> Ending {
+    let (report, exit) = match outcome {
         Ok(status) => (Report::Guest(status), width.exit_code(status)),
         Err(error) => (Report::Devvm(error), DEVVM_ERROR_EXIT),
     };
@@ -205,10 +219,10 @@ pub fn finish(
         None => Ok(()),
     };
     // One line either way: when the status file fails, its line carries the original error too.
-    let (line, exit) = match (written, &outcome) {
-        (Ok(()), Ok(_)) => return exit,
-        (Ok(()), Err(error)) => (format_error_line(error), exit),
-        (Err(failure), Ok(_)) => (format_error_line(&failure), DEVVM_ERROR_EXIT),
+    let (error_line, exit) = match (written, outcome) {
+        (Ok(()), Ok(_)) => (None, exit),
+        (Ok(()), Err(error)) => (Some(format_error_line(error)), exit),
+        (Err(failure), Ok(_)) => (Some(format_error_line(&failure)), DEVVM_ERROR_EXIT),
         (Err(failure), Err(original)) => {
             let message = format!(
                 "{}; original: {}: {}",
@@ -217,35 +231,16 @@ pub fn finish(
                 original.message()
             );
             (
-                format_error_line(&Error::new(ErrorKind::StatusFile, message)),
+                Some(format_error_line(&Error::new(ErrorKind::StatusFile, message))),
                 DEVVM_ERROR_EXIT,
             )
         }
     };
+    Ending { exit, error_line }
+}
+
+/// Writes the [`Ending::error_line`] `line` to `stderr`; with `colour`, its prefix is red.
+pub fn print_error_line(stderr: &mut dyn Write, line: &str, colour: bool) {
+    let line = if colour { painted(line) } else { line.to_owned() };
     let _ = writeln!(stderr, "{line}");
-    exit
-}
-
-// Progress ============================================================================================================
-
-/// Receives human-readable progress and "waiting for ..." messages.
-pub trait Progress: Send + Sync {
-    fn message(&self, text: &str);
-}
-
-/// Prints each message on its own stderr line.
-pub struct StderrProgress;
-
-impl Progress for StderrProgress {
-    fn message(&self, text: &str) {
-        let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(stderr, "{text}");
-    }
-}
-
-/// Discards messages.
-pub struct NullProgress;
-
-impl Progress for NullProgress {
-    fn message(&self, _text: &str) {}
 }

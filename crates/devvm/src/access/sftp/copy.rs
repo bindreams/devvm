@@ -3,7 +3,7 @@
 //! the copy is in [`plan`] or here; a side supplies how its own file system is read and written, and its wording.
 
 use super::plan::{self, Beyond, Conflict, Item, Kind, Place, Present, Rules, Source};
-use crate::exit::Progress;
+use crate::progress::{Progress, Total, human_bytes};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -71,12 +71,20 @@ pub(super) trait CopySide {
 /// A [`CopySide`] that can take files from the side `S`. The two directions move bytes differently, and each reports
 /// its own steps.
 pub(super) trait Receives<S: CopySide>: CopySide {
-    /// Writes the file `from` of `source` to `to` through a temporary file, with the given execute bit and time.
-    fn put_file(&self, source: &S, from: &S::Path, executable: bool, mtime: Option<u32>, to: &Self::Path)
-    -> Result<()>;
+    /// Writes the file `from` of `source` to `to` through a temporary file, with the given execute bit and time. Tells
+    /// `moved` how many bytes each chunk written was.
+    fn put_file(
+        &self,
+        source: &S,
+        from: &S::Path,
+        executable: bool,
+        mtime: Option<u32>,
+        to: &Self::Path,
+        moved: &mut dyn FnMut(u64),
+    ) -> Result<()>;
 
-    /// The line that announces a copy of `from` to `to`; `total` is what the walk found.
-    fn announce(&self, from: &str, to: &str, total: &str) -> String;
+    /// A copy of `from` to `to` in a sentence, for its progress.
+    fn describe(&self, from: &str, to: &str) -> String;
 }
 
 /// What the destination being in the way means, in words.
@@ -100,6 +108,16 @@ pub(super) fn slash_on_non_dir(side: &str, source: &str) -> Error {
     )
 }
 
+/// The bytes a copy of `top` and `items` moves: the sum of the file sizes, `u64::MAX` where the sum is past it.
+fn byte_total(top: &Kind, items: &[Item]) -> u64 {
+    std::iter::once(top)
+        .chain(items.iter().map(|item| &item.kind))
+        .fold(0, |sum, kind| match kind {
+            Kind::File { size, .. } => sum.saturating_add(*size),
+            Kind::Dir { .. } | Kind::Link { .. } => sum,
+        })
+}
+
 /// The announcement of a copy: what the walk found. The sizes are what the guest reports, so a sum past `u64::MAX` is
 /// announced as more than that, not wrapped or refused.
 fn total(top: &Kind, items: &[Item]) -> String {
@@ -116,8 +134,8 @@ fn total(top: &Kind, items: &[Item]) -> String {
         }
     }
     let size = match bytes {
-        Some(bytes) => bytesize::ByteSize(bytes).to_string(),
-        None => format!("more than {}", bytesize::ByteSize(u64::MAX)),
+        Some(bytes) => human_bytes(bytes),
+        None => format!("more than {}", human_bytes(u64::MAX)),
     };
     format!(
         "{files} files ({size}), {links} symlinks, {} directories",
@@ -148,7 +166,14 @@ fn put_dir<D: CopySide>(dst: &D, path: &D::Path, follow: bool, what: &str) -> Re
 }
 
 /// Makes `to` the tree entry `kind` copied from `from`. Returns whether it made a directory.
-fn put_item<S, D>(src: &S, dst: &D, kind: &Kind, from: &S::Path, to: &D::Path) -> Result<bool>
+fn put_item<S, D>(
+    src: &S,
+    dst: &D,
+    kind: &Kind,
+    from: &S::Path,
+    to: &D::Path,
+    moved: &mut dyn FnMut(u64),
+) -> Result<bool>
 where
     S: CopySide,
     D: Receives<S>,
@@ -157,7 +182,7 @@ where
     match kind {
         Kind::Dir { .. } => put_dir(dst, to, false, &what),
         Kind::Link { target, to_dir } => dst.put_link(target, *to_dir, to, &what).map(|()| false),
-        Kind::File { executable, mtime, .. } => dst.put_file(src, from, *executable, *mtime, to).map(|()| false),
+        Kind::File { executable, mtime, .. } => dst.put_file(src, from, *executable, *mtime, to, moved).map(|()| false),
     }
 }
 
@@ -237,9 +262,27 @@ where
         return Err(plan::link_refusal(&rules, &link, &cause));
     }
     let target = single.as_ref().map_or(dest, |(target, _)| target);
-    progress.message(&dst.announce(&src.show(from), &dst.show(target), &total(&top, &items)));
+    let what_moves = dst.describe(&src.show(from), &dst.show(target));
+    let announcement = format!("{what_moves}: {}", total(&top, &items));
+    // A copy with no bytes has nothing to count: its announcement is the whole report.
+    let bytes = byte_total(&top, &items);
+    let task = if bytes == 0 {
+        progress.message(&announcement);
+        None
+    } else {
+        progress.debug(&announcement);
+        Some(progress.task(what_moves, Total::Bytes(bytes)))
+    };
+    // What the files have moved so far, as they are written; a file that grew since the walk does not pass the total.
+    let mut so_far = 0u64;
+    let mut moved = |chunk: u64| {
+        if let Some(task) = &task {
+            so_far = so_far.saturating_add(chunk);
+            task.set(so_far.min(bytes));
+        }
+    };
     for note in plan::time_notes(&rules, &top, &items, &created, &source_path) {
-        progress.message(&note);
+        progress.warn(&note);
     }
     match placed {
         Place::Root => {
@@ -252,7 +295,7 @@ where
             }
             for item in &items {
                 let to = dest_path(&item.rel);
-                let item_made = put_item(src, dst, &item.kind, &src.join_all(from, &item.rel), &to)?;
+                let item_made = put_item(src, dst, &item.kind, &src.join_all(from, &item.rel), &to, &mut moved)?;
                 if let (true, Kind::Dir { mtime: Some(seconds) }) = (item_made, &item.kind) {
                     made.push((to, *seconds));
                 }
@@ -266,8 +309,11 @@ where
             if let Some(dir) = dst.parent(target) {
                 dst.create_dir(&dir)?;
             }
-            put_item(src, dst, &top, from, target)?;
+            put_item(src, dst, &top, from, target, &mut moved)?;
         }
+    }
+    if let Some(task) = task {
+        task.finish();
     }
     Ok(())
 }

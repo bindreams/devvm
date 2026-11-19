@@ -5,8 +5,8 @@ use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Stdio};
 use std::sync::Arc;
 
-use crate::exit::StderrProgress;
 use crate::store::layers::{BuildRequest, Built, LayerStore, SystemClock};
+use crate::test_support::fixtures::stderr_progress;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::helper;
 use crate::{Dirs, Error, ErrorKind};
@@ -20,7 +20,7 @@ pub fn layer_builder(args: &[String]) {
     let dirs = Dirs::under(Path::new(&args[0]));
     let key = args[1].parse().expect("a layer key");
     let markers = Path::new(&args[2]);
-    let store = LayerStore::open(&dirs, Arc::new(SystemClock), Arc::new(StderrProgress)).unwrap();
+    let store = LayerStore::open(&dirs, Arc::new(SystemClock), stderr_progress()).unwrap();
     let request = BuildRequest {
         key,
         source_label: "layer-builder helper".into(),
@@ -140,7 +140,7 @@ fn killing_the_builder_lets_the_waiter_build_in_a_fresh_staging_dir(#[fixture(un
     let generation = b.expect_stdout("done ");
     assert!(b.child.wait().unwrap().success());
 
-    let store = LayerStore::open(&Dirs::under(home), Arc::new(SystemClock), Arc::new(StderrProgress)).unwrap();
+    let store = LayerStore::open(&Dirs::under(home), Arc::new(SystemClock), stderr_progress()).unwrap();
     let hit = store.lookup(&key(1)).unwrap().expect("the waiter's layer is published");
     assert_eq!(hit.tip().meta().generation.to_string(), generation);
     assert_eq!(

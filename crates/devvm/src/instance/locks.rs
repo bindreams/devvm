@@ -38,9 +38,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::exit::{NullProgress, Progress};
 use crate::host::{Comparison, Host, remove_tree, symlink_metadata_if_present};
 use crate::instance::record::{InstanceId, InstanceRecord, MarkerRead, RecordRead, read_marker};
+use crate::progress::{NullProgress, Progress};
 use crate::random;
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};

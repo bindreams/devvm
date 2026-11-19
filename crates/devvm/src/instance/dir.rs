@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::backend::MachineRecord;
-use crate::exit::Progress;
 use crate::host::{Host, remove_tree};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
+use crate::progress::Progress;
 use crate::store::lock::FileLock;
 use crate::{Error, ErrorKind, Result};
 
@@ -255,13 +255,13 @@ impl InstanceDir {
         // Deleting is done one tree at a time. This waits for a deletion in progress (it only deletes, so it ends) and
         // then deletes this tree: `rm` promises it is gone.
         match self.locks.deleting_waiting(before_delete_wait, || remove_tree(&dead)) {
-            Ok(Err(e)) => self.progress.message(&format!(
+            Ok(Err(e)) => self.progress.warn(&format!(
                 "instance {} is removed, but {} could not be deleted ({e}); the next devvm command retries",
                 self.name,
                 dead.display()
             )),
             Ok(Ok(())) => {}
-            Err(e) => self.progress.message(&format!(
+            Err(e) => self.progress.warn(&format!(
                 "instance {} is removed, but {} could not be deleted ({}); the next devvm command retries",
                 self.name,
                 dead.display(),
@@ -270,7 +270,7 @@ impl InstanceDir {
         }
         // The instance is gone either way; leftover lock files go in the next lock sweep.
         if let Err(e) = self.locks.remove(&self.id) {
-            self.progress.message(&format!(
+            self.progress.warn(&format!(
                 "instance {} is removed, but its lock files could not be deleted ({}); the next devvm command retries",
                 self.name,
                 e.message()
