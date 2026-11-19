@@ -181,7 +181,8 @@ fn mid_command_drop_is_connection_lost(#[fixture(unicode_home)] home: &Path) {
 #[skuld::test]
 fn a_frozen_peer_is_connection_lost_through_keepalive(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
-    let session = SshSession::connect(&rig.target(), FAST, VmExit::never(), None, &NullProgress).unwrap();
+    // The standard keepalive: a shorter one would also bound the handshake with our own server, a bet on its speed.
+    let session = rig.connect();
     let error = session.exec_collect("freeze").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("keepalive"), "{error}");
