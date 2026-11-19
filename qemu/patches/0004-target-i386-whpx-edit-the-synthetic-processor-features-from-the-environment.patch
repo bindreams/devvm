@@ -1,0 +1,77 @@
+From: devvm <https://github.com/bindreams/devvm>
+Subject: [PATCH] target/i386/whpx: edit the synthetic processor features from the environment (experiment)
+
+DEVVM_EXP_SYNTH_CLEAR and DEVVM_EXP_SYNTH_SET are hex masks that clear and then
+set bits of WHV_SYNTHETIC_PROCESSOR_FEATURES Bank0 after QEMU fills it and
+before it is applied. With either set, QEMU prints the final Bank0 to stderr and,
+on a rejected property or failed WHvSetupPartition, the HRESULT and the mask.
+Neither set: no change. Never to be upstreamed or released.
+---
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -28,6 +28,7 @@
+ #include "hw/i386/x86.h"
+ #include "hw/i386/apic_internal.h"
+ #include "qemu/error-report.h"
++#include "qemu/cutils.h"
+ #include "qapi/error.h"
+ #include "qapi/qapi-types-common.h"
+ #include "qapi/qapi-visit-common.h"
+@@ -3335,6 +3336,33 @@
+ 
+     if (is_modern_os && whpx->hyperv_enlightenments_allowed) {
+         whpx->hyperv_enlightenments_enabled = true;
++
++        /* Experiment: DEVVM_EXP_SYNTH_CLEAR and _SET are hex masks on Bank0. */
++        const char *exp_clear = g_getenv("DEVVM_EXP_SYNTH_CLEAR");
++        const char *exp_set = g_getenv("DEVVM_EXP_SYNTH_SET");
++        uint64_t exp_mask;
++
++        if (exp_clear || exp_set) {
++            if (exp_clear && qemu_strtou64(exp_clear, NULL, 16, &exp_mask)) {
++                error_report("WHPX: bad DEVVM_EXP_SYNTH_CLEAR=%s", exp_clear);
++                ret = -EINVAL;
++                goto error;
++            }
++            if (exp_clear) {
++                synthetic_features.Bank0.AsUINT64 &= ~exp_mask;
++            }
++            if (exp_set && qemu_strtou64(exp_set, NULL, 16, &exp_mask)) {
++                error_report("WHPX: bad DEVVM_EXP_SYNTH_SET=%s", exp_set);
++                ret = -EINVAL;
++                goto error;
++            }
++            if (exp_set) {
++                synthetic_features.Bank0.AsUINT64 |= exp_mask;
++            }
++            error_report("WHPX: synthetic Bank0=0x%016" PRIx64,
++                         (uint64_t)synthetic_features.Bank0.AsUINT64);
++        }
++
+         hr = whp_dispatch.WHvSetPartitionProperty(
+                 whpx->partition,
+                 WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
+@@ -3342,6 +3370,10 @@
+                 sizeof(WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS));
+         if (FAILED(hr)) {
+             error_report("WHPX: Failed to set synthetic features, hr=%08lx", hr);
++            if (exp_clear || exp_set) {
++                error_report("WHPX: synthetic Bank0=0x%016" PRIx64 " rejected",
++                             (uint64_t)synthetic_features.Bank0.AsUINT64);
++            }
+             ret = -EINVAL;
+             goto error;
+         }
+@@ -3395,6 +3427,12 @@
+     hr = whp_dispatch.WHvSetupPartition(whpx->partition);
+     if (FAILED(hr)) {
+         error_report("WHPX: Failed to setup partition, hr=%08lx", hr);
++        if (whpx->hyperv_enlightenments_enabled &&
++            (g_getenv("DEVVM_EXP_SYNTH_CLEAR") ||
++             g_getenv("DEVVM_EXP_SYNTH_SET"))) {
++            error_report("WHPX: synthetic Bank0=0x%016" PRIx64 " at setup",
++                         (uint64_t)synthetic_features.Bank0.AsUINT64);
++        }
+         ret = -EINVAL;
+         goto error;
+     }
