@@ -19,8 +19,9 @@
 //! and the runner serves that request only:
 //!
 //! - it removes every request whose caller has ended and that no runner holds (its process is gone, or the process of
-//!   that id started at another time), then **claims** its own by creating [`CLAIM`] with `CreateNew` and sharing none,
-//!   and holds it until it exits. A request that has a claim, or is gone, is not served;
+//!   that id started at another time), and every file or link in the root, then **claims** its own by creating
+//!   [`CLAIM`] with `CreateNew` and sharing none, and holds it until it exits. A request that has a claim, or is gone, is
+//!   not served;
 //! - it ends the command's process tree when the caller ends, writes [`STDOUT`] and [`STDERR`] as the command produces
 //!   output (opened with `FileShare.Read` at least: the caller reads them while they grow), then [`EXIT`] (the status as
 //!   a signed decimal) and, last, [`DONE`];
@@ -31,24 +32,16 @@
 //! killed caller leaves is the runner's to remove, and the boot task removes what nothing else did (every entry of the
 //! root, tried once).
 //!
-//! **A request is removed in one order, until it is gone.** Whoever removes one (the caller, the runner at its end, the
-//! runner's sweep, the boot task) calls `Remove-Request` ([`remove_request`]): the files other than `caller` and
-//! `claim`, then `caller`, then `claim`, then the directory, looking again after each pause, with no limit on the tries
-//! (the sweep and the boot task try once). A file of the request open elsewhere (a scanner) fails a removal for a moment;
-//! an error that waiting does not change is reported and leaves the request to the next sweep. The order says who a
-//! half-removed request belongs to, so a request left at any point is taken (see [`REMOVE_REQUEST`]).
+//! **A request is removed by one function.** Every remover calls `Remove-Request` ([`REMOVE_REQUEST`]): the order of its
+//! steps says who a half-removed request belongs to; the caller and the runner's end retry until it is gone, the sweep
+//! and the boot task try once.
 //!
 //! **A link in the root is removed as a link.** A request, or an entry of one, that is already a junction or a symbolic
-//! link when a remover reaches it is removed as the link and never followed: `Remove-Request` enumerates and deletes only
-//! what is under a real directory. A path whose attributes cannot be read, for any reason but that it is not there, is
-//! taken for a link. A link swapped in while a removal runs can be followed. The accounts that can write the root are
-//! `user`, an administrator who already runs anything at High through this helper, and the guest's own service accounts
-//! (`Users` also holds Authenticated Users and INTERACTIVE), which are the guest OS: the root is not defended against
-//! them.
+//! link when a remover reaches it is removed as the link and never followed. A path whose attributes cannot be read, for
+//! any reason but that it is not there, is taken for a link. A link swapped in while a removal runs can be followed: the
+//! root's writers are trusted (see [`ROOT`]).
 //!
-//! The sweep also takes an `<id>.tmp` whose `caller` file names an ended caller. A `<id>.tmp` is only ever an
-//! unpublished request, and its caller removes it the same way. One with no `caller` file is not told from one a caller
-//! is still building, and stays for the boot task, which tries it once.
+//! The sweep also takes an `<id>.tmp` whose caller has ended; one with no `caller` file stays for the boot task.
 //!
 //! The caller's wait ends from file state alone, with no time bound: a held claim is a live runner; a released claim
 //! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
@@ -69,7 +62,7 @@ mod elevate_pwsh_tests;
 
 /// Where the requests are: `Users` may modify it, so a request needs no elevated writer. The ACL gives no protection
 /// against the accounts that can write it: `user`, an administrator, and the guest's own service accounts (`Users` also
-/// holds Authenticated Users and INTERACTIVE), which are the guest OS. It has only the absence of an elevated writer.
+/// holds Authenticated Users and INTERACTIVE), which are the guest OS.
 pub(crate) const ROOT: &str = r"C:\ProgramData\devvm\eb";
 /// The scheduled task that runs a request: `user`, highest privileges, `MultipleInstances Parallel`.
 pub(crate) const TASK: &str = "devvm-eb";
@@ -86,34 +79,33 @@ pub(super) const READ: &str = "read";
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
 pub(super) const PAUSE_MILLISECONDS: u32 = 200;
 
-/// The PowerShell functions `Remove-Request`, `Remove-Entry`, `Test-Link` and `Test-RemovalPending`, the same text in
-/// the caller script, the runner and the boot task. `Remove-Request` returns when the path is gone (a request's
-/// directory, or a stray file). It removes every file but `caller` and `claim`, then `caller`, then `claim`, then the
-/// directory; a try that fails because a file is open elsewhere (sharing violation 32, lock violation 33, directory not
-/// empty 145), or because an entry is already gone, is repeated from the top after a pause (none when the path is gone
-/// too: another remover finished it); with `-Once` it returns instead, and what is left is the next sweep's. Any other
-/// error (access denied included: measured permanent, not transient) is thrown.
+/// The PowerShell functions `Remove-Request`, `Remove-Entry`, `Test-Link`, `Test-RemovalPending` and `Get-Verbatim`, the
+/// same text in the caller script, the runner and the boot task. `Remove-Request` returns when the path is gone (a
+/// request's directory, or a stray file). It removes every file but `caller` and `claim`, then `caller`, then `claim`,
+/// then the directory; a try that fails because a file is open elsewhere (sharing violation 32, lock violation 33,
+/// directory not empty 145), or because an entry is already gone, is repeated from the top after a pause; with `-Once` it
+/// returns instead, and what is left is the next sweep's. Any other error (access denied included: measured permanent,
+/// not transient) is thrown.
+///
+/// Every path is verbatim: `Get-Verbatim` puts `\\?\` on it, and a listing under a verbatim path returns verbatim
+/// children. An entry whose name Win32 would change (a trailing dot or space, a device name such as `con`) is then the
+/// entry that is named, and `[IO.File]` and `[IO.Directory]` calls remove it.
 ///
 /// A reparse point is looked at without being followed (`Test-Link`, which reads any path it cannot read as a link): one
 /// that is the path itself, or an entry, is removed as the link (`Remove-Entry`), and nothing under it is listed or
-/// deleted. A directory, link or emptied, is deleted without recursion after its read-only attribute is cleared, so one
-/// that got a child meanwhile (a late runner's `claim`) fails with 145 and is retried.
+/// deleted. An entry is deleted without recursion after its read-only attribute is cleared, so a directory that got a
+/// child meanwhile (a late runner's `claim`) fails with 145 and is retried.
 ///
-/// Every other removal of a request is this one, so a request that is removed only in part is in one of these states,
-/// and each is safe:
-///
-/// - `claim` is there: a late runner's `CreateNew` fails with 80 and it leaves; the sweep skips it while it is held and
-///   takes it once its `caller` has ended.
-/// - `claim` is gone: `caller` was removed before it. A late runner claims the request, finds no `caller` file and
-///   fails before it waits on a caller, then removes the request itself; the removal in progress meets it by its claim
-///   (held, so a failure it retries) or finds the directory gone.
-/// - `caller` is gone: the sweep reads a published request with no `caller` file as one whose caller has ended, and
-///   takes it unless a runner holds its claim.
-/// - `script` is removed first, so a half-removed request never runs a command.
+/// Every intermediate state is safe: `script` goes first, so a half-removed request never runs a command, and `caller`
+/// and `claim` go last, so the sweep and a late runner can still tell whose it is.
 const REMOVE_REQUEST: &str = r#"function Test-RemovalPending($failure) {
     if ($failure -is [Management.Automation.MethodInvocationException] -and $failure.InnerException) { $failure = $failure.InnerException }
     if ($failure -is [Management.Automation.ItemNotFoundException] -or $failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
     return ($failure -is [IO.IOException]) -and (($failure.HResult -band 0xFFFF) -in 32, 33, 145)
+}
+function Get-Verbatim([string]$path) {
+    if ($path.StartsWith('\\?\')) { return $path }
+    return '\\?\' + $path
 }
 function Test-Link([string]$path) {
     try { return ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0 }
@@ -126,14 +118,13 @@ function Remove-Entry([string]$entry) {
     if ($directory -and -not $link) {
         foreach ($child in [IO.Directory]::GetFileSystemEntries($entry)) { Remove-Entry $child }
     }
-    if ($directory) {
-        [IO.File]::SetAttributes($entry, [IO.File]::GetAttributes($entry) -band -bnot [IO.FileAttributes]::ReadOnly)
-        [IO.Directory]::Delete($entry)
-    }
-    else { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop }
+    [IO.File]::SetAttributes($entry, [IO.File]::GetAttributes($entry) -band -bnot [IO.FileAttributes]::ReadOnly)
+    if ($directory) { [IO.Directory]::Delete($entry) }
+    else { [IO.File]::Delete($entry) }
 }
 function Remove-Request([string]$path, [switch]$Once) {
-    $last = (Join-Path $path {CALLER}), (Join-Path $path {CLAIM})
+    $path = Get-Verbatim $path
+    $last = [IO.Path]::Combine($path, {CALLER}), [IO.Path]::Combine($path, {CLAIM})
     while ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) {
         try {
             if ((Test-Link $path) -or -not [IO.Directory]::Exists($path)) { Remove-Entry $path }

@@ -239,7 +239,7 @@ $tree = [Management.Automation.Language.Parser]::ParseFile(@@TASK@@, [ref]$token
 if ($errors) { throw "the boot task does not parse: $($errors | Out-String)" }
 $noisy = @@NOISY@@
 function Stray { if ($noisy) { 'stray output' } }
-$shipped = 'Restart-Now', 'Set-ComputerNameFromSeed', 'Test-RemovalPending', 'Test-Link', 'Remove-Entry', 'Remove-Request', 'Remove-StaleRequests'
+$shipped = 'Restart-Now', 'Set-ComputerNameFromSeed', 'Test-RemovalPending', 'Get-Verbatim', 'Test-Link', 'Remove-Entry', 'Remove-Request', 'Remove-StaleRequests'
 $found = @($tree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false))
 foreach ($function in $found) { if ($function.Name -in $shipped) { Invoke-Expression $function.Extent.Text } }
 if (@($found | Where-Object { $_.Name -in $shipped }).Count -ne $shipped.Count) { throw "the boot task lacks one of: $shipped" }
@@ -612,9 +612,9 @@ fn a_request_another_remover_finished_is_not_waited_for(#[fixture(pwsh_wrap)] _g
         &Rename::default(),
         &format!(
             r#"{STALE_REQUESTS}
-# The other remover deletes the request between this one's look at it and its Remove-Item, which then fails as not found.
-function Remove-Item {{ param($LiteralPath, [switch]$Recurse, [switch]$Force, $ErrorAction)
-    [IO.Directory]::Delete((Split-Path -Parent $LiteralPath), $true)
+# The other remover deletes the request between this one's look at it and its delete, which then fails as not found.
+function Remove-Entry([string]$entry) {{
+    [IO.Directory]::Delete([IO.Path]::GetDirectoryName($entry), $true)
     throw [IO.FileNotFoundException]::new('gone')
 }}
 Remove-Request (Join-Path $root 'a')
@@ -624,7 +624,7 @@ $log.Add('returned')"#
     assert_eq!(log, ["returned"]);
 }
 
-/// A request `a` holding the file `f`, and a `Remove-Item` that, on each of its first two calls, first removes what it
+/// A request `a` holding the file `f`, and a `Remove-Entry` that, on each of its first two calls, first removes what it
 /// was asked to and then puts a new file `late<n>` beside it: a late runner's `CreateNew` of `claim`, which a removal
 /// meets in any state. The second call is the removal of the last child of the directory `a`, so the directory is no
 /// longer empty when it is deleted.
@@ -632,8 +632,9 @@ const LATE_CHILD: &str = r#"$a = Join-Path $root 'a'
 [void][IO.Directory]::CreateDirectory($a)
 [IO.File]::WriteAllText((Join-Path $a 'f'), '')
 $script:calls = 0
-function Remove-Item { param($LiteralPath, [switch]$Force, $ErrorAction)
-    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Force:$Force -ErrorAction $ErrorAction
+$shipped = ${function:Remove-Entry}
+function Remove-Entry([string]$entry) {
+    & $shipped $entry
     if (++$script:calls -le 2) { [IO.File]::WriteAllText((Join-Path $a "late$($script:calls)"), '') }
 }
 function Show-Root { $log.Add('root:' + ((Get-ChildItem -LiteralPath $root -Recurse -Force | ForEach-Object { $_.FullName.Substring($_.FullName.IndexOf('\eb') + 4) } | Sort-Object) -join ' ')) }
@@ -719,6 +720,125 @@ Show-Root"#
     assert_eq!(log, ["root:"]);
 }
 
+/// A request `a` holding `caller` and entries whose names Win32 changes (a trailing dot or space, a device name), made
+/// under `\\?\`, where they exist. `Clean` removes them the same way; `Start-Sleep` fails the test: nothing here pauses.
+const NORMALIZED: &str = r#"$root = Join-Path (Split-Path -Parent $disk) 'eb'
+$a = '\\?\' + (Join-Path $root 'a')
+[void][IO.Directory]::CreateDirectory($a)
+foreach ($name in 'caller', 'foo.', 'bar ', 'con', 'nul') { [IO.File]::WriteAllText("$a\$name", '') }
+[void][IO.Directory]::CreateDirectory("$a\dir.")
+[IO.File]::WriteAllText("$a\dir.\inner.", '')
+function Clean { if ([IO.Directory]::Exists($a)) { [IO.Directory]::Delete($a, $true) } }
+function Start-Sleep { throw 'the removal paused' }
+function Show-Root { $log.Add('root:' + ((Get-ChildItem -LiteralPath $root -Force | ForEach-Object Name | Sort-Object) -join ' ')) }
+"#;
+
+#[skuld::test]
+fn a_request_holding_entries_whose_names_windows_normalizes_is_removed_without_a_pause(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{NORMALIZED}
+try {{ Remove-Request (Join-Path $root 'a'); Show-Root }} finally {{ Clean }}"#
+        ),
+    );
+    assert_eq!(log, ["root:"]);
+}
+
+#[skuld::test]
+fn a_request_holding_entries_whose_names_windows_normalizes_is_removed_by_one_try(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{NORMALIZED}
+try {{ Remove-Request (Join-Path $root 'a') -Once; Show-Root }} finally {{ Clean }}"#
+        ),
+    );
+    assert_eq!(log, ["root:"]);
+}
+
+#[skuld::test]
+fn leftovers_whose_names_windows_normalizes_are_removed_at_boot_in_the_root_and_in_a_request(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{NORMALIZED}
+$stray = '\\?\' + (Join-Path $root 'foo.')
+$spaced = '\\?\' + (Join-Path $root 'baz ')
+[IO.File]::WriteAllText($stray, '')
+[void][IO.Directory]::CreateDirectory($spaced)
+[IO.File]::WriteAllText("$spaced\con", '')
+try {{ Remove-StaleRequests $root; Show-Root }} finally {{
+    Clean
+    if ([IO.File]::Exists($stray)) {{ [IO.File]::Delete($stray) }}
+    if ([IO.Directory]::Exists($spaced)) {{ [IO.Directory]::Delete($spaced, $true) }}
+}}"#
+        ),
+    );
+    assert_eq!(log, ["root:"]);
+}
+
+#[skuld::test]
+fn a_root_that_cannot_be_read_is_a_warning_and_only_a_root_that_is_not_there_is_quiet(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+# `|` is no name Windows reads: the root is neither listed nor reported as missing.
+Remove-StaleRequests (Join-Path $root 'a|b')
+$sid = '*' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+icacls $root /deny "${{sid}}:(RD)" | Out-Null
+try {{ Remove-StaleRequests $root }} finally {{ icacls $root /remove:d $sid | Out-Null }}
+Remove-StaleRequests (Join-Path $root 'missing')
+Show-Left"#
+        ),
+    );
+    assert_eq!(log.len(), 3, "{log:?}");
+    for warning in &log[..2] {
+        assert!(
+            warning.starts_with("line:DEVVM-WARNING=the leftovers could not be listed: "),
+            "{log:?}"
+        );
+    }
+    assert_eq!(
+        log[2],
+        "left:a/caller a/claim a/script.ps1 a/stdout b/caller b/claim b/script.ps1 b/stdout"
+    );
+}
+
+#[skuld::test]
+fn a_removal_is_pending_only_for_an_entry_that_is_gone_or_open_elsewhere(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename::default(),
+        r#"foreach ($hresult in 0x80070020, 0x80070021, 0x80070091, 0x80070005) {
+    $failure = [IO.IOException]::new('x', $hresult)
+    $wrapped = [Management.Automation.MethodInvocationException]::new('m', $failure)
+    $log.Add(('{0:X8}: {1} {2}' -f $hresult, (Test-RemovalPending $failure), (Test-RemovalPending $wrapped)))
+}
+$log.Add('denied: ' + (Test-RemovalPending ([UnauthorizedAccessException]::new('x'))))
+$log.Add('not found: ' + (Test-RemovalPending ([IO.FileNotFoundException]::new('x'))) + ' ' + (Test-RemovalPending ([IO.DirectoryNotFoundException]::new('x'))))"#,
+    );
+    assert_eq!(
+        log,
+        [
+            "80070020: True True",
+            "80070021: True True",
+            "80070091: True True",
+            "80070005: False False",
+            "denied: False",
+            "not found: True True",
+        ]
+    );
+}
+
 // The elevated helper's runner ========================================================================================
 
 /// Compiles the native helper into `dir` as the bootstrap does, so a rendered runner there can load it.
@@ -799,23 +919,28 @@ struct RunnerRun {
     /// The names in the directory `target` beside the root, sorted, when the test made one: what a junction in the root
     /// points at.
     target: Vec<String>,
+    /// Every file under the root, as a path from it, sorted.
+    files: Vec<String>,
+    /// What the runner and the script wrote on standard error.
+    stderr: String,
 }
 
 /// A runner started for the request `id` when the root held `requests`: each a name, its caller and the other files it
 /// holds. The runner runs in the test's own PowerShell, whose `Start-Sleep` is replaced by a function: with `held`, the
 /// file is open to nobody else until the first pause, and the pause says what the request holds then.
 fn run_runner(helper: &NativeHelper, id: &str, requests: &[(&str, Caller, &[&str])], held: Option<Held>) -> RunnerRun {
-    run_runner_with(helper, id, requests, held, "")
+    run_runner_with(helper, id, requests, held, "", "")
 }
 
-/// [`run_runner`] with `setup`, PowerShell run once the requests are made: `$root` is the root, `$target` a directory
-/// `target` beside it that [`RunnerRun::target`] reports.
+/// [`run_runner`] with `setup`, PowerShell run once the requests are made, and `teardown`, run after the runner whatever
+/// it did: `$root` is the root, `$target` a directory `target` beside it that [`RunnerRun::target`] reports.
 fn run_runner_with(
     helper: &NativeHelper,
     id: &str,
     requests: &[(&str, Caller, &[&str])],
     held: Option<Held>,
     setup: &str,
+    teardown: &str,
 ) -> RunnerRun {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("eb");
@@ -863,9 +988,14 @@ function global:Start-Sleep {{ param($Milliseconds)
     }
     script.push_str(&format!(
         "$global:LASTEXITCODE = 0
-& {} {}
-if ($LASTEXITCODE -ne 0) {{ throw \"the runner ended with $LASTEXITCODE\" }}
+try {{
+    & {} {}
+    if ($LASTEXITCODE -ne 0) {{ throw \"the runner ended with $LASTEXITCODE\" }}
+}} finally {{
+    {teardown}
+}}
 Get-ChildItem -LiteralPath $root -Force | ForEach-Object Name | Sort-Object
+Get-ChildItem -LiteralPath $root -Recurse -Force -File | ForEach-Object {{ 'FILE ' + $_.FullName.Substring($_.FullName.IndexOf('\\eb\\') + 4) }} | Sort-Object
 $target = Join-Path (Split-Path -Parent $root) 'target'
 if (Test-Path -LiteralPath $target) {{ 'TARGET ' + ((Get-ChildItem -LiteralPath $target -Force | ForEach-Object Name | Sort-Object) -join ' ') }}
 ",
@@ -874,12 +1004,14 @@ if (Test-Path -LiteralPath $target) {{ 'TARGET ' + ((Get-ChildItem -LiteralPath 
     ));
     let output = run(&script, "none", None);
     assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
-    let (mut left, mut at_first_pause, mut target) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut left, mut at_first_pause, mut target, mut files) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for line in String::from_utf8_lossy(&output.stdout).lines().map(str::trim) {
         if let Some(names) = line.strip_prefix("PAUSE") {
             at_first_pause = names.split_whitespace().map(str::to_owned).collect();
         } else if let Some(names) = line.strip_prefix("TARGET") {
             target = names.split_whitespace().map(str::to_owned).collect();
+        } else if let Some(file) = line.strip_prefix("FILE ") {
+            files.push(file.to_owned());
         } else {
             left.push(line.to_owned());
         }
@@ -888,6 +1020,8 @@ if (Test-Path -LiteralPath $target) {{ 'TARGET ' + ((Get-ChildItem -LiteralPath 
         left,
         at_first_pause,
         target,
+        files,
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
 }
 
@@ -1016,7 +1150,7 @@ fn run_runner_with_target(
     requests: &[(&str, Caller, &[&str])],
     setup: &str,
 ) -> RunnerRun {
-    run_runner_with(helper, id, requests, None, &format!("{LINK_TARGET}{setup}"))
+    run_runner_with(helper, id, requests, None, &format!("{LINK_TARGET}{setup}"), "")
 }
 
 /// The request `ended`: its caller has ended, and it holds a claim nobody holds.
@@ -1057,4 +1191,79 @@ fn the_runners_last_removal_unlinks_a_junction_in_its_request_and_leaves_its_tar
     );
     assert_eq!(run.left, Vec::<String>::new());
     assert_eq!(run.target, ["precious"]);
+}
+
+#[skuld::test]
+fn the_sweep_removes_what_is_in_the_root_but_a_request_a_file_a_link_to_one_and_a_name_windows_normalizes(
+    #[fixture(native_helper)] helper: &NativeHelper,
+) {
+    // Made under `\\?\`, where a trailing dot exists; a file link needs the right to make one, which the test names when
+    // it fails.
+    let run = run_runner_with_target(
+        helper,
+        NO_REQUEST,
+        &[("alive", Caller::Alive, &["script.ps1"])],
+        r#"[IO.File]::WriteAllText((Join-Path $root 'stray'), '')
+[IO.File]::WriteAllText('\\?\' + (Join-Path $root 'foo.'), '')
+[void][IO.Directory]::CreateDirectory('\\?\' + (Join-Path $root 'ended.'))
+[IO.File]::WriteAllText('\\?\' + (Join-Path $root 'ended.\caller'), "$($self.Id) 1")
+[IO.File]::WriteAllText('\\?\' + (Join-Path $root 'ended.\con'), '')
+try { New-Item -ItemType SymbolicLink -Path (Join-Path $root 'filelink') -Target (Join-Path $target 'precious') | Out-Null }
+catch { throw "the test needs the right to make a symbolic link: $($_.Exception.Message)" }"#,
+    );
+    assert_eq!(run.left, ["alive"]);
+    assert_eq!(run.target, ["precious"]);
+}
+
+#[skuld::test]
+fn the_sweep_leaves_a_request_whose_claim_is_held_by_a_runner(#[fixture(native_helper)] helper: &NativeHelper) {
+    let run = run_runner(
+        helper,
+        NO_REQUEST,
+        &[("served", Caller::Ended, &["script.ps1", "claim"])],
+        Some(Held {
+            request: "served",
+            file: "claim",
+        }),
+    );
+    // Not even the files before the claim are removed: nothing of a served request is touched.
+    assert_eq!(run.files, [r"served\caller", r"served\claim", r"served\script.ps1"]);
+    assert_eq!(run.left, ["served"]);
+}
+
+#[skuld::test]
+fn a_request_the_runner_may_not_delete_is_a_warning_and_the_runner_still_ends_well(
+    #[fixture(native_helper)] helper: &NativeHelper,
+) {
+    // A real denial: `script.ps1` and the request's directory deny deleting to the user, which is how a file the user may
+    // not delete looks to the runner.
+    let sid = r#"$sid = '*' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$request = Join-Path $root 'abcdefabcdefabcdefabcdefabcdefab'"#;
+    let run = run_runner_with(
+        helper,
+        REQUEST,
+        &[(REQUEST, Caller::Ended, &["script.ps1"])],
+        None,
+        &format!(
+            r#"{sid}
+icacls (Join-Path $request 'script.ps1') /deny "${{sid}}:(DE)" | Out-Null
+icacls $request /deny "${{sid}}:(DC)" | Out-Null"#
+        ),
+        &format!(
+            r#"{sid}
+icacls (Join-Path $request 'script.ps1') /remove:d $sid | Out-Null
+icacls $request /remove:d $sid | Out-Null"#
+        ),
+    );
+    assert!(
+        run.stderr.contains("devvm: the elevated runner could not remove") && run.stderr.contains("denied"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.left, [REQUEST]);
+    assert!(
+        run.files.iter().any(|file| file.ends_with("script.ps1")),
+        "{:?}",
+        run.files
+    );
 }

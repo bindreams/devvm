@@ -25,8 +25,8 @@ fn pending(guest: &dyn Guest) -> String {
 }
 
 /// What the helper's root holds, as a failing wait shows it: every entry, in every request, with its attributes, size and
-/// time of last write. An entry that goes while it is listed is skipped. It never panics: a listing that cannot be read
-/// is shown as the reason, so it never hides the failure of the wait it serves.
+/// time of last write. An entry that goes while it is listed is skipped; a listing that cannot be read is shown as the
+/// reason, so it never hides the wait's failure.
 fn listing(guest: &dyn Guest) -> String {
     let script = format!(
         r"Get-ChildItem -LiteralPath '{ROOT}' -Force -Recurse -ErrorAction SilentlyContinue | ForEach-Object {{ '{{0}} [{{1}}] {{2}} bytes, written {{3:o}}' -f $_.FullName, $_.Attributes, $_.Length, $_.LastWriteTimeUtc }}"

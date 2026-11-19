@@ -1024,8 +1024,8 @@ fn the_boot_task_waits_for_the_answer_disk_with_no_cap() {
 #[skuld::test]
 fn the_boot_task_removes_leftover_requests_with_remove_request_once_each_and_before_the_seed() {
     let task = rendered("boot-task.ps1");
-    // The only deletion is the one inside `Remove-Entry`: a plain removal of a held file under `Stop` ends the boot.
-    assert_eq!(task.matches("Remove-Item").count(), 1, "{task}");
+    // No plain removal: a held file under `Stop` ends the boot.
+    assert_eq!(task.matches("Remove-Item").count(), 0, "{task}");
     assert!(task.contains(&elevate::remove_request()), "{task}");
     let sweep = section(
         &task,
@@ -1036,7 +1036,10 @@ fn the_boot_task_removes_leftover_requests_with_remove_request_once_each_and_bef
     );
     assert!(sweep.contains("Remove-Request $leftover -Once"), "{sweep}");
     // Every entry of the root, files included: `pending()` of the VM suite counts them all.
-    assert!(sweep.contains("[IO.Directory]::GetFileSystemEntries($Root)"), "{sweep}");
+    assert!(
+        sweep.contains("[IO.Directory]::GetFileSystemEntries((Get-Verbatim $Root))"),
+        "{sweep}"
+    );
     assert!(!sweep.contains("GetDirectories("), "{sweep}");
     // A failure is a warning line, never the boot's.
     assert!(sweep.matches("Send-Line \"DEVVM-WARNING=").count() >= 2, "{sweep}");
@@ -1058,18 +1061,20 @@ fn the_eb_runner_serves_only_the_request_named_by_its_first_argument_and_claims_
     );
     // The claim is held until the end, and the request goes after it is released.
     assert_before(&runner, "'CreateNew', 'Write', 'None')", "$claim.Dispose()");
-    // The only walk over the other requests is the sweep, which never serves one.
-    assert_eq!(runner.matches("GetDirectories(").count(), 1);
+    // The only walk over the other requests is the sweep, which never serves one; it lists every entry of the root.
+    assert!(runner.contains("[IO.Directory]::GetFileSystemEntries((Get-Verbatim $root))"));
     assert_before(&runner, "foreach ($other in", "$dir = Join-Path $root $Id");
     let sweep = section(&runner, "foreach ($other in", "$dir = Join-Path");
     assert!(sweep.contains("$name -eq $Id") && !sweep.contains("Process]::Start"));
     // An `<id>.tmp` is swept by the same rule, unless it has no caller file: a caller building it has not written one.
-    assert!(sweep.contains("$name.EndsWith('.tmp') -and -not [IO.File]::Exists((Join-Path $other $callerName))"));
+    assert!(
+        sweep.contains("$name.EndsWith('.tmp') -and -not [IO.File]::Exists([IO.Path]::Combine($other, $callerName))")
+    );
     assert!(sweep.contains("Remove-RequestOrWarn $other"), "{sweep}");
-    // A link is removed as a link before anything is read through it.
+    // A file or a link is removed as it is before anything is read through it.
     assert_before(
         sweep,
-        "if (Test-Link $other) { Remove-RequestOrWarn $other -Once; continue }",
+        "if ((Test-Link $other) -or -not [IO.Directory]::Exists($other)) { Remove-RequestOrWarn $other -Once; continue }",
         "Test-CallerEnded $other",
     );
 }
@@ -1078,11 +1083,20 @@ fn the_eb_runner_serves_only_the_request_named_by_its_first_argument_and_claims_
 fn the_eb_runner_and_the_caller_remove_a_request_only_through_remove_request() {
     let runner = rendered("eb-runner.ps1");
     let caller = caller_script("inner");
+    // One delete site for a file and one for a directory, both in `Remove-Entry`: a file deleted on its own is out of the
+    // order of deletion.
+    let function = elevate::remove_request();
+    assert_eq!(function.matches("::Delete(").count(), 2, "{function}");
+    assert_eq!(
+        section(&function, "function Remove-Entry", "\n}\n")
+            .matches("::Delete(")
+            .count(),
+        2
+    );
     for (who, text) in [("runner", &runner), ("caller", &caller)] {
-        // One removal: a file deleted on its own is out of the order of deletion.
-        assert_eq!(text.matches("Remove-Item").count(), 1, "{who}: {text}");
-        let function = section(text, "function Remove-Entry", "\n}\n");
-        assert!(function.contains("Remove-Item"), "{who}: {function}");
+        assert!(text.contains(&function), "{who}: {text}");
+        assert_eq!(text.matches("::Delete(").count(), 2, "{who}: {text}");
+        assert!(!text.contains("Remove-Item"), "{who}: {text}");
     }
 }
 
@@ -1092,7 +1106,7 @@ fn the_eb_runner_removes_requests_whose_caller_ended_and_holds_no_claim() {
     // A request goes when its caller is gone (or its id now belongs to a process that started at another time) and no
     // runner holds its claim; the helper answers both from one handle.
     assert!(runner.contains("[Devvm.Caller]::Open("));
-    assert!(runner.contains("(Test-Held (Join-Path $other $claimName))"));
+    assert!(runner.contains("(Test-Held ([IO.Path]::Combine($other, $claimName)))"));
     assert!(runner.contains("[IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')"));
     // No time bound anywhere.
     for bound in ["-Timeout", "WaitForExit(", "Stopwatch", "Thread.Sleep"] {

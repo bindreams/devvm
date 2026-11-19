@@ -185,47 +185,9 @@ fn the_requests_files_are_the_ones_the_runner_contract_names() {
 }
 
 #[skuld::test]
-fn a_removal_is_tried_until_the_request_is_gone_and_ends_on_an_error_that_waiting_does_not_change() {
-    let text = script();
-    // The function the runner has is this text: the two cannot differ.
-    assert!(text.contains(&super::remove_request()), "{text}");
-    let function = at(&text, "function Remove-Request");
-    let body = &text[function..at(&text, "function Warn")];
-    assert!(
-        body.contains("while ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path))"),
-        "{body}"
-    );
-    assert!(
-        body.contains("if (-not (Test-RemovalPending $_.Exception)) { throw }"),
-        "{body}"
-    );
-    // The files, then `caller`, then `claim`, then the directory.
-    assert!(body.contains("-notin 'caller', 'claim'"), "{body}");
-    assert!(body.contains("$first + $last + $path"), "{body}");
-    assert!(
-        body.contains("$last = (Join-Path $path 'caller'), (Join-Path $path 'claim')"),
-        "{body}"
-    );
-    // Only the pause paces it: no count, no clock.
-    for bound in ["-Timeout", "Stopwatch", "$tries", "$attempt", "-lt"] {
-        assert!(!body.contains(bound), "{bound}: {body}");
-    }
-}
-
-#[skuld::test]
-fn a_removal_never_lists_or_deletes_through_a_link() {
-    let text = script();
-    // The root is writable by Users: a link in it can point anywhere. The path and each entry are looked at first, and a
-    // link is removed as a link; the only recursion is `Remove-Entry` over the entries of a real directory.
-    assert!(text.contains("if ((Test-Link $path) -or -not [IO.Directory]::Exists($path)) { Remove-Entry $path }"));
-    assert!(text.contains("if ($directory -and -not $link) {"), "{text}");
-    // A directory, link or emptied, goes by a delete that is never recursive: one that got a child meanwhile is retried.
-    assert!(text.contains("if ($directory) {"), "{text}");
-    assert!(text.contains("[IO.Directory]::Delete($entry)"), "{text}");
-    assert!(text.contains("catch { return $true }"), "{text}");
-    for follows in ["-Recurse", "Get-ChildItem", "Directory]::Delete($entry, $true)"] {
-        assert!(!text.contains(follows), "{follows}: {text}");
-    }
+fn the_caller_removes_a_request_with_the_text_the_runner_and_the_boot_task_have() {
+    // The behaviour of the removal is run in `elevate_pwsh_tests.rs` and `templates_pwsh_tests.rs`; these are one text.
+    assert!(script().contains(&super::remove_request()), "{}", script());
 }
 
 #[skuld::test]

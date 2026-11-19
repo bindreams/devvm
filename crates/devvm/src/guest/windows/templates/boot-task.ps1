@@ -86,14 +86,14 @@ function Set-ComputerNameFromSeed([string]$Disk, [string]$Marker) {
 }
 
 @@!EB_REMOVE_REQUEST@@
-# What the last boot left in the root: no caller survives a boot, so every request is stale, and nothing else is kept.
-# Each leftover is tried once: a link is removed as a link, never followed (the root is writable by Users). One that
-# cannot be removed now (a file held open by a scanner, say) is a warning, never a failed boot: what is left is the next
-# runner's sweep.
+# What the last boot left in the root: no caller survives a boot, so every request is stale. Each is tried once; one that
+# stays is a warning, never a failed boot, and the next runner's sweep takes it.
 function Remove-StaleRequests([string]$Root) {
     try {
-        if (-not (Test-Path -LiteralPath $Root)) { return }
-        foreach ($leftover in [IO.Directory]::GetFileSystemEntries($Root)) {
+        # Only a root that is not there is quiet: one that cannot be read is a warning.
+        try { $leftovers = [IO.Directory]::GetFileSystemEntries((Get-Verbatim $Root)) }
+        catch [IO.DirectoryNotFoundException] { return }
+        foreach ($leftover in $leftovers) {
             try {
                 Remove-Request $leftover -Once
                 if ([IO.File]::Exists($leftover) -or [IO.Directory]::Exists($leftover)) { Send-Line "DEVVM-WARNING=a leftover is still there after one try: $leftover" }

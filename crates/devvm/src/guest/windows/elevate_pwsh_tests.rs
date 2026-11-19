@@ -519,7 +519,7 @@ fn a_withdrawn_request_that_cannot_be_removed_for_good_is_warned_about_and_left(
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    let denied = "function global:Remove-Item { throw [UnauthorizedAccessException]::new('denied') }
+    let denied = "function script:Remove-Entry([string]$entry) { throw [UnauthorizedAccessException]::new('denied') }
 throw 'boom'";
     let output = caller(&root, denied, ENDED);
 
