@@ -19,6 +19,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::contain::is_unreadable_record;
 use crate::host::remove_tree;
 use crate::instance::locks::Probe;
 use crate::instance::quarantine::{Placed, classify};
@@ -290,8 +291,8 @@ impl Registry {
                 // Not running, or the pid now belongs to another process: nothing of ours to kill.
                 Ok(None) => {}
                 Err(e) => {
-                    // A step by hand is not a retry: the next command fails the same way until it is taken.
-                    let left = if e.has_next_step() {
+                    // The next command fails the same way until the person takes the step by hand.
+                    let left = if is_unreadable_record(&e) {
                         ""
                     } else {
                         "; it is left for the next devvm command"

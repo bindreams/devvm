@@ -7,6 +7,7 @@ use cosca::error::RecordErrorKind;
 use cosca::identity::{Liveness, ProcessId, ProcessIdRecord};
 
 use crate::host::Host;
+use crate::instance::name::InstanceName;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -344,8 +345,9 @@ pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Opt
         }
         IdentityRecord { kind, .. } => {
             format!(
-                "cannot tell whether the VM process {pid} is running: {}",
-                record_fault(*kind)
+                "cannot tell whether the VM process {pid} is running: {} ({})",
+                record_fault(*kind),
+                cosca::error::Report::new(&error)
             )
         }
         _ => return Err(cosca_error(&format!("cannot restore the VM process {pid}"), error)),
@@ -356,27 +358,55 @@ pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Opt
 /// Why a record cannot be checked, for the person who has to deal with it.
 fn record_fault(kind: RecordErrorKind) -> &'static str {
     match kind {
-        RecordErrorKind::UnknownVersion => "its record has a format this devvm does not read",
-        RecordErrorKind::InvalidPid => "its record holds a pid that cannot name a process",
+        RecordErrorKind::UnknownVersion => "its process record has a format this devvm does not read",
+        RecordErrorKind::InvalidPid => "its process record holds a pid that cannot name a process",
         RecordErrorKind::MissingBootSession
         | RecordErrorKind::MissingPidNamespace
-        | RecordErrorKind::MissingTokenKind => "its record lacks what is needed to check the process against it",
-        RecordErrorKind::ForeignTokenKind => "its record holds another kind of process token than this host's",
-        RecordErrorKind::ForeignPidNamespace => "its record was made in another pid namespace",
-        _ => "its record cannot be checked here",
+        | RecordErrorKind::MissingTokenKind => {
+            "its process record lacks what is needed to check the process against it"
+        }
+        RecordErrorKind::ForeignTokenKind => "its process record holds another kind of process token than this host's",
+        RecordErrorKind::ForeignPidNamespace => "its process record was made in another pid namespace",
+        _ => "its process record cannot be checked here",
     }
 }
 
-/// Whether `error` is the refusal of [`VmProcess::attach`] to read a process record: one the person can only clear by
-/// hand. A host that cannot read its own boot session is not.
-pub(crate) fn is_unreadable_record(error: &Error) -> bool {
+/// The identity layer's refusal inside `error`, with why, when it names a process record that cannot be read: one the
+/// person can only clear by hand. A host that cannot read its own boot session is not that.
+fn unreadable_record(error: &Error) -> Option<(&'static str, &cosca::error::Error)> {
     use std::error::Error as _;
-    matches!(
-        error
-            .source()
-            .and_then(|source| source.downcast_ref::<cosca::error::Error>()),
-        Some(cosca::error::Error::IdentityRecord { kind, .. }) if *kind != RecordErrorKind::ScopeUnreadable
-    )
+    match error
+        .source()
+        .and_then(|source| source.downcast_ref::<cosca::error::Error>())
+    {
+        Some(refusal @ cosca::error::Error::IdentityRecord { kind, .. })
+            if *kind != RecordErrorKind::ScopeUnreadable =>
+        {
+            Some((record_fault(*kind), refusal))
+        }
+        _ => None,
+    }
+}
+
+/// Whether `error` is the refusal of [`VmProcess::attach`] to read a process record.
+pub(crate) fn is_unreadable_record(error: &Error) -> bool {
+    unreadable_record(error).is_some()
+}
+
+/// `error` as the instance `name` has it when it is [`is_unreadable_record`]: the VM cannot be told to run or not, so
+/// the person stops it by hand and clears the `machine` field of `record_file`. The record may not be this build's
+/// own, so nothing is said of its pid.
+pub(crate) fn with_manual_recovery(error: Error, name: &InstanceName, record_file: &Path) -> Error {
+    let Some((why, refusal)) = unreadable_record(&error) else {
+        return error;
+    };
+    let message = format!(
+        "cannot tell whether the VM of instance {name} is running: {why}; stop that VM by hand if it still runs, then \
+         clear the `machine` field in {} ({})",
+        record_file.display(),
+        cosca::error::Report::new(refusal)
+    );
+    error.with_message(message)
 }
 
 pub(crate) fn unknown_liveness(id: ProcessId) -> Error {

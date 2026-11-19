@@ -147,10 +147,10 @@ fn an_instance_whose_vm_cannot_be_looked_for_is_left_for_the_next_pass(#[fixture
 }
 
 #[skuld::test]
-fn an_unreadable_process_record_is_left_for_the_person_and_not_promised_to_the_next_command(
+fn an_unreadable_process_record_is_reported_with_the_step_by_hand_and_no_promise_for_the_next_command(
     #[fixture(unicode_home)] home: &Path,
 ) {
-    let fx = fixture_with(home, Some(StubBackend::new(Attach::Process)));
+    let fx = fixture_with(home, Some(Arc::new(FakeBackend::new(&TestHost))));
     let owned = create(&fx, Some("foo"));
     let mut machine = dead_machine(Vec::new());
     machine.process.version = cosca::identity::RECORD_VERSION + 1;
@@ -169,7 +169,7 @@ fn an_unreadable_process_record_is_left_for_the_person_and_not_promised_to_the_n
     );
     assert!(
         !warning.contains("next devvm command"),
-        "the next command fails the same way: {warning}"
+        "the reaper checks again, but a pass does not promise that the next command repairs it: {warning}"
     );
     assert_eq!(names(&root(&fx)), ["foo"]);
 }

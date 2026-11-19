@@ -94,9 +94,7 @@ pub(super) fn reach(
     let session = SshSession::connect(
         &running.target,
         Keepalive::STANDARD,
-        engine
-            .vm_exit(&running.record)
-            .map_err(|e| dir.with_recovery(e, &running.record))?,
+        engine.vm_exit(&running.record)?,
         None,
         engine.progress().as_ref(),
     )?;
@@ -115,5 +113,4 @@ pub(super) fn reboot(engine: &Engine, dir: &InstanceDir, op: &OpExclusive) -> Re
     // The connection to the old boot is no use to anyone now.
     drop(before);
     reconnect_after_reset(engine, &*guest, dir.name(), &running.target, &running.record, &old_id)
-        .map_err(|e| dir.with_recovery(e, &running.record))
 }

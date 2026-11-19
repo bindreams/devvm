@@ -72,8 +72,6 @@ pub struct Error {
     kind: ErrorKind,
     message: String,
     source: Option<Source>,
-    /// The message ends with something the person has to do by hand: no later run of the command repairs it.
-    next_step: bool,
 }
 
 impl Error {
@@ -82,7 +80,6 @@ impl Error {
             kind,
             message: message.into(),
             source: None,
-            next_step: false,
         }
     }
 
@@ -104,8 +101,13 @@ impl Error {
             kind,
             message: format!("{context}: {}", self.message),
             source: self.source,
-            next_step: self.next_step,
         }
+    }
+
+    /// This error with another message and the same kind and source.
+    pub(crate) fn with_message(mut self, message: impl Into<String>) -> Error {
+        self.message = message.into();
+        self
     }
 
     /// This error once `cleanup`, which undid a step that had half happened, has run. A cleanup that failed too is
@@ -121,23 +123,8 @@ impl Error {
     }
 
     /// This error with a failure that came with it named after it; the first failure stays the error.
-    pub(crate) fn together_with(self, other: impl fmt::Display) -> Error {
-        self.then(format!("{other} as well"))
-    }
-
-    /// This error with what the person must do by hand about it, after its message. [`Error::has_next_step`] says so.
-    pub(crate) fn with_next_step(mut self, step: impl fmt::Display) -> Error {
-        self.next_step = true;
-        self.then(step)
-    }
-
-    /// Whether the message ends with a step the person must take: running the command again does not repair it.
-    pub(crate) fn has_next_step(&self) -> bool {
-        self.next_step
-    }
-
-    fn then(mut self, tail: impl fmt::Display) -> Error {
-        self.message = format!("{}; {tail}", self.message);
+    pub(crate) fn together_with(mut self, other: impl fmt::Display) -> Error {
+        self.message = format!("{}; {other} as well", self.message);
         self
     }
 

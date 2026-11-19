@@ -238,11 +238,28 @@ fn a_record_that_cannot_be_checked_is_an_unreadable_record_that_says_why() {
         assert!(
             error
                 .message()
-                .starts_with("cannot tell whether the VM process 7 is running: its record"),
+                .starts_with("cannot tell whether the VM process 7 is running: its process record"),
             "{kind:?}: {error}"
         );
         assert!(error.message().contains(why), "{kind:?}: {error}");
-        assert!(!error.message().contains("record v3"), "{kind:?}: no dump: {error}");
+        assert_eq!(
+            error.message().matches("persisted process identity").count(),
+            1,
+            "{kind:?}: cosca's words once: {error}"
+        );
+        assert!(error.message().ends_with(')'), "{kind:?}: {error}");
+        for advice in [
+            "check that process",
+            "command line",
+            "end process",
+            "by hand",
+            "clear the",
+        ] {
+            assert!(
+                !error.message().contains(advice),
+                "{kind:?}: {advice:?} in a bare attach error: {error}"
+            );
+        }
         assert!(std::error::Error::source(&error).is_some(), "{kind:?}");
     }
 }

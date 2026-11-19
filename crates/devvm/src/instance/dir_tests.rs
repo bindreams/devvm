@@ -2,11 +2,13 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::backend::MachineRecord;
+use crate::contain::is_unreadable_record;
 use crate::instance::registry::registry_tests::{create, fixture};
 use crate::progress::{Event, Level};
 use crate::store::layers::Reachability;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::qemu::{Sock, backend_in, socket_run};
+use crate::test_support::stub_backend::{Attach, StubBackend};
 
 #[skuld::test]
 fn destroy_never_fails_because_other_devvm_readers_run(#[fixture(unicode_home)] home: &Path) {
@@ -245,8 +247,8 @@ fn handing_over_an_instance_with_a_corrupt_record_reports_the_record_and_writes_
     assert_eq!(std::fs::read(instance.join("owner.json")).unwrap(), marker_before);
 }
 
-/// `rm` and `stop` need the machine found, so a record that cannot be read stops them. The error names the instance,
-/// the process to end and the `record.json` field to clear by hand, and never sends the person to delete the instance.
+/// `rm` and `stop` need the machine found, so a record that cannot be read stops them. The error names the instance and
+/// the `record.json` field to clear by hand after stopping the VM, and never sends the person to delete the instance.
 #[skuld::test]
 fn finding_a_machine_whose_process_record_cannot_be_read_says_how_to_recover(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
@@ -273,31 +275,37 @@ fn finding_a_machine_whose_process_record_cannot_be_read_says_how_to_recover(#[f
         .err()
         .expect("a record this build cannot read is not read as not running");
 
-    let text = error.to_string();
-    let pid = machine.process.pid;
-    let instance_dir = dir.path().display().to_string();
+    let text = error.message().to_owned();
+    let record = dir.path().join("record.json").display().to_string();
+    let start = "cannot tell whether the VM of instance foo is running: its process record has a format this devvm \
+                 does not read; stop that VM by hand if it still runs, then clear the `machine` field in ";
+    assert!(text.starts_with(start), "{text}");
+    assert!(
+        text.contains(&format!("{record} (persisted process identity")),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("persisted process identity").count(),
+        1,
+        "cosca's words once: {text}"
+    );
+    assert!(text.contains("unknown record format version"), "{text}");
     for part in [
-        "instance foo".to_owned(),
-        format!("cannot tell whether the VM process {pid} is running"),
-        format!("check that process {pid}"),
-        instance_dir,
-        "clear the `machine` field".to_owned(),
-        dir.path().join("record.json").display().to_string(),
+        "check that process",
+        "command line",
+        "end process",
+        "delete",
+        "devvm rm",
+        "cannot be used here",
     ] {
-        assert!(text.contains(&part), "{part:?} not in: {text}");
-    }
-    let check = text.find("check that process").unwrap();
-    let end = text.find("end it").expect("it says to end the process");
-    assert!(check < end, "the process is checked before it is ended: {text}");
-    for part in ["delete", "devvm rm", "cannot be used here", "boot_id"] {
         assert!(!text.contains(part), "{part:?} in: {text}");
     }
+    assert!(is_unreadable_record(&error), "the cosca error stays the source: {text}");
 }
 
-/// Only a record that cannot be read has a way out by hand: a host that cannot read its own boot session says what it
-/// could not read and nothing about the record.
+/// Only a record that cannot be read has a way out by hand: any other failure of the backend passes through.
 #[skuld::test]
-fn only_a_record_that_cannot_be_read_gets_the_way_out_by_hand(#[fixture(unicode_home)] home: &Path) {
+fn a_failure_of_the_backend_that_is_not_an_unreadable_record_passes_through_find(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let sock = Sock::new();
@@ -310,26 +318,9 @@ fn only_a_record_that_cannot_be_read_gets_the_way_out_by_hand(#[fixture(unicode_
         claim: Some(sock.claim.clone()),
         no_reboot: false,
     };
-    let host_failure = crate::contain::refused_record(
-        machine.process.pid,
-        cosca::error::Error::IdentityRecord {
-            kind: cosca::error::RecordErrorKind::ScopeUnreadable,
-            detail: "cannot read the boot id".into(),
-            source: None,
-        },
-    )
-    .err()
-    .unwrap();
-    let message = host_failure.message().to_owned();
+    let backend = StubBackend::new(Attach::Fails(crate::ErrorKind::Io));
 
-    let error = dir.with_recovery(host_failure, &machine);
+    let error = dir.find_machine(&*backend, &machine).err().unwrap();
 
-    assert_eq!(error.message(), message);
-    assert!(!error.has_next_step());
-    let unrelated = dir.with_recovery(
-        crate::Error::new(crate::ErrorKind::Io, "the OS refused the query"),
-        &machine,
-    );
-    assert_eq!(unrelated.message(), "the OS refused the query");
-    assert!(!unrelated.has_next_step());
+    assert_eq!(error.message(), "the stub backend cannot look");
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::backend::{Backend, Machine, MachineRecord};
-use crate::contain::is_unreadable_record;
+use crate::contain::with_manual_recovery;
 use crate::host::{Host, remove_tree};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
@@ -204,23 +204,9 @@ impl InstanceDir {
         backend: &dyn Backend,
         machine: &MachineRecord,
     ) -> Result<Option<Box<dyn Machine>>> {
-        backend.find(machine).map_err(|e| self.with_recovery(e, machine))
-    }
-
-    /// `error`, from turning `machine`'s process record into a process, with the way out when the record cannot be
-    /// read. Every such path goes through here. The record cannot say whether its process still runs, and its pid may
-    /// by now be an unrelated program's, so the process is checked before it is ended.
-    pub(crate) fn with_recovery(&self, error: Error, machine: &MachineRecord) -> Error {
-        if !is_unreadable_record(&error) {
-            return error;
-        }
-        let (pid, name, dir) = (machine.process.pid, &self.name, self.path.display());
-        let is_the_vm = format!("process {pid} is the VM of instance {name} (its command line names {dir})");
-        let record = self.path.join("record.json");
-        error.with_next_step(format!(
-            "check that {is_the_vm}, end it if so, then clear the `machine` field in {}",
-            record.display()
-        ))
+        backend
+            .find(machine)
+            .map_err(|e| with_manual_recovery(e, &self.name, &self.path.join("record.json")))
     }
 
     /// The machine named by `machine` is dead: deletes what it left outside the instance directory (a file that

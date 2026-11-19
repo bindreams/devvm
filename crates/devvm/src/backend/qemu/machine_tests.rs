@@ -132,27 +132,29 @@ fn a_record_whose_version_this_build_does_not_know_is_an_error_from_attach_and_f
         .expect("find does not read it as not running");
     assert_eq!(find.kind(), ErrorKind::Io, "{find}");
     for error in [attach, find] {
-        let text = error.to_string();
+        let text = error.message().to_owned();
         let pid = record.process.pid;
-        assert!(
-            text.contains(&format!(
-                "cannot tell whether the VM process {pid} is running: its record has a format this devvm does not read"
-            )),
-            "{text}"
+        let start = format!("cannot tell whether the VM process {pid} is running: its process record has a format");
+        assert!(text.starts_with(&start), "{text}");
+        assert!(text.contains("a format this devvm does not read ("), "{text}");
+        assert_eq!(
+            text.matches("persisted process identity").count(),
+            1,
+            "cosca's words once: {text}"
         );
-        for dump in [
-            "ProcessIdRecord",
-            "boot_id",
-            "record v",
-            "cannot be used here",
-            "not usable here",
+        assert!(text.contains("unknown record format version"), "{text}");
+        for advice in [
+            "check that process",
+            "command line",
+            "end process",
+            "devvm rm",
+            "delete",
         ] {
-            assert!(!text.contains(dump), "{dump:?}, a dump of the record, in: {text}");
+            assert!(!text.contains(advice), "{advice:?} in: {text}");
         }
-        let source = std::error::Error::source(&error).expect("the cosca error is the source");
         assert!(
-            source.to_string().contains("unknown record format version"),
-            "cosca's own words are kept for debugging: {source}"
+            std::error::Error::source(&error).is_some(),
+            "the cosca error is the source"
         );
     }
 }

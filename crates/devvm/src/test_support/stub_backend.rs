@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::backend::fake::FakeStorage;
 use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineExit, MachineRecord, MachineSpec, Storage};
-use crate::contain::VmProcess;
 use crate::{Error, ErrorKind, Result};
 
 /// What `attach` answers.
@@ -19,9 +18,6 @@ pub enum Attach {
     Gone,
     /// This error.
     Fails(ErrorKind),
-    /// What a real backend answers for the record's process: a machine while the process runs, `NotFound` when it is
-    /// gone, the identity layer's error when the record cannot be read.
-    Process,
 }
 
 /// Something a test does while a machine is being stopped.
@@ -90,10 +86,6 @@ impl Backend for StubBackend {
             Attach::Running => Ok(machine()),
             Attach::Gone => Err(Error::new(ErrorKind::NotFound, "the stub machine is gone")),
             Attach::Fails(kind) => Err(Error::new(kind, "the stub backend cannot look")),
-            Attach::Process => match VmProcess::attach(&rec.process)? {
-                Some(_) => Ok(machine()),
-                None => Err(Error::new(ErrorKind::NotFound, "the stub machine is gone")),
-            },
         }
     }
 
