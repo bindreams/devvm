@@ -910,8 +910,9 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
     }
 }
 
-/// Short enough that a frozen peer is found in well under a second. A connect with it has a handshake bound of 300 ms,
-/// so only a test whose subject is the keepalive or the handshake bound uses it; the rest use [`Keepalive::STANDARD`].
+/// Short enough that a frozen peer is found in well under a second. A connect with it and no boot bound has a handshake
+/// bound of 300 ms, a bet on our own server's speed: a keepalive test connects with a boot bound, and only a test of the
+/// handshake bound against a peer that never answers connects without one. The rest use [`Keepalive::STANDARD`].
 pub const FAST_KEEPALIVE: Keepalive = Keepalive {
     interval: Duration::from_millis(100),
     max_missed: 2,
