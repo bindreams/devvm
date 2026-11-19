@@ -28,8 +28,6 @@ mod templates_pwsh_tests;
 pub(super) const DEVVM_DIR: &str = r"C:\ProgramData\devvm";
 /// The time zone of every base: the guest's clock is the host's UTC clock.
 pub(super) const TIME_ZONE: &str = "UTC";
-/// The computer name of every base; an instance keeps its base's.
-pub(super) const COMPUTER_NAME: &str = "DEVVM";
 
 /// The letters a volume can have in WinPE and in the installed system, other than `X:` (WinPE's own drive) and the
 /// floppies'. `winpe.cmd` and the answer file search them for the virtio CD, the answer disk and Setup's logs, and
@@ -86,7 +84,6 @@ pub(super) struct AnswerInputs<'a> {
     /// The image's default language, as a locale name (`en-US`): the installed system's, not English.
     pub language: &'a str,
     pub time_zone: &'a str,
-    pub computer_name: &'a str,
     /// The image is an evaluation edition: the first-logon script activates an unlicensed one before it reads the
     /// license. The host decides, so no script judges the image itself.
     pub evaluation: bool,
@@ -140,7 +137,6 @@ pub(super) fn probe_inputs() -> AnswerInputs<'static> {
         image_index: 1,
         language: "en-US",
         time_zone: TIME_ZONE,
-        computer_name: COMPUTER_NAME,
         evaluation: false,
         product_key: None,
     }
@@ -234,7 +230,6 @@ pub(super) fn values(inputs: &AnswerInputs) -> Vec<(&'static str, String)> {
         ("IMAGE_INDEX", inputs.image_index.to_string()),
         ("LANGUAGE", inputs.language.to_owned()),
         ("TIME_ZONE", inputs.time_zone.to_owned()),
-        ("COMPUTER_NAME", inputs.computer_name.to_owned()),
         (
             "EVALUATION",
             if inputs.evaluation { "$true" } else { "$false" }.to_owned(),

@@ -1,6 +1,6 @@
-# The boot task: PowerShell 7 as SYSTEM, at every boot. It applies the instance's seed (the CIDATA disk), makes C: as large
-# as the disk, and starts sshd last, once the agent of ssh-broker answers. sshd is a Manual service, so a failed step
-# leaves it stopped (fail closed).
+# The boot task: PowerShell 7 as SYSTEM, at every boot. It names the computer after the instance, applies the instance's
+# seed (the CIDATA disk), makes C: as large as the disk, and starts sshd last, once the agent of ssh-broker answers.
+# sshd is a Manual service, so a failed step leaves it stopped (fail closed).
 $ErrorActionPreference = 'Stop'
 @@!UTF8_OUTPUT@@
 . (Join-Path $PSScriptRoot 'lib.ps1')
@@ -8,6 +8,8 @@ Add-Type -LiteralPath (Join-Path $PSScriptRoot @@NATIVE_DLL@@)
 
 $root = @@EB_ROOT@@
 $bootIdFile = @@BOOT_ID_FILE@@
+# The name the last boot restarted for: a boot that still has another name finds that the rename did not take.
+$renamedFile = Join-Path @@DEVVM_DIR@@ 'renamed-to'
 $ssh = 'C:\ProgramData\ssh'
 # The seed's files and where each goes; an administrator's keys are read from administrators_authorized_keys.
 $seed = [ordered]@{
@@ -39,6 +41,50 @@ function Write-Whole([string]$Target, [byte[]]$Bytes, [string[]]$ReadSids = @())
     [Devvm.Disk]::FlushDirectory((Split-Path -Parent $Target))
 }
 
+# Restarts now, retrying while the system refuses as not ready (21, 1722, 1190; each distinct status logged once). Any
+# other refusal ends the boot. 1190 means a shutdown is scheduled: it is aborted, then the request is retried. One
+# already in progress (1115) counts as accepted. Status codes, not localized text, are read.
+function Restart-Now {
+    $seen = @()
+    while ($true) {
+        shutdown.exe /r /f /t 0 | Out-Null
+        $status = $LASTEXITCODE
+        if ($status -in 0, 1115) { return }
+        if ($status -notin 21, 1722, 1190) { throw "shutdown.exe /r ended with status $status" }
+        if ($status -notin $seen) {
+            Send-Line "DEVVM-RESTART-REFUSED=$status"
+            $seen += $status
+        }
+        if ($status -eq 1190) { shutdown.exe /a | Out-Null }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
+# The pending computer name on the disk: Rename-Computer writes it to the registry, which is flushed lazily.
+function Save-ComputerName {
+    $names = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName')
+    try { $names.Flush() } finally { $names.Dispose() }
+}
+
+# Names the computer after the seed's `local-hostname`, the one in the disk's meta.json. A name takes effect at a restart:
+# a computer with another name is renamed and restarted, and the result is $true (the boot ends there). The result is
+# the function's only output. $Marker holds the name the last boot restarted for.
+function Set-ComputerNameFromSeed([string]$Disk, [string]$Marker) {
+    $hostname = (Get-Content -LiteralPath (Join-Path $Disk 'meta.json') -Raw | ConvertFrom-Json).'local-hostname'
+    if (-not $hostname) { throw "the seed's meta.json has no local-hostname" }
+    if ($env:COMPUTERNAME -eq $hostname) { return $false }
+    if ((Test-Path -LiteralPath $Marker) -and ((Get-Content -LiteralPath $Marker -Raw) -eq $hostname)) {
+        throw "the computer is still named $env:COMPUTERNAME after the rename to $hostname and a restart"
+    }
+    $null = Rename-Computer -NewName $hostname -Force
+    # The pending name is on the disk before the marker says a restart is owed for it.
+    $null = Save-ComputerName
+    $null = Write-Whole $Marker ([Text.Encoding]::UTF8.GetBytes($hostname))
+    $null = Send-Line "DEVVM-RENAMED=$hostname"
+    $null = Restart-Now
+    return $true
+}
+
 # Whether the agent of `user` accepts a connection on its socket, which is in the user's profile (found by SID: the
 # profile list names it). A connect that succeeds is the condition under which the shim does not fail open.
 function Test-AgentSocket([string]$Sid) {
@@ -61,6 +107,11 @@ try {
 
     # The disk may appear after the boot has started.
     while (-not ($disk = Find-VolumeRoot 'CIDATA')) { Start-Sleep -Milliseconds 200 }
+
+    # A boot that renames restarts and ends here: the seed, the boot id and sshd are the next boot's, which has the name.
+    $restarting = Set-ComputerNameFromSeed $disk $renamedFile
+    if ($restarting -isnot [bool]) { throw "Set-ComputerNameFromSeed answered $restarting, not a bool" }
+    if ($restarting) { exit 0 }
 
     New-Item -ItemType Directory -Force -Path $ssh | Out-Null
     foreach ($name in $seed.Keys) {

@@ -46,6 +46,9 @@ fn ls_json_emits_one_object_per_instance_and_filters_by_creation_dir() {
     let objects: Vec<Value> = lines.iter().map(|line| serde_json::from_str(line).unwrap()).collect();
     assert_eq!(objects[0]["name"], "a1");
     assert_eq!(objects[1]["name"], "a2");
+    // The id of `home.seed(.., &id(n), ..)` is `n` repeated: the hostname is its first eight digits, whatever the name.
+    assert_eq!(objects[0]["hostname"], "devvm-01010101");
+    assert_eq!(objects[1]["hostname"], "devvm-02020202");
     for object in &objects {
         assert_eq!(object["state"], "stopped");
         assert_eq!(object["guest"], "linux");
@@ -58,6 +61,7 @@ fn ls_json_emits_one_object_per_instance_and_filters_by_creation_dir() {
     for line in &lines {
         let keys = [
             "name",
+            "hostname",
             "state",
             "guest",
             "arch",
@@ -128,14 +132,20 @@ fn ls_prints_a_table_and_nothing_at_all_when_there_are_no_instances() {
     drop(owner);
     assert_eq!(lines.len(), 3, "{lines:?}");
     let header: Vec<&str> = lines[0].split_whitespace().collect();
-    assert_eq!(header, ["NAME", "STATE", "GUEST", "ARCH", "OWNER"]);
+    assert_eq!(header, ["NAME", "HOSTNAME", "STATE", "GUEST", "ARCH", "OWNER"]);
     // Every column of each row, in header order.
     let rows: Vec<Vec<&str>> = lines[1..]
         .iter()
         .map(|line| line.split_whitespace().collect())
         .collect();
-    assert_eq!(rows[0], ["alpha", "stopped", "linux", "amd64", "none"]);
-    assert_eq!(rows[1], ["beta", "stopped", "linux", "amd64", "process"]);
+    assert_eq!(
+        rows[0],
+        ["alpha", "devvm-01010101", "stopped", "linux", "amd64", "none"]
+    );
+    assert_eq!(
+        rows[1],
+        ["beta", "devvm-02020202", "stopped", "linux", "amd64", "process"]
+    );
 }
 
 /// Replaces the `machine` of the seeded instance `name` with a record that has no claim file, which no backend can look
@@ -166,7 +176,7 @@ fn ls_says_unknown_for_a_recorded_machine_the_backend_cannot_look_for() {
     assert_eq!(table.status.code(), Some(0));
     let lines = stdout_lines(&table);
     let row: Vec<&str> = lines[1].split_whitespace().collect();
-    assert_eq!(row, ["alpha", "unknown", "linux", "amd64", "none"]);
+    assert_eq!(row, ["alpha", "devvm-01010101", "unknown", "linux", "amd64", "none"]);
     let stderr = String::from_utf8(table.stderr).unwrap();
     assert!(
         stderr.contains("alpha") && stderr.contains("has no claim file"),

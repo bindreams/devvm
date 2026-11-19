@@ -52,9 +52,11 @@ try {
     # `PasswordNeverExpires` is no property of LocalUser; the CIM class says it.
     if ((Get-CimInstance Win32_UserAccount -Filter "Name='user'").PasswordExpires -ne $false) { throw 'the password of user can expire' }
 
-    # Autologon stays on with no logon count, so an interactive session exists at every boot.
+    # Autologon stays on with no logon count, so an interactive session exists at every boot. Its domain is the local
+    # machine (`.`), not the computer's name at the build: each instance renames the computer at its first boot.
     $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
     Set-ItemProperty -Path $winlogon -Name AutoAdminLogon -Value '1'
+    Set-ItemProperty -Path $winlogon -Name DefaultDomainName -Value '.'
     Remove-ItemProperty -Path $winlogon -Name AutoLogonCount -ErrorAction SilentlyContinue
 
     # No sleep, hibernation (which also ends Fast Startup), lock screen or update restarts; the power button shuts down.
@@ -112,7 +114,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'broker-config.yaml') -Destination "$brokerDir\config.yaml" -Force
 
     # The boot task (every boot, as SYSTEM) and the elevated helper's task (started once per request, as `user` with the
-    # highest privileges and an interactive token; its request id is the task's first argument).
+    # highest privileges and an interactive token; its request id is the task's first argument). The account is named by
+    # its SID: a name would carry the computer's name at the build.
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $bootAction = New-ScheduledTaskAction -Execute $pwsh -Argument ('-NoProfile -NonInteractive -File "' + $scripts + '\boot-task.ps1"')
     Register-ScheduledTask -TaskName 'devvm-boot' -Action $bootAction -Trigger (New-ScheduledTaskTrigger -AtStartup) -Settings $settings `
@@ -120,8 +123,9 @@ try {
     $helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel
     $helperAction = New-ScheduledTaskAction -Execute $pwsh -Argument ('-NoProfile -NonInteractive -File "' + $scripts + '\eb-runner.ps1" $(Arg0)')
     New-Item -ItemType Directory -Force -Path @@EB_ROOT@@ | Out-Null
+    $userSid = ([Security.Principal.NTAccount]::new('user')).Translate([Security.Principal.SecurityIdentifier]).Value
     Register-ScheduledTask -TaskName @@EB_TASK@@ -Action $helperAction -Settings $helperSettings `
-        -Principal (New-ScheduledTaskPrincipal -UserId 'user' -LogonType Interactive -RunLevel Highest) | Out-Null
+        -Principal (New-ScheduledTaskPrincipal -UserId $userSid -LogonType Interactive -RunLevel Highest) | Out-Null
 
     # Setup adds a Recovery partition behind C:, which stops the boot task growing C: into a larger instance disk, so
     # remove it. Storage cmdlets, not diskpart: its text is localized. reagentc's exit code is logged only; the

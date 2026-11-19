@@ -295,6 +295,7 @@ impl Engine {
             warn_if_expired(self, dir.name(), record.expires);
             infos.push(InstanceInfo {
                 name: record.name.as_str().to_owned(),
+                hostname: record.id.hostname(),
                 state: self.state_of(&record.machine, dir.name().as_str()),
                 guest: record.guest,
                 arch: record.arch,

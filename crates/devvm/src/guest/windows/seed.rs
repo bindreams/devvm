@@ -12,9 +12,12 @@ use crate::{Error, ErrorKind, Result};
 mod seed_tests;
 
 #[derive(Serialize)]
-struct MetaData {
+struct MetaData<'a> {
     #[serde(rename = "instance-id")]
     instance_id: String,
+    /// The computer name the boot task renames to.
+    #[serde(rename = "local-hostname")]
+    local_hostname: &'a str,
 }
 
 /// `meta.json`, the host key pair and `authorized_keys` for `spec`. A pure function of `spec`: the boot task writes
@@ -23,6 +26,7 @@ pub(super) fn seed_files(spec: &SeedSpec) -> Result<Vec<SeedFile>> {
     spec.keys.require_present()?;
     let meta = serde_json::to_string_pretty(&MetaData {
         instance_id: format!("devvm-{}", spec.instance_id),
+        local_hostname: &spec.hostname,
     })
     .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot write the seed's meta.json: {e}")))?;
     let file = |name: &str, text: &str| SeedFile {
