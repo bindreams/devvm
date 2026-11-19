@@ -181,7 +181,7 @@ fn mid_command_drop_is_connection_lost(#[fixture(unicode_home)] home: &Path) {
 #[skuld::test]
 fn a_frozen_peer_is_connection_lost_through_keepalive(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
-    let session = rig.connect();
+    let session = SshSession::connect(&rig.target(), FAST, VmExit::never(), None, &NullProgress).unwrap();
     let error = session.exec_collect("freeze").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("keepalive"), "{error}");
@@ -351,7 +351,7 @@ fn connect_retries_while_refused_and_stops_when_the_vm_exits(#[fixture(unicode_h
         let connecting = scope.spawn(|| {
             SshSession::connect(
                 &target,
-                FAST,
+                Keepalive::STANDARD,
                 vm,
                 Some(BootBound::start(Duration::from_secs(3600)).unwrap()),
                 &*progress,
@@ -373,8 +373,7 @@ fn a_connect_without_a_boot_bound_to_a_peer_that_accepts_and_never_speaks_ends_i
     #[fixture(unicode_home)] home: &Path,
 ) {
     let rig = Rig::with(home, |options| options.silent = true);
-    let error = rig
-        .connect_with(VmExit::never(), None)
+    let error = SshSession::connect(&rig.target(), FAST, VmExit::never(), None, &NullProgress)
         .err()
         .expect("the connect fails");
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
@@ -391,7 +390,7 @@ fn a_connect_without_a_boot_bound_to_a_refused_port_is_connection_lost_at_once(#
     let rig = Rig::new(home);
     let mut target = rig.target();
     target.addr = refused_addr();
-    let error = SshSession::connect(&target, FAST, VmExit::never(), None, &NullProgress)
+    let error = SshSession::connect(&target, Keepalive::STANDARD, VmExit::never(), None, &NullProgress)
         .err()
         .expect("the connect fails");
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
@@ -476,7 +475,7 @@ fn a_boot_bound_that_has_passed_ends_a_connect_naming_the_address_and_the_serial
 #[skuld::test]
 fn the_boot_bound_ends_a_connect_with_the_failure_it_last_saw() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let connect = silent_peer_connect(FAST, &listener);
+    let connect = silent_peer_connect(Keepalive::STANDARD, &listener);
     let bound = BootBound::start(Duration::from_secs(90)).unwrap();
     let awaiting = "waiting for SSH";
 
@@ -518,7 +517,7 @@ fn a_boot_bound_that_passes_during_a_retry_carries_the_failure_of_the_attempt_be
     // The server presents the wrong host key for good. The clock runs in real time until the first attempt has failed
     // and then stops, so the hour of the bound passes without anyone waiting for it, inside the retry that follows.
     let rig = Rig::with(home, |options| options.wrong_host_key_connections = usize::MAX);
-    let connect = connect_to(FAST, rig.target());
+    let connect = connect_to(Keepalive::STANDARD, rig.target());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -655,7 +654,7 @@ fn the_handshake_bound_is_told_in_units_a_person_reads() {
 #[skuld::test]
 fn the_bound_of_the_last_failed_attempt_is_told_in_units_a_person_reads() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let connect = silent_peer_connect(FAST, &listener);
+    let connect = silent_peer_connect(Keepalive::STANDARD, &listener);
     let refused = Failure::Tcp(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
     let error = refused.into_error(&connect.ctx, Some(Duration::from_secs(90)));
     assert!(error.message().contains("within 1m 30s"), "{error}");
@@ -1015,7 +1014,7 @@ fn connect_works_from_every_caller_context(#[fixture(unicode_home)] home: &Path)
     let rig = Rig::new(home);
     let target = rig.target();
     in_every_caller_context(move || {
-        let session = SshSession::connect(&target, FAST, VmExit::never(), None, &NullProgress).unwrap();
+        let session = SshSession::connect(&target, Keepalive::STANDARD, VmExit::never(), None, &NullProgress).unwrap();
         assert_eq!(session.exec_collect("exit 3").unwrap().status, ExitStatus::Code(3));
     });
 }
