@@ -160,8 +160,8 @@ devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/pr
   commands reuse the base. An evaluation edition's base is rebuilt from the ISO 10 days before its evaluation ends; a
   base built with a product key does not expire.
 - `ssh win` opens PowerShell 7; the home (`~`, and where relative guest paths start) is the user's profile.
-- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127. Use
-  `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
+- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127 (it is also a PowerShell alias: run
+  it through `pwsh -c`). For `cmd`'s, use `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
 - [Windows guests](#windows-guests) has how programs, shells, paths and `copy` work in a Windows guest.
 
 ## Windows ISOs
@@ -200,8 +200,9 @@ user, not elevated, through ssh-broker in the user's own session, so they see it
 The base has no Windows Recovery Environment.
 
 - **Programs.** `argv[0]` is looked up as a program on the guest's `PATH`, never as a PowerShell cmdlet or alias. A name
-  that is not found exits 127. A program's output reaches you byte for byte, and a status the guest ends with
-  (`0xC0000005`, say) is passed on in all 32 bits on a Windows host; a Unix host keeps the low byte.
+  that is not found exits 127, and when it is a PowerShell command the message says to run it through `pwsh -c`. A
+  program's output reaches you byte for byte, and a status the guest ends with (`0xC0000005`, say) is passed on in all
+  32 bits on a Windows host; a Unix host keeps the low byte.
 - **Shells.** A `run` step uses `pwsh` (PowerShell 7) unless it says `shell: cmd`. `sh` and `bash` do not exist in a
   Windows guest. A `cmd` script is one line, and a line break in it is refused before the build starts: use
   `shell: pwsh`, or `copy` a `.cmd` file in and run it.
@@ -217,8 +218,12 @@ The base has no Windows Recovery Environment.
   the guest has no separation between the user and the administrator, as a Linux guest has none with its passwordless
   `sudo`.
 - **`set: { uac: auto-approve }`** makes an administrator's elevation prompt-free in the guest, with no reboot.
-- A command line can be at most 32,766 characters on the guest. A command whose script is longer once quoted is refused,
-  naming both lengths.
+- A command is refused when the command line that carries its script is over 32,766 UTF-16 units (the script is quoted
+  as one argument, which makes the line at least about 46 units longer than the script, and more for each quote in an
+  argument), and the error names both lengths. Each argument is in the script twice, next to its fixed text, so the
+  arguments get about 14,940 characters; the text of `cmd /c` is there a third time (about 9,920), and less fits when
+  the command is elevated (about 11,440, and 7,580 for `cmd`). These are the figures at the time of writing;
+  `longest_fit` in `crates/devvm/src/guest/windows/wrap_tests.rs` measures them.
 
 Limits:
 
