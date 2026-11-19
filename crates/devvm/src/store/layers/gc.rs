@@ -219,7 +219,7 @@ impl LayerStore {
             }
             match meta::read(&entry.path())? {
                 MetaRead::Corrupt(why) => {
-                    self.progress.message(&format!(
+                    self.progress.warn(&format!(
                         "layer record {} is unreadable ({why}); moving the layer to quarantine instead of deleting it",
                         entry.path().display()
                     ));
@@ -237,7 +237,7 @@ impl LayerStore {
                     let _ = std::fs::remove_file(self.lock_path(&format!("{key}-{generation}.gen")));
                 }
                 Err(e) => {
-                    self.progress.message(&format!(
+                    self.progress.warn(&format!(
                         "cannot delete layer {}: {e}; leaving it for the next collection",
                         entry.path().display()
                     ));

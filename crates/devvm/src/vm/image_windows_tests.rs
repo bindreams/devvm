@@ -160,9 +160,9 @@ fn vm_drop_never_fails_when_the_instance_is_busy_and_the_next_reap_finishes_it(#
 
     assert!(!running(&machine), "the VM is dead even though the instance is busy");
     assert!(
-        progress.messages().iter().any(|m| m.contains(&name)),
+        progress.warnings().iter().any(|m| m.contains(&name)),
         "the warning names the instance: {:?}",
-        progress.messages()
+        progress.warnings()
     );
     assert!(
         fx.env.dirs.instances().join(&name).exists(),

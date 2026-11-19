@@ -15,7 +15,7 @@ pub(crate) fn warn_if_expired(engine: &Engine, name: &InstanceName, expires: Opt
     if let Some(expires) = expires
         && engine.clock().now() >= expires
     {
-        engine.progress().message(&format!(
+        engine.progress().warn(&format!(
             "instance {name}: the guest expired on {} (UTC)",
             date_text(expires)
         ));

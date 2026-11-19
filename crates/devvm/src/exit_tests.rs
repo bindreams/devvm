@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::{Value, json};
 
 use crate::exit::{
-    DEVVM_ERROR_EXIT, ExitStatus, ExitWidth, Report, finish, format_error_line, status_json, write_status_file,
+    DEVVM_ERROR_EXIT, ExitStatus, ExitWidth, Report, conclude, format_error_line, print_error_line, status_json,
+    write_status_file,
 };
 use crate::test_support::fixtures::unicode_home;
 use crate::{Error, ErrorKind};
@@ -91,14 +92,71 @@ fn error_line_is_one_line(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(value["devvm"]["message"], message);
 }
 
-fn run_finish(status_file: Option<&Path>, outcome: crate::Result<ExitStatus>, width: ExitWidth) -> (i32, String) {
+/// The ending as the command line makes it: [`conclude`], then the error line it names printed.
+fn ended(
+    status_file: Option<&Path>,
+    outcome: crate::Result<ExitStatus>,
+    width: ExitWidth,
+    colour: bool,
+) -> (i32, String) {
     let mut stderr = Vec::new();
-    let exit = finish(status_file, outcome, width, &mut stderr);
-    (exit, String::from_utf8(stderr).unwrap())
+    let ending = conclude(status_file, &outcome, width);
+    if let Some(line) = &ending.error_line {
+        print_error_line(&mut stderr, line, colour);
+    }
+    (ending.exit, String::from_utf8(stderr).unwrap())
+}
+
+fn run_finish(status_file: Option<&Path>, outcome: crate::Result<ExitStatus>, width: ExitWidth) -> (i32, String) {
+    ended(status_file, outcome, width, false)
+}
+
+const RED: &str = "\u{1b}[31m";
+const RESET: &str = "\u{1b}[0m";
+
+fn run_coloured(status_file: Option<&Path>, outcome: crate::Result<ExitStatus>) -> (i32, String) {
+    ended(status_file, outcome, ExitWidth::Full32, true)
 }
 
 #[skuld::test]
-fn finish_writes_status_file_and_returns_125_for_devvm_errors(#[fixture(unicode_home)] home: &Path) {
+fn a_coloured_error_line_has_only_its_prefix_in_red(#[fixture(unicode_home)] home: &Path) {
+    let (plain_file, coloured_file) = (home.join("plain.json"), home.join("coloured.json"));
+    let error = || Err(Error::new(ErrorKind::Io, "bad"));
+    let (plain_exit, plain) = run_finish(Some(&plain_file), error(), ExitWidth::Full32);
+    let (exit, coloured) = run_coloured(Some(&coloured_file), error());
+    assert_eq!(coloured, format!("{RED}devvm-error:{RESET} io: bad\n"));
+    assert_eq!(coloured.replace(RED, "").replace(RESET, ""), plain);
+    assert_eq!(exit, plain_exit);
+    assert_eq!(
+        std::fs::read_to_string(&coloured_file).unwrap(),
+        std::fs::read_to_string(&plain_file).unwrap()
+    );
+}
+
+#[skuld::test]
+fn the_status_file_never_holds_colour(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("s.json");
+    run_coloured(Some(&path), Err(Error::new(ErrorKind::Io, "bad")));
+    assert!(!std::fs::read_to_string(&path).unwrap().contains('\u{1b}'));
+}
+
+#[skuld::test]
+fn a_success_prints_nothing_even_when_colour_is_on() {
+    assert_eq!(run_coloured(None, Ok(ExitStatus::Code(0))), (0, String::new()));
+}
+
+#[skuld::test]
+fn the_line_of_an_unwritable_status_file_is_coloured_the_same_way(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("missing dir").join("s.json");
+    let (_, stderr) = run_coloured(Some(&path), Ok(ExitStatus::Code(0)));
+    assert!(
+        stderr.starts_with(&format!("{RED}devvm-error:{RESET} status-file: ")),
+        "{stderr}"
+    );
+}
+
+#[skuld::test]
+fn an_ending_writes_the_status_file_and_returns_125_for_devvm_errors(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("s.json");
     for width in WIDTHS {
         let (exit, stderr) = run_finish(Some(&path), Err(Error::new(ErrorKind::Checksum, "bad")), width);
@@ -110,7 +168,7 @@ fn finish_writes_status_file_and_returns_125_for_devvm_errors(#[fixture(unicode_
 }
 
 #[skuld::test]
-fn finish_returns_guest_code_for_guest_status(#[fixture(unicode_home)] home: &Path) {
+fn an_ending_returns_the_guest_code_for_a_guest_status(#[fixture(unicode_home)] home: &Path) {
     let path = home.join("s.json");
     let (exit, stderr) = run_finish(Some(&path), Ok(ExitStatus::Code(0x1_0000)), ExitWidth::LowByte);
     assert_eq!((exit, stderr.as_str()), (1, ""));
@@ -186,4 +244,26 @@ fn status_file_replace_is_atomic_for_readers(#[fixture(unicode_home)] home: &Pat
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(names, ["s.json"]);
+}
+
+#[skuld::test]
+fn conclude_gives_the_exit_and_the_line_to_print(#[fixture(unicode_home)] home: &Path) {
+    use crate::exit::conclude;
+    let ok = conclude(None, &Ok(ExitStatus::Code(3)), ExitWidth::Full32);
+    assert_eq!((ok.exit, ok.error_line), (3, None));
+
+    let failed = conclude(None, &Err(Error::new(ErrorKind::Io, "bad")), ExitWidth::Full32);
+    assert_eq!(failed.exit, 125);
+    assert_eq!(failed.error_line.as_deref(), Some("devvm-error: io: bad"));
+
+    let missing = home.join("missing").join("status.json");
+    let both = conclude(
+        Some(&missing),
+        &Err(Error::new(ErrorKind::Io, "bad")),
+        ExitWidth::Full32,
+    );
+    let line = both.error_line.unwrap();
+    assert_eq!(both.exit, 125);
+    assert!(line.starts_with("devvm-error: status-file: "), "{line}");
+    assert!(line.ends_with("original: io: bad"), "{line}");
 }

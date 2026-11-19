@@ -16,9 +16,9 @@ use serde::Deserialize;
 
 use super::args::ArchFiles;
 use crate::config::Config;
-use crate::exit::Progress;
 use crate::host::{Host, SystemDirs};
 use crate::lazy::Lazy;
+use crate::progress::{Progress, Total};
 use crate::store::fetch::{Artifact, Fetcher};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Arch, Dirs, Error, ErrorKind, Result, Sha256};
@@ -261,8 +261,9 @@ impl Source {
             return Ok(self.install_at(&published, entry));
         }
 
-        self.progress
-            .message(&format!("extracting QEMU {}", entry.qemu_version));
+        let task = self
+            .progress
+            .task(format!("extracting QEMU {}", entry.qemu_version), Total::Unknown);
         let staging = tempfile::Builder::new()
             .prefix(".extract-")
             .tempdir_in(&qemu)
@@ -304,6 +305,7 @@ impl Source {
                 e,
             )
         })?;
+        task.finish();
         Ok(self.install_at(&published, entry))
     }
 }

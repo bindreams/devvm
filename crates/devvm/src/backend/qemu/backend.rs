@@ -11,8 +11,8 @@ use super::sidecar::{LazyInstall, QemuInstall};
 use super::storage::QemuStorage;
 use crate::backend::{Backend, Check, Detail, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
 use crate::contain::{VmCommand, VmProcess};
-use crate::exit::Progress;
 use crate::host::{Hold, Host, is_absent, remove_tree};
+use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -72,7 +72,7 @@ impl QemuBackend {
         }
         // Only this launch's own files: nobody else draws its name while its claim file is there.
         remove_files(self.host, &endpoint.launch_files(), Some(claim), &mut |message| {
-            self.progress.message(&message)
+            self.progress.warn(&message)
         });
         error
     }

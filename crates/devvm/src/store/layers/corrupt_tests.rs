@@ -27,9 +27,9 @@ fn corrupt_meta_is_a_miss_then_quarantined_and_rebuilt(#[fixture(unicode_home)] 
     assert!(env.store.lookup(&key(1)).unwrap().is_none());
     assert!(env.store.generation_dir(&old).is_dir());
     assert!(
-        env.progress.messages().iter().any(|m| m.contains("unreadable")),
+        env.progress.warnings().iter().any(|m| m.contains("unreadable")),
         "{:?}",
-        env.progress.messages()
+        env.progress.warnings()
     );
 
     // A build repairs under the key's build lock, then builds anew.

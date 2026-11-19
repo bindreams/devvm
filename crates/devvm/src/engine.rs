@@ -13,7 +13,6 @@ use crate::backend::qemu::sidecar::LazyInstall;
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::backend::{Backend, MachineRecord};
 use crate::contain::VmProcess;
-use crate::exit::{Progress, StderrProgress};
 use crate::guest::Guests;
 use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
@@ -23,6 +22,7 @@ use crate::instance::name::InstanceName;
 use crate::instance::record::{MarkerRead, Owner, RecordRead};
 use crate::instance::registry::Registry;
 use crate::lazy::Lazy;
+use crate::progress::{LineProgress, Look, Progress};
 use crate::store::fetch::{Fetcher, Transport};
 use crate::store::layers::{Clock, LayerStore, SystemClock};
 use crate::{Dirs, Error, ErrorKind, Instance, Result};
@@ -143,9 +143,9 @@ impl Engine {
         Ok((engine, install))
     }
 
-    /// `from_env` reporting progress on stderr.
+    /// `from_env` reporting progress on stderr, with step output and debug notes when `DEVVM_VERBOSE` asks for them.
     pub fn from_env_stderr(transport: Arc<dyn Transport>) -> Result<Arc<Engine>> {
-        Engine::from_env(Arc::new(StderrProgress), transport)
+        Engine::from_env(Arc::new(LineProgress::stderr(Look::from_env())), transport)
     }
 
     pub(crate) fn with_parts(parts: EngineParts) -> Arc<Engine> {
@@ -197,13 +197,13 @@ impl Engine {
                 Ok(_) => true,
                 Err(e) => {
                     self.progress
-                        .message(&format!("instance {name}: cannot read its record: {}", e.message()));
+                        .warn(&format!("instance {name}: cannot read its record: {}", e.message()));
                     true
                 }
             }
         };
         for warning in self.ssh_configs().sweep(&live) {
-            self.progress.message(&warning);
+            self.progress.warn(&warning);
         }
     }
 
@@ -262,7 +262,7 @@ impl Engine {
                 Err(e) if e.kind() == ErrorKind::NotFound => continue,
                 Err(e) => {
                     self.progress
-                        .message(&format!("skipping instance {}: {}", dir.name(), e.message()));
+                        .warn(&format!("skipping instance {}: {}", dir.name(), e.message()));
                     continue;
                 }
             };
@@ -288,7 +288,7 @@ impl Engine {
                         Err(e) => format!("unreadable ({})", e.message()),
                     };
                     self.progress
-                        .message(&format!("skipping instance {}: its owner.json is {why}", dir.name()));
+                        .warn(&format!("skipping instance {}: its owner.json is {why}", dir.name()));
                     continue;
                 }
             };
@@ -316,7 +316,7 @@ impl Engine {
             Ok(Some(_)) => InstanceState::Running,
             Ok(None) => InstanceState::Stopped,
             Err(e) => {
-                self.progress.message(&format!(
+                self.progress.warn(&format!(
                     "cannot tell whether instance {name} is running: {}",
                     e.message()
                 ));

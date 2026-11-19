@@ -220,7 +220,7 @@ fn a_failed_look_at_a_lock_file_warns_and_deletes_nothing(#[fixture(unicode_home
 
     assert!(dir.is_dir(), "a failed look is not an answer");
     assert!(lock_is_there(&engine, &hex));
-    let messages = progress.messages();
+    let messages = progress.warnings();
     assert!(
         messages.iter().any(|message| message.contains(&hex)),
         "the warning names the build: {messages:?}"

@@ -91,7 +91,7 @@ fn a_failed_create_that_cannot_delete_its_half_built_directory_says_so(#[fixture
     );
     let left = names(&fx.env.dirs.instances());
     assert_eq!(left.len(), 1, "{left:?}");
-    let messages = fx.progress.messages();
+    let messages = fx.progress.warnings();
     assert!(
         messages
             .iter()
@@ -124,7 +124,7 @@ fn destroy_warns_but_succeeds_when_the_renamed_tree_cannot_be_deleted(#[fixture(
 
     destroyed.expect("the instance is removed, so rm succeeds");
     assert!(!fx.env.dirs.instances().join("foo").exists(), "the name is free");
-    let messages = fx.progress.messages();
+    let messages = fx.progress.warnings();
     assert!(
         messages
             .iter()

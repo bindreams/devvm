@@ -358,7 +358,7 @@ fn the_definition_hash_is_the_templates() {
         let fetcher = Arc::new(Fetcher::new(
             std::env::temp_dir(),
             Arc::new(RefusingTransport::default()),
-            Arc::new(crate::exit::NullProgress),
+            Arc::new(crate::progress::NullProgress),
         ));
         WindowsBuilder::new(
             fetcher,

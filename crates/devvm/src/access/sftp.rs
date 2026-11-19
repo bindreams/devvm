@@ -50,9 +50,9 @@ use self::typed::Typed;
 use crate::access::paths::{check_guest_path, expand_guest_path};
 use crate::access::runtime;
 use crate::access::session::Inner;
-use crate::exit::Progress;
 use crate::guest::GuestOs;
 use crate::host::Host;
+use crate::progress::Progress;
 use crate::random;
 use crate::{Error, ErrorKind, Result};
 
@@ -77,6 +77,10 @@ fn partial_name() -> String {
     format!(".devvm-partial-{}", hex::encode(random::bytes::<6>()))
 }
 
+/// Where a [`pump`] reports how many bytes each chunk moved; the receiving end is on the thread that waits for the
+/// transfer.
+pub(crate) type Moved = tokio::sync::mpsc::UnboundedSender<u64>;
+
 /// Which end of a [`pump`] failed.
 #[derive(Debug)]
 enum Failed {
@@ -84,9 +88,10 @@ enum Failed {
     Write(std::io::Error),
 }
 
-/// Copies `reader` to `writer` in chunks of [`CHUNK`]. The SFTP library reports a failed guest read or write as a
-/// plain `io::Error` with no mark of whose fault it was, so the end that failed is known by where the call was.
-async fn pump<R, W>(mut reader: R, mut writer: W) -> std::result::Result<(), Failed>
+/// Copies `reader` to `writer` in chunks of [`CHUNK`]. The SFTP library reports a
+/// failed guest read or write as a plain `io::Error` with no mark of whose fault it was, so the end that failed is
+/// known by where the call was.
+async fn pump<R, W>(mut reader: R, mut writer: W, moved: &Moved) -> std::result::Result<(), Failed>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -98,6 +103,7 @@ where
             return Ok(());
         }
         writer.write_all(&chunk[..read]).await.map_err(Failed::Write)?;
+        let _ = moved.send(read as u64);
     }
 }
 
@@ -149,6 +155,21 @@ impl Sftp {
             &awaiting.clone(),
             async move { remote.guarded(&awaiting, future).await },
         )?
+    }
+
+    /// [`Sftp::call`], where the step also reports the bytes it moves.
+    fn call_counting<T, F, Fut>(&self, awaiting: &str, moved: &mut dyn FnMut(u64), step: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Remote, Moved) -> Fut,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let remote = self.remote.clone();
+        let awaiting = awaiting.to_owned();
+        runtime::run_handing(&awaiting.clone(), moved, move |sender| {
+            let future = step(remote.clone(), sender);
+            async move { remote.guarded(&awaiting, future).await }
+        })?
     }
 
     /// This session, with the messages of what it does naming guest paths as `guest` writes them, and the guest path of

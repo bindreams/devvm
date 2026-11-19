@@ -104,7 +104,7 @@ impl Registry {
             .excluding_readers(&mut || {}, || move_if_unchanged(name, path, id, &target))
         {
             Ok(Moved::Done) => {
-                self.progress().message(&format!(
+                self.progress().warn(&format!(
                     "instance {name} is unreadable ({why}); moved it to {} (nothing was deleted)",
                     target.display()
                 ));

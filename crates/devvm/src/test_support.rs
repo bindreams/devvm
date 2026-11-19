@@ -14,6 +14,8 @@ pub mod http;
 pub mod manual_exit;
 pub mod name_change;
 pub mod other_account;
+#[cfg(windows)]
+pub mod private_files;
 pub mod qemu;
 pub mod refusing;
 pub mod roots;

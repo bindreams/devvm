@@ -136,6 +136,11 @@ impl Dirs {
         self.state.join("builds")
     }
 
+    /// One log file per devvm process run (`progress::FileLog`).
+    pub fn logs(&self) -> PathBuf {
+        self.state.join("logs")
+    }
+
     /// Where unreadable instance directories are moved instead of being deleted.
     pub fn instance_quarantine(&self) -> PathBuf {
         self.state.join("quarantine")
