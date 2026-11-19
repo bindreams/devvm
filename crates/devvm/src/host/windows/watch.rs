@@ -9,6 +9,7 @@ use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, Wa
 
 use super::link::EventLink;
 use crate::backend::qemu::uds::UnixStream;
+use crate::contain::unknown_liveness;
 use crate::host::watch::{Link, ProcessWatch, RETRY};
 use crate::{Error, ErrorKind, Result};
 
@@ -43,24 +44,10 @@ impl WindowsWatch {
         }
         // SAFETY: `raw` is a new handle that nothing else owns.
         let handle = unsafe { OwnedHandle::from_raw_handle(raw as _) };
-        let opened = cosca::Process::open(id).map_err(|e| {
-            Error::new(
-                ErrorKind::Io,
-                format!("cannot open the VM process {pid} to wait for its exit: {e}"),
-            )
-            .with_source(e)
-        })?;
-        // No process has this identity any more: it exited, or its PID is another process's now.
-        let Some(process) = opened else {
-            return Ok(WindowsWatch { handle: None });
-        };
-        match process.is_alive() {
+        match id.is_alive() {
             Liveness::Alive => Ok(WindowsWatch::from_handle(handle)),
             Liveness::Dead => Ok(WindowsWatch { handle: None }),
-            Liveness::Unknown => Err(Error::new(
-                ErrorKind::Io,
-                format!("cannot tell whether the VM process {pid} is running: the OS refused the query"),
-            )),
+            Liveness::Unknown => Err(unknown_liveness(id)),
         }
     }
 

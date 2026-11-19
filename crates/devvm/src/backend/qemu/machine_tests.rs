@@ -113,6 +113,33 @@ fn attach_refuses_a_record_without_a_claim_naming_the_socket() {
     );
 }
 
+/// A record this build cannot read names nothing it can tell is gone: reporting the machine as not running would let a
+/// second one start on the same disk.
+#[skuld::test]
+fn a_record_whose_version_this_build_does_not_know_is_an_error_from_attach_and_from_find() {
+    let sock = Sock::new();
+    let (_vm, mut record) = record(&sock, false);
+    record.process.version = cosca::identity::RECORD_VERSION + 1;
+
+    let attach = VmProcess::attach(&record.process)
+        .err()
+        .expect("attach reads the version");
+    assert_eq!(attach.kind(), ErrorKind::Io, "{attach}");
+    let backend = backend_in(&socket_run(), Arc::default());
+    let find = backend
+        .find(&record)
+        .err()
+        .expect("find does not read it as not running");
+    assert_eq!(find.kind(), ErrorKind::Io, "{find}");
+    for error in [attach, find] {
+        let text = error.to_string();
+        assert!(text.contains(&record.process.pid.to_string()), "{text}");
+        assert!(text.contains("format this devvm does not read"), "{text}");
+        assert!(text.contains("end that process if it still runs"), "{text}");
+        assert!(text.contains("remove the instance"), "{text}");
+    }
+}
+
 #[skuld::test]
 fn reset_of_a_launched_machine_asks_the_host_before_it_connects() {
     let sock = Sock::new();

@@ -60,15 +60,20 @@ fn wait_for_exit(id: ProcessId) -> std::result::Result<(), cosca::error::Error> 
     }
 }
 
-/// Kills the process `id` names. A process that is gone is `Ok`.
-fn kill_by_id(id: ProcessId) -> std::result::Result<(), cosca::error::Error> {
+/// Kills the process `id` names and waits for it to exit, through one handle: a kill that landed is never reported
+/// as failed by a second open that finds the process gone or refuses it. A process that is gone is `Ok`.
+fn kill_and_wait(id: ProcessId) -> std::result::Result<(), cosca::error::Error> {
     match cosca::Process::open(id)? {
-        Some(process) => process.kill(),
+        Some(process) => {
+            process.kill()?;
+            process.wait()
+        }
         None => Ok(()),
     }
 }
 
-fn cosca_error(context: &str, source: cosca::error::Error) -> Error {
+/// A cosca failure as an `Io` error that says `context` and keeps the failure as its source.
+pub(crate) fn cosca_error(context: &str, source: cosca::error::Error) -> Error {
     Error::new(ErrorKind::Io, format!("{context}: {source}")).with_source(source)
 }
 
@@ -230,8 +235,9 @@ impl VmProcess {
     }
 
     /// The process `record` names, if it is still running. `None` when it has exited, when the PID now belongs to
-    /// another process, or when the record is from another boot or platform; an error only when liveness cannot be
-    /// established.
+    /// another process, or when the record was written on another boot or platform: it names nothing that exists
+    /// now. An error when liveness cannot be established, including a record this build cannot read: it may name a
+    /// process that still runs.
     pub(crate) fn attach(record: &ProcessIdRecord) -> Result<Option<VmProcess>> {
         let id = match ProcessId::try_from(record) {
             Ok(id) => id,
@@ -245,8 +251,13 @@ impl VmProcess {
                     format!("cannot check the VM process {}: {detail}", record.pid),
                 ));
             }
-            // Another boot, platform or format: the record names nothing that exists now.
-            Err(cosca::error::Error::IdentityRecord { .. }) => return Ok(None),
+            Err(cosca::error::Error::IdentityRecord {
+                kind: RecordErrorKind::ForeignBootSession | RecordErrorKind::ForeignPlatform,
+                ..
+            }) => return Ok(None),
+            Err(error @ cosca::error::Error::IdentityRecord { kind, .. }) => {
+                return Err(unreadable_record(record, kind, error));
+            }
             Err(other) => {
                 return Err(cosca_error(
                     &format!("cannot restore the VM process {}", record.pid),
@@ -254,10 +265,7 @@ impl VmProcess {
                 ));
             }
         };
-        let opened = cosca::Process::open(id)
-            .map_err(|e| cosca_error(&format!("cannot open the VM process {}", id.pid()), e))?;
-        let Some(process) = opened else { return Ok(None) };
-        match process.is_alive() {
+        match id.is_alive() {
             Liveness::Alive => Ok(Some(VmProcess {
                 id,
                 state: State::Foreign,
@@ -310,24 +318,37 @@ impl VmProcess {
     /// is `Ok`.
     pub(crate) fn kill(&mut self) -> Result<()> {
         let id = self.id();
-        let pid = id.pid();
         let killed = match &self.state {
             State::Frozen(..) => {
                 // Killed by identity first, so that a failure is seen: dropping a frozen child kills it too, but
                 // discards how that went.
-                let killed = kill_by_id(id);
+                let killed = kill_and_wait(id);
                 self.state = State::Foreign;
                 killed
             }
+            // `kill_tree` returns once the root has exited.
             State::Running(child, _) => child.kill_tree(),
-            State::Released | State::Foreign => kill_by_id(id),
+            State::Released | State::Foreign => kill_and_wait(id),
         };
-        killed.map_err(|e| cosca_error(&format!("cannot kill the VM process {pid}"), e))?;
-        wait_for_exit(id).map_err(|e| cosca_error(&format!("cannot wait for the VM process {pid} to exit"), e))
+        killed.map_err(|e| cosca_error(&format!("cannot kill the VM process {}", id.pid()), e))
     }
 }
 
-fn unknown_liveness(id: ProcessId) -> Error {
+/// A record the identity layer refuses for a reason other than another boot or platform: what it names cannot be told
+/// from here, so it is not read as "not running", which would let a second VM start on a disk the first still holds.
+fn unreadable_record(record: &ProcessIdRecord, kind: RecordErrorKind, error: cosca::error::Error) -> Error {
+    Error::new(
+        ErrorKind::Io,
+        format!(
+            "cannot tell whether the VM process {} is running: its process record {record:?} is in a format this devvm does \
+             not read ({kind}); end that process if it still runs, then remove the instance",
+            record.pid
+        ),
+    )
+    .with_source(error)
+}
+
+pub(crate) fn unknown_liveness(id: ProcessId) -> Error {
     Error::new(
         ErrorKind::Io,
         format!(
