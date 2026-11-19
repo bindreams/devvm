@@ -51,6 +51,10 @@ fn the_seed_files_hold_the_instance_keys_and_nothing_else(#[fixture(unicode_home
     assert_eq!(text("authorized_keys"), "ssh-ed25519 AAAAclient devvm-client\n");
     let meta: serde_json::Value = serde_json::from_str(&text("meta.json")).unwrap();
     assert_eq!(meta["instance-id"], format!("devvm-{}", id(1)));
+    assert_eq!(
+        meta["local-hostname"], "dvm-test",
+        "the boot task names the computer from the spec"
+    );
     // The private key is in its own file only.
     for file in &files {
         assert_eq!(

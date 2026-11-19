@@ -102,7 +102,7 @@ impl QemuEngine {
     fn windows_base_build(&self) -> Error {
         let iso = self.home.join("windows.iso");
         std::fs::copy(iso_fixture("single-image.iso"), &iso).unwrap();
-        let root = key_iso(&TestHost, &IsoMemo::new(&self.dirs), &iso, None, &*self.progress).unwrap();
+        let root = key_iso(&TestHost, &IsoMemo::new(&self.dirs), &iso, None, None, &*self.progress).unwrap();
         let builder = self.engine.guests().builder(GuestKind::Windows).unwrap();
         let mut context = build_ctx(&self.home, Arch::Amd64);
         context.dirs = self.dirs.clone();

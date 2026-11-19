@@ -1,7 +1,7 @@
 //! The exec suite through the library: `Vm::run` in a real Ubuntu guest. The cases are the table of `exec/cases.rs`,
 //! which `devvm-cli/tests/vm_cli.rs` runs through the `devvm` executable.
 
-use super::fixture::{SharedGuest, shared_guest};
+use super::fixture::{SharedGuest, run_ok, shared_guest};
 use super::waits::{answer_to, named};
 use crate::{Command, ExitStatus, Guest, RunAs, Vm};
 use cases::{Case, Ended, ExecTarget, Observed, Os};
@@ -39,6 +39,14 @@ impl ExecTarget for InGuest<'_> {
             stderr: output.stderr,
         }
     }
+}
+
+#[skuld::test]
+fn the_guest_is_named_after_the_instance_id(#[fixture(shared_guest)] guest: &SharedGuest) {
+    let want = guest.vm.instance().dir().id().hostname();
+    let named = run_ok(&guest.vm, &["hostname"]);
+    assert_eq!(named.trim(), want);
+    assert_ne!(named.trim(), guest.vm.name(), "the label is not the hostname");
 }
 
 #[skuld::test]

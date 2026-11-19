@@ -1290,6 +1290,27 @@ fn the_seed_carries_the_instances_keys_and_a_restart_the_same_ones(#[fixture(uni
 }
 
 #[skuld::test]
+fn the_seed_names_the_machine_by_its_id_not_its_label_and_a_restart_keeps_the_name(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = memory_fixture(home);
+    let dir = instance_in(&fx, "foo", home);
+    let instance = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    instance.start().unwrap();
+    instance.stop().unwrap();
+    instance.start().unwrap();
+
+    let seeds = fx.guests.seeds();
+    assert_eq!(seeds.len(), 2);
+    for seed in &seeds {
+        assert_eq!(seed.hostname, dir.id().hostname());
+        assert_ne!(seed.hostname, "foo");
+    }
+    instance.remove().unwrap();
+}
+
+#[skuld::test]
 fn a_second_process_builds_its_target_from_the_record_and_the_keys(#[fixture(unicode_home)] home: &Path) {
     let fx = memory_fixture(home);
     instance_in(&fx, "foo", home);

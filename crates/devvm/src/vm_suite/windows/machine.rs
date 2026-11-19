@@ -161,13 +161,29 @@ fn windows_the_recorded_expiry_matches_an_independent_read_in_the_guest(
     let expires = base.image.chain.tip().meta().expires;
     if !base.evaluation {
         assert_eq!(expires, None, "a base of a non-evaluation edition has no expiry");
-        let family = printed(
-            &guest.vm,
-            r#"(Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" | Select-Object -First 1).LicenseFamily"#,
-        );
+        let read = |property: &str| {
+            printed(
+                &guest.vm,
+                &format!(
+                    r#"(Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" | Select-Object -First 1).{property}"#
+                ),
+            )
+        };
+        let family = read("LicenseFamily");
         assert!(
             !family.is_empty() && !names_an_evaluation(&family),
             "the guest reads the license family `{family}`, which is an evaluation's or none"
+        );
+        // The guest keeps only the last five characters of the installed key.
+        let key = base
+            .product_key
+            .as_ref()
+            .expect("a non-evaluation base is installed with a key");
+        let tail = &key.expose()[key.expose().len() - 5..];
+        assert_eq!(
+            read("PartialProductKey"),
+            tail,
+            "the guest's installed key ends in the build's key's tail"
         );
         return;
     }

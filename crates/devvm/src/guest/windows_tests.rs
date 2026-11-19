@@ -104,7 +104,10 @@ fn a_file_name_follows_the_rules_of_windows() {
 #[skuld::test]
 fn a_command_is_wrapped_by_the_windows_wrapper() {
     let text = WindowsGuest.wrap(&Command::new(["tool"])).unwrap();
-    assert!(text.contains("$app = Find-Program 'tool'"), "{text}");
+    assert!(
+        text.contains("$program = 'tool'\n$app = Find-Program $program"),
+        "{text}"
+    );
 }
 
 #[skuld::test]

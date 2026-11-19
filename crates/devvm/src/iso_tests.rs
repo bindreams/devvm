@@ -5,12 +5,13 @@ use sha2::{Digest, Sha256 as Sha2};
 use super::udf::udf_tests::{image, read_at};
 use super::{
     BootPatch, HeldIso, InstallIso, IsoMemo, IsoRoot, NO_PROMPT_IMAGE, PROMPTING_IMAGE, SECTOR, WimArch, WimImage,
-    check_product_key, efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, select_image, total,
+    efi_entry, key_iso, mount, no_prompt_patch, read_install_iso, resolve_product_key, select_image, total,
 };
 use crate::recipe::ProductKey;
 use crate::test_groups::{Group, WINDOWS_ISO_VAR, windows_guest};
 use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
 use crate::test_support::host::TestHost;
+use crate::text::escape_controls;
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
 #[cfg(windows)]
@@ -30,7 +31,7 @@ fn copy_of(home: &Path, name: &str, edit: impl FnOnce(&Path)) -> PathBuf {
 
 fn key(home: &Path, iso: &Path, edition: Option<&str>) -> Result<IsoRoot> {
     let memo = IsoMemo::new(&Dirs::under(home));
-    key_iso(&TestHost, &memo, iso, edition, &MemoryProgress::default())
+    key_iso(&TestHost, &memo, iso, edition, None, &MemoryProgress::default())
 }
 
 /// The ISO fixture `name` keyed and prepared: what a build does with it.
@@ -55,6 +56,8 @@ fn image_of(index: u32, name: &str, arch: WimArch) -> WimImage {
         index,
         name: name.to_owned(),
         edition_id: String::new(),
+        build: None,
+        spbuild: None,
         arch,
         language: "en-US".to_owned(),
     }
@@ -71,32 +74,207 @@ fn edition_of(id: &str, name: &str) -> WimImage {
     }
 }
 
-#[skuld::test]
-fn a_product_key_is_required_by_an_edition_that_is_not_an_evaluation_and_refused_on_one_that_is() {
-    let key = ProductKey::parse(KEY).unwrap();
-    let eval = edition_of("EnterpriseEval", "Windows 11 Enterprise Evaluation");
-    let retail = edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024");
-    check_product_key(&eval, None).unwrap();
-    check_product_key(&retail, Some(&key)).unwrap();
+fn built(build: u32, image: WimImage) -> WimImage {
+    WimImage {
+        build: Some(build.to_string()),
+        ..image
+    }
+}
 
-    let error = check_product_key(&retail, None).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert_eq!(
-        error.message(),
-        "the edition `Windows 11 IoT Enterprise LTSC 2024` is not an evaluation edition; `product-key` in `from:` is required"
+const KMS_PAGE: &str = "https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys";
+
+#[skuld::test]
+fn the_recipes_product_key_is_used_for_any_edition_that_is_not_an_evaluation() {
+    let key = ProductKey::parse(KEY).unwrap();
+    for image in [
+        built(
+            26100,
+            edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024"),
+        ),
+        built(
+            26100,
+            edition_of("IoTEnterpriseSK", "an edition the table does not have"),
+        ),
+        edition_of("", "No id"),
+    ] {
+        assert_eq!(
+            resolve_product_key(&image, Some(&key)).unwrap(),
+            Some(key.clone()),
+            "{image:?}"
+        );
+    }
+}
+
+#[skuld::test]
+fn an_edition_with_no_key_in_the_recipe_gets_the_generic_key_of_its_edition_and_build() {
+    let ltsc = built(
+        26100,
+        edition_of("IoTEnterpriseS", "Windows 11 IoT Enterprise LTSC 2024"),
     );
-    let error = check_product_key(&eval, Some(&key)).unwrap_err();
+    let generic = ProductKey::generic_for("IoTEnterpriseS", 26100, Some(1742))
+        .found()
+        .unwrap();
+    assert_eq!(resolve_product_key(&ltsc, None).unwrap(), Some(generic));
+    let key = |build| resolve_product_key(&built(build, edition_of("EnterpriseS", "e")), None).unwrap();
+    assert!(key(10240).is_some() && key(14393).is_some() && key(17763).is_some());
+    assert_ne!(key(10240), key(14393));
+    assert_ne!(key(14393), key(17763));
+}
+
+#[skuld::test]
+fn an_evaluation_edition_takes_no_key_from_the_recipe_or_the_table() {
+    let key = ProductKey::parse(KEY).unwrap();
+    let eval = built(26100, edition_of("EnterpriseEval", "Windows 11 Enterprise Evaluation"));
+    assert_eq!(resolve_product_key(&eval, None).unwrap(), None);
+
+    let error = resolve_product_key(&eval, Some(&key)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Recipe);
     assert_eq!(
         error.message(),
         "the edition `Windows 11 Enterprise Evaluation` is an evaluation edition; `product-key` in `from:` must not be set"
     );
     assert!(!format!("{error:?} {error}").contains(KEY));
-    let error = check_product_key(&edition_of("", "No id"), None).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Recipe);
+}
+
+#[skuld::test]
+fn iot_ltsc_2021_media_from_19044_2905_on_gets_the_generic_key() {
+    let image = WimImage {
+        spbuild: Some("2905".to_owned()),
+        ..built(
+            19044,
+            edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
+        )
+    };
     assert_eq!(
-        error.message(),
-        "the edition `No id` names no edition id, so it is not known to be an evaluation edition; `product-key` in `from:` is required"
+        resolve_product_key(&image, None).unwrap(),
+        ProductKey::generic_for("IoTEnterpriseS", 19044, Some(2905)).found()
+    );
+}
+
+#[skuld::test]
+fn an_edition_with_no_key_anywhere_is_refused_naming_product_key_and_microsofts_page() {
+    for (image, detail) in [
+        (
+            built(
+                26100,
+                edition_of("IoTEnterpriseSK", "Windows 11 IoT Enterprise Subscription LTSC 2024"),
+            ),
+            "edition id `IoTEnterpriseSK`, build 26100",
+        ),
+        (
+            built(28000, edition_of("EnterpriseS", "Windows 12 Enterprise LTSC")),
+            "edition id `EnterpriseS`, build 28000",
+        ),
+        (
+            edition_of("EnterpriseS", "No build"),
+            "edition id `EnterpriseS`, no build",
+        ),
+        (
+            WimImage {
+                build: Some("26x".to_owned()),
+                ..edition_of("EnterpriseS", "Malformed build")
+            },
+            "edition id `EnterpriseS`, BUILD `26x` is not a build number devvm can read",
+        ),
+        (
+            WimImage {
+                build: Some("4294967296".to_owned()),
+                ..edition_of("EnterpriseS", "Huge build")
+            },
+            "edition id `EnterpriseS`, BUILD `4294967296` is not a build number devvm can read",
+        ),
+        (
+            WimImage {
+                build: Some("26\"</BUILD>\n".to_owned()),
+                ..edition_of("EnterpriseS", "Raw XML build")
+            },
+            r#"edition id `EnterpriseS`, BUILD `26"</BUILD>\n` is not a build number devvm can read"#,
+        ),
+        (
+            built(26100, edition_of("Id\"</EDITIONID>\n", "Name\"</NAME>\n")),
+            r#"edition id `Id"</EDITIONID>\n`, build 26100"#,
+        ),
+        (edition_of("", "No id"), "no edition id"),
+        (
+            WimImage {
+                spbuild: Some("2904".to_owned()),
+                ..built(
+                    19044,
+                    edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
+                )
+            },
+            "edition id `IoTEnterpriseS`, build 19044.2904; its generic key needs media of 19044.2905 or later",
+        ),
+        (
+            WimImage {
+                spbuild: Some("2\"\n".to_owned()),
+                ..built(
+                    19044,
+                    edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
+                )
+            },
+            r#"edition id `IoTEnterpriseS`, build 19044, SPBUILD `2"\n` is not a build number devvm can read; its generic key needs media of 19044.2905 or later"#,
+        ),
+        (
+            WimImage {
+                spbuild: Some("x".to_owned()),
+                ..built(28000, edition_of("EnterpriseS", "Windows 12 Enterprise LTSC"))
+            },
+            "edition id `EnterpriseS`, build 28000",
+        ),
+        (
+            built(
+                19044,
+                edition_of("IoTEnterpriseS", "Windows 10 IoT Enterprise LTSC 2021"),
+            ),
+            "edition id `IoTEnterpriseS`, build 19044, the image names no SPBUILD; its generic key needs media of 19044.2905 or later",
+        ),
+    ] {
+        let error = resolve_product_key(&image, None).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Recipe);
+        assert_eq!(
+            error.message(),
+            format!(
+                "devvm has no generic product key for the edition `{}` ({detail}); set `product-key` in `from:`; Microsoft's list is {KMS_PAGE}",
+                escape_controls(&image.name)
+            )
+        );
+    }
+}
+
+#[skuld::test]
+fn a_keyed_iso_root_has_the_key_its_image_is_installed_with(#[fixture(unicode_home)] home: &Path) {
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let (three, one) = (
+        copy_of(home, "three-images.iso", |_| {}),
+        copy_of(home, "single-image.iso", |_| {}),
+    );
+    let root = |iso: &Path, edition: Option<&str>, key: Option<&ProductKey>| {
+        key_iso(&TestHost, &memo, iso, edition, key, &MemoryProgress::default())
+    };
+    let given = ProductKey::parse(KEY).unwrap();
+    let ltsc = Some("Windows 11 IoT Enterprise LTSC 2024");
+    let generic = ProductKey::generic_for("IoTEnterpriseS", 26100, Some(1742)).found();
+    assert_eq!(root(&three, ltsc, None).unwrap().product_key(), generic.as_ref());
+    assert_eq!(root(&three, ltsc, Some(&given)).unwrap().product_key(), Some(&given));
+    assert_eq!(root(&one, None, None).unwrap().product_key(), None);
+
+    let error = root(&one, None, Some(&given)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(
+        error
+            .message()
+            .contains("an evaluation edition; `product-key` in `from:` must not be set"),
+        "{error}"
+    );
+
+    let error = root(&three, Some("Windows 11 IoT Enterprise Subscription LTSC 2024"), None).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Recipe);
+    assert!(
+        error.message().contains(
+            "devvm has no generic product key for the edition `Windows 11 IoT Enterprise Subscription LTSC 2024`"
+        ) && error.message().contains("set `product-key` in `from:`"),
+        "{error}"
     );
 }
 
@@ -173,15 +351,56 @@ fn an_iso_is_keyed_by_its_hash_and_the_image_an_edition_selects(#[fixture(unicod
     let hash = Sha256::from_bytes(Sha2::digest(std::fs::read(&iso).unwrap()).into());
     let root = key(home, &iso, Some("Windows 11 IoT Enterprise LTSC 2024")).unwrap();
     assert_eq!(
-        root.sha256, hash,
+        root.sha256(),
+        hash,
         "the hash is of the whole file, whatever was read before it"
     );
     assert_eq!(
-        (root.image.index, root.image.name.as_str()),
+        (root.image().index, root.image().name.as_str()),
         (2, "Windows 11 IoT Enterprise LTSC 2024")
     );
     let error = key(home, &iso, None).unwrap_err();
     assert!(error.message().contains("several editions"), "{error}");
+}
+
+#[skuld::test]
+fn what_a_build_installs_carries_the_image_its_key_and_its_evaluation_flag_from_one_keyed_root(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let memo = IsoMemo::new(&Dirs::under(home));
+    let (three, one) = (
+        copy_of(home, "three-images.iso", |_| {}),
+        copy_of(home, "single-image.iso", |_| {}),
+    );
+    let install = |iso: &Path, edition: Option<&str>, key: Option<&ProductKey>| {
+        let root = key_iso(&TestHost, &memo, iso, edition, key, &MemoryProgress::default()).unwrap();
+        read_install_iso(root).unwrap()
+    };
+    let given = ProductKey::parse(KEY).unwrap();
+
+    let ltsc = install(&three, Some("Windows 11 IoT Enterprise LTSC 2024"), None);
+    assert_eq!(ltsc.image().index, 2);
+    assert_eq!(
+        ltsc.product_key(),
+        ProductKey::generic_for("IoTEnterpriseS", 26100, Some(1742))
+            .found()
+            .as_ref()
+    );
+    assert!(!ltsc.evaluation());
+
+    let subscription = install(
+        &three,
+        Some("Windows 11 IoT Enterprise Subscription LTSC 2024"),
+        Some(&given),
+    );
+    assert_eq!(subscription.image().index, 3);
+    assert_eq!(subscription.product_key(), Some(&given));
+    assert!(!subscription.evaluation());
+
+    let eval = install(&one, None, None);
+    assert_eq!(eval.image().index, 1);
+    assert_eq!(eval.product_key(), None);
+    assert!(eval.evaluation());
 }
 
 #[skuld::test]
@@ -191,9 +410,9 @@ fn a_root_keyed_from_the_memo_prepares_the_same_boot_patch_as_one_keyed_by_readi
     let iso = copy_of(home, "single-image.iso", |_| {});
     let memo = IsoMemo::new(&Dirs::under(home));
     let progress = MemoryProgress::default();
-    let patch = |root: IsoRoot| read_install_iso(root).unwrap().boot_patches;
-    let read = patch(key_iso(&TestHost, &memo, &iso, None, &progress).unwrap());
-    let remembered = patch(key_iso(&TestHost, &memo, &iso, None, &progress).unwrap());
+    let patch = |root: IsoRoot| read_install_iso(root).unwrap().boot_patches().to_vec();
+    let read = patch(key_iso(&TestHost, &memo, &iso, None, None, &progress).unwrap());
+    let remembered = patch(key_iso(&TestHost, &memo, &iso, None, None, &progress).unwrap());
     assert_eq!(read, remembered);
     assert_eq!(progress.tasks_begun("hashing "), 1);
 }
@@ -223,15 +442,15 @@ fn a_file_that_is_not_an_iso_is_refused_before_anything_is_made(#[fixture(unicod
 fn a_path_with_space_cyrillic_and_a_surrogate_pair_is_prepared(#[fixture(unicode_home)] home: &Path) {
     let (iso, result) = read(home, "single-image.iso", None);
     assert!(iso.to_string_lossy().contains('\u{1f600}'));
-    assert_eq!(result.unwrap().image.name, "Windows 11 Enterprise Evaluation");
+    assert_eq!(result.unwrap().image().name, "Windows 11 Enterprise Evaluation");
 }
 
 // install.esd =========================================================================================================
 
 #[skuld::test]
 fn an_iso_with_install_esd_lists_its_images_like_one_with_install_wim(#[fixture(unicode_home)] home: &Path) {
-    let wim = read(home, "single-image.iso", None).1.unwrap().image;
-    let esd = read(home, "install-esd.iso", None).1.unwrap().image;
+    let wim = read(home, "single-image.iso", None).1.unwrap().image().clone();
+    let esd = read(home, "install-esd.iso", None).1.unwrap().image().clone();
     assert_eq!(wim, esd);
 }
 
@@ -273,7 +492,8 @@ fn an_edition_selects_its_image_from_the_iso(#[fixture(unicode_home)] home: &Pat
     let image = read(home, "three-images.iso", Some("Windows 11 IoT Enterprise LTSC 2024"))
         .1
         .unwrap()
-        .image;
+        .image()
+        .clone();
     assert_eq!((image.index, image.edition_id.as_str()), (2, "IoTEnterpriseS"));
 }
 
@@ -323,6 +543,74 @@ fn an_arm64_image_is_refused_naming_arch_and_the_x64_scope() {
     assert_eq!(select_image(&images, Some("Intel")).unwrap().index, 2);
     let error = select_image(&images[..1], None).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NotSupported);
+}
+
+// WIM text in a refusal ===============================================================================================
+
+/// The refusals built from images named `name`.
+fn refusals_naming(name: &str) -> Vec<(&'static str, crate::Error)> {
+    let key = ProductKey::parse(KEY).unwrap();
+    let twin = |index| image_of(index, name, WimArch::X64);
+    let other = image_of(9, "Other", WimArch::X64);
+    let eval = built(26100, edition_of("EnterpriseEval", name));
+    let volume = built(28000, edition_of("EnterpriseS", name));
+    vec![
+        (
+            "several editions",
+            select_image(&[twin(1), other.clone()], None).unwrap_err(),
+        ),
+        (
+            "no such edition",
+            select_image(&[twin(1), other.clone()], Some("Nope")).unwrap_err(),
+        ),
+        (
+            "several images of one name",
+            select_image(&[twin(1), twin(2)], Some(name)).unwrap_err(),
+        ),
+        (
+            "not x64",
+            select_image(&[image_of(1, name, WimArch::Arm64)], None).unwrap_err(),
+        ),
+        (
+            "evaluation with a key",
+            resolve_product_key(&eval, Some(&key)).unwrap_err(),
+        ),
+        ("no generic key", resolve_product_key(&volume, None).unwrap_err()),
+    ]
+}
+
+#[skuld::test]
+fn a_name_with_control_characters_is_quoted_escaped_in_every_refusal_that_names_it() {
+    let name = "Evil\n\u{1b}[2J\tname\r\u{85}";
+    for (refusal, error) in refusals_naming(name) {
+        assert!(!error.message().chars().any(char::is_control), "{refusal}: {error:?}");
+        assert!(
+            error.message().contains(r"`Evil\n\u{1b}[2J\tname\r\u{85}`"),
+            "{refusal}: {error}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_name_with_a_quote_and_a_combining_mark_is_quoted_unchanged_in_every_refusal_that_names_it() {
+    let name = "Na\"me 'x' e\u{301} \\";
+    for (refusal, error) in refusals_naming(name) {
+        assert!(error.message().contains(&format!("`{name}`")), "{refusal}: {error}");
+    }
+}
+
+#[skuld::test]
+fn an_edition_id_and_a_build_with_control_characters_are_quoted_escaped() {
+    let image = WimImage {
+        build: Some("26\n1".to_owned()),
+        ..edition_of("Id\n\u{1b}", "Name")
+    };
+    let error = resolve_product_key(&image, None).unwrap_err();
+    assert!(!error.message().chars().any(char::is_control), "{error:?}");
+    assert!(
+        error.message().contains(r"edition id `Id\n\u{1b}`, BUILD `26\n1`"),
+        "{error}"
+    );
 }
 
 // The Windows ISO CI builds from ======================================================================================

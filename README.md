@@ -43,6 +43,11 @@ Each instance has a name: 1 to 63 of the ASCII letters, digits and `-`, starting
 not a Windows device name (`con`, `nul`, `com1`, ...), and lowercased (`--name Dev` makes `dev`). `up` builds a guest
 from a recipe, starts it and prints its name; `ssh`, `cp`, `stop`, `start` and `rm` take that name.
 
+A guest's hostname is `devvm-` plus the first 8 hex digits of the instance id (`devvm-0a1b2c3d`; `ls` shows it as
+HOSTNAME), not the name. It is set at first boot and kept across `stop`/`start`; a Windows guest restarts once to take
+it. Two instances collide with chance 2^-32; devvm does not check. A Windows base built before this version keeps
+`DEVVM` while `ls` shows `devvm-` and 8 hex digits for it; `rm` the instance and `up` again.
+
 Examples are for Git Bash. Git Bash rewrites arguments that look like paths (`/tmp/x`, `/c`), also after `--`: set
 `MSYS_NO_PATHCONV=1` for such a command, and write its local paths as `C:/x` or relative ones.
 
@@ -139,7 +144,6 @@ What a recipe file takes (an unknown key is an error):
 from:
   iso: C:/isos/windows.iso
   edition: Windows 11 IoT Enterprise LTSC 2024
-  product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
 ```
 
 ```sh
@@ -154,8 +158,8 @@ devvm rm win
 ```
 
 A project's recipe can start from it and add steps. `proj/proj-win.devvm.yaml`, where `proj/` is the root of the
-project's git repository and `win/` sits beside it, outside the repository, so the recipe holding the key is neither
-committed nor copied in by `copy` (Windows Setup still installs the key in the guest):
+project's git repository and `win/` sits beside it, outside the repository, because the ISO's path is per user and so
+does not belong in a committed recipe:
 
 ```yaml
 from: ../win/windows.devvm.yaml
@@ -172,8 +176,8 @@ devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/pr
   commands reuse the base. An evaluation edition's base is rebuilt from the ISO 10 days before its evaluation ends; a
   base built with a product key does not expire.
 - `ssh win` opens PowerShell 7; the home (`~`, and where relative guest paths start) is the user's profile.
-- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127. Use
-  `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
+- A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127 (it is also a PowerShell alias: run
+  it through `pwsh -c`). For `cmd`'s, use `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
 - [Windows guests](#windows-guests) has how programs, shells, paths and `copy` work in a Windows guest.
 
 ## Windows ISOs
@@ -186,12 +190,17 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
 
 - `edition` is the image's name in the ISO's `install.wim` (or `install.esd`). An ISO with one image does not need it;
   with several, the error lists their names.
-- A non-evaluation edition needs `product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` in `from:`, and an evaluation edition takes
-  none; the build is refused, before anything boots, when a non-evaluation edition has none or an evaluation edition has
-  one. devvm checks the key's shape only, not which edition it is for.
-- Microsoft publishes generic KMS client setup keys for its volume editions: see
-  [Key Management Services (KMS) client activation and product keys](https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys).
-- Windows installs unactivated with one of those keys; activate it however you are licensed.
+- devvm installs a non-evaluation edition with Microsoft's generic KMS client setup key when it knows one for the
+  edition: Windows 10 and 11 volume editions, Enterprise LTSC and LTSB, IoT Enterprise LTSC 2024 and LTSC 2021 (media
+  of build 19044.2905 or later), and Windows Server 2016 and later (Standard and Datacenter). The keys are on
+  Microsoft's page [Key Management Services (KMS) client activation and product keys](https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys).
+- `product-key: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` in `from:` installs with another key instead: your own, or one for an
+  edition devvm does not know. An edition with neither is refused before anything boots, naming `product-key`. An
+  evaluation edition takes no key, and a recipe that gives it one is refused. devvm checks the key's shape only, not
+  which edition it is for. A key of your own (retail or MAK) is a secret: put it in a base recipe outside the
+  repository (the `../win/windows.devvm.yaml` of [A Windows guest](#a-windows-guest)) that the project's recipe
+  starts `from:`, so it is neither committed nor copied in by a `copy` step.
+- Windows installs unactivated; activate it however you are licensed.
 - x64 images only. The install language is the image's default language.
 - Keep the ISO at the recipe's path. devvm never copies it, and a rebuild before the base expires reads it again.
   The layer is keyed by the ISO's content, so moving or renaming it does not rebuild.
@@ -207,8 +216,9 @@ user, not elevated, through ssh-broker in the user's own session, so they see it
 The base has no Windows Recovery Environment.
 
 - **Programs.** `argv[0]` is looked up as a program on the guest's `PATH`, never as a PowerShell cmdlet or alias. A name
-  that is not found exits 127. A program's output reaches you byte for byte, and a status the guest ends with
-  (`0xC0000005`, say) is passed on in all 32 bits on a Windows host; a Unix host keeps the low byte.
+  that is not found exits 127, and when it is a PowerShell command the message says to run it through `pwsh -c`. A
+  program's output reaches you byte for byte, and a status the guest ends with (`0xC0000005`, say) is passed on in all
+  32 bits on a Windows host; a Unix host keeps the low byte.
 - **Shells.** A `run` step uses `pwsh` (PowerShell 7) unless it says `shell: cmd`. `sh` and `bash` do not exist in a
   Windows guest. A `cmd` script is one line, and a line break in it is refused before the build starts: use
   `shell: pwsh`, or `copy` a `.cmd` file in and run it.
@@ -224,8 +234,12 @@ The base has no Windows Recovery Environment.
   the guest has no separation between the user and the administrator, as a Linux guest has none with its passwordless
   `sudo`.
 - **`set: { uac: auto-approve }`** makes an administrator's elevation prompt-free in the guest, with no reboot.
-- A command line can be at most 32,766 characters on the guest. A command whose script is longer once quoted is refused,
-  naming both lengths.
+- A command is refused when the command line that carries its script is over 32,766 UTF-16 units (the script is quoted
+  as one argument, which makes the line at least about 46 units longer than the script, and more for each quote in an
+  argument), and the error names both lengths. Each argument is in the script twice, next to its fixed text, so the
+  arguments get about 14,940 characters; the text of `cmd /c` is there a third time (about 9,920), and less fits when
+  the command is elevated (about 11,440, and 7,580 for `cmd`). These are the figures at the time of writing;
+  `longest_fit` in `crates/devvm/src/guest/windows/wrap_tests.rs` measures them.
 
 Limits:
 

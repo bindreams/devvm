@@ -3,10 +3,12 @@
 //! sshd hands the string to ssh-broker (`"<broker>" -c "<script>"`), which starts `pwsh.exe -c <script>` in the user's
 //! session. The script, in this order:
 //!
-//! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High;
+//! 1. checks its session and ends with 126 in session 0, where a broker without its agent runs it at High; the rest is
+//!    one child scope with its own `$ErrorActionPreference`;
 //! 2. sets the working directory, if the command has one, and finds argv[0] as a **file**: the file itself for a name
 //!    with a path, a file of `PATH` otherwise, as it is or with an extension of `PATHEXT`, never a cmdlet or an alias
-//!    and never read as a wildcard; a name that is not found is 127;
+//!    and never read as a wildcard; a name that is not found is 127, and one that PowerShell knows as a cmdlet,
+//!    function, alias or script says to run it through `pwsh -c`;
 //! 3. starts the file found with `System.Diagnostics.Process`, copies the standard streams as raw bytes and ends with
 //!    the child's status (every byte of stdout and stderr and every 32-bit status is carried exactly). A directory that
 //!    cannot be entered and a program that cannot start end with 126 and the reason: the command did not run.
@@ -14,6 +16,12 @@
 //!    list for a program, the batch-file command line of [`cmdquote`] for a `.cmd` or `.bat` file, and, when argv[0]
 //!    names `cmd`, the command line of `cmd.exe /c <text>` for `cmd.exe` (a text of several lines is refused, as any
 //!    argument with a line break is). No output encoding is set here: it would re-encode every user program's output.
+//!
+//! The script runs after the guest user's PowerShell profile, which the broker does not skip. The child scope covers a
+//! profile that makes a variable the script assigns read-only, a constant or typed. It does not cover an `AllScope`
+//! variable, an alias or function that shadows a command the script calls (`Find-Program`, `Where-Object`,
+//! `ForEach-Object`, `Remove-Item`, `Get-Command`, `Set-Location`), or the variables of the elevated caller script
+//! ([`elevate`]): those are one class, and its fix is to isolate the script from the profile.
 //!
 //! An elevated command is the same script run by the helper of [`elevate`].
 
@@ -35,6 +43,10 @@ pub(crate) const BROKER_EXE: &str = r"C:\ProgramData\ssh-broker\ssh-broker.exe";
 pub(super) const PWSH_EXE: &str = r"C:\Program Files\PowerShell\7\pwsh.exe";
 
 /// The longest command line `CreateProcess` takes, in UTF-16 units: its 32,767 include the terminating NUL.
+///
+/// Each character of an argument is in the script twice (the list and the batch form), and the arguments of `cmd` a
+/// third time (the line of `cmd.exe /c`). An elevated command is the script inside the helper's, so less fits. The
+/// capacities are measured by `longest_fit` in `wrap_tests.rs`, which the tests of the limit use.
 pub(crate) const LINE_LIMIT: usize = 32_766;
 
 /// What a command prints in session 0, with status 126.
@@ -45,25 +57,60 @@ pub(super) const NOT_IN_SESSION: &str = "the command did not reach the user's se
 /// readiness probe matches.
 pub(super) fn session_check() -> String {
     format!(
-        "if ([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0) {{ [Console]::Error.WriteLine({}); exit 126 }}
+        "if ([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0) {{ {} }}
 ",
-        literal(&format!("devvm: {NOT_IN_SESSION}"))
+        failure(&literal(&format!("devvm: {NOT_IN_SESSION}")), 126)
     )
+}
+
+/// A name with a path (a `\` or a `/` in it) is by its file, and one without is by `otherwise`: the PowerShell
+/// `if (<name has a path>) { <head><full path of the name><tail> } else { <otherwise> }`. The full path of the name
+/// is the name itself when it is fully qualified, and otherwise relative to the location the script is in; a location
+/// that is no directory (`HKCU:`) has no path to be relative to, and that throws.
+macro_rules! by_path {
+    ($name:literal, $head:literal, $tail:literal, $otherwise:literal) => {
+        concat!(
+            "if (",
+            $name,
+            ".IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { ",
+            $head,
+            "if ([IO.Path]::IsPathFullyQualified(",
+            $name,
+            ")) { [IO.Path]::GetFullPath(",
+            $name,
+            ") } else { [IO.Path]::GetFullPath(",
+            $name,
+            ", (Get-Location).ProviderPath) }",
+            $tail,
+            " } else { ",
+            $otherwise,
+            " }"
+        )
+    };
 }
 
 /// The file `name` names, or nothing: `name` is the file itself when it has a path (relative to the working directory)
 /// and a file of PATH otherwise, as it is or with an extension of PATHEXT. It is a plain name: no wildcard reads its
-/// `[` or `*`, and no cmdlet or alias answers to it.
-const RESOLVE: &str = "function Find-Program([string]$name) {
+/// `[` or `*`, and no cmdlet or alias answers to it. A name with a path that cannot be made a full path names nothing.
+const RESOLVE: &str = concat!(
+    "function Find-Program([string]$name) {
     $exts = @($env:PATHEXT -split ';' | Where-Object { $_ })
     $named = $exts -contains [IO.Path]::GetExtension($name)
-    $stems = if ($name.IndexOfAny([char[]]@([char]92, [char]47)) -ge 0) { @([IO.Path]::GetFullPath($name, (Get-Location).ProviderPath)) } else { @($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) }) }
+    $stems = ",
+    by_path!(
+        "$name",
+        "try { @(",
+        ") } catch { @() }",
+        "@($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { [IO.Path]::Combine($_.Trim([char]34), $name) })"
+    ),
+    "
     foreach ($stem in $stems) {
         if ($named -and [IO.File]::Exists($stem)) { return $stem }
         foreach ($ext in $exts) { if ([IO.File]::Exists($stem + $ext)) { return $stem + $ext } }
     }
 }
-";
+"
+);
 
 /// The copy of the standard streams, after the arguments are set and the program started.
 const CARRY: &str = "$stdout = [Console]::OpenStandardOutput()
@@ -80,6 +127,40 @@ $p.WaitForExit()
 /// The end with the child's status.
 const EXIT: &str = "exit $p.ExitCode
 ";
+
+/// What the message says of a name that is a command of PowerShell and no program, after the name as typed.
+pub(crate) const POWERSHELL_COMMAND: &str = ": a PowerShell command, not a program; run it through pwsh -c";
+
+/// What the script does when `$program` names no file: ends with 127 and `devvm: <name>` and the reason. A name that is
+/// a cmdlet, function, alias or script of PowerShell gets the way to run it (`dir` is an alias: `cmd`'s builtin of that
+/// name is not a program either); a lookup that throws is said and is no answer.
+///
+/// The lookup is in the script because only the guest knows its commands, and runs only when no program is found. A
+/// name with a path is a script by its file. When it has an extension, the file named is the script if it is a `.ps1`;
+/// a file that is there and is no script is not one, even when a file of its name and `.ps1` is there too, because
+/// PowerShell runs the file named. When it has none, PowerShell tries the name with `.ps1` first, so the script is
+/// there whether or not a file of the name itself is. A name with an extension and no file is a script when the name
+/// with `.ps1` added is one. A bare name is looked up by `Get-Command`, escaped because it is a name and not a
+/// wildcard. The block works from `$program` alone: no variable of the search is read. `Find-Program` is
+/// removed first, so the script's own function is not an answer; the removal is in the `try`, so a failure of it is
+/// said and the lookup is not made. A relative name in a location that is no directory (see `by_path!`) throws in the
+/// `try` too: the status is 127 and the message says why.
+fn not_found() -> String {
+    format!(
+        r#"if (-not $app) {{
+$w = ': command not found'
+try {{ Remove-Item Function:Find-Program; $c = {}; if ($c) {{ $w = '{POWERSHELL_COMMAND}' }} }} catch {{ $w += ' (lookup failed: ' + $_.Exception.Message + ')' }}
+{} }}
+"#,
+        by_path!(
+            "$program",
+            "$f = ",
+            "; if ([IO.Path]::GetExtension($f) -and [IO.File]::Exists($f)) { $f -like '*.ps1' } else { [IO.File]::Exists($f + '.ps1') }",
+            "Get-Command ([WildcardPattern]::Escape($program)) -CommandType Alias,Function,Cmdlet,ExternalScript,Filter -ErrorAction Ignore"
+        ),
+        failure("'devvm: ' + $program + $w", 127)
+    )
+}
 
 /// `text` as a PowerShell single-quoted string. PowerShell reads U+2018 to U+201B as a single quote too, so each is
 /// doubled like `'`.
@@ -157,21 +238,28 @@ fn user_script(cmd: &Command) -> Result<String> {
 
     let program = &cmd.argv[0];
     let args = &cmd.argv[1..];
-    let mut script = String::from("$ErrorActionPreference = 'Stop'\n");
-    script.push_str(&session_check());
+    let mut script = session_check();
+    // A child scope: a variable the guest user's profile made read-only, constant or typed does not stop an assignment
+    // of the command, which makes a local over it; the preference is one of them.
+    script.push_str(
+        "& {
+$ErrorActionPreference = 'Stop'
+",
+    );
     if let Some(cwd) = &cmd.cwd {
         script.push_str(&format!(
-            "try {{ Set-Location -LiteralPath {} }} catch {{ {} }}\n",
+            "$cwd = {}\ntry {{ Set-Location -LiteralPath $cwd }} catch {{ {} }}\n",
             literal(cwd),
-            failure(&format!("working directory {cwd}"))
+            failure("'devvm: working directory ' + $cwd + ': ' + $_.Exception.Message", 126)
         ));
     }
     script.push_str(RESOLVE);
-    script.push_str(&format!("$app = Find-Program {}\n", literal(program)));
+    // The name is written once, as the working directory is.
     script.push_str(&format!(
-        "if (-not $app) {{ [Console]::Error.WriteLine({}); exit 127 }}\n",
-        literal(&format!("devvm: {program}: command not found"))
+        "$program = {}\n$app = Find-Program $program\n",
+        literal(program)
     ));
+    script.push_str(&not_found());
     script.push_str("$psi = [Diagnostics.ProcessStartInfo]::new($app)\n");
     if cmd.cwd.is_some() {
         script.push_str("$psi.WorkingDirectory = (Get-Location).ProviderPath\n");
@@ -198,10 +286,14 @@ fn user_script(cmd: &Command) -> Result<String> {
     script.push_str("}\n");
     script.push_str(&format!(
         "try {{ $p = [Diagnostics.Process]::Start($psi) }} catch {{ {} }}\n",
-        failure(program)
+        failure("'devvm: ' + $program + ': ' + $_.Exception.Message", 126)
     ));
     script.push_str(CARRY);
     script.push_str(EXIT);
+    script.push_str(
+        "}
+",
+    );
     Ok(script)
 }
 
@@ -217,19 +309,19 @@ fn batch_form(args: &[String]) -> String {
     }
 }
 
-/// What the script does when what it names (`what`) cannot be started or entered: says why and ends with 126, the status
-/// of a command that did not run.
-fn failure(what: &str) -> String {
-    format!(
-        "[Console]::Error.WriteLine({} + $_.Exception.Message); exit 126",
-        literal(&format!("devvm: {what}: "))
-    )
+/// What the script does to end without the command's own status: writes `message` (a PowerShell expression) to stderr
+/// and ends with `status`, 126 for a command that did not run and 127 for one that is not found.
+fn failure(message: &str, status: u32) -> String {
+    format!("[Console]::Error.WriteLine({message}); exit {status}")
 }
 
 /// What the script does for an argument `cmd.exe` cannot be given: says so and does not run the command.
 fn refusal(why: &str) -> String {
     format!(
-        "[Console]::Error.WriteLine({})\nexit 126\n",
-        literal(&format!("devvm: {why}, and the program is run by cmd.exe"))
+        "{}\n",
+        failure(
+            &literal(&format!("devvm: {why}, and the program is run by cmd.exe")),
+            126
+        )
     )
 }

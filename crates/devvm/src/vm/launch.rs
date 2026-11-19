@@ -87,7 +87,7 @@ fn launch_machine(
     let seed = guest.instance_seed(
         engine.host(),
         &SeedSpec {
-            hostname: dir.name().as_str().to_owned(),
+            hostname: dir.id().hostname(),
             dir: seed_dir,
             instance_id: *dir.id(),
             keys: SeedKeys {

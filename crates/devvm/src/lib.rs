@@ -26,6 +26,7 @@ pub mod progress;
 pub(crate) mod random;
 pub mod recipe;
 pub mod store;
+pub(crate) mod text;
 pub mod types;
 pub mod vm;
 

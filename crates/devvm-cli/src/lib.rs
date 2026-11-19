@@ -176,16 +176,26 @@ fn list(engine: &Arc<Engine>, all: bool, json: bool) -> Result<ExitStatus> {
             .max()
             .unwrap_or(0)
             .max("NAME".len());
+        let hostname_width = infos
+            .iter()
+            .map(|info| info.hostname.len())
+            .max()
+            .unwrap_or(0)
+            .max("HOSTNAME".len());
         write(
             &mut out,
-            &format!("{:width$}  {:8}  {:7}  {:6}  OWNER", "NAME", "STATE", "GUEST", "ARCH"),
+            &format!(
+                "{:width$}  {:hostname_width$}  {:8}  {:7}  {:6}  OWNER",
+                "NAME", "HOSTNAME", "STATE", "GUEST", "ARCH"
+            ),
         )?;
         for info in &infos {
             write(
                 &mut out,
                 &format!(
-                    "{:width$}  {:8}  {:7}  {:6}  {}",
+                    "{:width$}  {:hostname_width$}  {:8}  {:7}  {:6}  {}",
                     info.name,
+                    info.hostname,
                     info.state.as_str(),
                     info.guest.as_str(),
                     info.arch.as_str(),

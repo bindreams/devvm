@@ -29,6 +29,8 @@ impl InstanceState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceInfo {
     pub name: String,
+    /// The machine's name in its guest.
+    pub hostname: String,
     pub state: InstanceState,
     pub guest: GuestKind,
     pub arch: Arch,
@@ -44,6 +46,7 @@ pub struct InstanceInfo {
 #[derive(Serialize)]
 struct Line<'a> {
     name: &'a str,
+    hostname: &'a str,
     state: &'a str,
     guest: &'a str,
     arch: &'a str,
@@ -58,11 +61,12 @@ fn time_text(time: SystemTime) -> String {
 }
 
 impl InstanceInfo {
-    /// One JSON object on one line, without a trailing newline. Keys: `name`, `state`, `guest`, `arch`, `created`,
-    /// `created_from`, `expires` (`null` when none), `owner` (`"process"` or `"none"`).
+    /// One JSON object on one line, without a trailing newline. Keys: `name`, `hostname`, `state`, `guest`, `arch`,
+    /// `created`, `created_from`, `expires` (`null` when none), `owner` (`"process"` or `"none"`).
     pub fn to_json_line(&self) -> String {
         let line = Line {
             name: &self.name,
+            hostname: &self.hostname,
             state: self.state.as_str(),
             guest: self.guest.as_str(),
             arch: self.arch.as_str(),

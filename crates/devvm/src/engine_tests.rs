@@ -403,6 +403,7 @@ fn list_marks_running_by_recorded_identity(#[fixture(unicode_home)] home: &Path)
 fn to_json_line_is_one_line_with_the_documented_keys() {
     let info = InstanceInfo {
         name: "foo".to_owned(),
+        hostname: "devvm-0a1b2c3d".to_owned(),
         state: InstanceState::Stopped,
         guest: GuestKind::Linux,
         arch: Arch::Amd64,
@@ -415,7 +416,7 @@ fn to_json_line_is_one_line_with_the_documented_keys() {
     assert!(!line.contains('\n'));
     assert_eq!(
         line,
-        r#"{"name":"foo","state":"stopped","guest":"linux","arch":"amd64","created":"2023-11-14T22:13:20Z","created_from":"/work/Ж project","expires":null,"owner":"none"}"#
+        r#"{"name":"foo","hostname":"devvm-0a1b2c3d","state":"stopped","guest":"linux","arch":"amd64","created":"2023-11-14T22:13:20Z","created_from":"/work/Ж project","expires":null,"owner":"none"}"#
     );
     let owned = InstanceInfo {
         state: InstanceState::Running,
