@@ -30,7 +30,7 @@ pub enum ErrorKind {
     ConnectionLost,
     /// The guest presented a host key other than the pinned one.
     HostKey,
-    /// The VM's process record cannot be checked on this host; the person clears it by hand.
+    /// The VM's process record cannot be checked on this host; `InstanceDir::find_machine` adds the step by hand.
     ProcessRecord,
     Unavailable,
     NotSupported,

@@ -310,12 +310,9 @@ fn a_failure_of_the_backend_that_is_not_an_unreadable_record_passes_through_find
     let error = dir.find_machine(&*backend, &machine).err().unwrap();
     assert_eq!(error.message(), "the stub backend cannot look");
 
-    let scope = cosca::error::Error::IdentityRecord {
-        kind: cosca::error::RecordErrorKind::ScopeUnreadable,
-        detail: "cannot read /proc/sys/kernel/random/boot_id".into(),
-        source: None,
-    };
-    let refused = refused_record(7, scope).err().expect("liveness cannot be established");
+    let refused = refused_record(7, crate::contain::contain_tests::scope_refusal())
+        .err()
+        .expect("liveness cannot be established");
     let backend = StubBackend::new(Attach::FailsWith(refused.clone()));
     let error = dir.find_machine(&*backend, &machine).err().unwrap();
     assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");

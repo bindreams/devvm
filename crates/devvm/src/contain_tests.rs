@@ -208,6 +208,17 @@ fn a_cosca_error_names_the_cause_cosca_keeps_as_its_source() {
     let error = crate::contain::cosca_error("cannot resume the VM process 7", cosca_error());
 
     assert_eq!(error.message(), format!("cannot resume the VM process 7: {report}"));
+    let at = |layer: &str| {
+        error
+            .message()
+            .find(layer)
+            .unwrap_or_else(|| panic!("{layer:?} not in: {error}"))
+    };
+    assert!(
+        at("its child was reaped") < at("could not resume the frozen child")
+            && at("could not resume") < at("access denied"),
+        "every cause, outermost first: {error}"
+    );
 }
 
 fn refusal(kind: RecordErrorKind) -> cosca::error::Error {
@@ -219,7 +230,7 @@ fn refusal(kind: RecordErrorKind) -> cosca::error::Error {
 }
 
 /// What a host that cannot read its own boot session refuses with.
-fn scope_refusal() -> cosca::error::Error {
+pub(crate) fn scope_refusal() -> cosca::error::Error {
     cosca::error::Error::IdentityRecord {
         kind: RecordErrorKind::ScopeUnreadable,
         detail: "cannot read /proc/sys/kernel/random/boot_id".into(),
@@ -288,6 +299,9 @@ fn a_host_that_cannot_read_its_own_boot_session_is_an_io_error_not_a_bad_record(
         ),
         "names the process it was checking, since the host's failure says nothing of the record"
     );
+    for part in ["cannot check the VM process 7", "boot_id", "access denied"] {
+        assert!(error.message().contains(part), "{part:?} not in: {error}");
+    }
     assert!(std::error::Error::source(&error).is_some());
 }
 

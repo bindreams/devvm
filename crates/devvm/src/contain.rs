@@ -62,7 +62,7 @@ fn wait_for_exit(id: ProcessId) -> Result<()> {
 }
 
 /// Kills the process `id` names and waits for it to exit through one handle, so a kill that landed is never reported
-/// as failed. A process that is gone is `Ok`.
+/// as failed, and a wait that fails after it is a failed wait. A process that is gone is `Ok`.
 fn kill_and_wait(id: ProcessId) -> Result<()> {
     let killing = |e: cosca::error::Error| cosca_error(&format!("cannot kill the VM process {}", id.pid()), e);
     let Some(process) = cosca::Process::open(id).map_err(killing)? else {
@@ -331,28 +331,28 @@ impl VmProcess {
 /// says nothing of the record.
 pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Option<VmProcess>> {
     use cosca::error::Error::IdentityRecord;
-    let text = match &error {
+    match &error {
         IdentityRecord {
             kind: RecordErrorKind::ForeignBootSession | RecordErrorKind::ForeignPlatform,
             ..
-        } => return Ok(None),
+        } => Ok(None),
         IdentityRecord {
             kind: kind @ RecordErrorKind::ScopeUnreadable,
             detail,
             source,
         } => {
-            format!(
+            let text = format!(
                 "cannot check the VM process {pid}: {kind}: {detail}{}",
                 caused_by(source)
-            )
+            );
+            Err(Error::new(ErrorKind::Io, text).with_source(error))
         }
         IdentityRecord { kind, .. } => {
             let text = format!("{} ({})", record_fault(*kind), cosca::error::Report::new(&error));
-            return Err(Error::new(ErrorKind::ProcessRecord, text).with_source(error));
+            Err(Error::new(ErrorKind::ProcessRecord, text).with_source(error))
         }
-        _ => return Err(cosca_error(&format!("cannot restore the VM process {pid}"), error)),
-    };
-    Err(Error::new(ErrorKind::Io, text).with_source(error))
+        _ => Err(cosca_error(&format!("cannot restore the VM process {pid}"), error)),
+    }
 }
 
 /// `: <the cause and its causes>`, or nothing without one.
