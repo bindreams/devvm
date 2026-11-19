@@ -133,10 +133,11 @@ fn a_record_whose_version_this_build_does_not_know_is_an_error_from_attach_and_f
     assert_eq!(find.kind(), ErrorKind::Io, "{find}");
     for error in [attach, find] {
         let text = error.message().to_owned();
-        let pid = record.process.pid;
-        let start = format!("cannot tell whether the VM process {pid} is running: its process record has a format");
-        assert!(text.starts_with(&start), "{text}");
-        assert!(text.contains("a format this devvm does not read ("), "{text}");
+        assert!(
+            text.starts_with("the VM's process record has a format this devvm does not read ("),
+            "{text}"
+        );
+        assert!(text.ends_with(')'), "no step by hand below the instance: {text}");
         assert_eq!(
             text.matches("persisted process identity").count(),
             1,

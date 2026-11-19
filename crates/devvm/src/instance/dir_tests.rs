@@ -277,13 +277,10 @@ fn finding_a_machine_whose_process_record_cannot_be_read_says_how_to_recover(#[f
 
     let text = error.message().to_owned();
     let record = dir.path().join("record.json").display().to_string();
-    let start = "cannot tell whether the VM of instance foo is running: its process record has a format this devvm \
-                 does not read; stop that VM by hand if it still runs, then clear the `machine` field in ";
-    assert!(text.starts_with(start), "{text}");
-    assert!(
-        text.contains(&format!("{record} (persisted process identity")),
-        "{text}"
-    );
+    let cause = "the VM's process record has a format this devvm does not read (";
+    let step = format!("; stop the VM by hand if it still runs, then clear the `machine` field in {record}");
+    assert!(text.starts_with(cause), "the cause leads, on its own: {text}");
+    assert!(text.ends_with(&step), "the step is added after the cause: {text}");
     assert_eq!(
         text.matches("persisted process identity").count(),
         1,
@@ -297,6 +294,8 @@ fn finding_a_machine_whose_process_record_cannot_be_read_says_how_to_recover(#[f
         "delete",
         "devvm rm",
         "cannot be used here",
+        "cannot tell whether",
+        "instance foo",
     ] {
         assert!(!text.contains(part), "{part:?} in: {text}");
     }

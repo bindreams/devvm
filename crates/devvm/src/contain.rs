@@ -7,7 +7,6 @@ use cosca::error::RecordErrorKind;
 use cosca::identity::{Liveness, ProcessId, ProcessIdRecord};
 
 use crate::host::Host;
-use crate::instance::name::InstanceName;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -324,7 +323,7 @@ impl VmProcess {
 /// What follows from the identity layer refusing the record of process `pid`. A record from another boot or platform
 /// names nothing that exists now: `None`. A record that cannot be checked is an error, not "not running", which would
 /// let a second VM start on a disk the first may still hold; so is a host that cannot read its own boot session, which
-/// says nothing of the record.
+/// says nothing of the record. The error reads on its own: the pid of a record that cannot be checked is not named.
 pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Option<VmProcess>> {
     use cosca::error::Error::IdentityRecord;
     let text = match &error {
@@ -341,14 +340,10 @@ pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Opt
                 .as_deref()
                 .map(|cause| format!(": {}", cosca::error::Report::new(cause)))
                 .unwrap_or_default();
-            format!("cannot tell whether the VM process {pid} is running: {kind}: {detail}{cause}")
+            format!("{kind}: {detail}{cause}")
         }
         IdentityRecord { kind, .. } => {
-            format!(
-                "cannot tell whether the VM process {pid} is running: {} ({})",
-                record_fault(*kind),
-                cosca::error::Report::new(&error)
-            )
+            format!("{} ({})", record_fault(*kind), cosca::error::Report::new(&error))
         }
         _ => return Err(cosca_error(&format!("cannot restore the VM process {pid}"), error)),
     };
@@ -358,55 +353,29 @@ pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Opt
 /// Why a record cannot be checked, for the person who has to deal with it.
 fn record_fault(kind: RecordErrorKind) -> &'static str {
     match kind {
-        RecordErrorKind::UnknownVersion => "its process record has a format this devvm does not read",
-        RecordErrorKind::InvalidPid => "its process record holds a pid that cannot name a process",
+        RecordErrorKind::UnknownVersion => "the VM's process record has a format this devvm does not read",
+        RecordErrorKind::InvalidPid => "the VM's process record holds a pid that cannot name a process",
         RecordErrorKind::MissingBootSession
         | RecordErrorKind::MissingPidNamespace
         | RecordErrorKind::MissingTokenKind => {
-            "its process record lacks what is needed to check the process against it"
+            "the VM's process record lacks what is needed to check the process against it"
         }
-        RecordErrorKind::ForeignTokenKind => "its process record holds another kind of process token than this host's",
-        RecordErrorKind::ForeignPidNamespace => "its process record was made in another pid namespace",
-        _ => "its process record cannot be checked here",
+        RecordErrorKind::ForeignTokenKind => {
+            "the VM's process record holds another kind of process token than this host's"
+        }
+        RecordErrorKind::ForeignPidNamespace => "the VM's process record was made in another pid namespace",
+        _ => "the VM's process record cannot be checked here",
     }
 }
 
-/// The identity layer's refusal inside `error`, with why, when it names a process record that cannot be read: one the
-/// person can only clear by hand. A host that cannot read its own boot session is not that.
-fn unreadable_record(error: &Error) -> Option<(&'static str, &cosca::error::Error)> {
-    use std::error::Error as _;
-    match error
-        .source()
-        .and_then(|source| source.downcast_ref::<cosca::error::Error>())
-    {
-        Some(refusal @ cosca::error::Error::IdentityRecord { kind, .. })
-            if *kind != RecordErrorKind::ScopeUnreadable =>
-        {
-            Some((record_fault(*kind), refusal))
-        }
-        _ => None,
-    }
-}
-
-/// Whether `error` is the refusal of [`VmProcess::attach`] to read a process record.
+/// Whether `error` is the refusal of [`VmProcess::attach`] to read a process record: one the person can only clear by
+/// hand. A host that cannot read its own boot session is not that.
 pub(crate) fn is_unreadable_record(error: &Error) -> bool {
-    unreadable_record(error).is_some()
-}
-
-/// `error` as the instance `name` has it when it is [`is_unreadable_record`]: the VM cannot be told to run or not, so
-/// the person stops it by hand and clears the `machine` field of `record_file`. The record may not be this build's
-/// own, so nothing is said of its pid.
-pub(crate) fn with_manual_recovery(error: Error, name: &InstanceName, record_file: &Path) -> Error {
-    let Some((why, refusal)) = unreadable_record(&error) else {
-        return error;
-    };
-    let message = format!(
-        "cannot tell whether the VM of instance {name} is running: {why}; stop that VM by hand if it still runs, then \
-         clear the `machine` field in {} ({})",
-        record_file.display(),
-        cosca::error::Report::new(refusal)
-    );
-    error.with_message(message)
+    use std::error::Error as _;
+    matches!(
+        error.source().and_then(|source| source.downcast_ref::<cosca::error::Error>()),
+        Some(cosca::error::Error::IdentityRecord { kind, .. }) if *kind != RecordErrorKind::ScopeUnreadable
+    )
 }
 
 pub(crate) fn unknown_liveness(id: ProcessId) -> Error {

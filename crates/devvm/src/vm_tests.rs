@@ -369,6 +369,36 @@ fn stop_when_the_backend_cannot_look_keeps_the_record(#[fixture(unicode_home)] h
 }
 
 #[skuld::test]
+fn stop_and_remove_of_an_unreadable_process_record_say_so_on_their_own(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, std::sync::Arc::new(MemoryProgress::default()));
+    let dir = instance_in(&fx, "foo", home);
+    let mut machine = dead_machine(Vec::new());
+    machine.process.version = cosca::identity::RECORD_VERSION + 1;
+    record_machine(&dir, &machine);
+    let foo = Instance::open_in(&fx.engine, "foo").unwrap();
+
+    for error in [
+        foo.stop()
+            .expect_err("a record that cannot be read is not a stopped VM"),
+        foo.remove().expect_err("nor is it a VM that is safe to remove"),
+    ] {
+        let text = error.message();
+        assert!(
+            text.starts_with("the VM's process record has a format this devvm does not read ("),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(&format!(
+                "; stop the VM by hand if it still runs, then clear the `machine` field in {}",
+                dir.path().join("record.json").display()
+            )),
+            "{text}"
+        );
+    }
+    assert!(dir.record().unwrap().machine.is_some());
+}
+
+#[skuld::test]
 fn start_asks_the_backend_whether_the_recorded_machine_runs(#[fixture(unicode_home)] home: &Path) {
     let (fx, stub, _) = stub_fixture(home, Attach::Running);
     let dir = instance_in(&fx, "foo", home);

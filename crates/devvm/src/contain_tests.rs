@@ -236,10 +236,12 @@ fn a_record_that_cannot_be_checked_is_an_unreadable_record_that_says_why() {
         assert_eq!(error.kind(), ErrorKind::Io, "{kind:?}");
         assert!(is_unreadable_record(&error), "{kind:?}: {error}");
         assert!(
-            error
-                .message()
-                .starts_with("cannot tell whether the VM process 7 is running: its process record"),
-            "{kind:?}: {error}"
+            error.message().starts_with("the VM's process record"),
+            "{kind:?}: reads on its own, with no lead: {error}"
+        );
+        assert!(
+            !error.message().contains("cannot tell whether") && !error.message().contains("VM process 7"),
+            "{kind:?}: the pid is cosca's to give, not devvm's: {error}"
         );
         assert!(error.message().contains(why), "{kind:?}: {error}");
         assert_eq!(
@@ -281,8 +283,14 @@ fn a_host_that_cannot_read_its_own_boot_session_is_a_plain_error_not_a_bad_recor
 
     assert_eq!(error.kind(), ErrorKind::Io);
     assert!(!is_unreadable_record(&error), "{error}");
+    assert!(
+        error
+            .message()
+            .starts_with("this host's boot session could not be read"),
+        "reads on its own, with no lead: {error}"
+    );
+    assert!(!error.message().contains("cannot tell whether"), "{error}");
     for part in [
-        "cannot tell whether the VM process 7 is running",
         "this host's boot session could not be read",
         "/proc/sys/kernel/random/boot_id",
         "access denied",
