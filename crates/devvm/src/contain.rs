@@ -329,8 +329,8 @@ impl VmProcess {
 /// What follows from the identity layer refusing the record of process `pid`. A record from another boot or platform
 /// names nothing that exists now: `None`. A record that cannot be checked is an error, not "not running", which would
 /// let a second VM start on a disk the first may still hold; so is a host that cannot read its own boot session, which
-/// says nothing of the record and names the process it was checking. The error for a record that cannot be checked
-/// reads on its own and does not name its pid, which may now be another process's.
+/// says nothing of the record. devvm's own words name `pid` only for the host's failure; cosca's words, quoted in
+/// every error, may name it too.
 pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Option<VmProcess>> {
     use cosca::error::Error::IdentityRecord;
     let text = match &error {
