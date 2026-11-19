@@ -586,6 +586,32 @@ fn list_cannot_tell_when_the_backend_cannot_look(#[fixture(unicode_home)] home: 
 }
 
 #[skuld::test]
+fn list_cannot_tell_for_an_unreadable_process_record_and_says_the_step_by_hand(#[fixture(unicode_home)] home: &Path) {
+    let progress = memory();
+    let fx = engine_fixture(home, progress.clone());
+    let dir = instance_in(&fx, "foo", home);
+    let mut machine = dead_machine(Vec::new());
+    machine.process.version = cosca::identity::RECORD_VERSION + 1;
+    record_machine(&dir, &machine);
+
+    let infos = fx.engine.list(ListFilter::All).unwrap();
+
+    assert_eq!(infos[0].state, InstanceState::Unknown);
+    let [warning] = &progress.warnings()[..] else {
+        panic!("{:?}", progress.warnings());
+    };
+    assert!(
+        warning.starts_with("cannot tell whether instance foo is running: the VM's process record has a format"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("stop the VM by hand") && warning.contains("clear the `machine` field"),
+        "the step by hand: {warning}"
+    );
+    assert_eq!(warning.matches("instance foo").count(), 1, "{warning}");
+}
+
+#[skuld::test]
 fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let dir = instance_in(&fx, "foo", home);

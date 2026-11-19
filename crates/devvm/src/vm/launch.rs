@@ -68,7 +68,7 @@ fn launch_machine(
     let record = read_record(engine, dir, op)?;
     let backend = engine.backend()?;
     if let Some(machine) = &record.machine {
-        if backend.find(machine)?.is_some() {
+        if dir.find_machine(&**backend, machine)?.is_some() {
             return Ok(None);
         }
         // A stale record: the machine is dead, so its leftovers go.

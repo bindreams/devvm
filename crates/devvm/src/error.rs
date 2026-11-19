@@ -30,6 +30,8 @@ pub enum ErrorKind {
     ConnectionLost,
     /// The guest presented a host key other than the pinned one.
     HostKey,
+    /// The VM's process record cannot be checked on this host; `InstanceDir::find_machine` adds the step by hand.
+    ProcessRecord,
     Unavailable,
     NotSupported,
     Panic,
@@ -56,6 +58,7 @@ impl ErrorKind {
             ErrorKind::NoExitStatus => "no-exit-status",
             ErrorKind::ConnectionLost => "connection-lost",
             ErrorKind::HostKey => "host-key",
+            ErrorKind::ProcessRecord => "process-record",
             ErrorKind::Unavailable => "unavailable",
             ErrorKind::NotSupported => "not-supported",
             ErrorKind::Panic => "panic",
@@ -104,22 +107,24 @@ impl Error {
         }
     }
 
-    /// This error once `cleanup`, which undid a step that had half happened, has run. A cleanup that failed too is
-    /// named next to it with `left`, what it left behind: the first failure stays the error.
-    pub(crate) fn after_cleanup(mut self, left: &str, cleanup: std::result::Result<(), impl fmt::Display>) -> Error {
-        if let Err(failed) = cleanup {
-            self.message = format!(
-                "{}; cleaning up failed as well, so {left} remains ({failed})",
-                self.message
-            );
-        }
+    /// This error with `step` after its message: what the person can do about it, or what came with it.
+    pub(crate) fn with_step(mut self, step: impl fmt::Display) -> Error {
+        self.message = format!("{}; {step}", self.message);
         self
     }
 
+    /// This error once `cleanup`, which undid a step that had half happened, has run. A cleanup that failed too is
+    /// named next to it with `left`, what it left behind: the first failure stays the error.
+    pub(crate) fn after_cleanup(self, left: &str, cleanup: std::result::Result<(), impl fmt::Display>) -> Error {
+        match cleanup {
+            Err(failed) => self.with_step(format_args!("cleaning up failed as well, so {left} remains ({failed})")),
+            Ok(()) => self,
+        }
+    }
+
     /// This error with a failure that came with it named after it; the first failure stays the error.
-    pub(crate) fn together_with(mut self, other: impl fmt::Display) -> Error {
-        self.message = format!("{}; {other} as well", self.message);
-        self
+    pub(crate) fn together_with(self, other: impl fmt::Display) -> Error {
+        self.with_step(format_args!("{other} as well"))
     }
 
     /// A failed write to `path`: `disk-full` when the device or quota is full, otherwise `io`. `hint` says what to

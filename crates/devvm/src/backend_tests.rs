@@ -15,12 +15,13 @@ use crate::test_support::fixtures::unicode_home;
 fn sample() -> MachineRecord {
     MachineRecord {
         process: ProcessIdRecord {
-            version: 1,
+            version: 2,
             platform: Platform::Windows,
             pid: 4242,
             token: 133_000_000_000_000_000,
             boot_id: None,
             pid_ns: None,
+            token_kind: None,
         },
         qmp: "/run/user/1000/devvm-ab.sock".to_owned(),
         ssh: vec![
@@ -50,7 +51,7 @@ fn sample() -> MachineRecord {
     }
 }
 
-const GOLDEN: &str = r#"{"process":{"v":1,"platform":"windows","pid":4242,"token":"133000000000000000"},"qmp":"/run/user/1000/devvm-ab.sock","ssh":[{"endpoint":"normal","addr":"127.0.0.1:2222"},{"endpoint":"elevated","addr":"127.0.0.1:2223"}],"serial_log":"/var/devvm/serial.log","leftovers":["/run/user/1000/devvm-ab.sock","/run/user/1000/devvm-ab.sock.lock","/run/user/1000/devvm-ab.sock.hold"],"claim":{"path":"/run/user/1000/devvm-ab.sock.hold","id":"1a:ff"},"no_reboot":false}"#;
+const GOLDEN: &str = r#"{"process":{"v":2,"platform":"windows","pid":4242,"token":"133000000000000000"},"qmp":"/run/user/1000/devvm-ab.sock","ssh":[{"endpoint":"normal","addr":"127.0.0.1:2222"},{"endpoint":"elevated","addr":"127.0.0.1:2223"}],"serial_log":"/var/devvm/serial.log","leftovers":["/run/user/1000/devvm-ab.sock","/run/user/1000/devvm-ab.sock.lock","/run/user/1000/devvm-ab.sock.hold"],"claim":{"path":"/run/user/1000/devvm-ab.sock.hold","id":"1a:ff"},"no_reboot":false}"#;
 
 #[skuld::test]
 fn machine_record_json_is_stable() {

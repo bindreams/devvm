@@ -18,6 +18,8 @@ pub enum Attach {
     Gone,
     /// This error.
     Fails(ErrorKind),
+    /// This very error.
+    FailsWith(Error),
 }
 
 /// Something a test does while a machine is being stopped.
@@ -83,6 +85,7 @@ impl Backend for StubBackend {
             })),
             Attach::Gone => Err(Error::new(ErrorKind::NotFound, "the stub machine is gone")),
             Attach::Fails(kind) => Err(Error::new(kind, "the stub backend cannot look")),
+            Attach::FailsWith(error) => Err(error),
         }
     }
 

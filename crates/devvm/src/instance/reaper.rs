@@ -274,7 +274,7 @@ impl Registry {
                 );
                 return;
             };
-            match backend.find(machine) {
+            match dir.find_machine(&**backend, machine) {
                 Ok(Some(mut running)) => {
                     if let Err(e) = running.kill() {
                         report.warn(

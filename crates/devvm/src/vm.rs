@@ -151,7 +151,7 @@ impl Instance {
             return Ok(());
         };
         // A machine the backend does not find is not running: the record is stale.
-        if let Some(mut running) = self.engine.backend()?.find(&machine)? {
+        if let Some(mut running) = dir.find_machine(&**self.engine.backend()?, &machine)? {
             running.shutdown()?;
         }
         dir.retire_machine(&op, &machine, self.engine.host(), &mut warn_for(&self.engine, dir))
@@ -164,7 +164,7 @@ impl Instance {
         let op = dir.op_exclusive()?;
         let record = dir.record()?;
         if let Some(machine) = &record.machine {
-            if let Some(mut running) = self.engine.backend()?.find(machine)? {
+            if let Some(mut running) = dir.find_machine(&**self.engine.backend()?, machine)? {
                 running.kill()?;
             }
             // A destroy that fails below must not leave a record naming a dead machine.

@@ -1,10 +1,14 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::backend::MachineRecord;
+use crate::contain::refused_record;
 use crate::instance::registry::registry_tests::{create, fixture};
 use crate::progress::{Event, Level};
 use crate::store::layers::Reachability;
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::qemu::{Sock, backend_in, socket_run};
+use crate::test_support::stub_backend::{Attach, StubBackend};
 
 #[skuld::test]
 fn destroy_never_fails_because_other_devvm_readers_run(#[fixture(unicode_home)] home: &Path) {
@@ -241,4 +245,76 @@ fn handing_over_an_instance_with_a_corrupt_record_reports_the_record_and_writes_
         error.message()
     );
     assert_eq!(std::fs::read(instance.join("owner.json")).unwrap(), marker_before);
+}
+
+/// `rm` and `stop` need the machine found, so a record that cannot be read stops them.
+#[skuld::test]
+fn finding_a_machine_whose_process_record_cannot_be_read_says_how_to_recover(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let sock = Sock::new();
+    let cosca::identity::Resolved::Found(id) = cosca::identity::ProcessId::of(std::process::id()) else {
+        panic!("the test process cannot be identified");
+    };
+    let mut process = id.to_record().unwrap();
+    process.version = cosca::identity::RECORD_VERSION + 1;
+    let machine = MachineRecord {
+        process,
+        qmp: sock.endpoint.path().display().to_string(),
+        ssh: Vec::new(),
+        serial_log: sock.endpoint.path().with_file_name("serial.log"),
+        leftovers: Vec::new(),
+        claim: Some(sock.claim.clone()),
+        no_reboot: false,
+    };
+    let backend = backend_in(&socket_run(), std::sync::Arc::<MemoryProgress>::default());
+
+    let error = dir
+        .find_machine(&*backend, &machine)
+        .err()
+        .expect("a record this build cannot read is not read as not running");
+
+    assert_eq!(error.kind(), crate::ErrorKind::ProcessRecord, "{error}");
+    let text = error.message().to_owned();
+    let record = dir.path().join("record.json").display().to_string();
+    let cause = "the VM's process record has a format this devvm does not read (";
+    let step = format!("; stop the VM by hand if it still runs, then clear the `machine` field in {record}");
+    assert!(text.starts_with(cause), "the cause leads, on its own: {text}");
+    let cosca = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<cosca::error::Error>())
+        .expect("the cosca error stays the source");
+    let report = cosca::error::Report::new(cosca).to_string();
+    assert!(
+        text.ends_with(&format!(" ({report}){step}")),
+        "cosca's words, then the step added after them: {text}"
+    );
+    assert_eq!(text.matches(&report).count(), 1, "cosca's words once: {text}");
+}
+
+/// Only a process record that cannot be read has a way out by hand: any other failure of the backend passes through.
+#[skuld::test]
+fn a_failure_of_the_backend_that_is_not_an_unreadable_record_passes_through_find(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let machine = MachineRecord {
+        process: cosca::identity::ProcessId::current().to_record().unwrap(),
+        qmp: String::new(),
+        ssh: Vec::new(),
+        serial_log: PathBuf::new(),
+        leftovers: Vec::new(),
+        claim: None,
+        no_reboot: false,
+    };
+
+    let backend = StubBackend::new(Attach::Fails(crate::ErrorKind::Io));
+    let error = dir.find_machine(&*backend, &machine).err().unwrap();
+    assert_eq!(error.message(), "the stub backend cannot look");
+
+    let refused = refused_record(7, crate::contain::contain_tests::scope_refusal())
+        .err()
+        .expect("liveness cannot be established");
+    let backend = StubBackend::new(Attach::FailsWith(refused.clone()));
+    let error = dir.find_machine(&*backend, &machine).err().unwrap();
+    assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
+    assert_eq!(error.message(), refused.message(), "no step is added");
 }

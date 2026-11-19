@@ -22,7 +22,7 @@ mod record_tests;
 /// The schema of `record.json` and `owner.json` this devvm writes and reads.
 pub(crate) const SCHEMA: u64 = 1;
 
-const RECORD_FILE: &str = "record.json";
+pub(crate) const RECORD_FILE: &str = "record.json";
 const MARKER_FILE: &str = "owner.json";
 
 // Ids =================================================================================================================

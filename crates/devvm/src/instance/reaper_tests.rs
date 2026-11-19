@@ -147,6 +147,35 @@ fn an_instance_whose_vm_cannot_be_looked_for_is_left_for_the_next_pass(#[fixture
 }
 
 #[skuld::test]
+fn an_unreadable_process_record_is_reported_with_the_step_by_hand_and_the_instance_named_once(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = fixture_with(home, Some(Arc::new(FakeBackend::new(&TestHost))));
+    let owned = create(&fx, Some("foo"));
+    let mut machine = dead_machine(Vec::new());
+    machine.process.version = cosca::identity::RECORD_VERSION + 1;
+    set_machine(owned.dir(), machine);
+    drop(owned);
+
+    let report = fx.registry.reap();
+
+    assert!(report.reaped.is_empty());
+    let [warning] = &report.warnings[..] else {
+        panic!("{:?}", report.warnings);
+    };
+    assert!(
+        warning.contains("clear the `machine` field") && warning.matches("instance foo").count() == 1,
+        "the step by hand, the instance named once: {warning}"
+    );
+    assert!(
+        warning.starts_with("cannot check the VM of instance foo: the VM's process record has a format")
+            && warning.ends_with("; it is left for the next devvm command"),
+        "{warning}"
+    );
+    assert_eq!(names(&root(&fx)), ["foo"]);
+}
+
+#[skuld::test]
 fn an_instance_with_a_recorded_vm_is_left_alone_when_the_build_has_no_backend(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture_with(home, None);
     let owned = create(&fx, Some("foo"));
