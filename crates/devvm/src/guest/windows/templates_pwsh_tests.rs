@@ -89,21 +89,11 @@ fn the_native_helper_compiles_as_the_bootstrap_compiles_it_and_the_scripts_can_l
 ) {
     // A plain directory: the C# 5 compiler Windows PowerShell 5.1 uses gets its paths in the ANSI code page.
     let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join(NATIVE_SOURCE);
     let dll = dir.path().join(NATIVE_DLL);
-    let files = answer_disk_files(&inputs()).unwrap();
-    let native = files.iter().find(|file| file.name == NATIVE_SOURCE).unwrap();
-    std::fs::write(&source, &native.bytes).unwrap();
 
     // Windows PowerShell 5.1, as the first-logon script does: C#, written to an assembly on disk.
-    let compile = format!(
-        "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition (Get-Content -LiteralPath {} -Raw) -OutputAssembly {}",
-        literal(&source.display().to_string()),
-        literal(&dll.display().to_string())
-    );
-    let built = run_windows_powershell(&compile);
-    assert_eq!(built.status.code(), Some(0), "{}", shown(&built));
-    assert!(dll.is_file(), "no assembly was written: {}", shown(&built));
+    compile_native_helper(dir.path());
+    assert!(dll.is_file(), "no assembly was written");
 
     // PowerShell 7 loads it as the runner and the boot task do, and finds the three types they use.
     let load = format!(
@@ -459,5 +449,133 @@ fn any_other_refusal_of_the_restart_ends_the_boot_naming_the_status(#[fixture(pw
             "shutdown:/r /f /t 0",
             "threw:shutdown.exe /r ended with status 5",
         ]
+    );
+}
+
+// The elevated helper's runner ========================================================================================
+
+/// Compiles the native helper into `dir` as the bootstrap does, so a rendered runner there can load it.
+fn compile_native_helper(dir: &std::path::Path) {
+    let source = dir.join(NATIVE_SOURCE);
+    let files = answer_disk_files(&inputs()).unwrap();
+    let native = files.iter().find(|file| file.name == NATIVE_SOURCE).unwrap();
+    std::fs::write(&source, &native.bytes).unwrap();
+    let compile = format!(
+        "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition (Get-Content -LiteralPath {} -Raw) -OutputAssembly {}",
+        literal(&source.display().to_string()),
+        literal(&dir.join(NATIVE_DLL).display().to_string())
+    );
+    let built = run_windows_powershell(&compile);
+    assert_eq!(built.status.code(), Some(0), "{}", shown(&built));
+}
+
+/// The runner as the answer disk has it, with `root` as the requests' root, written to `dir/eb-runner.ps1`.
+fn write_runner(dir: &std::path::Path, root: &std::path::Path) -> std::path::PathBuf {
+    let mut values = super::values(&inputs());
+    values.iter_mut().find(|(name, _)| *name == "EB_ROOT").unwrap().1 = root.display().to_string();
+    let files = disk_files(
+        &[TEMPLATES
+            .iter()
+            .find(|(name, _)| *name == "eb-runner.ps1")
+            .copied()
+            .unwrap()],
+        &values,
+    )
+    .unwrap();
+    let path = dir.join("eb-runner.ps1");
+    std::fs::write(&path, &files[0].bytes).unwrap();
+    path
+}
+
+/// What a request's caller file says in [`after_runner`].
+#[derive(Clone, Copy)]
+enum Caller {
+    /// The process that runs the test script, which is alive.
+    Alive,
+    /// The id of that process with another start time: ended.
+    Ended,
+    /// No caller file.
+    Missing,
+}
+
+/// The id of a request that is not in the root: a runner started for it only sweeps.
+const NO_REQUEST: &str = "00000000000000000000000000000000";
+
+/// The names left in the requests' root after a runner starts for the request `id`, when the root held `requests`: each
+/// a name, its caller and the other files it holds.
+fn after_runner(id: &str, requests: &[(&str, Caller, &[&str])]) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    compile_native_helper(dir.path());
+    let root = dir.path().join("eb");
+    let runner = write_runner(dir.path(), &root);
+    let mut script = format!(
+        "$ErrorActionPreference = 'Stop'
+$root = {}
+$self = [Diagnostics.Process]::GetCurrentProcess()
+function Make([string]$name, $caller, [string[]]$files) {{
+    $d = Join-Path $root $name
+    [void][IO.Directory]::CreateDirectory($d)
+    foreach ($file in $files) {{ [IO.File]::WriteAllText((Join-Path $d $file), '') }}
+    if ($null -ne $caller) {{ [IO.File]::WriteAllText((Join-Path $d 'caller'), $caller) }}
+}}
+",
+        literal(&root.display().to_string())
+    );
+    for (name, caller, files) in requests {
+        let caller = match caller {
+            Caller::Alive => "\"$($self.Id) $($self.StartTime.ToUniversalTime().Ticks)\"",
+            Caller::Ended => "\"$($self.Id) 1\"",
+            Caller::Missing => "$null",
+        };
+        let files = files.iter().map(|file| literal(file)).collect::<Vec<_>>().join(", ");
+        script.push_str(&format!("Make {} {caller} @({files})\n", literal(name)));
+    }
+    script.push_str(&format!(
+        "& pwsh -NoProfile -NonInteractive -File {} {}
+if ($LASTEXITCODE -ne 0) {{ throw \"the runner ended with $LASTEXITCODE\" }}
+Get-ChildItem -LiteralPath $root -Force | ForEach-Object Name | Sort-Object
+",
+        literal(&runner.display().to_string()),
+        literal(id)
+    ));
+    let output = run(&script, "none", None);
+    assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .collect()
+}
+
+#[skuld::test]
+fn the_runners_sweep_removes_requests_and_unpublished_requests_whose_caller_ended_and_no_runner_holds(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let left = after_runner(
+        NO_REQUEST,
+        &[
+            ("ended", Caller::Ended, &["script.ps1"]),
+            ("ended.tmp", Caller::Ended, &["script.ps1"]),
+            // What a caller leaves when it withdrew the request: the claim it made itself, which nobody holds.
+            ("withdrawn.tmp", Caller::Ended, &["script.ps1", "claim"]),
+            ("alive", Caller::Alive, &["script.ps1"]),
+            ("alive.tmp", Caller::Alive, &["script.ps1"]),
+            // Made but not yet given its caller: a caller still building it, or one that died in between, which nothing
+            // tells apart.
+            ("building.tmp", Caller::Missing, &["script.ps1"]),
+        ],
+    );
+    assert_eq!(left, ["alive", "alive.tmp", "building.tmp"]);
+}
+
+#[skuld::test]
+fn the_runner_removes_the_request_it_served_as_its_last_act(#[fixture(pwsh_wrap)] _group: &Group) {
+    // The caller ended, so the runner serves nothing and answers nobody: it claims the request and removes it.
+    let id = "abcdefabcdefabcdefabcdefabcdefab";
+    assert_eq!(
+        after_runner(
+            id,
+            &[(id, Caller::Ended, &["script.ps1"]), ("alive", Caller::Alive, &[])]
+        ),
+        ["alive"]
     );
 }

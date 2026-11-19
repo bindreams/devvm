@@ -7,7 +7,10 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 
 use super::bounds::STATE_BOUND;
 use super::windows_options;
-use super::{SharedWindowsGuest, WindowsBase, joined, printed, pwsh, ran, shared_windows_guest, until, windows_base};
+use super::{
+    SharedWindowsGuest, WindowsBase, joined, printed, pwsh, ran, shared_windows_guest, until, until_showing,
+    windows_base,
+};
 use crate::guest::windows::elevate::{ROOT, TASK};
 use crate::vm_suite::fixture::Up;
 use crate::vm_suite::waits::{answer_to, step};
@@ -19,6 +22,25 @@ fn pending(guest: &dyn Guest) -> String {
         guest,
         &format!(r"(Get-ChildItem -LiteralPath '{ROOT}' -Force | Measure-Object).Count"),
     )
+}
+
+/// What the helper's root holds, as a failing wait shows it: every entry, in every request, with its attributes, size and
+/// time of last write.
+fn listing(guest: &dyn Guest) -> String {
+    let script = format!(
+        r"Get-ChildItem -LiteralPath '{ROOT}' -Force -Recurse | ForEach-Object {{ '{{0}} [{{1}}] {{2}} bytes, written {{3:o}}' -f $_.FullName, $_.Attributes, $_.Length, $_.LastWriteTimeUtc }}"
+    );
+    let entries = printed(guest, &script);
+    format!(
+        "{ROOT} holds:
+{}",
+        if entries.is_empty() { "nothing" } else { &entries }
+    )
+}
+
+/// Waits until the helper holds no request; the failure lists what it holds.
+fn until_none_pending(guest: &dyn Guest, what: &str) {
+    until_showing(what, || pending(guest) == "0", || listing(guest));
 }
 
 /// The flag file `name` in the guest.
@@ -324,7 +346,7 @@ fn windows_an_elevated_child_that_writes_ends_when_the_client_goes_away(
     });
     child.ended = true;
     // The runner removes the request of a caller that ended.
-    until("the runner removing the request", || pending(&guest.vm) == "0");
+    until_none_pending(&guest.vm, "the runner removing the request");
 }
 
 // A request that gets no answer =======================================================================================
@@ -433,7 +455,20 @@ fn windows_a_runner_that_dies_before_its_claim_ends_its_caller_while_another_run
     let hider = hider.unwrap();
     assert_eq!(hider.status, ExitStatus::Code(7), "{}", hider.stderr_lossy());
     assert_eq!(hider.stdout_lossy().trim(), "out hider");
-    until("the runner removing its request", || pending(&*up) == "0");
+    until_showing(
+        "the runner removing its request",
+        || pending(&*up) == "0",
+        || {
+            // The victim's request is the one a caller removes, and its stderr names a removal that failed.
+            format!(
+                "{}
+the victim's stderr:
+{}",
+                listing(&*up),
+                victim.stderr_lossy()
+            )
+        },
+    );
 }
 
 /// What the helper task is turned into before the request: disabled, or removed.
@@ -479,7 +514,7 @@ fn windows_an_elevated_request_the_task_never_runs_ends_with_an_error_not_a_wait
             done.stderr_lossy()
         );
         // The runner removes the request it served on its own poll; the next count is the next command's.
-        until("the runner removing its request", || pending(&*up) == "0");
+        until_none_pending(&*up, "the runner removing its request");
 
         let seen = ran(
             &*up,

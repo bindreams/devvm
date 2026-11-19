@@ -1048,9 +1048,9 @@ fn the_eb_runner_serves_only_the_request_named_by_its_first_argument_and_claims_
     assert_eq!(runner.matches("GetDirectories(").count(), 1);
     assert_before(&runner, "foreach ($other in", "$dir = Join-Path $root $Id");
     let sweep = section(&runner, "foreach ($other in", "$dir = Join-Path");
-    assert!(
-        sweep.contains("$name -eq $Id") && sweep.contains("EndsWith('.tmp')") && !sweep.contains("Process]::Start")
-    );
+    assert!(sweep.contains("$name -eq $Id") && !sweep.contains("Process]::Start"));
+    // An `<id>.tmp` is swept by the same rule, unless it has no caller file: a caller building it has not written one.
+    assert!(sweep.contains("$name.EndsWith('.tmp') -and -not [IO.File]::Exists((Join-Path $other $callerName))"));
 }
 
 #[skuld::test]
@@ -1225,16 +1225,8 @@ fn the_eb_runner_writes_stdout_stderr_exit_and_done_in_that_order_and_removes_it
         "Exists((Join-Path $dir $readName))",
     );
     assert_before(&runner, "Exists((Join-Path $dir $readName))", "$claim.Dispose()");
-    assert_before(
-        &runner,
-        "$claim.Dispose()",
-        "Remove-Item -LiteralPath $dir -Recurse -Force",
-    );
-    assert!(
-        runner
-            .trim_end()
-            .ends_with("try { Remove-Item -LiteralPath $dir -Recurse -Force } catch { }")
-    );
+    assert_before(&runner, "$claim.Dispose()", "Remove-Request $dir");
+    assert!(runner.trim_end().ends_with("try { Remove-Request $dir } catch { }"));
     // The runner sets UTF-8 output, like every PowerShell devvm starts.
     assert!(runner.contains("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)"));
 }
@@ -1286,6 +1278,8 @@ fn the_runner_and_the_callers_names_come_from_the_same_constants() {
         );
         assert!(caller.contains(value), "the caller names {value}");
     }
+    // One removal, the same text: a request is removed the same way by whoever removes it.
+    assert!(runner.contains(&elevate::remove_request()) && caller.contains(&elevate::remove_request()));
     assert!(task.contains(&format!("$root = {}", literal(elevate::ROOT))));
     assert!(bootstrap.contains(&format!("-TaskName {}", literal(elevate::TASK))));
     assert!(caller.contains(&literal(elevate::TASK)));

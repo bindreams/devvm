@@ -30,6 +30,12 @@
 //! The caller removes a request only when no runner will touch it: one it withdrew or one whose runner died. What a
 //! killed caller leaves is the runner's to remove, and the boot task sweeps what nothing else did.
 //!
+//! **A removal is tried until the request is gone.** A file of the request open elsewhere (a scanner) fails a removal for
+//! a moment, so the caller and the runner both remove through `Remove-Request` ([`remove_request`]): it looks at the
+//! directory again after each pause, with no limit on the tries. An error that waiting does not change ends it, and the
+//! request stays for the sweep. The sweep also takes a `<id>.tmp` whose caller has ended, but never one with no `caller`
+//! file, which a caller that is still building it has not written yet.
+//!
 //! The caller's wait ends from file state alone, with no time bound: a held claim is a live runner; a released claim
 //! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
 //! longer queued or running is a helper that is not going to run the command (the caller claims the request itself, so
@@ -63,6 +69,30 @@ pub(super) const READ: &str = "read";
 
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
 const PAUSE_MILLISECONDS: u32 = 200;
+
+/// The PowerShell function `Remove-Request`, the same text in the caller script and in the runner. It returns when the
+/// directory is gone. A try that fails because a file of the request is open elsewhere (sharing violation 32, lock
+/// violation 33, directory not empty 145), or because an entry is already gone, is repeated after a pause. Any other
+/// error is thrown.
+const REMOVE_REQUEST: &str = r#"function Test-RemovalPending($failure) {
+    if ($failure -is [Management.Automation.ItemNotFoundException] -or $failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
+    return ($failure -is [IO.IOException]) -and (($failure.HResult -band 0xFFFF) -in 32, 33, 145)
+}
+function Remove-Request([string]$path) {
+    while ([IO.Directory]::Exists($path)) {
+        try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
+        catch {
+            if (-not (Test-RemovalPending $_.Exception)) { throw }
+            Start-Sleep -Milliseconds {PAUSE}
+        }
+    }
+}
+"#;
+
+/// [`REMOVE_REQUEST`] with its pause filled in.
+pub(super) fn remove_request() -> String {
+    REMOVE_REQUEST.replace("{PAUSE}", &PAUSE_MILLISECONDS.to_string())
+}
 
 /// The task is looked up before anything is made. Building and publishing the request, the start and the wait are one
 /// `try`: a failure in it is an answer of 126 that names it, and a published request is withdrawn if no runner holds it.
@@ -101,7 +131,7 @@ function Test-Held([string]$path) {
     catch [IO.FileNotFoundException] { return $false }
     catch [IO.IOException] { return $true }
 }
-function Warn([string]$what, $failure) {
+{REMOVE_REQUEST}function Warn([string]$what, $failure) {
     [Console]::Error.WriteLine('devvm: warning: ' + $what + ': ' + $failure.Exception.Message)
 }
 # Claiming the request ourselves withdraws it: no runner takes it. False when the claim is a runner's, which serves the
@@ -199,14 +229,14 @@ try {
     foreach ($stream in $streams.Values) { $stream.Dispose() }
     if (-not $published) {
         if ([IO.Directory]::Exists($building)) {
-            try { Remove-Item -LiteralPath $building -Recurse -Force } catch { Warn 'could not remove the unpublished request' $_ }
+            try { Remove-Request $building } catch { Warn 'could not remove the unpublished request' $_ }
         }
     } elseif ([IO.Directory]::Exists($dir)) {
         if ($abandoned) {
             # Out of the requests' names first, so that no runner finds half of it.
             $leaving = $dir
             try { [IO.Directory]::Move($dir, $building); $leaving = $building } catch { Warn 'could not rename the withdrawn request' $_ }
-            try { Remove-Item -LiteralPath $leaving -Recurse -Force } catch { Warn 'could not remove the withdrawn request' $_ }
+            try { Remove-Request $leaving } catch { Warn 'could not remove the withdrawn request' $_ }
         } else {
             try { [IO.File]::WriteAllText((Join-Path $dir '{READ}'), '', $utf8) } catch { Warn 'could not tell the runner the request was read' $_ }
         }
@@ -220,6 +250,7 @@ exit $code
 pub(super) fn caller_script(inner: &str) -> String {
     CALLER_SCRIPT
         .replace("{SESSION_CHECK}", &session_check())
+        .replace("{REMOVE_REQUEST}", &remove_request())
         .replace("{ROOT}", &literal(ROOT))
         .replace("{SCRIPT}", SCRIPT)
         .replace("{CALLER}", CALLER)

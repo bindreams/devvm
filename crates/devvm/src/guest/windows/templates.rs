@@ -6,7 +6,7 @@
 //! verbatim, for a value that is a statement. The paths and names the host's code also uses (`elevate.rs`, `wrap.rs`)
 //! are filled in from those constants, never copied.
 
-use super::elevate::{CALLER, CLAIM, DONE, EXIT, READ, ROOT, SCRIPT, STDERR, STDOUT, TASK};
+use super::elevate::{CALLER, CLAIM, DONE, EXIT, READ, ROOT, SCRIPT, STDERR, STDOUT, TASK, remove_request};
 use super::pins::{ALL, OPENSSH, POWERSHELL, Pin, SSH_BROKER};
 use super::wrap::{BROKER_EXE, PWSH_EXE, literal};
 use super::{BOOT_ID_FILE, UTF8_OUTPUT, WindowsGuest};
@@ -259,6 +259,7 @@ pub(super) fn values(inputs: &AnswerInputs) -> Vec<(&'static str, String)> {
         ("EB_EXIT", EXIT.to_owned()),
         ("EB_DONE", DONE.to_owned()),
         ("EB_READ", READ.to_owned()),
+        ("EB_REMOVE_REQUEST", remove_request()),
         ("OPENSSH_URL", OPENSSH.url.to_owned()),
         ("OPENSSH_SHA256", OPENSSH.sha256.to_owned()),
         ("POWERSHELL_URL", POWERSHELL.url.to_owned()),

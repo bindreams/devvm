@@ -121,11 +121,11 @@ fn the_cleanup_runs_in_a_finally_and_a_request_a_runner_may_hold_is_signalled_no
     let finally = at(&text, "} finally {");
     // The removals are the unpublished and the abandoned request's, in the `finally`; the read request is only told it
     // was read.
-    assert_eq!(text.matches("Remove-Item").count(), 2, "{text}");
-    let removal = text.rfind("Remove-Item").unwrap();
+    assert_eq!(text.matches("Remove-Request $").count(), 2, "{text}");
+    let removal = text.rfind("Remove-Request $").unwrap();
     let signal = at(&text, &format!("'{READ}'"));
     let abandoned = at(&text[finally..], "if ($abandoned)") + finally;
-    assert!(at(&text[finally..], "Remove-Item") + finally < abandoned, "{text}");
+    assert!(at(&text[finally..], "Remove-Request $") + finally < abandoned, "{text}");
     assert!(abandoned < removal && removal < signal, "{text}");
     assert!(finally < abandoned, "{text}");
     // Both come before the script's own end.
@@ -181,5 +181,23 @@ fn the_requests_files_are_the_ones_the_runner_contract_names() {
     for (constant, name) in names {
         assert_eq!(constant, name);
         assert!(text.contains(name), "{name}: {text}");
+    }
+}
+
+#[skuld::test]
+fn a_removal_is_tried_until_the_request_is_gone_and_ends_on_an_error_that_waiting_does_not_change() {
+    let text = script();
+    // The function the runner has is this text: the two cannot differ.
+    assert!(text.contains(&super::remove_request()), "{text}");
+    let function = at(&text, "function Remove-Request");
+    let body = &text[function..at(&text, "function Warn")];
+    assert!(body.contains("while ([IO.Directory]::Exists($path))"), "{body}");
+    assert!(
+        body.contains("if (-not (Test-RemovalPending $_.Exception)) { throw }"),
+        "{body}"
+    );
+    // Only the pause paces it: no count, no clock.
+    for bound in ["-Timeout", "Stopwatch", "$tries", "$attempt", "-lt"] {
+        assert!(!body.contains(bound), "{bound}: {body}");
     }
 }

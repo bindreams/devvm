@@ -211,13 +211,24 @@ pub(super) fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
 pub(super) const PACE: Duration = Duration::from_millis(200);
 
 /// Waits until `condition` holds; fails the test naming `what` if it does not within [`STATE_BOUND`].
-pub(super) fn until(what: &str, mut condition: impl FnMut() -> bool) {
+pub(super) fn until(what: &str, condition: impl FnMut() -> bool) {
+    until_showing(what, condition, String::new);
+}
+
+/// [`until`] whose failure also shows what `show` reads from the guest then: the state the wait was for.
+pub(super) fn until_showing(what: &str, mut condition: impl FnMut() -> bool, show: impl FnOnce() -> String) {
     let deadline = Instant::now() + STATE_BOUND;
     while !condition() {
-        assert!(
-            Instant::now() < deadline,
-            "{what} did not happen within {STATE_BOUND:?}"
-        );
+        if Instant::now() >= deadline {
+            let shown = show();
+            let separator = if shown.is_empty() {
+                ""
+            } else {
+                "
+"
+            };
+            panic!("{what} did not happen within {STATE_BOUND:?}{separator}{shown}");
+        }
         std::thread::sleep(PACE);
     }
 }
