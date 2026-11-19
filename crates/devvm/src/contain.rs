@@ -247,12 +247,13 @@ impl VmProcess {
             .map_err(|e| cosca_error(&format!("cannot record the VM process {}", id.pid()), e))
     }
 
-    /// Blocks until the process has exited, with no time limit.
+    /// Blocks until the process has exited and the OS no longer reports it running, with no time limit.
     pub(crate) fn wait(&self) -> Result<()> {
         let id = self.id();
         cosca::Process::from_id(id)
             .wait()
-            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e))
+            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e))?;
+        self.await_not_running()
     }
 
     /// The exit status of the process if it has exited, `None` while it runs: std's `Child::try_wait`. It reads the
@@ -294,10 +295,7 @@ impl VmProcess {
             State::Released(process) | State::Foreign(process) => process.kill(),
         };
         killed.map_err(|e| cosca_error(&format!("cannot kill the VM process {pid}"), e))?;
-        cosca::Process::from_id(id)
-            .wait()
-            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {pid} to exit"), e))?;
-        self.await_not_running()
+        self.wait()
     }
 
     /// Whether the process is still running; an error when the OS refuses to say (never "dead").
