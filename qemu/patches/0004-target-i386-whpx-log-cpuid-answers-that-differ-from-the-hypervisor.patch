@@ -1,0 +1,39 @@
+From: devvm <https://github.com/bindreams/devvm>
+Subject: [PATCH] target/i386/whpx: log CPUID answers that differ from the hypervisor's (diagnostic)
+
+Experiment only; removed before any merge.
+---
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -2681,6 +2681,31 @@
+                 }
+             }
+ 
++            {
++                /* N1 diagnostic: log where QEMU's answer differs from the hypervisor's. */
++                static int whpx_n1_seen[1024];
++                uint32_t leaf = (uint32_t)vcpu->exit_ctx.CpuidAccess.Rax;
++                uint32_t sub = (uint32_t)vcpu->exit_ctx.CpuidAccess.Rcx;
++                uint32_t qa = reg_values[1].Reg32, qb = reg_values[4].Reg32;
++                uint32_t qc = reg_values[2].Reg32, qd = reg_values[3].Reg32;
++                uint32_t da = (uint32_t)vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
++                uint32_t db = (uint32_t)vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
++                uint32_t dc = (uint32_t)vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
++                uint32_t dd = (uint32_t)vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
++                bool differs = qa != da || qb != db || qc != dc || qd != dd;
++                unsigned slot = ((leaf * 0x9e3779b1u) ^ (sub * 0x85ebca6bu)) >> 22;
++
++                if (qatomic_fetch_inc(&whpx_n1_seen[slot]) < 16) {
++                    fprintf(stderr,
++                            "N1CPUID cpu=%d leaf=%08x sub=%08x %s "
++                            "qemu=%08x/%08x/%08x/%08x "
++                            "whp=%08x/%08x/%08x/%08x\n",
++                            cpu->cpu_index, leaf, sub,
++                            differs ? "DIFF" : "same", qa, qb, qc, qd,
++                            da, db, dc, dd);
++                }
++            }
++
+             hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
+                 whpx->partition,
+                 cpu->cpu_index,

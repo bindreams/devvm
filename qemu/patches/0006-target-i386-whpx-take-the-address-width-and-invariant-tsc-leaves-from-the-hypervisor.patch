@@ -1,0 +1,28 @@
+From: devvm <https://github.com/bindreams/devvm>
+Subject: [PATCH] target/i386/whpx: take the address width and invariant TSC from the hypervisor
+
+Experiment N1, hypothesis 2.
+---
+--- c/target/i386/whpx/whpx-all.c
++++ d/target/i386/whpx/whpx-all.c
+@@ -2684,6 +2684,20 @@
+                 reg_values[3].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
+             }
+ 
++            /*
++             * CPUID[0x80000007].EDX (invariant TSC) and CPUID[0x80000008].EAX
++             * (physical address width) describe the platform the guest runs
++             * on. QEMU answers them from its own model: 40 address bits and
++             * no invariant TSC, where the hypervisor gives the partition 48
++             * bits and an invariant TSC. Take both from the hypervisor.
++             */
++            if ((uint32_t)vcpu->exit_ctx.CpuidAccess.Rax == 0x80000007) {
++                reg_values[3].Reg32 = (uint32_t)vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
++            }
++            if ((uint32_t)vcpu->exit_ctx.CpuidAccess.Rax == 0x80000008) {
++                reg_values[1].Reg32 = (uint32_t)vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
++            }
++
+             /* OSXSAVE is dynamic. Do this instead of syncing CR4 */
+             if (vcpu->exit_ctx.CpuidAccess.Rax == 1) {
+                 if (vcpu->exit_ctx.CpuidAccess.DefaultResultRcx
