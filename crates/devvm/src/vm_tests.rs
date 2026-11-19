@@ -382,6 +382,7 @@ fn stop_and_remove_of_an_unreadable_process_record_say_so_on_their_own(#[fixture
             .expect_err("a record that cannot be read is not a stopped VM"),
         foo.remove().expect_err("nor is it a VM that is safe to remove"),
     ] {
+        assert_eq!(error.kind(), ErrorKind::ProcessRecord, "{error}");
         let text = error.message();
         assert!(
             text.starts_with("the VM's process record has a format this devvm does not read ("),

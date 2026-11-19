@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::backend::MachineRecord;
-use crate::contain::is_unreadable_record;
+use crate::contain::refused_record;
 use crate::instance::registry::registry_tests::{create, fixture};
 use crate::progress::{Event, Level};
 use crate::store::layers::Reachability;
@@ -247,8 +247,7 @@ fn handing_over_an_instance_with_a_corrupt_record_reports_the_record_and_writes_
     assert_eq!(std::fs::read(instance.join("owner.json")).unwrap(), marker_before);
 }
 
-/// `rm` and `stop` need the machine found, so a record that cannot be read stops them. The error names the instance and
-/// the `record.json` field to clear by hand after stopping the VM, and never sends the person to delete the instance.
+/// `rm` and `stop` need the machine found, so a record that cannot be read stops them.
 #[skuld::test]
 fn finding_a_machine_whose_process_record_cannot_be_read_says_how_to_recover(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
@@ -275,51 +274,50 @@ fn finding_a_machine_whose_process_record_cannot_be_read_says_how_to_recover(#[f
         .err()
         .expect("a record this build cannot read is not read as not running");
 
+    assert_eq!(error.kind(), crate::ErrorKind::ProcessRecord, "{error}");
     let text = error.message().to_owned();
     let record = dir.path().join("record.json").display().to_string();
     let cause = "the VM's process record has a format this devvm does not read (";
     let step = format!("; stop the VM by hand if it still runs, then clear the `machine` field in {record}");
     assert!(text.starts_with(cause), "the cause leads, on its own: {text}");
-    assert!(text.ends_with(&step), "the step is added after the cause: {text}");
-    assert_eq!(
-        text.matches("persisted process identity").count(),
-        1,
-        "cosca's words once: {text}"
+    let cosca = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<cosca::error::Error>())
+        .expect("the cosca error stays the source");
+    let report = cosca::error::Report::new(cosca).to_string();
+    assert!(
+        text.ends_with(&format!(" ({report}){step}")),
+        "cosca's words, then the step added after them: {text}"
     );
-    assert!(text.contains("unknown record format version"), "{text}");
-    for part in [
-        "check that process",
-        "command line",
-        "end process",
-        "delete",
-        "devvm rm",
-        "cannot be used here",
-        "cannot tell whether",
-        "instance foo",
-    ] {
-        assert!(!text.contains(part), "{part:?} in: {text}");
-    }
-    assert!(is_unreadable_record(&error), "the cosca error stays the source: {text}");
+    assert_eq!(text.matches(&report).count(), 1, "cosca's words once: {text}");
 }
 
-/// Only a record that cannot be read has a way out by hand: any other failure of the backend passes through.
+/// Only a process record that cannot be read has a way out by hand: any other failure of the backend passes through.
 #[skuld::test]
 fn a_failure_of_the_backend_that_is_not_an_unreadable_record_passes_through_find(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
-    let sock = Sock::new();
     let machine = MachineRecord {
         process: cosca::identity::ProcessId::current().to_record().unwrap(),
-        qmp: sock.endpoint.path().display().to_string(),
+        qmp: String::new(),
         ssh: Vec::new(),
-        serial_log: sock.endpoint.path().with_file_name("serial.log"),
+        serial_log: PathBuf::new(),
         leftovers: Vec::new(),
-        claim: Some(sock.claim.clone()),
+        claim: None,
         no_reboot: false,
     };
+
     let backend = StubBackend::new(Attach::Fails(crate::ErrorKind::Io));
-
     let error = dir.find_machine(&*backend, &machine).err().unwrap();
-
     assert_eq!(error.message(), "the stub backend cannot look");
+
+    let scope = cosca::error::Error::IdentityRecord {
+        kind: cosca::error::RecordErrorKind::ScopeUnreadable,
+        detail: "cannot read /proc/sys/kernel/random/boot_id".into(),
+        source: None,
+    };
+    let refused = refused_record(7, scope).err().expect("liveness cannot be established");
+    let backend = StubBackend::new(Attach::FailsWith(refused.clone()));
+    let error = dir.find_machine(&*backend, &machine).err().unwrap();
+    assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
+    assert_eq!(error.message(), refused.message(), "no step is added");
 }

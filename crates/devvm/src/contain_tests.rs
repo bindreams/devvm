@@ -5,9 +5,7 @@ use std::sync::mpsc;
 use cosca::error::RecordErrorKind;
 use cosca::identity::{Liveness, ProcessIdRecord};
 
-use crate::contain::{
-    Lifetime, VmCommand, VmProcess, frozen_spawn_error, is_unreadable_record, refused_record, unknown_liveness,
-};
+use crate::contain::{Lifetime, VmCommand, VmProcess, frozen_spawn_error, refused_record, unknown_liveness};
 use crate::test_support::helper;
 use crate::{ErrorKind, Result};
 
@@ -189,24 +187,27 @@ fn any_other_frozen_spawn_failure_is_an_io_error_carrying_coscas_words() {
 
 #[skuld::test]
 fn a_cosca_error_names_the_cause_cosca_keeps_as_its_source() {
-    let cause = cosca::error::Error::Containment {
-        detail: "could not resume the frozen child".into(),
-        source: Some(std::sync::Arc::new(cosca::error::Error::Io(std::io::Error::other(
-            "access denied",
-        )))),
-    };
-    let error = crate::contain::cosca_error(
-        "cannot resume the VM process 7",
+    let cosca_error = || {
+        let cause = cosca::error::Error::Containment {
+            detail: "could not resume the frozen child".into(),
+            source: Some(std::sync::Arc::new(cosca::error::Error::Io(std::io::Error::other(
+                "access denied",
+            )))),
+        };
         cosca::error::Error::Containment {
             detail: "its child was reaped".into(),
             source: Some(std::sync::Arc::new(cause)),
-        },
+        }
+    };
+    let report = cosca::error::Report::new(&cosca_error()).to_string();
+    assert!(
+        report.contains("access denied"),
+        "the report reaches the deepest cause: {report}"
     );
-    assert_eq!(
-        error.message(),
-        "cannot resume the VM process 7: process containment failed: its child was reaped: process containment failed: \
-         could not resume the frozen child: an I/O operation failed: access denied"
-    );
+
+    let error = crate::contain::cosca_error("cannot resume the VM process 7", cosca_error());
+
+    assert_eq!(error.message(), format!("cannot resume the VM process 7: {report}"));
 }
 
 fn refusal(kind: RecordErrorKind) -> cosca::error::Error {
@@ -214,6 +215,17 @@ fn refusal(kind: RecordErrorKind) -> cosca::error::Error {
         kind,
         detail: "record v3 from windows for pid 7 (boot_id None vs live None)".into(),
         source: None,
+    }
+}
+
+/// What a host that cannot read its own boot session refuses with.
+fn scope_refusal() -> cosca::error::Error {
+    cosca::error::Error::IdentityRecord {
+        kind: RecordErrorKind::ScopeUnreadable,
+        detail: "cannot read /proc/sys/kernel/random/boot_id".into(),
+        source: Some(std::sync::Arc::new(cosca::error::Error::Io(std::io::Error::other(
+            "access denied",
+        )))),
     }
 }
 
@@ -225,7 +237,7 @@ fn a_record_from_another_boot_or_platform_names_nothing_that_runs() {
 }
 
 #[skuld::test]
-fn a_record_that_cannot_be_checked_is_an_unreadable_record_that_says_why() {
+fn a_record_that_cannot_be_checked_is_a_process_record_error_that_says_why() {
     for (kind, why) in [
         (RecordErrorKind::UnknownVersion, "a format this devvm does not read"),
         (RecordErrorKind::InvalidPid, "a pid that cannot name a process"),
@@ -237,71 +249,66 @@ fn a_record_that_cannot_be_checked_is_an_unreadable_record_that_says_why() {
     ] {
         let error = refused_record(7, refusal(kind)).err().expect("not read as not running");
 
-        assert_eq!(error.kind(), ErrorKind::Io, "{kind:?}");
-        assert!(is_unreadable_record(&error), "{kind:?}: {error}");
+        assert_eq!(error.kind(), ErrorKind::ProcessRecord, "{kind:?}");
         assert!(
             error.message().starts_with("the VM's process record"),
             "{kind:?}: reads on its own, with no lead: {error}"
         );
-        assert!(
-            !error.message().contains("cannot tell whether") && !error.message().contains("VM process 7"),
-            "{kind:?}: the pid is cosca's to give, not devvm's: {error}"
-        );
         assert!(error.message().contains(why), "{kind:?}: {error}");
-        assert_eq!(
-            error.message().matches("persisted process identity").count(),
-            1,
-            "{kind:?}: cosca's words once: {error}"
+        let report = cosca::error::Report::new(&refusal(kind)).to_string();
+        assert!(
+            error.message().ends_with(&format!(" ({report})")),
+            "{kind:?}: cosca's words once, last: {error}"
         );
-        assert!(error.message().ends_with(')'), "{kind:?}: {error}");
-        for advice in [
-            "check that process",
-            "command line",
-            "end process",
-            "by hand",
-            "clear the",
-        ] {
-            assert!(
-                !error.message().contains(advice),
-                "{kind:?}: {advice:?} in a bare attach error: {error}"
-            );
-        }
+        assert_eq!(error.message().matches(&report).count(), 1, "{kind:?}: {error}");
         assert!(std::error::Error::source(&error).is_some(), "{kind:?}");
     }
 }
 
 #[skuld::test]
-fn a_host_that_cannot_read_its_own_boot_session_is_a_plain_error_not_a_bad_record() {
-    let error = refused_record(
-        7,
-        cosca::error::Error::IdentityRecord {
-            kind: RecordErrorKind::ScopeUnreadable,
-            detail: "cannot read /proc/sys/kernel/random/boot_id".into(),
-            source: Some(std::sync::Arc::new(cosca::error::Error::Io(std::io::Error::other(
-                "access denied",
-            )))),
-        },
-    )
-    .err()
-    .expect("liveness cannot be established");
+fn a_host_that_cannot_read_its_own_boot_session_is_an_io_error_not_a_bad_record() {
+    let error = refused_record(7, scope_refusal())
+        .err()
+        .expect("liveness cannot be established");
+
+    let cosca::error::Error::IdentityRecord {
+        kind,
+        detail,
+        source: Some(cause),
+    } = scope_refusal()
+    else {
+        unreachable!();
+    };
+    assert_eq!(error.kind(), ErrorKind::Io);
+    assert_eq!(
+        error.message(),
+        format!(
+            "cannot check the VM process 7: {kind}: {detail}: {}",
+            cosca::error::Report::new(&*cause)
+        ),
+        "names the process it was checking, since the host's failure says nothing of the record"
+    );
+    assert!(std::error::Error::source(&error).is_some());
+}
+
+#[skuld::test]
+fn a_cosca_error_that_is_no_record_fault_is_an_io_error_that_names_the_process_and_quotes_cosca() {
+    let cosca = || cosca::error::Error::Containment {
+        detail: "its child was reaped".into(),
+        source: None,
+    };
+
+    let error = refused_record(7, cosca())
+        .err()
+        .expect("the process cannot be restored");
 
     assert_eq!(error.kind(), ErrorKind::Io);
-    assert!(!is_unreadable_record(&error), "{error}");
-    assert!(
-        error
-            .message()
-            .starts_with("cannot check the VM process 7: this host's boot session could not be read"),
-        "names the process it was checking, since the host's failure says nothing of the record: {error}"
+    assert_eq!(
+        error.message(),
+        format!(
+            "cannot restore the VM process 7: {}",
+            cosca::error::Report::new(&cosca())
+        )
     );
-    assert!(!error.message().contains("cannot tell whether"), "{error}");
-    for part in [
-        "this host's boot session could not be read",
-        "/proc/sys/kernel/random/boot_id",
-        "access denied",
-    ] {
-        assert!(error.message().contains(part), "{part:?} not in: {error}");
-    }
-    for part in ["record", "cannot be used here", "not usable here"] {
-        assert!(!error.message().contains(part), "{part:?} in: {error}");
-    }
+    assert!(std::error::Error::source(&error).is_some());
 }

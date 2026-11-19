@@ -30,6 +30,8 @@ pub enum ErrorKind {
     ConnectionLost,
     /// The guest presented a host key other than the pinned one.
     HostKey,
+    /// The VM's process record cannot be checked on this host; the person clears it by hand.
+    ProcessRecord,
     Unavailable,
     NotSupported,
     Panic,
@@ -56,6 +58,7 @@ impl ErrorKind {
             ErrorKind::NoExitStatus => "no-exit-status",
             ErrorKind::ConnectionLost => "connection-lost",
             ErrorKind::HostKey => "host-key",
+            ErrorKind::ProcessRecord => "process-record",
             ErrorKind::Unavailable => "unavailable",
             ErrorKind::NotSupported => "not-supported",
             ErrorKind::Panic => "panic",

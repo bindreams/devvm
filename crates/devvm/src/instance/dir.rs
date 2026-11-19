@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::backend::{Backend, Machine, MachineRecord};
-use crate::contain::is_unreadable_record;
 use crate::host::{Host, remove_tree};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
@@ -197,16 +196,15 @@ impl InstanceDir {
         Ok(record)
     }
 
-    /// `backend.find(machine)` for this instance's machine. When the machine's process record cannot be read, the
-    /// error adds the step that gets out: the VM cannot be told to run or not, so the person stops it by hand and
-    /// clears the `machine` field of the record. `rm` and `stop` need the machine found, so they refuse too.
+    /// `backend.find(machine)` for this instance's machine. A `process-record` error gets the step that gets out: the
+    /// VM cannot be told to run or not, so the person stops it by hand and clears the `machine` field of the record.
     pub(crate) fn find_machine(
         &self,
         backend: &dyn Backend,
         machine: &MachineRecord,
     ) -> Result<Option<Box<dyn Machine>>> {
         backend.find(machine).map_err(|e| {
-            if !is_unreadable_record(&e) {
+            if e.kind() != ErrorKind::ProcessRecord {
                 return e;
             }
             e.with_step(format_args!(

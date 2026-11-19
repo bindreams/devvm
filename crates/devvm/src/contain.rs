@@ -61,9 +61,8 @@ fn wait_for_exit(id: ProcessId) -> Result<()> {
     }
 }
 
-/// Kills the process `id` names and waits for it to exit, through one handle: a kill that landed is never reported
-/// as failed by a second open that finds the process gone or refuses it, and a wait that failed after it is not
-/// reported as a failed kill. A process that is gone is `Ok`.
+/// Kills the process `id` names and waits for it to exit through one handle, so a kill that landed is never reported
+/// as failed. A process that is gone is `Ok`.
 fn kill_and_wait(id: ProcessId) -> Result<()> {
     let killing = |e: cosca::error::Error| cosca_error(&format!("cannot kill the VM process {}", id.pid()), e);
     let Some(process) = cosca::Process::open(id).map_err(killing)? else {
@@ -124,7 +123,7 @@ impl VmProcess {
     /// owner.
     ///
     /// `program` is the absolute path of the executable, and argv[0]; `command` gives the rest of the arguments, the
-    /// environment and the working directory. Naming the executable is what gives the handle guarantee: cosca 0.8.0's
+    /// environment and the working directory. Naming the executable is what gives the handle guarantee: cosca's
     /// `routes_to_raw_backend` sends a Windows command that names one to its raw backend, which hands the child only
     /// the handles listed for it. Any other command goes through `std`, which has the child inherit every inheritable
     /// handle of this process.
@@ -229,7 +228,7 @@ impl VmProcess {
         let State::Running(child, lifetime) = std::mem::replace(&mut self.state, State::Released) else {
             unreachable!("checked just above");
         };
-        // A refused disarm hands the child back still armed: the process stays contained and `Running`.
+        // The child comes back still armed, so the state stays `Running`.
         child.detach().map_err(|(child, e)| {
             self.state = State::Running(child, lifetime);
             cosca_error(&format!("cannot release the VM process {}", id.pid()), e)
@@ -329,8 +328,7 @@ impl VmProcess {
 /// What follows from the identity layer refusing the record of process `pid`. A record from another boot or platform
 /// names nothing that exists now: `None`. A record that cannot be checked is an error, not "not running", which would
 /// let a second VM start on a disk the first may still hold; so is a host that cannot read its own boot session, which
-/// says nothing of the record. devvm's own words name `pid` only for the host's failure; cosca's words, quoted in
-/// every error, may name it too.
+/// says nothing of the record.
 pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Option<VmProcess>> {
     use cosca::error::Error::IdentityRecord;
     let text = match &error {
@@ -349,7 +347,8 @@ pub(crate) fn refused_record(pid: u32, error: cosca::error::Error) -> Result<Opt
             )
         }
         IdentityRecord { kind, .. } => {
-            format!("{} ({})", record_fault(*kind), cosca::error::Report::new(&error))
+            let text = format!("{} ({})", record_fault(*kind), cosca::error::Report::new(&error));
+            return Err(Error::new(ErrorKind::ProcessRecord, text).with_source(error));
         }
         _ => return Err(cosca_error(&format!("cannot restore the VM process {pid}"), error)),
     };
@@ -380,16 +379,6 @@ fn record_fault(kind: RecordErrorKind) -> &'static str {
         RecordErrorKind::ForeignPidNamespace => "the VM's process record was made in another pid namespace",
         _ => "the VM's process record cannot be checked here",
     }
-}
-
-/// Whether `error` is the refusal of [`VmProcess::attach`] to read a process record: one the person can only clear by
-/// hand. A host that cannot read its own boot session is not that.
-pub(crate) fn is_unreadable_record(error: &Error) -> bool {
-    use std::error::Error as _;
-    matches!(
-        error.source().and_then(|source| source.downcast_ref::<cosca::error::Error>()),
-        Some(cosca::error::Error::IdentityRecord { kind, .. }) if *kind != RecordErrorKind::ScopeUnreadable
-    )
 }
 
 pub(crate) fn unknown_liveness(id: ProcessId) -> Error {

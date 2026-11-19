@@ -124,39 +124,28 @@ fn a_record_whose_version_this_build_does_not_know_is_an_error_from_attach_and_f
     let attach = VmProcess::attach(&record.process)
         .err()
         .expect("attach reads the version");
-    assert_eq!(attach.kind(), ErrorKind::Io, "{attach}");
+    assert_eq!(attach.kind(), ErrorKind::ProcessRecord, "{attach}");
     let backend = backend_in(&socket_run(), Arc::default());
     let find = backend
         .find(&record)
         .err()
         .expect("find does not read it as not running");
-    assert_eq!(find.kind(), ErrorKind::Io, "{find}");
+    assert_eq!(find.kind(), ErrorKind::ProcessRecord, "{find}");
     for error in [attach, find] {
         let text = error.message().to_owned();
         assert!(
             text.starts_with("the VM's process record has a format this devvm does not read ("),
             "{text}"
         );
-        assert!(text.ends_with(')'), "no step by hand below the instance: {text}");
-        assert_eq!(
-            text.matches("persisted process identity").count(),
-            1,
-            "cosca's words once: {text}"
-        );
-        assert!(text.contains("unknown record format version"), "{text}");
-        for advice in [
-            "check that process",
-            "command line",
-            "end process",
-            "devvm rm",
-            "delete",
-        ] {
-            assert!(!text.contains(advice), "{advice:?} in: {text}");
-        }
+        let cosca = std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<cosca::error::Error>())
+            .expect("the cosca error is the source");
+        let report = cosca::error::Report::new(cosca).to_string();
         assert!(
-            std::error::Error::source(&error).is_some(),
-            "the cosca error is the source"
+            text.ends_with(&format!(" ({report})")),
+            "cosca's words last, with no step: {text}"
         );
+        assert_eq!(text.matches(&report).count(), 1, "cosca's words once: {text}");
     }
 }
 
