@@ -910,8 +910,8 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
     }
 }
 
-/// A handshake bound of 300 ms. Against a live server that is a bet on its speed, so only a test of the handshake bound
-/// against a peer that never answers uses it; the rest use [`Keepalive::STANDARD`].
+/// Finds a peer that never answers in well under a second (300 ms handshake bound). Against a live server that is a bet
+/// on its speed: use only where the peer never answers.
 pub const FAST_KEEPALIVE: Keepalive = Keepalive {
     interval: Duration::from_millis(100),
     max_missed: 2,

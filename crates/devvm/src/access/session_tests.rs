@@ -181,8 +181,7 @@ fn mid_command_drop_is_connection_lost(#[fixture(unicode_home)] home: &Path) {
 #[skuld::test]
 fn a_frozen_peer_is_connection_lost_through_keepalive(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
-    // The standard keepalive: against our own live server, a shorter one would be a bet on its speed, at the handshake
-    // and at every probe before `freeze`.
+    // Takes ~20 s: the standard keepalive, because a faster one against a live server bets on its speed.
     let session = rig.connect();
     let error = session.exec_collect("freeze").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
