@@ -1051,6 +1051,19 @@ fn the_eb_runner_serves_only_the_request_named_by_its_first_argument_and_claims_
     assert!(sweep.contains("$name -eq $Id") && !sweep.contains("Process]::Start"));
     // An `<id>.tmp` is swept by the same rule, unless it has no caller file: a caller building it has not written one.
     assert!(sweep.contains("$name.EndsWith('.tmp') -and -not [IO.File]::Exists((Join-Path $other $callerName))"));
+    assert!(sweep.contains("Remove-RequestOrWarn $other"), "{sweep}");
+}
+
+#[skuld::test]
+fn the_eb_runner_and_the_caller_remove_a_request_only_through_remove_request() {
+    let runner = rendered("eb-runner.ps1");
+    let caller = caller_script("inner");
+    for (who, text) in [("runner", &runner), ("caller", &caller)] {
+        // One removal: a file deleted on its own is out of the order of deletion.
+        assert_eq!(text.matches("Remove-Item").count(), 1, "{who}: {text}");
+        let function = section(text, "function Remove-Request", "\n}\n");
+        assert!(function.contains("Remove-Item"), "{who}: {function}");
+    }
 }
 
 #[skuld::test]
@@ -1225,8 +1238,8 @@ fn the_eb_runner_writes_stdout_stderr_exit_and_done_in_that_order_and_removes_it
         "Exists((Join-Path $dir $readName))",
     );
     assert_before(&runner, "Exists((Join-Path $dir $readName))", "$claim.Dispose()");
-    assert_before(&runner, "$claim.Dispose()", "Remove-Request $dir");
-    assert!(runner.trim_end().ends_with("try { Remove-Request $dir } catch { }"));
+    assert_before(&runner, "$claim.Dispose()", "Remove-RequestOrWarn $dir");
+    assert!(runner.trim_end().ends_with("Remove-RequestOrWarn $dir"));
     // The runner sets UTF-8 output, like every PowerShell devvm starts.
     assert!(runner.contains("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)"));
 }
@@ -1278,6 +1291,8 @@ fn the_runner_and_the_callers_names_come_from_the_same_constants() {
         );
         assert!(caller.contains(value), "the caller names {value}");
     }
+    // The poll interval is the host's.
+    assert!(runner.contains(&format!("$pause = {}", elevate::PAUSE_MILLISECONDS)));
     // One removal, the same text: a request is removed the same way by whoever removes it.
     assert!(runner.contains(&elevate::remove_request()) && caller.contains(&elevate::remove_request()));
     assert!(task.contains(&format!("$root = {}", literal(elevate::ROOT))));

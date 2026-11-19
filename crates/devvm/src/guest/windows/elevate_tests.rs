@@ -196,8 +196,22 @@ fn a_removal_is_tried_until_the_request_is_gone_and_ends_on_an_error_that_waitin
         body.contains("if (-not (Test-RemovalPending $_.Exception)) { throw }"),
         "{body}"
     );
+    // The files, then `caller`, then `claim`, then the directory.
+    assert!(body.contains("-notin 'caller', 'claim'"), "{body}");
+    assert!(body.contains("$first + $last + $path"), "{body}");
+    assert!(
+        body.contains("$last = (Join-Path $path 'caller'), (Join-Path $path 'claim')"),
+        "{body}"
+    );
     // Only the pause paces it: no count, no clock.
     for bound in ["-Timeout", "Stopwatch", "$tries", "$attempt", "-lt"] {
         assert!(!body.contains(bound), "{bound}: {body}");
     }
+}
+
+#[skuld::test]
+fn a_withdrawn_request_is_removed_under_its_published_name() {
+    let text = script();
+    // The only move is the publication: no rename takes a withdrawn request out of the requests' names.
+    assert_eq!(text.matches("Directory]::Move(").count(), 1, "{text}");
 }

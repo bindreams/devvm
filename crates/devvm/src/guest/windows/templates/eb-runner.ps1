@@ -18,7 +18,7 @@ $readName = @@EB_READ@@
 $pwsh = @@PWSH_EXE@@
 $utf8 = [Text.UTF8Encoding]::new($false)
 # Poll interval (ms).
-$pause = 200
+$pause = @@!EB_PAUSE@@
 
 if ($Id -notmatch '^[0-9a-f]{32}$') { exit 2 }
 
@@ -27,6 +27,11 @@ if ($Id -notmatch '^[0-9a-f]{32}$') { exit 2 }
 Add-Type -LiteralPath (Join-Path $PSScriptRoot @@NATIVE_DLL@@)
 
 @@!EB_REMOVE_REQUEST@@
+# Removes a request, or says on stderr why it stays: what is left is the sweep's of the next runner, or the boot task's.
+function Remove-RequestOrWarn([string]$Dir) {
+    try { Remove-Request $Dir }
+    catch { [Console]::Error.WriteLine("devvm: the elevated runner could not remove $Dir`: $($_.Exception.Message)") }
+}
 # Whether a request's caller has ended: its process is gone, or the process of that id started at another time. A caller
 # that cannot be told is not ended, so its request stays: only a caller file that is not there says the request is gone.
 function Test-CallerEnded([string]$Dir) {
@@ -50,16 +55,16 @@ function Test-Held([string]$Path) {
     catch [UnauthorizedAccessException] { return $true }
 }
 
-# Requests whose caller has ended and that no runner holds, the `<id>.tmp` a caller left included. A `.tmp` with no caller
-# file is a caller's that is still building it (it writes the file before it publishes): it is not told from one that
-# died there, and stays. A request another runner or its caller removes first is not an error, and one that stays is the
-# next runner's, or the boot task's.
+# Requests whose caller has ended and that no runner holds, the `<id>.tmp` a caller left included. A request with no
+# caller file has an ended caller (its removal got that far); a `.tmp` with none is a caller's that is still building it
+# (it writes the file before it publishes), not told from one that died there, and stays. A request another runner or its
+# caller removes first is not an error, and one that stays is the next runner's, or the boot task's.
 foreach ($other in [IO.Directory]::GetDirectories($root)) {
     $name = [IO.Path]::GetFileName($other)
     if ($name -eq $Id) { continue }
     if ($name.EndsWith('.tmp') -and -not [IO.File]::Exists((Join-Path $other $callerName))) { continue }
     if (-not (Test-CallerEnded $other) -or (Test-Held (Join-Path $other $claimName))) { continue }
-    try { Remove-Item -LiteralPath $other -Recurse -Force } catch { }
+    Remove-RequestOrWarn $other
 }
 
 $dir = Join-Path $root $Id
@@ -132,7 +137,6 @@ if (-not $callerGone) {
     while (-not [IO.File]::Exists((Join-Path $dir $readName)) -and -not $callerExit.IsCompleted) { Start-Sleep -Milliseconds $pause }
 }
 if ($null -ne $caller) { $caller.Dispose() }
-# The last act: the request goes. The claim is closed first, or it would keep its own directory. A removal that cannot
-# succeed leaves the request to the next runner's sweep.
+# The last act: the request goes. The claim is closed first, or it would keep its own directory.
 $claim.Dispose()
-try { Remove-Request $dir } catch { }
+Remove-RequestOrWarn $dir

@@ -469,8 +469,20 @@ fn compile_native_helper(dir: &std::path::Path) {
     assert_eq!(built.status.code(), Some(0), "{}", shown(&built));
 }
 
-/// The runner as the answer disk has it, with `root` as the requests' root, written to `dir/eb-runner.ps1`.
-fn write_runner(dir: &std::path::Path, root: &std::path::Path) -> std::path::PathBuf {
+/// The native helper, compiled once per test run: compiling takes seconds, and every runner test needs it.
+struct NativeHelper(tempfile::TempDir);
+
+#[skuld::fixture(scope = process)]
+fn native_helper(#[fixture(pwsh_wrap)] _group: &Group) -> Result<NativeHelper, String> {
+    let dir = tempfile::tempdir().map_err(|e| format!("cannot create a temp dir: {e}"))?;
+    compile_native_helper(dir.path());
+    Ok(NativeHelper(dir))
+}
+
+/// The runner as the answer disk has it, with `root` as the requests' root, written to `dir/eb-runner.ps1` beside a
+/// copy of the native helper, where the runner finds it.
+fn write_runner(helper: &NativeHelper, dir: &std::path::Path, root: &std::path::Path) -> std::path::PathBuf {
+    std::fs::copy(helper.0.path().join(NATIVE_DLL), dir.join(NATIVE_DLL)).unwrap();
     let mut values = super::values(&inputs());
     values.iter_mut().find(|(name, _)| *name == "EB_ROOT").unwrap().1 = root.display().to_string();
     let files = disk_files(
@@ -487,7 +499,7 @@ fn write_runner(dir: &std::path::Path, root: &std::path::Path) -> std::path::Pat
     path
 }
 
-/// What a request's caller file says in [`after_runner`].
+/// What a request's caller file says in [`run_runner`].
 #[derive(Clone, Copy)]
 enum Caller {
     /// The process that runs the test script, which is alive.
@@ -501,13 +513,31 @@ enum Caller {
 /// The id of a request that is not in the root: a runner started for it only sweeps.
 const NO_REQUEST: &str = "00000000000000000000000000000000";
 
-/// The names left in the requests' root after a runner starts for the request `id`, when the root held `requests`: each
-/// a name, its caller and the other files it holds.
-fn after_runner(id: &str, requests: &[(&str, Caller, &[&str])]) -> Vec<String> {
+/// The id of a request a runner is started for.
+const REQUEST: &str = "abcdefabcdefabcdefabcdefabcdefab";
+
+/// A file of the request `request` that is open to nobody else until the removal first pauses.
+struct Held<'a> {
+    request: &'a str,
+    file: &'a str,
+}
+
+/// What [`run_runner`] saw.
+struct RunnerRun {
+    /// The names left in the root, sorted.
+    left: Vec<String>,
+    /// The names in the held request at the removal's first pause, sorted: where the removal that failed on the held file
+    /// had got to. Empty if it never paused.
+    at_first_pause: Vec<String>,
+}
+
+/// A runner started for the request `id` when the root held `requests`: each a name, its caller and the other files it
+/// holds. The runner runs in the test's own PowerShell, whose `Start-Sleep` is replaced by a function: with `held`, the
+/// file is open to nobody else until the first pause, and the pause says what the request holds then.
+fn run_runner(helper: &NativeHelper, id: &str, requests: &[(&str, Caller, &[&str])], held: Option<Held>) -> RunnerRun {
     let dir = tempfile::tempdir().unwrap();
-    compile_native_helper(dir.path());
     let root = dir.path().join("eb");
-    let runner = write_runner(dir.path(), &root);
+    let runner = write_runner(helper, dir.path(), &root);
     let mut script = format!(
         "$ErrorActionPreference = 'Stop'
 $root = {}
@@ -530,8 +560,25 @@ function Make([string]$name, $caller, [string[]]$files) {{
         let files = files.iter().map(|file| literal(file)).collect::<Vec<_>>().join(", ");
         script.push_str(&format!("Make {} {caller} @({files})\n", literal(name)));
     }
+    if let Some(Held { request, file }) = held {
+        script.push_str(&format!(
+            "$global:requestDir = Join-Path $root {}
+$global:held = [IO.File]::Open((Join-Path $global:requestDir {}), 'Open', 'Read', 'None')
+function global:Start-Sleep {{ param($Milliseconds)
+    if ($global:held) {{
+        $names = Get-ChildItem -LiteralPath $global:requestDir -Force | ForEach-Object Name | Sort-Object
+        [Console]::Out.WriteLine('PAUSE ' + ($names -join ' '))
+        $global:held.Dispose(); $global:held = $null
+    }}
+}}
+",
+            literal(request),
+            literal(file)
+        ));
+    }
     script.push_str(&format!(
-        "& pwsh -NoProfile -NonInteractive -File {} {}
+        "$global:LASTEXITCODE = 0
+& {} {}
 if ($LASTEXITCODE -ne 0) {{ throw \"the runner ended with $LASTEXITCODE\" }}
 Get-ChildItem -LiteralPath $root -Force | ForEach-Object Name | Sort-Object
 ",
@@ -540,17 +587,27 @@ Get-ChildItem -LiteralPath $root -Force | ForEach-Object Name | Sort-Object
     ));
     let output = run(&script, "none", None);
     assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| line.trim().to_owned())
-        .collect()
+    let (mut left, mut at_first_pause) = (Vec::new(), Vec::new());
+    for line in String::from_utf8_lossy(&output.stdout).lines().map(str::trim) {
+        match line.strip_prefix("PAUSE") {
+            Some(names) => at_first_pause = names.split_whitespace().map(str::to_owned).collect(),
+            None => left.push(line.to_owned()),
+        }
+    }
+    RunnerRun { left, at_first_pause }
+}
+
+/// [`run_runner`] with nothing held: the names left in the root.
+fn after_runner(helper: &NativeHelper, id: &str, requests: &[(&str, Caller, &[&str])]) -> Vec<String> {
+    run_runner(helper, id, requests, None).left
 }
 
 #[skuld::test]
 fn the_runners_sweep_removes_requests_and_unpublished_requests_whose_caller_ended_and_no_runner_holds(
-    #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(native_helper)] helper: &NativeHelper,
 ) {
     let left = after_runner(
+        helper,
         NO_REQUEST,
         &[
             ("ended", Caller::Ended, &["script.ps1"]),
@@ -568,14 +625,90 @@ fn the_runners_sweep_removes_requests_and_unpublished_requests_whose_caller_ende
 }
 
 #[skuld::test]
-fn the_runner_removes_the_request_it_served_as_its_last_act(#[fixture(pwsh_wrap)] _group: &Group) {
+fn the_runner_removes_the_request_it_served_as_its_last_act(#[fixture(native_helper)] helper: &NativeHelper) {
     // The caller ended, so the runner serves nothing and answers nobody: it claims the request and removes it.
-    let id = "abcdefabcdefabcdefabcdefabcdefab";
     assert_eq!(
         after_runner(
-            id,
-            &[(id, Caller::Ended, &["script.ps1"]), ("alive", Caller::Alive, &[])]
+            helper,
+            REQUEST,
+            &[(REQUEST, Caller::Ended, &["script.ps1"]), ("alive", Caller::Alive, &[])]
         ),
         ["alive"]
     );
+}
+
+#[skuld::test]
+fn the_sweep_takes_a_published_request_whose_caller_file_is_gone(#[fixture(native_helper)] helper: &NativeHelper) {
+    // What a removal that stopped part way leaves: no caller file reads as an ended caller.
+    let left = after_runner(
+        helper,
+        NO_REQUEST,
+        &[
+            ("partly", Caller::Missing, &["script.ps1", "stdout", "claim"]),
+            ("emptied", Caller::Missing, &[]),
+        ],
+    );
+    assert_eq!(left, Vec::<String>::new());
+}
+
+#[skuld::test]
+fn a_late_runner_on_a_request_whose_caller_and_claim_are_gone_removes_it_and_does_not_wait(
+    #[fixture(native_helper)] helper: &NativeHelper,
+) {
+    // The state a removal leaves just before it ends the directory: the runner has no caller to wait on.
+    assert_eq!(
+        after_runner(helper, REQUEST, &[(REQUEST, Caller::Missing, &["script.ps1"])]),
+        Vec::<String>::new()
+    );
+}
+
+#[skuld::test]
+fn a_late_runner_on_a_request_whose_claim_is_there_leaves_it(#[fixture(native_helper)] helper: &NativeHelper) {
+    // The claim a caller made to withdraw the request, or a runner's: the request is not this runner's.
+    assert_eq!(
+        after_runner(helper, REQUEST, &[(REQUEST, Caller::Alive, &["script.ps1", "claim"])]),
+        [REQUEST]
+    );
+}
+
+#[skuld::test]
+fn the_sweep_removes_the_caller_and_the_claim_after_every_other_file(#[fixture(native_helper)] helper: &NativeHelper) {
+    let run = run_runner(
+        helper,
+        NO_REQUEST,
+        &[(
+            "swept",
+            Caller::Ended,
+            &["claim", "done", "exit", "read", "script.ps1", "stdout"],
+        )],
+        Some(Held {
+            request: "swept",
+            file: "stdout",
+        }),
+    );
+    // The removal that failed on `stdout` had removed the files before it, and neither `caller` nor `claim`.
+    assert_eq!(run.at_first_pause, ["caller", "claim", "stdout"]);
+    assert_eq!(run.left, Vec::<String>::new());
+}
+
+#[skuld::test]
+fn the_runners_last_removal_removes_the_caller_and_the_claim_after_every_other_file(
+    #[fixture(native_helper)] helper: &NativeHelper,
+) {
+    let run = run_runner(
+        helper,
+        REQUEST,
+        &[(
+            REQUEST,
+            Caller::Ended,
+            &["done", "exit", "read", "script.ps1", "stdout"],
+        )],
+        Some(Held {
+            request: REQUEST,
+            file: "stdout",
+        }),
+    );
+    // The runner makes its own claim and closes it before the removal.
+    assert_eq!(run.at_first_pause, ["caller", "claim", "stdout"]);
+    assert_eq!(run.left, Vec::<String>::new());
 }

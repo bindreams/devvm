@@ -457,15 +457,28 @@ fn an_elevated_powershell_command_gets_the_hint_through_the_request(
     assert!(stderr(&output).contains(&hint("Get-ChildItem")), "{}", shown(&output));
 }
 
-/// A `Run` that leaves a file of the request open to nobody else and ends in an error, so the caller withdraws it; the
-/// next pause (`Start-Sleep`, replaced by a function) closes the file and says so on stderr. A removal that stops after
-/// one try leaves the request; one that tries again is let through by the pause.
-const HELD_UNTIL_THE_PAUSE: &str =
-    "$global:held = [IO.File]::Open((Join-Path (Join-Path $root $id) 'script.ps1'), 'Open', 'Read', 'None')
-function global:Start-Sleep { param($Milliseconds)
-    [Console]::Error.WriteLine('PAUSED')
-    if ($global:held) { $global:held.Dispose(); $global:held = $null } }
-throw 'boom'";
+/// A `Run` that makes the request's files `created`, leaves the file `held` of it open to nobody else and ends in an
+/// error, so the caller withdraws it. The next pause (`Start-Sleep`, replaced by a function) says on stderr which names
+/// the root and the request then hold, and closes the file. A removal that stops after one try leaves the request; one
+/// that tries again is let through by the pause.
+fn held_until_the_pause(held: &str, created: &[&str]) -> String {
+    let created = created
+        .iter()
+        .map(|name| format!("[IO.File]::WriteAllText((Join-Path $global:requestDir '{name}'), '')\n"))
+        .collect::<String>();
+    format!(
+        "$global:requestDir = Join-Path $root $id
+{created}$global:held = [IO.File]::Open((Join-Path $global:requestDir '{held}'), 'Open', 'Read', 'None')
+function global:Start-Sleep {{ param($Milliseconds)
+    if ($global:held) {{
+        $root = Split-Path -Parent $global:requestDir
+        [Console]::Error.WriteLine('PAUSED root=' + ((Get-ChildItem -LiteralPath $root -Force | ForEach-Object Name) -replace '^[0-9a-f]{{32}}', 'ID' -join ',') + ' request=' + ((Get-ChildItem -LiteralPath $global:requestDir -Force | ForEach-Object Name | Sort-Object) -join ','))
+        $global:held.Dispose(); $global:held = $null
+    }}
+}}
+throw 'boom'"
+    )
+}
 
 #[skuld::test]
 fn a_withdrawn_request_that_is_held_open_is_removed_once_it_is_released(
@@ -473,10 +486,30 @@ fn a_withdrawn_request_that_is_held_open_is_removed_once_it_is_released(
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
     let root = home.join("eb");
-    let output = caller(&root, HELD_UNTIL_THE_PAUSE, ENDED);
+    let output = caller(&root, &held_until_the_pause("script.ps1", &[]), ENDED);
 
     assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
     assert!(stderr(&output).contains("PAUSED"), "{}", shown(&output));
+    assert!(requests(&root).is_empty(), "{:?}", requests(&root));
+}
+
+#[skuld::test]
+fn a_withdrawn_request_is_removed_under_its_name_with_the_caller_and_the_claim_last(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let root = home.join("eb");
+    let run = held_until_the_pause("stdout", &["done", "exit", "read", "stdout"]);
+    let output = caller(&root, &run, ENDED);
+
+    assert_eq!(output.status.code(), Some(126), "{}", shown(&output));
+    // The removal that failed on `stdout` had removed the files before it and kept `caller` and `claim`; and the request
+    // was not renamed out of the requests' names.
+    assert!(
+        stderr(&output).contains("PAUSED root=ID request=caller,claim,stdout"),
+        "{}",
+        shown(&output)
+    );
     assert!(requests(&root).is_empty(), "{:?}", requests(&root));
 }
 
@@ -496,4 +529,5 @@ throw 'boom'";
         "{}",
         shown(&output)
     );
+    assert_eq!(requests(&root).len(), 1, "{:?}", requests(&root));
 }

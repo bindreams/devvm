@@ -30,11 +30,16 @@
 //! The caller removes a request only when no runner will touch it: one it withdrew or one whose runner died. What a
 //! killed caller leaves is the runner's to remove, and the boot task sweeps what nothing else did.
 //!
-//! **A removal is tried until the request is gone.** A file of the request open elsewhere (a scanner) fails a removal for
-//! a moment, so the caller and the runner both remove through `Remove-Request` ([`remove_request`]): it looks at the
-//! directory again after each pause, with no limit on the tries. An error that waiting does not change ends it, and the
-//! request stays for the sweep. The sweep also takes a `<id>.tmp` whose caller has ended, but never one with no `caller`
-//! file, which a caller that is still building it has not written yet.
+//! **A request is removed in one order, until it is gone.** Whoever removes one (the caller, the runner at its end, the
+//! runner's sweep) calls `Remove-Request` ([`remove_request`]): the files other than `caller` and `claim`, then `caller`,
+//! then `claim`, then the directory, looking again after each pause, with no limit on the tries. A file of the request
+//! open elsewhere (a scanner) fails a removal for a moment; an error that waiting does not change is reported on stderr
+//! and leaves the request to the sweep. The order says who a half-removed request belongs to, so a request left at any
+//! point is taken (see [`REMOVE_REQUEST`]).
+//!
+//! The sweep also takes an `<id>.tmp` whose `caller` file names an ended caller. A `<id>.tmp` is only ever an
+//! unpublished request, and its caller removes it the same way. One with no `caller` file is not told from one a caller
+//! is still building, and stays: an empty `<id>.tmp` of a caller killed while building or removing it stays until boot.
 //!
 //! The caller's wait ends from file state alone, with no time bound: a held claim is a live runner; a released claim
 //! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
@@ -68,19 +73,38 @@ pub(super) const DONE: &str = "done";
 pub(super) const READ: &str = "read";
 
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
-const PAUSE_MILLISECONDS: u32 = 200;
+pub(super) const PAUSE_MILLISECONDS: u32 = 200;
 
-/// The PowerShell function `Remove-Request`, the same text in the caller script and in the runner. It returns when the
-/// directory is gone. A try that fails because a file of the request is open elsewhere (sharing violation 32, lock
-/// violation 33, directory not empty 145), or because an entry is already gone, is repeated after a pause. Any other
-/// error is thrown.
+/// The PowerShell functions `Remove-Request` and `Test-RemovalPending`, the same text in the caller script and in the
+/// runner. `Remove-Request` returns when the directory is gone. It removes every file but `caller` and `claim`, then
+/// `caller`, then `claim`, then the directory; a try that fails because a file is open elsewhere (sharing violation 32,
+/// lock violation 33, directory not empty 145), or because an entry is already gone, is repeated from the top after a
+/// pause. Any other error (access denied included: measured permanent, not transient) is thrown.
+///
+/// Every other removal of a request is this one, so a request that is removed only in part is in one of these states,
+/// and each is safe:
+///
+/// - `claim` is there: a late runner's `CreateNew` fails with 80 and it leaves; the sweep skips it while it is held and
+///   takes it once its `caller` has ended.
+/// - `claim` is gone: `caller` was removed before it. A late runner claims the request, finds no `caller` file and
+///   fails before it waits on a caller, then removes the request itself; the removal in progress meets it by its claim
+///   (held, so a failure it retries) or finds the directory gone.
+/// - `caller` is gone: the sweep reads a published request with no `caller` file as one whose caller has ended, and
+///   takes it unless a runner holds its claim.
+/// - `script` is removed first, so a half-removed request never runs a command.
 const REMOVE_REQUEST: &str = r#"function Test-RemovalPending($failure) {
     if ($failure -is [Management.Automation.ItemNotFoundException] -or $failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
     return ($failure -is [IO.IOException]) -and (($failure.HResult -band 0xFFFF) -in 32, 33, 145)
 }
 function Remove-Request([string]$path) {
+    $last = (Join-Path $path {CALLER}), (Join-Path $path {CLAIM})
     while ([IO.Directory]::Exists($path)) {
-        try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
+        try {
+            $first = @(Get-ChildItem -LiteralPath $path -Force -Name -ErrorAction Stop | Where-Object { $_ -notin {CALLER}, {CLAIM} } | ForEach-Object { Join-Path $path $_ })
+            foreach ($entry in $first + $last + $path) {
+                if ([IO.File]::Exists($entry) -or [IO.Directory]::Exists($entry)) { Remove-Item -LiteralPath $entry -Recurse -Force -ErrorAction Stop }
+            }
+        }
         catch {
             if (-not (Test-RemovalPending $_.Exception)) { throw }
             Start-Sleep -Milliseconds {PAUSE}
@@ -89,9 +113,12 @@ function Remove-Request([string]$path) {
 }
 "#;
 
-/// [`REMOVE_REQUEST`] with its pause filled in.
+/// [`REMOVE_REQUEST`] with its file names and its pause filled in.
 pub(super) fn remove_request() -> String {
-    REMOVE_REQUEST.replace("{PAUSE}", &PAUSE_MILLISECONDS.to_string())
+    REMOVE_REQUEST
+        .replace("{CALLER}", &literal(CALLER))
+        .replace("{CLAIM}", &literal(CLAIM))
+        .replace("{PAUSE}", &PAUSE_MILLISECONDS.to_string())
 }
 
 /// The task is looked up before anything is made. Building and publishing the request, the start and the wait are one
@@ -233,10 +260,7 @@ try {
         }
     } elseif ([IO.Directory]::Exists($dir)) {
         if ($abandoned) {
-            # Out of the requests' names first, so that no runner finds half of it.
-            $leaving = $dir
-            try { [IO.Directory]::Move($dir, $building); $leaving = $building } catch { Warn 'could not rename the withdrawn request' $_ }
-            try { Remove-Request $leaving } catch { Warn 'could not remove the withdrawn request' $_ }
+            try { Remove-Request $dir } catch { Warn 'could not remove the withdrawn request' $_ }
         } else {
             try { [IO.File]::WriteAllText((Join-Path $dir '{READ}'), '', $utf8) } catch { Warn 'could not tell the runner the request was read' $_ }
         }
