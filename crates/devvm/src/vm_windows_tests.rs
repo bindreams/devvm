@@ -39,20 +39,12 @@ fn recorded(instance: &Instance) -> Option<MachineRecord> {
 }
 
 fn running(machine: &MachineRecord) -> bool {
-    VmProcess::attach(&machine.process)
-        .unwrap()
-        .found(&machine.process)
-        .unwrap()
-        .is_some()
+    VmProcess::attach(&machine.process).unwrap().is_some()
 }
 
 /// Waits until the process of `machine` has exited (it may not have, yet, when the thing that kills it returns).
 fn wait_until_dead(machine: &MachineRecord) {
-    if let Some(vm) = VmProcess::attach(&machine.process)
-        .unwrap()
-        .found(&machine.process)
-        .unwrap()
-    {
+    if let Some(vm) = VmProcess::attach(&machine.process).unwrap() {
         vm.wait().unwrap();
     }
 }
@@ -254,11 +246,7 @@ fn remove_after_start_kills_the_machine_and_deletes_everything(#[fixture(unicode
     instance.start().unwrap();
     let machine = recorded(&instance).unwrap();
     let port = started_port(machine.serial_log.parent().unwrap());
-    let vm = VmProcess::attach(&machine.process)
-        .unwrap()
-        .found(&machine.process)
-        .unwrap()
-        .unwrap();
+    let vm = VmProcess::attach(&machine.process).unwrap().unwrap();
     assert!(connect_when_up(&vm, port).starts_with("up "));
 
     instance.remove().unwrap();
@@ -1020,8 +1008,7 @@ struct KillsOnDrop(MachineRecord);
 
 impl Drop for KillsOnDrop {
     fn drop(&mut self) {
-        if let Ok(Some(mut vm)) = VmProcess::attach(&self.0.process).and_then(|outcome| outcome.found(&self.0.process))
-        {
+        if let Ok(Some(mut vm)) = VmProcess::attach(&self.0.process) {
             let _ = vm.kill();
         }
     }

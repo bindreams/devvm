@@ -52,10 +52,15 @@ enum State {
     Foreign,
 }
 
-/// Waits for the process `id` names, opened by its identity, to exit. A process that is gone has exited.
+/// The process `id` names, opened by its identity; `None` when it is gone.
+fn open_by_identity(id: ProcessId) -> std::result::Result<Option<cosca::Process>, cosca::error::Error> {
+    cosca::Process::open(id)
+}
+
+/// Waits for the process `id` names to exit. A process that is gone has exited.
 fn wait_for_exit(id: ProcessId) -> Result<()> {
     let waiting = |e: cosca::error::Error| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e);
-    match cosca::Process::open(id).map_err(waiting)? {
+    match open_by_identity(id).map_err(waiting)? {
         Some(process) => process.wait().map_err(waiting),
         None => Ok(()),
     }
@@ -66,7 +71,7 @@ fn wait_for_exit(id: ProcessId) -> Result<()> {
 /// reported as a failed kill. A process that is gone is `Ok`.
 fn kill_and_wait(id: ProcessId) -> Result<()> {
     let killing = |e: cosca::error::Error| cosca_error(&format!("cannot kill the VM process {}", id.pid()), e);
-    let Some(process) = cosca::Process::open(id).map_err(killing)? else {
+    let Some(process) = open_by_identity(id).map_err(killing)? else {
         return Ok(());
     };
     process.kill().map_err(killing)?;
@@ -242,31 +247,20 @@ impl VmProcess {
         }
     }
 
-    /// Finds the process `record` names. `NotRunning` when it has exited, when the PID now belongs to another process,
-    /// or when the record was written on another boot or platform: it names nothing that exists now. `Unreadable` when
-    /// the identity layer refuses the record for another reason: nothing says whether the process runs. An error when
-    /// the host cannot read its own boot session, which no record can be compared with, and when liveness cannot be
-    /// established.
-    pub(crate) fn attach(record: &ProcessIdRecord) -> Result<AttachOutcome> {
+    /// The process `record` names, if it is still running. `None` when it has exited, when the PID now belongs to
+    /// another process, or when the record was written on another boot or platform: it names nothing that exists
+    /// now. An error when liveness cannot be established, including a record this build cannot read: it may name a
+    /// process that still runs.
+    pub(crate) fn attach(record: &ProcessIdRecord) -> Result<Option<VmProcess>> {
         let id = match ProcessId::try_from(record) {
             Ok(id) => id,
             Err(cosca::error::Error::IdentityRecord {
                 kind: RecordErrorKind::ForeignBootSession | RecordErrorKind::ForeignPlatform,
                 ..
-            }) => return Ok(AttachOutcome::NotRunning),
-            // About this host, not the record: it would refuse every record alike, so no claim can stand in for it.
-            Err(
-                error @ cosca::error::Error::IdentityRecord {
-                    kind: RecordErrorKind::ScopeUnreadable,
-                    ..
-                },
-            ) => {
-                return Err(cosca_error(
-                    &format!("cannot check the VM process {}", record.pid),
-                    error,
-                ));
+            }) => return Ok(None),
+            Err(error @ cosca::error::Error::IdentityRecord { .. }) => {
+                return Err(unreadable_record(record, error));
             }
-            Err(error @ cosca::error::Error::IdentityRecord { .. }) => return Ok(AttachOutcome::Unreadable(error)),
             Err(other) => {
                 return Err(cosca_error(
                     &format!("cannot restore the VM process {}", record.pid),
@@ -275,11 +269,11 @@ impl VmProcess {
             }
         };
         match id.is_alive() {
-            Liveness::Alive => Ok(AttachOutcome::Running(VmProcess {
+            Liveness::Alive => Ok(Some(VmProcess {
                 id,
                 state: State::Foreign,
             })),
-            Liveness::Dead => Ok(AttachOutcome::NotRunning),
+            Liveness::Dead => Ok(None),
             Liveness::Unknown => Err(unknown_liveness(id)),
         }
     }
@@ -343,28 +337,27 @@ impl VmProcess {
     }
 }
 
-/// What [`VmProcess::attach`] found of the process a record names.
-pub(crate) enum AttachOutcome {
-    Running(VmProcess),
-    NotRunning,
-    /// The identity layer refuses the record (a format version this build does not know, a PID it cannot name, ...).
-    Unreadable(cosca::error::Error),
+/// A record the identity layer refuses for a reason other than another boot or platform: what it names cannot be told
+/// from here, so it is not read as "not running", which would let a second VM start on a disk the first still holds.
+fn unreadable_record(record: &ProcessIdRecord, error: cosca::error::Error) -> Error {
+    cosca_error(
+        &format!(
+            "cannot tell whether the VM process {} is running: its process record cannot be used here",
+            record.pid
+        ),
+        error,
+    )
 }
 
-impl AttachOutcome {
-    /// The process, `None` when it is not running, and an error for a record that cannot be read: for a caller that
-    /// has no other way to tell. Reading it as "not running" would let a second VM start on a disk the first holds.
-    pub(crate) fn found(self, record: &ProcessIdRecord) -> Result<Option<VmProcess>> {
-        match self {
-            AttachOutcome::Running(vm) => Ok(Some(vm)),
-            AttachOutcome::NotRunning => Ok(None),
-            AttachOutcome::Unreadable(error) => Err(Error::new(
-                ErrorKind::Io,
-                format!("cannot tell whether the VM process {} is running: {error}", record.pid),
-            )
-            .with_source(error)),
-        }
-    }
+/// Whether `error` is the refusal of [`VmProcess::attach`] to read a process record.
+pub(crate) fn is_unreadable_record(error: &Error) -> bool {
+    use std::error::Error as _;
+    matches!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<cosca::error::Error>()),
+        Some(cosca::error::Error::IdentityRecord { .. })
+    )
 }
 
 pub(crate) fn unknown_liveness(id: ProcessId) -> Error {

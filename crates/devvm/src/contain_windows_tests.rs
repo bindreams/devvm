@@ -49,10 +49,10 @@ fn dropping_a_frozen_vm_kills_it_and_it_never_ran(#[fixture(unicode_home)] home:
     drop(vm);
 
     // The process may still be dying when `drop` returns; this waits for the real condition.
-    if let Some(dying) = VmProcess::attach(&record).unwrap().found(&record).unwrap() {
+    if let Some(dying) = VmProcess::attach(&record).unwrap() {
         dying.wait().unwrap();
     }
-    assert!(VmProcess::attach(&record).unwrap().found(&record).unwrap().is_none());
+    assert!(VmProcess::attach(&record).unwrap().is_none());
     assert!(!home.join(STARTED).exists(), "a dropped frozen VM never ran");
 }
 
@@ -60,11 +60,7 @@ fn dropping_a_frozen_vm_kills_it_and_it_never_ran(#[fixture(unicode_home)] home:
 fn a_failed_resume_leaves_no_process(#[fixture(unicode_home)] home: &Path) {
     let mut vm = frozen(home, Lifetime::OutlivesOwner);
     // Something else kills the frozen process before the resume.
-    let mut other = VmProcess::attach(&vm.record().unwrap())
-        .unwrap()
-        .found(&vm.record().unwrap())
-        .unwrap()
-        .unwrap();
+    let mut other = VmProcess::attach(&vm.record().unwrap()).unwrap().unwrap();
     other.kill().unwrap();
 
     let error = vm.resume().expect_err("a dead process cannot be resumed");
@@ -91,7 +87,7 @@ fn kill_of_a_frozen_vm_returns_after_it_has_exited_and_it_never_ran(#[fixture(un
         !vm.is_alive().unwrap(),
         "kill must not return before the process has exited"
     );
-    assert!(VmProcess::attach(&record).unwrap().found(&record).unwrap().is_none());
+    assert!(VmProcess::attach(&record).unwrap().is_none());
     assert!(!home.join(STARTED).exists());
     vm.kill().expect("killing a dead VM is Ok");
 }
@@ -138,8 +134,6 @@ fn a_contained_vm_dies_when_its_owner_is_killed(#[fixture(unicode_home)] home: &
     let record = first_record(&mut owner);
     let vm = VmProcess::attach(&record)
         .unwrap()
-        .found(&record)
-        .unwrap()
         .expect("the VM runs while its owner lives");
 
     owner.kill().unwrap();
@@ -156,8 +150,6 @@ fn a_released_vm_survives_its_owner_exiting(#[fixture(unicode_home)] home: &Path
     assert!(owner.wait().unwrap().success());
 
     let mut vm = VmProcess::attach(&record)
-        .unwrap()
-        .found(&record)
         .unwrap()
         .expect("the released VM outlives its owner");
     let port = await_port(&vm, home);
@@ -188,8 +180,6 @@ fn a_released_vm_does_not_hold_the_owners_pipes(#[fixture(unicode_home)] home: &
 
     let mut vm = VmProcess::attach(&record)
         .unwrap()
-        .found(&record)
-        .unwrap()
         .expect("the VM is still running at EOF");
     vm.kill().unwrap();
 }
@@ -206,7 +196,7 @@ fn kill_of_a_running_vm_returns_only_after_exit(#[fixture(unicode_home)] home: &
         !vm.is_alive().unwrap(),
         "kill must not return before the process has exited"
     );
-    assert!(VmProcess::attach(&record).unwrap().found(&record).unwrap().is_none());
+    assert!(VmProcess::attach(&record).unwrap().is_none());
     vm.kill().expect("killing a dead VM is Ok");
 }
 
@@ -309,11 +299,7 @@ fn try_wait_of_a_vm_this_process_did_not_start_is_an_internal_error(#[fixture(un
     let mut vm = frozen(home, Lifetime::DiesWithOwner);
     vm.resume().unwrap();
     await_port(&vm, home);
-    let foreign = VmProcess::attach(&vm.record().unwrap())
-        .unwrap()
-        .found(&vm.record().unwrap())
-        .unwrap()
-        .expect("the VM runs");
+    let foreign = VmProcess::attach(&vm.record().unwrap()).unwrap().expect("the VM runs");
 
     let error = foreign.try_wait().unwrap_err();
 

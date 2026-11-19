@@ -93,8 +93,6 @@ fn kill_returns_only_after_the_process_has_exited() {
     let sleeper = Sleeper::spawn();
     let mut vm = VmProcess::attach(&sleeper.record())
         .unwrap()
-        .found(&sleeper.record())
-        .unwrap()
         .expect("a live process attaches");
     assert!(vm.is_alive().unwrap());
     vm.kill().unwrap();
@@ -110,13 +108,9 @@ fn attach_refuses_a_record_whose_start_token_differs() {
     let sleeper = Sleeper::spawn();
     let mut record = sleeper.record();
     record.token ^= 1;
-    assert!(VmProcess::attach(&record).unwrap().found(&record).unwrap().is_none());
+    assert!(VmProcess::attach(&record).unwrap().is_none());
     // The process the forged record pointed at is untouched.
-    let mut vm = VmProcess::attach(&sleeper.record())
-        .unwrap()
-        .found(&sleeper.record())
-        .unwrap()
-        .unwrap();
+    let mut vm = VmProcess::attach(&sleeper.record()).unwrap().unwrap();
     assert!(vm.is_alive().unwrap());
     vm.kill().unwrap();
 }
@@ -126,7 +120,7 @@ fn attach_returns_none_for_an_exited_process() {
     let sleeper = Sleeper::spawn();
     let record = sleeper.record();
     sleeper.finish();
-    assert!(VmProcess::attach(&record).unwrap().found(&record).unwrap().is_none());
+    assert!(VmProcess::attach(&record).unwrap().is_none());
 }
 
 #[skuld::test]
@@ -134,17 +128,13 @@ fn attach_returns_none_for_a_record_from_another_platform() {
     let sleeper = Sleeper::spawn();
     let mut record = sleeper.record();
     record.platform = cosca::identity::Platform::Other("plan9".to_owned());
-    assert!(VmProcess::attach(&record).unwrap().found(&record).unwrap().is_none());
+    assert!(VmProcess::attach(&record).unwrap().is_none());
 }
 
 #[skuld::test]
 fn wait_on_an_attached_foreign_process_returns_when_it_exits() {
     let mut sleeper = Sleeper::spawn();
-    let vm = VmProcess::attach(&sleeper.record())
-        .unwrap()
-        .found(&sleeper.record())
-        .unwrap()
-        .unwrap();
+    let vm = VmProcess::attach(&sleeper.record()).unwrap().unwrap();
     let (done, waited) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         vm.wait().unwrap();
@@ -159,7 +149,7 @@ fn wait_on_an_attached_foreign_process_returns_when_it_exits() {
 fn record_names_the_attached_process() {
     let sleeper = Sleeper::spawn();
     let record = sleeper.record();
-    let vm = VmProcess::attach(&record).unwrap().found(&record).unwrap().unwrap();
+    let vm = VmProcess::attach(&record).unwrap().unwrap();
     assert_eq!(vm.record().unwrap(), record);
 }
 

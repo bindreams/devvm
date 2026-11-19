@@ -22,19 +22,11 @@ fn memory_fixture(home: &Path) -> (EngineFixture, Arc<MemoryProgress>) {
 }
 
 fn running(machine: &MachineRecord) -> bool {
-    VmProcess::attach(&machine.process)
-        .unwrap()
-        .found(&machine.process)
-        .unwrap()
-        .is_some()
+    VmProcess::attach(&machine.process).unwrap().is_some()
 }
 
 fn wait_until_dead(machine: &MachineRecord) {
-    if let Some(vm) = VmProcess::attach(&machine.process)
-        .unwrap()
-        .found(&machine.process)
-        .unwrap()
-    {
+    if let Some(vm) = VmProcess::attach(&machine.process).unwrap() {
         vm.wait().unwrap();
     }
 }
@@ -300,8 +292,6 @@ fn an_ownerless_instance_survives_the_cli_and_only_remove_deletes_it(#[fixture(u
         "reap leaves an ownerless instance"
     );
     let vm = VmProcess::attach(&machine.process)
-        .unwrap()
-        .found(&machine.process)
         .unwrap()
         .expect("the VM outlived its CLI");
     assert!(connect_when_up(&vm, started_port(machine.serial_log.parent().unwrap())).contains("kill-on-close=false"));

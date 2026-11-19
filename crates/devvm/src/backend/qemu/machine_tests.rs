@@ -14,7 +14,7 @@ use super::{NO_REBOOT_REFUSAL, QemuMachine, printed_since};
 use crate::backend::qemu::qmp::qmp_tests::serve;
 use crate::backend::{Backend, Machine, MachineRecord};
 use crate::contain::VmProcess;
-use crate::host::{self, HoldOutcome, Host, ProcessWatch};
+use crate::host::{self, Host, ProcessWatch};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
 use crate::test_support::host::{NO_GUEST_RESET, WINDOWS_11};
 use crate::test_support::manual_exit::ManualExit;
@@ -37,8 +37,6 @@ fn record(sock: &Sock, no_reboot: bool) -> (VmProcess, MachineRecord) {
         no_reboot,
     };
     let vm = VmProcess::attach(&record.process)
-        .unwrap()
-        .found(&record.process)
         .unwrap()
         .expect("the test process runs");
     (vm, record)
@@ -115,47 +113,41 @@ fn attach_refuses_a_record_without_a_claim_naming_the_socket() {
     );
 }
 
-/// A record this build cannot read says nothing about the process, but the launch's claim does: QEMU holds it while it
-/// runs, so a free claim is a machine that is over.
+/// A record this build cannot read names nothing it can tell is gone: reporting the machine as not running would let a
+/// second one start on the same disk.
 #[skuld::test]
-fn a_record_this_build_cannot_read_is_not_running_when_its_claim_is_free() {
+fn a_record_whose_version_this_build_does_not_know_is_an_error_from_attach_and_from_find() {
     let sock = Sock::new();
     let (_vm, mut record) = record(&sock, false);
     record.process.version = cosca::identity::RECORD_VERSION + 1;
+
+    let attach = VmProcess::attach(&record.process)
+        .err()
+        .expect("attach reads the version");
+    assert_eq!(attach.kind(), ErrorKind::Io, "{attach}");
     let backend = backend_in(&socket_run(), Arc::default());
-
-    let found = backend.find(&record).unwrap();
-
-    assert!(found.is_none(), "a free claim is a machine that is over");
-}
-
-/// A held claim is a machine that runs, under a record this devvm cannot read: it is refused naming the process, and
-/// the way out is to end that process.
-#[skuld::test]
-fn a_record_this_build_cannot_read_names_the_process_to_end_when_its_claim_is_held() {
-    let sock = Sock::new();
-    let (_vm, mut record) = record(&sock, false);
-    record.process.version = cosca::identity::RECORD_VERSION + 1;
-    let pid = record.process.pid;
-    let HoldOutcome::Taken(_held) = host::current().hold_existing(&sock.claim.path).unwrap() else {
-        panic!("nobody holds the new claim");
-    };
-    let backend = backend_in(&socket_run(), Arc::default());
-
-    let error = backend
+    let find = backend
         .find(&record)
         .err()
-        .expect("a held claim is a machine that runs");
-
-    let text = error.to_string();
-    assert!(text.contains(&format!("end process {pid}")), "{text}");
-    assert!(text.contains("cannot read the VM's process record"), "{text}");
-    assert!(!text.contains("delete"), "{text}");
-    assert!(!text.contains("ProcessIdRecord"), "no dump of the record: {text}");
-    assert!(
-        std::error::Error::source(&error).is_some(),
-        "the cosca error is the source"
-    );
+        .expect("find does not read it as not running");
+    assert_eq!(find.kind(), ErrorKind::Io, "{find}");
+    for error in [attach, find] {
+        let text = error.to_string();
+        let pid = record.process.pid;
+        assert!(
+            text.contains(&format!("cannot tell whether the VM process {pid} is running")),
+            "{text}"
+        );
+        assert!(
+            text.contains("unknown record format version"),
+            "cosca's own words are kept: {text}"
+        );
+        assert!(!text.contains("ProcessIdRecord"), "no dump of the record: {text}");
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the cosca error is the source"
+        );
+    }
 }
 
 #[skuld::test]

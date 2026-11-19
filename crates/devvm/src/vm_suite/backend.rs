@@ -506,18 +506,12 @@ fn vm_qemu_guest_shutdown_removes_the_socket_lock_and_claim_files(
 // Helpers =============================================================================================================
 
 fn is_running(record: &MachineRecord) -> bool {
-    VmProcess::attach(&record.process)
-        .unwrap()
-        .found(&record.process)
-        .unwrap()
-        .is_some()
+    VmProcess::attach(&record.process).unwrap().is_some()
 }
 
 /// The watch of the machine's process, as a session needs one.
 fn watch_of(record: &MachineRecord) -> Arc<dyn ProcessWatch> {
     let vm = VmProcess::attach(&record.process)
-        .unwrap()
-        .found(&record.process)
         .unwrap()
         .expect("the machine's process runs");
     host::current().watch_process(vm.id()).unwrap()
