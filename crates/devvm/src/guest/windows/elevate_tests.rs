@@ -219,10 +219,10 @@ fn a_removal_never_lists_or_deletes_through_a_link() {
     // link is removed as a link; the only recursion is `Remove-Entry` over the entries of a real directory.
     assert!(text.contains("if ((Test-Link $path) -or -not [IO.Directory]::Exists($path)) { Remove-Entry $path }"));
     assert!(text.contains("if ($directory -and -not $link) {"), "{text}");
-    assert!(
-        text.contains("if ($link -and $directory) { [IO.Directory]::Delete($entry) }"),
-        "{text}"
-    );
+    // A directory, link or emptied, goes by a delete that is never recursive: one that got a child meanwhile is retried.
+    assert!(text.contains("if ($directory) {"), "{text}");
+    assert!(text.contains("[IO.Directory]::Delete($entry)"), "{text}");
+    assert!(text.contains("catch { return $true }"), "{text}");
     for follows in ["-Recurse", "Get-ChildItem", "Directory]::Delete($entry, $true)"] {
         assert!(!text.contains(follows), "{follows}: {text}");
     }

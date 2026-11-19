@@ -40,8 +40,11 @@
 //!
 //! **A link in the root is removed as a link.** A request, or an entry of one, that is already a junction or a symbolic
 //! link when a remover reaches it is removed as the link and never followed: `Remove-Request` enumerates and deletes only
-//! what is under a real directory. A link swapped in while a removal runs can be followed. Only `user` can make one, and
-//! `user` already runs anything at High through this helper, so the root is not defended against them.
+//! what is under a real directory. A path whose attributes cannot be read, for any reason but that it is not there, is
+//! taken for a link. A link swapped in while a removal runs can be followed. The accounts that can write the root are
+//! `user`, an administrator who already runs anything at High through this helper, and the guest's own service accounts
+//! (`Users` also holds Authenticated Users and INTERACTIVE), which are the guest OS: the root is not defended against
+//! them.
 //!
 //! The sweep also takes an `<id>.tmp` whose `caller` file names an ended caller. A `<id>.tmp` is only ever an
 //! unpublished request, and its caller removes it the same way. One with no `caller` file is not told from one a caller
@@ -64,8 +67,9 @@ mod elevate_tests;
 #[path = "elevate_pwsh_tests.rs"]
 mod elevate_pwsh_tests;
 
-/// Where the requests are: `Users` may modify it, so a request needs no elevated writer. In this guest `Users` means
-/// `user`, an administrator: the ACL gives no protection, only the absence of an elevated writer.
+/// Where the requests are: `Users` may modify it, so a request needs no elevated writer. The ACL gives no protection
+/// against the accounts that can write it: `user`, an administrator, and the guest's own service accounts (`Users` also
+/// holds Authenticated Users and INTERACTIVE), which are the guest OS. It has only the absence of an elevated writer.
 pub(crate) const ROOT: &str = r"C:\ProgramData\devvm\eb";
 /// The scheduled task that runs a request: `user`, highest privileges, `MultipleInstances Parallel`.
 pub(crate) const TASK: &str = "devvm-eb";
@@ -90,8 +94,10 @@ pub(super) const PAUSE_MILLISECONDS: u32 = 200;
 /// too: another remover finished it); with `-Once` it returns instead, and what is left is the next sweep's. Any other
 /// error (access denied included: measured permanent, not transient) is thrown.
 ///
-/// A reparse point is looked at without being followed (`Test-Link`): one that is the path itself, or an entry, is
-/// removed as the link (`Remove-Entry`), and nothing under it is listed or deleted.
+/// A reparse point is looked at without being followed (`Test-Link`, which reads any path it cannot read as a link): one
+/// that is the path itself, or an entry, is removed as the link (`Remove-Entry`), and nothing under it is listed or
+/// deleted. A directory, link or emptied, is deleted without recursion after its read-only attribute is cleared, so one
+/// that got a child meanwhile (a late runner's `claim`) fails with 145 and is retried.
 ///
 /// Every other removal of a request is this one, so a request that is removed only in part is in one of these states,
 /// and each is safe:
@@ -105,12 +111,14 @@ pub(super) const PAUSE_MILLISECONDS: u32 = 200;
 ///   takes it unless a runner holds its claim.
 /// - `script` is removed first, so a half-removed request never runs a command.
 const REMOVE_REQUEST: &str = r#"function Test-RemovalPending($failure) {
+    if ($failure -is [Management.Automation.MethodInvocationException] -and $failure.InnerException) { $failure = $failure.InnerException }
     if ($failure -is [Management.Automation.ItemNotFoundException] -or $failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
     return ($failure -is [IO.IOException]) -and (($failure.HResult -band 0xFFFF) -in 32, 33, 145)
 }
 function Test-Link([string]$path) {
     try { return ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0 }
     catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return $false }
+    catch { return $true }
 }
 function Remove-Entry([string]$entry) {
     $link = Test-Link $entry
@@ -118,7 +126,10 @@ function Remove-Entry([string]$entry) {
     if ($directory -and -not $link) {
         foreach ($child in [IO.Directory]::GetFileSystemEntries($entry)) { Remove-Entry $child }
     }
-    if ($link -and $directory) { [IO.Directory]::Delete($entry) }
+    if ($directory) {
+        [IO.File]::SetAttributes($entry, [IO.File]::GetAttributes($entry) -band -bnot [IO.FileAttributes]::ReadOnly)
+        [IO.Directory]::Delete($entry)
+    }
     else { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop }
 }
 function Remove-Request([string]$path, [switch]$Once) {

@@ -514,9 +514,10 @@ Show-Left"#
     assert_eq!(log[1], "left:a/caller a/claim a/script.ps1 a/stdout");
 }
 
-/// A directory `target` beside the root, holding `precious`; `Link` makes a junction to it at a path. A removal that
-/// goes through a link empties `target`.
-const LINK_TARGET: &str = r#"$target = Join-Path (Split-Path -Parent $disk) 'target'
+/// A directory `target` beside the root (`$root` is set), holding `precious`; `Link` makes a junction to it at a path;
+/// `Show-Target`, which logs `target:<names>` (where `$log` is), says what is left in it. A removal that goes through a
+/// link empties `target`.
+const LINK_TARGET: &str = r#"$target = Join-Path (Split-Path -Parent $root) 'target'
 [void][IO.Directory]::CreateDirectory($target)
 [IO.File]::WriteAllText((Join-Path $target 'precious'), '')
 function Link([string]$path) { [void](New-Item -ItemType Junction -Path $path -Target $target) }
@@ -621,6 +622,101 @@ $log.Add('returned')"#
         ),
     );
     assert_eq!(log, ["returned"]);
+}
+
+/// A request `a` holding the file `f`, and a `Remove-Item` that, on each of its first two calls, first removes what it
+/// was asked to and then puts a new file `late<n>` beside it: a late runner's `CreateNew` of `claim`, which a removal
+/// meets in any state. The second call is the removal of the last child of the directory `a`, so the directory is no
+/// longer empty when it is deleted.
+const LATE_CHILD: &str = r#"$a = Join-Path $root 'a'
+[void][IO.Directory]::CreateDirectory($a)
+[IO.File]::WriteAllText((Join-Path $a 'f'), '')
+$script:calls = 0
+function Remove-Item { param($LiteralPath, [switch]$Force, $ErrorAction)
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Force:$Force -ErrorAction $ErrorAction
+    if (++$script:calls -le 2) { [IO.File]::WriteAllText((Join-Path $a "late$($script:calls)"), '') }
+}
+function Show-Root { $log.Add('root:' + ((Get-ChildItem -LiteralPath $root -Recurse -Force | ForEach-Object { $_.FullName.Substring($_.FullName.IndexOf('\eb') + 4) } | Sort-Object) -join ' ')) }
+"#;
+
+#[skuld::test]
+fn a_directory_that_gets_a_child_after_it_was_emptied_is_removed_on_the_retry(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"$root = Join-Path (Split-Path -Parent $disk) 'eb'
+{LATE_CHILD}
+Remove-Request $a
+$log.Add('returned'); Show-Root"#
+        ),
+    );
+    assert_eq!(log, ["sleep", "returned", "root:"]);
+}
+
+#[skuld::test]
+fn a_directory_that_gets_a_child_after_it_was_emptied_is_left_for_the_next_sweep_when_tried_once(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"$root = Join-Path (Split-Path -Parent $disk) 'eb'
+{LATE_CHILD}
+Remove-Request $a -Once
+$log.Add('returned'); Show-Root"#
+        ),
+    );
+    assert_eq!(log, ["returned", r"root:a a\late2"]);
+}
+
+#[skuld::test]
+fn a_path_whose_attributes_cannot_be_read_reads_as_a_link_and_a_missing_one_does_not(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+# `|` is no name Windows reads: an I/O error, which is neither not-found nor a link.
+$log.Add('unreadable:' + (Test-Link (Join-Path $root 'a|b')))
+$log.Add('missing:' + (Test-Link (Join-Path $root 'missing')))
+$log.Add('under a file:' + (Test-Link (Join-Path $root 'a\script.ps1\child')))
+$log.Add('real:' + (Test-Link (Join-Path $root 'a')))"#
+        ),
+    );
+    assert_eq!(
+        log,
+        ["unreadable:True", "missing:False", "under a file:False", "real:False"]
+    );
+}
+
+#[skuld::test]
+fn a_read_only_junction_is_unlinked_and_its_target_is_left_alone(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}{LINK_TARGET}
+Link (Join-Path $root 'c')
+attrib +r /l (Join-Path $root 'c')
+Remove-StaleRequests $root
+Show-Root; Show-Target"#
+        ),
+    );
+    assert_eq!(log, ["root:", "target:precious"]);
+}
+
+#[skuld::test]
+fn a_read_only_request_directory_is_removed(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+attrib +r (Join-Path $root 'a')
+Remove-StaleRequests $root
+Show-Root"#
+        ),
+    );
+    assert_eq!(log, ["root:"]);
 }
 
 // The elevated helper's runner ========================================================================================
@@ -913,29 +1009,24 @@ fn the_runners_last_removal_removes_the_caller_and_the_claim_after_every_other_f
     assert_eq!(run.left, Vec::<String>::new());
 }
 
-/// The request `ended` (its caller has ended; it holds a claim nobody holds) with a directory `target` beside the root
-/// holding `precious`, and `setup` run after both: `Link <path>` makes a junction to `target`.
-fn run_runner_with_target(helper: &NativeHelper, setup: &str) -> RunnerRun {
-    run_runner_with(
-        helper,
-        NO_REQUEST,
-        &[("ended", Caller::Ended, &["script.ps1", "claim"])],
-        None,
-        &format!(
-            "$target = Join-Path (Split-Path -Parent $root) 'target'
-[void][IO.Directory]::CreateDirectory($target)
-[IO.File]::WriteAllText((Join-Path $target 'precious'), '')
-function Link([string]$path) {{ [void](New-Item -ItemType Junction -Path $path -Target $target) }}
-{setup}"
-        ),
-    )
+/// A runner started for `id` over `requests`, with [`LINK_TARGET`] and then `setup` run once they are made.
+fn run_runner_with_target(
+    helper: &NativeHelper,
+    id: &str,
+    requests: &[(&str, Caller, &[&str])],
+    setup: &str,
+) -> RunnerRun {
+    run_runner_with(helper, id, requests, None, &format!("{LINK_TARGET}{setup}"))
 }
+
+/// The request `ended`: its caller has ended, and it holds a claim nobody holds.
+const ENDED_REQUEST: [(&str, Caller, &[&str]); 1] = [("ended", Caller::Ended, &["script.ps1", "claim"])];
 
 #[skuld::test]
 fn the_sweep_unlinks_a_junction_in_the_root_and_leaves_its_target_alone(
     #[fixture(native_helper)] helper: &NativeHelper,
 ) {
-    let run = run_runner_with_target(helper, "Link (Join-Path $root 'linked')");
+    let run = run_runner_with_target(helper, NO_REQUEST, &ENDED_REQUEST, "Link (Join-Path $root 'linked')");
     assert_eq!(run.left, Vec::<String>::new());
     assert_eq!(run.target, ["precious"]);
 }
@@ -944,7 +1035,12 @@ fn the_sweep_unlinks_a_junction_in_the_root_and_leaves_its_target_alone(
 fn the_sweep_unlinks_a_junction_inside_a_request_and_leaves_its_target_alone(
     #[fixture(native_helper)] helper: &NativeHelper,
 ) {
-    let run = run_runner_with_target(helper, "Link (Join-Path $root 'ended/link')");
+    let run = run_runner_with_target(
+        helper,
+        NO_REQUEST,
+        &ENDED_REQUEST,
+        "Link (Join-Path $root 'ended/link')",
+    );
     assert_eq!(run.left, Vec::<String>::new());
     assert_eq!(run.target, ["precious"]);
 }
@@ -953,17 +1049,11 @@ fn the_sweep_unlinks_a_junction_inside_a_request_and_leaves_its_target_alone(
 fn the_runners_last_removal_unlinks_a_junction_in_its_request_and_leaves_its_target_alone(
     #[fixture(native_helper)] helper: &NativeHelper,
 ) {
-    let run = run_runner_with(
+    let run = run_runner_with_target(
         helper,
         REQUEST,
         &[(REQUEST, Caller::Ended, &["script.ps1"])],
-        None,
-        &format!(
-            "$target = Join-Path (Split-Path -Parent $root) 'target'
-[void][IO.Directory]::CreateDirectory($target)
-[IO.File]::WriteAllText((Join-Path $target 'precious'), '')
-[void](New-Item -ItemType Junction -Path (Join-Path $root '{REQUEST}/link') -Target $target)"
-        ),
+        &format!("Link (Join-Path $root '{REQUEST}/link')"),
     );
     assert_eq!(run.left, Vec::<String>::new());
     assert_eq!(run.target, ["precious"]);
