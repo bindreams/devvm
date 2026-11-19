@@ -179,3 +179,25 @@ fn any_other_frozen_spawn_failure_is_an_io_error_carrying_coscas_words() {
     assert_eq!(error.kind(), ErrorKind::Io);
     assert!(error.message().contains("no job"), "{}", error.message());
 }
+
+#[skuld::test]
+fn a_cosca_error_names_the_cause_cosca_keeps_as_its_source() {
+    let cause = cosca::error::Error::Containment {
+        detail: "could not resume the frozen child".into(),
+        source: Some(std::sync::Arc::new(cosca::error::Error::Io(std::io::Error::other(
+            "access denied",
+        )))),
+    };
+    let error = crate::contain::cosca_error(
+        "cannot resume the VM process 7",
+        cosca::error::Error::Containment {
+            detail: "its child was reaped".into(),
+            source: Some(std::sync::Arc::new(cause)),
+        },
+    );
+    assert_eq!(
+        error.message(),
+        "cannot resume the VM process 7: process containment failed: its child was reaped: process containment failed: \
+         could not resume the frozen child: an I/O operation failed: access denied"
+    );
+}

@@ -74,7 +74,22 @@ fn kill_and_wait(id: ProcessId) -> std::result::Result<(), cosca::error::Error> 
 
 /// A cosca failure as an `Io` error that says `context` and keeps the failure as its source.
 pub(crate) fn cosca_error(context: &str, source: cosca::error::Error) -> Error {
-    Error::new(ErrorKind::Io, format!("{context}: {source}")).with_source(source)
+    Error::new(ErrorKind::Io, format!("{context}: {}", with_causes(&source))).with_source(source)
+}
+
+/// `error`'s message followed by each cause's: cosca keeps the cause of a wrapped failure (a resume that failed, then
+/// its teardown) as a source, not in the message. A cause whose text the message already holds is not repeated.
+fn with_causes(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        let text = next.to_string();
+        if !message.contains(&text) {
+            message = format!("{message}: {text}");
+        }
+        cause = next.source();
+    }
+    message
 }
 
 /// How a failed frozen spawn is reported: a host that cannot freeze a process is `NotSupported`, anything else `Io`.
