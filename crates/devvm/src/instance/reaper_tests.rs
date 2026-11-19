@@ -59,7 +59,11 @@ fn quarantined(fx: &Fixture) -> Vec<String> {
 }
 
 fn alive(record: &MachineRecord) -> bool {
-    VmProcess::attach(&record.process).unwrap().is_some()
+    VmProcess::attach(&record.process)
+        .unwrap()
+        .found(&record.process)
+        .unwrap()
+        .is_some()
 }
 
 #[skuld::test]

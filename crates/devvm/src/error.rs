@@ -122,12 +122,6 @@ impl Error {
         self
     }
 
-    /// This error with what the person can do about it, after its message.
-    pub(crate) fn with_next_step(mut self, step: impl fmt::Display) -> Error {
-        self.message = format!("{}; {step}", self.message);
-        self
-    }
-
     /// A failed write to `path`: `disk-full` when the device or quota is full, otherwise `io`. `hint` says what to
     /// do about a full disk and ends the `disk-full` message.
     pub(crate) fn write(path: &Path, source: std::io::Error, hint: &str) -> Error {

@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use super::backend::QemuBackend;
-use super::qmp::{LaunchFileKind, QmpEndpoint};
+use super::qmp::{LaunchFileKind, QmpEndpoint, RUN_LOCK};
 use crate::backend::remove_held;
 use crate::host::{HoldOutcome, claim_of_deleting_name, claim_of_new_name, is_absent, symlink_metadata_if_present};
 use crate::store::lock::{FileLock, Mode};
@@ -72,7 +72,7 @@ impl QemuBackend {
                 return;
             }
         }
-        let mut directory = match FileLock::open_existing(&run.join("runtime.lock")) {
+        let mut directory = match FileLock::open_existing(&run.join(RUN_LOCK)) {
             Ok(Some(lock)) => lock,
             Ok(None) => return,
             Err(e) => {

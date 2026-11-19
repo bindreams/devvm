@@ -6,13 +6,14 @@ use std::sync::Arc;
 use super::args::{ArchFiles, LaunchPaths, build_args};
 use super::checks::qemu_check;
 use super::machine::{QemuMachine, qemu_log};
-use super::qmp::{QmpEndpoint, Reservation};
+use super::qmp::{QmpEndpoint, RUN_LOCK, Reservation};
 use super::sidecar::{LazyInstall, QemuInstall};
 use super::storage::QemuStorage;
 use crate::backend::{Backend, Check, Detail, FileClaim, Machine, MachineRecord, MachineSpec, Storage, remove_files};
-use crate::contain::{VmCommand, VmProcess};
-use crate::host::{Hold, Host, is_absent, remove_tree};
+use crate::contain::{AttachOutcome, VmCommand, VmProcess};
+use crate::host::{Hold, HoldOutcome, Host, is_absent, remove_tree};
 use crate::progress::Progress;
+use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -77,6 +78,62 @@ impl QemuBackend {
         error
     }
 
+    /// What `attach` says of a machine whose process record this devvm cannot read, which says nothing of whether its
+    /// process runs. The launch's claim does: QEMU holds it for as long as it runs, so a claim that can be taken is a
+    /// machine that is over (`NotFound`, as for a dead process), the proof `remove_files` and the sweep rely on. A claim
+    /// that is held is a machine that runs, which this devvm cannot manage: an error that names the process to end.
+    ///
+    /// The runtime directory's lock is held shared while the claim is looked at, as `reserve` holds it: a sweep's own
+    /// brief hold on a dead machine's claim is then never read as a machine that runs.
+    fn without_readable_record(
+        &self,
+        record: &MachineRecord,
+        claim: &FileClaim,
+        unreadable: cosca::error::Error,
+    ) -> Error {
+        let pid = record.process.pid;
+        match self.claim_is_free(claim) {
+            Ok(true) => not_running(record),
+            Ok(false) => Error::new(
+                ErrorKind::Io,
+                format!(
+                    "the VM runs as process {pid}, and this devvm cannot read the VM's process record: {unreadable};                      end process {pid} and run the command again"
+                ),
+            )
+            .with_source(unreadable),
+            Err(e) => e.with_context(
+                ErrorKind::Io,
+                format!("cannot tell whether the VM process {pid} is running: {unreadable}"),
+            ),
+        }
+    }
+
+    /// Whether nobody holds `claim`'s file: no QEMU of the launch runs, whether the file is there or not.
+    fn claim_is_free(&self, claim: &FileClaim) -> Result<bool> {
+        let Some(run) = claim.path.parent() else {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("the claim file {} is in no directory", claim.path.display()),
+            ));
+        };
+        // A runtime directory with no lock was never launched in.
+        let mut directory = FileLock::open_existing(&run.join(RUN_LOCK))?;
+        if let Some(directory) = &mut directory {
+            directory.lock(Mode::Shared, "a sweep of the runtime directory", &mut |m| {
+                self.progress.message(m)
+            })?;
+        }
+        match self.host.hold_existing(&claim.path) {
+            Ok(HoldOutcome::Taken(_) | HoldOutcome::Absent) => Ok(true),
+            Ok(HoldOutcome::Busy) => Ok(false),
+            Err(e) => Err(Error::io(
+                ErrorKind::Io,
+                format!("cannot hold {}", claim.path.display()),
+                e,
+            )),
+        }
+    }
+
     /// Everything of a launch after its names are reserved, up to the frozen process and its watch. `hold` is shared
     /// with the frozen process and dropped here, so the launch's own copy never outlives the spawn.
     fn start(
@@ -115,6 +172,14 @@ impl QemuBackend {
         let watch = self.host.watch_process(vm.id())?;
         Ok((MachineRecordParts { process, log, log_from }, watch))
     }
+}
+
+/// `NotFound`: the machine `record` names is not running.
+fn not_running(record: &MachineRecord) -> Error {
+    Error::new(
+        ErrorKind::NotFound,
+        format!("no machine is running as process {}", record.process.pid),
+    )
 }
 
 /// How long the file `log` is, 0 when it is not there. A link is followed: QEMU appends to the file it leads to.
@@ -180,6 +245,7 @@ impl Backend for QemuBackend {
     }
 
     /// A record without a claim is refused: a session is only made against a machine's own files, which the claim says.
+    /// A record whose process record cannot be read is decided by the claim (`without_readable_record`).
     fn attach(&self, record: &MachineRecord) -> Result<Box<dyn Machine>> {
         let Some(claim) = record.claim.clone() else {
             return Err(Error::new(
@@ -187,11 +253,12 @@ impl Backend for QemuBackend {
                 format!("the record of the machine at {} has no claim file", record.qmp),
             ));
         };
-        let Some(vm) = VmProcess::attach(&record.process)? else {
-            return Err(Error::new(
-                ErrorKind::NotFound,
-                format!("no machine is running as process {}", record.process.pid),
-            ));
+        let vm = match VmProcess::attach(&record.process)? {
+            AttachOutcome::Running(vm) => vm,
+            AttachOutcome::NotRunning => return Err(not_running(record)),
+            AttachOutcome::Unreadable(unreadable) => {
+                return Err(self.without_readable_record(record, &claim, unreadable));
+            }
         };
         let watch = self.host.watch_process(vm.id())?;
         Ok(Box::new(QemuMachine::attached(

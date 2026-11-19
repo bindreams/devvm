@@ -131,7 +131,7 @@ struct KillsOnDrop<'a>(&'a MachineRecord);
 
 impl Drop for KillsOnDrop<'_> {
     fn drop(&mut self) {
-        match VmProcess::attach(&self.0.process) {
+        match VmProcess::attach(&self.0.process).and_then(|outcome| outcome.found(&self.0.process)) {
             Ok(Some(mut vm)) => {
                 if let Err(e) = vm.kill() {
                     eprintln!("cannot end the machine {:?}: {e}", self.0.process);
@@ -150,7 +150,11 @@ impl Drop for KillsOnDrop<'_> {
 }
 
 fn is_running(record: &MachineRecord) -> bool {
-    VmProcess::attach(&record.process).unwrap().is_some()
+    VmProcess::attach(&record.process)
+        .unwrap()
+        .found(&record.process)
+        .unwrap()
+        .is_some()
 }
 
 /// Waits until `addr` accepts a connection. Ends with a failure if the process dies instead.

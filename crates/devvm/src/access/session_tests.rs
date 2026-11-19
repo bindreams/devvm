@@ -233,6 +233,8 @@ fn a_process_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)
     let sleeper = Sleeper::spawn();
     let process = VmProcess::attach(&sleeper.record())
         .unwrap()
+        .found(&sleeper.record())
+        .unwrap()
         .expect("the sleeper is alive");
     let rig = Rig::new(home);
     let session = rig.connect_with(VmExit::watch(process).unwrap(), None).unwrap();

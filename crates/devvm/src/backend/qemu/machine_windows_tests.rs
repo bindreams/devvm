@@ -58,6 +58,8 @@ impl World {
     fn handle(&self) -> VmProcess {
         VmProcess::attach(&self.record.process)
             .unwrap()
+            .found(&self.record.process)
+            .unwrap()
             .expect("the fake VM runs")
     }
 

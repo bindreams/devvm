@@ -369,7 +369,7 @@ impl Backend for FakeBackend {
     }
 
     fn attach(&self, record: &MachineRecord) -> Result<Box<dyn Machine>> {
-        let Some(vm) = VmProcess::attach(&record.process)? else {
+        let Some(vm) = VmProcess::attach(&record.process)?.found(&record.process)? else {
             return Err(Error::new(
                 ErrorKind::NotFound,
                 format!("no machine is running as process {}", record.process.pid),

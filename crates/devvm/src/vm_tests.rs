@@ -56,7 +56,11 @@ fn remove_kills_a_running_machine_by_recorded_identity_and_deletes_everything(#[
 
     Instance::open_in(&fx.engine, "foo").unwrap().remove().unwrap();
     assert!(
-        VmProcess::attach(&machine.process).unwrap().is_none(),
+        VmProcess::attach(&machine.process)
+            .unwrap()
+            .found(&machine.process)
+            .unwrap()
+            .is_none(),
         "the VM is dead when remove returns"
     );
     assert!(names(&fx.env.dirs.instances()).is_empty());
@@ -564,7 +568,11 @@ pub(crate) fn fake_cli_up(args: &[String]) {
         .expect("the VM should come up");
     let machine = recorded_machine(instance.dir().path());
 
-    let process = VmProcess::attach(&machine.process).unwrap().expect("the VM runs");
+    let process = VmProcess::attach(&machine.process)
+        .unwrap()
+        .found(&machine.process)
+        .unwrap()
+        .expect("the VM runs");
     let report = connect_when_up(&process, started_port(instance.dir().path()));
     assert!(
         report.contains("kill-on-close=false"),

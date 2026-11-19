@@ -223,7 +223,7 @@ impl Engine {
         if let Some((_, exit)) = exits.iter().find(|(process, _)| *process == machine.process) {
             return Ok(exit.clone());
         }
-        let Some(process) = VmProcess::attach(&machine.process)? else {
+        let Some(process) = VmProcess::attach(&machine.process)?.found(&machine.process)? else {
             return Err(Error::new(
                 ErrorKind::ConnectionLost,
                 format!("the VM process exited (serial log: {})", machine.serial_log.display()),
@@ -308,6 +308,8 @@ impl Engine {
         Ok(infos)
     }
 
+    /// The state of an instance, read with no op lock. A machine under a process record this devvm cannot read is
+    /// `Unknown`, never `Running`: `find` refuses it, and says why.
     fn state_of(&self, machine: &Option<MachineRecord>, name: &str) -> InstanceState {
         let Some(machine) = machine else {
             return InstanceState::Stopped;

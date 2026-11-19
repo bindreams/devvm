@@ -40,6 +40,10 @@ const SOCKET_SUFFIX: &str = ".sock";
 const LOCK_SUFFIX: &str = ".lock";
 const HOLD_SUFFIX: &str = ".hold";
 
+/// The lock file of a runtime directory: shared by a launch while it claims a name and by a look at a claim, exclusive
+/// for a sweep.
+pub(super) const RUN_LOCK: &str = "runtime.lock";
+
 /// Which of a launch's three files a name is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchFileKind {
@@ -137,7 +141,7 @@ impl QmpEndpoint {
         // Released on return: the hold covers the launch from then on, and a sweep finds it `Busy`.
         // Not `FileLock::open`: only `create_runtime_dir` makes the directory, with its owner and access set in one
         // call.
-        let mut directory = FileLock::open_in_existing_dir(&run.join("runtime.lock"))?;
+        let mut directory = FileLock::open_in_existing_dir(&run.join(RUN_LOCK))?;
         directory.lock(Mode::Shared, "a sweep of the runtime directory", &mut |m| {
             progress.message(m)
         })?;

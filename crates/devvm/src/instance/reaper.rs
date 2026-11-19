@@ -290,13 +290,7 @@ impl Registry {
                 // Not running, or the pid now belongs to another process: nothing of ours to kill.
                 Ok(None) => {}
                 Err(e) => {
-                    report.warn(
-                        self,
-                        format!(
-                            "cannot check the VM of instance {name}: {}; it is left for the next devvm command",
-                            e.message()
-                        ),
-                    );
+                    report.warn(self, format!("cannot check the VM of instance {name}: {}", e.message()));
                     return;
                 }
             }

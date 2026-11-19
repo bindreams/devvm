@@ -163,7 +163,11 @@ impl ContractTarget for StrictTarget {
         assert!(!machine.ssh_endpoints().is_empty(), "the machine was not resumed");
         let record = machine.record();
         assert!(
-            VmProcess::attach(&record.process).unwrap().is_some(),
+            VmProcess::attach(&record.process)
+                .unwrap()
+                .found(&record.process)
+                .unwrap()
+                .is_some(),
             "the machine is not running"
         );
         self.booted_waits.fetch_add(1, Ordering::SeqCst);
@@ -339,7 +343,11 @@ fn fails_and_leaves_no_machine(target: &FailingTarget, home: &Path, function: fn
     assert_eq!(machines.len(), 1);
     for machine in machines {
         assert!(
-            VmProcess::attach(&machine.process).unwrap().is_none(),
+            VmProcess::attach(&machine.process)
+                .unwrap()
+                .found(&machine.process)
+                .unwrap()
+                .is_none(),
             "a failed contract function left its released machine running"
         );
     }
@@ -535,6 +543,8 @@ fn fake_has_run_only_after_the_process_runs(#[fixture(unicode_home)] home: &Path
     machine.resume().unwrap();
     let port = machine.ssh_endpoints()[0].1.port();
     let vm = crate::contain::VmProcess::attach(&machine.record().process)
+        .unwrap()
+        .found(&machine.record().process)
         .unwrap()
         .unwrap();
     connect_when_up(&vm, port);

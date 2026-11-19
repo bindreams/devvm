@@ -981,6 +981,8 @@ fn a_stalled_guest_is_stopped_and_its_files_are_removed(#[fixture(unicode_home)]
     assert!(
         crate::contain::VmProcess::attach(&launched[0].process)
             .unwrap()
+            .found(&launched[0].process)
+            .unwrap()
             .is_none(),
         "the VM process still runs"
     );
