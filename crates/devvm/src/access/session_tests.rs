@@ -181,16 +181,9 @@ fn mid_command_drop_is_connection_lost(#[fixture(unicode_home)] home: &Path) {
 #[skuld::test]
 fn a_frozen_peer_is_connection_lost_through_keepalive(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
-    // A boot bound puts no bound on each handshake with our own server, so only the keepalive under test is short.
-    let session = SshSession::connect(
-        &rig.target(),
-        FAST,
-        VmExit::never(),
-        Some(BootBound::start(Duration::from_secs(3600)).unwrap()),
-        &NullProgress,
-    )
-    .unwrap();
-    session.finish_boot();
+    // The standard keepalive: against our own live server, a shorter one would be a bet on its speed, at the handshake
+    // and at every probe before `freeze`.
+    let session = rig.connect();
     let error = session.exec_collect("freeze").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("keepalive"), "{error}");
