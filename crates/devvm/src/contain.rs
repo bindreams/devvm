@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use cosca::error::RecordErrorKind;
 use cosca::identity::{Liveness, ProcessId, ProcessIdRecord};
@@ -295,7 +296,30 @@ impl VmProcess {
         killed.map_err(|e| cosca_error(&format!("cannot kill the VM process {pid}"), e))?;
         cosca::Process::from_id(id)
             .wait()
-            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {pid} to exit"), e))
+            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {pid} to exit"), e))?;
+        self.await_not_running()
+    }
+
+    /// Whether the process is still running; an error when the OS refuses to say (never "dead").
+    pub(crate) fn is_alive(&self) -> Result<bool> {
+        let id = self.id();
+        match cosca::Process::from_id(id).is_alive() {
+            Liveness::Alive => Ok(true),
+            Liveness::Dead => Ok(false),
+            Liveness::Unknown => Err(unknown_liveness(id)),
+        }
+    }
+
+    /// Returns once `is_alive` says no. On macOS the exit that `cosca::Process::wait` reports comes while the kernel
+    /// is still tearing the process down, before it is marked a zombie, so `is_alive` can say yes for a moment more;
+    /// on Linux and Windows the first check already says no.
+    fn await_not_running(&self) -> Result<()> {
+        let mut pause = Duration::from_millis(1);
+        while self.is_alive()? {
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(Duration::from_millis(50));
+        }
+        Ok(())
     }
 }
 
