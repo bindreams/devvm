@@ -5,21 +5,6 @@
 //! Windows: the file is open with share mode 0, so no other open of it succeeds. (A `LockFileEx` lock does not do:
 //! it belongs to the handle that took it, not to the file, and a duplicate handle does not carry it. Measured.)
 //! Elsewhere: an exclusive `flock`, which belongs to the open file and so to every duplicate of it.
-//!
-//! # What a free hold means
-//!
-//! A hold that can be taken means the process it was shared with writes nothing more to the files it was working on,
-//! such as a VM's disk images: callers read it as "the machine is over" and start a second one, or delete the files.
-//! The hold is free before the exit is visible to a waiter, so this is a statement about writes, not about the process
-//! object.
-//!
-//! Measured on Windows 11 IoT Enterprise LTSC 2024 (10.0.26100, WHPX), with the pinned QEMU `qemu-11.1.2-3` and a
-//! debug build of devvm: a Linux guest writing a qcow2 and a raw disk continuously with direct I/O and flushes, QEMU
-//! killed as devvm kills it (300 runs, tree kills and attached kills), and a helper process holding a duplicate of the
-//! hold and writing a file from several threads with overlapped writes (3000 runs). Each run hashed every image
-//! repeatedly from the moment the hold could be taken until after the process had exited: no run's hash changed. The
-//! same readings taken while a writer is alive differ (helper 30 of 30 runs, QEMU 11 of 30), so the check sees a writer. Not measured: another
-//! host (QEMU is only launched on Windows in 0.1.0), a Windows guest, or UEFI boot.
 
 use std::fmt;
 use std::fs::File;
