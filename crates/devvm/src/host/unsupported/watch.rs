@@ -13,7 +13,6 @@ use crate::host::watch::{Link, ProcessWatch, RETRY};
 mod watch_tests;
 
 pub(super) struct UnixWatch {
-    id: ProcessId,
     /// `None`: no process has this identity any more, so it has exited.
     process: Option<Process>,
 }
@@ -26,7 +25,7 @@ impl UnixWatch {
                 e,
             )
         })?;
-        Ok(UnixWatch { id, process })
+        Ok(UnixWatch { process })
     }
 
     fn exited_within(&self, limit: std::time::Duration) -> Result<bool> {
@@ -35,7 +34,7 @@ impl UnixWatch {
         };
         process
             .wait_timeout(limit)
-            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", self.id.pid()), e))
+            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", process.id().pid()), e))
     }
 }
 
