@@ -105,7 +105,7 @@ pub(crate) fn running_of(
     let Some(machine) = &record.machine else {
         return Err(not_running(record));
     };
-    let Some(found) = engine.backend()?.find(machine)? else {
+    let Some(found) = dir.find_machine(&**engine.backend()?, machine)? else {
         return Err(not_running(record));
     };
     let target = target_for(&record.name, machine, &InstanceKeys::read(&keys_dir(dir))?)?;

@@ -296,7 +296,7 @@ impl Engine {
             infos.push(InstanceInfo {
                 name: record.name.as_str().to_owned(),
                 hostname: record.id.hostname(),
-                state: self.state_of(&record.machine, dir.name().as_str()),
+                state: self.state_of(&record.machine, &dir),
                 guest: record.guest,
                 arch: record.arch,
                 created: record.created,
@@ -308,16 +308,17 @@ impl Engine {
         Ok(infos)
     }
 
-    fn state_of(&self, machine: &Option<MachineRecord>, name: &str) -> InstanceState {
+    fn state_of(&self, machine: &Option<MachineRecord>, dir: &InstanceDir) -> InstanceState {
         let Some(machine) = machine else {
             return InstanceState::Stopped;
         };
-        match self.backend().and_then(|backend| backend.find(machine)) {
+        match self.backend().and_then(|backend| dir.find_machine(&**backend, machine)) {
             Ok(Some(_)) => InstanceState::Running,
             Ok(None) => InstanceState::Stopped,
             Err(e) => {
                 self.progress.warn(&format!(
-                    "cannot tell whether instance {name} is running: {}",
+                    "cannot tell whether instance {} is running: {}",
+                    dir.name(),
                     e.message()
                 ));
                 InstanceState::Unknown

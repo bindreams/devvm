@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::backend::MachineRecord;
+use crate::backend::{Backend, Machine, MachineRecord};
+use crate::contain::is_unreadable_record;
 use crate::host::{Host, remove_tree};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
@@ -194,6 +195,26 @@ impl InstanceDir {
         f(&mut record);
         record.write(&self.path)?;
         Ok(record)
+    }
+
+    /// `backend.find(machine)` for this instance's machine. When the machine's process record cannot be read, the
+    /// error says how to get out: `rm` and `stop` need the machine found, so they refuse too.
+    pub(crate) fn find_machine(
+        &self,
+        backend: &dyn Backend,
+        machine: &MachineRecord,
+    ) -> Result<Option<Box<dyn Machine>>> {
+        backend.find(machine).map_err(|e| {
+            if !is_unreadable_record(&e) {
+                return e;
+            }
+            e.with_next_step(format!(
+                "end process {} if it still runs, then clear the `machine` field of instance {} in {}",
+                machine.process.pid,
+                self.name,
+                self.path.join("record.json").display()
+            ))
+        })
     }
 
     /// The machine named by `machine` is dead: deletes what it left outside the instance directory (a file that
