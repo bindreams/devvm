@@ -38,9 +38,10 @@
 //! an error that waiting does not change is reported and leaves the request to the next sweep. The order says who a
 //! half-removed request belongs to, so a request left at any point is taken (see [`REMOVE_REQUEST`]).
 //!
-//! **A link is never followed.** `Users` may modify the root, so a request, or an entry of one, can be a junction or a
-//! symbolic link to anywhere, and the removers run at High or as SYSTEM. `Remove-Request` removes a reparse point as the
-//! link and enumerates and deletes only what is under a real directory.
+//! **A link in the root is removed as a link.** A request, or an entry of one, that is already a junction or a symbolic
+//! link when a remover reaches it is removed as the link and never followed: `Remove-Request` enumerates and deletes only
+//! what is under a real directory. A link swapped in while a removal runs can be followed. Only `user` can make one, and
+//! `user` already runs anything at High through this helper, so the root is not defended against them.
 //!
 //! The sweep also takes an `<id>.tmp` whose `caller` file names an ended caller. A `<id>.tmp` is only ever an
 //! unpublished request, and its caller removes it the same way. One with no `caller` file is not told from one a caller
@@ -63,7 +64,8 @@ mod elevate_tests;
 #[path = "elevate_pwsh_tests.rs"]
 mod elevate_pwsh_tests;
 
-/// Where the requests are: `Users` may modify it, so a request needs no elevated writer.
+/// Where the requests are: `Users` may modify it, so a request needs no elevated writer. In this guest `Users` means
+/// `user`, an administrator: the ACL gives no protection, only the absence of an elevated writer.
 pub(crate) const ROOT: &str = r"C:\ProgramData\devvm\eb";
 /// The scheduled task that runs a request: `user`, highest privileges, `MultipleInstances Parallel`.
 pub(crate) const TASK: &str = "devvm-eb";
