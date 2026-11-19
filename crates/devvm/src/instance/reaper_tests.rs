@@ -164,8 +164,8 @@ fn an_unreadable_process_record_is_reported_with_the_step_by_hand_and_no_promise
         panic!("{:?}", report.warnings);
     };
     assert!(
-        warning.contains("cannot check the VM of instance foo") && warning.contains("clear the `machine` field"),
-        "{warning}"
+        warning.contains("clear the `machine` field") && warning.matches("instance foo").count() == 1,
+        "the step by hand, the instance named once: {warning}"
     );
     assert!(
         !warning.contains("next devvm command"),

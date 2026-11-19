@@ -8,7 +8,7 @@ use crate::contain::with_manual_recovery;
 use crate::host::{Host, remove_tree};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
-use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
+use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RECORD_FILE, RecordRead, write_marker};
 use crate::progress::Progress;
 use crate::store::lock::FileLock;
 use crate::{Error, ErrorKind, Result};
@@ -206,7 +206,7 @@ impl InstanceDir {
     ) -> Result<Option<Box<dyn Machine>>> {
         backend
             .find(machine)
-            .map_err(|e| with_manual_recovery(e, &self.name, &self.path.join("record.json")))
+            .map_err(|e| with_manual_recovery(e, &self.name, &self.path.join(RECORD_FILE)))
     }
 
     /// The machine named by `machine` is dead: deletes what it left outside the instance directory (a file that

@@ -74,16 +74,13 @@ impl Backend for StubBackend {
 
     fn attach(&self, rec: &MachineRecord) -> Result<Box<dyn Machine>> {
         self.calls.lock().unwrap().push("attach".to_owned());
-        let machine = || {
-            Box::new(StubMachine {
+        match self.attach.lock().unwrap().clone() {
+            Attach::Running => Ok(Box::new(StubMachine {
                 record: rec.clone(),
                 fails: *self.stop_fails.lock().unwrap(),
                 calls: self.calls.clone(),
                 on_stop: self.on_stop.clone(),
-            }) as Box<dyn Machine>
-        };
-        match self.attach.lock().unwrap().clone() {
-            Attach::Running => Ok(machine()),
+            })),
             Attach::Gone => Err(Error::new(ErrorKind::NotFound, "the stub machine is gone")),
             Attach::Fails(kind) => Err(Error::new(kind, "the stub backend cannot look")),
         }

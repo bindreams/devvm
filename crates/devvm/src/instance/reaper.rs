@@ -291,16 +291,17 @@ impl Registry {
                 // Not running, or the pid now belongs to another process: nothing of ours to kill.
                 Ok(None) => {}
                 Err(e) => {
-                    // The next command fails the same way until the person takes the step by hand.
-                    let left = if is_unreadable_record(&e) {
-                        ""
+                    // An unreadable record's message names the instance and the step by hand; the next command fails
+                    // the same way until the person takes it.
+                    let text = if is_unreadable_record(&e) {
+                        e.message().to_owned()
                     } else {
-                        "; it is left for the next devvm command"
+                        format!(
+                            "cannot check the VM of instance {name}: {}; it is left for the next devvm command",
+                            e.message()
+                        )
                     };
-                    report.warn(
-                        self,
-                        format!("cannot check the VM of instance {name}: {}{left}", e.message()),
-                    );
+                    report.warn(self, text);
                     return;
                 }
             }

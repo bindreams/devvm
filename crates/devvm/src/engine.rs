@@ -12,7 +12,7 @@ use crate::access::{VmExit, WatchEnd};
 use crate::backend::qemu::sidecar::LazyInstall;
 use crate::backend::qemu::{QemuParts, qemu_parts};
 use crate::backend::{Backend, MachineRecord};
-use crate::contain::VmProcess;
+use crate::contain::{VmProcess, is_unreadable_record};
 use crate::guest::Guests;
 use crate::host::{self, Host};
 use crate::instance::dir::InstanceDir;
@@ -316,11 +316,12 @@ impl Engine {
             Ok(Some(_)) => InstanceState::Running,
             Ok(None) => InstanceState::Stopped,
             Err(e) => {
-                self.progress.warn(&format!(
-                    "cannot tell whether instance {} is running: {}",
-                    dir.name(),
-                    e.message()
-                ));
+                // An unreadable record's message already names the instance.
+                if is_unreadable_record(&e) {
+                    self.progress.warn(e.message());
+                } else {
+                    self.progress.warn(&format!("instance {}: {}", dir.name(), e.message()));
+                }
                 InstanceState::Unknown
             }
         }

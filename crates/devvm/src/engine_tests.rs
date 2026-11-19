@@ -580,7 +580,7 @@ fn list_cannot_tell_when_the_backend_cannot_look(#[fixture(unicode_home)] home: 
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("cannot tell whether instance foo is running") && m.contains("cannot look")),
+            .any(|m| m.contains("instance foo: ") && m.contains("cannot look")),
         "{messages:?}"
     );
 }
