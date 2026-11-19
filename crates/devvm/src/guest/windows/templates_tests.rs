@@ -1024,7 +1024,7 @@ fn the_boot_task_waits_for_the_answer_disk_with_no_cap() {
 #[skuld::test]
 fn the_boot_task_removes_leftover_requests_with_remove_request_once_each_and_before_the_seed() {
     let task = rendered("boot-task.ps1");
-    // The only deletion is the one inside `Remove-Request`: a plain removal of a held file under `Stop` ends the boot.
+    // The only deletion is the one inside `Remove-Entry`: a plain removal of a held file under `Stop` ends the boot.
     assert_eq!(task.matches("Remove-Item").count(), 1, "{task}");
     assert!(task.contains(&elevate::remove_request()), "{task}");
     let sweep = section(
@@ -1034,7 +1034,10 @@ fn the_boot_task_removes_leftover_requests_with_remove_request_once_each_and_bef
 }
 ",
     );
-    assert!(sweep.contains("Remove-Request $request -Once"), "{sweep}");
+    assert!(sweep.contains("Remove-Request $leftover -Once"), "{sweep}");
+    // Every entry of the root, files included: `pending()` of the VM suite counts them all.
+    assert!(sweep.contains("[IO.Directory]::GetFileSystemEntries($Root)"), "{sweep}");
+    assert!(!sweep.contains("GetDirectories("), "{sweep}");
     // A failure is a warning line, never the boot's.
     assert!(sweep.matches("Send-Line \"DEVVM-WARNING=").count() >= 2, "{sweep}");
     assert!(task.contains(&format!("$root = {}", literal(elevate::ROOT))));
@@ -1063,6 +1066,12 @@ fn the_eb_runner_serves_only_the_request_named_by_its_first_argument_and_claims_
     // An `<id>.tmp` is swept by the same rule, unless it has no caller file: a caller building it has not written one.
     assert!(sweep.contains("$name.EndsWith('.tmp') -and -not [IO.File]::Exists((Join-Path $other $callerName))"));
     assert!(sweep.contains("Remove-RequestOrWarn $other"), "{sweep}");
+    // A link is removed as a link before anything is read through it.
+    assert_before(
+        sweep,
+        "if (Test-Link $other) { Remove-RequestOrWarn $other -Once; continue }",
+        "Test-CallerEnded $other",
+    );
 }
 
 #[skuld::test]
@@ -1072,7 +1081,7 @@ fn the_eb_runner_and_the_caller_remove_a_request_only_through_remove_request() {
     for (who, text) in [("runner", &runner), ("caller", &caller)] {
         // One removal: a file deleted on its own is out of the order of deletion.
         assert_eq!(text.matches("Remove-Item").count(), 1, "{who}: {text}");
-        let function = section(text, "function Remove-Request", "\n}\n");
+        let function = section(text, "function Remove-Entry", "\n}\n");
         assert!(function.contains("Remove-Item"), "{who}: {function}");
     }
 }

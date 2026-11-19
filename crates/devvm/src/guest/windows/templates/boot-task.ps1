@@ -86,24 +86,25 @@ function Set-ComputerNameFromSeed([string]$Disk, [string]$Marker) {
 }
 
 @@!EB_REMOVE_REQUEST@@
-# Requests the last boot left behind: no caller survives a boot, so every one is stale. Nothing else is removed. A request
-# that cannot be removed now (a file held open by a scanner, say) is a warning, never a failed boot: what is left is the
-# next runner's sweep. A request is tried once, so no request holds up the boot or another request.
+# What the last boot left in the root: no caller survives a boot, so every request is stale, and nothing else is kept.
+# Each leftover is tried once: a link is removed as a link, never followed (the root is writable by Users). One that
+# cannot be removed now (a file held open by a scanner, say) is a warning, never a failed boot: what is left is the next
+# runner's sweep.
 function Remove-StaleRequests([string]$Root) {
     try {
         if (-not (Test-Path -LiteralPath $Root)) { return }
-        foreach ($request in [IO.Directory]::GetDirectories($Root)) {
+        foreach ($leftover in [IO.Directory]::GetFileSystemEntries($Root)) {
             try {
-                Remove-Request $request -Once
-                if ([IO.Directory]::Exists($request)) { Send-Line "DEVVM-WARNING=a leftover request is still held: $request" }
+                Remove-Request $leftover -Once
+                if ([IO.File]::Exists($leftover) -or [IO.Directory]::Exists($leftover)) { Send-Line "DEVVM-WARNING=a leftover is still there after one try: $leftover" }
             }
             catch {
-                Send-Line "DEVVM-WARNING=a leftover request could not be removed: $request`: $($_.Exception.Message)"
+                Send-Line "DEVVM-WARNING=a leftover could not be removed: $leftover`: $($_.Exception.Message)"
             }
         }
     }
     catch {
-        Send-Line "DEVVM-WARNING=the leftover requests could not be listed: $($_.Exception.Message)"
+        Send-Line "DEVVM-WARNING=the leftovers could not be listed: $($_.Exception.Message)"
     }
 }
 

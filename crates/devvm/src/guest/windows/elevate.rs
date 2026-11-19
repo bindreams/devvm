@@ -28,18 +28,23 @@
 //!   first, at once. It waits for neither with a time bound.
 //!
 //! The caller removes a request only when no runner will touch it: one it withdrew or one whose runner died. What a
-//! killed caller leaves is the runner's to remove, and the boot task sweeps what nothing else did.
+//! killed caller leaves is the runner's to remove, and the boot task removes what nothing else did (every entry of the
+//! root, tried once).
 //!
 //! **A request is removed in one order, until it is gone.** Whoever removes one (the caller, the runner at its end, the
-//! runner's sweep) calls `Remove-Request` ([`remove_request`]): the files other than `caller` and `claim`, then `caller`,
-//! then `claim`, then the directory, looking again after each pause, with no limit on the tries. A file of the request
-//! open elsewhere (a scanner) fails a removal for a moment; an error that waiting does not change is reported on stderr
-//! and leaves the request to the sweep. The order says who a half-removed request belongs to, so a request left at any
-//! point is taken (see [`REMOVE_REQUEST`]).
+//! runner's sweep, the boot task) calls `Remove-Request` ([`remove_request`]): the files other than `caller` and
+//! `claim`, then `caller`, then `claim`, then the directory, looking again after each pause, with no limit on the tries
+//! (the sweep and the boot task try once). A file of the request open elsewhere (a scanner) fails a removal for a moment;
+//! an error that waiting does not change is reported and leaves the request to the next sweep. The order says who a
+//! half-removed request belongs to, so a request left at any point is taken (see [`REMOVE_REQUEST`]).
+//!
+//! **A link is never followed.** `Users` may modify the root, so a request, or an entry of one, can be a junction or a
+//! symbolic link to anywhere, and the removers run at High or as SYSTEM. `Remove-Request` removes a reparse point as the
+//! link and enumerates and deletes only what is under a real directory.
 //!
 //! The sweep also takes an `<id>.tmp` whose `caller` file names an ended caller. A `<id>.tmp` is only ever an
 //! unpublished request, and its caller removes it the same way. One with no `caller` file is not told from one a caller
-//! is still building, and stays: an empty `<id>.tmp` of a caller killed while building or removing it stays until boot.
+//! is still building, and stays for the boot task, which tries it once.
 //!
 //! The caller's wait ends from file state alone, with no time bound: a held claim is a live runner; a released claim
 //! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
@@ -75,13 +80,16 @@ pub(super) const READ: &str = "read";
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
 pub(super) const PAUSE_MILLISECONDS: u32 = 200;
 
-/// The PowerShell functions `Remove-Request` and `Test-RemovalPending`, the same text in the caller script, the runner
-/// and the boot task. `Remove-Request` returns when the directory is gone. It removes every file but `caller` and
-/// `claim`, then `caller`, then `claim`, then the directory; a try that fails because a file is open elsewhere (sharing
-/// violation 32, lock violation 33, directory not empty 145), or because an entry is already gone, is repeated from the
-/// top after a pause (none when the directory is gone too: another remover finished it); with `-Once` it returns
-/// instead, and what is left is the next sweep's. Any other error (access denied included: measured permanent, not
-/// transient) is thrown.
+/// The PowerShell functions `Remove-Request`, `Remove-Entry`, `Test-Link` and `Test-RemovalPending`, the same text in
+/// the caller script, the runner and the boot task. `Remove-Request` returns when the path is gone (a request's
+/// directory, or a stray file). It removes every file but `caller` and `claim`, then `caller`, then `claim`, then the
+/// directory; a try that fails because a file is open elsewhere (sharing violation 32, lock violation 33, directory not
+/// empty 145), or because an entry is already gone, is repeated from the top after a pause (none when the path is gone
+/// too: another remover finished it); with `-Once` it returns instead, and what is left is the next sweep's. Any other
+/// error (access denied included: measured permanent, not transient) is thrown.
+///
+/// A reparse point is looked at without being followed (`Test-Link`): one that is the path itself, or an entry, is
+/// removed as the link (`Remove-Entry`), and nothing under it is listed or deleted.
 ///
 /// Every other removal of a request is this one, so a request that is removed only in part is in one of these states,
 /// and each is safe:
@@ -98,19 +106,35 @@ const REMOVE_REQUEST: &str = r#"function Test-RemovalPending($failure) {
     if ($failure -is [Management.Automation.ItemNotFoundException] -or $failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
     return ($failure -is [IO.IOException]) -and (($failure.HResult -band 0xFFFF) -in 32, 33, 145)
 }
+function Test-Link([string]$path) {
+    try { return ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0 }
+    catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return $false }
+}
+function Remove-Entry([string]$entry) {
+    $link = Test-Link $entry
+    $directory = [IO.Directory]::Exists($entry)
+    if ($directory -and -not $link) {
+        foreach ($child in [IO.Directory]::GetFileSystemEntries($entry)) { Remove-Entry $child }
+    }
+    if ($link -and $directory) { [IO.Directory]::Delete($entry) }
+    else { Remove-Item -LiteralPath $entry -Force -ErrorAction Stop }
+}
 function Remove-Request([string]$path, [switch]$Once) {
     $last = (Join-Path $path {CALLER}), (Join-Path $path {CLAIM})
-    while ([IO.Directory]::Exists($path)) {
+    while ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) {
         try {
-            $first = @(Get-ChildItem -LiteralPath $path -Force -Name -ErrorAction Stop | Where-Object { $_ -notin {CALLER}, {CLAIM} } | ForEach-Object { Join-Path $path $_ })
-            foreach ($entry in $first + $last + $path) {
-                if ([IO.File]::Exists($entry) -or [IO.Directory]::Exists($entry)) { Remove-Item -LiteralPath $entry -Recurse -Force -ErrorAction Stop }
+            if ((Test-Link $path) -or -not [IO.Directory]::Exists($path)) { Remove-Entry $path }
+            else {
+                $first = @([IO.Directory]::GetFileSystemEntries($path) | Where-Object { [IO.Path]::GetFileName($_) -notin {CALLER}, {CLAIM} })
+                foreach ($entry in $first + $last + $path) {
+                    if ([IO.File]::Exists($entry) -or [IO.Directory]::Exists($entry)) { Remove-Entry $entry }
+                }
             }
         }
         catch {
             if (-not (Test-RemovalPending $_.Exception)) { throw }
             if ($Once) { return }
-            if ([IO.Directory]::Exists($path)) { Start-Sleep -Milliseconds {PAUSE} }
+            if ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) { Start-Sleep -Milliseconds {PAUSE} }
         }
     }
 }

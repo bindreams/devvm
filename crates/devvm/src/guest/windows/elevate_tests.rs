@@ -191,7 +191,10 @@ fn a_removal_is_tried_until_the_request_is_gone_and_ends_on_an_error_that_waitin
     assert!(text.contains(&super::remove_request()), "{text}");
     let function = at(&text, "function Remove-Request");
     let body = &text[function..at(&text, "function Warn")];
-    assert!(body.contains("while ([IO.Directory]::Exists($path))"), "{body}");
+    assert!(
+        body.contains("while ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path))"),
+        "{body}"
+    );
     assert!(
         body.contains("if (-not (Test-RemovalPending $_.Exception)) { throw }"),
         "{body}"
@@ -206,6 +209,22 @@ fn a_removal_is_tried_until_the_request_is_gone_and_ends_on_an_error_that_waitin
     // Only the pause paces it: no count, no clock.
     for bound in ["-Timeout", "Stopwatch", "$tries", "$attempt", "-lt"] {
         assert!(!body.contains(bound), "{bound}: {body}");
+    }
+}
+
+#[skuld::test]
+fn a_removal_never_lists_or_deletes_through_a_link() {
+    let text = script();
+    // The root is writable by Users: a link in it can point anywhere. The path and each entry are looked at first, and a
+    // link is removed as a link; the only recursion is `Remove-Entry` over the entries of a real directory.
+    assert!(text.contains("if ((Test-Link $path) -or -not [IO.Directory]::Exists($path)) { Remove-Entry $path }"));
+    assert!(text.contains("if ($directory -and -not $link) {"), "{text}");
+    assert!(
+        text.contains("if ($link -and $directory) { [IO.Directory]::Delete($entry) }"),
+        "{text}"
+    );
+    for follows in ["-Recurse", "Get-ChildItem", "Directory]::Delete($entry, $true)"] {
+        assert!(!text.contains(follows), "{follows}: {text}");
     }
 }
 

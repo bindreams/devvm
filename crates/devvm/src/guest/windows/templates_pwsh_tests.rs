@@ -210,10 +210,11 @@ impl Default for Rename<'_> {
 }
 
 /// `call` run, in PowerShell 7, against the functions of the boot task as shipped (`Restart-Now`,
-/// `Set-ComputerNameFromSeed` and the removal of leftover requests), with everything that changes the system replaced by a function that logs its call:
-/// `Rename-Computer`, the flush of the name, `Write-Whole`, `Send-Line`, `Start-Sleep` and `shutdown.exe` (a function
-/// outranks the application of that name). Returns the log, one entry per call, then `call`'s own entries; an error of `call` is the
-/// entry `threw:<message>`. `$disk` and `$marker` are the paths the script reads.
+/// `Set-ComputerNameFromSeed` and the removal of leftover requests), with everything that changes the system replaced
+/// by a function that logs its call: `Rename-Computer`, the flush of the name, `Write-Whole`, `Send-Line`,
+/// `Start-Sleep` and `shutdown.exe` (a function outranks the application of that name). Returns the log, one entry per
+/// call, then `call`'s own entries; an error of `call` is the entry `threw:<message>`. `$disk` and `$marker` are the
+/// paths the script reads.
 fn boot_task(start: &Rename, call: &str) -> Vec<String> {
     let dir = tempfile::tempdir().unwrap();
     let script_path = dir.path().join("boot-task.ps1");
@@ -238,7 +239,7 @@ $tree = [Management.Automation.Language.Parser]::ParseFile(@@TASK@@, [ref]$token
 if ($errors) { throw "the boot task does not parse: $($errors | Out-String)" }
 $noisy = @@NOISY@@
 function Stray { if ($noisy) { 'stray output' } }
-$shipped = 'Restart-Now', 'Set-ComputerNameFromSeed', 'Test-RemovalPending', 'Remove-Request', 'Remove-StaleRequests'
+$shipped = 'Restart-Now', 'Set-ComputerNameFromSeed', 'Test-RemovalPending', 'Test-Link', 'Remove-Entry', 'Remove-Request', 'Remove-StaleRequests'
 $found = @($tree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false))
 foreach ($function in $found) { if ($function.Name -in $shipped) { Invoke-Expression $function.Extent.Text } }
 if (@($found | Where-Object { $_.Name -in $shipped }).Count -ne $shipped.Count) { throw "the boot task lacks one of: $shipped" }
@@ -453,13 +454,15 @@ fn any_other_refusal_of_the_restart_ends_the_boot_naming_the_status(#[fixture(pw
 }
 
 /// A root under the test's directory with the requests `a` and `b`, each holding `script.ps1`, `stdout`, `caller` and
-/// `claim`, and `Show-Left`, which logs the files left under the root as `left:<request>/<file> ...`.
+/// `claim`; `Show-Left`, which logs the files left under the root as `left:<request>/<file> ...`; and `Show-Root`, which
+/// logs the names in the root as `root:<name> ...`.
 const STALE_REQUESTS: &str = r#"$root = Join-Path (Split-Path -Parent $disk) 'eb'
 foreach ($name in 'a', 'b') {
     $d = Join-Path $root $name
     [void][IO.Directory]::CreateDirectory($d)
     foreach ($file in 'script.ps1', 'stdout', 'caller', 'claim') { [IO.File]::WriteAllText((Join-Path $d $file), '') }
 }
+function Show-Root { $log.Add('root:' + ((Get-ChildItem -LiteralPath $root -Force | ForEach-Object Name | Sort-Object) -join ' ')) }
 function Show-Left { $log.Add('left:' + ((Get-ChildItem -LiteralPath $root -Recurse -Force -File | ForEach-Object { $_.Directory.Name + '/' + $_.Name } | Sort-Object) -join ' ')) }
 "#;
 
@@ -480,7 +483,7 @@ Show-Left"#
     // sweep's. No pause: the boot does not wait on a request.
     assert_eq!(log.len(), 2, "{log:?}");
     assert!(
-        log[0].starts_with("line:DEVVM-WARNING=") && log[0].contains(r"eb\a"),
+        log[0].starts_with("line:DEVVM-WARNING=a leftover is still there after one try: ") && log[0].contains(r"eb\a"),
         "{log:?}"
     );
     assert_eq!(log[1], "left:a/caller a/claim a/stdout");
@@ -504,10 +507,86 @@ Show-Left"#
     );
     assert_eq!(log.len(), 2, "{log:?}");
     assert!(
-        log[0].starts_with("line:DEVVM-WARNING=") && log[0].contains("access is denied"),
+        log[0].starts_with("line:DEVVM-WARNING=a leftover could not be removed: ")
+            && log[0].contains("access is denied"),
         "{log:?}"
     );
     assert_eq!(log[1], "left:a/caller a/claim a/script.ps1 a/stdout");
+}
+
+/// A directory `target` beside the root, holding `precious`; `Link` makes a junction to it at a path. A removal that
+/// goes through a link empties `target`.
+const LINK_TARGET: &str = r#"$target = Join-Path (Split-Path -Parent $disk) 'target'
+[void][IO.Directory]::CreateDirectory($target)
+[IO.File]::WriteAllText((Join-Path $target 'precious'), '')
+function Link([string]$path) { [void](New-Item -ItemType Junction -Path $path -Target $target) }
+function Show-Target { $log.Add('target:' + ((Get-ChildItem -LiteralPath $target -Force | ForEach-Object Name) -join ' ')) }
+"#;
+
+#[skuld::test]
+fn a_leftover_request_that_is_a_junction_is_unlinked_and_its_target_is_left_alone(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}{LINK_TARGET}
+Link (Join-Path $root 'c')
+Remove-StaleRequests $root
+Show-Root; Show-Target"#
+        ),
+    );
+    assert_eq!(log, ["root:", "target:precious"]);
+}
+
+#[skuld::test]
+fn a_junction_inside_a_leftover_request_is_unlinked_and_its_target_is_left_alone(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}{LINK_TARGET}
+Link (Join-Path $root 'a\link')
+Remove-StaleRequests $root
+Show-Root; Show-Target"#
+        ),
+    );
+    assert_eq!(log, ["root:", "target:precious"]);
+}
+
+#[skuld::test]
+fn a_stray_file_in_the_root_is_removed_and_one_that_is_held_is_a_warning(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+[IO.File]::WriteAllText((Join-Path $root 'stray'), '')
+[IO.File]::WriteAllText((Join-Path $root 'held'), '')
+$held = [IO.File]::Open((Join-Path $root 'held'), 'Open', 'Read', 'None')
+try {{ Remove-StaleRequests $root }} finally {{ $held.Dispose() }}
+Show-Root"#
+        ),
+    );
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert!(
+        log[0].starts_with("line:DEVVM-WARNING=a leftover is still there after one try: ")
+            && log[0].contains(r"eb\held"),
+        "{log:?}"
+    );
+    assert_eq!(log[1], "root:held");
+}
+
+#[skuld::test]
+fn a_read_only_file_of_a_leftover_request_is_removed(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+[IO.File]::SetAttributes((Join-Path $root 'a\script.ps1'), [IO.FileAttributes]::ReadOnly)
+Remove-StaleRequests $root
+Show-Root"#
+        ),
+    );
+    assert_eq!(log, ["root:"]);
 }
 
 #[skuld::test]
@@ -621,12 +700,27 @@ struct RunnerRun {
     /// The names in the held request at the removal's first pause, sorted: where the removal that failed on the held file
     /// had got to. Empty if it never paused.
     at_first_pause: Vec<String>,
+    /// The names in the directory `target` beside the root, sorted, when the test made one: what a junction in the root
+    /// points at.
+    target: Vec<String>,
 }
 
 /// A runner started for the request `id` when the root held `requests`: each a name, its caller and the other files it
 /// holds. The runner runs in the test's own PowerShell, whose `Start-Sleep` is replaced by a function: with `held`, the
 /// file is open to nobody else until the first pause, and the pause says what the request holds then.
 fn run_runner(helper: &NativeHelper, id: &str, requests: &[(&str, Caller, &[&str])], held: Option<Held>) -> RunnerRun {
+    run_runner_with(helper, id, requests, held, "")
+}
+
+/// [`run_runner`] with `setup`, PowerShell run once the requests are made: `$root` is the root, `$target` a directory
+/// `target` beside it that [`RunnerRun::target`] reports.
+fn run_runner_with(
+    helper: &NativeHelper,
+    id: &str,
+    requests: &[(&str, Caller, &[&str])],
+    held: Option<Held>,
+    setup: &str,
+) -> RunnerRun {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("eb");
     let runner = write_runner(helper, dir.path(), &root);
@@ -652,6 +746,9 @@ function Make([string]$name, $caller, [string[]]$files) {{
         let files = files.iter().map(|file| literal(file)).collect::<Vec<_>>().join(", ");
         script.push_str(&format!("Make {} {caller} @({files})\n", literal(name)));
     }
+    script.push_str("[void][IO.Directory]::CreateDirectory($root)\n");
+    script.push_str(setup);
+    script.push('\n');
     if let Some(Held { request, file }) = held {
         script.push_str(&format!(
             "$global:requestDir = Join-Path $root {}
@@ -673,20 +770,29 @@ function global:Start-Sleep {{ param($Milliseconds)
 & {} {}
 if ($LASTEXITCODE -ne 0) {{ throw \"the runner ended with $LASTEXITCODE\" }}
 Get-ChildItem -LiteralPath $root -Force | ForEach-Object Name | Sort-Object
+$target = Join-Path (Split-Path -Parent $root) 'target'
+if (Test-Path -LiteralPath $target) {{ 'TARGET ' + ((Get-ChildItem -LiteralPath $target -Force | ForEach-Object Name | Sort-Object) -join ' ') }}
 ",
         literal(&runner.display().to_string()),
         literal(id)
     ));
     let output = run(&script, "none", None);
     assert_eq!(output.status.code(), Some(0), "{}", shown(&output));
-    let (mut left, mut at_first_pause) = (Vec::new(), Vec::new());
+    let (mut left, mut at_first_pause, mut target) = (Vec::new(), Vec::new(), Vec::new());
     for line in String::from_utf8_lossy(&output.stdout).lines().map(str::trim) {
-        match line.strip_prefix("PAUSE") {
-            Some(names) => at_first_pause = names.split_whitespace().map(str::to_owned).collect(),
-            None => left.push(line.to_owned()),
+        if let Some(names) = line.strip_prefix("PAUSE") {
+            at_first_pause = names.split_whitespace().map(str::to_owned).collect();
+        } else if let Some(names) = line.strip_prefix("TARGET") {
+            target = names.split_whitespace().map(str::to_owned).collect();
+        } else {
+            left.push(line.to_owned());
         }
     }
-    RunnerRun { left, at_first_pause }
+    RunnerRun {
+        left,
+        at_first_pause,
+        target,
+    }
 }
 
 /// [`run_runner`] with nothing held: the names left in the root.
@@ -704,6 +810,8 @@ fn the_runners_sweep_removes_requests_and_unpublished_requests_whose_caller_ende
         &[
             ("ended", Caller::Ended, &["script.ps1"]),
             ("ended.tmp", Caller::Ended, &["script.ps1"]),
+            // What a caller's withdrawal leaves when it dies: its own claim, which nothing holds.
+            ("withdrawn", Caller::Ended, &["script.ps1", "claim"]),
             ("alive", Caller::Alive, &["script.ps1"]),
             ("alive.tmp", Caller::Alive, &["script.ps1"]),
             // Made but not yet given its caller: a caller still building it, or one that died in between, which nothing
@@ -803,4 +911,60 @@ fn the_runners_last_removal_removes_the_caller_and_the_claim_after_every_other_f
     // The runner makes its own claim and closes it before the removal.
     assert_eq!(run.at_first_pause, ["caller", "claim", "stdout"]);
     assert_eq!(run.left, Vec::<String>::new());
+}
+
+/// The request `ended` (its caller has ended; it holds a claim nobody holds) with a directory `target` beside the root
+/// holding `precious`, and `setup` run after both: `Link <path>` makes a junction to `target`.
+fn run_runner_with_target(helper: &NativeHelper, setup: &str) -> RunnerRun {
+    run_runner_with(
+        helper,
+        NO_REQUEST,
+        &[("ended", Caller::Ended, &["script.ps1", "claim"])],
+        None,
+        &format!(
+            "$target = Join-Path (Split-Path -Parent $root) 'target'
+[void][IO.Directory]::CreateDirectory($target)
+[IO.File]::WriteAllText((Join-Path $target 'precious'), '')
+function Link([string]$path) {{ [void](New-Item -ItemType Junction -Path $path -Target $target) }}
+{setup}"
+        ),
+    )
+}
+
+#[skuld::test]
+fn the_sweep_unlinks_a_junction_in_the_root_and_leaves_its_target_alone(
+    #[fixture(native_helper)] helper: &NativeHelper,
+) {
+    let run = run_runner_with_target(helper, "Link (Join-Path $root 'linked')");
+    assert_eq!(run.left, Vec::<String>::new());
+    assert_eq!(run.target, ["precious"]);
+}
+
+#[skuld::test]
+fn the_sweep_unlinks_a_junction_inside_a_request_and_leaves_its_target_alone(
+    #[fixture(native_helper)] helper: &NativeHelper,
+) {
+    let run = run_runner_with_target(helper, "Link (Join-Path $root 'ended/link')");
+    assert_eq!(run.left, Vec::<String>::new());
+    assert_eq!(run.target, ["precious"]);
+}
+
+#[skuld::test]
+fn the_runners_last_removal_unlinks_a_junction_in_its_request_and_leaves_its_target_alone(
+    #[fixture(native_helper)] helper: &NativeHelper,
+) {
+    let run = run_runner_with(
+        helper,
+        REQUEST,
+        &[(REQUEST, Caller::Ended, &["script.ps1"])],
+        None,
+        &format!(
+            "$target = Join-Path (Split-Path -Parent $root) 'target'
+[void][IO.Directory]::CreateDirectory($target)
+[IO.File]::WriteAllText((Join-Path $target 'precious'), '')
+[void](New-Item -ItemType Junction -Path (Join-Path $root '{REQUEST}/link') -Target $target)"
+        ),
+    );
+    assert_eq!(run.left, Vec::<String>::new());
+    assert_eq!(run.target, ["precious"]);
 }

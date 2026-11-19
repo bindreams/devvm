@@ -62,6 +62,8 @@ function Test-Held([string]$Path) {
 foreach ($other in [IO.Directory]::GetDirectories($root)) {
     $name = [IO.Path]::GetFileName($other)
     if ($name -eq $Id) { continue }
+    # A link is no request, and what it points at is not read: it is removed as a link.
+    if (Test-Link $other) { Remove-RequestOrWarn $other -Once; continue }
     if ($name.EndsWith('.tmp') -and -not [IO.File]::Exists((Join-Path $other $callerName))) { continue }
     if (-not (Test-CallerEnded $other) -or (Test-Held (Join-Path $other $claimName))) { continue }
     # Once: a request another runner or a scanner still holds must not hold up this runner's own.
