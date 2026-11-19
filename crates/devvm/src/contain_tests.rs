@@ -12,7 +12,7 @@ impl VmProcess {
     /// Whether the process is still running; an error when the OS refuses to say (never "dead").
     pub(crate) fn is_alive(&self) -> Result<bool> {
         let id = self.id();
-        match cosca::Process::from_id(id).is_alive() {
+        match id.is_alive() {
             Liveness::Alive => Ok(true),
             Liveness::Dead => Ok(false),
             Liveness::Unknown => Err(unknown_liveness(id)),
@@ -41,10 +41,10 @@ impl Sleeper {
     }
 
     pub(crate) fn record(&self) -> ProcessIdRecord {
-        let process = cosca::Process::from_pid(self.child.id())
+        let id = cosca::identity::ProcessId::of(self.child.id())
             .found()
             .expect("the sleeper is alive");
-        process.id().to_record().expect("an identity record")
+        id.to_record().expect("an identity record")
     }
 
     /// Lets the sleeper exit and reaps it.
@@ -159,6 +159,7 @@ fn a_host_that_cannot_freeze_a_process_is_not_supported_naming_the_host() {
         op: "spawn_suspended".into(),
         platform: "plan9",
         detail: "no gate before exec".into(),
+        source: None,
     };
     let error = frozen_spawn_error(refusal);
     assert_eq!(error.kind(), ErrorKind::NotSupported);
@@ -173,6 +174,7 @@ fn a_host_that_cannot_freeze_a_process_is_not_supported_naming_the_host() {
 fn any_other_frozen_spawn_failure_is_an_io_error_carrying_coscas_words() {
     let error = frozen_spawn_error(cosca::error::Error::Containment {
         detail: "no job".into(),
+        source: None,
     });
     assert_eq!(error.kind(), ErrorKind::Io);
     assert!(error.message().contains("no job"), "{}", error.message());

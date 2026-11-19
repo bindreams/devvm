@@ -38,6 +38,8 @@ pub(crate) enum Lifetime {
 /// this process) and `Released` (containment disarmed: it outlives this process). Dropping a frozen or running one
 /// kills it; dropping a released or foreign one leaves it alone.
 pub(crate) struct VmProcess {
+    /// Read when the process was started or found; every later act on the process opens it by this.
+    id: ProcessId,
     state: State,
 }
 
@@ -45,9 +47,25 @@ enum State {
     Frozen(cosca::SuspendedChild, Lifetime),
     Running(cosca::Child, Lifetime),
     /// Started by this process, containment disarmed.
-    Released(cosca::Process),
+    Released,
     /// A process this one did not spawn (or no longer owns).
-    Foreign(cosca::Process),
+    Foreign,
+}
+
+/// Waits for the process `id` names to exit. A process that is gone has exited.
+fn wait_for_exit(id: ProcessId) -> std::result::Result<(), cosca::error::Error> {
+    match cosca::Process::open(id)? {
+        Some(process) => process.wait(),
+        None => Ok(()),
+    }
+}
+
+/// Kills the process `id` names. A process that is gone is `Ok`.
+fn kill_by_id(id: ProcessId) -> std::result::Result<(), cosca::error::Error> {
+    match cosca::Process::open(id)? {
+        Some(process) => process.kill(),
+        None => Ok(()),
+    }
 }
 
 fn cosca_error(context: &str, source: cosca::error::Error) -> Error {
@@ -57,7 +75,9 @@ fn cosca_error(context: &str, source: cosca::error::Error) -> Error {
 /// How a failed frozen spawn is reported: a host that cannot freeze a process is `NotSupported`, anything else `Io`.
 pub(crate) fn frozen_spawn_error(error: cosca::error::Error) -> Error {
     match error {
-        cosca::error::Error::Unsupported { op, platform, detail } if op == "spawn_suspended" => Error::new(
+        cosca::error::Error::Unsupported {
+            op, platform, detail, ..
+        } if op == "spawn_suspended" => Error::new(
             ErrorKind::NotSupported,
             format!("cannot start the VM: frozen spawn needs Windows in 0.1.0 (this host is {platform}: {detail})"),
         ),
@@ -85,7 +105,7 @@ impl VmProcess {
     /// owner.
     ///
     /// `program` is the absolute path of the executable, and argv[0]; `command` gives the rest of the arguments, the
-    /// environment and the working directory. Naming the executable is what gives the handle guarantee: cosca 0.6.0's
+    /// environment and the working directory. Naming the executable is what gives the handle guarantee: cosca 0.8.0's
     /// `routes_to_raw_backend` sends a Windows command that names one to its raw backend, which hands the child only
     /// the handles listed for it. Any other command goes through `std`, which has the child inherit every inheritable
     /// handle of this process.
@@ -126,7 +146,18 @@ impl VmProcess {
             .map_err(|e| cosca_error("cannot set up the VM process's stdio", e))?;
         host.detach(&mut cmd)?;
         let frozen = cmd.spawn_suspended().map_err(frozen_spawn_error)?;
+        // Dropping `frozen` kills the process, so one without an identity never runs.
+        let Some(id) = frozen.id() else {
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!(
+                    "cannot start the VM: the OS refused the identity of the VM process {}",
+                    frozen.pid()
+                ),
+            ));
+        };
         Ok(VmProcess {
+            id,
             state: State::Frozen(frozen, lifetime),
         })
     }
@@ -151,7 +182,7 @@ impl VmProcess {
     /// Disarms the containment of a resumed process: it now outlives this one. `Internal` unless the process is
     /// running and contained, so a release before `resume`, or a second one, is a mistake; `Internal` too for a VM
     /// started `DiesWithOwner`, whose lifetime does not allow it. The lifetime is the permission, `release` the switch.
-    /// cosca's `detach` only logs a disarm that fails, so a success here does not prove the containment is gone.
+    /// A disarm the OS refuses is an error, and the process stays contained.
     pub(crate) fn release(&mut self) -> Result<()> {
         let id = self.id();
         match &self.state {
@@ -176,12 +207,14 @@ impl VmProcess {
                 ));
             }
         }
-        let State::Running(child, _) = std::mem::replace(&mut self.state, State::Released(cosca::Process::from_id(id)))
-        else {
+        let State::Running(child, lifetime) = std::mem::replace(&mut self.state, State::Released) else {
             unreachable!("checked just above");
         };
-        child.detach();
-        Ok(())
+        // A refused disarm hands the child back still armed: the process stays contained and `Running`.
+        child.detach().map_err(|(child, e)| {
+            self.state = State::Running(child, lifetime);
+            cosca_error(&format!("cannot release the VM process {}", id.pid()), e)
+        })
     }
 
     fn take_frozen(&mut self) -> Option<(cosca::SuspendedChild, Lifetime)> {
@@ -189,7 +222,7 @@ impl VmProcess {
             return None;
         }
         // What is left behind is the identity alone: if the resume fails nothing of the process is still held.
-        let left = State::Foreign(cosca::Process::from_id(self.id()));
+        let left = State::Foreign;
         match std::mem::replace(&mut self.state, left) {
             State::Frozen(frozen, lifetime) => Some((frozen, lifetime)),
             _ => unreachable!("checked just above"),
@@ -221,10 +254,13 @@ impl VmProcess {
                 ));
             }
         };
-        let process = cosca::Process::from_id(id);
+        let opened = cosca::Process::open(id)
+            .map_err(|e| cosca_error(&format!("cannot open the VM process {}", id.pid()), e))?;
+        let Some(process) = opened else { return Ok(None) };
         match process.is_alive() {
             Liveness::Alive => Ok(Some(VmProcess {
-                state: State::Foreign(process),
+                id,
+                state: State::Foreign,
             })),
             Liveness::Dead => Ok(None),
             Liveness::Unknown => Err(unknown_liveness(id)),
@@ -232,11 +268,7 @@ impl VmProcess {
     }
 
     pub(crate) fn id(&self) -> ProcessId {
-        match &self.state {
-            State::Frozen(frozen, _) => frozen.id(),
-            State::Running(child, _) => child.id(),
-            State::Released(process) | State::Foreign(process) => process.id(),
-        }
+        self.id
     }
 
     /// The persistable identity of this process. Valid while the process is still frozen.
@@ -249,9 +281,7 @@ impl VmProcess {
     /// Blocks until the process has exited, with no time limit.
     pub(crate) fn wait(&self) -> Result<()> {
         let id = self.id();
-        cosca::Process::from_id(id)
-            .wait()
-            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e))
+        wait_for_exit(id).map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e))
     }
 
     /// The exit status of the process if it has exited, `None` while it runs: std's `Child::try_wait`. It reads the
@@ -266,7 +296,7 @@ impl VmProcess {
                     e,
                 )
             }),
-            State::Frozen(..) | State::Released(_) | State::Foreign(_) => Err(Error::new(
+            State::Frozen(..) | State::Released | State::Foreign => Err(Error::new(
                 ErrorKind::Internal,
                 format!(
                     "cannot read the exit status of the VM process {}: this process holds no running child of it",
@@ -285,17 +315,15 @@ impl VmProcess {
             State::Frozen(..) => {
                 // Killed by identity first, so that a failure is seen: dropping a frozen child kills it too, but
                 // discards how that went.
-                let killed = cosca::Process::from_id(id).kill();
-                self.state = State::Foreign(cosca::Process::from_id(id));
+                let killed = kill_by_id(id);
+                self.state = State::Foreign;
                 killed
             }
             State::Running(child, _) => child.kill_tree(),
-            State::Released(process) | State::Foreign(process) => process.kill(),
+            State::Released | State::Foreign => kill_by_id(id),
         };
         killed.map_err(|e| cosca_error(&format!("cannot kill the VM process {pid}"), e))?;
-        cosca::Process::from_id(id)
-            .wait()
-            .map_err(|e| cosca_error(&format!("cannot wait for the VM process {pid} to exit"), e))
+        wait_for_exit(id).map_err(|e| cosca_error(&format!("cannot wait for the VM process {pid} to exit"), e))
     }
 }
 

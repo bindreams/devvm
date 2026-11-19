@@ -43,7 +43,18 @@ impl WindowsWatch {
         }
         // SAFETY: `raw` is a new handle that nothing else owns.
         let handle = unsafe { OwnedHandle::from_raw_handle(raw as _) };
-        match cosca::Process::from_id(id).is_alive() {
+        let opened = cosca::Process::open(id).map_err(|e| {
+            Error::new(
+                ErrorKind::Io,
+                format!("cannot open the VM process {pid} to wait for its exit: {e}"),
+            )
+            .with_source(e)
+        })?;
+        // No process has this identity any more: it exited, or its PID is another process's now.
+        let Some(process) = opened else {
+            return Ok(WindowsWatch { handle: None });
+        };
+        match process.is_alive() {
             Liveness::Alive => Ok(WindowsWatch::from_handle(handle)),
             Liveness::Dead => Ok(WindowsWatch { handle: None }),
             Liveness::Unknown => Err(Error::new(

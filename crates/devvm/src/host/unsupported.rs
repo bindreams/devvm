@@ -121,7 +121,7 @@ impl<M: FileModes> Host for M {
     }
 
     fn watch_process(&self, id: ProcessId) -> Result<Arc<dyn ProcessWatch>> {
-        Ok(Arc::new(watch::UnixWatch::new(id)))
+        Ok(Arc::new(watch::UnixWatch::new(id)?))
     }
 
     fn ansi_code_page(&self) -> Option<u32> {

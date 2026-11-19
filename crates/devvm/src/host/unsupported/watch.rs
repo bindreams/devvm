@@ -12,21 +12,31 @@ use crate::{Error, ErrorKind, Result};
 mod watch_tests;
 
 pub(super) struct UnixWatch {
-    process: Process,
+    id: ProcessId,
+    /// `None`: no process has this identity any more, so it has exited.
+    process: Option<Process>,
 }
 
 impl UnixWatch {
-    pub(super) fn new(id: ProcessId) -> UnixWatch {
-        UnixWatch {
-            process: Process::from_id(id),
-        }
+    pub(super) fn new(id: ProcessId) -> Result<UnixWatch> {
+        let process = Process::open(id).map_err(|e| {
+            Error::new(
+                ErrorKind::Io,
+                format!("cannot open the VM process {} to wait for its exit: {e}", id.pid()),
+            )
+            .with_source(e)
+        })?;
+        Ok(UnixWatch { id, process })
     }
 
     fn exited_within(&self, limit: std::time::Duration) -> Result<bool> {
-        self.process.wait_timeout(limit).map_err(|e| {
+        let Some(process) = &self.process else {
+            return Ok(true);
+        };
+        process.wait_timeout(limit).map_err(|e| {
             Error::new(
                 ErrorKind::Io,
-                format!("cannot wait for the VM process {}: {e}", self.process.id().pid()),
+                format!("cannot wait for the VM process {}: {e}", self.id.pid()),
             )
         })
     }

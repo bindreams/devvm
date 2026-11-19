@@ -155,7 +155,7 @@ fn seed_a_machine(home: &Home, name: &str) {
     let record = std::fs::read_to_string(&path).unwrap().replace(
         r#""machine": null"#,
         r#""machine": {
-    "process": {"v": 1, "platform": "windows", "pid": 4242, "token": "133000000000000000"},
+    "process": {"v": 2, "platform": "windows", "pid": 4242, "token": "133000000000000000"},
     "qmp": "",
     "ssh": [],
     "serial_log": "serial.log",

@@ -24,11 +24,11 @@ use crate::{Arch, ErrorKind};
 
 /// A machine record naming the test process, whose control socket is `sock`.
 fn record(sock: &Sock, no_reboot: bool) -> (VmProcess, MachineRecord) {
-    let cosca::identity::Resolved::Found(process) = cosca::Process::from_pid(std::process::id()) else {
+    let cosca::identity::Resolved::Found(id) = cosca::identity::ProcessId::of(std::process::id()) else {
         panic!("the test process cannot be identified");
     };
     let record = MachineRecord {
-        process: process.id().to_record().unwrap(),
+        process: id.to_record().unwrap(),
         qmp: sock.endpoint.path().display().to_string(),
         ssh: Vec::new(),
         serial_log: sock.endpoint.path().with_file_name("serial.log"),
