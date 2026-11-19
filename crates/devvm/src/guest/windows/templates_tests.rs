@@ -863,7 +863,7 @@ fn the_boot_task_names_the_computer_from_the_seed_and_restarts_before_anything_e
     assert_before(
         &task,
         "try {
-    # Requests the last boot",
+    Remove-StaleRequests $root",
         call,
     );
     assert_before(&task, call, "} catch {");
@@ -1022,12 +1022,23 @@ fn the_boot_task_waits_for_the_answer_disk_with_no_cap() {
 }
 
 #[skuld::test]
-fn the_boot_task_sweeps_the_request_directories_nothing_else_removed() {
+fn the_boot_task_removes_leftover_requests_with_remove_request_once_each_and_before_the_seed() {
     let task = rendered("boot-task.ps1");
-    assert_eq!(task.matches("Remove-Item").count(), 1);
-    assert!(task.contains("Get-ChildItem -LiteralPath $root -Force | Remove-Item -Recurse -Force"));
+    // The only deletion is the one inside `Remove-Request`: a plain removal of a held file under `Stop` ends the boot.
+    assert_eq!(task.matches("Remove-Item").count(), 1, "{task}");
+    assert!(task.contains(&elevate::remove_request()), "{task}");
+    let sweep = section(
+        &task,
+        "function Remove-StaleRequests",
+        "
+}
+",
+    );
+    assert!(sweep.contains("Remove-Request $request -Once"), "{sweep}");
+    // A failure is a warning line, never the boot's.
+    assert!(sweep.matches("Send-Line \"DEVVM-WARNING=").count() >= 2, "{sweep}");
     assert!(task.contains(&format!("$root = {}", literal(elevate::ROOT))));
-    assert_before(&task, "Remove-Item", "DEVVM-SEED-WRITTEN");
+    assert_before(&task, "Remove-StaleRequests $root", "DEVVM-SEED-WRITTEN");
 }
 
 // The elevated helper =================================================================================================

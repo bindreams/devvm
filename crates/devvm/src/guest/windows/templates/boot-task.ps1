@@ -85,6 +85,28 @@ function Set-ComputerNameFromSeed([string]$Disk, [string]$Marker) {
     return $true
 }
 
+@@!EB_REMOVE_REQUEST@@
+# Requests the last boot left behind: no caller survives a boot, so every one is stale. Nothing else is removed. A request
+# that cannot be removed now (a file held open by a scanner, say) is a warning, never a failed boot: what is left is the
+# next runner's sweep. A request is tried once, so no request holds up the boot or another request.
+function Remove-StaleRequests([string]$Root) {
+    try {
+        if (-not (Test-Path -LiteralPath $Root)) { return }
+        foreach ($request in [IO.Directory]::GetDirectories($Root)) {
+            try {
+                Remove-Request $request -Once
+                if ([IO.Directory]::Exists($request)) { Send-Line "DEVVM-WARNING=a leftover request is still held: $request" }
+            }
+            catch {
+                Send-Line "DEVVM-WARNING=a leftover request could not be removed: $request`: $($_.Exception.Message)"
+            }
+        }
+    }
+    catch {
+        Send-Line "DEVVM-WARNING=the leftover requests could not be listed: $($_.Exception.Message)"
+    }
+}
+
 # Whether the agent of `user` accepts a connection on its socket, which is in the user's profile (found by SID: the
 # profile list names it). A connect that succeeds is the condition under which the shim does not fail open.
 function Test-AgentSocket([string]$Sid) {
@@ -102,8 +124,7 @@ function Test-AgentSocket([string]$Sid) {
 }
 
 try {
-    # Requests the last boot left behind: no caller survives a boot, so every one is stale. Nothing else is removed.
-    if (Test-Path -LiteralPath $root) { Get-ChildItem -LiteralPath $root -Force | Remove-Item -Recurse -Force }
+    Remove-StaleRequests $root
 
     # The disk may appear after the boot has started.
     while (-not ($disk = Find-VolumeRoot 'CIDATA')) { Start-Sleep -Milliseconds 200 }

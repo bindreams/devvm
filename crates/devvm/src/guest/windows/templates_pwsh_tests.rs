@@ -209,8 +209,8 @@ impl Default for Rename<'_> {
     }
 }
 
-/// `call` run, in PowerShell 7, against the functions of the boot task as shipped (`Restart-Now` and
-/// `Set-ComputerNameFromSeed`), with everything that changes the system replaced by a function that logs its call:
+/// `call` run, in PowerShell 7, against the functions of the boot task as shipped (`Restart-Now`,
+/// `Set-ComputerNameFromSeed` and the removal of leftover requests), with everything that changes the system replaced by a function that logs its call:
 /// `Rename-Computer`, the flush of the name, `Write-Whole`, `Send-Line`, `Start-Sleep` and `shutdown.exe` (a function
 /// outranks the application of that name). Returns the log, one entry per call, then `call`'s own entries; an error of `call` is the
 /// entry `threw:<message>`. `$disk` and `$marker` are the paths the script reads.
@@ -238,7 +238,7 @@ $tree = [Management.Automation.Language.Parser]::ParseFile(@@TASK@@, [ref]$token
 if ($errors) { throw "the boot task does not parse: $($errors | Out-String)" }
 $noisy = @@NOISY@@
 function Stray { if ($noisy) { 'stray output' } }
-$shipped = 'Restart-Now', 'Set-ComputerNameFromSeed'
+$shipped = 'Restart-Now', 'Set-ComputerNameFromSeed', 'Test-RemovalPending', 'Remove-Request', 'Remove-StaleRequests'
 $found = @($tree.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false))
 foreach ($function in $found) { if ($function.Name -in $shipped) { Invoke-Expression $function.Extent.Text } }
 if (@($found | Where-Object { $_.Name -in $shipped }).Count -ne $shipped.Count) { throw "the boot task lacks one of: $shipped" }
@@ -452,6 +452,98 @@ fn any_other_refusal_of_the_restart_ends_the_boot_naming_the_status(#[fixture(pw
     );
 }
 
+/// A root under the test's directory with the requests `a` and `b`, each holding `script.ps1`, `stdout`, `caller` and
+/// `claim`, and `Show-Left`, which logs the files left under the root as `left:<request>/<file> ...`.
+const STALE_REQUESTS: &str = r#"$root = Join-Path (Split-Path -Parent $disk) 'eb'
+foreach ($name in 'a', 'b') {
+    $d = Join-Path $root $name
+    [void][IO.Directory]::CreateDirectory($d)
+    foreach ($file in 'script.ps1', 'stdout', 'caller', 'claim') { [IO.File]::WriteAllText((Join-Path $d $file), '') }
+}
+function Show-Left { $log.Add('left:' + ((Get-ChildItem -LiteralPath $root -Recurse -Force -File | ForEach-Object { $_.Directory.Name + '/' + $_.Name } | Sort-Object) -join ' ')) }
+"#;
+
+#[skuld::test]
+fn a_leftover_request_with_a_held_file_is_a_warning_at_boot_and_the_other_requests_are_removed(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+$held = [IO.File]::Open((Join-Path $root 'a\stdout'), 'Open', 'Read', 'None')
+try {{ Remove-StaleRequests $root }} finally {{ $held.Dispose() }}
+Show-Left"#
+        ),
+    );
+    // `a` keeps what a removal in the fixed order leaves of it: `caller`, `claim` and the held file. It is the next
+    // sweep's. No pause: the boot does not wait on a request.
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert!(
+        log[0].starts_with("line:DEVVM-WARNING=") && log[0].contains(r"eb\a"),
+        "{log:?}"
+    );
+    assert_eq!(log[1], "left:a/caller a/claim a/stdout");
+}
+
+#[skuld::test]
+fn a_leftover_request_whose_removal_throws_is_a_warning_at_boot_and_the_next_is_still_removed(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+function Remove-Request([string]$path, [switch]$Once) {{
+    if ($path.EndsWith('a')) {{ throw 'access is denied' }}
+    [IO.Directory]::Delete($path, $true)
+}}
+Remove-StaleRequests $root
+Show-Left"#
+        ),
+    );
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert!(
+        log[0].starts_with("line:DEVVM-WARNING=") && log[0].contains("access is denied"),
+        "{log:?}"
+    );
+    assert_eq!(log[1], "left:a/caller a/claim a/script.ps1 a/stdout");
+}
+
+#[skuld::test]
+fn leftover_requests_are_all_removed_when_nothing_holds_them_and_a_missing_root_is_nothing(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+Remove-StaleRequests $root
+Remove-StaleRequests (Join-Path $root 'missing')
+Show-Left"#
+        ),
+    );
+    assert_eq!(log, ["left:"]);
+}
+
+#[skuld::test]
+fn a_request_another_remover_finished_is_not_waited_for(#[fixture(pwsh_wrap)] _group: &Group) {
+    let log = boot_task(
+        &Rename::default(),
+        &format!(
+            r#"{STALE_REQUESTS}
+# The other remover deletes the request between this one's look at it and its Remove-Item, which then fails as not found.
+function Remove-Item {{ param($LiteralPath, [switch]$Recurse, [switch]$Force, $ErrorAction)
+    [IO.Directory]::Delete((Split-Path -Parent $LiteralPath), $true)
+    throw [IO.FileNotFoundException]::new('gone')
+}}
+Remove-Request (Join-Path $root 'a')
+$log.Add('returned')"#
+        ),
+    );
+    assert_eq!(log, ["returned"]);
+}
+
 // The elevated helper's runner ========================================================================================
 
 /// Compiles the native helper into `dir` as the bootstrap does, so a rendered runner there can load it.
@@ -612,8 +704,6 @@ fn the_runners_sweep_removes_requests_and_unpublished_requests_whose_caller_ende
         &[
             ("ended", Caller::Ended, &["script.ps1"]),
             ("ended.tmp", Caller::Ended, &["script.ps1"]),
-            // What a caller leaves when it withdrew the request: the claim it made itself, which nobody holds.
-            ("withdrawn.tmp", Caller::Ended, &["script.ps1", "claim"]),
             ("alive", Caller::Alive, &["script.ps1"]),
             ("alive.tmp", Caller::Alive, &["script.ps1"]),
             // Made but not yet given its caller: a caller still building it, or one that died in between, which nothing

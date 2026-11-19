@@ -25,16 +25,23 @@ fn pending(guest: &dyn Guest) -> String {
 }
 
 /// What the helper's root holds, as a failing wait shows it: every entry, in every request, with its attributes, size and
-/// time of last write. An entry that goes while it is listed is skipped.
+/// time of last write. An entry that goes while it is listed is skipped. It never panics: a listing that cannot be read
+/// is shown as the reason, so it never hides the failure of the wait it serves.
 fn listing(guest: &dyn Guest) -> String {
     let script = format!(
         r"Get-ChildItem -LiteralPath '{ROOT}' -Force -Recurse -ErrorAction SilentlyContinue | ForEach-Object {{ '{{0}} [{{1}}] {{2}} bytes, written {{3:o}}' -f $_.FullName, $_.Attributes, $_.Length, $_.LastWriteTimeUtc }}"
     );
-    let entries = printed(guest, &script);
+    let shown = match ran(guest, "listing the helper's root", &pwsh(RunAs::User, &script)) {
+        Ok(output) if output.status == ExitStatus::Code(0) => match output.stdout_lossy().trim() {
+            "" => "nothing".to_owned(),
+            entries => entries.to_owned(),
+        },
+        Ok(output) => format!("cannot be listed: {:?}: {}", output.status, output.stderr_lossy()),
+        Err(error) => format!("cannot be listed: {error}"),
+    };
     format!(
         "{ROOT} holds:
-{}",
-        if entries.is_empty() { "nothing" } else { &entries }
+{shown}"
     )
 }
 

@@ -75,12 +75,13 @@ pub(super) const READ: &str = "read";
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
 pub(super) const PAUSE_MILLISECONDS: u32 = 200;
 
-/// The PowerShell functions `Remove-Request` and `Test-RemovalPending`, the same text in the caller script and in the
-/// runner. `Remove-Request` returns when the directory is gone. It removes every file but `caller` and `claim`, then
-/// `caller`, then `claim`, then the directory; a try that fails because a file is open elsewhere (sharing violation 32,
-/// lock violation 33, directory not empty 145), or because an entry is already gone, is repeated from the top after a
-/// pause; with `-Once` it returns instead, and what is left is the next sweep's. Any other error (access denied
-/// included: measured permanent, not transient) is thrown.
+/// The PowerShell functions `Remove-Request` and `Test-RemovalPending`, the same text in the caller script, the runner
+/// and the boot task. `Remove-Request` returns when the directory is gone. It removes every file but `caller` and
+/// `claim`, then `caller`, then `claim`, then the directory; a try that fails because a file is open elsewhere (sharing
+/// violation 32, lock violation 33, directory not empty 145), or because an entry is already gone, is repeated from the
+/// top after a pause (none when the directory is gone too: another remover finished it); with `-Once` it returns
+/// instead, and what is left is the next sweep's. Any other error (access denied included: measured permanent, not
+/// transient) is thrown.
 ///
 /// Every other removal of a request is this one, so a request that is removed only in part is in one of these states,
 /// and each is safe:
@@ -109,7 +110,7 @@ function Remove-Request([string]$path, [switch]$Once) {
         catch {
             if (-not (Test-RemovalPending $_.Exception)) { throw }
             if ($Once) { return }
-            Start-Sleep -Milliseconds {PAUSE}
+            if ([IO.Directory]::Exists($path)) { Start-Sleep -Milliseconds {PAUSE} }
         }
     }
 }
