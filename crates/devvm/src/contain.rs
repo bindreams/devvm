@@ -52,44 +52,42 @@ enum State {
     Foreign,
 }
 
+/// The process `id` names, opened by its identity; `None` when it is gone.
+fn open_by_identity(id: ProcessId) -> std::result::Result<Option<cosca::Process>, cosca::error::Error> {
+    cosca::Process::open(id)
+}
+
 /// Waits for the process `id` names to exit. A process that is gone has exited.
-fn wait_for_exit(id: ProcessId) -> std::result::Result<(), cosca::error::Error> {
-    match cosca::Process::open(id)? {
-        Some(process) => process.wait(),
+fn wait_for_exit(id: ProcessId) -> Result<()> {
+    let waiting = |e: cosca::error::Error| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e);
+    match open_by_identity(id).map_err(waiting)? {
+        Some(process) => process.wait().map_err(waiting),
         None => Ok(()),
     }
 }
 
 /// Kills the process `id` names and waits for it to exit, through one handle: a kill that landed is never reported
-/// as failed by a second open that finds the process gone or refuses it. A process that is gone is `Ok`.
-fn kill_and_wait(id: ProcessId) -> std::result::Result<(), cosca::error::Error> {
-    match cosca::Process::open(id)? {
-        Some(process) => {
-            process.kill()?;
-            process.wait()
-        }
-        None => Ok(()),
-    }
+/// as failed by a second open that finds the process gone or refuses it, and a wait that failed after it is not
+/// reported as a failed kill. A process that is gone is `Ok`.
+fn kill_and_wait(id: ProcessId) -> Result<()> {
+    let killing = |e: cosca::error::Error| cosca_error(&format!("cannot kill the VM process {}", id.pid()), e);
+    let Some(process) = open_by_identity(id).map_err(killing)? else {
+        return Ok(());
+    };
+    process.kill().map_err(killing)?;
+    process
+        .wait()
+        .map_err(|e| cosca_error(&format!("cannot wait for the VM process {} to exit", id.pid()), e))
 }
 
-/// A cosca failure as an `Io` error that says `context` and keeps the failure as its source.
+/// A cosca failure as an `Io` error that says `context` and keeps the failure as its source. The message holds the
+/// whole failure, causes and cleanup included: cosca's `Display` says one layer only.
 pub(crate) fn cosca_error(context: &str, source: cosca::error::Error) -> Error {
-    Error::new(ErrorKind::Io, format!("{context}: {}", with_causes(&source))).with_source(source)
-}
-
-/// `error`'s message followed by each cause's: cosca keeps the cause of a wrapped failure (a resume that failed, then
-/// its teardown) as a source, not in the message. A cause whose text the message already holds is not repeated.
-fn with_causes(error: &dyn std::error::Error) -> String {
-    let mut message = error.to_string();
-    let mut cause = error.source();
-    while let Some(next) = cause {
-        let text = next.to_string();
-        if !message.contains(&text) {
-            message = format!("{message}: {text}");
-        }
-        cause = next.source();
-    }
-    message
+    Error::new(
+        ErrorKind::Io,
+        format!("{context}: {}", cosca::error::Report::new(&source)),
+    )
+    .with_source(source)
 }
 
 /// How a failed frozen spawn is reported: a host that cannot freeze a process is `NotSupported`, anything else `Io`.
@@ -257,21 +255,11 @@ impl VmProcess {
         let id = match ProcessId::try_from(record) {
             Ok(id) => id,
             Err(cosca::error::Error::IdentityRecord {
-                kind: RecordErrorKind::ScopeUnreadable,
-                detail,
-                ..
-            }) => {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    format!("cannot check the VM process {}: {detail}", record.pid),
-                ));
-            }
-            Err(cosca::error::Error::IdentityRecord {
                 kind: RecordErrorKind::ForeignBootSession | RecordErrorKind::ForeignPlatform,
                 ..
             }) => return Ok(None),
-            Err(error @ cosca::error::Error::IdentityRecord { kind, .. }) => {
-                return Err(unreadable_record(record, kind, error));
+            Err(error @ cosca::error::Error::IdentityRecord { .. }) => {
+                return Err(unreadable_record(record, error));
             }
             Err(other) => {
                 return Err(cosca_error(
@@ -303,8 +291,7 @@ impl VmProcess {
 
     /// Blocks until the process has exited, with no time limit.
     pub(crate) fn wait(&self) -> Result<()> {
-        let id = self.id();
-        wait_for_exit(id).map_err(|e| cosca_error(&format!("cannot wait for the VM process {}", id.pid()), e))
+        wait_for_exit(self.id())
     }
 
     /// The exit status of the process if it has exited, `None` while it runs: std's `Child::try_wait`. It reads the
@@ -333,7 +320,7 @@ impl VmProcess {
     /// is `Ok`.
     pub(crate) fn kill(&mut self) -> Result<()> {
         let id = self.id();
-        let killed = match &self.state {
+        match &self.state {
             State::Frozen(..) => {
                 // Killed by identity first, so that a failure is seen: dropping a frozen child kills it too, but
                 // discards how that went.
@@ -342,25 +329,35 @@ impl VmProcess {
                 killed
             }
             // `kill_tree` returns once the root has exited.
-            State::Running(child, _) => child.kill_tree(),
+            State::Running(child, _) => child
+                .kill_tree()
+                .map_err(|e| cosca_error(&format!("cannot kill the VM process {}", id.pid()), e)),
             State::Released | State::Foreign => kill_and_wait(id),
-        };
-        killed.map_err(|e| cosca_error(&format!("cannot kill the VM process {}", id.pid()), e))
+        }
     }
 }
 
 /// A record the identity layer refuses for a reason other than another boot or platform: what it names cannot be told
 /// from here, so it is not read as "not running", which would let a second VM start on a disk the first still holds.
-fn unreadable_record(record: &ProcessIdRecord, kind: RecordErrorKind, error: cosca::error::Error) -> Error {
-    Error::new(
-        ErrorKind::Io,
-        format!(
-            "cannot tell whether the VM process {} is running: its process record {record:?} is in a format this devvm does \
-             not read ({kind}); end that process if it still runs, then remove the instance",
+fn unreadable_record(record: &ProcessIdRecord, error: cosca::error::Error) -> Error {
+    cosca_error(
+        &format!(
+            "cannot tell whether the VM process {} is running: its process record cannot be used here",
             record.pid
         ),
+        error,
     )
-    .with_source(error)
+}
+
+/// Whether `error` is the refusal of [`VmProcess::attach`] to read a process record.
+pub(crate) fn is_unreadable_record(error: &Error) -> bool {
+    use std::error::Error as _;
+    matches!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<cosca::error::Error>()),
+        Some(cosca::error::Error::IdentityRecord { .. })
+    )
 }
 
 pub(crate) fn unknown_liveness(id: ProcessId) -> Error {
