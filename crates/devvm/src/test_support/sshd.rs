@@ -910,7 +910,8 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
     }
 }
 
-/// Short enough that a frozen peer is found in well under a second.
+/// Finds a peer that never answers in well under a second (300 ms handshake bound). Against a live server that is a bet
+/// on its speed: use only where the peer never answers.
 pub const FAST_KEEPALIVE: Keepalive = Keepalive {
     interval: Duration::from_millis(100),
     max_missed: 2,
@@ -954,7 +955,7 @@ impl Rig {
     }
 
     pub fn connect_with(&self, vm: VmExit, boot: Option<BootBound>) -> Result<SshSession, Error> {
-        SshSession::connect(&self.target(), FAST_KEEPALIVE, vm, boot, &NullProgress)
+        SshSession::connect(&self.target(), Keepalive::STANDARD, vm, boot, &NullProgress)
     }
 
     /// A session with no boot bound and no VM to watch.

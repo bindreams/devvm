@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::access::keys::InstanceKeys;
-use crate::access::{SshSession, VmExit};
+use crate::access::{Keepalive, SshSession, VmExit};
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
@@ -26,7 +26,6 @@ use crate::test_support::fake_vm::{STARTED, answer, connect_when_up, started_por
 use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
 use crate::test_support::helper;
 use crate::test_support::host::TestHost;
-use crate::test_support::sshd::FAST_KEEPALIVE;
 use crate::vm::vm_tests::{queued, step_name};
 use crate::{Command, ErrorKind, Guest, Instance, InstanceState, ListFilter, StartOptions};
 
@@ -1326,7 +1325,7 @@ fn a_second_process_builds_its_target_from_the_record_and_the_keys(#[fixture(uni
     let instance = Instance::open_in(&other, "foo").unwrap();
     let op = instance.dir().op_shared().unwrap();
     let target = read_target(&other, instance.dir(), &op).unwrap().target;
-    let session = SshSession::connect(&target, FAST_KEEPALIVE, VmExit::never(), None, &NullProgress).unwrap();
+    let session = SshSession::connect(&target, Keepalive::STANDARD, VmExit::never(), None, &NullProgress).unwrap();
     let output = session.exec_collect("echo from another process").unwrap();
 
     assert_eq!(output.stdout, b"from another process\n");
