@@ -19,8 +19,9 @@
 //! and the runner serves that request only:
 //!
 //! - it removes every request whose caller has ended and that no runner holds (its process is gone, or the process of
-//!   that id started at another time), then **claims** its own by creating [`CLAIM`] with `CreateNew` and sharing none,
-//!   and holds it until it exits. A request that has a claim, or is gone, is not served;
+//!   that id started at another time), and every file or link in the root, then **claims** its own by creating
+//!   [`CLAIM`] with `CreateNew` and sharing none, and holds it until it exits. A request that has a claim, or is gone, is
+//!   not served;
 //! - it ends the command's process tree when the caller ends, writes [`STDOUT`] and [`STDERR`] as the command produces
 //!   output (opened with `FileShare.Read` at least: the caller reads them while they grow), then [`EXIT`] (the status as
 //!   a signed decimal) and, last, [`DONE`];
@@ -28,7 +29,19 @@
 //!   first, at once. It waits for neither with a time bound.
 //!
 //! The caller removes a request only when no runner will touch it: one it withdrew or one whose runner died. What a
-//! killed caller leaves is the runner's to remove, and the boot task sweeps what nothing else did.
+//! killed caller leaves is the runner's to remove, and the boot task removes what nothing else did (every entry of the
+//! root, tried once).
+//!
+//! **A request is removed by one function.** Every remover calls `Remove-Request` ([`REMOVE_REQUEST`]): the order of its
+//! steps says who a half-removed request belongs to; the caller and the runner's end retry until it is gone, the sweep
+//! and the boot task try once.
+//!
+//! **A link in the root is removed as a link.** A request, or an entry of one, that is already a junction or a symbolic
+//! link when a remover reaches it is removed as the link and never followed. A path whose attributes cannot be read, for
+//! any reason but that it is not there, is taken for a link. A link swapped in while a removal runs can be followed: the
+//! root's writers are trusted (see [`ROOT`]).
+//!
+//! The sweep also takes an `<id>.tmp` whose caller has ended; one with no `caller` file stays for the boot task.
 //!
 //! The caller's wait ends from file state alone, with no time bound: a held claim is a live runner; a released claim
 //! with no `DONE` is a runner that died; no claim and an instance, the one `Run` returned for this request, that is no
@@ -47,7 +60,9 @@ mod elevate_tests;
 #[path = "elevate_pwsh_tests.rs"]
 mod elevate_pwsh_tests;
 
-/// Where the requests are: `Users` may modify it, so a request needs no elevated writer.
+/// Where the requests are: `Users` may modify it, so a request needs no elevated writer. The ACL gives no protection
+/// against the accounts that can write it: `user`, an administrator, and the guest's own service accounts (`Users` also
+/// holds Authenticated Users and INTERACTIVE), which are the guest OS.
 pub(crate) const ROOT: &str = r"C:\ProgramData\devvm\eb";
 /// The scheduled task that runs a request: `user`, highest privileges, `MultipleInstances Parallel`.
 pub(crate) const TASK: &str = "devvm-eb";
@@ -62,7 +77,80 @@ pub(super) const DONE: &str = "done";
 pub(super) const READ: &str = "read";
 
 /// The pause between two looks at the request's files. It paces the wait; it never ends it.
-const PAUSE_MILLISECONDS: u32 = 200;
+pub(super) const PAUSE_MILLISECONDS: u32 = 200;
+
+/// The PowerShell functions `Remove-Request`, `Remove-Entry`, `Test-Link`, `Test-RemovalPending` and `Get-Verbatim`, the
+/// same text in the caller script, the runner and the boot task. `Remove-Request` returns when the path is gone (a
+/// request's directory, or a stray file). It removes every file but `caller` and `claim`, then `caller`, then `claim`,
+/// then the directory; a try that fails because a file is open elsewhere (sharing violation 32, lock violation 33,
+/// directory not empty 145), or because an entry is already gone, is repeated from the top after a pause; with `-Once` it
+/// returns instead, and what is left is the next sweep's. Any other error (access denied included: measured permanent,
+/// not transient) is thrown.
+///
+/// Every path is verbatim: `Get-Verbatim` puts `\\?\` on it, and a listing under a verbatim path returns verbatim
+/// children. An entry whose name Win32 would change (a trailing dot or space, a device name such as `con`) is then the
+/// entry that is named, and `[IO.File]` and `[IO.Directory]` calls remove it.
+///
+/// A reparse point is looked at without being followed (`Test-Link`, which reads any path it cannot read as a link): one
+/// that is the path itself, or an entry, is removed as the link (`Remove-Entry`), and nothing under it is listed or
+/// deleted. An entry is deleted without recursion after its read-only attribute is cleared, so a directory that got a
+/// child meanwhile (a late runner's `claim`) fails with 145 and is retried.
+///
+/// Every intermediate state is safe: `script` goes first, so a half-removed request never runs a command, and `caller`
+/// and `claim` go last, so the sweep and a late runner can still tell whose it is.
+const REMOVE_REQUEST: &str = r#"function Test-RemovalPending($failure) {
+    if ($failure -is [Management.Automation.MethodInvocationException] -and $failure.InnerException) { $failure = $failure.InnerException }
+    if ($failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
+    return ($failure -is [IO.IOException]) -and (($failure.HResult -band 0xFFFF) -in 32, 33, 145)
+}
+function Get-Verbatim([string]$path) {
+    if ($path.StartsWith('\\?\')) { return $path }
+    return '\\?\' + $path
+}
+function Test-Link([string]$path) {
+    try { return ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0 }
+    catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return $false }
+    catch { return $true }
+}
+function Remove-Entry([string]$entry) {
+    $link = Test-Link $entry
+    $directory = [IO.Directory]::Exists($entry)
+    if ($directory -and -not $link) {
+        foreach ($child in [IO.Directory]::GetFileSystemEntries($entry)) { Remove-Entry $child }
+    }
+    [IO.File]::SetAttributes($entry, [IO.File]::GetAttributes($entry) -band -bnot [IO.FileAttributes]::ReadOnly)
+    if ($directory) { [IO.Directory]::Delete($entry) }
+    else { [IO.File]::Delete($entry) }
+}
+function Remove-Request([string]$path, [switch]$Once) {
+    $path = Get-Verbatim $path
+    $last = [IO.Path]::Combine($path, {CALLER}), [IO.Path]::Combine($path, {CLAIM})
+    while ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) {
+        try {
+            if ((Test-Link $path) -or -not [IO.Directory]::Exists($path)) { Remove-Entry $path }
+            else {
+                $first = @([IO.Directory]::GetFileSystemEntries($path) | Where-Object { [IO.Path]::GetFileName($_) -notin {CALLER}, {CLAIM} })
+                foreach ($entry in $first + $last + $path) {
+                    if ([IO.File]::Exists($entry) -or [IO.Directory]::Exists($entry)) { Remove-Entry $entry }
+                }
+            }
+        }
+        catch {
+            if (-not (Test-RemovalPending $_.Exception)) { throw }
+            if ($Once) { return }
+            if ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) { Start-Sleep -Milliseconds {PAUSE} }
+        }
+    }
+}
+"#;
+
+/// [`REMOVE_REQUEST`] with its file names and its pause filled in.
+pub(super) fn remove_request() -> String {
+    REMOVE_REQUEST
+        .replace("{CALLER}", &literal(CALLER))
+        .replace("{CLAIM}", &literal(CLAIM))
+        .replace("{PAUSE}", &PAUSE_MILLISECONDS.to_string())
+}
 
 /// The task is looked up before anything is made. Building and publishing the request, the start and the wait are one
 /// `try`: a failure in it is an answer of 126 that names it, and a published request is withdrawn if no runner holds it.
@@ -101,7 +189,7 @@ function Test-Held([string]$path) {
     catch [IO.FileNotFoundException] { return $false }
     catch [IO.IOException] { return $true }
 }
-function Warn([string]$what, $failure) {
+{REMOVE_REQUEST}function Warn([string]$what, $failure) {
     [Console]::Error.WriteLine('devvm: warning: ' + $what + ': ' + $failure.Exception.Message)
 }
 # Claiming the request ourselves withdraws it: no runner takes it. False when the claim is a runner's, which serves the
@@ -199,14 +287,11 @@ try {
     foreach ($stream in $streams.Values) { $stream.Dispose() }
     if (-not $published) {
         if ([IO.Directory]::Exists($building)) {
-            try { Remove-Item -LiteralPath $building -Recurse -Force } catch { Warn 'could not remove the unpublished request' $_ }
+            try { Remove-Request $building } catch { Warn 'could not remove the unpublished request' $_ }
         }
     } elseif ([IO.Directory]::Exists($dir)) {
         if ($abandoned) {
-            # Out of the requests' names first, so that no runner finds half of it.
-            $leaving = $dir
-            try { [IO.Directory]::Move($dir, $building); $leaving = $building } catch { Warn 'could not rename the withdrawn request' $_ }
-            try { Remove-Item -LiteralPath $leaving -Recurse -Force } catch { Warn 'could not remove the withdrawn request' $_ }
+            try { Remove-Request $dir } catch { Warn 'could not remove the withdrawn request' $_ }
         } else {
             try { [IO.File]::WriteAllText((Join-Path $dir '{READ}'), '', $utf8) } catch { Warn 'could not tell the runner the request was read' $_ }
         }
@@ -220,6 +305,7 @@ exit $code
 pub(super) fn caller_script(inner: &str) -> String {
     CALLER_SCRIPT
         .replace("{SESSION_CHECK}", &session_check())
+        .replace("{REMOVE_REQUEST}", &remove_request())
         .replace("{ROOT}", &literal(ROOT))
         .replace("{SCRIPT}", SCRIPT)
         .replace("{CALLER}", CALLER)

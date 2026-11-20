@@ -18,7 +18,7 @@ $readName = @@EB_READ@@
 $pwsh = @@PWSH_EXE@@
 $utf8 = [Text.UTF8Encoding]::new($false)
 # Poll interval (ms).
-$pause = 200
+$pause = @@!EB_PAUSE@@
 
 if ($Id -notmatch '^[0-9a-f]{32}$') { exit 2 }
 
@@ -26,10 +26,16 @@ if ($Id -notmatch '^[0-9a-f]{32}$') { exit 2 }
 # own (Devvm.cs). Ending the child's tree is ending that job.
 Add-Type -LiteralPath (Join-Path $PSScriptRoot @@NATIVE_DLL@@)
 
+@@!EB_REMOVE_REQUEST@@
+# Removes a request, or says on stderr why it stays: what is left is the sweep's of the next runner, or the boot task's.
+function Remove-RequestOrWarn([string]$Dir, [switch]$Once) {
+    try { Remove-Request $Dir -Once:$Once }
+    catch { [Console]::Error.WriteLine("devvm: the elevated runner could not remove $Dir`: $($_.Exception.Message)") }
+}
 # Whether a request's caller has ended: its process is gone, or the process of that id started at another time. A caller
 # that cannot be told is not ended, so its request stays: only a caller file that is not there says the request is gone.
 function Test-CallerEnded([string]$Dir) {
-    try { $text = [IO.File]::ReadAllText((Join-Path $Dir $callerName)) }
+    try { $text = [IO.File]::ReadAllText([IO.Path]::Combine($Dir, $callerName)) }
     catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return $true } catch { return $false }
     if ($text -notmatch '^\s*(\d+)\s+(\d+)\s*$') { return $true }
     try {
@@ -49,13 +55,20 @@ function Test-Held([string]$Path) {
     catch [UnauthorizedAccessException] { return $true }
 }
 
-# Requests whose caller has ended and that no runner holds. A request another runner or its caller removes first is
-# not an error, and one that stays is the next runner's, or the boot task's.
-foreach ($other in [IO.Directory]::GetDirectories($root)) {
+# Requests whose caller has ended and that no runner holds, the `<id>.tmp` a caller left included, and every file or link
+# in the root. A request with no caller file has an ended caller (its removal got that far); a `.tmp` with none is a
+# caller's that is still building it (it writes the file before it publishes), not told from one that died there, and
+# stays. A request another runner or its caller removes first is not an error. The root is listed under a verbatim path,
+# so an entry's name is the one it has.
+foreach ($other in [IO.Directory]::GetFileSystemEntries((Get-Verbatim $root))) {
     $name = [IO.Path]::GetFileName($other)
-    if ($name -eq $Id -or $name.EndsWith('.tmp')) { continue }
-    if (-not (Test-CallerEnded $other) -or (Test-Held (Join-Path $other $claimName))) { continue }
-    try { Remove-Item -LiteralPath $other -Recurse -Force } catch { }
+    if ($name -eq $Id) { continue }
+    # A file or a link is no request.
+    if ((Test-Link $other) -or -not [IO.Directory]::Exists($other)) { Remove-RequestOrWarn $other -Once; continue }
+    if ($name.EndsWith('.tmp') -and -not [IO.File]::Exists([IO.Path]::Combine($other, $callerName))) { continue }
+    if (-not (Test-CallerEnded $other) -or (Test-Held ([IO.Path]::Combine($other, $claimName)))) { continue }
+    # Once: a request another runner or a scanner still holds must not hold up this runner's own.
+    Remove-RequestOrWarn $other -Once
 }
 
 $dir = Join-Path $root $Id
@@ -130,4 +143,4 @@ if (-not $callerGone) {
 if ($null -ne $caller) { $caller.Dispose() }
 # The last act: the request goes. The claim is closed first, or it would keep its own directory.
 $claim.Dispose()
-try { Remove-Item -LiteralPath $dir -Recurse -Force } catch { }
+Remove-RequestOrWarn $dir

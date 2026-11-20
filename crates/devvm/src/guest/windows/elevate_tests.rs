@@ -121,11 +121,11 @@ fn the_cleanup_runs_in_a_finally_and_a_request_a_runner_may_hold_is_signalled_no
     let finally = at(&text, "} finally {");
     // The removals are the unpublished and the abandoned request's, in the `finally`; the read request is only told it
     // was read.
-    assert_eq!(text.matches("Remove-Item").count(), 2, "{text}");
-    let removal = text.rfind("Remove-Item").unwrap();
+    assert_eq!(text.matches("Remove-Request $").count(), 2, "{text}");
+    let removal = text.rfind("Remove-Request $").unwrap();
     let signal = at(&text, &format!("'{READ}'"));
     let abandoned = at(&text[finally..], "if ($abandoned)") + finally;
-    assert!(at(&text[finally..], "Remove-Item") + finally < abandoned, "{text}");
+    assert!(at(&text[finally..], "Remove-Request $") + finally < abandoned, "{text}");
     assert!(abandoned < removal && removal < signal, "{text}");
     assert!(finally < abandoned, "{text}");
     // Both come before the script's own end.
@@ -182,4 +182,17 @@ fn the_requests_files_are_the_ones_the_runner_contract_names() {
         assert_eq!(constant, name);
         assert!(text.contains(name), "{name}: {text}");
     }
+}
+
+#[skuld::test]
+fn the_caller_removes_a_request_with_the_text_the_runner_and_the_boot_task_have() {
+    // The behaviour of the removal is run in `elevate_pwsh_tests.rs` and `templates_pwsh_tests.rs`; these are one text.
+    assert!(script().contains(&super::remove_request()), "{}", script());
+}
+
+#[skuld::test]
+fn a_withdrawn_request_is_removed_under_its_published_name() {
+    let text = script();
+    // The only move is the publication: no rename takes a withdrawn request out of the requests' names.
+    assert_eq!(text.matches("Directory]::Move(").count(), 1, "{text}");
 }
