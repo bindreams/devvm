@@ -127,6 +127,7 @@ fn spec_in(dir: &Path, id: InstanceId, lifetime: Lifetime) -> MachineSpec {
             net: NetModel::Virtio,
             video: Video::None,
             no_reboot: false,
+            hyperv: true,
         },
         firmware: None,
         forwards: vec![Endpoint::Normal],

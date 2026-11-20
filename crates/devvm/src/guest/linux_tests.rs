@@ -43,6 +43,7 @@ fn virtio_devices_and_a_guest_that_reboots_inside_its_process() {
             net: NetModel::Virtio,
             video: Video::None,
             no_reboot: false,
+            hyperv: true,
         }
     );
 }

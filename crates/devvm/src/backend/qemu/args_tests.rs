@@ -275,6 +275,7 @@ fn device_profiles_select_buses_and_models() {
         net: NetModel::E1000,
         video: Video::None,
         no_reboot: false,
+        hyperv: true,
     };
     let sata = args(&spec, &paths());
     assert!(sata.contains(&"ich9-ahci,id=ahci".to_owned()), "{sata:?}");
@@ -300,6 +301,28 @@ fn no_reboot_follows_the_device_profile() {
     assert!(args(&spec, &paths()).contains(&"-no-reboot".to_owned()));
     spec.profile.no_reboot = false;
     assert!(!args(&spec, &paths()).contains(&"-no-reboot".to_owned()));
+}
+
+#[skuld::test]
+fn a_profile_without_the_hyperv_interface_turns_it_off_under_whpx() {
+    let mut spec = spec();
+    spec.profile.hyperv = false;
+    assert_eq!(values_of(&args(&spec, &paths()), "-accel"), ["whpx,hyperv=off"]);
+}
+
+#[skuld::test]
+fn a_profile_with_the_hyperv_interface_leaves_whpx_at_its_default() {
+    let mut spec = spec();
+    spec.profile.hyperv = true;
+    assert_eq!(values_of(&args(&spec, &paths()), "-accel"), ["whpx"]);
+}
+
+#[skuld::test]
+fn the_hyperv_interface_is_not_a_tcg_property() {
+    let mut spec = spec();
+    spec.accel = Accel::Tcg;
+    spec.profile.hyperv = false;
+    assert_eq!(values_of(&args(&spec, &paths()), "-accel"), ["tcg"]);
 }
 
 #[skuld::test]

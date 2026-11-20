@@ -225,6 +225,7 @@ impl GuestOs for FakeGuestOs {
             net: NetModel::Virtio,
             video: Video::None,
             no_reboot: false,
+            hyperv: true,
         }
     }
 
