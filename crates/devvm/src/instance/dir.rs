@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::backend::MachineRecord;
+use crate::backend::{Backend, Machine, MachineRecord};
 use crate::host::{Host, remove_tree};
 use crate::instance::locks::{Locks, Probe};
 use crate::instance::name::InstanceName;
-use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RecordRead, write_marker};
+use crate::instance::record::{InstanceId, InstanceRecord, Marker, MarkerRead, RECORD_FILE, RecordRead, write_marker};
 use crate::progress::Progress;
 use crate::store::lock::FileLock;
 use crate::{Error, ErrorKind, Result};
@@ -194,6 +194,24 @@ impl InstanceDir {
         f(&mut record);
         record.write(&self.path)?;
         Ok(record)
+    }
+
+    /// `backend.find(machine)` for this instance's machine. A `process-record` error gets the step that gets out: the
+    /// VM cannot be told to run or not, so the person stops it by hand and clears the `machine` field of the record.
+    pub(crate) fn find_machine(
+        &self,
+        backend: &dyn Backend,
+        machine: &MachineRecord,
+    ) -> Result<Option<Box<dyn Machine>>> {
+        backend.find(machine).map_err(|e| {
+            if e.kind() != ErrorKind::ProcessRecord {
+                return e;
+            }
+            e.with_step(format_args!(
+                "stop the VM by hand if it still runs, then clear the `machine` field in {}",
+                self.path.join(RECORD_FILE).display()
+            ))
+        })
     }
 
     /// The machine named by `machine` is dead: deletes what it left outside the instance directory (a file that

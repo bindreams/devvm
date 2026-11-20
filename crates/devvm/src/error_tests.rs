@@ -22,6 +22,7 @@ fn kind_strings_are_the_wire_names() {
         (NoExitStatus, "no-exit-status"),
         (ConnectionLost, "connection-lost"),
         (HostKey, "host-key"),
+        (ProcessRecord, "process-record"),
         (Unavailable, "unavailable"),
         (NotSupported, "not-supported"),
         (Panic, "panic"),

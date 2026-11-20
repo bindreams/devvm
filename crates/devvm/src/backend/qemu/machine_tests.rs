@@ -24,11 +24,11 @@ use crate::{Arch, ErrorKind};
 
 /// A machine record naming the test process, whose control socket is `sock`.
 fn record(sock: &Sock, no_reboot: bool) -> (VmProcess, MachineRecord) {
-    let cosca::identity::Resolved::Found(process) = cosca::Process::from_pid(std::process::id()) else {
+    let cosca::identity::Resolved::Found(id) = cosca::identity::ProcessId::of(std::process::id()) else {
         panic!("the test process cannot be identified");
     };
     let record = MachineRecord {
-        process: process.id().to_record().unwrap(),
+        process: id.to_record().unwrap(),
         qmp: sock.endpoint.path().display().to_string(),
         ssh: Vec::new(),
         serial_log: sock.endpoint.path().with_file_name("serial.log"),
@@ -111,6 +111,42 @@ fn attach_refuses_a_record_without_a_claim_naming_the_socket() {
         error.message().contains(&sock.endpoint.path().display().to_string()),
         "{error}"
     );
+}
+
+/// A record this build cannot read names nothing it can tell is gone: reporting the machine as not running would let a
+/// second one start on the same disk.
+#[skuld::test]
+fn a_record_whose_version_this_build_does_not_know_is_an_error_from_attach_and_from_find() {
+    let sock = Sock::new();
+    let (_vm, mut record) = record(&sock, false);
+    record.process.version = cosca::identity::RECORD_VERSION + 1;
+
+    let attach = VmProcess::attach(&record.process)
+        .err()
+        .expect("attach reads the version");
+    assert_eq!(attach.kind(), ErrorKind::ProcessRecord, "{attach}");
+    let backend = backend_in(&socket_run(), Arc::default());
+    let find = backend
+        .find(&record)
+        .err()
+        .expect("find does not read it as not running");
+    assert_eq!(find.kind(), ErrorKind::ProcessRecord, "{find}");
+    for error in [attach, find] {
+        let text = error.message().to_owned();
+        assert!(
+            text.starts_with("the VM's process record has a format this devvm does not read ("),
+            "{text}"
+        );
+        let cosca = std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<cosca::error::Error>())
+            .expect("the cosca error is the source");
+        let report = cosca::error::Report::new(cosca).to_string();
+        assert!(
+            text.ends_with(&format!(" ({report})")),
+            "cosca's words last, with no step: {text}"
+        );
+        assert_eq!(text.matches(&report).count(), 1, "cosca's words once: {text}");
+    }
 }
 
 #[skuld::test]

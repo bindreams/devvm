@@ -163,6 +163,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
+]
+
+[[package]]
 name = "base16ct"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -500,10 +509,11 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cosca"
-version = "0.6.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba63ea6bb20dd28d6337e203f75fee133435ee858e7822f19496fce57e6a44e"
+checksum = "e4d2c4461691fd01588b090727897609c09d970114dd5f0825554756c891bf20"
 dependencies = [
+ "backon",
  "event-listener",
  "exacl",
  "getrandom 0.4.3",

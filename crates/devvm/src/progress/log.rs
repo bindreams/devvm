@@ -174,10 +174,10 @@ fn stamp(time: SystemTime, format: &str) -> String {
 /// Whether the process `pid` is running. A pid the OS will not say anything about is taken as running, and so is a
 /// reused one: a log is then kept too long, never removed under its run.
 fn process_is_alive(pid: u32) -> bool {
-    match cosca::Process::from_pid(pid) {
+    match cosca::identity::ProcessId::of(pid) {
         Resolved::Gone => false,
         Resolved::Unknown => true,
-        Resolved::Found(process) => process.is_alive() != Liveness::Dead,
+        Resolved::Found(id) => id.is_alive() != Liveness::Dead,
     }
 }
 

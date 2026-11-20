@@ -275,8 +275,8 @@ impl BareQemu {
             .spawn()
             .unwrap_or_else(|e| panic!("cannot start {}: {e}", install.tool("qemu-system-x86_64").display()));
         let pid = child.id();
-        let process = match cosca::Process::from_pid(pid) {
-            cosca::identity::Resolved::Found(process) => host::current().watch_process(process.id()).unwrap(),
+        let process = match cosca::identity::ProcessId::of(pid) {
+            cosca::identity::Resolved::Found(id) => host::current().watch_process(id).unwrap(),
             other => panic!("cannot identify QEMU {pid} right after starting it: {other:?}"),
         };
         BareQemu { child, sock, process }

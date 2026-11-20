@@ -35,12 +35,13 @@ fn layer(n: u8) -> LayerRef {
 fn machine() -> MachineRecord {
     MachineRecord {
         process: ProcessIdRecord {
-            version: 1,
+            version: 2,
             platform: Platform::Windows,
             pid: 4242,
             token: 133_000_000_000_000_000,
             boot_id: None,
             pid_ns: None,
+            token_kind: None,
         },
         qmp: "/run/devvm-ab.sock".to_owned(),
         serial_log: std::path::PathBuf::from("/state/serial.log"),
@@ -97,7 +98,7 @@ const GOLDEN: &str = r#"{
   "network": "nat",
   "machine": {
     "process": {
-      "v": 1,
+      "v": 2,
       "platform": "windows",
       "pid": 4242,
       "token": "133000000000000000"
