@@ -100,7 +100,7 @@ pub(super) const PAUSE_MILLISECONDS: u32 = 200;
 /// and `claim` go last, so the sweep and a late runner can still tell whose it is.
 const REMOVE_REQUEST: &str = r#"function Test-RemovalPending($failure) {
     if ($failure -is [Management.Automation.MethodInvocationException] -and $failure.InnerException) { $failure = $failure.InnerException }
-    if ($failure -is [Management.Automation.ItemNotFoundException] -or $failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
+    if ($failure -is [IO.FileNotFoundException] -or $failure -is [IO.DirectoryNotFoundException]) { return $true }
     return ($failure -is [IO.IOException]) -and (($failure.HResult -band 0xFFFF) -in 32, 33, 145)
 }
 function Get-Verbatim([string]$path) {

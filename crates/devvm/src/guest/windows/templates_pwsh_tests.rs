@@ -11,7 +11,7 @@ use super::{NATIVE_DLL, NATIVE_SOURCE, TEMPLATES, answer_disk_files, answer_file
 use crate::guest::windows::templates::templates_tests::inputs;
 use crate::guest::windows::wrap::literal;
 use crate::guest::windows::wrap::wrap_pwsh_tests::{HOSTILE, Search, run, run_with, shown};
-use crate::test_groups::{Group, pwsh_wrap};
+use crate::test_groups::{Group, ntfs_names, pwsh_wrap, symlinks};
 
 /// `script` in Windows PowerShell 5.1 (`powershell.exe`), the PowerShell the guest's first-logon command and bootstrap
 /// run in.
@@ -655,6 +655,28 @@ $log.Add('returned'); Show-Root"#
 }
 
 #[skuld::test]
+fn a_request_whose_claim_is_held_loses_its_caller_first_and_is_removed_when_the_hold_ends(
+    #[fixture(pwsh_wrap)] _group: &Group,
+) {
+    // The pause is where the hold ends, so the retry is the second try and nothing is timed.
+    let log = boot_task(
+        &Rename::default(),
+        r#"$root = Join-Path (Split-Path -Parent $disk) 'eb'
+$a = Join-Path $root 'a'
+[void][IO.Directory]::CreateDirectory($a)
+foreach ($file in 'caller', 'claim', 'stdout') { [IO.File]::WriteAllText((Join-Path $a $file), '') }
+$held = [IO.File]::Open((Join-Path $a 'claim'), 'Open', 'Read', 'None')
+function Start-Sleep { param([int]$Milliseconds)
+    $log.Add('paused:' + ((Get-ChildItem -LiteralPath $a -Force | ForEach-Object Name | Sort-Object) -join ' '))
+    $held.Dispose()
+}
+try { Remove-Request $a } finally { $held.Dispose() }
+$log.Add('returned:' + [IO.Directory]::Exists($a))"#,
+    );
+    assert_eq!(log, ["paused:claim", "returned:False"]);
+}
+
+#[skuld::test]
 fn a_directory_that_gets_a_child_after_it_was_emptied_is_left_for_the_next_sweep_when_tried_once(
     #[fixture(pwsh_wrap)] _group: &Group,
 ) {
@@ -736,6 +758,7 @@ function Show-Root { $log.Add('root:' + ((Get-ChildItem -LiteralPath $root -Forc
 #[skuld::test]
 fn a_request_holding_entries_whose_names_windows_normalizes_is_removed_without_a_pause(
     #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(ntfs_names)] _names: &Group,
 ) {
     let log = boot_task(
         &Rename::default(),
@@ -750,6 +773,7 @@ try {{ Remove-Request (Join-Path $root 'a'); Show-Root }} finally {{ Clean }}"#
 #[skuld::test]
 fn a_request_holding_entries_whose_names_windows_normalizes_is_removed_by_one_try(
     #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(ntfs_names)] _names: &Group,
 ) {
     let log = boot_task(
         &Rename::default(),
@@ -764,6 +788,7 @@ try {{ Remove-Request (Join-Path $root 'a') -Once; Show-Root }} finally {{ Clean
 #[skuld::test]
 fn leftovers_whose_names_windows_normalizes_are_removed_at_boot_in_the_root_and_in_a_request(
     #[fixture(pwsh_wrap)] _group: &Group,
+    #[fixture(ntfs_names)] _names: &Group,
 ) {
     let log = boot_task(
         &Rename::default(),
@@ -1194,11 +1219,11 @@ fn the_runners_last_removal_unlinks_a_junction_in_its_request_and_leaves_its_tar
 }
 
 #[skuld::test]
-fn the_sweep_removes_what_is_in_the_root_but_a_request_a_file_a_link_to_one_and_a_name_windows_normalizes(
+fn the_sweep_removes_what_is_in_the_root_but_a_request_a_file_and_a_name_windows_normalizes(
     #[fixture(native_helper)] helper: &NativeHelper,
+    #[fixture(ntfs_names)] _names: &Group,
 ) {
-    // Made under `\\?\`, where a trailing dot exists; a file link needs the right to make one, which the test names when
-    // it fails.
+    // Made under `\\?\`, where a trailing dot exists.
     let run = run_runner_with_target(
         helper,
         NO_REQUEST,
@@ -1207,11 +1232,23 @@ fn the_sweep_removes_what_is_in_the_root_but_a_request_a_file_a_link_to_one_and_
 [IO.File]::WriteAllText('\\?\' + (Join-Path $root 'foo.'), '')
 [void][IO.Directory]::CreateDirectory('\\?\' + (Join-Path $root 'ended.'))
 [IO.File]::WriteAllText('\\?\' + (Join-Path $root 'ended.\caller'), "$($self.Id) 1")
-[IO.File]::WriteAllText('\\?\' + (Join-Path $root 'ended.\con'), '')
-try { New-Item -ItemType SymbolicLink -Path (Join-Path $root 'filelink') -Target (Join-Path $target 'precious') | Out-Null }
-catch { throw "the test needs the right to make a symbolic link: $($_.Exception.Message)" }"#,
+[IO.File]::WriteAllText('\\?\' + (Join-Path $root 'ended.\con'), '')"#,
     );
     assert_eq!(run.left, ["alive"]);
+}
+
+#[skuld::test]
+fn the_sweep_unlinks_a_file_link_in_the_root_and_leaves_its_target_alone(
+    #[fixture(native_helper)] helper: &NativeHelper,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let run = run_runner_with_target(
+        helper,
+        NO_REQUEST,
+        &ENDED_REQUEST,
+        "New-Item -ItemType SymbolicLink -Path (Join-Path $root 'filelink') -Target (Join-Path $target 'precious') | Out-Null",
+    );
+    assert_eq!(run.left, Vec::<String>::new());
     assert_eq!(run.target, ["precious"]);
 }
 
