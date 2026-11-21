@@ -214,6 +214,8 @@ from: { iso: ../isos/windows.iso, edition: Windows 11 Enterprise Evaluation }
 The guest account is `user`, a member of Administrators with UAC on, logged in automatically. Commands run as that
 user, not elevated, through ssh-broker in the user's own session, so they see its profile and registry.
 The base has no Windows Recovery Environment.
+A Windows guest can run VMs of its own (nested virtualization): measured on an AMD host, untested on an Intel one. devvm
+withholds the hypervisor's Hyper-V hypercall interface from the guest to allow it.
 
 - **Programs.** `argv[0]` is looked up as a program on the guest's `PATH`, never as a PowerShell cmdlet or alias. A name
   that is not found exits 127, and when it is a PowerShell command the message says to run it through `pwsh -c`. A
