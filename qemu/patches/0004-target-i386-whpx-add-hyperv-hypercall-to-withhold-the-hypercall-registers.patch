@@ -6,41 +6,23 @@ synthetic processor features. With it, Hyper-V running inside a Windows guest
 gets a broken hypercall page: an inner Linux guest panics in hv_send_ipi and
 inner WHP clients die at int3. With only that bit cleared (Bank0 0x6448fff to
 0x6448f7f), inner VMs boot 27 of 27 times and the guest measures as fast as
-before. Linux guests need the bit for their Hyper-V clocksource: without it
-they fall back to hpet and a clock read is about 200 times slower. So the bit
-stays granted, and the new accelerator property hyperv-hypercall=off withholds
-it. The default, and =on, are unchanged.
+before. The new accelerator property hyperv-hypercall=off withholds the bit;
+the default, and =on, are unchanged.
+
+=off is for Windows guests only. A Linux guest loses its Hyper-V clocksource
+without the bit (x86/hyperv: HYPERCALL MSR not available; hpet instead, a clock
+read about 200 times slower) and, measured, panicked at boot (IO-APIC + timer
+doesn't work!) in 7 of 7 attempts on a busy host. The property has no effect
+when hyperv=off, which grants no enlightenments at all.
+
+The property is registered with the other x86-only WHPX properties, since the
+bit it controls is set in x86-only code.
 
 devvm-specific; applies after 0003.
 ---
 --- a/accel/whpx/whpx-common.c
 +++ b/accel/whpx/whpx-common.c
-@@ -505,6 +505,13 @@
-     }
- }
- 
-+static void whpx_set_hyperv_hypercall(Object *obj, bool value, Error **errp)
-+{
-+    struct whpx_state *whpx = &whpx_global;
-+
-+    whpx->hyperv_hypercall_allowed = value;
-+}
-+
- static void whpx_cpu_accel_class_init(ObjectClass *oc, const void *data)
- {
-     AccelCPUClass *acc = ACCEL_CPU_CLASS(oc);
-@@ -538,6 +545,10 @@
-         NULL, NULL);
-     object_class_property_set_description(oc, "hyperv",
-         "Configure Hyper-V enlightenments");
-+    object_class_property_add_bool(oc, "hyperv-hypercall",
-+        NULL, whpx_set_hyperv_hypercall);
-+    object_class_property_set_description(oc, "hyperv-hypercall",
-+        "Grant the guest the Hyper-V hypercall registers (default on)");
- 
-     whpx_arch_accel_class_init(oc);
- }
-@@ -554,6 +565,7 @@
+@@ -554,6 +554,7 @@
      whpx->hyperv_enlightenments_required = false;
      /* Value determined at whpx_accel_init */
      whpx->hyperv_enlightenments_enabled = false;
@@ -60,7 +42,33 @@ devvm-specific; applies after 0003.
  
 --- a/target/i386/whpx/whpx-all.c
 +++ b/target/i386/whpx/whpx-all.c
-@@ -3314,7 +3314,8 @@
+@@ -3053,6 +3053,13 @@
+ }
+ 
+ 
++static void whpx_set_hyperv_hypercall(Object *obj, bool value, Error **errp)
++{
++    struct whpx_state *whpx = &whpx_global;
++
++    whpx->hyperv_hypercall_allowed = value;
++}
++
+ void whpx_arch_accel_class_init(ObjectClass *oc)
+ {
+     object_class_property_add(oc, "ignore-unknown-msr", "OnOffAuto",
+@@ -3070,6 +3077,11 @@
+         NULL, NULL);
+     object_class_property_set_description(oc, "ssd",
+         "Separate security domain");
++    object_class_property_add_bool(oc, "hyperv-hypercall",
++        NULL, whpx_set_hyperv_hypercall);
++    object_class_property_set_description(oc, "hyperv-hypercall",
++        "Grant the guest the Hyper-V hypercall registers (default on); "
++        "no effect with hyperv=off");
+ }
+ 
+ int whpx_accel_init(AccelState *as, MachineState *ms)
+@@ -3314,7 +3326,8 @@
      synthetic_features.Bank0.AccessVpRunTimeReg = 1;
      synthetic_features.Bank0.AccessPartitionReferenceCounter = 1;
      synthetic_features.Bank0.AccessPartitionReferenceTsc = 1;
