@@ -1,0 +1,78 @@
+From: devvm <https://github.com/bindreams/devvm>
+Subject: [PATCH] target/i386/whpx: do not advertise the enlightened NPT TLB
+
+With nested virtualization on, the hypervisor answers CPUID 0x4000000A for a WHP
+partition with the enlightened NPT TLB bit (EAX bit 22) set, but it rejects the
+two hypercalls that enlightenment consists of: HvCallFlushGuestPhysicalAddressSpace
+and HvCallFlushGuestPhysicalAddressList return HV_STATUS_INVALID_HYPERCALL_CODE.
+A guest hypervisor that turns the enlightenment on promises to flush by hypercall
+and cannot, so the hypervisor keeps running its guests on stale nested page
+tables. A Windows guest with the Windows Hypervisor Platform then hands out a
+hypercall page whose overlay its own guests do not see.
+
+Intercept the leaf and clear the bit.
+
+To be upstreamed; applies after 0003.
+---
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -56,6 +56,9 @@
+ #define HV_X64_MSR_VP_ASSIST_PAGE       0x40000073
+ #define HV_X64_MSR_GUEST_IDLE           0x400000f0
+ 
++#define HV_CPUID_NESTED_FEATURES        0x4000000A
++#define HV_NESTED_ENLIGHTENED_TLB       (1u << 22)
++
+ static bool is_modern_os = true;
+ 
+ static const WHV_REGISTER_NAME whpx_register_names[] = {
+@@ -2605,18 +2608,39 @@
+                         reg_values[4].Reg64 = env->apic_bus_freq / 1000; /* Hz to KHz */
+                     }
+                     break;
++                case HV_CPUID_NESTED_FEATURES:
++                    /* Intercepted for the Hyper-V case below only. */
++                    reg_values[1].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
++                    reg_values[2].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
++                    reg_values[3].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
++                    reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
++                    break;
+                 }
+             } else {
+                 switch (vcpu->exit_ctx.CpuidAccess.Rax) {
+                 case 0x40000000:
+                 case 0x40000001:
+                 case 0x40000010:
++                case HV_CPUID_NESTED_FEATURES:
+                     reg_values[1].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
+                     reg_values[2].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
+                     reg_values[3].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
+                     reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
+                     break;
+                 }
++
++                /*
++                 * The hypervisor advertises the enlightened NPT TLB to a WHP
++                 * partition but answers the hypercalls it consists of,
++                 * HvCallFlushGuestPhysicalAddressSpace and ...List, with
++                 * HV_STATUS_INVALID_HYPERCALL_CODE. A guest hypervisor that
++                 * turns the enlightenment on then cannot flush the
++                 * hypervisor's copy of its nested page tables, and its guests
++                 * run on stale mappings.
++                 */
++                if (vcpu->exit_ctx.CpuidAccess.Rax == HV_CPUID_NESTED_FEATURES) {
++                    reg_values[1].Reg64 &= ~(uint64_t)HV_NESTED_ENLIGHTENED_TLB;
++                }
+             }
+ 
+             if (vcpu->exit_ctx.CpuidAccess.Rax == 0x1) {
+@@ -3085,7 +3109,8 @@
+     WHV_PROCESSOR_PERFMON_FEATURES perfmon_features;
+ 
+     UINT32 cpuidExitList[] = {0x0, 0x1, 0x6, 0x7, 0xb, 0xd, 0x14, 0x24, 0x29, 0x1E,
+-        0x40000000, 0x40000001, 0x40000010, 0x80000000, 0x80000001,
++        0x40000000, 0x40000001, HV_CPUID_NESTED_FEATURES, 0x40000010,
++        0x80000000, 0x80000001,
+         0x80000002, 0x80000003, 0x80000004, 0x80000007, 0x80000008,
+         0x8000000A, 0x80000021, 0x80000022, 0xC0000000, 0xC0000001};
+ 
