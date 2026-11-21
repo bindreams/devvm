@@ -10,63 +10,47 @@ and cannot, so the hypervisor keeps running its guests on stale nested page
 tables. A Windows guest with the Windows Hypervisor Platform then hands out a
 hypercall page whose overlay its own guests do not see.
 
-Intercept the leaf and clear the bit.
+Measured on AMD. On Intel the same two hypercalls are advertised by EAX bit 18
+(HV_X64_NESTED_GUEST_MAPPING_FLUSH); that was not measured and is left as the
+hypervisor reports it. Intercept the leaf and clear the bit.
 
 To be upstreamed; applies after 0003.
 ---
+--- a/target/i386/kvm/hyperv-proto.h
++++ b/target/i386/kvm/hyperv-proto.h
+@@ -92,6 +92,7 @@
+  */
+ #define HV_NESTED_DIRECT_FLUSH              (1u << 17)
+ #define HV_NESTED_MSR_BITMAP                (1u << 19)
++#define HV_NESTED_ENLIGHTENED_TLB           (1u << 22)
+ 
+ /*
+  * Basic virtualized MSRs
 --- a/target/i386/whpx/whpx-all.c
 +++ b/target/i386/whpx/whpx-all.c
-@@ -56,6 +56,9 @@
- #define HV_X64_MSR_VP_ASSIST_PAGE       0x40000073
- #define HV_X64_MSR_GUEST_IDLE           0x400000f0
- 
-+#define HV_CPUID_NESTED_FEATURES        0x4000000A
-+#define HV_NESTED_ENLIGHTENED_TLB       (1u << 22)
-+
- static bool is_modern_os = true;
- 
- static const WHV_REGISTER_NAME whpx_register_names[] = {
-@@ -2605,18 +2608,39 @@
-                         reg_values[4].Reg64 = env->apic_bus_freq / 1000; /* Hz to KHz */
-                     }
-                     break;
-+                case HV_CPUID_NESTED_FEATURES:
-+                    /* Intercepted for the Hyper-V case below only. */
-+                    reg_values[1].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
-+                    reg_values[2].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
-+                    reg_values[3].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
-+                    reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
-+                    break;
+@@ -2619,6 +2619,21 @@
                  }
-             } else {
-                 switch (vcpu->exit_ctx.CpuidAccess.Rax) {
-                 case 0x40000000:
-                 case 0x40000001:
-                 case 0x40000010:
-+                case HV_CPUID_NESTED_FEATURES:
-                     reg_values[1].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
-                     reg_values[2].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
-                     reg_values[3].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
-                     reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
-                     break;
-                 }
-+
-+                /*
-+                 * The hypervisor advertises the enlightened NPT TLB to a WHP
-+                 * partition but answers the hypercalls it consists of,
-+                 * HvCallFlushGuestPhysicalAddressSpace and ...List, with
-+                 * HV_STATUS_INVALID_HYPERCALL_CODE. A guest hypervisor that
-+                 * turns the enlightenment on then cannot flush the
-+                 * hypervisor's copy of its nested page tables, and its guests
-+                 * run on stale mappings.
-+                 */
-+                if (vcpu->exit_ctx.CpuidAccess.Rax == HV_CPUID_NESTED_FEATURES) {
-+                    reg_values[1].Reg64 &= ~(uint64_t)HV_NESTED_ENLIGHTENED_TLB;
-+                }
              }
  
++            /*
++             * On AMD hosts the hypervisor advertises the enlightened NPT TLB
++             * to a WHP partition but rejects the hypercalls it consists of
++             * (HvCallFlushGuestPhysicalAddressSpace and ...List), so a guest
++             * hypervisor that turns it on runs its guests on stale nested page
++             * tables. Answer as the hypervisor does, without that bit.
++             */
++            if ((uint32_t)vcpu->exit_ctx.CpuidAccess.Rax == HV_CPUID_NESTED_FEATURES) {
++                reg_values[1].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
++                reg_values[2].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
++                reg_values[3].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
++                reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
++                reg_values[1].Reg64 &= ~(uint64_t)HV_NESTED_ENLIGHTENED_TLB;
++            }
++
              if (vcpu->exit_ctx.CpuidAccess.Rax == 0x1) {
-@@ -3085,7 +3109,8 @@
+                 if (cpu_has_x2apic_feature(env)) {
+                     reg_values[2].Reg64 |= CPUID_EXT_X2APIC;
+@@ -3085,7 +3100,8 @@
      WHV_PROCESSOR_PERFMON_FEATURES perfmon_features;
  
      UINT32 cpuidExitList[] = {0x0, 0x1, 0x6, 0x7, 0xb, 0xd, 0x14, 0x24, 0x29, 0x1E,
