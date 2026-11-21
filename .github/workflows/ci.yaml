@@ -53,7 +53,7 @@ jobs:
       # prek.toml is the single source of truth for lint; the same checks run locally as git hooks. Clippy runs per
       # platform in the Test job instead.
       - name: Run prek
-        uses: j178/prek-action@1382ad72dea72f9d53832f2bcb65b3e87a947204 # v3.0.1
+        uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
         env:
           SKIP: cargo-clippy
         with:
@@ -82,9 +82,9 @@ jobs:
       # The seed test reads the cloud-init seed with PyYAML through `uv run --script` (Linux only; see Test below).
       - name: Install uv
         if: runner.os == 'Linux'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: 0.13.6
+          version: 0.13.8
           enable-cache: false
 
       - name: Clippy
