@@ -1,0 +1,366 @@
+From: devvm <https://github.com/bindreams/devvm>
+Subject: [PATCH] target/i386/whpx: n1r experiment knobs (never to be merged)
+
+Environment knobs for the nested-virtualization root-cause search: CPUID answer
+overrides, extra extended VM exits with a hypercall exit log, MSR exit bitmap,
+processor feature masks, nested virtualization off, nested state dump.
+---
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -287,6 +287,190 @@
+ 
+ static bool whpx_rdtsc_cap;
+ 
++/*
++ * n1r experiment knobs, read from the environment. Never to be upstreamed or
++ * released. Every line they print starts with "EXP:".
++ *
++ * DEVVM_EXP_CPUID=LEAF:REG:AND:OR[,...]  hex; REG is eax|ebx|ecx|edx. The leaf
++ *     joins the CPUID exit list; the answer is (value & AND) | OR. For leaves
++ *     0x40000000-0x400000ff the value is the hypervisor's default result.
++ * DEVVM_EXP_EXT_EXITS=HEX   OR-ed into WHV_EXTENDED_VM_EXITS (0x20 = hypercall).
++ * DEVVM_EXP_HCALL_STATUS=HEX  RAX answered to a hypercall exit (default 2).
++ * DEVVM_EXP_MSR_EXIT=HEX    replaces the X64 MSR exit bitmap.
++ * DEVVM_EXP_NESTED=0        do not set the NestedVirtualization property.
++ * DEVVM_EXP_PF0_CLEAR, DEVVM_EXP_PF1_CLEAR=HEX  bits cleared from the
++ *     processor feature banks.
++ * DEVVM_EXP_DUMP=DIR        on every full register read (monitor "info
++ *     registers", "stop") print the hypercall/nested registers of the vCPU and
++ *     write its nested state (with the current VMCB) to DIR.
++ */
++#define EXP_MAX_CPUID 32
++#define EXP_MAX_HCALL 64
++
++typedef struct ExpCpuid {
++    uint32_t leaf;
++    int reg;
++    uint32_t and_mask;
++    uint32_t or_mask;
++} ExpCpuid;
++
++static ExpCpuid exp_cpuid[EXP_MAX_CPUID];
++static int exp_cpuid_n;
++static uint64_t exp_ext_exits;
++static uint64_t exp_hcall_status = 2;
++static const char *exp_dump_dir;
++static QemuMutex exp_lock;
++static struct {
++    uint64_t code;
++    uint64_t count;
++} exp_hcalls[EXP_MAX_HCALL];
++static int exp_hcalls_n;
++static int exp_dump_seq;
++
++static bool exp_env_u64(const char *name, uint64_t *value)
++{
++    const char *text = g_getenv(name);
++
++    if (!text) {
++        return false;
++    }
++    if (qemu_strtou64(text, NULL, 16, value)) {
++        error_report("EXP: bad %s=%s", name, text);
++        exit(1);
++    }
++    error_report("EXP: %s=0x%" PRIx64, name, *value);
++    return true;
++}
++
++static void exp_init(void)
++{
++    static const char *const reg_names[] = { "eax", "ecx", "edx", "ebx" };
++    const char *text = g_getenv("DEVVM_EXP_CPUID");
++
++    qemu_mutex_init(&exp_lock);
++    exp_env_u64("DEVVM_EXP_EXT_EXITS", &exp_ext_exits);
++    exp_env_u64("DEVVM_EXP_HCALL_STATUS", &exp_hcall_status);
++    exp_dump_dir = g_getenv("DEVVM_EXP_DUMP");
++
++    if (text) {
++        g_auto(GStrv) items = g_strsplit(text, ",", -1);
++
++        for (int i = 0; items[i]; i++) {
++            g_auto(GStrv) fields = g_strsplit(items[i], ":", -1);
++            uint64_t leaf = 0, and_mask = 0, or_mask = 0;
++            int reg = -1;
++
++            if (g_strv_length(fields) == 4) {
++                for (int r = 0; r < 4; r++) {
++                    if (!strcmp(fields[1], reg_names[r])) {
++                        reg = r + 1;
++                    }
++                }
++            }
++            if (reg < 0 || exp_cpuid_n == EXP_MAX_CPUID ||
++                qemu_strtou64(fields[0], NULL, 16, &leaf) ||
++                qemu_strtou64(fields[2], NULL, 16, &and_mask) ||
++                qemu_strtou64(fields[3], NULL, 16, &or_mask)) {
++                error_report("EXP: bad DEVVM_EXP_CPUID item %s", items[i]);
++                exit(1);
++            }
++            exp_cpuid[exp_cpuid_n++] = (ExpCpuid) {
++                .leaf = leaf, .reg = reg, .and_mask = and_mask,
++                .or_mask = or_mask,
++            };
++            error_report("EXP: cpuid 0x%" PRIx64 " %s = (v & 0x%" PRIx64
++                         ") | 0x%" PRIx64, leaf, fields[1], and_mask, or_mask);
++        }
++    }
++}
++
++/* Counts the hypercall exit and prints it at counts 1, 2, 4, 8, ... */
++static void exp_log_hcall(CPUState *cpu, const uint64_t *hc, unsigned len)
++{
++    /* hc: Rax Rbx Rcx Rdx R8 Rsi Rdi (WHV_X64_HYPERCALL_CONTEXT) */
++    uint64_t code = hc[2] & 0xffff;
++    uint64_t count = 0;
++
++    qemu_mutex_lock(&exp_lock);
++    for (int i = 0; i < exp_hcalls_n; i++) {
++        if (exp_hcalls[i].code == code) {
++            count = ++exp_hcalls[i].count;
++        }
++    }
++    if (!count && exp_hcalls_n < EXP_MAX_HCALL) {
++        exp_hcalls[exp_hcalls_n].code = code;
++        exp_hcalls[exp_hcalls_n++].count = count = 1;
++    }
++    qemu_mutex_unlock(&exp_lock);
++
++    if (!count || !(count & (count - 1))) {
++        error_report("EXP: hcall code=0x%04" PRIx64 " n=%" PRIu64 " cpu=%d"
++                     " rcx=%016" PRIx64 " rdx=%016" PRIx64 " r8=%016" PRIx64
++                     " rax=%016" PRIx64 " len=%u",
++                     code, count, cpu->cpu_index, hc[2], hc[3], hc[4], hc[0],
++                     len);
++    }
++}
++
++static void exp_dump(CPUState *cpu)
++{
++    static const uint32_t names[] = {
++        0x5001, /* WHvX64RegisterHypercall */
++        0x5002, /* WHvRegisterGuestOsId */
++        0x5013, /* WHvRegisterVpAssistPage */
++        0x5050, /* WHvX64RegisterNestedGuestState */
++        0x5051, /* WHvX64RegisterNestedCurrentVmGpa */
++    };
++    struct whpx_state *whpx = &whpx_global;
++    g_autofree uint8_t *state = g_malloc0(16384);
++    UINT32 written = 0;
++    HRESULT hr;
++    int seq;
++
++    qemu_mutex_lock(&exp_lock);
++    seq = exp_dump_seq++;
++    qemu_mutex_unlock(&exp_lock);
++
++    for (int i = 0; i < ARRAY_SIZE(names); i++) {
++        WHV_REGISTER_NAME name = (WHV_REGISTER_NAME)names[i];
++        WHV_REGISTER_VALUE value;
++
++        memset(&value, 0, sizeof(value));
++        hr = whp_dispatch.WHvGetVirtualProcessorRegisters(
++            whpx->partition, cpu->cpu_index, &name, 1, &value);
++        error_report("EXP: dump %d cpu=%d reg 0x%x hr=%08lx value=%016" PRIx64
++                     " %016" PRIx64, seq, cpu->cpu_index, (unsigned)names[i],
++                     hr, (uint64_t)value.Reg128.Low64,
++                     (uint64_t)value.Reg128.High64);
++    }
++
++    if (!whp_dispatch.WHvGetVirtualProcessorState) {
++        return;
++    }
++    /* 0x1002: WHvVirtualProcessorStateTypeNestedState */
++    hr = whp_dispatch.WHvGetVirtualProcessorState(
++        whpx->partition, cpu->cpu_index,
++        (WHV_VIRTUAL_PROCESSOR_STATE_TYPE)0x1002, state, 16384, &written);
++    error_report("EXP: dump %d cpu=%d nested state hr=%08lx written=%u"
++                 " vendor=%u flags=0x%x enl=0x%x hcctl=0x%x hsave=%016" PRIx64
++                 " vmcr=%016" PRIx64 " vmcb=%016" PRIx64,
++                 seq, cpu->cpu_index, hr, (unsigned)written,
++                 (unsigned)ldl_le_p(state), (unsigned)ldl_le_p(state + 4),
++                 (unsigned)ldl_le_p(state + 8), (unsigned)ldl_le_p(state + 12),
++                 (uint64_t)ldq_le_p(state + 16),
++                 (uint64_t)ldq_le_p(state + 24),
++                 (uint64_t)ldq_le_p(state + 40));
++    if (SUCCEEDED(hr) && written) {
++        g_autofree char *file = g_strdup_printf("%s/nested-%04d-cpu%d.bin",
++                                                exp_dump_dir, seq,
++                                                cpu->cpu_index);
++
++        if (!g_file_set_contents(file, (const char *)state, written, NULL)) {
++            error_report("EXP: cannot write %s", file);
++        }
++    }
++}
++
+ bool whpx_has_rdtscp(void)
+ {
+     return whpx_rdtsc_cap;
+@@ -913,6 +1097,10 @@
+         return whpx_get_registers_for_vmexit(cpu, level);
+     }
+ 
++    if (level == WHPX_LEVEL_FULL_STATE && exp_dump_dir) {
++        exp_dump(cpu);
++    }
++
+     if (!env->tsc_valid) {
+         whpx_get_tsc(cpu);
+         env->tsc_valid = !runstate_is_running();
+@@ -1554,6 +1742,7 @@
+     memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
+     prop.ExtendedVmExits.X64MsrExit = 1;
+     prop.ExtendedVmExits.X64CpuidExit = 1;
++    prop.ExtendedVmExits.AsUINT64 |= exp_ext_exits;
+ 
+     if (exceptions != 0 || whpx_get_default_exceptions() != 0) {
+         prop.ExtendedVmExits.ExceptionExit = 1;
+@@ -2355,7 +2544,7 @@
+ 
+         whpx_vcpu_post_run(cpu);
+ 
+-        switch (vcpu->exit_ctx.ExitReason) {
++        switch ((uint32_t)vcpu->exit_ctx.ExitReason) {
+         case WHvRunVpExitReasonMemoryAccess:
+             ret = whpx_handle_mmio(cpu, &vcpu->exit_ctx);
+             break;
+@@ -2682,6 +2871,24 @@
+                 }
+             }
+ 
++            for (int e = 0, first = 1; e < exp_cpuid_n; e++) {
++                uint32_t leaf = vcpu->exit_ctx.CpuidAccess.Rax;
++                ExpCpuid *x = &exp_cpuid[e];
++
++                if (x->leaf != leaf) {
++                    continue;
++                }
++                if (first && leaf >= 0x40000000 && leaf <= 0x400000ff) {
++                    reg_values[1].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
++                    reg_values[2].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRcx;
++                    reg_values[3].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRdx;
++                    reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
++                }
++                first = 0;
++                reg_values[x->reg].Reg64 =
++                    ((uint32_t)reg_values[x->reg].Reg64 & x->and_mask) | x->or_mask;
++            }
++
+             hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
+                 whpx->partition,
+                 cpu->cpu_index,
+@@ -2695,6 +2902,26 @@
+             ret = 0;
+             break;
+         }
++        case 0x1005: /* WHvRunVpExitReasonHypercall, experiment only */ {
++            WHV_REGISTER_NAME reg_names[2] = {
++                WHvX64RegisterRip, WHvX64RegisterRax
++            };
++            WHV_REGISTER_VALUE reg_values[2];
++            unsigned len = vcpu->exit_ctx.VpContext.InstructionLength;
++
++            memset(reg_values, 0, sizeof(reg_values));
++            exp_log_hcall(cpu, (const uint64_t *)&vcpu->exit_ctx.MemoryAccess,
++                          len);
++            reg_values[0].Reg64 = vcpu->exit_ctx.VpContext.Rip + (len ? len : 3);
++            reg_values[1].Reg64 = exp_hcall_status;
++            hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
++                whpx->partition, cpu->cpu_index, reg_names, 2, reg_values);
++            if (FAILED(hr)) {
++                error_report("EXP: hcall answer failed, hr=%08lx", hr);
++            }
++            ret = 0;
++            break;
++        }
+         case WHvRunVpExitReasonException:
+             if (vcpu->exit_ctx.VpException.ExceptionType ==
+                 WHvX64ExceptionTypeGeneralProtectionFault) {
+@@ -3098,6 +3325,7 @@
+     }
+ 
+     whpx = &whpx_global;
++    exp_init();
+ 
+     if (!init_whp_dispatch()) {
+         ret = -ENOSYS;
+@@ -3251,7 +3479,8 @@
+     whpx_rdtsc_cap = processor_features.Bank0.RdtscpSupport;
+     whpx_invpcid_cap = processor_features.Bank0.InvpcidSupport;
+ 
+-    if (whpx_irqchip_in_kernel() && processor_features.Bank1.NestedVirtSupport) {
++    if (whpx_irqchip_in_kernel() && processor_features.Bank1.NestedVirtSupport
++        && g_strcmp0(g_getenv("DEVVM_EXP_NESTED"), "0")) {
+         memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
+         prop.NestedVirtualization = 1;
+         hr = whp_dispatch.WHvSetPartitionProperty(
+@@ -3292,6 +3521,24 @@
+         }
+     }
+ 
++    {
++        uint64_t exp_bits = 0;
++
++        if (exp_env_u64("DEVVM_EXP_PF0_CLEAR", &exp_bits)) {
++            processor_features.Bank0.AsUINT64 &= ~exp_bits;
++        }
++        if (exp_env_u64("DEVVM_EXP_PF1_CLEAR", &exp_bits)) {
++            processor_features.Bank1.AsUINT64 &= ~exp_bits;
++        }
++        if (g_getenv("DEVVM_EXP_PF0_CLEAR") || g_getenv("DEVVM_EXP_PF1_CLEAR")
++            || exp_cpuid_n || exp_ext_exits || exp_dump_dir) {
++            error_report("EXP: processor features Bank0=0x%016" PRIx64
++                         " Bank1=0x%016" PRIx64,
++                         (uint64_t)processor_features.Bank0.AsUINT64,
++                         (uint64_t)processor_features.Bank1.AsUINT64);
++        }
++    }
++
+     hr = whp_dispatch.WHvSetPartitionProperty(
+             whpx->partition,
+             WHvPartitionPropertyCodeProcessorFeaturesBanks,
+@@ -3386,6 +3633,13 @@
+     memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
+     prop.X64MsrExitBitmap.UnhandledMsrs = 1;
+     prop.X64MsrExitBitmap.ApicBaseMsrWrite = 1;
++    {
++        uint64_t exp_bits = 0;
++
++        if (exp_env_u64("DEVVM_EXP_MSR_EXIT", &exp_bits)) {
++            prop.X64MsrExitBitmap.AsUINT64 = exp_bits;
++        }
++    }
+ 
+     hr = whp_dispatch.WHvSetPartitionProperty(
+             whpx->partition,
+@@ -3398,11 +3652,26 @@
+         goto error;
+     }
+ 
++    UINT32 exp_exit_list[RTL_NUMBER_OF(cpuidExitList) + EXP_MAX_CPUID];
++    UINT32 exp_exit_n = RTL_NUMBER_OF(cpuidExitList);
++
++    memcpy(exp_exit_list, cpuidExitList, sizeof(cpuidExitList));
++    for (int e = 0; e < exp_cpuid_n; e++) {
++        bool listed = false;
++
++        for (UINT32 l = 0; l < exp_exit_n; l++) {
++            listed |= exp_exit_list[l] == exp_cpuid[e].leaf;
++        }
++        if (!listed) {
++            exp_exit_list[exp_exit_n++] = exp_cpuid[e].leaf;
++        }
++    }
++
+     hr = whp_dispatch.WHvSetPartitionProperty(
+         whpx->partition,
+         WHvPartitionPropertyCodeCpuidExitList,
+-        cpuidExitList,
+-        RTL_NUMBER_OF(cpuidExitList) * sizeof(UINT32));
++        exp_exit_list,
++        exp_exit_n * sizeof(UINT32));
+ 
+     if (FAILED(hr)) {
+         error_report("WHPX: Failed to set partition CpuidExitList hr=%08lx",

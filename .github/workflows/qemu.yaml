@@ -6,7 +6,7 @@ name: QEMU
 on:
   push:
     branches:
-      - exp/n1-synth-mask
+      - exp/n1r-knobs
   pull_request:
     paths:
       - "qemu/**"
