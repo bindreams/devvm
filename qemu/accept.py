@@ -97,7 +97,7 @@ def version_and_accel(z: Zip):
 
 @check
 def whpx_has_the_hyperv_hypercall_switch(z: Zip):
-    """devvm passes `hyperv-hypercall=off` for Windows guests (patch 0004); without the property no such guest starts."""
+    """devvm starts every Windows guest with `hyperv-hypercall=off` (patch 0004)."""
     # A value the property refuses shows that it exists, and QEMU exits without starting a machine.
     argv = [z.bin / "qemu-system-x86_64.exe", "-display", "none", "-accel", "whpx,hyperv-hypercall=refused"]
     stderr = z.run(argv, exit_code=1).stderr
