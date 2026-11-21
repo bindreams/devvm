@@ -690,6 +690,7 @@ pub(crate) fn fake_spec(disk: PathBuf, serial_log: PathBuf, lifetime: Lifetime) 
             net: NetModel::Virtio,
             video: Video::None,
             no_reboot: false,
+            hyperv_hypercall: true,
         },
         firmware: None,
         forwards: vec![Endpoint::Normal],

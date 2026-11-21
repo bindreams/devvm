@@ -117,7 +117,12 @@ pub(crate) fn build_args(spec: &MachineSpec, paths: &LaunchPaths) -> Result<Vec<
         }
         Arch::Arm64 => "virt,gic-version=3",
     };
-    args.pair("-accel", spec.accel.name());
+    // Only WHPX can withhold the interface from the guest.
+    if spec.accel == Accel::Whpx && !spec.profile.hyperv_hypercall {
+        args.pair("-accel", format!("{},hyperv-hypercall=off", spec.accel.name()));
+    } else {
+        args.pair("-accel", spec.accel.name());
+    }
     args.pair("-machine", machine);
     args.pair("-cpu", "max");
     args.pair("-smp", spec.cpus.to_string());

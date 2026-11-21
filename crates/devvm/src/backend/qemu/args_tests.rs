@@ -7,6 +7,9 @@ use crate::backend::{
     DeviceProfile, DiskBus, Endpoint, Firmware, MachineSpec, Media, MediaFormat, MediaKind, NetModel, Video,
 };
 use crate::contain::Lifetime;
+use crate::guest::GuestOs;
+use crate::guest::linux::LinuxGuest;
+use crate::guest::windows::WindowsGuest;
 use crate::host::Accel;
 use crate::test_support::fixtures::UNICODE_DIR;
 use crate::{Arch, ErrorKind, Network};
@@ -275,6 +278,7 @@ fn device_profiles_select_buses_and_models() {
         net: NetModel::E1000,
         video: Video::None,
         no_reboot: false,
+        hyperv_hypercall: true,
     };
     let sata = args(&spec, &paths());
     assert!(sata.contains(&"ich9-ahci,id=ahci".to_owned()), "{sata:?}");
@@ -300,6 +304,23 @@ fn no_reboot_follows_the_device_profile() {
     assert!(args(&spec, &paths()).contains(&"-no-reboot".to_owned()));
     spec.profile.no_reboot = false;
     assert!(!args(&spec, &paths()).contains(&"-no-reboot".to_owned()));
+}
+
+#[skuld::test]
+fn a_windows_guest_under_whpx_is_not_offered_the_hyperv_hypercall_interface() {
+    let mut spec = spec();
+    spec.profile = WindowsGuest.device_profile();
+    assert_eq!(
+        values_of(&args(&spec, &paths()), "-accel"),
+        ["whpx,hyperv-hypercall=off"]
+    );
+}
+
+#[skuld::test]
+fn a_linux_guest_under_whpx_is_offered_the_hyperv_hypercall_interface() {
+    let mut spec = spec();
+    spec.profile = LinuxGuest.device_profile();
+    assert_eq!(values_of(&args(&spec, &paths()), "-accel"), ["whpx"]);
 }
 
 #[skuld::test]

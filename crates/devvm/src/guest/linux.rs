@@ -136,6 +136,8 @@ impl GuestOs for LinuxGuest {
             net: NetModel::Virtio,
             video: Video::None,
             no_reboot: false,
+            // Without it the guest loses its Hyper-V clock and can panic at boot.
+            hyperv_hypercall: true,
         }
     }
 

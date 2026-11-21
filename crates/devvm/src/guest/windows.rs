@@ -97,6 +97,8 @@ impl GuestOs for WindowsGuest {
             net: NetModel::Virtio,
             video: Video::Vga,
             no_reboot: false,
+            // VMs inside the guest need it withheld; costs about 9-10% on process-spawn-heavy work.
+            hyperv_hypercall: false,
         }
     }
 
