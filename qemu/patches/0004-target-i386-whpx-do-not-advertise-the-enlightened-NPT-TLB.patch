@@ -7,12 +7,11 @@ two hypercalls that enlightenment consists of: HvCallFlushGuestPhysicalAddressSp
 and HvCallFlushGuestPhysicalAddressList return HV_STATUS_INVALID_HYPERCALL_CODE.
 A guest hypervisor that turns the enlightenment on promises to flush by hypercall
 and cannot, so the hypervisor keeps running its guests on stale nested page
-tables. A Windows guest with the Windows Hypervisor Platform then hands out a
-hypercall page whose overlay its own guests do not see.
+tables. Under Hyper-V in a Windows guest, an inner Linux guest then panics in
+hv_send_ipi and inner WHP clients die at int3.
 
-Measured on AMD. On Intel the same two hypercalls are advertised by EAX bit 18
-(HV_X64_NESTED_GUEST_MAPPING_FLUSH); that was not measured and is left as the
-hypervisor reports it. Intercept the leaf and clear the bit.
+Measured on AMD only. Intel's equivalent, EAX bit 18
+(HV_X64_NESTED_GUEST_MAPPING_FLUSH), is unmeasured and left as reported.
 
 To be upstreamed; applies after 0003.
 ---
@@ -33,11 +32,11 @@ To be upstreamed; applies after 0003.
              }
  
 +            /*
-+             * On AMD hosts the hypervisor advertises the enlightened NPT TLB
-+             * to a WHP partition but rejects the hypercalls it consists of
-+             * (HvCallFlushGuestPhysicalAddressSpace and ...List), so a guest
-+             * hypervisor that turns it on runs its guests on stale nested page
-+             * tables. Answer as the hypervisor does, without that bit.
++             * The hypervisor advertises the enlightened NPT TLB, an AMD
++             * enlightenment, but rejects its flush hypercalls, leaving a guest
++             * hypervisor with stale nested page tables. Cleared on every host;
++             * measured on AMD only. Intel's equivalent, bit 18, is unmeasured
++             * and left as reported.
 +             */
 +            if ((uint32_t)vcpu->exit_ctx.CpuidAccess.Rax == HV_CPUID_NESTED_FEATURES) {
 +                reg_values[1].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRax;
