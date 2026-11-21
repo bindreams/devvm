@@ -60,17 +60,17 @@ class Zip:
         self.bin = self.root / "bin"
         self.share = self.root / "share"
 
-    def run(self, argv, **kwargs) -> subprocess.CompletedProcess:
-        """Run a QEMU tool; fail with its output if it exits non-zero."""
+    def run(self, argv, *, exit_code: int = 0, **kwargs) -> subprocess.CompletedProcess:
+        """Run a QEMU tool; fail with its output unless it exits with `exit_code`."""
         try:
             done = subprocess.run([str(a) for a in argv], env=self.env, capture_output=True, timeout=RUN_BOUND, **kwargs)
         except subprocess.TimeoutExpired:
             raise AssertionError(f"{argv[0]} did not finish within {RUN_BOUND}s and was killed") from None
         stdout = done.stdout.decode("utf-8", errors="replace")
         stderr = done.stderr.decode("utf-8", errors="replace")
-        if done.returncode != 0:
+        if done.returncode != exit_code:
             raise AssertionError(f"{argv[0]} exited {done.returncode}\nstdout: {stdout}\nstderr: {stderr}")
-        return subprocess.CompletedProcess(done.args, 0, stdout, stderr)
+        return subprocess.CompletedProcess(done.args, exit_code, stdout, stderr)
 
 
 def registry_acp() -> str:
@@ -93,6 +93,15 @@ def version_and_accel(z: Zip):
         assert re.match(pattern, out), f"{system} --version printed: {out!r}"
     accels = z.run([z.bin / "qemu-system-x86_64.exe", "-accel", "help"]).stdout.split()
     assert "whpx" in accels, f"-accel help lists {accels}"
+
+
+@check
+def whpx_has_the_hyperv_hypercall_switch(z: Zip):
+    """devvm starts every Windows guest with `hyperv-hypercall=off` (patch 0004)."""
+    # A value the property refuses shows that it exists, and QEMU exits without starting a machine.
+    argv = [z.bin / "qemu-system-x86_64.exe", "-display", "none", "-accel", "whpx,hyperv-hypercall=refused"]
+    stderr = z.run(argv, exit_code=1).stderr
+    assert "Parameter 'hyperv-hypercall' expects 'on' or 'off'" in stderr, f"QEMU said: {stderr!r}"
 
 
 @check
