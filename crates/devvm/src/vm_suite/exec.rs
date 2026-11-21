@@ -1,7 +1,7 @@
 //! The exec suite through the library: `Vm::run` in a real Ubuntu guest. The cases are the table of `exec/cases.rs`,
 //! which `devvm-cli/tests/vm_cli.rs` runs through the `devvm` executable.
 
-use super::fixture::{SharedGuest, run_ok, shared_guest};
+use super::fixture::{SharedGuest, run_ok, run_ok_as, shared_guest};
 use super::waits::{answer_to, named};
 use crate::{Command, ExitStatus, Guest, RunAs, Vm};
 use cases::{Case, Ended, ExecTarget, Observed, Os};
@@ -47,6 +47,30 @@ fn the_guest_is_named_after_the_instance_id(#[fixture(shared_guest)] guest: &Sha
     let named = run_ok(&guest.vm, &["hostname"]);
     assert_eq!(named.trim(), want);
     assert_ne!(named.trim(), guest.vm.name(), "the label is not the hostname");
+}
+
+/// The low privilege flags the guest kernel logged at boot (`Hyper-V: privilege flags low 0x..., high 0x...`): CPUID
+/// leaf 0x40000003, EAX. `None` when the kernel logged no such line.
+fn hyperv_privilege_flags_low(guest: &SharedGuest) -> Option<u32> {
+    let log = run_ok_as(
+        &guest.vm,
+        RunAs::Elevated,
+        &["sh", "-c", "dmesg | grep 'Hyper-V: privilege flags' || true"],
+    );
+    let (_, after) = log.split_once("privilege flags low 0x")?;
+    let digits: String = after.chars().take_while(char::is_ascii_hexdigit).collect();
+    Some(u32::from_str_radix(&digits, 16).unwrap_or_else(|e| panic!("no hex after \"low 0x\" in {log:?}: {e}")))
+}
+
+/// Without the hypercall MSRs (bit 5) the guest loses its Hyper-V clock, and can panic at boot.
+#[skuld::test]
+fn the_guest_is_granted_the_hyperv_hypercall_msrs(#[fixture(shared_guest)] guest: &SharedGuest) {
+    let low = hyperv_privilege_flags_low(guest).expect("the guest kernel logged no Hyper-V privilege flags at boot");
+    assert_ne!(
+        low & 0x20,
+        0,
+        "the privilege flags are {low:#x}: the hypercall MSRs (bit 5) are absent"
+    );
 }
 
 #[skuld::test]
