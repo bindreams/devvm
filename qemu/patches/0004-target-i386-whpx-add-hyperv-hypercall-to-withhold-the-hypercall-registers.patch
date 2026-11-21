@@ -5,9 +5,8 @@ QEMU grants the guest AccessHypercallRegs (Bank0 bit 7) in the partition's
 synthetic processor features. With it, Hyper-V running inside a Windows guest
 gets a broken hypercall page: an inner Linux guest panics in hv_send_ipi and
 inner WHP clients die at int3. With only that bit cleared (Bank0 0x6448fff to
-0x6448f7f), inner VMs boot 27 of 27 times and the guest measures as fast as
-before. The new accelerator property hyperv-hypercall=off withholds the bit;
-the default, and =on, are unchanged.
+0x6448f7f), inner VMs boot 27 of 27 times. The new accelerator property
+hyperv-hypercall=off withholds the bit; the default, and =on, are unchanged.
 
 =off is for Windows guests only. A Linux guest loses its Hyper-V clocksource
 without the bit (x86/hyperv: HYPERCALL MSR not available; hpet instead, a clock
@@ -15,10 +14,7 @@ read about 200 times slower) and, measured, panicked at boot (IO-APIC + timer
 doesn't work!) in 7 of 7 attempts on a busy host. The property has no effect
 when hyperv=off, which grants no enlightenments at all.
 
-The property is registered with the other x86-only WHPX properties, since the
-bit it controls is set in x86-only code.
-
-devvm-specific; applies after 0003.
+devvm-only; applies after 0003.
 ---
 --- a/accel/whpx/whpx-common.c
 +++ b/accel/whpx/whpx-common.c
