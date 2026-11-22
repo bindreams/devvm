@@ -79,9 +79,8 @@ fn windows_an_instance_disk_larger_than_the_base_is_claimed_by_c(
 
 // The CPU =============================================================================================================
 
-/// Runs CPUID and XGETBV in the guest and prints `xsave=0` for a CPU without XSAVE, or `xcr0=<hex> needed=<bytes>
-/// reported=<bytes>`: the area the enabled XSAVE components fill, and the size CPUID leaf 0xD says it is.
-const XSAVE_AREA: &str = r#"Add-Type -TypeDefinition '
+/// Defines `[Cpu]::Id(leaf, sub)`, which runs CPUID in the guest, and `[Cpu]::Xcr(index)`, which runs XGETBV.
+const CPU: &str = r#"Add-Type -TypeDefinition '
 using System;
 using System.Runtime.InteropServices;
 public static class Cpu {
@@ -106,8 +105,11 @@ public static class Cpu {
     return new uint[] { (uint)registers[0], (uint)registers[1], (uint)registers[2], (uint)registers[3] };
   }
   public static ulong Xcr(uint index) { return xgetbv(index); }
-}'
-if (([Cpu]::Id(1, 0)[2] -band 0x04000000) -eq 0) { 'xsave=0'; return }
+}'"#;
+
+/// Prints `xsave=0` for a CPU without XSAVE, or `xcr0=<hex> needed=<bytes> reported=<bytes>`: the area the enabled
+/// XSAVE components fill, and the size CPUID leaf 0xD says it is.
+const XSAVE_AREA: &str = r#"if (([Cpu]::Id(1, 0)[2] -band 0x04000000) -eq 0) { 'xsave=0'; return }
 $xcr0 = [Cpu]::Xcr(0)
 $needed = 0x240
 foreach ($component in 2..62) {
@@ -127,22 +129,53 @@ $reported = [Cpu]::Id(13, 0)[1]
 fn windows_the_xsave_area_cpuid_reports_holds_the_enabled_features(
     #[fixture(shared_windows_guest)] guest: &SharedWindowsGuest,
 ) {
-    let report = printed(&guest.vm, XSAVE_AREA);
+    let report = printed(&guest.vm, &format!("{CPU}\n{XSAVE_AREA}"));
     if report == "xsave=0" {
         return;
     }
-    let number = |field: &str| -> u32 {
-        report
-            .split_whitespace()
-            .find_map(|word| word.strip_prefix(field))
-            .and_then(|digits| digits.parse().ok())
-            .unwrap_or_else(|| panic!("no {field}<bytes> in the guest's answer: {report:?}"))
-    };
-    let (needed, reported) = (number("needed="), number("reported="));
+    let (needed, reported) = (number(&report, "needed="), number(&report, "reported="));
     assert!(
         reported >= needed,
         "CPUID says the XSAVE area is {reported} bytes; the enabled features fill {needed} ({report})"
     );
+}
+
+/// Prints `vendor=<name>` when the hypervisor is not Microsoft's, `max=<number>` when its highest leaf is below
+/// 0x4000000A, else `max=<number> eax=<number>`: the highest hypervisor leaf, and the EAX of leaf 0x4000000A.
+const ENLIGHTENED_NPT_TLB: &str = r#"$hv = [Cpu]::Id(0x40000000, 0)
+$vendor = [Text.Encoding]::ASCII.GetString([BitConverter]::GetBytes($hv[1]) + [BitConverter]::GetBytes($hv[2]) + [BitConverter]::GetBytes($hv[3]))
+if ($vendor -ne 'Microsoft Hv') { "vendor=$vendor"; return }
+if ($hv[0] -lt 0x4000000A) { "max=$($hv[0])"; return }
+"max=$($hv[0]) eax=$([Cpu]::Id(0x4000000A, 0)[0])""#;
+
+/// Bit 22 of CPUID leaf 0x4000000A, EAX, promises the enlightened NPT TLB: the guest may flush its nested page tables
+/// by hypercall. The hypervisor rejects that hypercall for a QEMU guest, so a hypervisor inside the guest that trusts
+/// the bit runs its VMs on stale nested page tables and they crash.
+#[skuld::test]
+fn windows_the_guest_is_not_shown_the_enlightened_npt_tlb(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
+    let report = printed(&guest.vm, &format!("{CPU}\n{ENLIGHTENED_NPT_TLB}"));
+    assert!(
+        report.starts_with("max="),
+        "the guest's hypervisor is not Microsoft's, which WHPX's is: {report}"
+    );
+    if !report.contains(" eax=") {
+        eprintln!("not checked: the hypervisor's highest leaf is below 0x4000000A ({report})");
+        return;
+    }
+    let eax = number(&report, "eax=");
+    assert_eq!(
+        eax & (1 << 22),
+        0,
+        "CPUID leaf 0x4000000A, EAX bit 22 (the enlightened NPT TLB) is set: EAX is {eax:#x} ({report})"
+    );
+}
+
+fn number(report: &str, field: &str) -> u32 {
+    report
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix(field))
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or_else(|| panic!("no {field}<number> in the guest's answer: {report:?}"))
 }
 
 // The expiry ==========================================================================================================
