@@ -259,3 +259,50 @@ Limits:
 - devvm does not end a guest command whose client went away (a killed `devvm`, a closed reader). The command finds out
   when it next writes, as a command run by ssh without a terminal does. A command that writes nothing keeps running
   until it ends or the instance stops (`devvm stop`).
+
+## Developing devvm
+
+`dev.devvm.yaml` makes a Windows guest with devvm's source, Rust, the MSVC build tools and hardware acceleration, in
+which devvm's own VM suites run. It starts from `../win/windows.devvm.yaml`, the recipe of
+[A Windows guest](#a-windows-guest) beside the repository, so that recipe has to exist first.
+
+```sh
+devvm up dev.devvm.yaml --name dev
+devvm ssh dev -- devvm doctor
+```
+
+Measured on an AMD host: the first `up` takes 29 minutes (the Windows base 10, then Git, Rust, Visual Studio Build Tools
+and `cargo install` of devvm), and `doctor` in the guest reports `accelerator: whpx`. A change to the sources reruns only
+the `copy` step and the install after it. The guest has 8 CPUs, 16GiB and a 160GiB disk; the Linux and Windows suites
+used up to 54GiB of it and the instance takes about 70GB on the host.
+
+The Linux-guest suite, as CI's `vm` job runs it:
+
+```sh
+devvm ssh dev -- pwsh -c '
+  $env:DEVVM_TEST_VM = 1; $env:DEVVM_TEST_VM_CONSENT = 1; $env:SKULD_LABELS = "vm"
+  $env:DEVVM_TEST_WINDOWS_GUEST = 0
+  "ACP_1252", "UNICODE_BASE", "PYYAML", "OPENSSH_SFTP", "NTFS_NAMES", "EXFAT_VOLUME" | % { Set-Item "Env:DEVVM_TEST_$_" 0 }
+  cd ~/devvm
+  cargo test -p devvm --lib --locked
+  cargo test -p devvm-cli --locked --test vm_cli'
+```
+
+It took 59 minutes. The Windows-guest suite needs your ISO in the guest (4.8 GiB took 27 minutes):
+
+```sh
+devvm cp C:/isos/windows.iso dev:windows.iso
+devvm ssh dev -- pwsh -c '
+  $env:DEVVM_TEST_VM = 1; $env:DEVVM_TEST_VM_CONSENT = 1; $env:SKULD_LABELS = "windows_guest"
+  $env:DEVVM_TEST_WINDOWS_GUEST = 1
+  $env:DEVVM_WINDOWS_ISO = "$HOME\windows.iso"
+  $env:DEVVM_WINDOWS_EDITION = "Windows 11 IoT Enterprise LTSC 2024"
+  "ACP_1252", "UNICODE_BASE", "PYYAML", "OPENSSH_SFTP", "NTFS_NAMES", "EXFAT_VOLUME" | % { Set-Item "Env:DEVVM_TEST_$_" 0 }
+  cd ~/devvm
+  cargo test -p devvm --lib --locked -- --nocapture
+  cargo test -p devvm-cli --locked --test vm_cli -- --nocapture'
+```
+
+`DEVVM_WINDOWS_EDITION` is the `edition` of your `../win/windows.devvm.yaml`, and the ISO path takes backslashes. It
+took 4 hours, because each test boots a Windows guest inside the Windows guest. Two tests lost their connection to the
+inner guest in that run and passed when run alone.
