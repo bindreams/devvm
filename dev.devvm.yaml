@@ -1,8 +1,7 @@
 # A Windows guest with devvm's source, Rust and the MSVC build tools: devvm's own VM suites run in it, on WHPX.
-#   devvm up dev.devvm.yaml --name dev
+#   devvm up dev.devvm.yaml
 # ../win/windows.devvm.yaml is your Windows recipe (README: "A Windows guest"), beside this repository.
 from: ../win/windows.devvm.yaml
-name: dev
 resources: { cpus: 8, memory: 16GiB, disk: 160GiB }
 steps:
   # The restart the feature needs is the boot of the next step.

@@ -267,7 +267,7 @@ which devvm's own VM suites run. It starts from `../win/windows.devvm.yaml`, the
 [A Windows guest](#a-windows-guest) beside the repository, so that recipe has to exist first.
 
 ```sh
-devvm up dev.devvm.yaml --name dev
+devvm up dev.devvm.yaml
 devvm ssh dev -- devvm doctor
 ```
 
@@ -285,6 +285,7 @@ devvm ssh dev -- pwsh -c '
   "ACP_1252", "UNICODE_BASE", "PYYAML", "OPENSSH_SFTP", "NTFS_NAMES", "EXFAT_VOLUME" | % { Set-Item "Env:DEVVM_TEST_$_" 0 }
   cd ~/devvm
   cargo test -p devvm --lib --locked
+  if ($LASTEXITCODE) { exit $LASTEXITCODE }
   cargo test -p devvm-cli --locked --test vm_cli'
 ```
 
@@ -300,9 +301,11 @@ devvm ssh dev -- pwsh -c '
   "ACP_1252", "UNICODE_BASE", "PYYAML", "OPENSSH_SFTP", "NTFS_NAMES", "EXFAT_VOLUME" | % { Set-Item "Env:DEVVM_TEST_$_" 0 }
   cd ~/devvm
   cargo test -p devvm --lib --locked -- --nocapture
+  if ($LASTEXITCODE) { exit $LASTEXITCODE }
   cargo test -p devvm-cli --locked --test vm_cli -- --nocapture'
 ```
 
-`DEVVM_WINDOWS_EDITION` is the `edition` of your `../win/windows.devvm.yaml`, and the ISO path takes backslashes. It
+`DEVVM_WINDOWS_EDITION` is the `edition` of your `../win/windows.devvm.yaml`: leave it out if that recipe has none. If
+the recipe has a `product-key`, set `DEVVM_WINDOWS_PRODUCT_KEY` to it too. The ISO path takes backslashes. It
 took 4 hours, because each test boots a Windows guest inside the Windows guest. Two tests lost their connection to the
 inner guest in that run and passed when run alone.
