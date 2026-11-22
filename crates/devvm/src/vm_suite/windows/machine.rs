@@ -140,11 +140,12 @@ fn windows_the_xsave_area_cpuid_reports_holds_the_enabled_features(
     );
 }
 
-/// Prints `npt-tlb=not-offered` when the hypervisor leaves up to 0x4000000A are not Microsoft's, or `max=<number>
-/// eax=<number>`: the highest hypervisor leaf, and the EAX of leaf 0x4000000A.
+/// Prints `vendor=<name>` when the hypervisor is not Microsoft's, `max=<number>` when its highest leaf is below
+/// 0x4000000A, else `max=<number> eax=<number>`: the highest hypervisor leaf, and the EAX of leaf 0x4000000A.
 const ENLIGHTENED_NPT_TLB: &str = r#"$hv = [Cpu]::Id(0x40000000, 0)
 $vendor = [Text.Encoding]::ASCII.GetString([BitConverter]::GetBytes($hv[1]) + [BitConverter]::GetBytes($hv[2]) + [BitConverter]::GetBytes($hv[3]))
-if ($vendor -ne 'Microsoft Hv' -or $hv[0] -lt 0x4000000A) { 'npt-tlb=not-offered'; return }
+if ($vendor -ne 'Microsoft Hv') { "vendor=$vendor"; return }
+if ($hv[0] -lt 0x4000000A) { "max=$($hv[0])"; return }
 "max=$($hv[0]) eax=$([Cpu]::Id(0x4000000A, 0)[0])""#;
 
 /// Bit 22 of CPUID leaf 0x4000000A, EAX, promises the enlightened NPT TLB: the guest may flush its nested page tables
@@ -153,7 +154,12 @@ if ($vendor -ne 'Microsoft Hv' -or $hv[0] -lt 0x4000000A) { 'npt-tlb=not-offered
 #[skuld::test]
 fn windows_the_guest_is_not_shown_the_enlightened_npt_tlb(#[fixture(shared_windows_guest)] guest: &SharedWindowsGuest) {
     let report = printed(&guest.vm, &format!("{CPU}\n{ENLIGHTENED_NPT_TLB}"));
-    if report == "npt-tlb=not-offered" {
+    assert!(
+        report.starts_with("max="),
+        "the guest's hypervisor is not Microsoft's, which WHPX's is: {report}"
+    );
+    if !report.contains(" eax=") {
+        eprintln!("not checked: the hypervisor's highest leaf is below 0x4000000A ({report})");
         return;
     }
     let eax = number(&report, "eax=");
@@ -164,7 +170,6 @@ fn windows_the_guest_is_not_shown_the_enlightened_npt_tlb(#[fixture(shared_windo
     );
 }
 
-/// The decimal number that follows `field` in a guest's one-line answer.
 fn number(report: &str, field: &str) -> u32 {
     report
         .split_whitespace()
