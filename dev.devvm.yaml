@@ -1,0 +1,57 @@
+# A Windows guest with devvm's source, Rust and the MSVC build tools: devvm's own VM suites run in it, on WHPX.
+#   devvm up dev.devvm.yaml
+# ../win/windows.devvm.yaml is your Windows recipe (README: "A Windows guest"), beside this repository.
+from: ../win/windows.devvm.yaml
+resources: { cpus: 8, memory: 16GiB, disk: 160GiB }
+steps:
+  # The restart the feature needs is the boot of the next step.
+  - elevated: true
+    run: |
+      $ErrorActionPreference = 'Stop'
+      Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -NoRestart
+
+  - elevated: true
+    run: |
+      $ErrorActionPreference = 'Stop'
+      $ProgressPreference = 'SilentlyContinue'
+      $installer = "$env:TEMP\Git-2.56.1-64-bit.exe"
+      Invoke-WebRequest https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/Git-2.56.1-64-bit.exe -OutFile $installer
+      if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne 'C330C72E10B408CC39994BFEFDB63542B0D93D21699325C3E0BD874AF8A5A559') { throw 'git installer: wrong sha256' }
+      $p = Start-Process $installer -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/SP-' -Wait -PassThru
+      exit $p.ExitCode
+
+  - run: |
+      $ErrorActionPreference = 'Stop'
+      $ProgressPreference = 'SilentlyContinue'
+      $installer = "$env:TEMP\rustup-init.exe"
+      Invoke-WebRequest https://static.rust-lang.org/rustup/archive/1.29.3/x86_64-pc-windows-msvc/rustup-init.exe -OutFile $installer
+      if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne '38027D51D69A5D05493627A0634DBEA52D6CD793C8F072D2373D3F4163EEC7DB') { throw 'rustup-init: wrong sha256' }
+      & $installer -y --default-toolchain stable --profile minimal
+      exit $LASTEXITCODE
+
+  # 3010 is "restart needed": success; the next step's boot restarts.
+  - elevated: true
+    run: |
+      $ErrorActionPreference = 'Stop'
+      $ProgressPreference = 'SilentlyContinue'
+      $installer = "$env:TEMP\vs_BuildTools.exe"
+      Invoke-WebRequest https://aka.ms/vs/17/release/vs_BuildTools.exe -OutFile $installer
+      $p = Start-Process $installer -ArgumentList '--quiet', '--wait', '--norestart', '--nocache', '--add', 'Microsoft.VisualStudio.Workload.VCTools', '--includeRecommended' -Wait -PassThru
+      if ($p.ExitCode -eq 3010) { exit 0 }
+      exit $p.ExitCode
+
+  # Developer Mode lets the unelevated user make symlinks, which the cp tests need.
+  - elevated: true
+    run: |
+      $ErrorActionPreference = 'Stop'
+      $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+      New-Item $key -Force | Out-Null
+      Set-ItemProperty $key -Name AllowDevelopmentWithoutDevLicense -Type DWord -Value 1
+
+  - copy: { from: git-tracked, to: ~/devvm }
+
+  - cwd: ~/devvm
+    run: |
+      $ErrorActionPreference = 'Stop'
+      cargo install --path crates/devvm-cli --locked
+      exit $LASTEXITCODE
