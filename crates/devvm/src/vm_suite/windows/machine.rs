@@ -133,26 +133,19 @@ fn windows_the_xsave_area_cpuid_reports_holds_the_enabled_features(
     if report == "xsave=0" {
         return;
     }
-    let number = |field: &str| -> u32 {
-        report
-            .split_whitespace()
-            .find_map(|word| word.strip_prefix(field))
-            .and_then(|digits| digits.parse().ok())
-            .unwrap_or_else(|| panic!("no {field}<bytes> in the guest's answer: {report:?}"))
-    };
-    let (needed, reported) = (number("needed="), number("reported="));
+    let (needed, reported) = (number(&report, "needed="), number(&report, "reported="));
     assert!(
         reported >= needed,
         "CPUID says the XSAVE area is {reported} bytes; the enabled features fill {needed} ({report})"
     );
 }
 
-/// Prints `npt-tlb=not-offered` when the hypervisor leaves up to 0x4000000A are not Microsoft's, or `max=0x<hex>
-/// eax=0x<hex>`: the highest hypervisor leaf, and the EAX of leaf 0x4000000A.
+/// Prints `npt-tlb=not-offered` when the hypervisor leaves up to 0x4000000A are not Microsoft's, or `max=<number>
+/// eax=<number>`: the highest hypervisor leaf, and the EAX of leaf 0x4000000A.
 const ENLIGHTENED_NPT_TLB: &str = r#"$hv = [Cpu]::Id(0x40000000, 0)
 $vendor = [Text.Encoding]::ASCII.GetString([BitConverter]::GetBytes($hv[1]) + [BitConverter]::GetBytes($hv[2]) + [BitConverter]::GetBytes($hv[3]))
 if ($vendor -ne 'Microsoft Hv' -or $hv[0] -lt 0x4000000A) { 'npt-tlb=not-offered'; return }
-"max=0x{0:X} eax=0x{1:X}" -f $hv[0], [Cpu]::Id(0x4000000A, 0)[0]"#;
+"max=$($hv[0]) eax=$([Cpu]::Id(0x4000000A, 0)[0])""#;
 
 /// Bit 22 of CPUID leaf 0x4000000A, EAX, promises the enlightened NPT TLB: the guest may flush its nested page tables
 /// by hypercall. The hypervisor rejects that hypercall for a QEMU guest, so a hypervisor inside the guest that trusts
@@ -163,16 +156,21 @@ fn windows_the_guest_is_not_shown_the_enlightened_npt_tlb(#[fixture(shared_windo
     if report == "npt-tlb=not-offered" {
         return;
     }
-    let eax = report
-        .split_whitespace()
-        .find_map(|word| word.strip_prefix("eax=0x"))
-        .and_then(|digits| u32::from_str_radix(digits, 16).ok())
-        .unwrap_or_else(|| panic!("no eax=0x<hex> in the guest's answer: {report:?}"));
+    let eax = number(&report, "eax=");
     assert_eq!(
         eax & (1 << 22),
         0,
         "CPUID leaf 0x4000000A, EAX bit 22 (the enlightened NPT TLB) is set: EAX is {eax:#x} ({report})"
     );
+}
+
+/// The decimal number that follows `field` in a guest's one-line answer.
+fn number(report: &str, field: &str) -> u32 {
+    report
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix(field))
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or_else(|| panic!("no {field}<number> in the guest's answer: {report:?}"))
 }
 
 // The expiry ==========================================================================================================
