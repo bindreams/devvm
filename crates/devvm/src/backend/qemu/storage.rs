@@ -41,16 +41,16 @@ impl QemuStorage {
     fn qemu_img(&self, args: &[&OsStr]) -> Result<Vec<u8>> {
         let install = self.install.get()?;
         let tool = install.tool("qemu-img");
-        let mut command = install.command("qemu-img", self.host)?;
-        command.args(args);
         let shown = || {
             args.iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        let output = command
-            .output()
+        let output = install
+            .run("qemu-img", self.host, |command| {
+                command.args(args);
+            })
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot run {} {}", tool.display(), shown()), e))?;
         if !output.status.success() {
             return Err(Error::new(

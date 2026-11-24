@@ -16,7 +16,7 @@ use crate::progress::{Event, Outcome as TaskOutcome};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
 use crate::store::lock::{FileLock, Mode};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
-use crate::test_support::host::TestHost;
+use crate::test_support::host::{RecordingHost, TestHost};
 use crate::test_support::qemu::write_config;
 use crate::{Arch, Dirs, ErrorKind, Result, Sha256};
 
@@ -1098,6 +1098,7 @@ pub(crate) fn act_as_qemu_img_when_installed_as_one() {
         .collect();
     env.sort();
     println!("QEMU emulator version {VERSION}");
+    println!("pid {}", std::process::id());
     println!("cwd {}", cwd.display());
     println!("entries {}", std::fs::read_dir(&cwd).unwrap().count());
     for line in env {
@@ -1142,6 +1143,76 @@ fn the_version_check_runs_a_tool_with_exactly_qemus_environment_in_an_empty_dire
         std::env::current_dir().unwrap(),
         "the caller's directory"
     );
+}
+
+/// An install in `home` whose `qemu-img` is a copy of this test binary (see [`act_as_qemu_img_when_installed_as_one`]),
+/// with `bin` held through `host` when `held`.
+fn install_with_a_qemu_img(home: &Path, host: &dyn Host, held: bool) -> QemuInstall {
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let install = QemuInstall {
+        held: held.then(|| Arc::new(host.open_held_read(&bin, host::HeldKind::Directory).unwrap())),
+        bin,
+        share: home.join("share"),
+        version: VERSION.to_owned(),
+        zip_sha256: None,
+    };
+    std::fs::copy(std::env::current_exe().unwrap(), install.tool("qemu-img")).unwrap();
+    install
+}
+
+/// The `pid` the fake `qemu-img` printed.
+fn printed_pid(output: &std::process::Output) -> u32 {
+    let printed = String::from_utf8_lossy(&output.stdout);
+    printed
+        .lines()
+        .find_map(|line| line.strip_prefix("pid "))
+        .unwrap_or_else(|| panic!("no pid in {printed}"))
+        .parse()
+        .unwrap()
+}
+
+#[skuld::test]
+fn a_tool_run_from_an_install_is_given_the_installs_hold(#[fixture(unicode_home)] home: &Path) {
+    let host: &'static RecordingHost = Box::leak(Box::new(RecordingHost::new()));
+    let install = install_with_a_qemu_img(home, host, true);
+    let held = host.file_id_of_open(install.held.as_ref().unwrap()).unwrap();
+
+    let output = install
+        .run("qemu-img", host, |command| {
+            command.arg("--version");
+        })
+        .unwrap();
+
+    assert_eq!(host.shared_files(), [(held, printed_pid(&output))]);
+}
+
+#[skuld::test]
+fn a_tool_run_from_a_configured_qemu_is_given_nothing(#[fixture(unicode_home)] home: &Path) {
+    let host: &'static RecordingHost = Box::leak(Box::new(RecordingHost::new()));
+    let install = install_with_a_qemu_img(home, host, false);
+
+    install
+        .run("qemu-img", host, |command| {
+            command.arg("--version");
+        })
+        .unwrap();
+
+    assert_eq!(host.shared_files(), []);
+}
+
+#[skuld::test]
+fn a_tool_run_on_a_host_that_cannot_tell_an_install_is_in_use_is_given_nothing(#[fixture(unicode_home)] home: &Path) {
+    let host: &'static RecordingHost = Box::leak(Box::new(RecordingHost::without_in_use_codes()));
+    let install = install_with_a_qemu_img(home, host, true);
+
+    install
+        .run("qemu-img", host, |command| {
+            command.arg("--version");
+        })
+        .unwrap();
+
+    assert_eq!(host.shared_files(), []);
 }
 
 #[skuld::test]

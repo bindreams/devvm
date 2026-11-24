@@ -364,8 +364,10 @@ pub struct RecordingHost {
     directory_calls: Mutex<Vec<DirectoryCall>>,
     fail_sync_dir_of: Mutex<Option<PathBuf>>,
     /// Every open file given to a process by `share_open_file_with`, as the file's identity and the process's PID, in
-    /// call order, failed calls included.
+    /// call order.
     shared_files: Mutex<Vec<(FileId, u32)>>,
+    /// `rename_refused_by_open_file` answers nothing, as on a host where an open file does not stop a rename.
+    no_in_use_codes: bool,
     /// What `free_space` answers for a directory; the real host answers for any other.
     free_space: Mutex<HashMap<PathBuf, std::result::Result<u64, String>>>,
 }
@@ -458,8 +460,18 @@ impl RecordingHost {
         self.holds_made.lock().unwrap().clone()
     }
 
+    /// A host that cannot tell a directory is in use, as one where an open file does not stop a rename: it names no
+    /// code for a refused rename.
+    pub fn without_in_use_codes() -> RecordingHost {
+        RecordingHost {
+            no_in_use_codes: true,
+            ..RecordingHost::default()
+        }
+    }
+
     /// The open files given to a process by `share_open_file_with`, in call order: each file's identity (read from the
-    /// open file, as `file_id_of_open` gives it) and the PID of the process it went to.
+    /// open file, as `file_id_of_open` gives it) and the PID of the process it went to. Nothing is given: a test that
+    /// needs the duplicate itself uses the real host.
     pub fn shared_files(&self) -> Vec<(FileId, u32)> {
         self.shared_files.lock().unwrap().clone()
     }
@@ -681,10 +693,13 @@ impl Host for RecordingHost {
     fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()> {
         let id = TestHost.file_id_of_open(file)?;
         self.shared_files.lock().unwrap().push((id, process.pid()));
-        TestHost.share_open_file_with(file, process)
+        Ok(())
     }
 
     fn rename_refused_by_open_file(&self) -> &'static [i32] {
+        if self.no_in_use_codes {
+            return &[];
+        }
         TestHost.rename_refused_by_open_file()
     }
 

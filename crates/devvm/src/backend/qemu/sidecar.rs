@@ -127,16 +127,41 @@ impl QemuInstall {
         self.bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     }
 
-    /// A command for the tool `name` that runs it as QEMU itself is run: nothing in its environment but
-    /// [`QemuInstall::environment`], no input, and no console window.
-    pub(crate) fn command(&self, name: &str, host: &dyn Host) -> Result<std::process::Command> {
+    /// Runs the tool `name` to completion as QEMU itself is run: nothing in its environment but
+    /// [`QemuInstall::environment`], no input, and no console window; `configure` adds its arguments and working
+    /// directory. Its stdout and stderr are captured.
+    ///
+    /// The process is given a duplicate of the install's hold ([`Host::share_open_file_with`]) as soon as it has
+    /// started, so the install stays in use until it exits even if this devvm is killed first. A host that cannot tell
+    /// an install is in use removes none, and gives nothing. A process that exits before the hold reaches it needs none.
+    pub(crate) fn run(
+        &self,
+        name: &str,
+        host: &dyn Host,
+        configure: impl FnOnce(&mut std::process::Command),
+    ) -> std::io::Result<std::process::Output> {
+        let environment = self
+            .environment(host.system_dirs().as_ref())
+            .map_err(|e| std::io::Error::other(e.message().to_owned()))?;
         let mut command = std::process::Command::new(self.tool(name));
         command
             .env_clear()
-            .envs(self.environment(host.system_dirs().as_ref())?)
-            .stdin(std::process::Stdio::null());
+            .envs(environment)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         host.quiet(&mut command);
-        Ok(command)
+        configure(&mut command);
+        let mut child = command.spawn()?;
+        if let Some(held) = &self.held
+            && !host.rename_refused_by_open_file().is_empty()
+            && let Err(e) = give_hold(host, held, &mut child)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+        child.wait_with_output()
     }
 
     /// The whole environment QEMU is started with: `SystemRoot`, and `PATH` of System32 then `bin`. Pure: the
@@ -160,6 +185,26 @@ impl QemuInstall {
     }
 }
 
+/// Gives `child` a duplicate of `held`. A child that has exited by now holds nothing to protect, so a hold that cannot
+/// reach it is not an error.
+fn give_hold(host: &dyn Host, held: &File, child: &mut std::process::Child) -> std::io::Result<()> {
+    use cosca::identity::{ProcessId, Resolved};
+    let id = match ProcessId::of(child.id()) {
+        Resolved::Found(id) => id,
+        Resolved::Gone => return Ok(()),
+        Resolved::Unknown => {
+            return Err(std::io::Error::other(format!(
+                "the operating system would not identify process {}",
+                child.id()
+            )));
+        }
+    };
+    match host.share_open_file_with(held, id) {
+        Err(e) if child.try_wait()?.is_none() => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// Runs the tool `name` of an install with `--version` and returns what it printed.
 pub(crate) type Verify = Arc<dyn Fn(&QemuInstall, &str) -> Result<String> + Send + Sync>;
 
@@ -174,10 +219,9 @@ fn run_version(host: &dyn Host, install: &QemuInstall, name: &str) -> Result<Str
         )
     })?;
     let output = install
-        .command(name, host)?
-        .arg("--version")
-        .current_dir(cwd.path())
-        .output()
+        .run(name, host, |command| {
+            command.arg("--version").current_dir(cwd.path());
+        })
         .map_err(|e| Error::io(ErrorKind::Store, format!("cannot run {} --version", tool.display()), e))?;
     if !output.status.success() {
         return Err(Error::new(

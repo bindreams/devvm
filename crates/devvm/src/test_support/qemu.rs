@@ -331,10 +331,9 @@ pub fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend>
 /// Runs the sidecar's `qemu-img` and returns its stdout; panics with its stderr when it fails.
 pub fn qemu_img(install: &QemuInstall, args: &[&OsStr]) -> Vec<u8> {
     let output = install
-        .command("qemu-img", host::current())
-        .unwrap()
-        .args(args)
-        .output()
+        .run("qemu-img", host::current(), |command| {
+            command.args(args);
+        })
         .expect("qemu-img should run");
     assert!(
         output.status.success(),
