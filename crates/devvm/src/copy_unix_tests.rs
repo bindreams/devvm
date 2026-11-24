@@ -247,7 +247,6 @@ fn a_tracked_symlink_that_is_a_fifo_now_is_refused_naming_it(#[fixture(unicode_h
     assert!(error.message().contains("neither a link nor a file"), "{error}");
 }
 
-/// Mode bits do not bind root, so the test refuses to run as root.
 #[skuld::test]
 fn a_tracked_file_that_cannot_be_read_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
     refuse_root("file modes do not bind root");

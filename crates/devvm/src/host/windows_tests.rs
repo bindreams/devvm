@@ -47,7 +47,7 @@ fn the_rest_of_a_name_is_returned_as_the_name_has_it() {
         strip("GIT_\u{131}\u{1F600}x", "GIT_").as_deref(),
         Some("\u{131}\u{1F600}x")
     );
-    // Its own shape: the unpaired surrogate is the whole rest of the name after the `GIT_` prefix.
+    // Not `non_unicode_name`: the lone surrogate must directly follow the prefix.
     let lone_surrogate = OsString::from_wide(&[b'g'.into(), b'i'.into(), b't'.into(), b'_'.into(), 0xD800]);
     assert_eq!(
         WindowsHost.env_name_strip_prefix(&lone_surrogate, "GIT_").as_deref(),

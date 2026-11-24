@@ -456,7 +456,7 @@ fn the_image_is_fat12_whatever_the_contents() {
 }
 
 /// The limit is tight: one byte more than [`LARGEST_FAT12_CONTENTS`], at the size the formula gives, does not format as
-/// FAT12: `fatfs` 0.3.6 fails to select a FAT type, and a version that picks another type must not give FAT12 either.
+/// FAT12: `fatfs` either fails to select a FAT type or picks another one.
 #[skuld::test]
 fn one_byte_beyond_the_fat12_limit_does_not_format_as_fat12() {
     let size = unchecked_image_size(LARGEST_FAT12_CONTENTS + 1) as u64;

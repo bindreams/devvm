@@ -1,5 +1,3 @@
-//! Tests that rely on what root is not bound by.
-
 /// Panics when the tests run as root, whom mode bits and ownership do not bind: `why` says what the test relies on.
 #[track_caller]
 pub fn refuse_root(why: &str) {
