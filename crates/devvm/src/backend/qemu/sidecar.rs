@@ -12,7 +12,8 @@
 //! An install is in use while a process has its `bin` directory open: the [`QemuInstall`] a resolve returns keeps it
 //! open ([`HeldKind::Directory`]) for as long as the value lives. While it is open Windows refuses to rename the
 //! install or `bin`, and to remove `bin`, whatever is done to the files inside, so nothing can unlink the hold (a
-//! scanner quarantining a tool, a user deleting one). A launch gives QEMU a duplicate of that handle
+//! scanner quarantining a tool, a user deleting one). A program that has `bin` open for deleting or renaming, or
+//! without sharing read, makes a launch fail with `cannot hold <bin>`. A launch gives QEMU a duplicate of that handle
 //! ([`Host::share_open_file_with`]), which it keeps until it exits, whether or not the devvm that started it has. A
 //! `qemu-img` or `--version` run is contained and dies with its devvm, so that devvm's own hold covers it. Removal
 //! renames, so an install in use is never touched. A QEMU started by a devvm that did not hold its install is not seen
