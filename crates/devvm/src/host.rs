@@ -199,7 +199,8 @@ pub(crate) trait Host: Send + Sync {
     /// A link at `path` is not followed and not restricted: it is `InvalidInput`, "is a link", in `Check`. The file is
     /// opened once, and the check and the change are made on that one file.
     ///
-    /// A file that is restricted already is not written to.
+    /// A file that is restricted already is not written to; on Unix that is any mode without group or other bits (`0400`
+    /// too), as `ssh` reads it.
     fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError>;
 
     /// Whether any execute bit of `path` is set; always `false` on Windows.

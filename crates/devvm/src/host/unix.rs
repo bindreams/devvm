@@ -24,13 +24,14 @@ impl FileModes for UnixHost {
         options
     }
 
-    /// Opens `path` once, without following a link, and looks at and changes that descriptor.
+    /// Opens `path` once, without following a link, and looks at and changes that descriptor. A mode with no group or
+    /// other bits is private, as `ssh` reads it; any other is set to `0600`.
     fn make_private(&self, path: &Path) -> Result<MakePrivateOutcome, MakePrivateError> {
         const PRIVATE: Mode = Mode::from_bits_retain(0o600);
         let file = open(path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
             .map_err(|errno| MakePrivateError::Check(refused_as_link(path, errno.into())))?;
         let stat = fstat(&file).map_err(|errno| MakePrivateError::Check(errno.into()))?;
-        if Mode::from_raw_mode(stat.st_mode) == PRIVATE {
+        if !Mode::from_raw_mode(stat.st_mode).intersects(Mode::RWXG | Mode::RWXO) {
             return Ok(MakePrivateOutcome::Unchanged);
         }
         fchmod(&file, PRIVATE).map_err(|errno| MakePrivateError::Change(errno.into()))?;

@@ -5,7 +5,7 @@ use std::path::Path;
 use rustix::io::Errno;
 
 use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with};
-use crate::host::{Entry, Host};
+use crate::host::{Entry, Host, MakePrivateOutcome};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -133,6 +133,51 @@ fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_hom
         // The temporary directory cannot be removed with the mode left as it is.
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(found, Ok(Entry::File(_))), "{name}: {found:?}");
+    }
+}
+
+// Private files -------------------------------------------------------------------------------------------------------
+
+/// A mode without group or other bits is private, as `ssh` reads it: a key the user hardened to `0400` is not written to.
+#[skuld::test]
+fn a_file_with_no_group_or_other_bits_is_private_and_keeps_its_mode(#[fixture(unicode_home)] home: &Path) {
+    for mode in [0o400, 0o600, 0o700] {
+        let path = home.join(format!("key{mode:o}"));
+        std::fs::write(&path, b"secret").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+
+        assert_eq!(
+            UnixHost.make_private(&path).unwrap(),
+            MakePrivateOutcome::Unchanged,
+            "{mode:o}"
+        );
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            mode,
+            "{mode:o}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_file_with_a_group_or_other_bit_is_made_0600(#[fixture(unicode_home)] home: &Path) {
+    for mode in [0o640, 0o604, 0o644, 0o440] {
+        let path = home.join(format!("key{mode:o}"));
+        std::fs::write(&path, b"secret").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+
+        assert_eq!(
+            UnixHost.make_private(&path).unwrap(),
+            MakePrivateOutcome::Changed,
+            "{mode:o}"
+        );
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "{mode:o}"
+        );
     }
 }
 
