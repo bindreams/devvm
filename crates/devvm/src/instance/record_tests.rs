@@ -10,7 +10,7 @@ use crate::instance::record::{
 };
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{non_unicode_name, unicode_home};
 use crate::{Arch, ErrorKind, GuestKind, Network};
 
 fn id() -> InstanceId {
@@ -288,21 +288,9 @@ fn non_ascii_created_from_round_trips(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(read_valid(home).created_from, home.join("projects").join("Ж"));
 }
 
-#[cfg(windows)]
-fn non_unicode_path() -> PathBuf {
-    use std::os::windows::ffi::OsStringExt;
-    PathBuf::from(std::ffi::OsString::from_wide(&[0x43, 0x3a, 0x5c, 0xd800, 0x78]))
-}
-
-#[cfg(unix)]
-fn non_unicode_path() -> PathBuf {
-    use std::os::unix::ffi::OsStrExt;
-    PathBuf::from(std::ffi::OsStr::from_bytes(b"/work/\xff\xfe"))
-}
-
 #[skuld::test]
 fn a_non_unicode_created_from_is_refused_naming_the_path(#[fixture(unicode_home)] home: &Path) {
-    let bad = non_unicode_path();
+    let bad = PathBuf::from(non_unicode_name());
     let error = record(bad.clone()).write(home).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Io);
     assert!(error.message().contains("not valid Unicode"), "{}", error.message());
