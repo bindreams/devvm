@@ -12,7 +12,7 @@ use crate::error::TAIL_LINES;
 use crate::exit::ExitStatus;
 use crate::guest::{BuildCtx, GuestOs};
 use crate::iso::{IsoMemo, IsoRoot, key_iso};
-use crate::progress::{Progress, Total, strip_ansi};
+use crate::progress::{Progress, Total, open_escape, strip_ansi};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
 use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
@@ -547,11 +547,20 @@ impl<'a> Lines<'a> {
     }
 
     /// Reports the pending bytes as one part of a long line, except the start of a character that is cut off at their
-    /// end, which stays pending to be completed.
+    /// end and an escape sequence that may go on past it: those stay pending, so that each part strips the same as
+    /// the whole line would. A sequence that fills all the pending bytes cannot be held, and is cut like text.
     fn flush_part(&mut self) {
-        let cut = self.pending.len() - unfinished_character(&self.pending);
-        self.report(&self.pending[..cut]);
-        self.pending.drain(..cut);
+        let whole = self.pending.len() - unfinished_character(&self.pending);
+        let text = String::from_utf8_lossy(&self.pending[..whole]);
+        let held = open_escape(&text);
+        let (part, kept) = match held {
+            0 => (&*text, ""),
+            held => text.split_at(held),
+        };
+        self.report(part.as_bytes());
+        let mut pending = kept.as_bytes().to_vec();
+        pending.extend_from_slice(&self.pending[whole..]);
+        self.pending = pending;
     }
 }
 

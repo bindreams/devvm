@@ -289,6 +289,31 @@ pub fn strip_ansi(text: &str) -> Cow<'_, str> {
     console::strip_ansi_codes(text)
 }
 
+/// The offset in `text` of the escape sequence that `text` ends in or may be about to end in: more text after it can
+/// change what [`strip_ansi`] takes out of it. `text.len()` when `text` cannot end in one. Everything before the offset
+/// is stripped the same alone as it is with any text after it.
+pub fn open_escape(text: &str) -> usize {
+    let mut pieces = console::AnsiCodeIterator::new(text).collect::<Vec<_>>();
+    let Some((piece, is_escape)) = pieces.pop() else {
+        return text.len();
+    };
+    let start = text.len() - piece.len();
+    if is_escape {
+        // A code that ends the text may be longer (`ESC[31` before `m`, an OSC before its terminator).
+        return start;
+    }
+    // An escape that opened a piece of plain text found no end in it: the last one may still find one.
+    if let Some(at) = piece.rfind(['\u{1b}', '\u{9b}']) {
+        return start + at;
+    }
+    // The characters after a code that its scan took in without ending on them (`;` of `ESC[1;`) are plain text only
+    // until more text makes them part of a longer code. They are punctuation, never a letter or digit.
+    match pieces.pop() {
+        Some((code, true)) if piece.chars().all(|c| c.is_ascii_punctuation()) => start - code.len(),
+        _ => text.len(),
+    }
+}
+
 /// `text` with each control character written as an escape (`\r`, `\u{1b}`), so it stays on one line and cannot move a
 /// terminal's cursor. Everything else, a backslash included, is unchanged.
 pub fn escape_controls(text: &str) -> Cow<'_, str> {
