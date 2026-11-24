@@ -6,13 +6,13 @@ use std::path::Path;
 
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
 };
 
 use super::create_file::open;
 use super::security::Descriptor;
 
-/// Creates `path`, which must not exist (`AlreadyExists` otherwise), open for writing, with the descriptor of
+/// Creates `path`, which must not exist (`AlreadyExists` otherwise), open for appending, with the descriptor of
 /// [`Descriptor::user_only_file`]: the token's default owner (the user, or Administrators for an elevated token), and
 /// a protected DACL with one entry, full access for the user.
 ///
@@ -23,7 +23,8 @@ pub(super) fn create_new(path: &Path) -> io::Result<File> {
     let descriptor = Descriptor::user_only_file()?;
     Ok(open(
         path,
-        FILE_GENERIC_WRITE,
+        // Append without the plain write right, as std's `append(true)`.
+        FILE_GENERIC_WRITE & !FILE_WRITE_DATA,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,

@@ -61,7 +61,7 @@ pub(crate) fn write_cidata_image(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
-    .and_then(|()| host.write_private(into, &image));
+    .and_then(|()| host.write_private(into, &image).map(drop));
     written.map_err(|e| {
         Error::io(
             ErrorKind::Io,
