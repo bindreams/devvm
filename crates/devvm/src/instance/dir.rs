@@ -215,8 +215,7 @@ impl InstanceDir {
     /// Writes this process as the holder, once the exclusive lock is held. A record that cannot be written is a warning:
     /// the process goes on, and a command that waits behind it names no one.
     fn record_holder(&self) {
-        let written = Holder::current()
-            .and_then(|holder| self.in_this_instance(|| write_holder(&self.path, &holder)));
+        let written = Holder::current().and_then(|holder| self.in_this_instance(|| write_holder(&self.path, &holder)));
         if let Err(e) = written {
             self.progress.warn(&format!(
                 "instance {}: cannot record the holder ({})",

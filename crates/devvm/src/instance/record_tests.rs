@@ -6,8 +6,8 @@ use cosca::identity::{Platform, ProcessIdRecord};
 use crate::backend::{Endpoint, MachineRecord, SshEndpoint};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{
-    HOLDER_FILE, HOSTNAME_LEN, Holder, InstanceId, InstanceRecord, Marker, MarkerRead, Owner,
-    RecordRead, program_name, read_holder, read_marker, remove_holder, write_holder, write_marker,
+    HOLDER_FILE, HOSTNAME_LEN, Holder, InstanceId, InstanceRecord, Marker, MarkerRead, Owner, RecordRead, program_name,
+    read_holder, read_marker, remove_holder, write_holder, write_marker,
 };
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
