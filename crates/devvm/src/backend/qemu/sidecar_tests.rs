@@ -649,19 +649,58 @@ fn a_busy_extraction_lock_does_not_delay_a_resolve_whose_install_is_present(#[fi
     assert!(!old.exists(), "{:?}", entries(&qemu));
 }
 
+/// What an interrupted removal of a superseded install, or a killed extraction, leaves under the cache.
+fn leftover_extraction(qemu: &Path) -> PathBuf {
+    let leftover = qemu.join(".extract-leftover");
+    std::fs::create_dir_all(leftover.join("bin")).unwrap();
+    std::fs::write(leftover.join("bin").join("half"), b"half").unwrap();
+    leftover
+}
+
 #[skuld::test]
-fn a_leftover_extraction_alone_does_not_make_a_resolve_take_the_lock(#[fixture(unicode_home)] home: &Path) {
+fn a_leftover_extraction_is_left_while_another_devvm_holds_the_lock(#[fixture(unicode_home)] home: &Path) {
     let world = world(home, zip_of(&files()));
     world.source.resolve().unwrap();
     let qemu = world.dirs.qemu();
-    let leftover = qemu.join(".extract-leftover");
-    std::fs::create_dir_all(&leftover).unwrap();
+    let leftover = leftover_extraction(&qemu);
     let mut extracting = FileLock::open(&qemu.join(".extract.lock")).unwrap();
     assert!(extracting.try_lock(Mode::Exclusive).unwrap());
 
     world.source.resolve().unwrap();
 
-    assert!(leftover.is_dir(), "it is swept when an extraction next runs");
+    assert!(leftover.is_dir(), "nothing is removed while another devvm holds the lock");
+    extracting.unlock().unwrap();
+
+    world.source.resolve().unwrap();
+    assert!(!leftover.exists(), "{:?}", entries(&qemu));
+}
+
+#[skuld::test]
+fn a_resolve_that_finds_its_install_sweeps_the_leftover_extractions(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let install = world.source.resolve().unwrap();
+    let qemu = world.dirs.qemu();
+    let leftover = leftover_extraction(&qemu);
+
+    world.source.resolve().unwrap();
+
+    assert!(!leftover.exists(), "{:?}", entries(&qemu));
+    assert!(install.tool("qemu-img").is_file());
+    assert!(world.progress.warnings().is_empty(), "{:?}", world.progress.warnings());
+}
+
+#[skuld::test]
+fn a_host_that_cannot_tell_an_install_is_in_use_still_sweeps_leftover_extractions(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = world(home, zip_of(&files()));
+    let source = world.source_on(&OtherHost);
+    source.resolve().unwrap();
+    let leftover = leftover_extraction(&world.dirs.qemu());
+
+    source.resolve().unwrap();
+
+    assert!(!leftover.exists(), "{:?}", entries(&world.dirs.qemu()));
 }
 
 #[skuld::test]

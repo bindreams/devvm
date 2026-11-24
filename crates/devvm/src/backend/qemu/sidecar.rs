@@ -385,27 +385,29 @@ impl Source {
     /// Under the extraction lock no extraction runs, so every `.extract-*` directory is left over by a killed devvm. One
     /// that cannot be removed (an antivirus holds it) is a warning naming it; a `qemu` that cannot be listed is the error.
     fn sweep_extractions(&self, qemu: &Path) -> Result<()> {
-        for warning in crate::host::sweep(qemu, &|name| name.starts_with(".extract-"), &crate::host::remove_tree)? {
+        for warning in crate::host::sweep(qemu, &is_extraction_name, &crate::host::remove_tree)? {
             self.progress.warn(&warning);
         }
         Ok(())
     }
 
-    /// The published installs but `keep`: directories named like an install ([`is_install_name`]), which is all of the
-    /// cache that devvm made besides `.extract-` names; a configured `qemu.path` is never under it. Empty on a host
-    /// that cannot tell an install is in use. A listing that fails ends at the failure, with one warning.
-    fn superseded_installs(&self, qemu: &Path, keep: &Path) -> Vec<PathBuf> {
-        if self.host.rename_refused_by_open_file().is_none() {
-            return Vec::new();
-        }
+    /// What housekeeping removes from `qemu`: the published installs but `keep`, which are directories named like an
+    /// install ([`is_install_name`]), all of the cache that devvm made besides `.extract-` names (a configured
+    /// `qemu.path` is never under it), and whether an `.extract-` leftover is there. No install is listed on a host that
+    /// cannot tell an install is in use. A listing that fails ends at the failure, with one warning.
+    fn surplus(&self, qemu: &Path, keep: &Path) -> Surplus {
+        let mut surplus = Surplus {
+            installs: Vec::new(),
+            extractions: false,
+        };
         let listing = match std::fs::read_dir(qemu) {
             Ok(listing) => listing,
             Err(e) => {
                 self.progress.warn(&format!("cannot list {}: {e}", qemu.display()));
-                return Vec::new();
+                return surplus;
             }
         };
-        let mut found = Vec::new();
+        let tells_in_use = self.host.rename_refused_by_open_file().is_some();
         for entry in listing {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -415,16 +417,18 @@ impl Source {
                 }
             };
             let path = entry.path();
-            if path == keep || !is_install_name(&entry.file_name().to_string_lossy()) {
-                continue;
-            }
-            match crate::host::symlink_metadata_if_present(&path) {
-                Ok(Some(meta)) if meta.is_dir() && !meta.file_type().is_symlink() => found.push(path),
-                Ok(_) => {}
-                Err(e) => self.progress.warn(&crate::host::look_failed(&path, e).to_string()),
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if is_extraction_name(&name) {
+                surplus.extractions = true;
+            } else if tells_in_use && path != keep && is_install_name(&name) {
+                match crate::host::symlink_metadata_if_present(&path) {
+                    Ok(Some(meta)) if meta.is_dir() && !meta.file_type().is_symlink() => surplus.installs.push(path),
+                    Ok(_) => {}
+                    Err(e) => self.progress.warn(&crate::host::look_failed(&path, e).to_string()),
+                }
             }
         }
-        found
+        surplus
     }
 
     /// Removes every published install but `keep`, with the extraction lock held.
@@ -436,7 +440,7 @@ impl Source {
     /// failure on one install does not stop the others.
     fn prune_superseded(&self, qemu: &Path, keep: &Path) {
         let in_use = self.host.rename_refused_by_open_file();
-        for path in self.superseded_installs(qemu, keep) {
+        for path in self.surplus(qemu, keep).installs {
             let removing = match quarantine_path(qemu, ".extract") {
                 Ok(removing) => removing,
                 Err(e) => {
@@ -460,17 +464,21 @@ impl Source {
         }
     }
 
-    /// For a launch that finds its install: removes the installs of other builds, but only when there is one and the
-    /// extraction lock is free. It never waits: another devvm that holds the lock is extracting or removing, and a later
-    /// launch finds the installs still there. Housekeeping: a failure is a warning and never fails the launch.
+    /// For a launch that finds its install: removes the installs of other builds and sweeps the leftovers of extractions
+    /// and removals that did not finish, but only when there is something to remove and the extraction lock is free. It
+    /// never waits: another devvm that holds the lock is extracting or removing, and a later launch finds the work
+    /// still there. Housekeeping: a failure is a warning and never fails the launch.
     fn prune_if_idle(&self, published: &Path) {
         let qemu = self.dirs.qemu();
-        if self.superseded_installs(&qemu, published).is_empty() {
+        let surplus = self.surplus(&qemu, published);
+        if surplus.installs.is_empty() && !surplus.extractions {
             return;
         }
         let pruned = (|| -> Result<()> {
             let mut lock = FileLock::open(&qemu.join(".extract.lock"))?;
             if lock.try_lock(Mode::Exclusive)? {
+                // Every `.extract-` directory is created and renamed from under this lock, so none is in progress.
+                self.sweep_extractions(&qemu)?;
                 self.prune_superseded(&qemu, published);
             }
             Ok(())
@@ -479,6 +487,17 @@ impl Source {
             self.progress.warn(e.message());
         }
     }
+}
+
+/// What [`Source::surplus`] found in the cache.
+struct Surplus {
+    installs: Vec<PathBuf>,
+    extractions: bool,
+}
+
+/// Whether `name` is an extraction in progress, or what one left: the install of a build being removed has one too.
+fn is_extraction_name(name: &str) -> bool {
+    name.starts_with(".extract-")
 }
 
 /// The directory name of the install of QEMU `version` built into the zip with `sha256`:
