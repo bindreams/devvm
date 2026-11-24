@@ -663,12 +663,11 @@ fn vm_qemu_spawned_through_the_backend_has_no_console_and_no_window(
     let pid = machine.record().process.pid;
 
     // A process with a console has a `conhost.exe` child; a detached one has none. QEMU has no children of its own.
-    let found = os::children_of(pid);
+    let children = os::children_of(pid);
     assert!(
-        found.children.is_empty(),
-        "QEMU has a console (a child process):\n{}\nleft out, created before QEMU:\n{}",
-        found.children.join("\n"),
-        found.older_than_parent.join("\n")
+        children.is_empty(),
+        "QEMU has a console (a child process):\n{}",
+        children.join("\n")
     );
     assert_eq!(os::windows_of(pid), 0, "QEMU has a window");
     machine.kill().unwrap();

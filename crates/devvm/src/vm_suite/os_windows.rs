@@ -1,6 +1,5 @@
 //! What the tests ask Windows about a process they did not write.
 
-use super::Children;
 use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
 use windows_sys::Win32::Foundation::{
     CloseHandle, FILETIME, GetLastError, HANDLE, LPARAM, STILL_ACTIVE, UNICODE_STRING,
@@ -155,11 +154,13 @@ pub fn windows_of(pid: u32) -> usize {
     count.found
 }
 
-/// The running processes that have `pid` as their parent, each described: image name, PID, command line, and when it
-/// was created relative to `pid`'s process. A console program has a `conhost.exe` child; a detached one has none. The
-/// parent is whatever the process list says, and a reused PID makes a process that never started the child its parent:
-/// one created before its parent is left out of the children and listed apart.
-pub fn children_of(pid: u32) -> Children {
+/// The running processes that have `pid` (QEMU's) as their parent, each described: image name and PID from the process
+/// list, when it was created relative to `pid`'s process, and its command line. What cannot be read is named with the
+/// failing call and its error. A console program has a `conhost.exe` child; a detached one has none.
+///
+/// The parent is whatever the process list says. A reused PID makes a process that never started the child its parent;
+/// such a child reads as created before QEMU.
+pub fn children_of(pid: u32) -> Vec<String> {
     // SAFETY: a snapshot of the process list.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     assert!(
@@ -169,10 +170,8 @@ pub fn children_of(pid: u32) -> Children {
     // SAFETY: an all-zero entry with its size set is what the API expects.
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    // A process created after this moment is not the one the snapshot lists: its id was reused.
-    let listed_at = now_as_filetime();
     let parent_created = Watch::open(pid).and_then(|parent| parent.created());
-    let mut found = Children::default();
+    let mut children = Vec::new();
     // SAFETY: `snapshot` is open and `entry` is valid.
     let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
     while more {
@@ -183,72 +182,36 @@ pub fn children_of(pid: u32) -> Children {
                 .position(|&unit| unit == 0)
                 .unwrap_or(entry.szExeFile.len());
             let image = String::from_utf16_lossy(&entry.szExeFile[..image_len]);
-            let (text, older_than_parent) = describe_child(
-                &image,
-                entry.th32ProcessID,
-                parent_created.as_ref().ok().copied(),
-                listed_at,
-            );
-            if older_than_parent {
-                found.older_than_parent.push(text);
-            } else {
-                found.children.push(text);
-            }
+            children.push(describe_child(&image, entry.th32ProcessID, &parent_created));
         }
         // SAFETY: as above.
         more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
     }
     // SAFETY: closed once.
     unsafe { CloseHandle(snapshot) };
-    found
+    children
 }
 
-/// The current time, in the 100 ns ticks since 1601 that process creation times use.
-fn now_as_filetime() -> u64 {
-    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
-    let since_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock is after 1970");
-    UNIX_EPOCH_TICKS + since_unix.as_secs() * 10_000_000 + u64::from(since_unix.subsec_nanos() / 100)
-}
-
-/// The description of a process listed as a child, and whether it was created before its parent. A process created
-/// after `listed_at` is a later owner of the id, so its times and command line are not read as the child's.
-fn describe_child(image: &str, pid: u32, parent_created: Option<u64>, listed_at: u64) -> (String, bool) {
+/// The description of a process listed as a child: what could be read of it, and the reason for what could not.
+fn describe_child(image: &str, pid: u32, parent_created: &Result<u64, Unreadable>) -> String {
     let child = match Watch::open(pid) {
         Ok(child) => child,
-        Err(why) => {
-            return (
-                format!("{image} (pid {pid}, gone before it was described: {why})"),
-                false,
-            );
+        Err(why) => return format!("{image} (pid {pid}, {why})"),
+    };
+    let when = match (parent_created, child.created()) {
+        (Ok(parent), Ok(created)) if created >= *parent => {
+            format!("created {} ms after QEMU", (created - parent) / 10_000)
+        }
+        (Ok(parent), Ok(created)) => format!("created {} ms before QEMU", (parent - created) / 10_000),
+        (Ok(_), Err(why)) => format!("creation time unreadable: {why}"),
+        (Err(parent), Ok(_)) => format!("QEMU's creation time unreadable: {parent}"),
+        (Err(parent), Err(why)) => {
+            format!("creation time unreadable: {why}; QEMU's creation time unreadable: {parent}")
         }
     };
-    let created = match child.created() {
-        Ok(created) if created > listed_at => {
-            let text = format!("{image} (pid {pid}, id reused: created after the process list was read)");
-            return (text, false);
-        }
-        Ok(created) => created,
-        Err(why) => {
-            let text = format!("{image} (pid {pid}, creation time unreadable: {why})");
-            return (text, false);
-        }
+    let command_line = match child.command_line() {
+        Ok(text) => format!("command line: {text}"),
+        Err(why) => format!("command line unreadable: {why}"),
     };
-    let (when, older_than_parent) = match parent_created {
-        Some(parent) if created >= parent => (
-            format!("created {} ms after its parent", (created - parent) / 10_000),
-            false,
-        ),
-        Some(parent) => (
-            format!("created {} ms before its parent", (parent - created) / 10_000),
-            true,
-        ),
-        None => ("its parent's creation time is unreadable".to_owned(), false),
-    };
-    let command_line = child.command_line().unwrap_or_else(|why| format!("unreadable: {why}"));
-    (
-        format!("{image} (pid {pid}, {when}, command line: {command_line})"),
-        older_than_parent,
-    )
+    format!("{image} (pid {pid}, {when}, {command_line})")
 }

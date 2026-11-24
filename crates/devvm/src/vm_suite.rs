@@ -25,12 +25,3 @@ mod os;
 #[cfg(not(windows))]
 #[path = "vm_suite/os_other.rs"]
 mod os;
-
-/// The processes the process list names as children of one process, each described.
-#[derive(Default)]
-pub(crate) struct Children {
-    /// Created no earlier than the parent.
-    pub(crate) children: Vec<String>,
-    /// Created before the parent, so not its children: the parent's process id was reused.
-    pub(crate) older_than_parent: Vec<String>,
-}
