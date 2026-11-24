@@ -24,6 +24,9 @@ fn elapsed() -> tokio::time::error::Elapsed {
         .unwrap_err()
 }
 
+// No test drives a real connect failure through `HttpTransport::get`: there is no portable way to make one without a
+// port nobody owns. The classifiers below are tested on constructed errors.
+
 #[skuld::test]
 fn an_io_error_beneath_the_request_error_comes_from_below_whatever_its_kind() {
     use std::io::{Error, ErrorKind};

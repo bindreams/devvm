@@ -130,6 +130,8 @@ fn first_io_error<'a>(e: &'a (dyn std::error::Error + 'static)) -> Option<&'a st
     None
 }
 
+/// The shape of `hyper-util`'s connect timeout, as of 0.1.21 (`client/legacy/connect/http.rs`, `connect`): an
+/// `io::Error` of kind `TimedOut` holding tokio's `Elapsed`. Re-check it when `hyper-util` is bumped.
 fn holds_elapsed(io: &std::io::Error) -> bool {
     io.get_ref()
         .is_some_and(|inner| inner.is::<tokio::time::error::Elapsed>())
