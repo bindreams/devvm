@@ -86,7 +86,8 @@ devvm rm dev
 - On a terminal, stderr shows progress bars and a task tree. Windows Terminal and the Windows console get bars; mintty
   (Git Bash's own window) and any stream that is not a terminal get one concise line per event.
 - A failed step shows its last 20 lines in the error. `-v` (or `DEVVM_VERBOSE=1`) also shows step output and debug
-  notes as they happen.
+  notes as they happen. A single line of step output longer than 64 KiB is shown and logged in parts, and an escape
+  sequence cut by a part boundary can leave stray characters.
 - `NO_COLOR` turns colour off. With colour, `pass`, `fail` and `warning:` are coloured, and so is the `devvm-error:`
   prefix of the final error line; piped, that line is plain text.
 - Every run writes a log with all the detail to `logs` in the state directory (`~/.local/state/devvm/logs` unless

@@ -368,9 +368,9 @@ impl StepRun<'_> {
         self.execute(vm, &self.guest.flush_command(), "the guest's flush", ErrorKind::Io)
     }
 
-    /// Runs `command`, reporting its output on the progress channel line by line. A status other than 0 fails the
-    /// build with an error of `kind`, as does a command that cannot be run; both name the step and `what` ran, and end
-    /// with the last lines the command printed.
+    /// Runs `command`, reporting its output on the progress channel line by line (a very long line in parts, see
+    /// [`Lines`]). A status other than 0 fails the build with an error of `kind`, as does a command that cannot be
+    /// run; both name the step and `what` ran, and end with the last lines the command printed.
     fn execute(&self, vm: &Vm, command: &Command, what: &str, kind: ErrorKind) -> StepResult<()> {
         let progress = self.engine.progress.as_ref();
         let tail = Tail::default();
@@ -504,14 +504,32 @@ impl Tail {
     }
 }
 
+/// The most bytes of one line that [`Lines`] holds back: 64 KiB, far above the lines tools print for people. It
+/// protects the host's memory against a stream with no line end. A line longer than this is reported in parts, each
+/// its own output event and its own slot of the [`Tail`], and an escape sequence that straddles a cut leaves its
+/// remainder as text. A stored part is lossy text, up to three bytes per input byte, so the [`Tail`]'s `TAIL_LINES`
+/// slots hold at most 20 x 192 KiB = 3.75 MiB, and each writer at most one chunk more.
+const LINE_CHUNK: usize = 64 * 1024;
+
 /// A writer that reports each complete line as step output and keeps it in a [`Tail`]; the rest goes out when it is
-/// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress).
+/// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress). A line longer than [`LINE_CHUNK`] is
+/// reported in parts.
 struct Lines<'a> {
     progress: &'a dyn Progress,
     tail: &'a Tail,
     pending: Vec<u8>,
-    /// The last byte written was `\r`, so a `\n` that follows is the other half of its line end.
-    after_cr: bool,
+    carriage: Carriage,
+}
+
+/// What the last byte written says about the `\r` before a `\n`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Carriage {
+    None,
+    /// The last byte was a `\r` that ended a line, so a `\n` that follows is the other half of its line end.
+    EndedLine,
+    /// The last byte was a `\r` with no line to end: a `\n` that follows ends an empty line (`\r\n`), and any other
+    /// byte makes it the start of a redraw.
+    Bare,
 }
 
 impl<'a> Lines<'a> {
@@ -520,7 +538,7 @@ impl<'a> Lines<'a> {
             progress,
             tail,
             pending: Vec::new(),
-            after_cr: false,
+            carriage: Carriage::None,
         }
     }
 
@@ -529,22 +547,57 @@ impl<'a> Lines<'a> {
         self.progress.output(&line);
         self.tail.push(&line);
     }
+
+    /// Reports the pending bytes as one part of a long line, except the start of a character that is cut off at their
+    /// end: that stays pending, as bytes, to be completed by the next ones.
+    fn flush_part(&mut self) {
+        let whole = self.pending.len() - unfinished_character(&self.pending);
+        self.report(&self.pending[..whole]);
+        self.pending.drain(..whole);
+    }
+}
+
+/// How many bytes at the end of `bytes` are the start of a UTF-8 character that more bytes would complete.
+fn unfinished_character(bytes: &[u8]) -> usize {
+    let Some(chunk) = bytes.utf8_chunks().last() else {
+        return 0;
+    };
+    let invalid = chunk.invalid();
+    match std::str::from_utf8(invalid) {
+        Err(error) if error.error_len().is_none() => invalid.len(),
+        _ => 0,
+    }
 }
 
 impl Write for Lines<'_> {
     fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
         for &byte in chunk {
-            match byte {
-                b'\n' if self.after_cr => {}
-                b'\r' | b'\n' => {
-                    if byte == b'\n' || !self.pending.is_empty() {
-                        self.report(&self.pending);
-                    }
+            match (byte, self.carriage) {
+                (b'\n', Carriage::EndedLine) => self.carriage = Carriage::None,
+                (b'\n', _) => {
+                    self.report(&self.pending);
                     self.pending.clear();
+                    self.carriage = Carriage::None;
                 }
-                _ => self.pending.push(byte),
+                // After a `\r` that ended a line, this one is the first half of `\r\r\n`: still that line's end.
+                (b'\r', Carriage::EndedLine) => {}
+                (b'\r', _) if self.pending.is_empty() => self.carriage = Carriage::Bare,
+                (b'\r', _) => {
+                    self.report(&self.pending);
+                    self.pending.clear();
+                    self.carriage = Carriage::EndedLine;
+                }
+                _ => {
+                    // A byte past the chunk is what makes it a part: a line of exactly a chunk stays one line. A part
+                    // is never empty, so the line end after it reports nothing extra.
+                    debug_assert!(self.pending.len() <= LINE_CHUNK);
+                    if self.pending.len() == LINE_CHUNK {
+                        self.flush_part();
+                    }
+                    self.pending.push(byte);
+                    self.carriage = Carriage::None;
+                }
             }
-            self.after_cr = byte == b'\r';
         }
         Ok(chunk.len())
     }
