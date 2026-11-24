@@ -76,7 +76,7 @@ fn tail_of(mut file: impl BufRead) -> io::Result<String> {
         };
         open = true;
         line.extend_from_slice(part);
-        // One byte more than the cap, for the `` that may end the line: the line is cut by what it holds without it.
+        // One byte more than the cap, for the `\r` that may end the line: the line is cut by what it holds without it.
         keep_end(&mut line, TAIL_LINE_BYTES + 1, &mut cut);
         let used = ended.unwrap_or(chunk.len());
         file.consume(used);
