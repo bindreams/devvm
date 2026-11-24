@@ -1,7 +1,9 @@
 use std::io::Read;
 use std::path::Path;
 
-use super::{Entry, failed, look_failed, nearest_existing, nearest_existing_dir, symlink_metadata_if_present};
+use super::{
+    Entry, failed, look_failed, nearest_existing, nearest_existing_dir, refused_as_link, symlink_metadata_if_present,
+};
 use crate::host::current;
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
@@ -132,6 +134,46 @@ fn a_link_is_looked_at_not_followed(#[fixture(unicode_home)] home: &Path, #[fixt
     let meta = symlink_metadata_if_present(&home.join("dangling")).unwrap().unwrap();
 
     assert!(meta.file_type().is_symlink());
+}
+
+/// Whatever error a system gives an open that refuses a link (`ELOOP`, `EMLINK`, `EFTYPE`, or another), a link at the
+/// name is "is a link".
+#[skuld::test]
+fn a_failed_open_of_a_link_is_a_link_whatever_the_error(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    std::fs::write(home.join("target"), b"x").unwrap();
+    symlink(&home.join("target"), &home.join("link"));
+
+    for raw in [40, 31, 79, 13] {
+        let error = refused_as_link(&home.join("link"), std::io::Error::from_raw_os_error(raw));
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{raw}: {error}");
+        assert!(error.to_string().ends_with("is a link"), "{raw}: {error}");
+    }
+}
+
+#[skuld::test]
+fn a_failed_open_of_what_is_not_a_link_is_the_error_it_was(#[fixture(unicode_home)] home: &Path) {
+    std::fs::write(home.join("file"), b"x").unwrap();
+
+    for name in ["file", "gone"] {
+        let error = refused_as_link(&home.join(name), std::io::Error::from_raw_os_error(5));
+        assert_eq!(error.raw_os_error(), Some(5), "{name}: {error}");
+    }
+}
+
+/// A failure that says the name is absent is not looked behind.
+#[skuld::test]
+fn a_failed_open_that_says_the_name_is_absent_is_the_error_it_was(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    symlink(&home.join("nowhere"), &home.join("dangling"));
+
+    let error = refused_as_link(&home.join("dangling"), std::io::ErrorKind::NotFound.into());
+
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
 }
 
 #[skuld::test]

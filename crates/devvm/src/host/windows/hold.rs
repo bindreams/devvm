@@ -205,11 +205,11 @@ pub(super) fn new(path: &Path) -> std::io::Result<WindowsHold> {
 /// The flags that open the link at a name itself, never what it leads to: a directory link (junction, directory
 /// symlink) opens only with `FILE_FLAG_BACKUP_SEMANTICS`, and without it fails with access denied. The handle then may
 /// be a directory, so [`refuse_link`] follows every open.
-const LINK_OPEN: u32 = FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS;
+pub(super) const LINK_OPEN: u32 = FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS;
 
 /// `InvalidInput` "is a link" if `file` is a name-surrogate reparse point (std's `is_symlink`); `IsADirectory` for a
 /// directory, which [`LINK_OPEN`] lets open but a lock or hold is not on.
-fn refuse_link(file: &File, path: &Path) -> std::io::Result<()> {
+pub(super) fn refuse_link(file: &File, path: &Path) -> std::io::Result<()> {
     let metadata = file.metadata()?;
     if metadata.file_type().is_symlink() {
         return Err(is_a_link(path));

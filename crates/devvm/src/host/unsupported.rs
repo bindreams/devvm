@@ -11,8 +11,8 @@ use cosca::identity::ProcessId;
 
 use super::names::{posix_problem, unix_run_dir};
 use super::{
-    Accel, Entry, FileId, Hold, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, after_failed_write,
-    create_new_with, look_failed, nearest_existing_dir,
+    Accel, Entry, FileId, Hold, HoldOutcome, Host, MakePrivateError, MakePrivateOutcome, ProcessWatch, SystemDirs,
+    Unavailable, after_failed_write, create_new_with, look_failed, nearest_existing_dir,
 };
 use crate::exit::ExitWidth;
 use crate::{Arch, Result};
@@ -24,6 +24,10 @@ mod watch;
 pub(super) trait FileModes: Send + Sync {
     /// Options that create a file readable and writable by its owner only, from the first moment it exists.
     fn private_options(&self) -> OpenOptions;
+
+    /// [`Host::make_private`]: a mode with no group or other bits is left as it is; any other becomes
+    /// `0600`, what `private_options` creates a file with.
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError>;
 
     /// Options that open a file for reading and writing, and refuse a symlink at its name instead of opening what it
     /// leads to where the system can.
@@ -152,6 +156,10 @@ impl<M: FileModes> Host for M {
     /// Mode `0600` is set when the file is created, so there is no moment with wider permissions.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         create_new_with(self.private_options(), path, bytes)
+    }
+
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError> {
+        FileModes::make_private(self, path)
     }
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {

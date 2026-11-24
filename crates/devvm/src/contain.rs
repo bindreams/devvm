@@ -62,7 +62,8 @@ fn wait_for_exit(id: ProcessId) -> Result<()> {
 }
 
 /// Kills the process `id` names and waits for it to exit through one handle, so a kill that landed is never reported
-/// as failed, and a wait that fails after it is a failed wait. A process that is gone is `Ok`.
+/// as failed, and a wait that fails after it is a failed wait. A process that is gone is `Ok`, and so is one whose id now
+/// names another process: `Process::open` checks the start token, so the kill is by recorded identity.
 fn kill_and_wait(id: ProcessId) -> Result<()> {
     let killing = |e: cosca::error::Error| cosca_error(&format!("cannot kill the VM process {}", id.pid()), e);
     let Some(process) = cosca::Process::open(id).map_err(killing)? else {

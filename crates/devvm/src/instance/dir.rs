@@ -94,7 +94,9 @@ fn unreadable_record(name: &InstanceName, path: &Path, why: &str) -> Error {
     )
 }
 
-/// Proof of the shared op lock of one instance (`run`, `ssh`, `cp`). It cannot change or remove anything.
+/// Proof of the shared op lock of one instance (`run`, `ssh`, `cp`). It cannot change or remove anything, except that
+/// reading the keys makes a key file private
+/// ([`InstanceKeys::read_private`](crate::access::keys::InstanceKeys::read_private)).
 pub(crate) struct OpShared {
     _lock: FileLock,
 }

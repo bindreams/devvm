@@ -60,13 +60,24 @@ fn machine_record_json_is_stable() {
     assert_eq!(serde_json::from_str::<MachineRecord>(GOLDEN).unwrap(), record);
 }
 
+/// A record is read as the schema of this build defines it: a field it has is not defaulted when it is missing.
 #[skuld::test]
-fn a_machine_record_without_no_reboot_parses_as_a_machine_that_reboots() {
-    let without = GOLDEN.replace(r#","no_reboot":false"#, "");
-    assert_ne!(without, GOLDEN);
-    let parsed = serde_json::from_str::<MachineRecord>(&without).unwrap();
-    assert!(!parsed.no_reboot);
-    assert_eq!(parsed, sample());
+fn a_machine_record_without_leftovers_or_no_reboot_is_refused_naming_the_field() {
+    let (start, end) = (
+        GOLDEN.find(r#""leftovers""#).unwrap(),
+        GOLDEN.find(r#""claim""#).unwrap(),
+    );
+    for (field, without) in [
+        ("leftovers", format!("{}{}", &GOLDEN[..start], &GOLDEN[end..])),
+        ("no_reboot", GOLDEN.replace(r#","no_reboot":false"#, "")),
+    ] {
+        assert_ne!(without, GOLDEN, "{field}");
+        let error = serde_json::from_str::<MachineRecord>(&without).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("missing field `{field}`")),
+            "{field}: {error}"
+        );
+    }
 }
 
 #[skuld::test]
@@ -78,19 +89,6 @@ fn a_machine_record_keeps_no_reboot() {
     let json = serde_json::to_string(&record).unwrap();
     assert!(json.contains(r#""no_reboot":true"#), "{json}");
     assert_eq!(serde_json::from_str::<MachineRecord>(&json).unwrap(), record);
-}
-
-#[skuld::test]
-fn a_machine_record_without_leftovers_parses_with_none() {
-    let without = GOLDEN.replace(
-        r#","leftovers":["/run/user/1000/devvm-ab.sock","/run/user/1000/devvm-ab.sock.lock","/run/user/1000/devvm-ab.sock.hold"],"claim":{"path":"/run/user/1000/devvm-ab.sock.hold","id":"1a:ff"}"#,
-        "",
-    );
-    assert_ne!(without, GOLDEN);
-    let parsed = serde_json::from_str::<MachineRecord>(&without).unwrap();
-    assert!(parsed.leftovers.is_empty());
-    assert_eq!(parsed.claim, None);
-    assert_eq!(parsed.serial_log, sample().serial_log);
 }
 
 /// The files of a launch under `dir`: a socket, a session lock and the hold that is the claim, which nobody holds now.

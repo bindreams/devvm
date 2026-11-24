@@ -379,7 +379,6 @@ pub(crate) struct MachineRecord {
     pub serial_log: PathBuf,
     /// Files outside the instance directory that die with the machine (QEMU: the QMP socket, the lock file of its
     /// sessions and the hold, in that order: the hold last, since it keeps the name reserved while the others go).
-    #[serde(default)]
     pub leftovers: Vec<PathBuf>,
     /// The file among `leftovers` that this launch made and that is held while the machine runs. `None` in a record
     /// of a machine that has no such file.
@@ -387,7 +386,6 @@ pub(crate) struct MachineRecord {
     pub claim: Option<FileClaim>,
     /// The machine was launched with `DeviceProfile::no_reboot`: it exits when its guest reboots, so it cannot be reset
     /// in place.
-    #[serde(default)]
     pub no_reboot: bool,
 }
 

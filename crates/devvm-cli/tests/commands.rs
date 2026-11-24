@@ -170,6 +170,7 @@ fn seed_a_running_machine(home: &Home, name: &str) {
         "serial_log": dir.join("serial.log"),
         "leftovers": [],
         "claim": { "path": dir.join("claim"), "id": "0:0" },
+        "no_reboot": false,
     });
     let path = dir.join("record.json");
     let mut record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

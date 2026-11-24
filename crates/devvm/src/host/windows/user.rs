@@ -22,22 +22,33 @@ fn call_failed(call: &str, source: io::Error) -> io::Error {
 }
 
 /// `S-1-5-...` for `psid`.
-pub(crate) fn sid_string(psid: PSID) -> io::Result<String> {
+///
+/// # Safety
+///
+/// `psid` must point to a valid SID that stays valid for the call.
+pub(crate) unsafe fn sid_string(psid: PSID) -> io::Result<String> {
     let mut raw: *mut u16 = null_mut();
-    // SAFETY: `psid` is a valid SID; on success `raw` is a NUL-terminated string that `LocalFree` frees.
+    // SAFETY: `psid` is a valid SID, by this function's contract; on success `raw` is a NUL-terminated string that
+    // `LocalFree` frees.
     if unsafe { ConvertSidToStringSidW(psid, &mut raw) } == 0 {
         return Err(call_failed("ConvertSidToStringSidW", io::Error::last_os_error()));
     }
+    // SAFETY: `raw` is the NUL-terminated string `ConvertSidToStringSidW` just made.
     // A SID string is ASCII.
-    let text = wide_to_os_string(raw).to_string_lossy().into_owned();
+    let text = unsafe { wide_to_os_string(raw) }.to_string_lossy().into_owned();
     // SAFETY: `raw` came from `ConvertSidToStringSidW`, which documents `LocalFree` for it.
     unsafe { LocalFree(raw.cast()) };
     Ok(text)
 }
 
 /// The NUL-terminated UTF-16 string `raw`, unpaired surrogates and all.
-fn wide_to_os_string(raw: *const u16) -> OsString {
-    // SAFETY: `raw` is NUL-terminated, so scanning up to the NUL stays inside the allocation.
+///
+/// # Safety
+///
+/// `raw` must point to a NUL-terminated UTF-16 string that stays valid for the call.
+unsafe fn wide_to_os_string(raw: *const u16) -> OsString {
+    // SAFETY: `raw` is NUL-terminated, by this function's contract, so scanning up to the NUL stays inside the
+    // allocation.
     let units = unsafe {
         let mut len = 0;
         while *raw.add(len) != 0 {
@@ -83,7 +94,7 @@ impl TokenUserBuffer {
     }
 
     /// The user's SID, valid while `self` lives.
-    pub(super) fn sid(&self) -> PSID {
+    fn sid(&self) -> PSID {
         // SAFETY: the buffer holds the `TOKEN_USER` that `GetTokenInformation` wrote.
         unsafe { (*self.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
     }
@@ -93,7 +104,12 @@ impl TokenUserBuffer {
 /// failed is tried again by the next call.
 pub(crate) fn current_sid() -> io::Result<String> {
     static SID: Lazy<String> = Lazy::new();
-    SID.get(|| sid_string(TokenUserBuffer::read()?.sid())).cloned()
+    SID.get(|| {
+        let token_user = TokenUserBuffer::read()?;
+        // SAFETY: the SID points into `token_user`, which lives to the end of the call.
+        unsafe { sid_string(token_user.sid()) }
+    })
+    .cloned()
 }
 
 /// `C:\ProgramData`, from the known folder and not from the environment.
@@ -109,7 +125,8 @@ pub(super) fn program_data() -> io::Result<PathBuf> {
             io::Error::from_raw_os_error(status),
         ));
     }
-    let path = PathBuf::from(wide_to_os_string(raw));
+    // SAFETY: `SHGetKnownFolderPath` succeeded, so `raw` is a NUL-terminated string.
+    let path = PathBuf::from(unsafe { wide_to_os_string(raw) });
     // SAFETY: `raw` came from `SHGetKnownFolderPath`, which documents `CoTaskMemFree` for it.
     unsafe { CoTaskMemFree(raw.cast()) };
     Ok(path)

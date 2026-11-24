@@ -20,7 +20,10 @@ use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use super::Hold;
 use super::entry;
 use super::names::{windows_colon_path, windows_problem, windows_run_dir};
-use super::{Accel, Entry, FileId, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, fill_new};
+use super::{
+    Accel, Entry, FileId, HoldOutcome, Host, MakePrivateError, MakePrivateOutcome, ProcessWatch, SystemDirs,
+    Unavailable, fill_new,
+};
 use crate::exit::ExitWidth;
 use crate::{Arch, Error, ErrorKind, Result};
 
@@ -181,6 +184,10 @@ impl Host for WindowsHost {
     /// See [`private_file::create_new`].
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         fill_new(private_file::create_new(path)?, path, bytes)
+    }
+
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError> {
+        private_file::restrict(path)
     }
 
     fn is_executable(&self, _path: &Path) -> std::io::Result<bool> {

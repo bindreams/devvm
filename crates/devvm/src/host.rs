@@ -39,7 +39,8 @@ pub(crate) mod watch;
 pub(crate) mod windows;
 
 pub(crate) use entry::{
-    Entry, failed, is_a_link, is_absent, look_failed, nearest_existing_dir, symlink_metadata_if_present,
+    Entry, failed, is_a_link, is_absent, look_failed, nearest_existing_dir, refused_as_link,
+    symlink_metadata_if_present,
 };
 pub(crate) use file_id::{Comparison, FileId};
 #[cfg_attr(
@@ -52,6 +53,41 @@ pub(crate) use file_id::{Comparison, FileId};
 pub(crate) use hold::{DELETING_DRAW_BYTES, deleting_name};
 pub(crate) use hold::{Hold, HoldOutcome, claim_of_deleting_name, claim_of_new_name, new_name};
 pub(crate) use watch::{Link, ProcessWatch};
+
+/// How [`Host::make_private`] found its file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MakePrivateOutcome {
+    /// The file was not the user's alone, and now is.
+    Changed,
+    /// The file was the user's alone already, and was not written to.
+    Unchanged,
+}
+
+/// How [`Host::make_private`] failed. Each variant says what is known of the file's protection.
+#[derive(Debug)]
+pub(crate) enum MakePrivateError {
+    /// The protection could not be looked at, or the name is a link or not a regular file: whether the file is private
+    /// is not known.
+    Check(std::io::Error),
+    /// The file is not private, and could not be made so.
+    Change(std::io::Error),
+}
+
+impl fmt::Display for MakePrivateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            MakePrivateError::Check(_) => "cannot check the protection of the file",
+            MakePrivateError::Change(_) => "cannot make the file private",
+        })
+    }
+}
+
+impl std::error::Error for MakePrivateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let (MakePrivateError::Check(source) | MakePrivateError::Change(source)) = self;
+        Some(source)
+    }
+}
 
 #[cfg(not(any(unix, windows)))]
 use other::OtherHost as Current;
@@ -165,6 +201,21 @@ pub(crate) trait Host: Send + Sync {
     /// A volume without permissions (FAT32, exFAT) cannot restrict it. On Windows the file names no owner, so a network
     /// share that refuses a named owner still accepts it.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File>;
+
+    /// Restricts the existing file `path` the way [`write_private`](Host::write_private) restricts a new one: the
+    /// current user alone can read it, whatever it had before (a Unix mode with a group or other bit becomes `0600`; on
+    /// Windows a protected DACL granting only the user, which replaces an inherited one). The contents are not touched.
+    /// No file is `NotFound`, in [`Check`](MakePrivateError::Check).
+    ///
+    /// A link at `path` is not followed and not restricted: it is `InvalidInput`, "is a link", in `Check`. The file is
+    /// opened once, and the check and the change are made on that one file. On Unix, a FIFO (which is not waited on) or a
+    /// directory is `InvalidInput`, "not a regular file", in `Check`; what cannot be opened (a socket, a file the user
+    /// cannot read) fails with the open's own error in `Check`. A key devvm cannot read is refused before this point
+    /// anyway.
+    ///
+    /// A file that is restricted already is not written to; on Unix that is any mode without group or other bits (`0400`
+    /// too).
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError>;
 
     /// Whether any execute bit of `path` is set; always `false` on Windows.
     fn is_executable(&self, path: &Path) -> std::io::Result<bool>;
