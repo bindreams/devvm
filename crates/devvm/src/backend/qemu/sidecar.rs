@@ -3,9 +3,15 @@
 //! On disk, under `Dirs::qemu()`:
 //!
 //! - `<version>-<12 hex of the zip sha256>/`: a published install (`bin/`, `share/`). It exists only once complete,
-//!   because it is published by one rename of a finished extraction directory;
-//! - `.extract-<random>/`: an extraction in progress; only a killed extraction leaves one behind;
-//! - `.extract.lock`: one OS lock around extraction and publication.
+//!   because it is published by one rename of a finished extraction directory. The install the manifest names is the
+//!   only one kept: the others are removed under the extraction lock, each by one rename to an `.extract-` name and then
+//!   a delete, so an install is removed whole or not at all;
+//! - `.extract-<random>/`: an extraction in progress, or an install being removed; a killed devvm leaves one behind;
+//! - `.extract.lock`: one OS lock around extraction, publication and removal.
+//!
+//! A running QEMU holds its install open, and Windows, the only host devvm publishes QEMU for, refuses to rename a
+//! directory with an open file in it, so an install in use is never touched. No record of which install a machine runs
+//! is kept, and none is needed.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -21,11 +27,16 @@ use crate::lazy::Lazy;
 use crate::progress::{Progress, Total};
 use crate::store::fetch::{Artifact, Fetcher};
 use crate::store::lock::{FileLock, Mode};
+use crate::store::quarantine::quarantine_path;
 use crate::{Arch, Dirs, Error, ErrorKind, Result, Sha256};
 
 #[cfg(test)]
 #[path = "sidecar_tests.rs"]
 pub(crate) mod sidecar_tests;
+
+#[cfg(all(test, windows))]
+#[path = "sidecar_windows_tests.rs"]
+mod sidecar_windows_tests;
 
 const MANIFEST: &str = include_str!("../../../qemu-manifest.toml");
 
@@ -244,6 +255,7 @@ impl Source {
         let entry = self.entry()?;
         let published = self.published(entry);
         if published.is_dir() {
+            self.prune_if_needed(&published);
             return Ok(self.install_at(&published, entry));
         }
         let zip = self.fetcher.fetch(&entry.artifact())?;
@@ -255,8 +267,7 @@ impl Source {
         lock.lock(Mode::Exclusive, "another devvm process to extract QEMU", &mut |m| {
             self.progress.message(m)
         })?;
-        // No extraction runs without the lock, so every `.extract-*` directory is a killed extraction's leftover.
-        remove_stale_extractions(&qemu)?;
+        self.sweep_extractions(&qemu)?;
         if published.is_dir() {
             return Ok(self.install_at(&published, entry));
         }
@@ -306,8 +317,114 @@ impl Source {
             )
         })?;
         task.finish();
+        self.prune_superseded(&qemu, &published);
         Ok(self.install_at(&published, entry))
     }
+
+    /// Under the extraction lock no extraction runs, so every `.extract-*` directory is left over by a killed devvm. One
+    /// that cannot be removed (an antivirus holds it) is a warning naming it; a `qemu` that cannot be listed is the error.
+    fn sweep_extractions(&self, qemu: &Path) -> Result<()> {
+        for warning in crate::host::sweep(qemu, &|name| name.starts_with(".extract-"), &crate::host::remove_tree)? {
+            self.progress.warn(&warning);
+        }
+        Ok(())
+    }
+
+    /// Removes every published install but `keep`, with the extraction lock held. Only a directory named like an
+    /// install (`is_install_name`) is touched: the cache holds nothing else devvm made, and a configured `qemu.path` is
+    /// never under it.
+    ///
+    /// An install is first renamed to an `.extract-` name, which nothing resolves. The rename is the test for "in use":
+    /// it fails while an open file is under the directory, and the install stays as it was. Once renamed, the install is
+    /// gone as far as every devvm is concerned, and what the delete cannot remove is swept by the next sweep. A failure
+    /// on one install does not stop the others.
+    fn prune_superseded(&self, qemu: &Path, keep: &Path) {
+        let listing = match std::fs::read_dir(qemu) {
+            Ok(listing) => listing,
+            Err(e) => {
+                self.progress.warn(&format!("cannot list {}: {e}", qemu.display()));
+                return;
+            }
+        };
+        for entry in listing {
+            let path = match entry {
+                Ok(entry) if is_install_name(&entry.file_name().to_string_lossy()) => entry.path(),
+                Ok(_) => continue,
+                Err(e) => {
+                    self.progress.warn(&format!("cannot list {}: {e}", qemu.display()));
+                    continue;
+                }
+            };
+            if path == keep {
+                continue;
+            }
+            match crate::host::symlink_metadata_if_present(&path) {
+                Ok(Some(meta)) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+                Ok(_) => continue,
+                Err(e) => {
+                    self.progress.warn(&crate::host::look_failed(&path, e).to_string());
+                    continue;
+                }
+            }
+            let removing = match quarantine_path(qemu, ".extract") {
+                Ok(removing) => removing,
+                Err(e) => {
+                    self.progress.warn(e.message());
+                    return;
+                }
+            };
+            if let Err(e) = std::fs::rename(&path, &removing) {
+                self.progress
+                    .debug(&format!("kept {}, which cannot be moved: {e}", path.display()));
+                continue;
+            }
+            if let Err(e) = crate::host::remove_tree(&removing) {
+                self.progress
+                    .warn(&format!("cannot remove {}: {e}", removing.display()));
+            }
+        }
+    }
+
+    /// For a launch that finds the pinned install: removes what an earlier build left, taking the lock only when the
+    /// cache holds something to remove. Housekeeping: a failure is a warning and never fails the launch.
+    fn prune_if_needed(&self, published: &Path) {
+        let qemu = self.dirs.qemu();
+        let pending = std::fs::read_dir(&qemu).is_ok_and(|listing| {
+            listing.flatten().any(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                entry.path() != published && (name.starts_with(".extract-") || is_install_name(&name))
+            })
+        });
+        if !pending {
+            return;
+        }
+        let pruned = (|| -> Result<()> {
+            let mut lock = FileLock::open(&qemu.join(".extract.lock"))?;
+            lock.lock(Mode::Exclusive, "another devvm process to extract QEMU", &mut |m| {
+                self.progress.message(m)
+            })?;
+            self.sweep_extractions(&qemu)?;
+            self.prune_superseded(&qemu, published);
+            Ok(())
+        })();
+        if let Err(e) = pruned {
+            self.progress.warn(e.message());
+        }
+    }
+}
+
+/// Whether `name` is one `Source::published` gives an install: `<version>-<12 lowercase hex>`, the version starting with
+/// a digit.
+fn is_install_name(name: &str) -> bool {
+    let Some((version, hash)) = name.rsplit_once('-') else {
+        return false;
+    };
+    version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+        && hash.len() == 12
+        && hash.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
 }
 
 /// A QEMU the user installed: `dir` holds the executables, the firmware is in `<dir>/share` or `<dir>/../share`. It must
@@ -381,24 +498,6 @@ fn require_firmware(share: &Path, firmware: &[&str], kind: ErrorKind) -> Result<
                 kind,
                 format!("QEMU is incomplete: {} is missing", path.display()),
             ));
-        }
-    }
-    Ok(())
-}
-
-fn remove_stale_extractions(qemu: &Path) -> Result<()> {
-    let read =
-        std::fs::read_dir(qemu).map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", qemu.display()), e))?;
-    for entry in read {
-        let entry = entry.map_err(|e| Error::io(ErrorKind::Io, format!("cannot list {}", qemu.display()), e))?;
-        if entry.file_name().to_string_lossy().starts_with(".extract-") {
-            std::fs::remove_dir_all(entry.path()).map_err(|e| {
-                Error::io(
-                    ErrorKind::Io,
-                    format!("cannot remove the abandoned extraction {}", entry.path().display()),
-                    e,
-                )
-            })?;
         }
     }
     Ok(())
