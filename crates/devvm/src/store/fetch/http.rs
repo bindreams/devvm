@@ -191,6 +191,8 @@ impl Transport for HttpTransport {
             }
         }
         let response = request.send().map_err(|e| {
+            // The message names the URL once, in its own words.
+            let e = e.without_url();
             let why = if e.is_timeout() {
                 stall_message(url, self.stall)
             } else {

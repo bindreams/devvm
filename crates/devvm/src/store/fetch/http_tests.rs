@@ -354,4 +354,5 @@ fn a_refused_connection_says_why_in_the_message() {
         error.message().starts_with(&format!("cannot fetch {url}: ")) && error.message().contains(&cause.to_string()),
         "{error}"
     );
+    assert_eq!(error.message().matches(&url).count(), 1, "{error}");
 }
