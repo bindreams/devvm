@@ -21,6 +21,25 @@ fn common_problem(name: &str) -> Option<String> {
     None
 }
 
+/// Whether Windows takes `name` for a device: `CON.txt` is `CON`, so only the part before the first dot decides, case
+/// and trailing spaces apart.
+pub(crate) fn is_device_name(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix)
+            .is_some_and(|rest| matches!(rest, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+    };
+    numbered("COM") || numbered("LPT")
+}
+
 /// The longest a file name can be: in bytes of UTF-8 on Unix, in UTF-16 units on NTFS.
 const NAME_MAX: usize = 255;
 

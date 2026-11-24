@@ -8,7 +8,7 @@ use crate::backend::{
 };
 use crate::contain::Lifetime;
 use crate::host::Accel;
-use crate::test_support::fixtures::UNICODE_DIR;
+use crate::test_support::fixtures::{UNICODE_DIR, non_unicode_name};
 use crate::{Arch, ErrorKind, Network};
 
 fn spec() -> MachineSpec {
@@ -454,16 +454,7 @@ fn paths_with_a_space_and_non_ascii_are_single_argv_items() {
 
 #[skuld::test]
 fn a_path_that_is_not_unicode_is_refused() {
-    #[cfg(windows)]
-    let path = {
-        use std::os::windows::ffi::OsStringExt;
-        PathBuf::from(OsString::from_wide(&[0x61, 0xD800, 0x62]))
-    };
-    #[cfg(not(windows))]
-    let path = {
-        use std::os::unix::ffi::OsStringExt;
-        PathBuf::from(OsString::from_vec(vec![0x61, 0xFF, 0x62]))
-    };
+    let path = PathBuf::from(non_unicode_name());
     assert_eq!(escape_option_value(&path).unwrap_err().kind(), ErrorKind::Unavailable);
 }
 

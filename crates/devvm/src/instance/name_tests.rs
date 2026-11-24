@@ -53,6 +53,22 @@ fn invalid_names_are_rejected() {
 }
 
 #[skuld::test]
+fn every_windows_device_name_is_refused() {
+    let devices = ["con", "prn", "aux", "nul"].into_iter().map(str::to_owned).chain(
+        ["com", "lpt"]
+            .into_iter()
+            .flat_map(|prefix| (1..=9).map(move |n| format!("{prefix}{n}"))),
+    );
+    for device in devices {
+        for text in [device.clone(), device.to_ascii_uppercase()] {
+            let error = InstanceName::parse(&text).expect_err(&text);
+            assert_eq!(error.kind(), ErrorKind::InvalidName, "{text}");
+            assert!(error.message().contains("device name"), "{text}: {error}");
+        }
+    }
+}
+
+#[skuld::test]
 fn com10_and_console_are_valid() {
     for text in ["com10", "console", "lpt0", "com", "nulx"] {
         assert!(InstanceName::parse(text).is_ok(), "{text}");
