@@ -37,6 +37,16 @@ pub(crate) fn is_a_link(path: &Path) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, format!("{} is a link", path.display()))
 }
 
+/// The failure `e` of an open of `path` that refuses a link, said as [`is_a_link`] when the name is a link now: systems
+/// answer that open with different errors (`ELOOP`, `EMLINK`, `EFTYPE`, ...), so the look at the name says it. A failure
+/// that says the name is absent ([`is_absent`]), or one with no link at the name, is `e` as it was.
+pub(crate) fn refused_as_link(path: &Path, e: io::Error) -> io::Error {
+    if !is_absent(&e) && matches!(symlink_metadata_if_present(path), Ok(Some(meta)) if meta.is_symlink()) {
+        return is_a_link(path);
+    }
+    e
+}
+
 /// What is at `path`, not following a link: `None` when it is not there ([`is_absent`]), the error for any other
 /// failure.
 pub(crate) fn symlink_metadata_if_present(path: &Path) -> io::Result<Option<Metadata>> {
