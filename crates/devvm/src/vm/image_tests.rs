@@ -1,21 +1,24 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 
+use crate::access::keys::InstanceKeys;
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
 use crate::backend::{Backend, Machine};
 use crate::engine::engine_tests::{
     EngineFixture, dead_machine, engine_fixture, image_of, image_with, is_there, stub_fixture, write_conf,
 };
-use crate::engine::keys::read_target;
+use crate::engine::keys::{ensure_keys, read_target};
 use crate::instance::expiry::expiry_tests::running_expiring;
-use crate::instance::record::{MarkerRead, Owner, read_marker};
+use crate::instance::record::{MarkerRead, Owner, RECORD_FILE, read_marker};
 use crate::recipe::Resources;
 use crate::store::layers::layers_tests::{days, names, t0};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::ops::ops_tests::{running_instance, short_bound_instance};
 use crate::vm::{Guest, Handle, ops};
 use crate::{Command, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
+use secrecy::ExposeSecret;
 use skuld::env;
 
 fn memory() -> Arc<MemoryProgress> {
@@ -154,7 +157,11 @@ fn a_vm_without_a_machine_cannot_be_handed_over(#[fixture(unicode_home)] home: &
     let error = vm.hand_over(&mut || {}).err().expect("nothing to hand over");
 
     assert_eq!(error.kind(), ErrorKind::Internal);
-    assert!(error.message().contains("already handed over"), "{}", error.message());
+    assert!(error.message().contains("no machine"), "{}", error.message());
+    assert!(
+        names(&fx.env.dirs.instances()).is_empty(),
+        "the refused handover leaves the drop to remove the instance"
+    );
 }
 
 #[skuld::test]
@@ -174,6 +181,16 @@ fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(unicode_home
 
     assert_eq!(error.kind(), ErrorKind::Internal);
     assert!(error.message().contains("not owned"), "{}", error.message());
+    assert_eq!(
+        stub.calls(),
+        ["attach"],
+        "the machine of an instance not owned is not killed"
+    );
+    assert_eq!(
+        names(&fx.env.dirs.instances()),
+        ["foo"],
+        "the instance not owned is not destroyed"
+    );
 }
 
 #[skuld::test]
@@ -304,6 +321,201 @@ fn a_vm_whose_session_died_connects_again_for_its_next_operation(#[fixture(unico
 "
     );
     assert_eq!(fx.server.connections() - before, 1);
+}
+
+#[skuld::test]
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_and_runs_the_command_once(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    // The connection looks alive to the client, as one that ended unseen does; the server takes no new channel on it.
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+
+    let output = vm.run(&Command::new(["echo", "after"])).unwrap();
+
+    assert_eq!(
+        output.stdout,
+        b"after
+"
+    );
+    assert_eq!(fx.server.connections() - before, 1);
+    let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
+    assert_eq!(sent, 1, "the command was sent once");
+}
+
+#[skuld::test]
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_an_sftp_session(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+
+    let home = vm.with_sftp(|sftp| sftp.home());
+
+    assert!(home.is_ok(), "the SFTP subsystem opened on a new connection: {home:?}");
+    assert_eq!(fx.server.connections() - before, 1);
+}
+
+#[skuld::test]
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_run_to(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+    let mut out = Vec::new();
+
+    vm.run_to(&Command::new(["echo", "after"]), &mut out, &mut Vec::new())
+        .unwrap();
+
+    assert_eq!(
+        out,
+        b"after
+"
+    );
+    assert_eq!(fx.server.connections() - before, 1);
+    let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
+    assert_eq!(sent, 1, "the command was sent once");
+}
+
+#[skuld::test]
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_copy_in_and_copy_out(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    let up = home.join("up.txt");
+    std::fs::write(&up, "going up").unwrap();
+    let down = home.join("down.txt");
+
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+    vm.copy_in(&up, "/up.txt").unwrap();
+    assert_eq!(fx.server.connections() - before, 1, "copy_in");
+
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+    vm.copy_out("/up.txt", &down).unwrap();
+    assert_eq!(fx.server.connections() - before, 1, "copy_out");
+
+    assert_eq!(std::fs::read(fx.server.root().join("up.txt")).unwrap(), b"going up");
+    assert_eq!(std::fs::read(&down).unwrap(), b"going up");
+}
+
+#[skuld::test]
+fn a_failed_reconnect_returns_its_own_error_with_the_first_failure_named(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.refuse_channel_opens(1);
+    // The machine is gone from the record, so a new connection cannot be made.
+    let dir = vm.instance().dir();
+    dir.update(&dir.op_exclusive().unwrap(), &mut |record| record.machine = None)
+        .unwrap();
+
+    let error = vm.run(&Command::new(["echo", "after"])).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "the reconnect's kind: {error}");
+    assert!(error.message().contains("is not running"), "{error}");
+    assert!(error.message().contains("channel could not be opened"), "{error}");
+    assert!(error.message().contains("serial log"), "{error}");
+}
+
+#[skuld::test]
+fn a_reconnect_that_finds_another_host_key_returns_host_key_with_the_first_failure_named(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let keys = {
+        let dir = instance.dir();
+        ensure_keys(dir, &dir.op_exclusive().unwrap(), &TestHost, &mut |_| {}).unwrap()
+    };
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.refuse_channel_opens(1);
+    // The guest presents another host key from the next connection on; the cached connection is unaffected.
+    let other = InstanceKeys::generate().unwrap();
+    fx.server
+        .install(&keys.client_public, other.host_private.expose_secret());
+
+    let error = vm.run(&Command::new(["echo", "after"])).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::HostKey, "{error}");
+    assert!(error.message().contains("channel could not be opened"), "{error}");
+}
+
+#[skuld::test]
+fn each_operation_that_failed_on_the_same_stale_session_makes_its_own_new_connection(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    let (_, _, op) = vm.reached().unwrap();
+    let before = fx.server.connections();
+
+    vm.reconnect(&op).unwrap();
+    vm.reconnect(&op).unwrap();
+
+    // A server may limit the sessions of one connection, so a connection is not shared by what failed on another.
+    assert_eq!(fx.server.connections() - before, 2);
+    assert!(vm.session.lock().unwrap().as_ref().is_some_and(|s| s.is_alive()));
+}
+
+#[skuld::test]
+fn a_failed_reconnect_leaves_no_cached_session(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    let (_, _, op) = vm.reached().unwrap();
+    let dir = vm.instance().dir();
+    // A record that cannot be read: the reconnect fails before a connection is tried.
+    let file = dir.path().join(RECORD_FILE);
+    let record = std::fs::read(&file).unwrap();
+    std::fs::write(&file, b"not json").unwrap();
+
+    let failed = vm.reconnect(&op);
+
+    std::fs::write(&file, record).unwrap();
+    assert!(failed.is_err(), "the record is unreadable");
+    assert!(vm.session.lock().unwrap().is_none());
+}
+
+#[skuld::test]
+fn a_command_whose_connection_was_lost_after_it_was_sent_is_not_run_again(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    let before = fx.server.connections();
+
+    let error = vm.run(&Command::new(["drop-connection"])).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert_eq!(
+        fx.server.connections() - before,
+        0,
+        "no new connection for a sent command"
+    );
+    let sent = fx
+        .server
+        .commands()
+        .iter()
+        .filter(|c| c.contains("drop-connection"))
+        .count();
+    assert_eq!(sent, 1, "the command was sent once");
 }
 
 /// A new connection to `instance` whose VM watcher ends with the verdict `unwatched` once `end` is sent to.
