@@ -6,8 +6,8 @@ use cosca::identity::{Platform, ProcessIdRecord};
 use crate::backend::{Endpoint, MachineRecord, SshEndpoint};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{
-    COMMAND_CHARS, HOLDER_FILE, HOSTNAME_LEN, Holder, InstanceId, InstanceRecord, Marker, MarkerRead, Owner,
-    RecordRead, command_text, read_holder, read_marker, remove_holder, write_holder, write_marker,
+    HOLDER_FILE, HOSTNAME_LEN, Holder, InstanceId, InstanceRecord, Marker, MarkerRead, Owner,
+    RecordRead, program_name, read_holder, read_marker, remove_holder, write_holder, write_marker,
 };
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
@@ -366,7 +366,7 @@ fn a_holder_round_trips_and_goes_when_removed(#[fixture(unicode_home)] home: &Pa
     assert!(read_holder(home).unwrap().is_none());
     let holder = Holder {
         process: machine().process,
-        command: "devvm up --name foo".to_owned(),
+        program: "devvm".to_owned(),
     };
     write_holder(home, &holder).unwrap();
     assert_eq!(read_holder(home).unwrap(), Some(holder));
@@ -377,7 +377,7 @@ fn a_holder_round_trips_and_goes_when_removed(#[fixture(unicode_home)] home: &Pa
 
 #[skuld::test]
 fn a_torn_holder_reads_as_none_and_one_from_a_newer_devvm_is_an_error(#[fixture(unicode_home)] home: &Path) {
-    for torn in ["", "{ torn", r#"{"schema":1,"command":"devvm"}"#, r#"{"schema":0}"#] {
+    for torn in ["", "{ torn", r#"{"schema":1,"program":"devvm"}"#, r#"{"schema":0}"#] {
         std::fs::write(home.join(HOLDER_FILE), torn).unwrap();
         assert!(read_holder(home).unwrap().is_none(), "{torn:?}");
     }
@@ -386,23 +386,22 @@ fn a_torn_holder_reads_as_none_and_one_from_a_newer_devvm_is_an_error(#[fixture(
 }
 
 #[skuld::test]
-fn the_command_is_the_stem_of_argv0_and_the_arguments() {
-    let argv0 = Path::new("bin").join("devvm.exe");
-    let args = [argv0.into_os_string(), "rm".into(), "foo".into()];
-    assert_eq!(command_text(args), "devvm rm foo");
-    assert_eq!(command_text(["devvm".into()]), "devvm");
+fn the_program_is_the_file_name_without_its_directory_and_its_exe_extension() {
+    let at = |name: &str| program_name(&Path::new("bin").join(name));
+    assert_eq!(at("devvm.exe").as_deref(), Some("devvm"));
+    assert_eq!(at("DEVVM.EXE").as_deref(), Some("DEVVM"));
+    assert_eq!(at("devvm").as_deref(), Some("devvm"));
+    assert_eq!(at("my.tool.exe").as_deref(), Some("my.tool"));
 }
 
 #[skuld::test]
-fn a_long_command_is_cut_to_one_line() {
-    let args = [
-        "devvm".into(),
-        "a\nb\rc\td".into(),
-        "x".repeat(2 * COMMAND_CHARS).into(),
-    ];
-    let text = command_text(args);
-    assert!(text.starts_with("devvm a b c d xxx"), "{text}");
-    assert!(text.ends_with("..."), "{text}");
-    assert_eq!(text.chars().count(), COMMAND_CHARS + 3);
-    assert!(!text.contains(char::is_control), "{text:?}");
+fn a_program_name_keeps_the_dots_that_are_not_an_exe_extension() {
+    assert_eq!(program_name(Path::new("devvm-0.1.0")).as_deref(), Some("devvm-0.1.0"));
+    assert_eq!(program_name(Path::new("my.tool")).as_deref(), Some("my.tool"));
+}
+
+#[skuld::test]
+fn a_path_without_a_file_name_names_no_program() {
+    assert_eq!(program_name(Path::new("")), None);
+    assert_eq!(program_name(Path::new("..")), None);
 }

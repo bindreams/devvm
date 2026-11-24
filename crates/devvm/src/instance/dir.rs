@@ -175,7 +175,7 @@ impl InstanceDir {
     }
 
     /// What a wait for an op lock says it waits for when the exclusive holder is recorded and still runs:
-    /// `<command> (PID <pid>) on instance <name>`. `None` names no one: no record, an unusable one, or one whose process
+    /// `<program> (PID <pid>) on instance <name>`. `None` names no one: no record, an unusable one, or one whose process
     /// has exited, is not this one or cannot be assessed. A record that cannot be read is a debug note.
     fn holder_text(&self) -> Option<String> {
         let read = in_instance(&self.locks, &self.path, &self.id, || read_holder(&self.path));
@@ -193,11 +193,11 @@ impl InstanceDir {
         };
         let process = ProcessId::try_from(&holder.process).ok()?;
         matches!(process.is_alive(), Liveness::Alive)
-            .then(|| format!("{} (PID {}) on instance {}", holder.command, process.pid(), self.name))
+            .then(|| format!("{} (PID {}) on instance {}", holder.program, process.pid(), self.name))
     }
 
     /// Writes this process as the holder, once the exclusive lock is held. A record that cannot be written is a warning:
-    /// the command goes on, and a command that waits behind it names no one.
+    /// the process goes on, and a command that waits behind it names no one.
     fn record_holder(&self) {
         let written = Holder::current()
             .and_then(|holder| in_instance(&self.locks, &self.path, &self.id, || write_holder(&self.path, &holder)));
@@ -242,7 +242,7 @@ impl InstanceDir {
     }
 
     /// The exclusive op lock if nobody holds it, else `None`. `NotFound` if the instance is gone. The holder is not
-    /// recorded: a command that waits behind it names no one.
+    /// recorded: a wait behind it names no one.
     pub(crate) fn try_op_exclusive(&self) -> Result<Option<OpExclusive>> {
         match self.locks.try_op_exclusive(&self.id)? {
             Probe::Free(lock) => {

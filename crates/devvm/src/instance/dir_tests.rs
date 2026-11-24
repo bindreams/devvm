@@ -339,23 +339,23 @@ fn another_command(fx: &Fixture, dir: &InstanceDir, progress: Arc<dyn Progress>)
     )
 }
 
-/// What this test binary calls itself in `waiting for <command> (PID <pid>) on instance <name>`.
-fn this_command() -> String {
+/// What this test binary calls itself in `waiting for <program> (PID <pid>) on instance <name>`: the name of its
+/// executable, without `.exe`.
+fn this_program() -> String {
     let exe = std::env::current_exe().unwrap();
-    exe.file_stem().unwrap().to_string_lossy().into_owned()
+    let name = exe.file_name().unwrap().to_string_lossy().into_owned();
+    name.strip_suffix(".exe").unwrap_or(&name).to_owned()
 }
 
 fn named_holder(message: &str, pid: u32, instance: &str) {
-    let command = this_command();
-    assert!(message.starts_with(&format!("waiting for {command}")), "{message}");
-    assert!(
-        message.ends_with(&format!(" (PID {pid}) on instance {instance}")),
-        "{message}"
+    assert_eq!(
+        message,
+        format!("waiting for {} (PID {pid}) on instance {instance}", this_program())
     );
 }
 
 #[skuld::test]
-fn a_wait_behind_the_exclusive_holder_names_its_command_and_pid(#[fixture(unicode_home)] home: &Path) {
+fn a_wait_behind_the_exclusive_holder_names_its_program_and_pid(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
     let holder = dir.op_exclusive().unwrap();
@@ -523,7 +523,7 @@ fn a_wait_behind_a_holder_in_another_process_names_that_pid(#[fixture(unicode_ho
     };
     let holder = Holder {
         process: id.to_record().unwrap(),
-        command: "devvm up".to_owned(),
+        program: "hold-lock".to_owned(),
     };
     write_holder(dir.path(), &holder).unwrap();
     let (progress, messages) = ChannelProgress::new();
@@ -533,7 +533,7 @@ fn a_wait_behind_a_holder_in_another_process_names_that_pid(#[fixture(unicode_ho
         let waiting = scope.spawn(|| waiter.op_exclusive().map(drop));
         assert_eq!(
             messages.recv().unwrap(),
-            format!("waiting for devvm up (PID {}) on instance foo", child.id())
+            format!("waiting for hold-lock (PID {}) on instance foo", child.id())
         );
         child.kill().unwrap();
         child.wait().unwrap();

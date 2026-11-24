@@ -401,80 +401,67 @@ pub(crate) fn read_marker(dir: &Path) -> Result<MarkerRead> {
 
 // The holder of the op lock ===========================================================================================
 
-/// `holder.json`: the devvm command that holds an instance's exclusive op lock (`start`, `up`, `stop`, `rm`, `reboot`),
-/// so a command that waits behind it can name it.
+/// `holder.json`: the process that holds an instance's exclusive op lock, so a command that waits behind it can name it.
 ///
 /// It is a record and not a question to the OS because std's file lock is `LockFileEx` on Windows, and no Windows call
 /// names the holder of a lock. The holder writes it once it holds the lock and removes it before releasing the lock, so
 /// a reader may see it written late or not at all, never half-written (see [`write_file`]); a reader names the process
 /// only if it still runs (a crashed holder leaves its record behind).
 ///
-/// Only the exclusive holder is recorded: a wait behind `run`, `ssh` or `cp` (shared holders), or behind the reaper,
-/// keeps the text without a holder. A record whose removal failed and whose process still runs would be named by a
-/// wait behind such a holder; the failed removal is a warning.
+/// Only the exclusive holder is recorded: a wait behind a shared holder, or behind the reaper, keeps the text without a
+/// holder. A record whose removal failed and whose process still runs would be named by a wait behind such a holder; the
+/// failed removal is a warning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Holder {
     pub process: ProcessIdRecord,
-    /// What the process was started as: [`command_text`] of its argv.
-    pub command: String,
+    /// The name of the process's executable: see [`program_name`].
+    pub program: String,
 }
 
 pub(crate) const HOLDER_FILE: &str = "holder.json";
 
-/// The most characters of a command that [`command_text`] keeps.
-pub(crate) const COMMAND_CHARS: usize = 100;
+/// What a holder is called when its executable cannot be read.
+const UNKNOWN_PROGRAM: &str = "unknown program";
 
 #[derive(Serialize, Deserialize)]
 struct WireHolder {
     schema: u64,
     process: ProcessIdRecord,
-    command: String,
+    program: String,
 }
 
 impl Holder {
-    /// This process, as its own argv names it.
+    /// This process. The library can be embedded in any application, so only the program name is kept, never an
+    /// argument.
     pub(crate) fn current() -> Result<Holder> {
         let id = cosca::identity::ProcessId::current();
         let process = id
             .to_record()
             .map_err(|e| cosca_error(&format!("cannot record process {}", id.pid()), e))?;
-        Ok(Holder {
-            process,
-            command: command_text(std::env::args_os()),
-        })
+        let program = std::env::current_exe()
+            .ok()
+            .and_then(|exe| program_name(&exe))
+            .unwrap_or_else(|| UNKNOWN_PROGRAM.to_owned());
+        Ok(Holder { process, program })
     }
 }
 
-/// The file stem of `argv[0]` followed by the other arguments, on one line of at most [`COMMAND_CHARS`] characters:
-/// control characters become spaces and what does not fit is cut, ending in `...`.
-pub(crate) fn command_text(argv: impl IntoIterator<Item = std::ffi::OsString>) -> String {
-    let mut argv = argv.into_iter();
-    let program = argv
-        .next()
-        .and_then(|first| {
-            Path::new(&first)
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-        })
-        .unwrap_or_default();
-    let mut text = program;
-    for arg in argv {
-        text.push(' ');
-        text.push_str(&arg.to_string_lossy());
-    }
-    let mut chars = text.chars().map(|c| if c.is_control() { ' ' } else { c });
-    let mut line: String = chars.by_ref().take(COMMAND_CHARS).collect();
-    if chars.next().is_some() {
-        line.push_str("...");
-    }
-    line
+/// The file name of `exe` without its directory and without a `.exe` extension (a name such as `devvm-0.1.0` or
+/// `my.tool` keeps its dots); `None` if `exe` has no file name.
+pub(crate) fn program_name(exe: &Path) -> Option<String> {
+    let name = exe.file_name()?;
+    let is_exe = exe
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+    let name = if is_exe { Path::new(name).file_stem()? } else { name };
+    Some(name.to_string_lossy().into_owned())
 }
 
 fn holder_parse(text: &str) -> std::result::Result<Holder, String> {
     let wire = serde_json::from_str::<WireHolder>(text).map_err(|e| e.to_string())?;
     Ok(Holder {
         process: wire.process,
-        command: wire.command,
+        program: wire.program,
     })
 }
 
@@ -489,7 +476,7 @@ pub(crate) fn write_holder(dir: &Path, holder: &Holder) -> Result<()> {
     let wire = WireHolder {
         schema: SCHEMA,
         process: holder.process.clone(),
-        command: holder.command.clone(),
+        program: holder.program.clone(),
     };
     let text = serde_json::to_string(&wire).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
     write_file(host::current(), dir, HOLDER_FILE, &text)

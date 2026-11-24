@@ -78,8 +78,9 @@ devvm rm dev
   home. `devvm cp --help` lists the names it cannot carry.
 - `ls` lists the instances created from the current directory; `ls --all` lists every one.
 - `stop` keeps the disk; `start` boots it again. The guest's `/tmp` is empty after a restart: keep files under `~`.
-- A command that waits for another one on the same instance says `waiting for <command> (PID <pid>) on instance <name>`.
-  A command that holds the instance only for `run`, `ssh` or `cp` is not named: the wait says `another devvm command`.
+- A command that waits for another process on the same instance says
+  `waiting for <program> (PID <pid>) on instance <name>`, where `<program>` is the name of the holder's executable.
+  A holder of `run`, `ssh` or `cp` is not named: the wait says `another devvm command`.
 
 ### Output
 
