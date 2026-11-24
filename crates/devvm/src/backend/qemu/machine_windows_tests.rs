@@ -371,17 +371,22 @@ fn the_log_an_attached_machine_quotes_is_beside_the_serial_log(#[fixture(unicode
 }
 
 #[skuld::test]
-fn an_exited_machine_sets_its_serial_log_and_does_not_print_it_in_its_text(#[fixture(unicode_home)] home: &Path) {
+fn an_exited_machine_names_its_serial_log_before_the_output_it_quotes(#[fixture(unicode_home)] home: &Path) {
     let world = world(home);
+    std::fs::write(world.dir.join("qemu.log"), "qemu: out of memory").unwrap();
     let machine = world.attached();
 
     let error = machine.exited("gone");
 
-    assert_eq!(
-        error.serial_log(),
-        Some(world.dir.join("serial.log").as_path()),
+    let serial_log = world.dir.join("serial.log");
+    assert_eq!(error.serial_log(), Some(serial_log.as_path()), "{error}");
+    assert!(
+        error
+            .message()
+            .starts_with(&format!("QEMU exited: gone (serial log: {})\n", serial_log.display())),
         "{error}"
     );
+    assert!(error.message().ends_with("\nqemu: out of memory"), "{error}");
     assert!(!error.body().contains("serial log"), "{error}");
     world.end_qemu();
 }
