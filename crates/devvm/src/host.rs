@@ -59,22 +59,10 @@ use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
 
-#[cfg_attr(
-    not(test),
-    allow(
-        unused_imports,
-        reason = "only the tests set a time the trait cannot say; `Host::set_mtime` calls it"
-    )
-)]
-#[cfg(not(windows))]
-pub(crate) use unsupported::set_modified;
-#[cfg_attr(
-    not(test),
-    allow(
-        unused_imports,
-        reason = "only the tests set a time the trait cannot say; `Host::set_mtime` calls it"
-    )
-)]
+#[cfg(not(any(unix, windows)))]
+pub(crate) use other::set_modified;
+#[cfg(unix)]
+pub(crate) use unix::set_modified;
 #[cfg(windows)]
 pub(crate) use windows::set_modified;
 

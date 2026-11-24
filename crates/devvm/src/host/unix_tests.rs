@@ -1,10 +1,11 @@
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::time::{Duration, UNIX_EPOCH};
 
 use rustix::io::Errno;
 
-use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with};
+use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with, set_modified};
 use crate::host::{Entry, Host};
 use crate::test_support::fixtures::unicode_home;
 
@@ -134,6 +135,46 @@ fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_hom
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(found, Ok(Entry::File(_))), "{name}: {found:?}");
     }
+}
+
+/// A file or directory its owner cannot read (`chmod 200`, `chmod 300`) takes a time: it is set by path, which asks for
+/// ownership and opens nothing. Mode bits do not bind root, so the test refuses to run as root.
+#[skuld::test]
+fn set_mtime_sets_the_time_of_what_its_owner_cannot_read(#[fixture(unicode_home)] home: &Path) {
+    // SAFETY: `geteuid` reads a process attribute.
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "modes do not bind root: run this test as another user"
+    );
+    let file = home.join("write-only.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let directory = home.join("write-only-dir");
+    std::fs::create_dir(&directory).unwrap();
+    for (path, mode) in [(&file, 0o200), (&directory, 0o300)] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        let set = UnixHost.set_mtime(path, 1_000_000_000);
+        let since = std::fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        // The temporary directory cannot be removed with the modes left as they are.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        set.unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(since.as_secs(), 1_000_000_000, "{}", path.display());
+    }
+}
+
+/// A time before 1970 is a negative `tv_sec` with the fraction counted forward.
+#[skuld::test]
+fn set_modified_sets_a_time_before_1970_with_a_fraction(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("old.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let time = UNIX_EPOCH - Duration::new(86_400, 250_000_000);
+    set_modified(&file, time).unwrap();
+    assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), time);
 }
 
 // The runtime directory -----------------------------------------------------------------------------------------------

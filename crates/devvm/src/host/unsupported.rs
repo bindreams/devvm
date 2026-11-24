@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File, Metadata, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
@@ -65,12 +65,6 @@ pub(super) trait FileModes: Send + Sync {
     /// [`Host::publish_dir`]. A host with a rename that refuses to replace does it in one step; one without can only
     /// call [`claim_then_rename`].
     fn publish_dir(&self, from: &Path, to: &Path) -> std::io::Result<()>;
-}
-
-/// Sets the modification time of the file or directory `path`, whatever its date. `futimens` with explicit times asks
-/// for ownership of the file, not write access, and a directory opens read-only: a read-only file takes it too.
-pub(crate) fn set_modified(path: &Path, time: SystemTime) -> std::io::Result<()> {
-    File::open(path)?.set_modified(time)
 }
 
 /// Claims `to` with `create_dir`, which fails for anything that exists, and renames `from` over the claim: a rename of
@@ -169,7 +163,7 @@ impl<M: FileModes> Host for M {
     }
 
     fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
-        set_modified(path, UNIX_EPOCH + Duration::from_secs(u64::from(seconds)))
+        super::set_modified(path, UNIX_EPOCH + Duration::from_secs(u64::from(seconds)))
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {
