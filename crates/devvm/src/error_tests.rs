@@ -1,7 +1,7 @@
 use std::error::Error as _;
 use std::path::Path;
 
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, tail_of};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -173,6 +173,41 @@ fn with_log_tail_of_a_file_with_one_huge_unterminated_line_keeps_the_end(#[fixtu
         "the huge line is cut: {} bytes",
         message.len()
     );
+}
+
+/// A reader whose first fill is interrupted, as a read can be by a signal.
+struct InterruptedOnce {
+    inner: std::io::Cursor<Vec<u8>>,
+    interrupted: bool,
+}
+
+impl std::io::Read for InterruptedOnce {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl std::io::BufRead for InterruptedOnce {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if !self.interrupted {
+            self.interrupted = true;
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.inner.consume(amount);
+    }
+}
+
+#[skuld::test]
+fn an_interrupted_read_of_a_log_is_retried() {
+    let reader = InterruptedOnce {
+        inner: std::io::Cursor::new(b"one\ntwo\n".to_vec()),
+        interrupted: false,
+    };
+    assert_eq!(tail_of(reader).unwrap(), "one\ntwo");
 }
 
 #[skuld::test]

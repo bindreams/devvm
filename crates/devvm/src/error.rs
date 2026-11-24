@@ -211,13 +211,21 @@ fn keep(lines: &mut VecDeque<Vec<u8>>, line: Vec<u8>) {
 
 /// The last [`TAIL_LINES`] lines of the file at `path`, read in one pass without holding the file.
 fn tail_of_file(path: &Path) -> io::Result<String> {
-    let mut file = BufReader::new(std::fs::File::open(path)?);
+    tail_of(BufReader::new(std::fs::File::open(path)?))
+}
+
+/// The last [`TAIL_LINES`] lines `file` has.
+fn tail_of(mut file: impl BufRead) -> io::Result<String> {
     let mut lines: VecDeque<Vec<u8>> = VecDeque::with_capacity(TAIL_LINES);
     let mut line: Vec<u8> = Vec::new();
     // Whether bytes of a line that has not ended were seen.
     let mut open = false;
     loop {
-        let chunk = file.fill_buf()?;
+        let chunk = match file.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if chunk.is_empty() {
             break;
         }
