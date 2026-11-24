@@ -332,7 +332,7 @@ pub fn backend_in(run: &Path, progress: Arc<MemoryProgress>) -> Arc<QemuBackend>
 pub fn qemu_img(install: &QemuInstall, args: &[&OsStr]) -> Vec<u8> {
     let output = install
         .run("qemu-img", host::current(), |command| {
-            command.args(args);
+            command.args(args.iter().copied());
         })
         .expect("qemu-img should run");
     assert!(

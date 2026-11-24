@@ -13,12 +13,12 @@
 //! open ([`HeldKind::Directory`]) for as long as the value lives. While it is open Windows refuses to rename the
 //! install or `bin`, and to remove `bin`, whatever is done to the files inside, so nothing can unlink the hold (a
 //! scanner quarantining a tool, a user deleting one). A launch gives QEMU a duplicate of that handle
-//! ([`Host::share_open_file_with`]), and so does every `qemu-img` or `--version` run; each keeps it until it exits,
-//! whether or not the devvm that started it has. Removal renames, so an install in use is never touched. A QEMU
-//! started by a devvm that did not hold its install is not seen as using it. A configured `qemu.path` is the user's
-//! own: nothing is held or given for it. A host where an open file does not stop the rename
-//! ([`Host::rename_refused_by_open_file`]) has no such test, and removes nothing there: a manifest entry for another
-//! OS needs its own in-use test first.
+//! ([`Host::share_open_file_with`]), which it keeps until it exits, whether or not the devvm that started it has. A
+//! `qemu-img` or `--version` run is contained and dies with its devvm, so that devvm's own hold covers it. Removal
+//! renames, so an install in use is never touched. A QEMU started by a devvm that did not hold its install is not seen
+//! as using it. A configured `qemu.path` is the user's own: nothing is held or given for it. A host where an open file
+//! does not stop the rename ([`Host::rename_refused_by_open_file`]) has no such test, and removes nothing there: a
+//! manifest entry for another OS needs its own in-use test first.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -130,37 +130,25 @@ impl QemuInstall {
     /// [`QemuInstall::environment`], no input, and no console window; `configure` adds its arguments and working
     /// directory. Its stdout and stderr are captured.
     ///
-    /// The process is given a duplicate of the install's hold ([`Host::share_open_file_with`]) as soon as it has
-    /// started, so the install stays in use until it exits even if this devvm is killed first. A host that cannot tell
-    /// an install is in use removes none, and gives nothing. A process that exits before the hold reaches it needs none.
+    /// The tool is contained: it is killed when this process dies, so it never outlives the devvm that started it, and
+    /// this process's own hold of the install covers it. A failure to start it, or to read its output, is an `Io` error
+    /// that names the cause and says nothing of the tool: the caller adds the context.
     pub(crate) fn run(
         &self,
         name: &str,
         host: &dyn Host,
-        configure: impl FnOnce(&mut std::process::Command),
-    ) -> std::io::Result<std::process::Output> {
-        let environment = self
-            .environment(host.system_dirs().as_ref())
-            .map_err(|e| std::io::Error::other(e.message().to_owned()))?;
-        let mut command = std::process::Command::new(self.tool(name));
-        command
-            .env_clear()
-            .envs(environment)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        host.quiet(&mut command);
+        configure: impl FnOnce(&mut cosca::Command),
+    ) -> Result<cosca::Output> {
+        let environment = self.environment(host.system_dirs().as_ref())?;
+        let tool = self.tool(name);
+        let mut command = cosca::Command::new();
+        // Naming the executable gives the child only the handles listed for it, as `VmProcess::spawn_frozen` does.
+        command.arg(&tool).executable(&tool).env_clear().envs(environment).contain();
+        host.detach(&mut command)?;
         configure(&mut command);
-        let mut child = command.spawn()?;
-        if let Some(held) = &self.held
-            && !host.rename_refused_by_open_file().is_empty()
-            && let Err(e) = give_hold(host, held, &mut child)
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(e);
-        }
-        child.wait_with_output()
+        command.output().map_err(|source| {
+            Error::new(ErrorKind::Io, cosca::error::Report::new(&source).to_string()).with_source(source)
+        })
     }
 
     /// The whole environment QEMU is started with: `SystemRoot`, and `PATH` of System32 then `bin`. Pure: the
@@ -184,26 +172,6 @@ impl QemuInstall {
     }
 }
 
-/// Gives `child` a duplicate of `held`. A child that has exited by now holds nothing to protect, so a hold that cannot
-/// reach it is not an error.
-fn give_hold(host: &dyn Host, held: &File, child: &mut std::process::Child) -> std::io::Result<()> {
-    use cosca::identity::{ProcessId, Resolved};
-    let id = match ProcessId::of(child.id()) {
-        Resolved::Found(id) => id,
-        Resolved::Gone => return Ok(()),
-        Resolved::Unknown => {
-            return Err(std::io::Error::other(format!(
-                "the operating system would not identify process {}",
-                child.id()
-            )));
-        }
-    };
-    match host.share_open_file_with(held, id) {
-        Err(e) if child.try_wait()?.is_none() => Err(e),
-        _ => Ok(()),
-    }
-}
-
 /// Runs the tool `name` of an install with `--version` and returns what it printed.
 pub(crate) type Verify = Arc<dyn Fn(&QemuInstall, &str) -> Result<String> + Send + Sync>;
 
@@ -221,7 +189,7 @@ fn run_version(host: &dyn Host, install: &QemuInstall, name: &str) -> Result<Str
         .run(name, host, |command| {
             command.arg("--version").current_dir(cwd.path());
         })
-        .map_err(|e| Error::io(ErrorKind::Store, format!("cannot run {} --version", tool.display()), e))?;
+        .map_err(|e| e.with_context(ErrorKind::Store, format!("cannot run {} --version", tool.display())))?;
     if !output.status.success() {
         return Err(Error::new(
             ErrorKind::Store,

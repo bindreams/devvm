@@ -49,9 +49,9 @@ impl QemuStorage {
         };
         let output = install
             .run("qemu-img", self.host, |command| {
-                command.args(args);
+                command.args(args.iter().copied());
             })
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot run {} {}", tool.display(), shown()), e))?;
+            .map_err(|e| e.with_context(ErrorKind::Io, format!("cannot run {} {}", tool.display(), shown())))?;
         if !output.status.success() {
             return Err(Error::new(
                 ErrorKind::Io,

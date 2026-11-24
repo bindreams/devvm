@@ -96,6 +96,10 @@ mod test_helpers {
             "qemu-extract",
             crate::backend::qemu::sidecar::sidecar_tests::extract_and_wait,
         ),
+        (
+            "qemu-run-owner",
+            crate::backend::qemu::sidecar::sidecar_tests::run_a_tool_that_stays,
+        ),
         ("qemu-launcher", crate::vm_suite::backend::qemu_launcher),
         ("qemu-shutdown", crate::vm_suite::backend::qemu_shutdown),
         ("access-heap", crate::access::heap_tests::access_heap),

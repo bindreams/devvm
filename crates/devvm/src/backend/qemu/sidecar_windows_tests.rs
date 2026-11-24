@@ -1,4 +1,6 @@
 use std::fs::OpenOptions;
+use std::io::Read;
+use std::net::{Ipv4Addr, TcpListener};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -7,6 +9,7 @@ use crate::contain::Lifetime;
 use crate::host;
 use crate::test_support::fake_vm;
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::helper;
 
 /// A world over the same cache as `world(home, zip_of(&files()))` whose manifest pins another build: the zip holds one
 /// more file, so its hash and the name of its install differ.
@@ -249,4 +252,25 @@ fn an_install_whose_hold_was_given_to_a_process_stays_whole_until_that_process_e
         std::thread::yield_now();
     }
     assert!(!installed.exists(), "{:?}", entries(&qemu));
+}
+
+/// A tool run from an install dies with the devvm that started it: it is contained. A helper process runs a tool that
+/// connects here and stays; killing the helper must end the tool, which closes its connection. A tool that was not
+/// contained keeps the connection, and the read below blocks. The helpers are spawned, so this runs in CI only.
+#[skuld::test]
+fn a_tool_run_from_an_install_dies_with_the_process_that_ran_it(#[fixture(unicode_home)] home: &Path) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let mut owner = helper::command(
+        "qemu-run-owner",
+        &[&home.display().to_string(), &listener.local_addr().unwrap().to_string()],
+    )
+    .spawn()
+    .expect("the owner helper should start");
+    let (mut connection, _) = listener.accept().unwrap();
+
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+
+    // A reset ends the connection as a close does.
+    let _ = connection.read_to_end(&mut Vec::new());
 }
