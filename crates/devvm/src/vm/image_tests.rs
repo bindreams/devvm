@@ -154,7 +154,11 @@ fn a_vm_without_a_machine_cannot_be_handed_over(#[fixture(unicode_home)] home: &
     let error = vm.hand_over(&mut || {}).err().expect("nothing to hand over");
 
     assert_eq!(error.kind(), ErrorKind::Internal);
-    assert!(error.message().contains("already handed over"), "{}", error.message());
+    assert!(error.message().contains("no machine"), "{}", error.message());
+    assert!(
+        names(&fx.env.dirs.instances()).is_empty(),
+        "the refused handover leaves the drop to remove the instance"
+    );
 }
 
 #[skuld::test]
@@ -174,6 +178,11 @@ fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(unicode_home
 
     assert_eq!(error.kind(), ErrorKind::Internal);
     assert!(error.message().contains("not owned"), "{}", error.message());
+    assert_eq!(
+        stub.calls(),
+        ["attach", "kill"],
+        "the refused handover leaves the drop to kill the machine"
+    );
 }
 
 #[skuld::test]
