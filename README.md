@@ -77,8 +77,12 @@ devvm rm dev
   [A Windows guest](#a-windows-guest)). `devvm run` takes its command the same way.
 - `cp` takes `INSTANCE:PATH` on one side and a local path on the other. A relative guest path starts in the user's
   home. `devvm cp --help` lists the names it cannot carry.
-- `cp` keeps only the execute bit of a file. A file copied from a Windows host has none, so a Linux guest gets it as
-  `0644`; make it executable afterwards:
+- `cp` carries no permissions but the execute bit. A file reaches the guest as `0755` if the host file has any execute
+  bit and as `0644` otherwise, less the guest account's umask. A file copied out gets the host's default mode, plus
+  execute for whoever can read it if the guest file has any execute bit. Directories get default modes, and a file that
+  replaces another takes the new mode. A private file (`0600`) is readable by others on the other side: restrict it
+  again after the copy. A Windows host has no execute bit, so a file copied from it is not executable in a Linux guest;
+  make it executable afterwards:
 
   ```sh
   devvm cp script.sh dev:script.sh

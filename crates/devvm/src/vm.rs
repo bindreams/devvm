@@ -50,11 +50,13 @@ pub trait Guest {
     /// Contract: a copied tree has no two names that differ only in case, no name ending in a dot or a space and no
     /// Windows device name. Nothing checks this, and a tree that breaks it may be copied wrongly.
     ///
-    /// Only the execute bit of a file is kept; a Windows host has none (see the README).
+    /// No permission is carried but the execute bit: the guest file is requested as `0755` if the host file has any
+    /// execute bit, else `0644`, and the guest's SFTP server applies the account's umask. A Windows host has none.
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()>;
     /// Copies the guest file, symlink or directory `src` to the host path `dest`. Same contract as [`Guest::copy_in`].
     ///
-    /// Only the execute bit of a file is kept; a Windows host has none (see the README).
+    /// No permission is carried but the execute bit: the host file gets its default mode, plus execute for whoever can
+    /// read it if the guest file has any execute bit; a Windows host adds nothing.
     fn copy_out(&self, src: &str, dest: &Path) -> Result<()>;
 }
 
