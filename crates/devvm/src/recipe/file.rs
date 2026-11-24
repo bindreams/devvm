@@ -333,7 +333,11 @@ impl Recipe {
         reject_out_of_scope(text, origin)?;
         let raw: RawRecipe = yaml_serde::from_str(text).map_err(|e| invalid(origin, &e).with_source(e))?;
         let dir = origin.parent().map(Path::to_path_buf).unwrap_or_default();
-        let name = raw.name.unwrap_or_else(|| default_name(origin));
+        let name = match raw.name {
+            Some(name) if name.trim().is_empty() => return Err(invalid(origin, "`name` is empty")),
+            Some(name) => name,
+            None => default_name(origin),
+        };
         let steps = raw
             .steps
             .into_iter()

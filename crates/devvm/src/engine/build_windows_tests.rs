@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use super::build_tests::{
-    Fixture, assert_a_failed_phase_commits_nothing, fixture, keys_of, no_instance_or_build_is_left, ran, recipe,
-    recipe_in,
+    Fixture, assert_a_failed_phase_commits_nothing, chained_recipe, fixture, keys_of, no_instance_or_build_is_left,
+    ran, recipe, recipe_in,
 };
 use crate::backend::fake::FakeBackend;
 use crate::copy::copy_tests::{add_all, new_repo, put};
@@ -74,7 +74,7 @@ fn a_failing_run_step_names_its_index_command_and_status_and_publishes_nothing(#
 
     assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
     let message = error.message();
-    assert!(message.contains("step 2 of 3"), "{message}");
+    assert!(message.contains("r: step 2 of 3"), "{message}");
     assert!(message.contains("`exit 3`"), "{message}");
     assert!(message.contains("exit code 3"), "{message}");
     assert!(
@@ -122,7 +122,7 @@ fn tasks_ended(events: &[Event]) -> Vec<(String, Option<String>, Outcome)> {
             })?;
             Some((label_of(*id)?, parent.and_then(label_of), *outcome))
         })
-        .filter(|(label, _, _)| label.starts_with("building ") || label.starts_with("step "))
+        .filter(|(label, _, _)| label.starts_with("building ") || label.contains(": step "))
         .collect()
 }
 
@@ -138,8 +138,8 @@ fn a_build_nests_its_steps_under_one_building_task(#[fixture(unicode_home)] home
     assert_eq!(
         tasks_ended(&events),
         [
-            ("step 1 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
-            ("step 2 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
+            ("r: step 1 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
+            ("r: step 2 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
             (building.clone(), None, Outcome::Finished),
         ]
     );
@@ -161,7 +161,7 @@ fn a_build_nests_its_steps_under_one_building_task(#[fixture(unicode_home)] home
     let steps: Vec<TaskId> = events
         .iter()
         .filter_map(|event| match event {
-            Event::Begin { id, label, .. } if label.starts_with("step ") => Some(*id),
+            Event::Begin { id, label, .. } if label.contains(": step ") => Some(*id),
             _ => None,
         })
         .collect();
@@ -189,6 +189,46 @@ fn a_build_nests_its_steps_under_one_building_task(#[fixture(unicode_home)] home
 }
 
 #[skuld::test]
+fn a_failing_step_of_the_child_recipe_is_named_by_the_child_and_its_own_position(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = chained_recipe(
+        home,
+        &["run: echo one", "run: echo two", "run: echo three"],
+        &["run: exit 3", "run: echo five"],
+    );
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    let message = error.message();
+    assert!(message.contains("top: step 1 of 2"), "{message}");
+    assert!(!message.contains("of 5"), "{message}");
+}
+
+#[skuld::test]
+fn the_step_task_label_names_the_recipe_and_position(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = chained_recipe(home, &["run: echo one"], &["run: echo two", "run: echo three"]);
+
+    fx.engine.build(&recipe, &BuildOptions::default()).unwrap();
+
+    let building = "building top".to_owned();
+    let events = fx.progress.events();
+    assert_eq!(
+        tasks_ended(&events),
+        [
+            (
+                "base: step 1 of 1".to_owned(),
+                Some(building.clone()),
+                Outcome::Finished
+            ),
+            ("top: step 1 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
+            ("top: step 2 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
+            (building, None, Outcome::Finished),
+        ]
+    );
+}
+
+#[skuld::test]
 fn a_failing_step_ends_every_open_task_abandoned(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let recipe = recipe(home, &["run: echo one", "run: exit 3"]);
@@ -199,8 +239,8 @@ fn a_failing_step_ends_every_open_task_abandoned(#[fixture(unicode_home)] home: 
     assert_eq!(
         tasks_ended(&fx.progress.events()),
         [
-            ("step 1 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
-            ("step 2 of 2".to_owned(), Some(building.clone()), Outcome::Abandoned),
+            ("r: step 1 of 2".to_owned(), Some(building.clone()), Outcome::Finished),
+            ("r: step 2 of 2".to_owned(), Some(building.clone()), Outcome::Abandoned),
             (building, None, Outcome::Abandoned),
         ]
     );
@@ -591,11 +631,11 @@ fn an_error_of_the_layer_store_around_a_step_names_the_step(#[fixture(unicode_ho
 
     let message = error.message();
     assert!(
-        message.starts_with("step 2 of 2 (building the step's layer): "),
+        message.starts_with("r: step 2 of 2 (building the step's layer): "),
         "{message}"
     );
     assert!(
-        !message.contains("step 2 of 2 (building the step's layer): step"),
+        !message.contains("step 2 of 2 (building the step's layer): r: step"),
         "{message}"
     );
     assert!(

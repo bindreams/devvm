@@ -415,6 +415,16 @@ fn name_defaults_to_the_file_stem() {
 }
 
 #[skuld::test]
+fn an_empty_or_blank_name_is_an_error_that_names_the_file() {
+    for name in ["\"\"", "\"  \"", "\"\\t\""] {
+        let error = parse_err(&format!("from: u\nname: {name}"));
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{name}");
+        assert!(error.message().contains("x.devvm.yaml"), "{name}: {error}");
+        assert!(error.message().contains("`name` is empty"), "{name}: {error}");
+    }
+}
+
+#[skuld::test]
 fn resources_parse_binary_sizes() {
     let recipe = parse("from: u\nresources: { cpus: 4, memory: 8GiB, disk: 40GiB }");
     assert_eq!(recipe.resources.cpus, Some(4));
