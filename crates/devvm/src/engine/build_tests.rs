@@ -680,6 +680,22 @@ fn an_escape_sequence_that_never_ends_is_reported_in_chunks() {
 }
 
 #[skuld::test]
+fn a_long_line_below_the_bound_is_one_entry_in_the_tail() {
+    // A linker command line, as rustc prints it after an error.
+    let command = format!("  = note: \"cc\" {}", long_line(30_000));
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    lines
+        .write_all(format!("error: linking failed\n{command}\n").as_bytes())
+        .unwrap();
+    drop(lines);
+
+    assert_eq!(tail.text(), format!("error: linking failed\n{command}"));
+    assert_eq!(progress.messages(), ["error: linking failed", command.as_str()]);
+}
+
+#[skuld::test]
 fn a_stream_of_unterminated_output_keeps_a_bounded_tail() {
     let progress = MemoryProgress::default();
     let tail = Tail::default();

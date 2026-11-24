@@ -504,10 +504,12 @@ impl Tail {
     }
 }
 
-/// The most bytes of one line that [`Lines`] holds back. A step that prints without a line end is reported in chunks of
-/// this size instead of growing the host's memory. It is far above any line a tool prints for a person to read, so
-/// ordinary lines are never split, and small enough that the lines of a [`Tail`] stay small.
-const LINE_CHUNK: usize = 4096;
+/// The most bytes of one line that [`Lines`] holds back: 64 KiB. It protects the host's memory against a stream with
+/// no line end, and costs a line longer than this its being reported in parts (each its own output event and its own
+/// slot of the [`Tail`]). Twice the 32,767 characters Windows allows a command line, it keeps whole the lines tools
+/// print: a linker command, a base64 blob, minified JSON. The [`Tail`]'s `TAIL_LINES` slots hold at most
+/// 20 x 64 KiB = 1.25 MiB, and each writer at most one chunk more.
+const LINE_CHUNK: usize = 64 * 1024;
 
 /// A writer that reports each complete line as step output and keeps it in a [`Tail`]; the rest goes out when it is
 /// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress).
