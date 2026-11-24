@@ -258,7 +258,10 @@ fn a_sha512_download_resumes_from_its_part_and_verifies_the_whole(#[fixture(unic
     let wanted = sha512_artifact(&data);
 
     setup.fetcher.fetch(&wanted).unwrap_err();
-    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 700_000);
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        700_000
+    );
 
     let path = setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), data);
@@ -328,7 +331,10 @@ fn remote_change_between_attempts_is_a_checksum_error_with_no_partial(#[fixture(
     let wanted = artifact(&original);
 
     assert_eq!(setup.fetcher.fetch(&wanted).unwrap_err().kind(), ErrorKind::Download);
-    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 40_000);
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        40_000
+    );
 
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
@@ -389,7 +395,10 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unico
         error.message().contains(URL) && error.message().contains("700000"),
         "{error}"
     );
-    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 700_000);
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        700_000
+    );
     assert!(setup.fetcher.sidecar_path(&wanted).is_file());
 
     let path = setup.fetcher.fetch(&wanted).unwrap();
@@ -443,7 +452,10 @@ fn connection_dropped_mid_body_is_an_interruption_not_a_checksum_error(#[fixture
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download);
     assert!(error.message().contains("10000 of 60000"), "{error}");
-    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 10_000);
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        10_000
+    );
 }
 
 #[skuld::test]
@@ -478,7 +490,10 @@ fn unexpected_status_on_resume_keeps_the_part(#[fixture(unicode_home)] home: &Pa
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download);
     assert!(error.message().contains("503"), "{error}");
-    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 30_000);
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        30_000
+    );
 }
 
 #[skuld::test]
@@ -489,11 +504,7 @@ fn a_cached_entry_clears_a_stale_sidecar(#[fixture(unicode_home)] home: &Path) {
     setup.fetcher.fetch(&wanted).unwrap();
     // A crash between publishing and deleting the sidecar leaves these behind.
     std::fs::write(setup.fetcher.sidecar_path(&wanted), b"{}").unwrap();
-    std::fs::write(
-        setup.fetcher.sidecar_temp_path(&wanted),
-        b"{}",
-    )
-    .unwrap();
+    std::fs::write(setup.fetcher.sidecar_temp_path(&wanted), b"{}").unwrap();
     setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(
         listing(&setup.downloads),
