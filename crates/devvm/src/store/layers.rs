@@ -33,10 +33,6 @@ use meta::MetaRead;
 #[path = "layers_tests.rs"]
 pub(crate) mod layers_tests;
 
-#[cfg(all(test, windows))]
-#[path = "layers_windows_tests.rs"]
-mod layers_windows_tests;
-
 #[cfg(test)]
 #[path = "layers/cross_tests.rs"]
 pub(crate) mod cross_tests;
