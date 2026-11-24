@@ -23,6 +23,15 @@ fn every_character_that_reorders_or_splits_a_line_is_written_as_an_escape() {
     }
 }
 
+/// The characters next to the ends of the set's ranges: a widened range escapes one of them.
+#[skuld::test]
+fn the_neighbours_of_that_set_stay_as_they_are() {
+    for c in ['\u{200b}', '\u{200d}', '\u{2060}', '\u{2065}', '\u{206a}', '\u{202f}'] {
+        let text = format!("a{c}b");
+        assert_eq!(escape_controls(&text), text);
+    }
+}
+
 #[skuld::test]
 fn a_joiner_inside_an_emoji_sequence_and_a_soft_hyphen_stay_as_they_are() {
     for text in ["\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}", "co\u{ad}operate"] {
