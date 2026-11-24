@@ -4,7 +4,7 @@
 //!
 //! - `<hash>/<file-name>`: a verified artifact, `<hash>` being the first 64 hex digits of the pinned digest (all of a
 //!   sha256, half of a sha512, so a path stays short enough for `qemu-img`). It exists only after verification and is
-//!   published by rename; a sha512 entry is checked against the whole digest on every later use;
+//!   published by rename, after its content was verified against the whole digest;
 //! - `<hash>.part` and `<hash>.part.json` (url and validator): a download in progress, kept across interruptions;
 //! - `<hash>.lock`: one OS lock per artifact, held for the whole fetch.
 
@@ -208,7 +208,6 @@ impl Fetcher {
         )?;
         let entry = self.entry_path(artifact);
         if entry.is_file() {
-            self.check_entry(artifact, &entry)?;
             // A crash between publishing and the cleanup in `verify_and_publish` leaves these behind.
             remove_if_present(&self.sidecar_path(artifact))?;
             remove_if_present(&self.sidecar_temp_path(artifact))?;
@@ -216,27 +215,6 @@ impl Fetcher {
         }
         self.download(artifact, &entry)?;
         Ok(entry)
-    }
-
-    /// A key that holds the whole digest names the entry's content; a shorter one is a prefix, so the entry is hashed
-    /// against the pin.
-    fn check_entry(&self, artifact: &Artifact, entry: &Path) -> Result<()> {
-        if artifact.hash.to_string().len() == KEY_DIGITS {
-            return Ok(());
-        }
-        let actual = Hasher::of_file(&artifact.hash, entry)?.finish();
-        if actual != artifact.hash {
-            return Err(Error::new(
-                ErrorKind::Checksum,
-                format!(
-                    "{} has {} {actual}, expected {}",
-                    entry.display(),
-                    artifact.hash.algorithm(),
-                    artifact.hash
-                ),
-            ));
-        }
-        Ok(())
     }
 
     // Download --------------------------------------------------------------------------------------------------------
