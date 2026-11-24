@@ -1,13 +1,16 @@
-//! `record.json` (what an instance is) and `owner.json` (who keeps it alive): the files an instance directory holds.
+//! `record.json` (what an instance is), `owner.json` (who keeps it alive) and `holder.json` (who holds its op lock): the
+//! files an instance directory holds.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::SystemTime;
 
+use cosca::identity::ProcessIdRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::MachineRecord;
+use crate::contain::cosca_error;
 use crate::host::{self, Host, remove_if_present};
 use crate::instance::name::InstanceName;
 use crate::random;
@@ -19,7 +22,7 @@ use crate::{Arch, Error, ErrorKind, GuestKind, Network, Result};
 #[path = "record_tests.rs"]
 mod record_tests;
 
-/// The schema of `record.json` and `owner.json` this devvm writes and reads.
+/// The schema of `record.json`, `owner.json` and `holder.json` this devvm writes and reads.
 pub(crate) const SCHEMA: u64 = 1;
 
 pub(crate) const RECORD_FILE: &str = "record.json";
@@ -394,6 +397,112 @@ pub(crate) fn read_marker(dir: &Path) -> Result<MarkerRead> {
         Ok(None) => MarkerRead::Absent,
         Err(why) => MarkerRead::Corrupt(why),
     })
+}
+
+// The holder of the op lock ===========================================================================================
+
+/// `holder.json`: the process that holds an instance's exclusive op lock, so a command that waits behind it can name it.
+///
+/// It is a record and not a question to the OS because std's file lock is `LockFileEx` on Windows, and no Windows call
+/// names the holder of a lock. The holder writes it once it holds the lock and removes it before releasing the lock, so
+/// a reader may see it written late or not at all, never half-written (see [`write_file`]); a reader names the process
+/// only if it still runs (a crashed holder leaves its record behind).
+///
+/// A wait asks once, when it begins, so a holder not yet recorded is not named and a name outlives its holder.
+///
+/// Every exclusive holder is recorded except quarantine, which takes the lock by id for an instance whose own record
+/// is unreadable, so a holder record cannot be shown to be that instance's. Whoever takes the lock shared removes any
+/// record, which cannot be current then.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Holder {
+    pub process: ProcessIdRecord,
+    /// See [`program_name`].
+    pub program: String,
+}
+
+pub(crate) const HOLDER_FILE: &str = "holder.json";
+
+/// What a holder is called when its executable cannot be read.
+const UNKNOWN_PROGRAM: &str = "unknown program";
+
+#[derive(Serialize, Deserialize)]
+struct WireHolder {
+    schema: u64,
+    process: ProcessIdRecord,
+    program: String,
+}
+
+impl Holder {
+    /// This process. The library can be embedded in any application, so only the program name is kept, never an
+    /// argument.
+    pub(crate) fn current() -> Result<Holder> {
+        // `ProcessId::current` panics where the host refuses the process its own handle; `Process::current` is the
+        // fallible call.
+        let id = cosca::Process::current()
+            .map_err(|e| cosca_error("cannot identify this process", e))?
+            .id();
+        let process = id
+            .to_record()
+            .map_err(|e| cosca_error(&format!("cannot record process {}", id.pid()), e))?;
+        let program = std::env::current_exe()
+            .ok()
+            .and_then(|exe| program_name(&exe))
+            .unwrap_or_else(|| UNKNOWN_PROGRAM.to_owned());
+        Ok(Holder { process, program })
+    }
+}
+
+/// The file name of `exe` without its directory, without a `.exe` extension (a name such as `devvm-0.1.0` or
+/// `my.tool` keeps its dots) and without a trailing ` (deleted)`; `None` if `exe` has no file name.
+///
+/// Linux appends ` (deleted)` to the path of an executable replaced while it runs, so a program really named so is
+/// shown without it.
+pub(crate) fn program_name(exe: &Path) -> Option<String> {
+    let file_name = exe.file_name()?.to_string_lossy();
+    let name = file_name
+        .strip_suffix(DELETED_MARK)
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(&file_name);
+    let name = Path::new(name);
+    let is_exe = name
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+    let name = if is_exe { name.file_stem()? } else { name.as_os_str() };
+    Some(name.to_string_lossy().into_owned())
+}
+
+/// What Linux appends to the path of a running executable that was deleted or replaced.
+const DELETED_MARK: &str = " (deleted)";
+
+fn holder_parse(text: &str) -> std::result::Result<Holder, String> {
+    let wire = serde_json::from_str::<WireHolder>(text).map_err(|e| e.to_string())?;
+    Ok(Holder {
+        process: wire.process,
+        program: wire.program,
+    })
+}
+
+/// The holder recorded in `dir`: `None` when there is no record or it is unusable (torn, hand-edited), neither of which
+/// names anyone. A record from a newer devvm is `Err(Store)`.
+pub(crate) fn read_holder(dir: &Path) -> Result<Option<Holder>> {
+    Ok(read_file(dir, HOLDER_FILE, holder_parse)?.unwrap_or(None))
+}
+
+/// Replaces `holder.json` atomically.
+pub(crate) fn write_holder(dir: &Path, holder: &Holder) -> Result<()> {
+    let wire = WireHolder {
+        schema: SCHEMA,
+        process: holder.process.clone(),
+        program: holder.program.clone(),
+    };
+    let text = serde_json::to_string(&wire).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
+    write_file(host::current(), dir, HOLDER_FILE, &text)
+}
+
+/// Removes `holder.json`; one that is not there is as good as removed.
+pub(crate) fn remove_holder(dir: &Path) -> Result<()> {
+    let path = dir.join(HOLDER_FILE);
+    remove_if_present(&path).map_err(|e| Error::io(ErrorKind::Io, format!("cannot remove {}", path.display()), e))
 }
 
 /// Replaces `owner.json` atomically.

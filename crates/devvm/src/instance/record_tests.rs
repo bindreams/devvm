@@ -6,7 +6,8 @@ use cosca::identity::{Platform, ProcessIdRecord};
 use crate::backend::{Endpoint, MachineRecord, SshEndpoint};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{
-    HOSTNAME_LEN, InstanceId, InstanceRecord, Marker, MarkerRead, Owner, RecordRead, read_marker, write_marker,
+    HOLDER_FILE, HOSTNAME_LEN, Holder, InstanceId, InstanceRecord, Marker, MarkerRead, Owner, RecordRead, program_name,
+    read_holder, read_marker, remove_holder, write_holder, write_marker,
 };
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
@@ -346,4 +347,60 @@ fn instance_ids_are_random_and_round_trip_as_text() {
         "000102030405060708090A0B0C0D0E0F".parse::<InstanceId>().is_err(),
         "ids are lowercase"
     );
+}
+
+#[skuld::test]
+fn a_holder_round_trips_and_goes_when_removed(#[fixture(unicode_home)] home: &Path) {
+    assert!(read_holder(home).unwrap().is_none());
+    let holder = Holder {
+        process: machine().process,
+        program: "devvm".to_owned(),
+    };
+    write_holder(home, &holder).unwrap();
+    assert_eq!(read_holder(home).unwrap(), Some(holder));
+    remove_holder(home).unwrap();
+    assert!(read_holder(home).unwrap().is_none());
+    remove_holder(home).expect("a record that is not there is as good as removed");
+}
+
+#[skuld::test]
+fn a_torn_holder_reads_as_none_and_one_from_a_newer_devvm_is_an_error(#[fixture(unicode_home)] home: &Path) {
+    for torn in ["", "{ torn", r#"{"schema":1,"program":"devvm"}"#, r#"{"schema":0}"#] {
+        std::fs::write(home.join(HOLDER_FILE), torn).unwrap();
+        assert!(read_holder(home).unwrap().is_none(), "{torn:?}");
+    }
+    std::fs::write(home.join(HOLDER_FILE), r#"{"schema":2}"#).unwrap();
+    assert_eq!(read_holder(home).unwrap_err().kind(), ErrorKind::Store);
+}
+
+#[skuld::test]
+fn the_program_is_the_file_name_without_its_directory_and_its_exe_extension() {
+    let at = |name: &str| program_name(&Path::new("bin").join(name));
+    assert_eq!(at("devvm.exe").as_deref(), Some("devvm"));
+    assert_eq!(at("DEVVM.EXE").as_deref(), Some("DEVVM"));
+    assert_eq!(at("devvm").as_deref(), Some("devvm"));
+    assert_eq!(at("my.tool.exe").as_deref(), Some("my.tool"));
+}
+
+#[skuld::test]
+fn a_program_name_keeps_the_dots_that_are_not_an_exe_extension() {
+    assert_eq!(program_name(Path::new("devvm-0.1.0")).as_deref(), Some("devvm-0.1.0"));
+    assert_eq!(program_name(Path::new("my.tool")).as_deref(), Some("my.tool"));
+}
+
+/// Linux appends ` (deleted)` to the path of an executable replaced while it runs.
+#[skuld::test]
+fn a_program_name_drops_the_deleted_mark_linux_appends_to_a_replaced_executable() {
+    let at = |name: &str| program_name(&Path::new("bin").join(name));
+    assert_eq!(at("devvm (deleted)").as_deref(), Some("devvm"));
+    assert_eq!(at("devvm.exe (deleted)").as_deref(), Some("devvm"));
+    assert_eq!(at("devvm (deleted) (deleted)").as_deref(), Some("devvm (deleted)"));
+    assert_eq!(at("devvm (deleted)x").as_deref(), Some("devvm (deleted)x"));
+    assert_eq!(at(" (deleted)").as_deref(), Some(" (deleted)"));
+}
+
+#[skuld::test]
+fn a_path_without_a_file_name_names_no_program() {
+    assert_eq!(program_name(Path::new("")), None);
+    assert_eq!(program_name(Path::new("..")), None);
 }
