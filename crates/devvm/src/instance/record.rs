@@ -412,9 +412,7 @@ pub(crate) fn read_marker(dir: &Path) -> Result<MarkerRead> {
 /// until the lock is free. The name it prints is the holder at that moment, so a holder that has taken the lock but
 /// not yet written its record is not named, and a name stays on screen after its holder has gone.
 ///
-/// Only the exclusive holder is recorded: a wait behind a shared holder, or behind the reaper, keeps the text without a
-/// holder. A record whose removal failed and whose process still runs would be named by a wait behind such a holder; the
-/// failed removal is a warning.
+/// Every exclusive holder is recorded. Whoever takes the lock shared removes any record, which cannot be current then.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Holder {
     pub process: ProcessIdRecord,
@@ -454,16 +452,27 @@ impl Holder {
     }
 }
 
-/// The file name of `exe` without its directory and without a `.exe` extension (a name such as `devvm-0.1.0` or
-/// `my.tool` keeps its dots); `None` if `exe` has no file name.
+/// The file name of `exe` without its directory, without a `.exe` extension (a name such as `devvm-0.1.0` or
+/// `my.tool` keeps its dots) and without a trailing ` (deleted)`; `None` if `exe` has no file name.
+///
+/// Linux appends ` (deleted)` to the path of an executable replaced while it runs, so a program really named so is
+/// shown without it.
 pub(crate) fn program_name(exe: &Path) -> Option<String> {
-    let name = exe.file_name()?;
-    let is_exe = exe
+    let file_name = exe.file_name()?.to_string_lossy();
+    let name = file_name
+        .strip_suffix(DELETED_MARK)
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(&file_name);
+    let name = Path::new(name);
+    let is_exe = name
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
-    let name = if is_exe { Path::new(name).file_stem()? } else { name };
+    let name = if is_exe { name.file_stem()? } else { name.as_os_str() };
     Some(name.to_string_lossy().into_owned())
 }
+
+/// What Linux appends to the path of a running executable that was deleted or replaced.
+const DELETED_MARK: &str = " (deleted)";
 
 fn holder_parse(text: &str) -> std::result::Result<Holder, String> {
     let wire = serde_json::from_str::<WireHolder>(text).map_err(|e| e.to_string())?;

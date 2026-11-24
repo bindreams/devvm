@@ -80,9 +80,10 @@ devvm rm dev
 - `stop` keeps the disk; `start` boots it again. The guest's `/tmp` is empty after a restart: keep files under `~`.
 - A command that waits for another process on the same instance says
   `waiting for <program> (PID <pid>) on instance <name>`, where `<program>` is the name of the holder's executable.
-  A holder of `run`, `ssh` or `cp` is not named: the wait says `another devvm command`. The wait names the holder at
-  the moment it began: a holder that has not yet written its record is not named, and the name stays on screen after
-  that holder finishes.
+  Only a holder of the exclusive lock is named (`start`, `stop`, `reboot`, `rm`, and devvm's own cleanup of abandoned
+  instances and dead VMs); a holder of `run`, `ssh` or `cp` is not, and the wait says `another devvm command`. The wait
+  names the holder at the moment it began: a holder that has not yet written its record is not named, and the name
+  stays on screen after that holder finishes.
 
 ### Output
 

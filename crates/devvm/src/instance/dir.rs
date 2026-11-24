@@ -50,16 +50,19 @@ impl Drop for OpExclusive {
     /// The holder record stays, with a warning, when it could not be shown to be this instance's or could not be removed.
     /// An instance that is gone or replaced has nothing of this holder's to remove.
     fn drop(&mut self) {
-        let removed = in_instance(&self.locks, &self.name, &self.path, &self.id, || {
-            remove_holder(&self.path)
-        });
-        if let Err(e) = removed {
-            self.progress.warn(&format!(
-                "instance {}: cannot remove the holder record ({})",
-                self.name,
-                e.message()
-            ));
-        }
+        remove_holder_record(&self.locks, &self.name, &self.path, &self.id, &*self.progress);
+    }
+}
+
+/// Removes `holder.json` of the instance `id` at `path`; one that is not there is not a failure. Else a warning names
+/// the instance.
+fn remove_holder_record(locks: &Locks, name: &InstanceName, path: &Path, id: &InstanceId, progress: &dyn Progress) {
+    let removed = in_instance(locks, name, path, id, || remove_holder(path));
+    if let Err(e) = removed {
+        progress.warn(&format!(
+            "instance {name}: cannot remove the holder record ({})",
+            e.message()
+        ));
     }
 }
 
@@ -213,7 +216,7 @@ impl InstanceDir {
     }
 
     /// Writes this process as the holder, once the exclusive lock is held. A record that cannot be written is a warning:
-    /// the process goes on, and a command that waits behind it names no one.
+    /// the process goes on.
     fn record_holder(&self) {
         let written = Holder::current().and_then(|holder| self.in_this_instance(|| write_holder(&self.path, &holder)));
         if let Err(e) = written {
@@ -225,15 +228,19 @@ impl InstanceDir {
         }
     }
 
+    /// The proof of the exclusive `lock`, just taken, with this process recorded as its holder. Every exclusive take
+    /// ends here, so none can leave the holder unrecorded.
     fn exclusive(&self, lock: FileLock) -> OpExclusive {
-        OpExclusive {
+        let op = OpExclusive {
             id: self.id,
             name: self.name.clone(),
             path: self.path.clone(),
             locks: self.locks.clone(),
             progress: self.progress.clone(),
             _lock: lock,
-        }
+        };
+        self.record_holder();
+        op
     }
 
     /// Waits for the exclusive op lock (`start`, `stop`, `reboot`, `rm`) and records this process as its holder.
@@ -243,22 +250,24 @@ impl InstanceDir {
             .locks
             .op_exclusive(&self.id, &self.what(), &*self.progress, &|| self.holder_text())?;
         self.record()?;
-        let op = self.exclusive(lock);
-        self.record_holder();
-        Ok(op)
+        Ok(self.exclusive(lock))
     }
 
     /// Waits for the shared op lock (`run`, `ssh`, `cp`). `NotFound` if the instance went away meanwhile.
+    ///
+    /// Under a shared lock no exclusive holder exists, so a holder record found is stale and is removed.
     pub(crate) fn op_shared(&self) -> Result<OpShared> {
         let lock = self
             .locks
             .op_shared(&self.id, &self.what(), &*self.progress, &|| self.holder_text())?;
         self.record()?;
-        Ok(OpShared { _lock: lock })
+        let op = OpShared { _lock: lock };
+        remove_holder_record(&self.locks, &self.name, &self.path, &self.id, &*self.progress);
+        Ok(op)
     }
 
-    /// The exclusive op lock if nobody holds it, else `None`. `NotFound` if the instance is gone. The holder is not
-    /// recorded: a wait behind it names no one.
+    /// The exclusive op lock if nobody holds it, else `None`, and records this process as its holder like
+    /// [`InstanceDir::op_exclusive`]. `NotFound` if the instance is gone.
     pub(crate) fn try_op_exclusive(&self) -> Result<Option<OpExclusive>> {
         match self.locks.try_op_exclusive(&self.id)? {
             Probe::Free(lock) => {

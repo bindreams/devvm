@@ -400,6 +400,17 @@ fn a_program_name_keeps_the_dots_that_are_not_an_exe_extension() {
     assert_eq!(program_name(Path::new("my.tool")).as_deref(), Some("my.tool"));
 }
 
+/// Linux appends ` (deleted)` to the path of an executable replaced while it runs.
+#[skuld::test]
+fn a_program_name_drops_the_deleted_mark_linux_appends_to_a_replaced_executable() {
+    let at = |name: &str| program_name(&Path::new("bin").join(name));
+    assert_eq!(at("devvm (deleted)").as_deref(), Some("devvm"));
+    assert_eq!(at("devvm.exe (deleted)").as_deref(), Some("devvm"));
+    assert_eq!(at("devvm (deleted) (deleted)").as_deref(), Some("devvm (deleted)"));
+    assert_eq!(at("devvm (deleted)x").as_deref(), Some("devvm (deleted)x"));
+    assert_eq!(at(" (deleted)").as_deref(), Some(" (deleted)"));
+}
+
 #[skuld::test]
 fn a_path_without_a_file_name_names_no_program() {
     assert_eq!(program_name(Path::new("")), None);
