@@ -184,7 +184,8 @@ pub(crate) fn keep_copy_with(
     }
     let (path, mut to) = create_named(dir, clock, SERIAL_COPY, b"")
         .map_err(|(path, e)| failed(format_args!("cannot write {}", path.display()), e))?;
-    let copied = std::io::copy(&mut from, &mut to);
+    // An error the file system reports only at flush is a failed copy too.
+    let copied = std::io::copy(&mut from, &mut to).and_then(|_| to.sync_all());
     drop(to);
     if let Err(e) = copied {
         if let Err(removed) = remove_if_present(&path) {
