@@ -28,7 +28,6 @@ impl HttpTransport {
 
     /// `new` with another stall bound.
     pub(crate) fn with_stall(stall: Duration) -> Result<HttpTransport> {
-        install_crypto_provider();
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(stall)
             // On the blocking client this bounds the wait for the response head and each body read, not the transfer.
@@ -40,12 +39,6 @@ impl HttpTransport {
             })?;
         Ok(HttpTransport { client, stall })
     }
-}
-
-/// Makes `ring` the process's rustls provider, which reqwest reads when it builds a client. A provider the host
-/// application installed first stays: `install_default` then returns an error, which is the answer wanted.
-fn install_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 /// The real HTTP transport, built on the first `get`. A failed build is a `Download` error naming the URL and is not

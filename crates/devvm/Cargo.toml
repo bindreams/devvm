@@ -26,10 +26,7 @@ getrandom = "0.4.3"
 # Directory modification times (`access/sftp/local.rs`): `std` cannot open a directory for writing on Unix.
 filetime = "0.2"
 jiff = "0.2.38"
-# TLS crypto: `ring`, the one provider (russh uses it too). reqwest's own `rustls` feature would add `aws-lc-rs` and its C
-# build; `store/fetch/http.rs` installs the provider reqwest then needs.
-reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
 url = "2.5.8"
 percent-encoding = "2.3.2"
 cosca = { version = "0.8.0", features = ["serde"] }
