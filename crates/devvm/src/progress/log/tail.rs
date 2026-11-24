@@ -48,7 +48,7 @@ fn keep_end(line: &mut Vec<u8>, keep: usize, cut: &mut bool) {
 }
 
 /// The last [`TAIL_LINES`](crate::error::TAIL_LINES) lines of the file at `path`, read in one pass.
-fn tail_of_file(path: &Path) -> io::Result<String> {
+pub(crate) fn tail_of_file(path: &Path) -> io::Result<String> {
     tail_of(BufReader::new(std::fs::File::open(path)?))
 }
 

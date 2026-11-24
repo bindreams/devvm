@@ -18,9 +18,9 @@ use crate::backend::qemu::sidecar::QemuInstall;
 use crate::config::Config;
 use crate::engine::engine_tests::engine_with_bound;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, LaunchHooks, LaunchStep};
-use crate::error::last_lines;
 use crate::host;
-use crate::progress::Progress;
+use crate::progress::log::tail::tail_of_file;
+use crate::progress::{Progress, escape_controls, strip_ansi};
 use crate::recipe::Recipe;
 use crate::store::fetch::{Fetcher, HttpTransport};
 use crate::test_groups::{Group, unicode_base};
@@ -327,13 +327,18 @@ impl Drop for Up {
             let name = instance.name().to_owned();
             if std::thread::panicking() {
                 // The guest's console is gone with the instance.
-                let log = instance.dir().serial_log();
-                eprintln!("serial log of instance {name}: {}", log.display());
-                match std::fs::read(&log) {
-                    Ok(bytes) => eprintln!("{}", last_lines(&String::from_utf8_lossy(&bytes))),
-                    Err(e) if host::is_absent(&e) => eprintln!("(no serial log)"),
-                    Err(e) => eprintln!("(cannot be read: {e})"),
+                let mut report = format!("serial log of instance {name}, last lines:");
+                match tail_of_file(&instance.dir().serial_log()) {
+                    Ok(tail) if tail.is_empty() => report.push_str("\n(empty)"),
+                    Ok(tail) => {
+                        for line in tail.lines() {
+                            report.push_str(&format!("\n{}", escape_controls(&strip_ansi(line))));
+                        }
+                    }
+                    Err(e) if host::is_absent(&e) => report.push_str("\n(no serial log)"),
+                    Err(e) => report.push_str(&format!("\n(cannot be read: {e})")),
                 }
+                eprintln!("{report}");
             }
             if let Err(e) = instance.remove() {
                 eprintln!("cannot remove instance {name}: {e}");

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod lines;
-mod log;
+pub(crate) mod log;
 pub use crate::text::escape_controls;
 pub use lines::{LineProgress, Look, VERBOSE_VAR, verbose_from_env};
 pub use log::FileLog;
