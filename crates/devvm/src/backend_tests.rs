@@ -60,6 +60,26 @@ fn machine_record_json_is_stable() {
     assert_eq!(serde_json::from_str::<MachineRecord>(GOLDEN).unwrap(), record);
 }
 
+/// A record is read as the schema of this build defines it: a field it has is not defaulted when it is missing.
+#[skuld::test]
+fn a_machine_record_without_leftovers_or_no_reboot_is_refused_naming_the_field() {
+    let (start, end) = (
+        GOLDEN.find(r#""leftovers""#).unwrap(),
+        GOLDEN.find(r#""claim""#).unwrap(),
+    );
+    for (field, without) in [
+        ("leftovers", format!("{}{}", &GOLDEN[..start], &GOLDEN[end..])),
+        ("no_reboot", GOLDEN.replace(r#","no_reboot":false"#, "")),
+    ] {
+        assert_ne!(without, GOLDEN, "{field}");
+        let error = serde_json::from_str::<MachineRecord>(&without).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("missing field `{field}`")),
+            "{field}: {error}"
+        );
+    }
+}
+
 #[skuld::test]
 fn a_machine_record_keeps_no_reboot() {
     let record = MachineRecord {
