@@ -219,6 +219,14 @@ fn long_help(command: &str) -> String {
 }
 
 #[skuld::test]
+fn cp_help_says_what_mode_a_copied_file_gets() {
+    let help = long_help("cp");
+    for phrase in ["0644", "chmod +x"] {
+        assert!(help.contains(phrase), "`devvm cp --help` lacks `{phrase}`:\n{help}");
+    }
+}
+
+#[skuld::test]
 fn help_states_the_copy_login_profile_and_snapshot_contracts() {
     let table = [
         ("cp", vec!["differ only in case", "1970 to 2106", ".devvm-partial-"]),

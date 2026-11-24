@@ -49,8 +49,12 @@ pub trait Guest {
     ///
     /// Contract: a copied tree has no two names that differ only in case, no name ending in a dot or a space and no
     /// Windows device name. Nothing checks this, and a tree that breaks it may be copied wrongly.
+    ///
+    /// Only the execute bit of a file is kept; a Windows host has none (see the README).
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()>;
     /// Copies the guest file, symlink or directory `src` to the host path `dest`. Same contract as [`Guest::copy_in`].
+    ///
+    /// Only the execute bit of a file is kept; a Windows host has none (see the README).
     fn copy_out(&self, src: &str, dest: &Path) -> Result<()>;
 }
 

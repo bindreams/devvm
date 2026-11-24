@@ -166,6 +166,10 @@ the colon, `c:path` names the file `path` in the instance `c`.
 The copied trees must not hold names that differ only in case, names ending in a dot or a space, or Windows device \
 names (`nul`, `con`). devvm does not check.
 
+Only the execute bit of a file is kept. A file copied from a Windows host has none, so a Linux guest gets it as 0644; \
+make it executable afterwards with devvm ssh <name> -- chmod +x <file>. A file copied out to a Windows host loses its \
+execute bit.
+
 A file time outside 1970 to 2106 is not kept, and `cp` says so; for a file in the guest the range is 1970 to 2038, \
 because SFTP version 3 carries 32 bits.
 

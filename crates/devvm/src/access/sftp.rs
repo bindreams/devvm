@@ -15,6 +15,7 @@
 //!   `/` included), and a path below one as the typed text and the rest; the normalised forms are only operated on
 //!   ([`typed::Typed`]).
 //! - Contents, the execute bit and the modification time of files are kept (through [`Host`] where the host decides).
+//!   A Windows host has no execute bit to keep.
 //! - Every file and link is written to `.devvm-partial-<random>` beside its target and renamed over it (on the guest
 //!   side with `posix-rename@openssh.com`), so a failure leaves no partial file at the final path, a read-only target
 //!   is replaced, and a symlink at the destination is replaced, never written through.

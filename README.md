@@ -77,6 +77,16 @@ devvm rm dev
   [A Windows guest](#a-windows-guest)). `devvm run` takes its command the same way.
 - `cp` takes `INSTANCE:PATH` on one side and a local path on the other. A relative guest path starts in the user's
   home. `devvm cp --help` lists the names it cannot carry.
+- `cp` keeps only the execute bit of a file. A file copied from a Windows host has none, so a Linux guest gets it as
+  `0644`; make it executable afterwards:
+
+  ```sh
+  devvm cp script.sh dev:script.sh
+  devvm ssh dev -- chmod +x script.sh
+  ```
+
+  A file copied out to a Windows host loses its execute bit.
+
 - `ls` lists the instances created from the current directory; `ls --all` lists every one.
 - `stop` keeps the disk; `start` boots it again. The guest's `/tmp` is empty after a restart: keep files under `~`.
 
