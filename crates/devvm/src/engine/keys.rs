@@ -91,7 +91,8 @@ pub(crate) fn read_record(engine: &Engine, dir: &InstanceDir, _op: &impl OpHeld)
 }
 
 /// The machine `dir` has now, built from its record, the backend and the key files, which are made private as they are
-/// read: the op lock keeps the starter from rewriting any of them. A recorded machine that the backend does not find is not running: the record is stale.
+/// read: the op lock keeps the starter from rewriting any of them. A recorded machine that the backend does not find is
+/// not running: the record is stale.
 pub(crate) fn read_target(engine: &Engine, dir: &InstanceDir, op: &impl OpHeld) -> Result<Running> {
     running_of(engine, dir, &read_record(engine, dir, op)?, op)
 }
