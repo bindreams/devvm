@@ -1,10 +1,12 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::host::names::{posix_problem, unix_run_dir, windows_colon_path, windows_problem, windows_run_dir};
+use crate::host::names::{
+    is_device_name, posix_problem, unix_run_dir, windows_colon_path, windows_problem, windows_run_dir,
+};
 use crate::random;
 use crate::test_groups::{Group, ntfs_names};
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{WINDOWS_DEVICE_NAMES, unicode_home};
 
 #[skuld::test]
 fn posix_names_are_anything_but_nothing_dots_slash_and_nul() {
@@ -203,6 +205,34 @@ fn windows_problem_agrees_with_what_ntfs_stores(
 fn windows_names_do_not_check_trailing_dots_spaces_or_device_names() {
     for name in ["x.", "x ", "con", "Aux.txt", "COM1", "CONIN$"] {
         assert_eq!(windows_problem(name), None, "{name:?}");
+    }
+}
+
+/// Windows takes a name for a device by the part before the first dot, in any case, with trailing spaces ignored.
+#[skuld::test]
+fn a_device_name_is_the_part_before_the_first_dot_in_any_case_without_trailing_spaces() {
+    for device in WINDOWS_DEVICE_NAMES {
+        for name in [
+            device.to_owned(),
+            device.to_ascii_lowercase(),
+            format!("{device}.txt"),
+            format!("{}.tar.gz", device.to_ascii_lowercase()),
+            format!("{device}."),
+            format!("{device} "),
+            format!("{device}  .x"),
+        ] {
+            assert!(is_device_name(&name), "{name:?}");
+        }
+    }
+}
+
+#[skuld::test]
+fn names_that_only_resemble_devices_are_not_device_names() {
+    for name in [
+        "", "com0", "com10", "COM10.img", "lpt0", "lpt10", "con1", "prn1", "console", "conin", "conout", "nulx", "xcon",
+        "com", "lpt", " con", "con\t", "a.con", ".con", "co n", "com1x",
+    ] {
+        assert!(!is_device_name(name), "{name:?}");
     }
 }
 
