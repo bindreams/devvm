@@ -152,7 +152,8 @@ impl Security {
                 // SAFETY: a type-0 entry is an `ACCESS_ALLOWED_ACE`, whose SID starts at `SidStart`.
                 let sid = unsafe { (&raw mut (*ace).SidStart).cast::<std::ffi::c_void>() };
                 Allowed {
-                    sid: user::sid_string(sid).unwrap(),
+                    // SAFETY: `sid` points into the live DACL, which is not changed meanwhile.
+                    sid: unsafe { user::sid_string(sid) }.unwrap(),
                     // SAFETY: as above; the fields are read unaligned because the entry sits in a byte buffer.
                     mask: unsafe { std::ptr::read_unaligned(&raw const (*ace).Mask) },
                     flags: unsafe { std::ptr::read_unaligned(&raw const (*ace).Header.AceFlags) },

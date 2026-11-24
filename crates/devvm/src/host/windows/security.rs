@@ -147,7 +147,8 @@ impl Owner {
     }
 
     pub(crate) fn sid(&self) -> io::Result<String> {
-        sid_string(self.sid)
+        // SAFETY: `sid` points into the descriptor `GetSecurityInfo` allocated, which `self` owns until it is dropped.
+        unsafe { sid_string(self.sid) }
     }
 
     /// `DOMAIN\name`, or the SID string if the account has no name.
