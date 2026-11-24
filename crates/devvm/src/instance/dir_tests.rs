@@ -507,7 +507,30 @@ fn a_holder_of_a_removed_instance_leaves_the_record_of_a_new_instance_of_the_nam
         read_holder(new.path()).unwrap().is_some(),
         "the old holder removed the new one's record"
     );
+    assert!(
+        fx.progress.warnings().is_empty(),
+        "there is nothing of the old holder's to remove: {:?}",
+        fx.progress.warnings()
+    );
     drop(new_holder);
+}
+
+#[skuld::test]
+fn a_holder_whose_instance_record_cannot_be_checked_warns_naming_the_instance(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = dir.op_exclusive().unwrap();
+    std::fs::write(dir.path().join("record.json"), "{ torn").unwrap();
+
+    drop(holder);
+
+    let warnings = fx.progress.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with("instance foo: "), "{warnings:?}");
+    assert!(
+        read_holder(dir.path()).unwrap().is_some(),
+        "the record could not be shown to be this instance's, so it stays"
+    );
 }
 
 /// Spawns the `hold-lock` helper process, which holds the op lock; the record written for it names it, as a record

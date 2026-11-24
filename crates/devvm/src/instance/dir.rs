@@ -39,6 +39,7 @@ pub(crate) struct InstanceDir {
 /// holder's record is never removed by this one.
 pub(crate) struct OpExclusive {
     id: InstanceId,
+    name: InstanceName,
     path: PathBuf,
     locks: Arc<Locks>,
     progress: Arc<dyn Progress>,
@@ -46,22 +47,48 @@ pub(crate) struct OpExclusive {
 }
 
 impl Drop for OpExclusive {
+    /// The holder record stays, with a warning, when it could not be shown to be this instance's or could not be removed.
+    /// An instance that is gone or replaced has nothing of this holder's to remove.
     fn drop(&mut self) {
-        let removed = in_instance(&self.locks, &self.path, &self.id, || remove_holder(&self.path));
+        let removed = in_instance(&self.locks, &self.name, &self.path, &self.id, || {
+            remove_holder(&self.path)
+        });
         if let Err(e) = removed {
-            self.progress.warn(e.message());
+            self.progress.warn(&format!(
+                "instance {}: cannot remove the holder record ({})",
+                self.name,
+                e.message()
+            ));
         }
     }
 }
 
-/// Runs `f` while no instance directory is renamed, if the directory at `path` is the instance `id`; else `None`.
-fn in_instance<T>(locks: &Locks, path: &Path, id: &InstanceId, f: impl FnOnce() -> Result<T>) -> Result<Option<T>> {
+/// Runs `f` while no instance directory is renamed, if the directory at `path` is the instance `id`: `None` if it is
+/// gone or another instance, `Store` if its record is unreadable.
+fn in_instance<T>(
+    locks: &Locks,
+    name: &InstanceName,
+    path: &Path,
+    id: &InstanceId,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<Option<T>> {
     locks
         .reading(path, || match InstanceRecord::read(path)? {
             RecordRead::Valid(record) if record.id == *id => f().map(Some),
-            RecordRead::Valid(_) | RecordRead::Absent | RecordRead::Corrupt(_) => Ok(None),
+            RecordRead::Corrupt(why) => Err(unreadable_record(name, path, &why)),
+            RecordRead::Valid(_) | RecordRead::Absent => Ok(None),
         })?
         .unwrap_or(Ok(None))
+}
+
+fn unreadable_record(name: &InstanceName, path: &Path, why: &str) -> Error {
+    Error::new(
+        ErrorKind::Store,
+        format!(
+            "the record of instance {name} is unreadable ({why}): {}",
+            path.join("record.json").display()
+        ),
+    )
 }
 
 /// Proof of the shared op lock of one instance (`run`, `ssh`, `cp`). It cannot change or remove anything.
@@ -134,19 +161,8 @@ impl InstanceDir {
                 ),
             )),
             RecordRead::Valid(_) | RecordRead::Absent => Err(self.gone()),
-            RecordRead::Corrupt(why) => Err(self.unreadable_record(&why)),
+            RecordRead::Corrupt(why) => Err(unreadable_record(&self.name, &self.path, &why)),
         }
-    }
-
-    fn unreadable_record(&self, why: &str) -> Error {
-        Error::new(
-            ErrorKind::Store,
-            format!(
-                "the record of instance {} is unreadable ({why}): {}",
-                self.name,
-                self.path.join("record.json").display()
-            ),
-        )
     }
 
     /// The owner marker on disk, whichever instance it names.
@@ -158,16 +174,16 @@ impl InstanceDir {
     /// be renamed meanwhile, and it must still be this handle's instance: `NotFound` if it is gone or another one,
     /// `Store` if its record is unreadable; nothing is written either way.
     pub(super) fn write_marker(&self, marker: &Marker, before_write: &mut dyn FnMut()) -> Result<()> {
-        self.locks
-            .reading(&self.path, || match InstanceRecord::read(&self.path)? {
-                RecordRead::Valid(record) if record.id == self.id => {
-                    before_write();
-                    write_marker(&self.path, marker)
-                }
-                RecordRead::Corrupt(why) => Err(self.unreadable_record(&why)),
-                RecordRead::Valid(_) | RecordRead::Absent => Err(self.gone()),
-            })?
-            .unwrap_or_else(|| Err(self.gone()))
+        self.in_this_instance(|| {
+            before_write();
+            write_marker(&self.path, marker)
+        })?
+        .ok_or_else(|| self.gone())
+    }
+
+    /// [`in_instance`] for this handle's instance.
+    fn in_this_instance<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<Option<T>> {
+        in_instance(&self.locks, &self.name, &self.path, &self.id, f)
     }
 
     fn what(&self) -> String {
@@ -178,7 +194,7 @@ impl InstanceDir {
     /// `<program> (PID <pid>) on instance <name>`. `None` names no one: no record, an unusable one, or one whose process
     /// has exited, is not this one or cannot be assessed. A record that cannot be read is a debug note.
     fn holder_text(&self) -> Option<String> {
-        let read = in_instance(&self.locks, &self.path, &self.id, || read_holder(&self.path));
+        let read = self.in_this_instance(|| read_holder(&self.path));
         let holder = match read {
             Ok(Some(Some(holder))) => holder,
             Ok(_) => return None,
@@ -200,7 +216,7 @@ impl InstanceDir {
     /// the process goes on, and a command that waits behind it names no one.
     fn record_holder(&self) {
         let written = Holder::current()
-            .and_then(|holder| in_instance(&self.locks, &self.path, &self.id, || write_holder(&self.path, &holder)));
+            .and_then(|holder| self.in_this_instance(|| write_holder(&self.path, &holder)));
         if let Err(e) = written {
             self.progress.warn(&format!(
                 "instance {}: cannot record the holder ({})",
@@ -213,6 +229,7 @@ impl InstanceDir {
     fn exclusive(&self, lock: FileLock) -> OpExclusive {
         OpExclusive {
             id: self.id,
+            name: self.name.clone(),
             path: self.path.clone(),
             locks: self.locks.clone(),
             progress: self.progress.clone(),
