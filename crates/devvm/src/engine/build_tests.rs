@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::access::keys::InstanceKeys;
 use crate::backend::Backend;
 use crate::backend::fake::{FakeBackend, FakeStorage};
-use crate::engine::build::{Lines, Tail, guest_destination, root_of};
+use crate::engine::build::{LINE_CHUNK, Lines, Tail, guest_destination, root_of};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
 use crate::guest::fake::{FakeGuests, ServedGuests};
@@ -534,15 +534,95 @@ fn a_blank_line_ends_in_a_carriage_return_and_line_feed_like_in_a_line_feed() {
 
 #[skuld::test]
 fn a_carriage_return_after_a_line_end_is_a_redraw_when_text_follows_it() {
-    assert_eq!(
-        lines_reported(&[b"a\r\n\r", b"10%\r100%\r\n"]),
-        ["a", "10%", "100%"]
-    );
+    assert_eq!(lines_reported(&[b"a\r\n\r", b"10%\r100%\r\n"]), ["a", "10%", "100%"]);
     assert_eq!(
         lines_reported(&[b"a\r\n\r"]),
         ["a"],
         "a lone carriage return at the end reports nothing"
     );
+}
+
+/// `len` bytes of text with no line end.
+fn long_line(len: usize) -> String {
+    (0..len).map(|n| char::from(b'a' + (n % 26) as u8)).collect()
+}
+
+#[skuld::test]
+fn a_line_without_a_line_end_is_reported_in_chunks_as_it_grows() {
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    let text = long_line(2 * LINE_CHUNK + 5);
+
+    lines.write_all(text.as_bytes()).unwrap();
+    assert_eq!(progress.messages().len(), 2, "two full chunks are out before the end");
+    drop(lines);
+
+    let reported = progress.messages();
+    assert_eq!(reported.len(), 3);
+    assert_eq!(reported.concat(), text);
+    assert!(reported[..2].iter().all(|line| line.len() == LINE_CHUNK));
+}
+
+#[skuld::test]
+fn a_line_of_exactly_a_chunk_is_one_line() {
+    let text = long_line(LINE_CHUNK);
+    for end in [&b"\n"[..], b"\r", b"\r\n"] {
+        assert_eq!(
+            lines_reported(&[text.as_bytes(), end, b"next\n"]),
+            [text.clone(), "next".to_owned()],
+            "{end:?}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_flushed_part_of_a_line_leaves_the_line_end_and_the_redraw_after_it_as_they_were() {
+    let text = long_line(LINE_CHUNK + 3);
+    let (first, rest) = text.split_at(LINE_CHUNK);
+    for end in [&b"\n"[..], b"\r\n", b"\r"] {
+        let mut input = text.clone().into_bytes();
+        input.extend_from_slice(end);
+        input.extend_from_slice(b"next\n");
+        assert_eq!(lines_reported(&[&input]), [first, rest, "next"], "{end:?}");
+    }
+    // The line end arrives in writes of its own after the flush.
+    assert_eq!(
+        lines_reported(&[text.as_bytes(), b"\r", b"\n", b"next\n"]),
+        [first, rest, "next"]
+    );
+}
+
+#[skuld::test]
+fn a_chunk_never_splits_a_character() {
+    // `é` is two bytes: the first falls on the last byte of the chunk.
+    let mut text = "a".repeat(LINE_CHUNK - 1).into_bytes();
+    text.extend_from_slice("é".as_bytes());
+    text.extend_from_slice(b"tail\n");
+
+    let reported = lines_reported(&[&text]);
+
+    assert_eq!(reported.concat(), format!("{}étail", "a".repeat(LINE_CHUNK - 1)));
+    assert!(!reported.concat().contains('\u{fffd}'), "{reported:?}");
+
+    // An invalid byte earlier in the chunk does not hide the cut character.
+    text[0] = 0xff;
+    let reported = lines_reported(&[&text]);
+    assert_eq!(
+        reported.concat().matches('\u{fffd}').count(),
+        1,
+        "only the invalid byte is replaced: {reported:?}"
+    );
+}
+
+#[skuld::test]
+fn a_stream_of_unterminated_output_keeps_a_bounded_tail() {
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    lines.write_all(long_line(50 * LINE_CHUNK).as_bytes()).unwrap();
+    drop(lines);
+    assert_eq!(tail.text().lines().count(), crate::error::TAIL_LINES);
 }
 
 /// The guests of the QEMU backend: a Windows recipe's guest is the real one, whose shells are the real ones.

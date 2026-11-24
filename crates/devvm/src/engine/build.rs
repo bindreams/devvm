@@ -504,6 +504,11 @@ impl Tail {
     }
 }
 
+/// The most bytes of one line that [`Lines`] holds back. A step that prints without a line end is reported in chunks of
+/// this size instead of growing the host's memory. It is far above any line a tool prints for a person to read, so
+/// ordinary lines are never split, and small enough that the lines of a [`Tail`] stay small.
+const LINE_CHUNK: usize = 4096;
+
 /// A writer that reports each complete line as step output and keeps it in a [`Tail`]; the rest goes out when it is
 /// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress).
 struct Lines<'a> {
@@ -540,6 +545,26 @@ impl<'a> Lines<'a> {
         self.progress.output(&line);
         self.tail.push(&line);
     }
+
+    /// Reports the pending bytes as one part of a long line, except the start of a character that is cut off at their
+    /// end, which stays pending to be completed.
+    fn flush_part(&mut self) {
+        let cut = self.pending.len() - unfinished_character(&self.pending);
+        self.report(&self.pending[..cut]);
+        self.pending.drain(..cut);
+    }
+}
+
+/// How many bytes at the end of `bytes` are the start of a UTF-8 character that more bytes would complete.
+fn unfinished_character(bytes: &[u8]) -> usize {
+    let Some(chunk) = bytes.utf8_chunks().last() else {
+        return 0;
+    };
+    let invalid = chunk.invalid();
+    match std::str::from_utf8(invalid) {
+        Err(error) if error.error_len().is_none() => invalid.len(),
+        _ => 0,
+    }
 }
 
 impl Write for Lines<'_> {
@@ -561,6 +586,11 @@ impl Write for Lines<'_> {
                     self.carriage = Carriage::EndedLine;
                 }
                 _ => {
+                    // A byte past the chunk is what makes it a part: a line of exactly a chunk stays one line. A part
+                    // is never empty, so the line end after it reports nothing extra.
+                    if self.pending.len() == LINE_CHUNK {
+                        self.flush_part();
+                    }
                     self.pending.push(byte);
                     self.carriage = Carriage::None;
                 }
