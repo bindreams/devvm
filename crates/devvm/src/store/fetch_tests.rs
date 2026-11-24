@@ -183,14 +183,6 @@ fn listing(dir: &Path) -> Vec<String> {
     crate::store::layers::layers_tests::names(dir)
 }
 
-fn part(setup: &Setup, artifact: &Artifact) -> PathBuf {
-    setup.downloads.join(format!("{}.part", artifact.cache_key()))
-}
-
-fn sidecar(setup: &Setup, artifact: &Artifact) -> PathBuf {
-    setup.downloads.join(format!("{}.part.json", artifact.cache_key()))
-}
-
 // Happy path ==========================================================================================================
 
 #[skuld::test]
@@ -250,7 +242,7 @@ fn a_wrong_sha512_is_a_checksum_error_naming_the_algorithm_and_both_digests(#[fi
         error.message().contains(&sha512_artifact(&served).hash.to_string()),
         "{error}"
     );
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
     assert!(!setup.fetcher.entry_path(&wanted).exists());
 }
 
@@ -266,7 +258,7 @@ fn a_sha512_download_resumes_from_its_part_and_verifies_the_whole(#[fixture(unic
     let wanted = sha512_artifact(&data);
 
     setup.fetcher.fetch(&wanted).unwrap_err();
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 700_000);
+    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 700_000);
 
     let path = setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), data);
@@ -297,7 +289,7 @@ fn wrong_sha256_deletes_the_partial_and_reports_url_expected_and_actual(#[fixtur
     assert!(error.message().contains(URL), "{error}");
     assert!(error.message().contains(&wanted.hash.to_string()), "{error}");
     assert!(error.message().contains(&sha_of(&served).to_string()), "{error}");
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
     assert!(!setup.fetcher.entry_path(&wanted).exists());
 }
 
@@ -312,7 +304,7 @@ fn truncated_artifact_is_a_checksum_error_and_leaves_no_entry(#[fixture(unicode_
 
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
     assert!(!setup.fetcher.entry_path(&wanted).exists());
 }
 
@@ -336,11 +328,11 @@ fn remote_change_between_attempts_is_a_checksum_error_with_no_partial(#[fixture(
     let wanted = artifact(&original);
 
     assert_eq!(setup.fetcher.fetch(&wanted).unwrap_err().kind(), ErrorKind::Download);
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 40_000);
+    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 40_000);
 
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
     assert_eq!(
         transport.requests()[1],
         Some(Resume {
@@ -365,7 +357,7 @@ fn server_ignoring_if_range_and_sending_206_of_new_content_is_caught_by_the_hash
     assert_eq!(setup.fetcher.fetch(&wanted).unwrap_err().kind(), ErrorKind::Download);
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
 }
 
 // Interruptions keep the partial ======================================================================================
@@ -397,8 +389,8 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unico
         error.message().contains(URL) && error.message().contains("700000"),
         "{error}"
     );
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 700_000);
-    assert!(sidecar(&setup, &wanted).is_file());
+    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 700_000);
+    assert!(setup.fetcher.sidecar_path(&wanted).is_file());
 
     let path = setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), data);
@@ -436,7 +428,7 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unico
         resuming < first_advance,
         "\"resuming\" is said before the first position: {resumed:?}"
     );
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
 }
 
 #[skuld::test]
@@ -451,7 +443,7 @@ fn connection_dropped_mid_body_is_an_interruption_not_a_checksum_error(#[fixture
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download);
     assert!(error.message().contains("10000 of 60000"), "{error}");
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 10_000);
+    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 10_000);
 }
 
 #[skuld::test]
@@ -486,7 +478,7 @@ fn unexpected_status_on_resume_keeps_the_part(#[fixture(unicode_home)] home: &Pa
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download);
     assert!(error.message().contains("503"), "{error}");
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 30_000);
+    assert_eq!(std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(), 30_000);
 }
 
 #[skuld::test]
@@ -496,9 +488,9 @@ fn a_cached_entry_clears_a_stale_sidecar(#[fixture(unicode_home)] home: &Path) {
     let setup = setup(home, Script::serving(data.clone()));
     setup.fetcher.fetch(&wanted).unwrap();
     // A crash between publishing and deleting the sidecar leaves these behind.
-    std::fs::write(sidecar(&setup, &wanted), b"{}").unwrap();
+    std::fs::write(setup.fetcher.sidecar_path(&wanted), b"{}").unwrap();
     std::fs::write(
-        setup.downloads.join(format!("{}.part.json.tmp", wanted.cache_key())),
+        setup.fetcher.sidecar_temp_path(&wanted),
         b"{}",
     )
     .unwrap();
@@ -514,9 +506,9 @@ fn a_cached_entry_clears_a_stale_sidecar(#[fixture(unicode_home)] home: &Path) {
 /// Leaves `have` bytes of `data` as a part from `URL`, as an interrupted run would.
 fn seed_part(setup: &Setup, artifact: &Artifact, data: &[u8], have: usize, url: &str) {
     std::fs::create_dir_all(&setup.downloads).unwrap();
-    std::fs::write(part(setup, artifact), &data[..have]).unwrap();
+    std::fs::write(setup.fetcher.part_path(artifact), &data[..have]).unwrap();
     let json = format!("{{\"url\":\"{url}\",\"validator\":\"{}\"}}", ETAG.replace('"', "\\\""));
-    std::fs::write(sidecar(setup, artifact), json).unwrap();
+    std::fs::write(setup.fetcher.sidecar_path(artifact), json).unwrap();
 }
 
 #[skuld::test]
@@ -618,7 +610,7 @@ fn a_part_without_a_sidecar_is_restarted_and_says_why(#[fixture(unicode_home)] h
     let setup = setup(home, Script::serving(data.clone()));
     let wanted = artifact(&data);
     seed_part(&setup, &wanted, &data, 2_000, URL);
-    std::fs::remove_file(sidecar(&setup, &wanted)).unwrap();
+    std::fs::remove_file(setup.fetcher.sidecar_path(&wanted)).unwrap();
 
     setup.fetcher.fetch(&wanted).unwrap();
     let [message] = abandonments(&setup).try_into().unwrap();
@@ -631,7 +623,7 @@ fn an_unreadable_sidecar_is_restarted_and_says_why(#[fixture(unicode_home)] home
     let setup = setup(home, Script::serving(data.clone()));
     let wanted = artifact(&data);
     seed_part(&setup, &wanted, &data, 2_000, URL);
-    std::fs::write(sidecar(&setup, &wanted), b"{ torn").unwrap();
+    std::fs::write(setup.fetcher.sidecar_path(&wanted), b"{ torn").unwrap();
 
     setup.fetcher.fetch(&wanted).unwrap();
     let [message] = abandonments(&setup).try_into().unwrap();
@@ -795,7 +787,7 @@ fn disk_full_is_a_clear_error_and_publishes_nothing(#[fixture(unicode_home)] hom
 
         let error = fetcher.fetch(&wanted).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::DiskFull, "{kind:?}: {error}");
-        let part = downloads.join(format!("{}.part", wanted.cache_key()));
+        let part = fetcher.part_path(&wanted);
         assert!(error.message().contains(&part.display().to_string()), "{error}");
         assert!(error.message().ends_with("run again to resume"), "{error}");
         assert_eq!(

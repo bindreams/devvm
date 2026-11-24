@@ -184,11 +184,11 @@ impl Fetcher {
             .join(name::file_name(&artifact.url))
     }
 
-    fn part_path(&self, artifact: &Artifact) -> PathBuf {
+    pub(super) fn part_path(&self, artifact: &Artifact) -> PathBuf {
         self.downloads.join(format!("{}.part", artifact.cache_key()))
     }
 
-    fn sidecar_path(&self, artifact: &Artifact) -> PathBuf {
+    pub(super) fn sidecar_path(&self, artifact: &Artifact) -> PathBuf {
         self.downloads.join(format!("{}.part.json", artifact.cache_key()))
     }
 
@@ -405,7 +405,7 @@ impl Fetcher {
         }
     }
 
-    fn sidecar_temp_path(&self, artifact: &Artifact) -> PathBuf {
+    pub(super) fn sidecar_temp_path(&self, artifact: &Artifact) -> PathBuf {
         self.downloads.join(format!("{}.part.json.tmp", artifact.cache_key()))
     }
 

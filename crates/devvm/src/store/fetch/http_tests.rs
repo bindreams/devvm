@@ -153,7 +153,7 @@ fn http_transport_resumes_with_range_and_if_range(#[fixture(unicode_home)] home:
 
     let error = fetcher.fetch(&artifact).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download, "{error}");
-    let part = downloads.join(format!("{}.part", artifact.hash));
+    let part = fetcher.part_path(&artifact);
     let kept = std::fs::metadata(&part).unwrap().len();
     assert!(kept > 0 && kept <= 81_920, "{kept}");
 
@@ -215,15 +215,15 @@ fn ctrl_c_mid_download_resumes(#[fixture(unicode_home)] home: &Path) {
     a.child.kill().unwrap();
     a.child.wait().unwrap();
 
-    let part = downloads.join(format!("{}.part", artifact.hash));
-    let kept = std::fs::metadata(&part).unwrap().len();
-    assert!(kept >= (3 * MIB) as u64, "{kept}");
-
     let fetcher = Fetcher::new(
         downloads.clone(),
         Arc::new(HttpTransport::new().unwrap()),
         Arc::new(NullProgress),
     );
+    let part = fetcher.part_path(&artifact);
+    let kept = std::fs::metadata(&part).unwrap().len();
+    assert!(kept >= (3 * MIB) as u64, "{kept}");
+
     // The dead downloader's lock died with it: this fetch does not wait.
     let path = fetcher.fetch(&artifact).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), body);
@@ -257,7 +257,7 @@ fn a_stall_mid_body_is_reported_as_a_stall_and_keeps_the_part(#[fixture(unicode_
     assert_eq!(error.kind(), ErrorKind::Download, "{error}");
     assert!(error.message().contains("no data for 1s"), "{error}");
     assert_eq!(error.message().matches(&artifact.url).count(), 1, "{error}");
-    let part = downloads.join(format!("{}.part", artifact.hash));
+    let part = fetcher.part_path(&artifact);
     assert!(std::fs::metadata(part).unwrap().len() > 0);
 }
 
