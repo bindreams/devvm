@@ -62,13 +62,13 @@ impl QemuEngine {
     /// An engine over the layout of `Dirs::under(home)` except for the runtime directory: `run` is where the host
     /// puts it, or why it cannot name one.
     fn with_run(home: &Path, run: Result<PathBuf>) -> QemuEngine {
-        let vars = ["config", "data", "cache", "state"].map(|name| {
-            (
-                format!("XDG_{}_HOME", name.to_uppercase()),
-                home.join(name).into_os_string(),
-            )
-        });
-        let var = |name: &str| vars.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone());
+        let vars = Dirs::env_under(home).map(|(name, dir)| (name, dir.into_os_string()));
+        // Every variable but the runtime directory, which `run` stands in for.
+        let var = |name: &str| {
+            vars.iter()
+                .find(|(key, _)| *key == name && *key != "XDG_RUNTIME_DIR")
+                .map(|(_, value)| value.clone())
+        };
         let dirs = Dirs::from_lookup(Some(home.to_path_buf()), &var, &|| run.clone()).unwrap();
         QemuEngine::over(home, dirs)
     }

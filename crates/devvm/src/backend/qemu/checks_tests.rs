@@ -94,6 +94,36 @@ fn a_configured_qemu_path_that_is_accepted_passes_and_names_its_hash(#[fixture(u
     assert!(transport.asked().is_empty());
 }
 
+/// An unreadable system emulator costs only the hash, not the pass.
+pub(super) fn brief_and_full_agree_on_an_emulator_that_cannot_be_read(
+    home: &Path,
+    make_unreadable: impl FnOnce(&Path),
+) {
+    let dirs = Dirs::under(home);
+    let bin = home.join("qemu").join("bin");
+    make_tools(&bin);
+    make_firmware(&bin.join("share"));
+    let system = bin.join(format!(
+        "{}{}",
+        ArchFiles::of(Arch::host()).system,
+        std::env::consts::EXE_SUFFIX
+    ));
+    make_unreadable(&system);
+    configure(&dirs, &bin);
+    let (install, _) = install_over(&dirs, Ok(pinned()));
+
+    let brief = qemu_check(&install, Detail::Brief);
+    let full = qemu_check(&install, Detail::Full);
+
+    assert!(brief.outcome.is_ok(), "{brief:?}");
+    let full = full.outcome.expect("the hash is information, not a verdict");
+    assert!(full.contains("unavailable"), "{full}");
+    assert!(
+        full.contains(&system.display().to_string()),
+        "the hash failure names the file: {full}"
+    );
+}
+
 #[skuld::test]
 fn a_brief_qemu_check_passes_without_a_hash(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
@@ -131,6 +161,28 @@ fn a_configured_path_that_is_not_accepted_fails_naming_the_path(#[fixture(unicod
 
     assert!(why.contains(&empty.display().to_string()), "{why}");
     assert!(why.contains("qemu-img"), "{why}");
+}
+
+#[skuld::test]
+fn a_configured_path_removed_after_a_passing_check_fails_the_next_check_of_the_same_install(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dirs = Dirs::under(home);
+    let bin = home.join("qemu").join("bin");
+    make_tools(&bin);
+    make_firmware(&bin.join("share"));
+    configure(&dirs, &bin);
+    let (install, _) = install_over(&dirs, Ok(pinned()));
+    qemu_check(&install, Detail::Brief)
+        .outcome
+        .expect("the configured path is accepted");
+
+    std::fs::remove_dir_all(&bin).unwrap();
+
+    let why = qemu_check(&install, Detail::Brief)
+        .outcome
+        .expect_err("the directory is gone");
+    assert!(why.contains(&bin.display().to_string()), "{why}");
 }
 
 #[skuld::test]

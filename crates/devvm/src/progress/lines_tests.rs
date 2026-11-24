@@ -207,7 +207,7 @@ fn controls_in_a_note_are_escaped_so_a_line_stays_one_line() {
     let (progress, out) = sink(VERBOSE);
     progress.message("a\rb\u{1b}[31mc\0d\ne\tf");
     progress.output("C:\\Users\\x\r");
-    assert_eq!(out.lines(), ["a\\rb\\u{1b}[31mc\\0d\\ne\\tf", "C:\\Users\\x\\r"]);
+    assert_eq!(out.lines(), ["a\\rb\\u{1b}[31mc\\u{0}d\\ne\\tf", "C:\\Users\\x\\r"]);
 }
 
 #[skuld::test]

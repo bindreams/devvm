@@ -17,7 +17,7 @@ use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::ops::ops_tests::{running_instance, short_bound_instance};
 use crate::vm::{Guest, Handle, ops};
-use crate::{Command, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
+use crate::{Command, Dirs, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
 use secrecy::ExposeSecret;
 use skuld::env;
 
@@ -110,14 +110,8 @@ fn availability_of_an_engine_that_cannot_be_built_says_why(
     #[fixture(env)] env: &skuld::EnvGuard,
     #[fixture(unicode_home)] home: &Path,
 ) {
-    for (variable, directory) in [
-        ("XDG_CONFIG_HOME", "config"),
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_CACHE_HOME", "cache"),
-        ("XDG_STATE_HOME", "state"),
-        ("XDG_RUNTIME_DIR", "run"),
-    ] {
-        env.set(variable, home.join(directory).to_str().unwrap());
+    for (variable, directory) in Dirs::env_under(home) {
+        env.set(variable, directory.to_str().unwrap());
     }
     std::fs::create_dir_all(home.join("config").join("devvm")).unwrap();
     let file = home.join("config").join("devvm").join("config.yaml");

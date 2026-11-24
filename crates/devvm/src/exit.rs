@@ -7,6 +7,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::progress::{Colour, paint};
+use crate::text::escape_controls;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
@@ -180,15 +181,11 @@ pub const ERROR_PREFIX: &str = "devvm-error:";
 
 /// `devvm-error: <kind>: <message>` on one line: control characters are escaped, so the line has no newline inside.
 pub fn format_error_line(error: &Error) -> String {
-    let mut line = format!("{ERROR_PREFIX} {}: ", error.kind().as_str());
-    for c in error.message().chars() {
-        if c.is_control() {
-            line.extend(c.escape_default());
-        } else {
-            line.push(c);
-        }
-    }
-    line
+    format!(
+        "{ERROR_PREFIX} {}: {}",
+        error.kind().as_str(),
+        escape_controls(error.message())
+    )
 }
 
 /// `line`, a [`format_error_line`], with its `devvm-error:` prefix alone in red.

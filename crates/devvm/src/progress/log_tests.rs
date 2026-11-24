@@ -132,7 +132,10 @@ fn output_lines_are_complete_and_controls_are_escaped(#[fixture(unicode_home)] h
     let records = records(&log);
     assert_eq!(records.len(), 3, "{records:?}");
     assert_eq!(records[0], format!("{AT} OUTPUT {long}"));
-    assert_eq!(records[1], format!("{AT} OUTPUT redraw\\r10%\\u{{1b}}[31m red\\0 nul"));
+    assert_eq!(
+        records[1],
+        format!("{AT} OUTPUT redraw\\r10%\\u{{1b}}[31m red\\u{{0}} nul")
+    );
     assert_eq!(records[2], format!("{AT} WARN two\\nlines"));
 }
 

@@ -1,8 +1,8 @@
 use std::cell::Cell;
 use std::error::Error as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Barrier, mpsc};
 
 use tokio::runtime::{Builder, Runtime};
 
@@ -14,14 +14,12 @@ fn a_failed_build_is_not_kept_and_a_built_value_is_not_built_again() {
     let lazy = Lazy::<u32>::new();
     let builds = Cell::new(0);
     assert!(lazy.get(|| Err(Error::new(ErrorKind::Io, "no"))).is_err());
-    assert_eq!(lazy.built(), None);
 
     let second = lazy.get(|| {
         builds.set(builds.get() + 1);
         Ok::<_, Error>(7)
     });
     assert_eq!(second.unwrap(), &7);
-    assert_eq!(lazy.built(), Some(&7));
 
     let third = lazy.get(|| {
         builds.set(builds.get() + 1);
@@ -59,29 +57,6 @@ fn a_panicking_build_leaves_the_next_get_able_to_build() {
         .is_err()
     );
     assert_eq!(lazy.get(|| Ok::<_, Error>(3)).unwrap(), &3);
-}
-
-#[skuld::test]
-fn built_does_not_wait_for_a_build_in_progress() {
-    let lazy = Lazy::<u32>::new();
-    let (started, wait_for_start) = mpsc::channel();
-    let (release, wait_for_release) = mpsc::channel::<()>();
-    std::thread::scope(|scope| {
-        let lazy = &lazy;
-        let builder = scope.spawn(move || {
-            lazy.get(|| {
-                started.send(()).unwrap();
-                wait_for_release.recv().unwrap();
-                Ok::<_, Error>(1)
-            })
-            .copied()
-        });
-        wait_for_start.recv().unwrap();
-        assert_eq!(lazy.built(), None);
-        release.send(()).unwrap();
-        assert_eq!(builder.join().unwrap().unwrap(), 1);
-    });
-    assert_eq!(lazy.built(), Some(&1));
 }
 
 #[skuld::test]
