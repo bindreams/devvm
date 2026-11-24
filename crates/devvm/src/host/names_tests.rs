@@ -106,8 +106,8 @@ fn round_trip(path: &Path) -> Result<(), String> {
     }
 }
 
-/// `dir` with `name` as the one name below it. `Path::join` takes `C:z` for a path of its own (drive `C:`, relative to the
-/// current directory there), which would create a file next to the test's working directory.
+/// `dir` with `name` as the one name below it. `Path::join` takes `C:z` for a path of its own (drive `C:`, relative to
+/// the current directory there), which would create a file next to the test's working directory.
 fn child(dir: &Path, name: &str) -> PathBuf {
     let mut path = dir.as_os_str().to_owned();
     path.push(std::path::MAIN_SEPARATOR_STR);

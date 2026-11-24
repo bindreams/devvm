@@ -305,8 +305,7 @@ fn a_name_fatfs_rejects_is_refused_by_name_with_fatfs_s_reason(#[fixture(unicode
     }
 }
 
-/// `fatfs` numbers the short name of a long one (`ABCDEF~1`), then tries checksums when the numbers are taken; it never
-/// answers `AlreadyExists` to `create_file`, so [`is_name_rejection`] has no arm for it.
+/// Long names whose short names share a prefix take `~1` to `~4`, then a checksum form; all are written as asked.
 #[skuld::test]
 fn long_names_that_share_a_prefix_beyond_the_numbered_short_names_are_written_as_asked(
     #[fixture(unicode_home)] home: &Path,
