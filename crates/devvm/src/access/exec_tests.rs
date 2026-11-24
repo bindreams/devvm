@@ -1,10 +1,10 @@
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use futures::FutureExt;
 
-use super::{Event, ExecEnd, run_exec, take_queued};
+use super::{Arrived, EVENT_BUFFER, Event, ExecEnd, relay, run_exec};
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
 use crate::exit::{ExitStatus, ExitWidth, Report, status_json};
 use crate::progress::NullProgress;
@@ -48,7 +48,13 @@ fn a_vm_exit_ends_an_exec_whose_close_has_no_room_in_the_session_queue(#[fixture
     let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
     let session = SshSession::connect(&rig.target(), NEVER, vm, None, &NullProgress).unwrap();
     let (events, mut host) = tokio::sync::mpsc::channel(1);
-    let running = runtime::spawn(run_exec(session.inner.clone(), "hold".to_owned(), events)).unwrap();
+    let running = runtime::spawn(run_exec(
+        session.inner.clone(),
+        "hold".to_owned(),
+        events,
+        Arc::default(),
+    ))
+    .unwrap();
     rig.sshd.wait_for_commands(1);
 
     let (_upload, taken) = stall_the_outgoing_queue(&session, &rig);
@@ -105,51 +111,123 @@ fn the_status_file_carries_it_signed(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(ExitWidth::Full32.exit_code(&status), -1_073_741_819);
 }
 
+/// A host sink that refuses every write.
+struct Refuses;
+
+impl std::io::Write for Refuses {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "the reader is gone",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// An event buffer as the task leaves it when the host is slow: full of output, with the task blocked on the next send.
+fn full_of_output() -> tokio::sync::mpsc::Receiver<Event> {
+    let (events, buffered) = tokio::sync::mpsc::channel(EVENT_BUFFER);
+    for n in 0..EVENT_BUFFER {
+        events
+            .try_send(Event::Out(
+                format!(
+                    "{n}
+"
+                )
+                .into_bytes(),
+            ))
+            .unwrap();
+    }
+    buffered
+}
+
 #[skuld::test]
-fn a_failed_write_takes_the_status_the_task_already_queued() {
-    let (events, mut queued) = tokio::sync::mpsc::channel(8);
-    events.try_send(Event::Out(b"1\n".to_vec())).unwrap();
-    events.try_send(Event::Out(b"2\n".to_vec())).unwrap();
-    events.try_send(Event::Status(ExitStatus::Code(7))).unwrap();
+fn a_failed_write_names_the_status_that_arrived_behind_a_full_event_buffer() {
+    let buffered = full_of_output();
+    let arrived = Arrived::default();
+    arrived.set_status(ExitStatus::Code(7));
+
+    let end = relay(buffered, &arrived, &mut Refuses, &mut Vec::new()).unwrap();
+
+    match end {
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            assert_eq!(status, Some(ExitStatus::Code(7)), "the command's result is not lost");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[skuld::test]
+fn a_failed_write_without_a_status_that_arrived_names_none() {
+    let end = relay(full_of_output(), &Arrived::default(), &mut Refuses, &mut Vec::new()).unwrap();
+
+    match end {
+        ExecEnd::HostOutputClosed { status, .. } => assert_eq!(status, None),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[skuld::test]
+fn a_failed_write_names_the_loss_that_arrived_behind_a_full_event_buffer() {
+    let arrived = Arrived::default();
+    arrived.set_status(ExitStatus::Code(7));
+    arrived.lose(Error::new(ErrorKind::ConnectionLost, "the VM process exited"));
+
+    let end = relay(full_of_output(), &arrived, &mut Refuses, &mut Vec::new()).unwrap();
+
+    match end {
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(status, Some(ExitStatus::Code(7)));
+            assert!(error.to_string().contains("the reader is gone"), "{error}");
+            assert!(error.to_string().contains("the VM process exited"), "{error}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[skuld::test]
+fn the_first_loss_stays() {
+    let arrived = Arrived::default();
+    arrived.lose(Error::new(ErrorKind::Io, "first"));
+    arrived.lose(Error::new(ErrorKind::Io, "second"));
+
+    assert_eq!(arrived.lost().expect("a loss").message(), "first");
+}
+
+#[skuld::test]
+fn a_command_that_ended_with_a_loss_finishes_with_it() {
+    let (events, buffered) = tokio::sync::mpsc::channel(EVENT_BUFFER);
+    events
+        .try_send(Event::Out(
+            b"1
+"
+            .to_vec(),
+        ))
+        .unwrap();
     events.try_send(Event::End(Ok(ExitStatus::Code(7)))).unwrap();
-    let (mut status, mut lost) = (None, None);
+    let arrived = Arrived::default();
+    arrived.set_status(ExitStatus::Code(7));
+    arrived.lose(Error::new(ErrorKind::ConnectionLost, "the VM process exited"));
+    let mut out = Vec::new();
 
-    take_queued(&mut queued, &mut status, &mut lost);
+    let end = relay(buffered, &arrived, &mut out, &mut Vec::new()).unwrap();
 
-    assert_eq!(status, Some(ExitStatus::Code(7)));
-    assert!(lost.is_none());
-}
-
-#[skuld::test]
-fn a_failed_write_takes_the_loss_the_task_already_queued_and_not_a_failed_end() {
-    let (events, mut queued) = tokio::sync::mpsc::channel(8);
-    events.try_send(Event::Status(ExitStatus::Code(7))).unwrap();
-    events
-        .try_send(Event::Lost(Error::new(
-            ErrorKind::ConnectionLost,
-            "the VM process exited",
-        )))
-        .unwrap();
-    events
-        .try_send(Event::End(Err(Error::new(ErrorKind::ConnectionLost, "ignored"))))
-        .unwrap();
-    let (mut status, mut lost) = (None, None);
-
-    take_queued(&mut queued, &mut status, &mut lost);
-
-    assert_eq!(status, Some(ExitStatus::Code(7)));
-    assert!(lost.expect("the loss").message().contains("VM process exited"));
-}
-
-#[skuld::test]
-fn a_failed_write_with_no_status_queued_has_none() {
-    let (events, mut queued) = tokio::sync::mpsc::channel(8);
-    events.try_send(Event::Out(b"1\n".to_vec())).unwrap();
-    let (mut status, mut lost) = (None, None);
-
-    take_queued(&mut queued, &mut status, &mut lost);
-
-    assert_eq!(status, None);
+    assert_eq!(
+        out,
+        b"1
+"
+    );
+    match end {
+        ExecEnd::FinishedWithLoss { status, lost } => {
+            assert_eq!(status, ExitStatus::Code(7));
+            assert!(lost.message().contains("VM process exited"), "{lost}");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[skuld::test]

@@ -1,11 +1,12 @@
 //! Running one command over an SSH channel and mapping how it ended.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use russh::client::Msg;
 use russh::{Channel, ChannelMsg, Sig};
 use tokio::sync::mpsc;
 
+use crate::access::runtime;
 use crate::access::session::{Inner, Watch};
 use crate::exit::ExitStatus;
 use crate::{Error, ErrorKind, Result};
@@ -52,33 +53,97 @@ impl ExecEnd {
     }
 }
 
-/// Takes the status and the loss of what the task has queued in `events` and `exec` has not read, without waiting for
-/// more: the task may have seen the command end before a write to the host failed. Output is dropped.
-pub(super) fn take_queued(
-    events: &mut mpsc::Receiver<Event>,
-    status: &mut Option<ExitStatus>,
-    lost: &mut Option<Error>,
-) {
-    while let Ok(event) = events.try_recv() {
-        match event {
-            Event::Status(arrived) | Event::End(Ok(arrived)) => *status = Some(arrived),
-            Event::Lost(error) => {
-                lost.get_or_insert(error);
-            }
-            Event::Out(_) | Event::Err(_) | Event::End(Err(_)) => {}
-        }
-    }
-}
+/// Chunks of guest output the executing task may hold ahead of a slow host writer.
+pub(super) const EVENT_BUFFER: usize = 16;
 
-/// What the task running the command tells the thread that called `exec`.
+/// What the task running the command tells the thread that called `exec`, through a bounded buffer: a task blocked
+/// sending into a full buffer has more to say than the buffer holds, which is what [`Arrived`] is for.
 pub(super) enum Event {
     Out(Vec<u8>),
     Err(Vec<u8>),
-    /// The command's status, sent as it arrives and so before any output that follows it on the wire.
-    Status(ExitStatus),
-    /// Something that happened after the command's status had arrived; it does not change that status.
-    Lost(Error),
     End(Result<ExitStatus>),
+}
+
+/// What the task running the command has seen arrive, published as soon as it did and whatever the buffer holds. `exec`
+/// reads it when a write to the host failed, to name what had arrived by then; nothing waits for more.
+#[derive(Default)]
+pub(super) struct Arrived(Mutex<Seen>);
+
+#[derive(Default)]
+struct Seen {
+    /// The command's status.
+    status: Option<ExitStatus>,
+    /// The first thing that happened after the status had arrived and could not be carried; it does not change the
+    /// status.
+    lost: Option<Error>,
+}
+
+impl Arrived {
+    fn seen(&self) -> std::sync::MutexGuard<'_, Seen> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(super) fn set_status(&self, status: ExitStatus) {
+        self.seen().status = Some(status);
+    }
+
+    pub(super) fn status(&self) -> Option<ExitStatus> {
+        self.seen().status.clone()
+    }
+
+    pub(super) fn lose(&self, error: Error) {
+        self.seen().lost.get_or_insert(error);
+    }
+
+    pub(super) fn lost(&self) -> Option<Error> {
+        self.seen().lost.clone()
+    }
+}
+
+/// Copies the output of the command whose task sends to `events` to `out` and `err`, until the command ends or a write
+/// to the host fails. `arrived` is the task's.
+pub(super) fn relay(
+    mut events: mpsc::Receiver<Event>,
+    arrived: &Arrived,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> Result<ExecEnd> {
+    loop {
+        let (to_stderr, chunk) = match runtime::wait(events.recv()) {
+            Some(Event::Out(chunk)) => (false, chunk),
+            Some(Event::Err(chunk)) => (true, chunk),
+            Some(Event::End(result)) => {
+                // A partial line the host writers still buffer (a prompt) would otherwise be lost.
+                let flushed_out = out.flush();
+                let flushed = flushed_out.and(err.flush());
+                return match (result, flushed, arrived.lost()) {
+                    (Ok(status), Ok(()), None) => Ok(ExecEnd::Finished(status)),
+                    (Ok(status), Ok(()), Some(lost)) => Ok(ExecEnd::FinishedWithLoss { status, lost }),
+                    (Ok(status), Err(error), lost) => Ok(ExecEnd::host_output_closed(error, Some(status), lost)),
+                    (Err(e), Err(error), _) => {
+                        Err(e.together_with(format!("flushing the host output failed ({error})")))
+                    }
+                    (Err(e), Ok(()), _) => Err(e),
+                };
+            }
+            None => {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "the SSH task for the command ended without a result",
+                ));
+            }
+        };
+        let sink: &mut dyn std::io::Write = if to_stderr { &mut *err } else { &mut *out };
+        if let Err(e) = sink.write_all(&chunk) {
+            // The other sink may hold a partial line (a prompt); its flush is best effort, the write failure is the
+            // result.
+            let other: &mut dyn std::io::Write = if to_stderr { &mut *out } else { &mut *err };
+            let _ = other.flush();
+            // Dropping `events` tells the task to close the channel.
+            drop(events);
+            return Ok(ExecEnd::host_output_closed(e, arrived.status(), arrived.lost()));
+        }
+    }
 }
 
 /// The name an `exit-signal` request carries.
@@ -100,13 +165,10 @@ fn signal_name(signal: &Sig) -> String {
     }
 }
 
-/// Runs `command`; sends output and then the end to `events`. A receiver that has gone away means the host output
-/// closed: the channel is closed and nothing more is sent.
-pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::Sender<Event>) {
+/// Runs `command`; sends output and then the end to `events`, and publishes the status and the losses in `arrived`. A
+/// receiver that has gone away means the host output closed: the channel is closed and nothing more is sent.
+pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::Sender<Event>, arrived: Arc<Arrived>) {
     let awaiting = format!("the command `{command}`");
-    // Kept here, not in `run`: the guard drops `run` when the VM exits or the boot bound passes, and a status that had
-    // arrived is still the command's result.
-    let mut status = None;
     // Kept here for the same reason, and for one more: `run` empties it when the channel has ended, so what is left
     // when the guard drops `run` is a channel with a command still running on it.
     let mut channel = None;
@@ -115,7 +177,7 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
         .guarded(
             &awaiting,
             Watch::VmAndBoot,
-            run(&inner, &command, &awaiting, &events, &mut status, &mut channel),
+            run(&inner, &command, &awaiting, &events, &arrived, &mut channel),
         )
         .await;
     if let Some(channel) = channel {
@@ -127,14 +189,15 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
             .guarded(&awaiting, Watch::VmAndBoot, async { Ok(channel.close().await.is_ok()) })
             .await;
     }
-    match (outcome, status) {
+    // Read after `run`, which the guard may have dropped: a status that had arrived is still the command's result.
+    match (outcome, arrived.status()) {
         (Ok(None), _) => {} // The host side went away; there is nobody to tell.
         (Ok(Some(status)), _) => {
             let _ = events.send(Event::End(Ok(status))).await;
         }
         // The VM exited or the boot bound passed after the status arrived: the status stands, and the end is said.
         (Err(e), Some(status)) => {
-            let _ = events.send(Event::Lost(e)).await;
+            arrived.lose(e);
             let _ = events.send(Event::End(Ok(status))).await;
         }
         (Err(e), None) => {
@@ -143,7 +206,7 @@ pub(super) async fn run_exec(inner: Arc<Inner>, command: String, events: mpsc::S
     }
 }
 
-/// `Ok(None)` when the host output closed. `status` is set as soon as the command's status arrives. `slot` holds the
+/// `Ok(None)` when the host output closed. `arrived` has the command's status as soon as it arrives. `slot` holds the
 /// channel from the moment it is open until `run` returns, so the caller can close it when this future is dropped
 /// instead; every other way out has ended the channel already.
 async fn run(
@@ -151,7 +214,7 @@ async fn run(
     command: &str,
     awaiting: &str,
     events: &mpsc::Sender<Event>,
-    status: &mut Option<ExitStatus>,
+    arrived: &Arrived,
     slot: &mut Option<Channel<Msg>>,
 ) -> Result<Option<ExitStatus>> {
     let opened = inner
@@ -160,7 +223,7 @@ async fn run(
         .await
         .map_err(|e| inner.channel_not_opened(awaiting, &e))?;
     let channel = slot.insert(opened);
-    let result = pump(inner, channel, command, awaiting, events, status).await;
+    let result = pump(inner, channel, command, awaiting, events, arrived).await;
     *slot = None;
     result
 }
@@ -173,7 +236,7 @@ async fn pump(
     command: &str,
     awaiting: &str,
     events: &mpsc::Sender<Event>,
-    status: &mut Option<ExitStatus>,
+    arrived: &Arrived,
 ) -> Result<Option<ExitStatus>> {
     channel
         .exec(true, command.as_bytes())
@@ -194,7 +257,10 @@ async fn pump(
         let Some(message) = message else {
             // The channel's sender is gone without a close: the connection ended under it. A status that arrived
             // first is still the command's result.
-            return status.take().map(Some).ok_or_else(|| inner.connection_ended(awaiting));
+            return arrived
+                .status()
+                .map(Some)
+                .ok_or_else(|| inner.connection_ended(awaiting));
         };
         let event = match message {
             ChannelMsg::Data { data } => Event::Out(data.to_vec()),
@@ -207,42 +273,45 @@ async fn pump(
                         "the server sent output of {awaiting} on extended data stream {ext}, which devvm does not read"
                     ),
                 );
-                if status.is_none() {
+                if arrived.status().is_none() {
                     let _ = channel.close().await;
                     return Err(lost);
                 }
-                Event::Lost(lost)
+                arrived.lose(lost);
+                continue;
             }
             ChannelMsg::ExitStatus { exit_status } => {
                 // SSH carries the status as 32 unsigned bits; a Windows status such as 0xC0000005 is the same bits as
                 // the negative code the guest's own tools report. How many bits a status has is the guest's contract: a
                 // Linux server's is 0..=255, and this does not check it.
-                Event::Status(status.insert(ExitStatus::Code(exit_status as i32)).clone())
+                arrived.set_status(ExitStatus::Code(exit_status as i32));
+                continue;
             }
             ChannelMsg::ExitSignal {
                 signal_name: signal,
                 core_dumped,
                 ..
             } => {
-                let signalled = ExitStatus::Signal {
+                arrived.set_status(ExitStatus::Signal {
                     name: signal_name(&signal),
                     core_dumped,
-                };
-                Event::Status(status.insert(signalled).clone())
+                });
+                continue;
             }
             ChannelMsg::Failure => {
                 let lost = Error::new(
                     ErrorKind::Io,
                     format!("the server at {} refused to run {awaiting}", inner.ctx.addr),
                 );
-                if status.is_none() {
+                if arrived.status().is_none() {
                     let _ = channel.close().await;
                     return Err(lost);
                 }
-                Event::Lost(lost)
+                arrived.lose(lost);
+                continue;
             }
             ChannelMsg::Close => {
-                return status.take().map(Some).ok_or_else(|| {
+                return arrived.status().map(Some).ok_or_else(|| {
                     Error::new(
                         ErrorKind::NoExitStatus,
                         format!(

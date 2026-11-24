@@ -29,7 +29,7 @@ use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) use crate::access::exec::ExecEnd;
-use crate::access::exec::{Event, run_exec, take_queued};
+use crate::access::exec::{Arrived, EVENT_BUFFER, relay, run_exec};
 use crate::access::sftp::Sftp;
 
 pub(super) mod watched;
@@ -41,9 +41,6 @@ mod session_tests;
 /// The pause between two connection attempts of a booting guest, and between two readiness probes of a Windows one. It
 /// paces the loop; it never ends it.
 pub(crate) const RETRY_PAUSE: Duration = Duration::from_millis(200);
-
-/// Chunks of guest output the executing task may hold ahead of a slow host writer.
-const EVENT_BUFFER: usize = 16;
 
 // Parameters ==========================================================================================================
 
@@ -738,58 +735,15 @@ impl SshSession {
         out: &mut dyn std::io::Write,
         err: &mut dyn std::io::Write,
     ) -> Result<ExecEnd> {
-        let (sender, mut receiver) = mpsc::channel(EVENT_BUFFER);
-        let mut lost = None;
-        let mut status = None;
-        let inner = self.inner.clone();
-        let command = command.to_owned();
-        runtime::spawn(run_exec(inner, command, sender))?;
-        loop {
-            let (to_stderr, chunk) = match runtime::wait(receiver.recv()) {
-                Some(Event::Out(chunk)) => (false, chunk),
-                Some(Event::Err(chunk)) => (true, chunk),
-                Some(Event::End(result)) => {
-                    // A partial line the host writers still buffer (a prompt) would otherwise be lost.
-                    let flushed_out = out.flush();
-                    let flushed = flushed_out.and(err.flush());
-                    return match (result, flushed, lost) {
-                        (Ok(status), Ok(()), None) => Ok(ExecEnd::Finished(status)),
-                        (Ok(status), Ok(()), Some(lost)) => Ok(ExecEnd::FinishedWithLoss { status, lost }),
-                        (Ok(status), Err(error), lost) => Ok(ExecEnd::host_output_closed(error, Some(status), lost)),
-                        (Err(e), Err(error), _) => {
-                            Err(e.together_with(format!("flushing the host output failed ({error})")))
-                        }
-                        (Err(e), Ok(()), _) => Err(e),
-                    };
-                }
-                Some(Event::Status(arrived)) => {
-                    status = Some(arrived);
-                    continue;
-                }
-                Some(Event::Lost(error)) => {
-                    lost.get_or_insert(error);
-                    continue;
-                }
-                None => {
-                    return Err(Error::new(
-                        ErrorKind::Internal,
-                        "the SSH task for the command ended without a result",
-                    ));
-                }
-            };
-            let sink: &mut dyn std::io::Write = if to_stderr { &mut *err } else { &mut *out };
-            if let Err(e) = sink.write_all(&chunk) {
-                // The other sink may hold a partial line (a prompt); its flush is best effort, the write failure is
-                // the result.
-                let other: &mut dyn std::io::Write = if to_stderr { &mut *out } else { &mut *err };
-                let _ = other.flush();
-                // The command may have ended with its status still queued.
-                take_queued(&mut receiver, &mut status, &mut lost);
-                // Dropping the receiver tells the task to close the channel.
-                drop(receiver);
-                return Ok(ExecEnd::host_output_closed(e, status, lost));
-            }
-        }
+        let (sender, receiver) = mpsc::channel(EVENT_BUFFER);
+        let arrived = Arc::new(Arrived::default());
+        runtime::spawn(run_exec(
+            self.inner.clone(),
+            command.to_owned(),
+            sender,
+            arrived.clone(),
+        ))?;
+        relay(receiver, &arrived, out, err)
     }
 
     /// [`SshSession::exec`] into memory: the sinks are `Vec`s, so the host output never closes. What is lost after the
