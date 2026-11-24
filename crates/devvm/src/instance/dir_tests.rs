@@ -62,6 +62,20 @@ fn destroy_never_fails_because_other_devvm_readers_run(#[fixture(unicode_home)] 
 }
 
 #[skuld::test]
+fn destroy_after_a_try_op_exclusive_take_never_fails(#[fixture(unicode_home)] home: &Path) {
+    // The take writes `holder.json` right before the rename, as the reaper's and image cleanup's path does.
+    const ROUNDS: usize = 200;
+    let fx = fixture(home);
+    for round in 0..ROUNDS {
+        let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+        let op = dir.try_op_exclusive().unwrap().expect("nobody holds the lock");
+        if let Err(e) = dir.destroy(op) {
+            panic!("round {round}: {}", e.message());
+        }
+    }
+}
+
+#[skuld::test]
 fn destroy_waits_for_a_reader_that_has_a_file_open(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
     let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
