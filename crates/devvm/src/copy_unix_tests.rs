@@ -8,6 +8,7 @@ use crate::copy::copy_tests::{
 };
 use crate::recipe::hash::EntryContent;
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::root::refuse_root;
 
 #[skuld::test]
 fn a_real_symlink_becomes_a_symlink_entry_and_is_never_followed(#[fixture(unicode_home)] home: &Path) {
@@ -249,12 +250,7 @@ fn a_tracked_symlink_that_is_a_fifo_now_is_refused_naming_it(#[fixture(unicode_h
 /// Mode bits do not bind root, so the test refuses to run as root.
 #[skuld::test]
 fn a_tracked_file_that_cannot_be_read_is_an_error_naming_it(#[fixture(unicode_home)] home: &Path) {
-    // SAFETY: `geteuid` reads a process attribute.
-    assert_ne!(
-        unsafe { libc::geteuid() },
-        0,
-        "file modes do not bind root: run this test as another user"
-    );
+    refuse_root("file modes do not bind root");
     let repo = new_repo(home, "repo");
     put(&repo, "secret.txt", b"x");
     add_all(&repo);

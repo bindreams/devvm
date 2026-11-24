@@ -18,6 +18,8 @@ pub mod other_account;
 pub mod private_files;
 pub mod qemu;
 pub mod refusing;
+#[cfg(unix)]
+pub mod root;
 pub mod roots;
 pub mod sshd;
 pub mod stub_backend;
