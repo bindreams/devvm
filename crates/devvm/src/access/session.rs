@@ -729,8 +729,8 @@ impl SshSession {
 
     /// Runs `command` through the guest's SSH `exec`, copying guest stdout and stderr to `out` and `err` as they
     /// arrive, and flushing both when the command ends. A guest that outpaces the writers is slowed down, not buffered.
-    /// See [`ExecEnd`] for the three ways it ends. When the host output closes, `exec` returns before the task has sent
-    /// the channel close, so the caller may release its op lock before the close is sent.
+    /// See [`ExecEnd`] for the three ways it ends. When the host output closes, `exec` does not wait for the task to
+    /// send the channel close: the caller's op lock is released in no order against it.
     ///
     /// Failures: `connection-lost` (keepalive expiry, a dropped connection, the VM exiting, the boot bound),
     /// `no-exit-status` (the channel closed without a status while the connection lives), `io`.
