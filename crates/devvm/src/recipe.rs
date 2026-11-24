@@ -25,6 +25,12 @@ pub struct FlatStep {
     pub step: Step,
     /// The directory of the recipe that declared the step.
     pub origin_dir: PathBuf,
+    /// The name of the recipe that declared the step: its `name:`, else its file name without `.devvm.yaml` (for an
+    /// embedded base, its embedded name).
+    pub recipe: String,
+    /// 0-based position in that recipe's own `steps`.
+    pub position: usize,
+    pub count: usize,
 }
 
 /// A recipe with its `from:` chain resolved down to a root source.
@@ -118,9 +124,12 @@ impl Recipe {
             .iter()
             .rev()
             .flat_map(|recipe| {
-                recipe.steps.iter().map(|step| FlatStep {
+                recipe.steps.iter().enumerate().map(|(position, step)| FlatStep {
                     step: step.clone(),
                     origin_dir: recipe.dir.clone(),
+                    recipe: recipe.name.clone(),
+                    position,
+                    count: recipe.steps.len(),
                 })
             })
             .collect();
