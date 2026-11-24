@@ -97,7 +97,14 @@ impl FileLog {
         let (path, out) =
             create_named(dir, &*clock, RUN_LOG, header.as_bytes()).map_err(|(path, e)| cannot_write(&path, e))?;
         // One file, made private: a second open of the name could find another file under it.
-        let tail = out.try_clone().map_err(|e| cannot_write(&path, e))?;
+        let tail = match out.try_clone() {
+            Ok(tail) => tail,
+            Err(e) => {
+                drop(out);
+                return Err(cannot_write(&path, e)
+                    .after_cleanup(&format!("the log {}", path.display()), remove_if_present(&path)));
+            }
+        };
         let log = FileLog {
             path,
             clock,
