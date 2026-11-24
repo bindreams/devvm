@@ -229,8 +229,27 @@ fn a_device_name_is_the_part_before_the_first_dot_in_any_case_without_trailing_s
 #[skuld::test]
 fn names_that_only_resemble_devices_are_not_device_names() {
     for name in [
-        "", "com0", "com10", "COM10.img", "lpt0", "lpt10", "con1", "prn1", "console", "conin", "conout", "nulx", "xcon",
-        "com", "lpt", " con", "con\t", "a.con", ".con", "co n", "com1x",
+        "",
+        "com0",
+        "com10",
+        "COM10.img",
+        "lpt0",
+        "lpt10",
+        "con1",
+        "prn1",
+        "console",
+        "conin",
+        "conout",
+        "nulx",
+        "xcon",
+        "com",
+        "lpt",
+        " con",
+        "con\t",
+        "a.con",
+        ".con",
+        "co n",
+        "com1x",
     ] {
         assert!(!is_device_name(name), "{name:?}");
     }
