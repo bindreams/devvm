@@ -64,8 +64,8 @@ pub(crate) enum MakePrivateOutcome {
 /// How [`Host::make_private`] failed. Each variant says what is known of the file's protection.
 #[derive(Debug)]
 pub(crate) enum MakePrivateError {
-    /// The protection could not be looked at, or the name is a link or no longer the file that was looked at: whether
-    /// the file is private is not known.
+    /// The protection could not be looked at, or the name is a link or not a regular file: whether the file is private
+    /// is not known.
     Check(std::io::Error),
     /// The file is not private, and could not be made so.
     Change(std::io::Error),
@@ -192,17 +192,18 @@ pub(crate) trait Host: Send + Sync {
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
 
     /// Restricts the existing file `path` the way [`write_private`](Host::write_private) restricts a new one: the
-    /// current user alone can read it, whatever it had before (mode `0600`; on Windows a protected DACL granting only
-    /// the user, which replaces an inherited one). The contents are not touched. No file is `NotFound`, in
-    /// [`Check`](MakePrivateError::Check).
+    /// current user alone can read it, whatever it had before (a Unix mode with a group or other bit becomes `0600`; on
+    /// Windows a protected DACL granting only the user, which replaces an inherited one). The contents are not touched.
+    /// No file is `NotFound`, in [`Check`](MakePrivateError::Check).
     ///
     /// A link at `path` is not followed and not restricted: it is `InvalidInput`, "is a link", in `Check`. The file is
-    /// opened once, and the check and the change are made on that one file. On Unix, what is not a regular file is
-    /// `InvalidInput` in `Check` (a pipe is not waited on), and the file must be readable by the user, else it is
-    /// `PermissionDenied` in `Check`; a key devvm cannot read is refused before this point anyway.
+    /// opened once, and the check and the change are made on that one file. On Unix, a FIFO (which is not waited on) or a
+    /// directory is `InvalidInput`, "not a regular file", in `Check`; what cannot be opened (a socket, a file the user
+    /// cannot read) fails with the open's own error in `Check`. A key devvm cannot read is refused before this point
+    /// anyway.
     ///
     /// A file that is restricted already is not written to; on Unix that is any mode without group or other bits (`0400`
-    /// too), as `ssh` reads it.
+    /// too).
     fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError>;
 
     /// Whether any execute bit of `path` is set; always `false` on Windows.

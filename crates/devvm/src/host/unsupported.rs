@@ -24,7 +24,8 @@ pub(super) trait FileModes: Send + Sync {
     /// Options that create a file readable and writable by its owner only, from the first moment it exists.
     fn private_options(&self) -> OpenOptions;
 
-    /// [`Host::make_private`]: sets what `private_options` creates a file with.
+    /// [`Host::make_private`]: a mode with no group or other bits is left as it is; any other becomes
+    /// `0600`, what `private_options` creates a file with.
     fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError>;
 
     /// Options that open a file for reading and writing, and refuse a symlink at its name instead of opening what it

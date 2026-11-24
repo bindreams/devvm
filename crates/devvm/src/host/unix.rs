@@ -24,7 +24,7 @@ impl FileModes for UnixHost {
     }
 
     /// Opens `path` once, without following a link and without waiting on a pipe ([`open_regular`]), and looks at and
-    /// changes that descriptor. A mode with no group or other bits is private, as `ssh` reads it; any other is set to
+    /// changes that descriptor. A mode with no group or other permission bits is left as it is; any other is set to
     /// `0600`. A name that is not a regular file is refused, and so is a file its owner cannot read.
     fn make_private(&self, path: &Path) -> Result<MakePrivateOutcome, MakePrivateError> {
         let file = open_regular(path).map_err(|e| MakePrivateError::Check(refused_as_link(path, e)))?;

@@ -138,7 +138,7 @@ fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_hom
 
 // Private files -------------------------------------------------------------------------------------------------------
 
-/// A mode without group or other bits is private, as `ssh` reads it: a key the user hardened to `0400` is not written to.
+/// A mode without group or other bits is left as it is: a key the user hardened to `0400` is not written to.
 #[skuld::test]
 fn a_file_with_no_group_or_other_bits_is_private_and_keeps_its_mode(#[fixture(unicode_home)] home: &Path) {
     for mode in [0o400, 0o600, 0o700] {
