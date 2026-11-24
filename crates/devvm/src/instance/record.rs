@@ -408,6 +408,10 @@ pub(crate) fn read_marker(dir: &Path) -> Result<MarkerRead> {
 /// a reader may see it written late or not at all, never half-written (see [`write_file`]); a reader names the process
 /// only if it still runs (a crashed holder leaves its record behind).
 ///
+/// A waiting command asks for the holder once, when its wait begins: the wait is one blocking OS call that does not wake
+/// until the lock is free. The name it prints is the holder at that moment, so a holder that has taken the lock but
+/// not yet written its record is not named, and a name stays on screen after its holder has gone.
+///
 /// Only the exclusive holder is recorded: a wait behind a shared holder, or behind the reaper, keeps the text without a
 /// holder. A record whose removal failed and whose process still runs would be named by a wait behind such a holder; the
 /// failed removal is a warning.
