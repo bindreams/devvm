@@ -353,8 +353,7 @@ impl Vm {
         Ok((guest, session, op))
     }
 
-    /// A new connection to the guest `record` names, which becomes the cached session: the one stored last stays. The
-    /// lock of the cache is not held while connecting.
+    /// A new connection to the guest `record` names, which becomes the cached session: the one stored last stays.
     fn connect_and_cache(&self, record: &InstanceRecord, op: &OpShared) -> Result<SshSession> {
         let instance = self.instance();
         let fresh = ops::reach(&instance.engine, instance.dir(), record, op)?.1;

@@ -24,9 +24,8 @@ pub(crate) enum ExecEnd {
     /// refusal to run the command) or what ended the wait (the VM exited, the boot bound passed); `lost` says what.
     /// The status stands: the error that follows an exit status does not take it back.
     FinishedWithLoss { status: ExitStatus, lost: Error },
-    /// The host side of the output closed. `exec` returns at once, and dropping its receiver makes the task close the
-    /// channel, so the guest process loses its output pipe and ends by its own failed write (SIGPIPE); devvm does not
-    /// wait for a status that may never come. The caller decides what that means.
+    /// The host side of the output closed. `exec` returns at once without waiting for a status; the task closes the
+    /// channel, which ends the guest process by SIGPIPE.
     HostOutputClosed {
         /// The failed write or flush.
         error: std::io::Error,
@@ -56,8 +55,8 @@ impl ExecEnd {
 /// Chunks of guest output the executing task may hold ahead of a slow host writer.
 pub(super) const EVENT_BUFFER: usize = 16;
 
-/// What the task running the command tells the thread that called `exec`, through a bounded buffer: a task blocked
-/// sending into a full buffer has more to say than the buffer holds, which is what [`Arrived`] is for.
+/// What the task running the command tells the thread that called `exec`, through a bounded buffer. Status and losses
+/// go through [`Arrived`] so a full buffer cannot hold them back.
 pub(super) enum Event {
     Out(Vec<u8>),
     Err(Vec<u8>),
@@ -101,7 +100,7 @@ impl Arrived {
 }
 
 /// Copies the output of the command whose task sends to `events` to `out` and `err`, until the command ends or a write
-/// to the host fails. `arrived` is the task's.
+/// to the host fails.
 pub(super) fn relay(
     mut events: mpsc::Receiver<Event>,
     arrived: &Arrived,

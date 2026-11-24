@@ -570,7 +570,7 @@ impl Handler for Connection {
             }
         };
         if refused {
-            // Dropping the reply refuses the channel.
+            // A reply dropped unanswered sends `AdministrativelyProhibited`.
             return Ok(());
         }
         self.channels.insert(channel.id(), channel);
