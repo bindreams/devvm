@@ -70,6 +70,11 @@ pub(crate) enum HeldKind {
     Directory,
 }
 
+/// What renaming a directory fails with on Windows while it is in use: 5 (`ERROR_ACCESS_DENIED`) when something inside
+/// it is open, 32 (`ERROR_SHARING_VIOLATION`) when it is open itself, as a working directory. The Windows host answers
+/// with these ([`Host::rename_refused_by_open_file`]), and the test host does on every host.
+pub(crate) const WINDOWS_RENAME_REFUSED: &[i32] = &[5, 32];
+
 /// How a hypervisor is reached on this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Accel {
@@ -274,6 +279,13 @@ pub(crate) trait Host: Send + Sync {
     /// Empty on a host where an open file does not stop the rename: no directory can be shown to be in use there, and
     /// devvm removes none on that ground.
     fn rename_refused_by_open_file(&self) -> &'static [i32];
+
+    /// Whether the permissions on the directory `dir` refuse this process delete access to it, which is what a rename
+    /// refused with a code of [`Host::rename_refused_by_open_file`] means when no program has the directory in use.
+    /// Windows opens `dir` with `DELETE` access and every sharing: access denied is yes, and so is no other answer,
+    /// a sharing violation (another program has `dir` open) included. A host where an open file does not stop a rename
+    /// says no.
+    fn refuses_delete_access(&self, dir: &Path) -> std::io::Result<bool>;
 
     /// The path of `file`, opened by [`Host::open_held_read`] at `opened_by`, with no link in it: a program that opens
     /// the file by name opens this file, where `opened_by` can be pointed elsewhere by re-making a junction or a

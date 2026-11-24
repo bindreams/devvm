@@ -264,6 +264,19 @@ pub(super) fn open_held_read(path: &Path, kind: HeldKind) -> std::io::Result<Fil
     })
 }
 
+/// [`Host::refuses_delete_access`](crate::host::Host::refuses_delete_access): `dir` itself is opened (a link is not
+/// followed) with `DELETE` access and every sharing, and closed at once. Only an access that the permissions refuse is
+/// yes; a sharing violation or a deletion pending means another program has it, and any other failure is the error.
+pub(super) fn refuses_delete_access(dir: &Path) -> std::io::Result<bool> {
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    match open(dir, DELETE, share, OPEN_EXISTING, LINK_OPEN, None) {
+        Ok(_) => Ok(false),
+        Err(failure) if failure.is_access_denied() => Ok(true),
+        Err(failure) if failure.is_sharing_violation() || failure.is_delete_pending() => Ok(false),
+        Err(failure) => Err(failure.into()),
+    }
+}
+
 /// Holds the file at `path` if nobody else does. A link at the name is refused. A file that is held
 /// (`ERROR_SHARING_VIOLATION`) is `Busy`: somebody else has it, and it is not absent.
 pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {

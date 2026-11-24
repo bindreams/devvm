@@ -406,7 +406,11 @@ impl Source {
                 format!("{} is gone right after it was published", published.display()),
             )
         })?;
-        self.prune_superseded(&qemu, &self.surplus(&qemu, &published).installs);
+        self.prune_superseded(
+            &qemu,
+            &self.surplus(&qemu, &published).installs,
+            &crate::host::remove_tree,
+        );
         Ok(install)
     }
 
@@ -421,11 +425,8 @@ impl Source {
             return Ok(());
         }
         let aside = quarantine_path(qemu, ".extract")?;
-        std::fs::rename(published, &aside).map_err(|e| {
-            let in_use = e
-                .raw_os_error()
-                .is_some_and(|code| self.host.rename_refused_by_open_file().contains(&code));
-            let what = if in_use {
+        self.host.publish_dir(published, &aside).map_err(|e| {
+            let what = if self.refused_as_in_use(published, &e).unwrap_or(false) {
                 format!(
                     "the incomplete {} is in use and cannot be moved aside",
                     published.display()
@@ -487,16 +488,16 @@ impl Source {
         surplus
     }
 
-    /// Removes the superseded `installs` ([`Source::surplus`]), with the extraction lock held.
+    /// Removes the superseded `installs` ([`Source::surplus`]) with `remove`, with the extraction lock held.
     ///
     /// An install is first renamed to an `.extract-` name, which nothing resolves. The rename is the test for "in use":
-    /// it is refused with one of the host's codes ([`Host::rename_refused_by_open_file`]) while a file is held open
-    /// under the directory or the directory is open itself (a working directory), and the install stays as it was,
-    /// silently. An install that is no longer there (the list was made before the lock was taken) is passed over; any
-    /// other failure is a warning. Once renamed, the install is gone as far as every devvm is concerned, and what the
-    /// delete cannot remove is swept by the next sweep. A failure on one install does not stop the others.
-    fn prune_superseded(&self, qemu: &Path, installs: &[PathBuf]) {
-        let in_use = self.host.rename_refused_by_open_file();
+    /// it is refused with one of the host's codes ([`Host::rename_refused_by_open_file`]) while something under the
+    /// directory is held open or the directory is open itself (a working directory), and the install stays as it was.
+    /// That is recorded at debug level and is no warning, unless the code is the permissions' ([`Source::refused_as_in_use`]).
+    /// An install that is no longer there (the list was made before the lock was taken) is passed over; any other
+    /// failure is a warning. Once renamed, the install is gone as far as every devvm is concerned, and what the delete
+    /// cannot remove is swept by the next sweep. A failure on one install does not stop the others.
+    fn prune_superseded(&self, qemu: &Path, installs: &[PathBuf], remove: &dyn Fn(&Path) -> std::io::Result<()>) {
         for path in installs {
             let removing = match quarantine_path(qemu, ".extract") {
                 Ok(removing) => removing,
@@ -505,22 +506,42 @@ impl Source {
                     return;
                 }
             };
-            match std::fs::rename(path, &removing) {
+            match self.host.publish_dir(path, &removing) {
                 Ok(()) => {}
                 // Listed before the lock was taken: another devvm removed it since.
                 Err(e) if crate::host::is_absent(&e) => continue,
-                Err(e) if e.raw_os_error().is_some_and(|code| in_use.contains(&code)) => continue,
                 Err(e) => {
-                    self.progress
-                        .warn(&format!("cannot move {} aside to remove it: {e}", path.display()));
+                    match self.refused_as_in_use(path, &e) {
+                        Ok(true) => self
+                            .progress
+                            .debug(&format!("{} is in use and stays: {e}", path.display())),
+                        Ok(false) => self
+                            .progress
+                            .warn(&format!("cannot move {} aside to remove it: {e}", path.display())),
+                        Err(probe) => self.progress.warn(&format!(
+                            "cannot move {} aside to remove it: {e}; cannot tell whether it is in use either: {probe}",
+                            path.display()
+                        )),
+                    }
                     continue;
                 }
             }
-            if let Err(e) = crate::host::remove_tree(&removing) {
+            if let Err(e) = remove(&removing) {
                 self.progress
                     .warn(&format!("cannot remove {}: {e}", removing.display()));
             }
         }
+    }
+
+    /// Whether `error`, from moving the install `dir` aside, means a program has it in use. The host names the codes
+    /// for that, and one of them (access denied on Windows) is also what permissions that refuse the move give, so a
+    /// named code counts only when `dir` can be opened with delete access: otherwise the move was refused by
+    /// permissions. `Err` when that cannot be found out.
+    fn refused_as_in_use(&self, dir: &Path, error: &std::io::Error) -> std::io::Result<bool> {
+        let named = error
+            .raw_os_error()
+            .is_some_and(|code| self.host.rename_refused_by_open_file().contains(&code));
+        Ok(named && !self.host.refuses_delete_access(dir)?)
     }
 
     /// For a launch that finds its install: removes the installs of other builds and sweeps the leftovers of extractions
@@ -538,7 +559,7 @@ impl Source {
             if lock.try_lock(Mode::Exclusive)? {
                 // Every `.extract-` directory is created and renamed from under this lock, so none is in progress.
                 self.sweep_extractions(&qemu)?;
-                self.prune_superseded(&qemu, &surplus.installs);
+                self.prune_superseded(&qemu, &surplus.installs, &crate::host::remove_tree);
             }
             Ok(())
         })();

@@ -56,6 +56,12 @@ impl Failure {
         )
     }
 
+    /// Whether the file's permissions refuse the open: `ERROR_ACCESS_DENIED` for a reason other than a deletion that is
+    /// pending ([`Failure::is_delete_pending`]).
+    pub(super) fn is_access_denied(&self) -> bool {
+        self.error.raw_os_error().map(|code| code as u32) == Some(ERROR_ACCESS_DENIED) && !self.is_delete_pending()
+    }
+
     /// Whether another open of the file refuses this one (`ERROR_SHARING_VIOLATION`).
     pub(super) fn is_sharing_violation(&self) -> bool {
         self.error.raw_os_error().map(|code| code as u32) == Some(ERROR_SHARING_VIOLATION)

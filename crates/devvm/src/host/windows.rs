@@ -22,7 +22,15 @@ use super::entry;
 use super::names::{windows_colon_path, windows_problem, windows_run_dir};
 use super::{Accel, Entry, FileId, HeldKind, HoldOutcome, Host, ProcessWatch, SystemDirs, Unavailable, fill_new};
 use crate::exit::ExitWidth;
+use crate::host::WINDOWS_RENAME_REFUSED;
 use crate::{Arch, Error, ErrorKind, Result};
+
+// The codes the test host names on every host are the ones this host names.
+const _: () = assert!(
+    WINDOWS_RENAME_REFUSED.len() == 2
+        && WINDOWS_RENAME_REFUSED[0] == ERROR_ACCESS_DENIED as i32
+        && WINDOWS_RENAME_REFUSED[1] == ERROR_SHARING_VIOLATION as i32
+);
 
 mod create_file;
 mod file_id;
@@ -319,7 +327,11 @@ impl Host for WindowsHost {
     }
 
     fn rename_refused_by_open_file(&self) -> &'static [i32] {
-        &[ERROR_ACCESS_DENIED as i32, ERROR_SHARING_VIOLATION as i32]
+        WINDOWS_RENAME_REFUSED
+    }
+
+    fn refuses_delete_access(&self, dir: &Path) -> std::io::Result<bool> {
+        hold::refuses_delete_access(dir)
     }
 
     fn final_path_of_open(&self, file: &File, _opened_by: &Path) -> std::io::Result<PathBuf> {

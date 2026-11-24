@@ -255,6 +255,10 @@ impl<M: FileModes> Host for M {
         &[]
     }
 
+    fn refuses_delete_access(&self, _dir: &Path) -> std::io::Result<bool> {
+        Ok(false)
+    }
+
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
         let canonical = std::fs::canonicalize(opened_by)?;
         let unsupported = |e: &std::io::Error| e.kind() == std::io::ErrorKind::Unsupported;

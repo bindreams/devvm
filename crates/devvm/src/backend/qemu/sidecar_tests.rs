@@ -15,9 +15,11 @@ use crate::host::{self, Host, OtherHost, SystemDirs};
 use crate::progress::{Event, Outcome as TaskOutcome};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
 use crate::store::lock::{FileLock, Mode};
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
 use crate::test_support::host::{RecordingHost, TestHost};
 use crate::test_support::qemu::write_config;
+use crate::test_support::symlink::symlink;
 use crate::{Arch, Dirs, ErrorKind, Result, Sha256};
 
 const VERSION: &str = "11.1.2";
@@ -574,11 +576,176 @@ fn pruning_removes_the_installs_it_is_given_and_passes_over_one_that_is_gone(#[f
     let untouched = old_install(&qemu, "10.0.1-0123456789ab");
     let gone = qemu.join("10.0.2-0123456789ab");
 
-    world.source.prune_superseded(&qemu, &[gone, given.clone()]);
+    world
+        .source
+        .prune_superseded(&qemu, &[gone, given.clone()], &host::remove_tree);
 
     assert!(!given.exists(), "{:?}", entries(&qemu));
     assert!(untouched.join("bin").is_dir(), "only what it is given is removed");
     assert!(world.progress.warnings().is_empty(), "{:?}", world.progress.warnings());
+}
+
+/// A host that is `TestHost` and can be told to refuse the rename of a chosen install.
+fn recording_host() -> &'static RecordingHost {
+    Box::leak(Box::new(RecordingHost::new()))
+}
+
+#[skuld::test]
+fn an_install_whose_rename_the_host_refuses_as_in_use_is_kept_and_recorded_without_a_warning(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let host = recording_host();
+    let source = world.source_on(host);
+    let installs: Vec<(PathBuf, i32)> = host::WINDOWS_RENAME_REFUSED
+        .iter()
+        .enumerate()
+        .map(|(n, code)| (old_install(&qemu, &format!("10.0.{n}-0123456789ab")), *code))
+        .collect();
+    for (install, code) in &installs {
+        host.refuse_rename(install, *code);
+    }
+
+    source.resolve().unwrap();
+
+    assert!(world.progress.warnings().is_empty(), "{:?}", world.progress.warnings());
+    for (install, code) in &installs {
+        assert!(install.join("bin").is_dir(), "{:?}", entries(&qemu));
+        let said = world.progress.messages();
+        assert!(
+            said.iter()
+                .any(|m| m.contains(&install.display().to_string()) && m.contains(&format!("os error {code}"))),
+            "no record of {} and code {code}: {said:?}",
+            install.display()
+        );
+    }
+}
+
+#[skuld::test]
+fn an_install_whose_rename_is_refused_by_its_permissions_is_kept_with_a_warning_and_the_others_are_removed(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let host = recording_host();
+    let source = world.source_on(host);
+    let protected = old_install(&qemu, "10.0.0-0123456789ab");
+    let other = old_install(&qemu, "10.0.1-0123456789ab");
+    host.refuse_rename(&protected, host::WINDOWS_RENAME_REFUSED[0]);
+    host.refuse_delete_access(&protected);
+
+    source.resolve().unwrap();
+
+    assert!(protected.join("bin").is_dir(), "{:?}", entries(&qemu));
+    assert!(!other.exists(), "{:?}", entries(&qemu));
+    let warnings = world.progress.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(&protected.display().to_string()), "{warnings:?}");
+    assert!(
+        warnings[0].contains(&format!("os error {}", host::WINDOWS_RENAME_REFUSED[0])),
+        "{warnings:?}"
+    );
+}
+
+#[skuld::test]
+fn an_install_whose_rename_fails_for_another_reason_is_kept_with_a_warning_and_the_others_are_removed(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let host = recording_host();
+    let source = world.source_on(host);
+    let stuck = old_install(&qemu, "10.0.0-0123456789ab");
+    let other = old_install(&qemu, "10.0.1-0123456789ab");
+    let code = 1117; // not one the host names for an install in use
+    assert!(!host::WINDOWS_RENAME_REFUSED.contains(&code));
+    host.refuse_rename(&stuck, code);
+
+    source.resolve().unwrap();
+
+    assert!(stuck.join("bin").is_dir(), "{:?}", entries(&qemu));
+    assert!(!other.exists(), "{:?}", entries(&qemu));
+    let warnings = world.progress.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(&stuck.display().to_string()), "{warnings:?}");
+    assert!(warnings[0].contains(&format!("os error {code}")), "{warnings:?}");
+}
+
+#[skuld::test]
+fn a_removal_that_fails_after_the_rename_is_a_warning_and_the_others_are_still_removed(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let first = old_install(&qemu, "10.0.0-0123456789ab");
+    let second = old_install(&qemu, "10.0.1-0123456789ab");
+    // The first removal fails and leaves the install where its rename put it.
+    let calls = std::cell::Cell::new(0);
+    let failing = |path: &Path| -> std::io::Result<()> {
+        calls.set(calls.get() + 1);
+        if calls.get() == 1 {
+            return Err(std::io::Error::other("the antivirus holds it"));
+        }
+        host::remove_tree(path)
+    };
+
+    world
+        .source
+        .prune_superseded(&qemu, &[first.clone(), second.clone()], &failing);
+
+    assert!(!first.exists() && !second.exists(), "{:?}", entries(&qemu));
+    let warnings = world.progress.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("the antivirus holds it"), "{warnings:?}");
+    let left: Vec<String> = entries(&qemu)
+        .into_iter()
+        .filter(|n| n.starts_with(".extract-"))
+        .collect();
+    assert_eq!(
+        left.len(),
+        1,
+        "the one that failed is left for the next sweep: {left:?}"
+    );
+}
+
+#[skuld::test]
+fn an_install_named_link_to_a_directory_outside_the_cache_is_left_alone_with_its_target(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    std::fs::create_dir_all(&qemu).unwrap();
+    let outside = old_install(&home.join("elsewhere"), "somebody-elses-files");
+    let link = qemu.join("10.0.0-0123456789ab");
+    symlink(&outside, &link);
+
+    world.source.resolve().unwrap();
+    world.source.resolve().unwrap();
+
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    assert!(
+        outside
+            .join("bin")
+            .join(format!("qemu-img{}", std::env::consts::EXE_SUFFIX))
+            .is_file()
+    );
+    assert!(outside.join("share").is_dir());
+    assert!(world.progress.warnings().is_empty(), "{:?}", world.progress.warnings());
+}
+
+#[skuld::test]
+fn a_cache_directory_that_cannot_be_listed_is_one_warning_and_lists_nothing(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let missing = home.join("no-such-cache");
+
+    let surplus = world.source.surplus(&missing, &missing.join("keep"));
+
+    assert!(surplus.installs.is_empty() && !surplus.extractions);
+    let warnings = world.progress.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(&missing.display().to_string()), "{warnings:?}");
 }
 
 #[skuld::test]

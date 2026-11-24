@@ -158,7 +158,11 @@ impl Host for TestHost {
 
     /// Windows's answer on every host, so the tests of what is done with it run everywhere.
     fn rename_refused_by_open_file(&self) -> &'static [i32] {
-        &[5, 32]
+        host::WINDOWS_RENAME_REFUSED
+    }
+
+    fn refuses_delete_access(&self, dir: &Path) -> std::io::Result<bool> {
+        host::current().refuses_delete_access(dir)
     }
 
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
@@ -323,6 +327,10 @@ impl Host for NoAccelHost {
         TestHost.rename_refused_by_open_file()
     }
 
+    fn refuses_delete_access(&self, dir: &Path) -> std::io::Result<bool> {
+        TestHost.refuses_delete_access(dir)
+    }
+
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
         TestHost.final_path_of_open(file, opened_by)
     }
@@ -368,6 +376,10 @@ pub struct RecordingHost {
     shared_files: Mutex<Vec<(FileId, u32)>>,
     /// `rename_refused_by_open_file` answers nothing, as on a host where an open file does not stop a rename.
     no_in_use_codes: bool,
+    /// The directories whose `publish_dir` is refused, with the OS error code each is refused with.
+    refused_renames: Mutex<HashMap<PathBuf, i32>>,
+    /// The directories `refuses_delete_access` says yes for.
+    refused_delete_access: Mutex<HashSet<PathBuf>>,
     /// What `free_space` answers for a directory; the real host answers for any other.
     free_space: Mutex<HashMap<PathBuf, std::result::Result<u64, String>>>,
 }
@@ -467,6 +479,17 @@ impl RecordingHost {
             no_in_use_codes: true,
             ..RecordingHost::default()
         }
+    }
+
+    /// Makes `publish_dir` of exactly `dir` fail with the OS error `code`, as a rename of a directory in use does on
+    /// Windows (see [`host::WINDOWS_RENAME_REFUSED`]), whatever OS the test runs on.
+    pub fn refuse_rename(&self, dir: &Path, code: i32) {
+        self.refused_renames.lock().unwrap().insert(dir.to_owned(), code);
+    }
+
+    /// Makes `refuses_delete_access` say yes for exactly `dir`.
+    pub fn refuse_delete_access(&self, dir: &Path) {
+        self.refused_delete_access.lock().unwrap().insert(dir.to_owned());
     }
 
     /// The open files given to a process by `share_open_file_with`, in call order: each file's identity (read from the
@@ -600,6 +623,9 @@ impl Host for RecordingHost {
             from: from.to_owned(),
             to: to.to_owned(),
         });
+        if let Some(code) = self.refused_renames.lock().unwrap().get(from) {
+            return Err(std::io::Error::from_raw_os_error(*code));
+        }
         TestHost.publish_dir(from, to)
     }
 
@@ -701,6 +727,13 @@ impl Host for RecordingHost {
             return &[];
         }
         TestHost.rename_refused_by_open_file()
+    }
+
+    fn refuses_delete_access(&self, dir: &Path) -> std::io::Result<bool> {
+        if self.refused_delete_access.lock().unwrap().contains(dir) {
+            return Ok(true);
+        }
+        TestHost.refuses_delete_access(dir)
     }
 
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
@@ -869,6 +902,10 @@ impl Host for NoGuestReset {
 
     fn rename_refused_by_open_file(&self) -> &'static [i32] {
         TestHost.rename_refused_by_open_file()
+    }
+
+    fn refuses_delete_access(&self, dir: &Path) -> std::io::Result<bool> {
+        TestHost.refuses_delete_access(dir)
     }
 
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {

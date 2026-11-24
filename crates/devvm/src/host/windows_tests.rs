@@ -450,6 +450,58 @@ fn a_file_open_for_writing_cannot_be_held_and_the_error_says_why(#[fixture(unico
     assert!(error.to_string().contains("open for writing"), "{error}");
 }
 
+/// A directory the permissions let this process delete is not refused, whether or not a program has it open: only a
+/// refusal of the access itself counts.
+#[skuld::test]
+fn delete_access_is_refused_only_by_permissions_not_by_programs_that_have_the_directory_open(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_TRAVERSE: u32 = 0x20;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let dir = home.join("install");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    assert!(!WindowsHost.refuses_delete_access(&dir).unwrap(), "nothing open");
+    // How the system opens a working directory: sharing read and write, not delete.
+    let _cwd = OpenOptions::new()
+        .access_mode(FILE_TRAVERSE | SYNCHRONIZE)
+        .share_mode(0x1 | 0x2)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&dir)
+        .unwrap();
+    assert!(
+        !WindowsHost.refuses_delete_access(&dir).unwrap(),
+        "open as a working directory"
+    );
+}
+
+/// Windows grants delete access to a directory when its parent allows deleting children, so a refusal needs both denied.
+#[skuld::test]
+fn a_directory_whose_permissions_deny_deleting_it_refuses_delete_access(#[fixture(unicode_home)] home: &Path) {
+    let cache = home.join("cache");
+    let dir = cache.join("install");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(!WindowsHost.refuses_delete_access(&dir).unwrap());
+    // Everyone may do all but delete the directory, and all but delete what is in the cache; undone below so the
+    // fixture can remove them.
+    set_protected_dacl(&dir, "D:P(D;;SD;;;WD)(A;;FA;;;WD)");
+    // 0x40 is FILE_DELETE_CHILD: the SDDL name `DC` is another right.
+    set_protected_dacl(&cache, "D:P(D;;0x40;;;WD)(A;;FA;;;WD)");
+
+    let refused = WindowsHost.refuses_delete_access(&dir);
+
+    set_protected_dacl(&cache, "D:P(A;;FA;;;WD)");
+    set_protected_dacl(&dir, "D:P(A;;FA;;;WD)");
+    assert!(refused.unwrap());
+}
+
+#[skuld::test]
+fn delete_access_to_a_directory_that_is_not_there_is_the_systems_error(#[fixture(unicode_home)] home: &Path) {
+    let error = WindowsHost.refuses_delete_access(&home.join("gone")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+}
+
 /// `<home>/<name>/bin/tool`, and the open directory `<home>/<name>/bin`.
 fn held_bin(home: &Path, name: &str) -> (PathBuf, std::fs::File) {
     let root = home.join(name);
