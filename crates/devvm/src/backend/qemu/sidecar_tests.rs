@@ -115,17 +115,6 @@ pub(crate) struct World {
     pub(crate) source: Source,
 }
 
-/// A world over the same cache as `world(home, zip_of(&files()))` whose manifest pins another build: the zip holds one
-/// more file, so its hash and the name of its install differ.
-pub(crate) fn world_pinning_another_build(home: &Path) -> World {
-    let mut other = files();
-    other.push(("share/another-build.txt".to_owned(), b"another build".to_vec()));
-    let zip = zip_of(&other);
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let verify = verified(&asked);
-    world_with(home, zip.clone(), sha_of(&zip), asked, verify)
-}
-
 pub(crate) fn world(home: &Path, zip: Vec<u8>) -> World {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let verify = verified(&asked);

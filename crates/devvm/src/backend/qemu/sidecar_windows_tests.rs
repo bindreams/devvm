@@ -1,10 +1,18 @@
 use std::path::Path;
 
-use super::sidecar_tests::{entries, files, visible, world, world_pinning_another_build, zip_of};
+use super::sidecar_tests::{World, entries, files, visible, world, zip_of};
 use crate::contain::Lifetime;
 use crate::host;
 use crate::test_support::fake_vm;
 use crate::test_support::fixtures::unicode_home;
+
+/// A world over the same cache as `world(home, zip_of(&files()))` whose manifest pins another build: the zip holds one
+/// more file, so its hash and the name of its install differ.
+fn world_pinning_another_build(home: &Path) -> World {
+    let mut other = files();
+    other.push(("share/another-build.txt".to_owned(), b"another build".to_vec()));
+    world(home, zip_of(&other))
+}
 
 /// The error a rename fails with while a file inside the directory is open without delete sharing, measured on Windows
 /// 11 (build 26100) on 2026-11-24: `ERROR_ACCESS_DENIED`, which the host names as the sign of an install in use.
