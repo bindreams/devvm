@@ -94,8 +94,7 @@ fn a_configured_qemu_path_that_is_accepted_passes_and_names_its_hash(#[fixture(u
     assert!(transport.asked().is_empty());
 }
 
-/// A configured QEMU whose system emulator is a file that `make_unreadable` makes unreadable: only its hash cannot be
-/// had, so the brief and the full line both pass, and the full one says the hash is unavailable.
+/// An unreadable system emulator costs only the hash, not the pass.
 pub(super) fn brief_and_full_agree_on_an_emulator_that_cannot_be_read(
     home: &Path,
     make_unreadable: impl FnOnce(&Path),

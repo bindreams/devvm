@@ -1,5 +1,3 @@
-//! The qemu line where the system emulator is a file with no read permission.
-
 use std::path::Path;
 
 use super::checks_tests::brief_and_full_agree_on_an_emulator_that_cannot_be_read;

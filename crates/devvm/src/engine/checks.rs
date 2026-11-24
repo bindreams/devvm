@@ -159,7 +159,7 @@ fn iso_line(memo: &IsoMemo, host: &dyn Host, path: &Path, sha256: Sha256, progre
     }
 }
 
-/// `ssh -V`: the `ssh` that `devvm ssh` runs, here without a console window.
+/// `ssh -V`, run as devvm runs `ssh`.
 fn ssh_check(host: &dyn Host) -> Check {
     let mut command = Command::new("ssh");
     command.arg("-V").stdin(Stdio::null());
@@ -174,8 +174,8 @@ fn git_check(host: &dyn Host, progress: &dyn Progress) -> Check {
     tool_check("git", command)
 }
 
-/// Runs `command` and says what it printed first, on stdout or else on stderr (`ssh -V` writes there). A tool that
-/// exits non-zero fails with the first line it said, on stderr or else on stdout.
+/// Runs `command`. On success: its first non-blank line, stdout else stderr (`ssh -V` writes to stderr). On non-zero
+/// exit: an error with the first non-blank line, stderr else stdout.
 pub(super) fn tool_check(program: &str, mut command: Command) -> Check {
     Check {
         name: program.to_owned(),

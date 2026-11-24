@@ -7,10 +7,8 @@ use std::fmt::Write;
 #[path = "text_tests.rs"]
 mod text_tests;
 
-/// `text` with every control character (newline, carriage return, tab, the rest of C0 and C1, DEL) and every character
-/// that reorders or splits a line ([`reorders_or_splits`]) written as an escape (`\n`, `\r`, `\t`, else `\u{..}`), so it
-/// cannot end or rewrite a line of a message. Every other character stays as it is, so a quoted name reads as it is
-/// typed.
+/// `text` with every control character and every [`reorders_or_splits`] character written as an escape (`\n`, `\r`,
+/// `\t`, else `\u{..}`), so it cannot end or rewrite a line. Every other character is unchanged.
 pub fn escape_controls(text: &str) -> Cow<'_, str> {
     if !text.chars().any(needs_escape) {
         return Cow::Borrowed(text);
@@ -32,9 +30,8 @@ fn needs_escape(c: char) -> bool {
     c.is_control() || reorders_or_splits(c)
 }
 
-/// The characters of Unicode's `Bidi_Control` property, which reorder the text around them, and the line and paragraph
-/// separators, which a reader may take for a line end. Not the rest of the format category: a zero-width joiner in an
-/// emoji sequence and the soft hyphen are harmless.
+/// Unicode `Bidi_Control` (reorders the text around it) and U+2028/U+2029 (read as line ends). Not all of Cf: the
+/// zero-width joiner and soft hyphen are harmless.
 fn reorders_or_splits(c: char) -> bool {
     matches!(
         c,
