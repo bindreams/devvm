@@ -197,7 +197,9 @@ pub(crate) trait Host: Send + Sync {
     /// [`Check`](MakePrivateError::Check).
     ///
     /// A link at `path` is not followed and not restricted: it is `InvalidInput`, "is a link", in `Check`. The file is
-    /// opened once, and the check and the change are made on that one file.
+    /// opened once, and the check and the change are made on that one file. On Unix, what is not a regular file is
+    /// `InvalidInput` in `Check` (a pipe is not waited on), and the file must be readable by the user, else it is
+    /// `PermissionDenied` in `Check`; a key devvm cannot read is refused before this point anyway.
     ///
     /// A file that is restricted already is not written to; on Unix that is any mode without group or other bits (`0400`
     /// too), as `ssh` reads it.

@@ -4,7 +4,6 @@ use std::fs::{DirBuilder, File, FileType, Metadata, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use rustix::fs::{Mode, OFlags, fchmod, fstat, open};
 use rustix::io::Errno;
 
 use super::entry;
@@ -24,17 +23,23 @@ impl FileModes for UnixHost {
         options
     }
 
-    /// Opens `path` once, without following a link, and looks at and changes that descriptor. A mode with no group or
-    /// other bits is private, as `ssh` reads it; any other is set to `0600`.
+    /// Opens `path` once, without following a link and without waiting on a pipe ([`open_regular`]), and looks at and
+    /// changes that descriptor. A mode with no group or other bits is private, as `ssh` reads it; any other is set to
+    /// `0600`. A name that is not a regular file is refused, and so is a file its owner cannot read.
     fn make_private(&self, path: &Path) -> Result<MakePrivateOutcome, MakePrivateError> {
-        const PRIVATE: Mode = Mode::from_bits_retain(0o600);
-        let file = open(path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
-            .map_err(|errno| MakePrivateError::Check(refused_as_link(path, errno.into())))?;
-        let stat = fstat(&file).map_err(|errno| MakePrivateError::Check(errno.into()))?;
-        if !Mode::from_raw_mode(stat.st_mode).intersects(Mode::RWXG | Mode::RWXO) {
+        let file = open_regular(path).map_err(|e| MakePrivateError::Check(refused_as_link(path, e)))?;
+        let metadata = file.metadata().map_err(MakePrivateError::Check)?;
+        if !metadata.is_file() {
+            return Err(MakePrivateError::Check(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file", path.display()),
+            )));
+        }
+        if metadata.permissions().mode() & 0o077 == 0 {
             return Ok(MakePrivateOutcome::Unchanged);
         }
-        fchmod(&file, PRIVATE).map_err(|errno| MakePrivateError::Change(errno.into()))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(MakePrivateError::Change)?;
         Ok(MakePrivateOutcome::Changed)
     }
 

@@ -5,7 +5,7 @@ use std::path::Path;
 use rustix::io::Errno;
 
 use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with};
-use crate::host::{Entry, Host, MakePrivateOutcome};
+use crate::host::{Entry, Host, MakePrivateError, MakePrivateOutcome};
 use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
@@ -179,6 +179,53 @@ fn a_file_with_a_group_or_other_bit_is_made_0600(#[fixture(unicode_home)] home: 
             "{mode:o}"
         );
     }
+}
+
+/// A pipe at a key's name is not opened for reading, which would wait for a writer for ever; a directory is not a key.
+#[skuld::test]
+fn what_is_not_a_regular_file_is_refused_and_not_waited_for(#[fixture(unicode_home)] home: &Path) {
+    make_fifo(&home.join("pipe"));
+    std::fs::create_dir(home.join("dir")).unwrap();
+    std::fs::set_permissions(home.join("dir"), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    for name in ["pipe", "dir"] {
+        let error = UnixHost.make_private(&home.join(name)).unwrap_err();
+        let MakePrivateError::Check(source) = &error else {
+            panic!("{name}: what is not a file has no protection to look at: {error:?}")
+        };
+        assert!(
+            source.to_string().ends_with("is not a regular file"),
+            "{name}: {source}"
+        );
+    }
+    assert_eq!(
+        std::fs::metadata(home.join("dir")).unwrap().permissions().mode() & 0o777,
+        0o755,
+        "the directory is left as it was"
+    );
+}
+
+/// A file its owner cannot read is not looked at: `Check`, and its mode is not touched. Mode bits do not bind root, so
+/// the test refuses to run as root.
+#[skuld::test]
+fn a_file_its_owner_cannot_read_is_a_check_error(#[fixture(unicode_home)] home: &Path) {
+    // SAFETY: `geteuid` reads a process attribute.
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "file modes do not bind root: run this test as another user"
+    );
+    let path = home.join("write-only");
+    std::fs::write(&path, b"secret").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o220)).unwrap();
+
+    let error = UnixHost.make_private(&path).unwrap_err();
+
+    let MakePrivateError::Check(source) = &error else {
+        panic!("a file that cannot be opened has no protection looked at: {error:?}")
+    };
+    assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied, "{source}");
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o220);
 }
 
 // The runtime directory -----------------------------------------------------------------------------------------------
