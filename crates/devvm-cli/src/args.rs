@@ -63,9 +63,9 @@ program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell:
 macro_rules! image_help {
     () => {
         "`from: { url, sha256 }` or `from: { url, sha512 }`, or `amd64:` and `arm64:` each with one of those, starts a \
-Linux guest from a disk image. Each `url` takes exactly one of `sha256` (64 hex digits) and `sha512` (128 hex digits). \
+Linux guest from a disk image. Each `url` (http or https) takes exactly one of `sha256` (64 hex digits) and `sha512` (128 hex digits). \
 The image must boot with UEFI from a virtio disk, run cloud-init with the NoCloud datasource, run sshd with SFTP on \
-port 22, have bash, sudo, tar, sh, sed, sync, cat, mkdir and rm, and power off on a power-button press. Details: \
+port 22 that accepts ed25519 keys, have bash, sudo, tar, sh, sed, sync (with `-f`), cat, mkdir and rm, and power off on a power-button press. Details: \
 https://github.com/bindreams/devvm#disk-images"
     };
 }

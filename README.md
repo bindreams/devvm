@@ -203,13 +203,14 @@ The embedded [`ubuntu-24.04`](crates/devvm/src/recipe/embedded/ubuntu-24.04.devv
 - `from: { url, sha256 }` names one image for both architectures. With `amd64:` and `arm64:` each architecture has its
   own, and either may be left out: a build for an architecture without one fails. A build is for the host's
   architecture unless `--arch` says otherwise. devvm does not check that the image is of the guest's architecture.
-- Each `url` is followed by exactly one of `sha256` (64 hex digits) and `sha512` (128 hex digits), in either case; the
-  two architectures of one recipe may use different ones. Both keys, neither, or a digest of the wrong length is an
-  error.
-- The digest is that of the file at `url`. devvm downloads the file once and keeps it by the digest. A file with
-  another digest is refused and its partial download deleted.
-- The file is not unpacked. A qcow2 image is used as it is, and one with a backing file is refused; any other format
-  `qemu-img` reads (raw, vmdk, ...) is converted to qcow2.
+- Each `url` is an `http` or `https` address (any other scheme fails the download), followed by exactly one of `sha256`
+  (64 hex digits) and `sha512` (128 hex digits), in either case; the two architectures of one recipe may use different
+  ones. Both keys, neither, or a digest of the wrong length is an error.
+- The digest is that of the file at `url`. devvm keeps the download and does not repeat it for the same digest and the
+  same last part of the `url`'s path. A file with another digest is refused and its partial download deleted.
+- The file at `url` is the disk image itself: devvm unpacks nothing, so an archive or a compressed file (`.xz`, `.gz`)
+  is not an image. A qcow2 image is used as it is, and one with a backing file is refused; any other format `qemu-img`
+  reads (raw, vmdk, ...) is converted to qcow2.
 - The `url` is not part of the layer's key: a new `url` with the same digest reuses the layer. The same file pinned by
   `sha256` in one recipe and by `sha512` in another makes two layers.
 
@@ -225,9 +226,16 @@ The embedded [`ubuntu-24.04`](crates/devvm/src/recipe/embedded/ubuntu-24.04.devv
 - **sshd on port 22.** devvm reaches it through a forward from a loopback port of the host into QEMU's user-mode
   network, so the guest has to bring its virtio network card up on that network (DHCP). sshd has to offer the host key
   from the seed, since devvm refuses any other, accept the key of `user`, and serve SFTP: `cp` and `copy` steps use
-  OpenSSH's server, with its `posix-rename@openssh.com` extension.
+  OpenSSH's server, with its `posix-rename@openssh.com` extension. The client key and the host key are ed25519, so sshd
+  has to accept ed25519 user keys and use the ed25519 host key the seed gives it.
 - **Programs** that devvm runs: `bash` (every command runs through `bash -lc`), `sudo` (`elevated: true`, `--elevated`
-  and flushing the disk before a layer is saved), `tar`, `sh`, `sed`, `sync`, `cat`, `mkdir` and `rm`.
+  and flushing the disk before a layer is saved), `tar`, `sh`, `sed`, `sync`, `cat`, `mkdir` and `rm`. The flush runs
+  `sync -f`, so `sync` has to accept `-f` (GNU coreutils' does), and a `copy` step uploads its archive to `/tmp`, so
+  `user` has to be able to write there.
+- **A root file system that fills the disk.** An instance's disk is `resources.disk`, or else the larger of 40 GiB and
+  the image's virtual size; a `resources.disk` smaller than the image is refused. devvm does not grow the guest's file
+  system, so the image has to grow its root file system on first boot, as cloud-init does by default
+  ([modules reference](https://docs.cloud-init.io/en/latest/reference/modules.html), Growpart and Resizefs).
 - **A finished boot.** devvm waits for `cloud-init status --wait --format json` to report `done`. A `done` that reports
   only recoverable problems (exit code 2, an `extended_status` that starts with `degraded`, or `recoverable_errors`) is
   a warning; any other status, any `errors`, or any exit code but 0 and 2 fails the start. The
