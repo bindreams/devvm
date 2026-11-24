@@ -1,10 +1,13 @@
 //! What the tests ask Windows about a process they did not write.
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LPARAM, STILL_ACTIVE};
+use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, LPARAM, STILL_ACTIVE, UNICODE_STRING};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId};
 
 /// A handle that reports a process's exit code after the process is gone (a PID alone cannot).
@@ -57,9 +60,11 @@ pub fn windows_of(pid: u32) -> usize {
     count.found
 }
 
-/// How many running processes have `pid` as their parent. A console program has a `conhost.exe` child; a detached one
-/// has none.
-pub fn children_of(pid: u32) -> usize {
+/// The running processes that have `pid` as their parent, each described: image name, PID, command line, and when it
+/// was created relative to `pid`'s process. A console program has a `conhost.exe` child; a detached one has none. The
+/// parent is whatever the process list says, which a reused PID can make a process that never started the child: a child
+/// created before its parent is that.
+pub fn children_of(pid: u32) -> Vec<String> {
     // SAFETY: a snapshot of the process list.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     assert!(
@@ -69,12 +74,19 @@ pub fn children_of(pid: u32) -> usize {
     // SAFETY: an all-zero entry with its size set is what the API expects.
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    let mut children = 0;
+    let parent_created = created_of(pid);
+    let mut children = Vec::new();
     // SAFETY: `snapshot` is open and `entry` is valid.
     let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
     while more {
         if entry.th32ParentProcessID == pid {
-            children += 1;
+            let image_len = entry
+                .szExeFile
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let image = String::from_utf16_lossy(&entry.szExeFile[..image_len]);
+            children.push(describe_child(&image, entry.th32ProcessID, parent_created));
         }
         // SAFETY: as above.
         more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
@@ -82,4 +94,84 @@ pub fn children_of(pid: u32) -> usize {
     // SAFETY: closed once.
     unsafe { CloseHandle(snapshot) };
     children
+}
+
+fn describe_child(image: &str, pid: u32, parent_created: Option<u64>) -> String {
+    let created = created_of(pid);
+    let when = match (created, parent_created) {
+        (Some(child), Some(parent)) if child >= parent => {
+            format!("created {} ms after its parent", (child - parent) / 10_000)
+        }
+        (Some(child), Some(parent)) => format!("created {} ms before its parent", (parent - child) / 10_000),
+        _ => "creation time unreadable".to_owned(),
+    };
+    let command_line = command_line_of(pid).unwrap_or_else(|| "unreadable".to_owned());
+    format!("{image} (pid {pid}, {when}, command line: {command_line})")
+}
+
+/// Runs `read` on a handle that can query `pid`; `None` when the process cannot be opened (it has exited, or is not ours
+/// to query).
+fn with_process<T>(pid: u32, read: impl FnOnce(HANDLE) -> Option<T>) -> Option<T> {
+    // SAFETY: plain query access to a process by id.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let read = read(handle);
+    // SAFETY: the handle came from `OpenProcess` and is closed once.
+    unsafe { CloseHandle(handle) };
+    read
+}
+
+/// When the process was created, in 100 ns ticks since 1601.
+fn created_of(pid: u32) -> Option<u64> {
+    with_process(pid, |handle| {
+        let (mut created, mut exited, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        // SAFETY: the handle is open; the four out pointers are valid.
+        let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) };
+        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    })
+}
+
+/// The command line the process was started with, as the OS keeps it.
+fn command_line_of(pid: u32) -> Option<String> {
+    with_process(pid, |handle| {
+        let mut needed = 0u32;
+        // SAFETY: a size query: no buffer.
+        unsafe {
+            NtQueryInformationProcess(
+                handle,
+                ProcessCommandLineInformation,
+                std::ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        // In 8-byte units, so the buffer is aligned for the `UNICODE_STRING` the OS writes at its start.
+        let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+        let size = (buffer.len() * 8) as u32;
+        // SAFETY: the buffer is `size` bytes; `needed` is a valid out pointer.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                handle,
+                ProcessCommandLineInformation,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &mut needed,
+            )
+        };
+        if status < 0 {
+            return None;
+        }
+        // SAFETY: on success the buffer starts with a `UNICODE_STRING` whose text lies inside the buffer.
+        let text = unsafe { &*buffer.as_ptr().cast::<UNICODE_STRING>() };
+        // SAFETY: `Length` bytes of UTF-16 at `Buffer`, inside `buffer`, which is alive and unchanged.
+        let units = unsafe { std::slice::from_raw_parts(text.Buffer, usize::from(text.Length) / 2) };
+        Some(String::from_utf16_lossy(units))
+    })
 }
