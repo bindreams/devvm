@@ -22,6 +22,12 @@ mod log_tests;
 /// A log older than this is removed when a new one is made, unless its run is alive.
 const KEEP: Duration = Duration::from_secs(14 * 24 * 3600);
 
+/// The end of the name of a kept copy of a serial log; that of a run's log is [`RUN_LOG`].
+const SERIAL_COPY: &str = ".serial.log";
+
+/// The end of the name of a run's log.
+const RUN_LOG: &str = ".log";
+
 const ADVANCES: u128 = 20;
 
 const TIME: &str = "%Y-%m-%dT%H:%M:%S%.3fZ";
@@ -82,7 +88,7 @@ impl FileLog {
             stamp(clock.now(), TIME),
             env!("CARGO_PKG_VERSION")
         );
-        let path = create_named(dir, &*clock, "log", header.as_bytes()).map_err(|(path, e)| cannot_write(&path, e))?;
+        let path = create_named(dir, &*clock, RUN_LOG, header.as_bytes()).map_err(|(path, e)| cannot_write(&path, e))?;
         let open = || {
             OpenOptions::new()
                 .append(true)
@@ -149,8 +155,8 @@ impl FileLog {
 }
 
 /// Copies `source` to `devvm-<UTC time>-<pid>-<4 hex>.serial.log` in `dir`, which is made if it is not there, after
-/// removing the logs in it that are older than 14 days and whose process is not running, as [`FileLog::create`] does.
-/// What goes wrong in that removal is told to `warn`. The copy is the user's alone and is streamed. A `source` that
+/// removing the logs in it that are older than 14 days, except a run log whose process is running, as
+/// [`FileLog::create`] does. What goes wrong in that removal is told to `warn`. The copy is the user's alone and is streamed. A `source` that
 /// cannot be read makes no file, and a copy that fails half way is removed. Returns the copy's path.
 #[allow(
     dead_code,
@@ -178,7 +184,7 @@ pub(crate) fn keep_copy_with(
     for warning in prune(dir, clock.now(), alive) {
         warn(&warning);
     }
-    let path = create_named(dir, clock, "serial.log", b"")
+    let path = create_named(dir, clock, SERIAL_COPY, b"")
         .map_err(|(path, e)| said(e, format_args!("cannot write {}", path.display())))?;
     let copied = OpenOptions::new()
         .append(true)
@@ -201,17 +207,17 @@ fn said(e: std::io::Error, what: std::fmt::Arguments<'_>) -> std::io::Error {
     std::io::Error::new(e.kind(), format!("{what}: {e}"))
 }
 
-/// Makes `devvm-<UTC time>-<pid>-<4 hex>.<extension>` in `dir`, the user's alone, holding `first`. The name is drawn
+/// Makes `devvm-<UTC time>-<pid>-<4 hex><suffix>` in `dir`, the user's alone, holding `first`. The name is drawn
 /// again while another run has drawn it. A failure comes with the path it could not write.
 fn create_named(
     dir: &Path,
     clock: &dyn Clock,
-    extension: &str,
+    suffix: &str,
     first: &[u8],
 ) -> std::result::Result<PathBuf, (PathBuf, std::io::Error)> {
     loop {
         let name = format!(
-            "devvm-{}-{}-{}.{extension}",
+            "devvm-{}-{}-{}{suffix}",
             stamp(clock.now(), "%Y%m%dT%H%M%SZ"),
             std::process::id(),
             hex::encode(random::bytes::<2>())
@@ -247,11 +253,11 @@ fn process_is_alive(pid: u32) -> bool {
 
 /// The pid in the name of the log `devvm-<time>-<pid>-<hex>.log`.
 fn owner_of(name: &str) -> Option<u32> {
-    let rest = name.strip_prefix("devvm-")?.strip_suffix(".log")?;
+    let rest = name.strip_prefix("devvm-")?.strip_suffix(RUN_LOG)?;
     rest.rsplit('-').nth(1)?.parse().ok()
 }
 
-/// Removes the logs in `dir` that are older than [`KEEP`] by `now`, except those of a process that `alive` says is
+/// Removes the logs in `dir` that are older than [`KEEP`] by `now`, except the run logs of a process that `alive` says is
 /// running; returns what went wrong. Works from one listing of the directory.
 fn prune(dir: &Path, now: SystemTime, alive: &dyn Fn(u32) -> bool) -> Vec<String> {
     let mut warnings = Vec::new();
@@ -269,7 +275,7 @@ fn prune(dir: &Path, now: SystemTime, alive: &dyn Fn(u32) -> bool) -> Vec<String
         };
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.starts_with("devvm-") || !name.ends_with(".log") {
+        if !name.starts_with("devvm-") || !name.ends_with(RUN_LOG) {
             continue;
         }
         let modified = match entry.metadata() {
@@ -279,7 +285,8 @@ fn prune(dir: &Path, now: SystemTime, alive: &dyn Fn(u32) -> bool) -> Vec<String
         };
         match modified {
             Ok(modified) if now.duration_since(modified).is_ok_and(|age| age > KEEP) => {
-                if owner_of(name).is_some_and(alive) {
+                // A kept copy is complete when made; a run log may still be written.
+                if !name.ends_with(SERIAL_COPY) && owner_of(name).is_some_and(alive) {
                     continue;
                 }
                 if let Err(e) = remove_if_present(&entry.path()) {

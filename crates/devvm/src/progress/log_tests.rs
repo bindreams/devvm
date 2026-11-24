@@ -430,7 +430,7 @@ fn owner_of_a_kept_copy_is_this_process(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
-fn keeping_a_copy_prunes_old_logs_unless_their_process_is_alive(#[fixture(unicode_home)] home: &Path) {
+fn keeping_a_copy_prunes_old_copies_and_the_old_logs_of_processes_that_are_gone(#[fixture(unicode_home)] home: &Path) {
     let dir = home.join("logs");
     std::fs::create_dir_all(&dir).unwrap();
     let put = |name: &str, days: u64| -> PathBuf {
@@ -448,11 +448,11 @@ fn keeping_a_copy_prunes_old_logs_unless_their_process_is_alive(#[fixture(unicod
 
     let copy = keep_copy_with(&dir, &FixedClock(noon()), &source, &mut |_| {}, &|pid| pid == 7).unwrap();
 
+    assert!(running_log.exists(), "the process 7 is running, and may still write its log");
     assert!(
-        running_log.exists() && running_copy.exists(),
-        "the process 7 is running"
+        !running_copy.exists() && !gone_log.exists() && !gone_copy.exists(),
+        "a copy is complete when made, whoever made it; the process 8 is gone"
     );
-    assert!(!gone_log.exists() && !gone_copy.exists(), "the process 8 is not");
     assert!(recent_copy.exists() && copy.exists());
 }
 
