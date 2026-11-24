@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::random;
 use crate::recipe::hash::LayerKey;
-use crate::store::layers::time_parse;
+use crate::store::{time_parse, time_text};
 use crate::{Error, ErrorKind, Result};
 
 /// The `meta.json` schema this devvm writes and reads.
@@ -110,12 +110,6 @@ pub enum MetaRead {
     /// Written by a newer devvm: the error to report, which is not corruption and must not be recovered from.
     Newer(Error),
     Valid(LayerMeta),
-}
-
-fn time_text(time: SystemTime) -> Result<String> {
-    jiff::Timestamp::try_from(time)
-        .map(|timestamp| timestamp.to_string())
-        .map_err(|e| Error::new(ErrorKind::Store, format!("time out of range: {e}")))
 }
 
 impl LayerMeta {

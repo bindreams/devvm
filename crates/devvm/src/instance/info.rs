@@ -5,6 +5,7 @@ use std::time::SystemTime;
 
 use serde::Serialize;
 
+use crate::store::time_text;
 use crate::{Arch, GuestKind};
 
 /// Whether an instance's VM is running, judged by the recorded process identity.
@@ -56,8 +57,9 @@ struct Line<'a> {
     owner: &'a str,
 }
 
-fn time_text(time: SystemTime) -> String {
-    jiff::Timestamp::try_from(time).map_or_else(|_| "out-of-range".to_owned(), |t| t.to_string())
+/// The time as a record would write it, or `out-of-range`.
+fn time_shown(time: SystemTime) -> String {
+    time_text(time).unwrap_or_else(|_| "out-of-range".to_owned())
 }
 
 impl InstanceInfo {
@@ -70,9 +72,9 @@ impl InstanceInfo {
             state: self.state.as_str(),
             guest: self.guest.as_str(),
             arch: self.arch.as_str(),
-            created: time_text(self.created),
+            created: time_shown(self.created),
             created_from: self.created_from.to_string_lossy().into_owned(),
-            expires: self.expires.map(time_text),
+            expires: self.expires.map(time_shown),
             owner: if self.ownerless { "none" } else { "process" },
         };
         serde_json::to_string(&line).expect("a struct of strings serializes")

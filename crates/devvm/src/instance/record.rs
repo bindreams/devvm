@@ -12,7 +12,8 @@ use crate::host::{self, Host, remove_if_present};
 use crate::instance::name::InstanceName;
 use crate::random;
 use crate::recipe::hash::LayerKey;
-use crate::store::layers::{Generation, LayerRef, time_parse};
+use crate::store::layers::{Generation, LayerRef};
+use crate::store::{time_parse, time_text};
 use crate::{Arch, Error, ErrorKind, GuestKind, Network, Result};
 
 #[cfg(test)]
@@ -138,12 +139,6 @@ struct Wire {
 #[derive(Deserialize)]
 struct SchemaOnly {
     schema: u64,
-}
-
-fn time_text(time: SystemTime) -> Result<String> {
-    jiff::Timestamp::try_from(time)
-        .map(|timestamp| timestamp.to_string())
-        .map_err(|e| Error::new(ErrorKind::Store, format!("time out of range: {e}")))
 }
 
 fn guest_parse(text: &str) -> std::result::Result<GuestKind, String> {

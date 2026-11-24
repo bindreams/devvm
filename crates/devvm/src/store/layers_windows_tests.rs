@@ -1,4 +1,4 @@
-use crate::store::layers::time_parse;
+use crate::store::time_parse;
 
 /// The earliest timestamp jiff holds is outside `SystemTime`'s range on Windows; on Linux and macOS every timestamp
 /// fits, so this error cannot be reached there.

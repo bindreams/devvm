@@ -574,15 +574,3 @@ fn waiter_whose_layer_was_built_meanwhile_does_not_build_again(#[fixture(unicode
     assert_eq!(waiter_builds.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(a_generation, b_generation);
 }
-
-#[skuld::test]
-fn time_parse_reads_an_rfc3339_instant() {
-    let parsed = crate::store::layers::time_parse("2027-01-15T08:00:00Z").unwrap();
-    assert_eq!(parsed, SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000));
-}
-
-#[skuld::test]
-fn time_parse_of_text_that_is_no_instant_names_the_text() {
-    let error = crate::store::layers::time_parse("tomorrow").unwrap_err();
-    assert!(error.starts_with("bad time `tomorrow`: "), "{error}");
-}

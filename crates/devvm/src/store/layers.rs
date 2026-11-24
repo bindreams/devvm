@@ -549,14 +549,6 @@ pub(crate) fn date_text(time: SystemTime) -> String {
     }
 }
 
-/// The instant an RFC 3339 timestamp names. A timestamp the platform's `SystemTime` cannot hold (`Timestamp::MIN` on
-/// Windows) is refused with the same text as one that is no timestamp.
-pub(crate) fn time_parse(text: &str) -> std::result::Result<SystemTime, String> {
-    text.parse::<jiff::Timestamp>()
-        .and_then(SystemTime::try_from)
-        .map_err(|e| format!("bad time `{text}`: {e}"))
-}
-
 /// What `<key>/current` holds.
 pub(super) enum CurrentFile {
     Absent,
