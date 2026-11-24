@@ -30,7 +30,6 @@ pub struct FlatStep {
     pub recipe: String,
     /// 0-based position in that recipe's own `steps`.
     pub position: usize,
-    /// The number of steps that recipe declares.
     pub count: usize,
 }
 
