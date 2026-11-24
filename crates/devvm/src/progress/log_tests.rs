@@ -502,7 +502,13 @@ fn a_prune_warning_goes_to_warn_and_the_copy_is_still_made(#[fixture(unicode_hom
     let source = source_of(home, b"kept");
 
     let mut warnings = Vec::new();
-    let copy = copy_of(&dir, &source, &mut warnings);
+    let copy = keep_copy_with(
+        &dir,
+        &FixedClock(noon()),
+        &source,
+        &mut |warning| warnings.push(warning.to_owned()),
+        &|_| false,
+    );
     drop(held);
 
     let copy = copy.unwrap();
