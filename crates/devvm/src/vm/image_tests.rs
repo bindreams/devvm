@@ -348,7 +348,9 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_and_runs_the_c
 }
 
 #[skuld::test]
-fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_a_copy(#[fixture(unicode_home)] home: &Path) {
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_an_sftp_session(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let fx = engine_fixture(home, memory());
     let instance = short_bound_instance(&fx, home);
     let vm = vm_over(reached(&instance), instance);
@@ -360,6 +362,52 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_a_copy(#[f
 
     assert!(home.is_ok(), "the SFTP subsystem opened on a new connection: {home:?}");
     assert_eq!(fx.server.connections() - before, 1);
+}
+
+#[skuld::test]
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_run_to(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+    let mut out = Vec::new();
+
+    vm.run_to(&Command::new(["echo", "after"]), &mut out, &mut Vec::new())
+        .unwrap();
+
+    assert_eq!(out, b"after
+");
+    assert_eq!(fx.server.connections() - before, 1);
+    let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
+    assert_eq!(sent, 1, "the command was sent once");
+}
+
+#[skuld::test]
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_copy_in_and_copy_out(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    let up = home.join("up.txt");
+    std::fs::write(&up, "going up").unwrap();
+    let down = home.join("down.txt");
+
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+    vm.copy_in(&up, "/up.txt").unwrap();
+    assert_eq!(fx.server.connections() - before, 1, "copy_in");
+
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+    vm.copy_out("/up.txt", &down).unwrap();
+    assert_eq!(fx.server.connections() - before, 1, "copy_out");
+
+    assert_eq!(std::fs::read(fx.server.root().join("up.txt")).unwrap(), b"going up");
+    assert_eq!(std::fs::read(&down).unwrap(), b"going up");
 }
 
 #[skuld::test]
