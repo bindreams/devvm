@@ -12,6 +12,11 @@ fn stall_error_text_names_url_and_seconds() {
 }
 
 #[skuld::test]
+fn the_transport_builds_its_tls_client_without_the_caller_installing_a_provider() {
+    HttpTransport::new().unwrap();
+}
+
+#[skuld::test]
 fn content_range_headers_parse() {
     assert_eq!(
         parse_content_range("bytes 100-199/1000"),
