@@ -165,6 +165,28 @@ fn a_configured_path_that_is_not_accepted_fails_naming_the_path(#[fixture(unicod
 }
 
 #[skuld::test]
+fn a_configured_path_removed_after_a_passing_check_fails_the_next_check_of_the_same_install(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dirs = Dirs::under(home);
+    let bin = home.join("qemu").join("bin");
+    make_tools(&bin);
+    make_firmware(&bin.join("share"));
+    configure(&dirs, &bin);
+    let (install, _) = install_over(&dirs, Ok(pinned()));
+    qemu_check(&install, Detail::Brief)
+        .outcome
+        .expect("the configured path is accepted");
+
+    std::fs::remove_dir_all(&bin).unwrap();
+
+    let why = qemu_check(&install, Detail::Brief)
+        .outcome
+        .expect_err("the directory is gone");
+    assert!(why.contains(&bin.display().to_string()), "{why}");
+}
+
+#[skuld::test]
 fn no_build_for_the_triple_and_no_path_fails_the_qemu_check_naming_the_triple(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);
     let (install, transport) = install_over(&dirs, manifest_entry("riscv64-unknown-plan9"));

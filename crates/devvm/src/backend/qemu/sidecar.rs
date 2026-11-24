@@ -302,7 +302,7 @@ impl Source {
 
 /// A QEMU the user installed: `dir` holds the executables, the firmware is in `<dir>/share` or `<dir>/../share`. It must
 /// hold what a guest of `arch` needs, the host's in every caller: the only architecture a launch uses today.
-fn configured(dir: &Path, arch: Arch) -> Result<QemuInstall> {
+pub(super) fn configured(dir: &Path, arch: Arch) -> Result<QemuInstall> {
     if !dir.is_absolute() {
         return Err(Error::new(
             ErrorKind::Unavailable,
