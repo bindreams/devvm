@@ -171,6 +171,24 @@ impl InstanceKeys {
         Ok(warnings)
     }
 
+    /// [`read`](InstanceKeys::read), and makes the two private key files the user's alone ([`Host::make_private`]): keys
+    /// written before they were created private, which OpenSSH for Windows refuses, are repaired where they are read.
+    /// An error names the key that could not be restricted.
+    pub(crate) fn read_private(host: &dyn Host, dir: &Path) -> Result<InstanceKeys> {
+        let keys = InstanceKeys::read(dir)?;
+        for name in [CLIENT, HOST] {
+            let path = dir.join(name);
+            host.make_private(&path).map_err(|e| {
+                Error::io(
+                    ErrorKind::Io,
+                    format!("cannot make the key {} private to the current user", path.display()),
+                    e,
+                )
+            })?;
+        }
+        Ok(keys)
+    }
+
     /// Reads the set `write` made. `NotFound` when `dir` has no keys.
     pub(crate) fn read(dir: &Path) -> Result<InstanceKeys> {
         let read = |name: &str| -> Result<String> {

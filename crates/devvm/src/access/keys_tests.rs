@@ -6,6 +6,7 @@ use secrecy::{ExposeSecret, SecretString};
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
 use crate::test_groups::{Group, symlinks};
+use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{DirectoryCall, RecordingHost, TestHost};
 use crate::test_support::symlink::symlink;
@@ -58,6 +59,43 @@ fn write_then_read_keys_under_a_space_and_non_ascii_directory(#[fixture(unicode_
         assert!(dir.join(name).is_file(), "{name}");
     }
     assert_eq!(texts(&InstanceKeys::read(&dir).unwrap()), texts(&keys));
+}
+
+#[skuld::test]
+fn read_private_takes_keys_written_before_they_were_private_to_the_users_alone(#[fixture(unicode_home)] home: &Path) {
+    let loose = home.join("loose");
+    std::fs::create_dir(&loose).unwrap();
+    #[cfg(windows)]
+    let me = crate::test_support::private_files::let_other_accounts_write_below(&loose);
+    let dir = loose.join("keys");
+    let keys = InstanceKeys::generate().unwrap();
+    keys.write(&TestHost, &dir).unwrap();
+    for name in ["client", "host"] {
+        file_mode::loosen(&dir.join(name));
+    }
+    #[cfg(windows)]
+    assert!(
+        crate::test_support::file_security::Security::of(&dir.join("client"))
+            .allowed_sids()
+            .len()
+            > 1,
+        "the client key must have the inherited entries"
+    );
+
+    let read = InstanceKeys::read_private(&TestHost, &dir).unwrap();
+
+    assert_eq!(texts(&read), texts(&keys));
+    for name in ["client", "host"] {
+        assert_eq!(file_mode::mode(&dir.join(name)), cfg!(unix).then_some(0o600), "{name}");
+        #[cfg(windows)]
+        crate::test_support::private_files::assert_is_the_users_alone(&dir.join(name), &me);
+    }
+}
+
+#[skuld::test]
+fn read_private_of_a_missing_set_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = InstanceKeys::read_private(&TestHost, &home.join("keys")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotFound);
 }
 
 #[skuld::test]

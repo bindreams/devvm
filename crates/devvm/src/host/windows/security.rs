@@ -10,9 +10,11 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    SetSecurityInfo,
 };
 use windows_sys::Win32::Security::{
-    LookupAccountSidW, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SID_NAME_USE,
+    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, LookupAccountSidW, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SID_NAME_USE,
 };
 
 use super::user::{current_sid, sid_string};
@@ -54,6 +56,45 @@ impl Descriptor {
     pub(crate) fn user_only_file() -> io::Result<Descriptor> {
         let sid = current_sid()?;
         Descriptor::from_sddl(&format!("D:P(A;;FA;;;{sid})"))
+    }
+
+    /// Calls `with` with this descriptor's DACL, which lives for the call only.
+    pub(crate) fn with_dacl<R>(&self, with: impl FnOnce(*mut ACL) -> R) -> io::Result<R> {
+        let (mut present, mut defaulted) = (0, 0);
+        let mut dacl: *mut ACL = null_mut();
+        // SAFETY: the descriptor is live and the out-pointers are valid.
+        let got = unsafe { GetSecurityDescriptorDacl(self.0, &mut present, &mut dacl, &mut defaulted) };
+        if got == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if present == 0 {
+            return Err(io::Error::other("the descriptor has no DACL"));
+        }
+        Ok(with(dacl))
+    }
+
+    /// Replaces the DACL of the object `handle` names with this descriptor's, protected: nothing is inherited. The handle
+    /// must be open with `WRITE_DAC` and `READ_CONTROL`.
+    pub(crate) fn protect(&self, handle: &File) -> io::Result<()> {
+        let status = self.with_dacl(|dacl| {
+            // SAFETY: the handle is open; `dacl` points into this live descriptor; a null owner, group and SACL are
+            // allowed because those parts are not set.
+            unsafe {
+                SetSecurityInfo(
+                    handle.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    dacl,
+                    null(),
+                )
+            }
+        })?;
+        match status {
+            ERROR_SUCCESS => Ok(()),
+            code => Err(io::Error::from_raw_os_error(code as i32)),
+        }
     }
 
     /// Calls `with` with attributes that carry this descriptor and no inheritable handle; they live for the call only.

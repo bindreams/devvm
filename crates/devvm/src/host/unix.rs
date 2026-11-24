@@ -23,6 +23,10 @@ impl FileModes for UnixHost {
         options
     }
 
+    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    }
+
     fn hold_options(&self) -> OpenOptions {
         let mut options = OpenOptions::new();
         options.read(true).write(true).custom_flags(libc::O_NOFOLLOW);

@@ -222,6 +222,33 @@ fn assert_private_file_is_the_users_alone(home: &Path) {
 }
 
 #[skuld::test]
+fn make_private_takes_an_existing_file_to_the_users_alone(#[fixture(unicode_home)] home: &Path) {
+    let loose = home.join("loose");
+    std::fs::create_dir(&loose).unwrap();
+    #[cfg(windows)]
+    let me = crate::test_support::private_files::let_other_accounts_write_below(&loose);
+    let path = loose.join("older key");
+    std::fs::write(&path, b"secret").unwrap();
+    file_mode::set_mode(&path, 0o644);
+
+    current().make_private(&path).unwrap();
+
+    assert_eq!(file_mode::mode(&path), cfg!(unix).then_some(0o600));
+    #[cfg(windows)]
+    crate::test_support::private_files::assert_is_the_users_alone(&path, &me);
+    assert_eq!(std::fs::read(&path).unwrap(), b"secret", "the contents are left alone");
+    current()
+        .make_private(&path)
+        .expect("a file that is private already stays so");
+}
+
+#[skuld::test]
+fn make_private_of_a_missing_file_is_not_found(#[fixture(unicode_home)] home: &Path) {
+    let error = current().make_private(&home.join("absent")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[skuld::test]
 fn set_mtime_sets_the_time_of_a_directory_and_of_a_read_only_file(#[fixture(unicode_home)] home: &Path) {
     let dir = home.join("dir");
     std::fs::create_dir(&dir).unwrap();

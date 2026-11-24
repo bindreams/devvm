@@ -154,6 +154,11 @@ pub(crate) trait Host: Send + Sync {
     /// share that refuses a named owner still accepts it.
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
 
+    /// Restricts the existing file `path` the way [`write_private`](Host::write_private) restricts a new one: the
+    /// current user alone can read it, whatever it had before (mode `0600`; on Windows a protected DACL granting only
+    /// the user, which replaces an inherited one). The contents are not touched. `NotFound` if there is no file.
+    fn make_private(&self, path: &Path) -> std::io::Result<()>;
+
     /// Whether any execute bit of `path` is set; always `false` on Windows.
     fn is_executable(&self, path: &Path) -> std::io::Result<bool>;
 

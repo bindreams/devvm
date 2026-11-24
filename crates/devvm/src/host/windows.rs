@@ -172,6 +172,11 @@ impl Host for WindowsHost {
         fill_new(private_file::create_new(path)?, path, bytes)
     }
 
+    /// See [`private_file::restrict`].
+    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+        private_file::restrict(path)
+    }
+
     fn is_executable(&self, _path: &Path) -> std::io::Result<bool> {
         Ok(false)
     }

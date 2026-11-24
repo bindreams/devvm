@@ -6,8 +6,10 @@ use secrecy::ExposeSecret;
 use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
 use crate::engine::engine_tests::{engine_fixture, instance_in, memory, record_machine, running_machine};
-use crate::engine::keys::{SSH_USER, ensure_keys, read_target};
+use crate::engine::keys::{SSH_USER, ensure_keys, keys_dir, read_target};
 use crate::host::symlink_metadata_if_present;
+use crate::instance::dir::InstanceDir;
+use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::TestHost;
 
@@ -87,6 +89,57 @@ fn an_empty_keys_directory_is_filled_not_refused(#[fixture(unicode_home)] home: 
     let keys = ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
 
     assert_eq!(InstanceKeys::read(&keys_dir).unwrap().host_public, keys.host_public);
+}
+
+/// The instance's keys as a devvm that did not yet make its private files private left them. The instance directory
+/// hands `Authenticated Users` write down on Windows, so a new file there is readable by others.
+fn loose_keys(dir: &InstanceDir) {
+    #[cfg(windows)]
+    crate::test_support::private_files::let_other_accounts_write_below(dir.path());
+    let op = dir.op_exclusive().unwrap();
+    ensure_keys(dir, &op, &TestHost, &mut |_| {}).unwrap();
+    for name in ["client", "host"] {
+        file_mode::loosen(&keys_dir(dir).join(name));
+    }
+}
+
+fn assert_private_keys(dir: &InstanceDir) {
+    for name in ["client", "host"] {
+        let path = keys_dir(dir).join(name);
+        assert_eq!(file_mode::mode(&path), cfg!(unix).then_some(0o600), "{name}");
+        #[cfg(windows)]
+        crate::test_support::private_files::assert_is_the_users_alone(
+            &path,
+            &crate::host::windows::user::current_sid().unwrap(),
+        );
+    }
+}
+
+#[skuld::test]
+fn keys_written_before_they_were_private_are_made_private_at_the_next_start(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "foo", home);
+    loose_keys(&dir);
+
+    let op = dir.op_exclusive().unwrap();
+    ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
+
+    assert_private_keys(&dir);
+}
+
+#[skuld::test]
+fn keys_written_before_they_were_private_are_made_private_when_the_target_is_read(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let dir = instance_in(&fx, "foo", home);
+    loose_keys(&dir);
+    record_machine(&dir, &running_machine(home, "127.0.0.1:2222".parse().unwrap()));
+
+    let op = dir.op_shared().unwrap();
+    read_target(&fx.engine, &dir, &op).unwrap();
+
+    assert_private_keys(&dir);
 }
 
 #[skuld::test]

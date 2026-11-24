@@ -14,6 +14,11 @@ impl FileModes for OtherHost {
         OpenOptions::new()
     }
 
+    /// There are no mode bits here; the file only has to be there.
+    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::metadata(path).map(drop)
+    }
+
     /// No file system here lacks hard links.
     fn lacks_hard_links(&self, _error: &std::io::Error) -> bool {
         false

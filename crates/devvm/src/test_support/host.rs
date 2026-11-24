@@ -66,6 +66,10 @@ impl Host for TestHost {
         host::current().write_private(path, bytes)
     }
 
+    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+        host::current().make_private(path)
+    }
+
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
         host::current().is_executable(path)
     }
@@ -218,6 +222,10 @@ impl Host for NoAccelHost {
 
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         TestHost.write_private(path, bytes)
+    }
+
+    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+        TestHost.make_private(path)
     }
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
@@ -521,6 +529,10 @@ impl Host for RecordingHost {
         TestHost.write_private(path, bytes)
     }
 
+    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+        TestHost.make_private(path)
+    }
+
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
         if self.executable.lock().unwrap().contains(path) {
             return Ok(true);
@@ -724,6 +736,10 @@ impl Host for NoGuestReset {
 
     fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         host::current().write_private(path, bytes)
+    }
+
+    fn make_private(&self, path: &Path) -> std::io::Result<()> {
+        host::current().make_private(path)
     }
 
     fn is_executable(&self, path: &Path) -> std::io::Result<bool> {
