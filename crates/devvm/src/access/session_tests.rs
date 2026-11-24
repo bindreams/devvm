@@ -62,7 +62,7 @@ fn a_command_that_fails_before_a_status_has_its_channel_closed(#[fixture(unicode
     let session = rig.connect();
     let error = session.exec_collect("extended-data-and-hold 2").unwrap_err();
     assert!(error.message().contains("extended data stream 2"), "{error}");
-    rig.sshd.wait_for_channel_close();
+    rig.sshd.wait_for_close_of("extended-data-and-hold 2");
 }
 
 #[skuld::test]
@@ -679,7 +679,7 @@ fn a_command_in_flight_when_the_boot_bound_passes_has_its_channel_closed(#[fixtu
         let error = running.join().unwrap().unwrap_err();
         assert!(error.message().contains("boot bound"), "{error}");
     });
-    rig.sshd.wait_for_channel_close();
+    rig.sshd.wait_for_close_of("hold");
 }
 
 #[skuld::test]
@@ -780,7 +780,7 @@ fn a_closed_host_output_closes_the_channel_and_returns_host_output_closed(#[fixt
         other => panic!("a command that never ends finished: {other:?}"),
     }
     // The server saw the channel close, so its `yes` loses its pipe.
-    rig.sshd.wait_for_channel_close();
+    rig.sshd.wait_for_close_of("write-forever");
 }
 
 #[skuld::test]
@@ -794,7 +794,7 @@ fn a_closed_host_output_closes_the_channel_of_a_command_that_went_quiet(#[fixtur
         .exec("write-once-and-hold", &mut RefusesWrites, &mut stderr)
         .unwrap();
     assert!(matches!(end, ExecEnd::HostOutputClosed { status: None, .. }), "{end:?}");
-    rig.sshd.wait_for_channel_close();
+    rig.sshd.wait_for_close_of("write-once-and-hold");
 }
 
 /// A sink that drops every connection of `sshd` when it receives output.

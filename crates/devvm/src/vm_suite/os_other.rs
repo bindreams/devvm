@@ -17,6 +17,6 @@ pub fn windows_of(_pid: u32) -> usize {
     0
 }
 
-pub fn children_of(_pid: u32) -> usize {
-    0
+pub fn children_of(_pid: u32) -> Vec<String> {
+    Vec::new()
 }

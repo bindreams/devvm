@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::access::keys::InstanceKeys;
 use crate::access::{Keepalive, SshSession, VmExit};
+use crate::backend::contract::KillsOnDrop;
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Check, Detail, Endpoint, Machine, MachineRecord, MachineSpec, Storage};
 use crate::contain::VmProcess;
@@ -1002,17 +1003,6 @@ fn a_second_record_write_that_fails_kills_the_machine_and_deletes_its_leftovers(
     instance.remove().unwrap();
 }
 
-/// Ends the process of a machine that a failed kill left running, so the test does not leak it.
-struct KillsOnDrop(MachineRecord);
-
-impl Drop for KillsOnDrop {
-    fn drop(&mut self) {
-        if let Ok(Some(mut vm)) = VmProcess::attach(&self.0.process) {
-            let _ = vm.kill();
-        }
-    }
-}
-
 #[skuld::test]
 fn a_resume_that_fails_with_a_machine_that_cannot_be_killed_keeps_the_record_and_names_both_errors(
     #[fixture(unicode_home)] home: &Path,
@@ -1030,7 +1020,7 @@ fn a_resume_that_fails_with_a_machine_that_cannot_be_killed_keeps_the_record_and
     let error = instance.start().expect_err("the resume fails");
 
     let machine = fx.fake.launched()[0].clone();
-    let _leak_guard = KillsOnDrop(machine.clone());
+    let _leak_guard = KillsOnDrop(&machine);
     assert_eq!(kills.load(Ordering::SeqCst), 1, "the machine was to be killed");
     assert!(running(&machine), "the kill failed, so the machine still runs");
     let kept = recorded(&instance).expect("the record still names the machine that may run");
