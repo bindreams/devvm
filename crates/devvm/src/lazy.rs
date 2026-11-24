@@ -37,11 +37,6 @@ impl<T> Lazy<T> {
         let built = build()?;
         Ok(self.value.get_or_init(|| built))
     }
-
-    /// The value if it is already built; never builds, and does not wait for a build in progress.
-    pub(crate) fn built(&self) -> Option<&T> {
-        self.value.get()
-    }
 }
 
 impl<T> Default for Lazy<T> {

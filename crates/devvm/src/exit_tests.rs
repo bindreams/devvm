@@ -92,6 +92,12 @@ fn error_line_is_one_line(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(value["devvm"]["message"], message);
 }
 
+#[skuld::test]
+fn error_line_escapes_nul_and_what_reorders_a_line() {
+    let line = format_error_line(&Error::new(ErrorKind::Io, "a\u{0}b\u{202e}c\u{2028}d"));
+    assert_eq!(line, r"devvm-error: io: a\u{0}b\u{202e}c\u{2028}d");
+}
+
 /// The ending as the command line makes it: [`conclude`], then the error line it names printed.
 fn ended(
     status_file: Option<&Path>,
