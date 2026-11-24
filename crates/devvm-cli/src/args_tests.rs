@@ -222,14 +222,47 @@ fn long_help(command: &str) -> String {
 fn help_states_the_copy_login_profile_and_snapshot_contracts() {
     let table = [
         ("cp", vec!["differ only in case", "1970 to 2106", ".devvm-partial-"]),
-        ("run", vec!["startup files", "mixed"]),
-        ("ssh", vec!["startup files"]),
+        (
+            "run",
+            vec![
+                "startup files",
+                "mixed",
+                "one program and its arguments",
+                "sh -c",
+                "pwsh -c",
+            ],
+        ),
+        (
+            "ssh",
+            vec!["startup files", "one program and its arguments", "sh -c", "pwsh -c"],
+        ),
         ("up", vec!["mixed"]),
         ("build", vec!["mixed"]),
     ];
     for (command, phrases) in table {
         let help = long_help(command);
         for phrase in phrases {
+            assert!(
+                help.contains(phrase),
+                "`devvm {command} --help` lacks `{phrase}`:\n{help}"
+            );
+        }
+    }
+}
+
+#[skuld::test]
+fn help_states_what_a_disk_image_must_provide() {
+    for command in ["run", "up", "build"] {
+        let help = long_help(command);
+        for phrase in [
+            "from: { url, sha256 }",
+            "from: { url, sha512 }",
+            "exactly one of `sha256` (64 hex digits) and `sha512` (128 hex digits)",
+            "UEFI",
+            "cloud-init",
+            "sshd",
+            "power-button",
+        ] {
             assert!(
                 help.contains(phrase),
                 "`devvm {command} --help` lacks `{phrase}`:\n{help}"

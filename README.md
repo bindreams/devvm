@@ -73,7 +73,8 @@ devvm rm dev
 - `ssh` with no command opens a login shell. `devvm ssh dev -- <command>` runs one command and exits with its status.
 - The words after `--` are one argv, not a shell string, and nothing in them is expanded by the guest: `-- 'a; b'`
   looks for a program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell:
-  `devvm ssh dev -- bash -c 'cd ~/proj && ls'`. `devvm run` takes its command the same way.
+  `devvm ssh dev -- bash -c 'cd ~/proj && ls'` (`sh -c` works too; a Windows guest has neither, see
+  [A Windows guest](#a-windows-guest)). `devvm run` takes its command the same way.
 - `cp` takes `INSTANCE:PATH` on one side and a local path on the other. A relative guest path starts in the user's
   home. `devvm cp --help` lists the names it cannot carry.
 - `ls` lists the instances created from the current directory; `ls --all` lists every one.
@@ -123,8 +124,8 @@ What a recipe file takes (an unknown key is an error):
   - `ubuntu-24.04`, the embedded recipe;
   - another recipe file, `../base.devvm.yaml`, relative to this file;
   - `{ iso, edition, product-key }`, a Windows ISO (see [Windows ISOs](#windows-isos));
-  - `{ url, sha256 }` or `{ url, sha512 }` (exactly one of the two), a Linux cloud image with cloud-init (qcow2 or
-    another format `qemu-img` converts); `amd64:` and `arm64:` each take one.
+  - `{ url, sha256 }` or `{ url, sha512 }`, a Linux disk image; or `amd64:` and `arm64:`, each with a `{ url, sha256 }`
+    or `{ url, sha512 }` of its own (see [Disk images](#disk-images)).
 - `name:` names the recipe; the default is the file name without `.devvm.yaml`.
 - `resources:` takes `cpus`, `memory` and `disk`, as `8GiB` or a byte count.
 - `steps:` run in order. A step is exactly one of:
@@ -179,7 +180,62 @@ devvm run proj/proj-win.devvm.yaml -- pwsh -c 'Get-ChildItem -Recurse -Name ~/pr
 - `ssh win` opens PowerShell 7; the home (`~`, and where relative guest paths start) is the user's profile.
 - A `cmd` builtin such as `dir` is not a program: `devvm ssh win -- dir` exits 127 (it is also a PowerShell alias: run
   it through `pwsh -c`). For `cmd`'s, use `MSYS_NO_PATHCONV=1 devvm ssh win -- cmd /c dir`.
+- The words after `--` are one argv here too, so a script needs a shell of the guest:
+  `devvm ssh win -- pwsh -c 'Get-Date; hostname'`.
 - [Windows guests](#windows-guests) has how programs, shells, paths and `copy` work in a Windows guest.
+
+## Disk images
+
+A recipe starts a Linux guest from a disk image it downloads, one per architecture:
+
+```yaml
+from:
+  amd64:
+    url: https://images.example.org/guest-amd64.qcow2
+    sha256: <64 hex digits>
+  arm64:
+    url: https://images.example.org/guest-arm64.qcow2
+    sha256: <64 hex digits>
+```
+
+The embedded [`ubuntu-24.04`](crates/devvm/src/recipe/embedded/ubuntu-24.04.devvm.yaml) is a recipe of this shape.
+
+- `from: { url, sha256 }` names one image for both architectures. With `amd64:` and `arm64:` each architecture has its
+  own, and either may be left out: a build for an architecture without one fails. A build is for the host's
+  architecture unless `--arch` says otherwise. devvm does not check that the image is of the guest's architecture.
+- Each `url` is followed by exactly one of `sha256` (64 hex digits) and `sha512` (128 hex digits), in either case; the
+  two architectures of one recipe may use different ones. Both keys, neither, or a digest of the wrong length is an
+  error.
+- The digest is that of the file at `url`. devvm downloads the file once and keeps it by the digest. A file with
+  another digest is refused and its partial download deleted.
+- The file is not unpacked. A qcow2 image is used as it is, and one with a backing file is refused; any other format
+  `qemu-img` reads (raw, vmdk, ...) is converted to qcow2.
+- The `url` is not part of the layer's key: a new `url` with the same digest reuses the layer. The same file pinned by
+  `sha256` in one recipe and by `sha512` in another makes two layers.
+
+### Requirements for the image
+
+- **UEFI boot.** devvm boots it with UEFI firmware (edk2) from a virtio block disk, on a `q35` machine (amd64) or a
+  `virt` machine (arm64). Its kernel needs the virtio block and network drivers. A BIOS-only image does not boot.
+- **cloud-init with the NoCloud datasource.** devvm attaches a read-only virtio disk, a FAT12 volume labelled `CIDATA`
+  with `meta-data` and `user-data`. They give the guest an instance id (`devvm-` and the instance's id), the hostname,
+  and one account: `user`, with login shell `/bin/bash`, `sudo: ALL=(ALL) NOPASSWD:ALL`, an SSH public key, and
+  `ssh_pwauth: false`. The guest's ed25519 host key comes from the same file. Every instance, and every build step, gets
+  an instance id of its own, so cloud-init has to apply the seed again for each new id.
+- **sshd on port 22.** devvm reaches it through a forward from a loopback port of the host into QEMU's user-mode
+  network, so the guest has to bring its virtio network card up on that network (DHCP). sshd has to offer the host key
+  from the seed, since devvm refuses any other, accept the key of `user`, and serve SFTP: `cp` and `copy` steps use
+  OpenSSH's server, with its `posix-rename@openssh.com` extension.
+- **Programs** that devvm runs: `bash` (every command runs through `bash -lc`), `sudo` (`elevated: true`, `--elevated`
+  and flushing the disk before a layer is saved), `tar`, `sh`, `sed`, `sync`, `cat`, `mkdir` and `rm`.
+- **A finished boot.** devvm waits for `cloud-init status --wait --format json` to report `done`. A `done` that reports
+  only recoverable problems (exit code 2, an `extended_status` that starts with `degraded`, or `recoverable_errors`) is
+  a warning; any other status, any `errors`, or any exit code but 0 and 2 fails the start. The
+  guest has 10 minutes after devvm starts the VM to answer SSH and finish cloud-init; after that the start fails,
+  naming the serial log.
+- **Power-off on a power-button press.** `devvm stop` and the end of each build step send QEMU's `system_powerdown`
+  and wait for the VM to exit, with no time limit, so a guest that ignores it keeps the command waiting. `devvm rm`
+  kills the VM instead.
 
 ## Windows ISOs
 

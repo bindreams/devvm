@@ -50,6 +50,26 @@ user's: one that redefines `cd` or `exec`, or sets `cdable_vars`, changes the co
     };
 }
 
+/// `run` and `ssh -- <command>` take an argument vector.
+macro_rules! argv_help {
+    () => {
+        "The words after `--` are one program and its arguments, not a string for a shell: `-- 'a; b'` looks for a \
+program named `a; b` and exits 127. For a pipeline, `~` or `$HOME`, run a shell: `-- sh -c 'a; b'` in a Linux guest, \
+`-- pwsh -c 'a; b'` in a Windows guest."
+    };
+}
+
+/// The commands that take a recipe start a Linux guest from a disk image if the recipe says `url` and a digest.
+macro_rules! image_help {
+    () => {
+        "`from: { url, sha256 }` or `from: { url, sha512 }`, or `amd64:` and `arm64:` each with one of those, starts a \
+Linux guest from a disk image. Each `url` takes exactly one of `sha256` (64 hex digits) and `sha512` (128 hex digits). \
+The image must boot with UEFI from a virtio disk, run cloud-init with the NoCloud datasource, run sshd with SFTP on \
+port 22, have bash, sudo, tar, sh, sed, sync, cat, mkdir and rm, and power off on a power-button press. Details: \
+https://github.com/bindreams/devvm#disk-images"
+    };
+}
+
 macro_rules! snapshot_help {
     () => {
         "`copy: { from: git-tracked }` copies the files git tracks as they are on disk. A project that changes during \
@@ -68,7 +88,7 @@ pub enum CpSide {
 #[derive(Clone, Debug, PartialEq, Eq, Subcommand)]
 pub enum Cmd {
     /// Boot a VM, run a command in it, destroy the VM; exits with the command's exit code.
-    #[command(after_help = concat!(login_help!(), "\n\n", snapshot_help!()))]
+    #[command(after_help = concat!(argv_help!(), "\n\n", login_help!(), "\n\n", snapshot_help!(), "\n\n", image_help!()))]
     Run {
         /// A recipe file (`*.devvm.yaml`) or the name of an embedded base recipe.
         reference: String,
@@ -82,7 +102,7 @@ pub enum Cmd {
         argv: Vec<String>,
     },
     /// Start an instance that stays until `rm`.
-    #[command(after_help = snapshot_help!())]
+    #[command(after_help = concat!(snapshot_help!(), "\n\n", image_help!()))]
     Up {
         /// A recipe file (`*.devvm.yaml`) or the name of an embedded base recipe.
         reference: String,
@@ -93,7 +113,7 @@ pub enum Cmd {
         flags: VmFlags,
     },
     /// Open a shell in an instance, or run one command (after `--`).
-    #[command(after_help = login_help!())]
+    #[command(after_help = concat!(argv_help!(), "\n\n", login_help!()))]
     Ssh {
         instance: String,
         /// Run as root (Linux, macOS) or with the administrator token (Windows). Needs a command.
@@ -127,7 +147,7 @@ pub enum Cmd {
     /// Kill an instance and delete it.
     Rm { name: String },
     /// Build the image a recipe describes without starting it.
-    #[command(after_help = snapshot_help!())]
+    #[command(after_help = concat!(snapshot_help!(), "\n\n", image_help!()))]
     Build {
         /// A recipe file (`*.devvm.yaml`) or the name of an embedded base recipe.
         reference: String,
