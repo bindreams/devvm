@@ -369,8 +369,7 @@ impl Locks {
     }
 
     /// Takes the op lock exclusive, waiting for it. `NotFound` if the instance is gone before or after the wait. The
-    /// wait says `waiting for <what>`, or `waiting for <text>` if `holder` answers `Some(text)`; `holder` is called once,
-    /// when the lock is first found held.
+    /// wait says `waiting for <what>`, or `waiting for <text>` if `holder` answers `Some(text)`.
     pub(crate) fn op_exclusive(
         &self,
         id: &InstanceId,

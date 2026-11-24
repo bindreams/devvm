@@ -408,15 +408,13 @@ pub(crate) fn read_marker(dir: &Path) -> Result<MarkerRead> {
 /// a reader may see it written late or not at all, never half-written (see [`write_file`]); a reader names the process
 /// only if it still runs (a crashed holder leaves its record behind).
 ///
-/// A waiting command asks for the holder once, when its wait begins: the wait is one blocking OS call that does not wake
-/// until the lock is free. The name it prints is the holder at that moment, so a holder that has taken the lock but
-/// not yet written its record is not named, and a name stays on screen after its holder has gone.
+/// A wait asks once, when it begins, so a holder not yet recorded is not named and a name outlives its holder.
 ///
 /// Every exclusive holder is recorded. Whoever takes the lock shared removes any record, which cannot be current then.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Holder {
     pub process: ProcessIdRecord,
-    /// The name of the process's executable: see [`program_name`].
+    /// See [`program_name`].
     pub program: String,
 }
 

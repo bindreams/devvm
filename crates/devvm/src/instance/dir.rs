@@ -194,8 +194,8 @@ impl InstanceDir {
     }
 
     /// What a wait for an op lock says it waits for when the exclusive holder is recorded and still runs:
-    /// `<program> (PID <pid>) on instance <name>`. `None` names no one: no record, an unusable one, or one whose process
-    /// has exited, is not this one or cannot be assessed. A record that cannot be read is a debug note.
+    /// `<program> (PID <pid>) on instance <name>`. `None` (name no one) when there is no usable record or its process
+    /// is not known to run.
     fn holder_text(&self) -> Option<String> {
         let read = self.in_this_instance(|| read_holder(&self.path));
         let holder = match read {
