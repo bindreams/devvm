@@ -1,4 +1,4 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -7,7 +7,7 @@ use crate::copy::copy_tests::{
     add_all, git, git_command, new_repo, paths, put, read_tar, snapshot_through_a_directory_link, take,
 };
 use crate::recipe::hash::EntryContent;
-use crate::test_support::fixtures::unicode_home;
+use crate::test_support::fixtures::{non_unicode_name, unicode_home};
 use crate::test_support::root::refuse_root;
 
 #[skuld::test]
@@ -44,7 +44,7 @@ fn non_utf8_names_are_refused_naming_them(#[fixture(unicode_home)] home: &Path) 
     // Index only: some file systems cannot hold the name, and the listing is refused before any file is read.
     let empty = git(&repo, &["hash-object", "-w", "--stdin"]);
     let mut entry = OsString::from(format!("100644,{},", empty.trim()));
-    entry.push(OsStr::from_bytes(b"bad-\xff-name"));
+    entry.push(non_unicode_name());
     let status = git_command(&repo)
         .args(["update-index", "--add", "--cacheinfo"])
         .arg(entry)
@@ -55,7 +55,7 @@ fn non_utf8_names_are_refused_naming_them(#[fixture(unicode_home)] home: &Path) 
         .err()
         .expect("a non-UTF-8 name cannot be copied");
     assert_eq!(error.kind(), ErrorKind::Recipe);
-    assert!(error.message().contains("bad-"), "{error}");
+    assert!(error.message().contains("bad\u{FFFD}name"), "{error}");
 }
 
 #[skuld::test]
