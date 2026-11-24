@@ -157,11 +157,13 @@ fn read_private_warns_that_the_protection_of_a_key_that_is_a_link_cannot_be_chec
 
     assert_eq!(texts(&read), texts(&keys));
     let [client, host_key] = warning_for_each_key(&dir, &warnings);
-    for warning in [client, host_key] {
+    for (name, warning) in [("client", client), ("host", host_key)] {
         assert!(
             warning.starts_with("cannot check the protection of the ") && warning.contains("is a link"),
             "{warning}"
         );
+        let path = dir.join(name).display().to_string();
+        assert_eq!(warning.matches(&path).count(), 1, "the path is named once: {warning}");
         assert!(!warning.contains("not private"), "the state is not known: {warning}");
     }
     assert!(client.contains("if others can read it, OpenSSH refuses it"), "{client}");

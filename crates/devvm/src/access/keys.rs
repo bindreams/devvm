@@ -95,6 +95,9 @@ fn private_key_warning(path: &Path, read_by_openssh: bool, error: &MakePrivateEr
     let key = if read_by_openssh { "key" } else { "host key" };
     let path = path.display();
     let (MakePrivateError::Check(source) | MakePrivateError::Change(source)) = error;
+    // An error that opens with the path ("P is a link") names it once, in the outer text.
+    let source = source.to_string();
+    let source = source.strip_prefix(&format!("{path} ")).unwrap_or(&source);
     match (error, read_by_openssh) {
         (MakePrivateError::Check(_), true) => format!(
             "cannot check the protection of the {key} {path} ({source}); if others can read it, OpenSSH refuses \
