@@ -11,8 +11,8 @@ use cosca::identity::ProcessId;
 
 use crate::exit::ExitWidth;
 use crate::host::{
-    self, Accel, Entry, FileId, Hold, HoldOutcome, Host, MakePrivateOutcome, ProcessWatch, SystemDirs, Unavailable,
-    names,
+    self, Accel, Entry, FileId, Hold, HoldOutcome, Host, MakePrivateError, MakePrivateOutcome, ProcessWatch,
+    SystemDirs, Unavailable, names,
 };
 use crate::{Arch, Result};
 
@@ -69,7 +69,7 @@ impl Host for TestHost {
         host::current().write_private(path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError> {
         host::current().make_private(path)
     }
 
@@ -227,7 +227,7 @@ impl Host for NoAccelHost {
         TestHost.write_private(path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError> {
         TestHost.make_private(path)
     }
 
@@ -538,9 +538,11 @@ impl Host for RecordingHost {
         TestHost.write_private(path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError> {
         if self.fail_make_private.load(Ordering::SeqCst) {
-            return Err(std::io::Error::other("the test made this make_private fail"));
+            return Err(MakePrivateError::Change(std::io::Error::other(
+                "the test made this make_private fail",
+            )));
         }
         TestHost.make_private(path)
     }
@@ -750,7 +752,7 @@ impl Host for NoGuestReset {
         host::current().write_private(path, bytes)
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError> {
         host::current().make_private(path)
     }
 

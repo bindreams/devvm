@@ -9,9 +9,11 @@ use crate::engine::engine_tests::{engine_fixture, instance_in, memory, record_ma
 use crate::engine::keys::{SSH_USER, ensure_keys, keys_dir, read_target};
 use crate::host::symlink_metadata_if_present;
 use crate::instance::dir::InstanceDir;
+use crate::test_groups::{Group, symlinks};
 use crate::test_support::file_mode;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::host::{RecordingHost, TestHost};
+use crate::test_support::symlink::symlink;
 
 const FILES: [&str; 4] = ["client", "client.pub", "host", "host.pub"];
 
@@ -237,4 +239,37 @@ fn a_machine_with_no_normal_endpoint_is_an_internal_error_naming_the_instance(#[
 
     assert_eq!(error.kind(), ErrorKind::Internal, "{error}");
     assert!(error.message().contains("foo"), "{error}");
+}
+
+/// The target of a running instance is read with a warning per key that cannot be checked, not an error, and the
+/// warning reaches the progress channel naming the instance.
+#[skuld::test]
+fn keys_that_are_links_are_warned_about_when_the_target_is_read(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let progress = memory();
+    let fx = engine_fixture(home, progress.clone());
+    let dir = instance_in(&fx, "foo", home);
+    let op = dir.op_exclusive().unwrap();
+    ensure_keys(&dir, &op, &TestHost, &mut |_| {}).unwrap();
+    drop(op);
+    for name in ["client", "host"] {
+        let target = home.join(format!("{name}-target"));
+        std::fs::rename(keys_dir(&dir).join(name), &target).unwrap();
+        symlink(&target, &keys_dir(&dir).join(name));
+    }
+    record_machine(&dir, &running_machine(home, "127.0.0.1:2222".parse().unwrap()));
+
+    let op = dir.op_shared().unwrap();
+    read_target(&fx.engine, &dir, &op).unwrap();
+
+    let warnings = progress.warnings();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    for warning in &warnings {
+        assert!(
+            warning.starts_with("instance foo: cannot check the protection of the ") && warning.contains("is a link"),
+            "{warning}"
+        );
+    }
 }

@@ -4,11 +4,12 @@ use std::fs::{DirBuilder, File, FileType, Metadata, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use rustix::fs::{Mode, OFlags, fchmod, fstat, open};
 use rustix::io::Errno;
 
 use super::entry;
 use super::unsupported::{FileModes, claim_then_rename};
-use super::{Entry, FileId, MakePrivateOutcome};
+use super::{Entry, FileId, MakePrivateError, MakePrivateOutcome, is_a_link};
 
 #[cfg(test)]
 #[path = "unix_tests.rs"]
@@ -23,12 +24,16 @@ impl FileModes for UnixHost {
         options
     }
 
-    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
-        const PRIVATE: u32 = 0o600;
-        if std::fs::metadata(path)?.permissions().mode() & 0o7777 == PRIVATE {
+    /// Opens `path` once, without following a link, and looks at and changes that descriptor.
+    fn make_private(&self, path: &Path) -> Result<MakePrivateOutcome, MakePrivateError> {
+        const PRIVATE: Mode = Mode::from_bits_retain(0o600);
+        let file = open(path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
+            .map_err(|errno| MakePrivateError::Check(refused_link(path, errno)))?;
+        let stat = fstat(&file).map_err(|errno| MakePrivateError::Check(errno.into()))?;
+        if Mode::from_raw_mode(stat.st_mode) == PRIVATE {
             return Ok(MakePrivateOutcome::Unchanged);
         }
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE))?;
+        fchmod(&file, PRIVATE).map_err(|errno| MakePrivateError::Change(errno.into()))?;
         Ok(MakePrivateOutcome::Changed)
     }
 
@@ -117,6 +122,16 @@ impl FileModes for UnixHost {
     fn make_symlink(&self, target: &str, link: &Path, _to_dir: bool) -> std::io::Result<()> {
         std::os::unix::fs::symlink(target, link)
     }
+}
+
+/// What a failed `open` of `path` with `O_NOFOLLOW` says: "is a link" where the system refuses one (`ELOOP`, `EMLINK`
+/// on FreeBSD) and the name is a link, else the failure itself (`ELOOP` is also a loop in the directories above).
+fn refused_link(path: &Path, errno: Errno) -> std::io::Error {
+    let is_link = || matches!(std::fs::symlink_metadata(path), Ok(meta) if meta.is_symlink());
+    if (errno == Errno::LOOP || errno == Errno::MLINK) && is_link() {
+        return is_a_link(path);
+    }
+    errno.into()
 }
 
 /// Opens `path` for reading, but not a link and not a pipe's other end: a link that appeared since the file was looked

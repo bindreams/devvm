@@ -5,7 +5,7 @@ use std::fs::{DirBuilder, Metadata, OpenOptions};
 use std::path::Path;
 
 use super::unsupported::{FileModes, claim_then_rename};
-use super::{Entry, FileId, MakePrivateOutcome};
+use super::{Entry, FileId, MakePrivateError, MakePrivateOutcome, is_a_link};
 
 pub(crate) struct OtherHost;
 
@@ -14,9 +14,13 @@ impl FileModes for OtherHost {
         OpenOptions::new()
     }
 
-    /// There are no mode bits here; the file only has to be there.
-    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome> {
-        std::fs::metadata(path).map(|_| MakePrivateOutcome::Unchanged)
+    /// There are no mode bits here; the file only has to be there, and not be a link.
+    fn make_private(&self, path: &Path) -> Result<MakePrivateOutcome, MakePrivateError> {
+        let meta = std::fs::symlink_metadata(path).map_err(MakePrivateError::Check)?;
+        if meta.is_symlink() {
+            return Err(MakePrivateError::Check(is_a_link(path)));
+        }
+        Ok(MakePrivateOutcome::Unchanged)
     }
 
     /// No file system here lacks hard links.

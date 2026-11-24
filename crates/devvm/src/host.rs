@@ -59,6 +59,32 @@ pub(crate) enum MakePrivateOutcome {
     Unchanged,
 }
 
+/// How [`Host::make_private`] failed. Each variant says what is known of the file's protection.
+#[derive(Debug)]
+pub(crate) enum MakePrivateError {
+    /// The protection could not be looked at, or the name is a link or no longer the file that was looked at: whether
+    /// the file is private is not known.
+    Check(std::io::Error),
+    /// The file is not private, and could not be made so.
+    Change(std::io::Error),
+}
+
+impl fmt::Display for MakePrivateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            MakePrivateError::Check(_) => "cannot check the protection of the file",
+            MakePrivateError::Change(_) => "cannot make the file private",
+        })
+    }
+}
+
+impl std::error::Error for MakePrivateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let (MakePrivateError::Check(source) | MakePrivateError::Change(source)) = self;
+        Some(source)
+    }
+}
+
 #[cfg(not(any(unix, windows)))]
 use other::OtherHost as Current;
 #[cfg(test)]
@@ -165,11 +191,14 @@ pub(crate) trait Host: Send + Sync {
 
     /// Restricts the existing file `path` the way [`write_private`](Host::write_private) restricts a new one: the
     /// current user alone can read it, whatever it had before (mode `0600`; on Windows a protected DACL granting only
-    /// the user, which replaces an inherited one). The contents are not touched. `NotFound` if there is no file.
+    /// the user, which replaces an inherited one). The contents are not touched. No file is `NotFound`, in
+    /// [`Check`](MakePrivateError::Check).
     ///
-    /// A file that is restricted already is not written to: the check opens it for reading its permissions only, so it
-    /// succeeds for a file the user cannot change the permissions of.
-    fn make_private(&self, path: &Path) -> std::io::Result<MakePrivateOutcome>;
+    /// A link at `path` is not followed and not restricted: it is `InvalidInput`, "is a link", in `Check`. The file is
+    /// opened once, and the check and the change are made on that one file.
+    ///
+    /// A file that is restricted already is not written to.
+    fn make_private(&self, path: &Path) -> std::result::Result<MakePrivateOutcome, MakePrivateError>;
 
     /// Whether any execute bit of `path` is set; always `false` on Windows.
     fn is_executable(&self, path: &Path) -> std::io::Result<bool>;

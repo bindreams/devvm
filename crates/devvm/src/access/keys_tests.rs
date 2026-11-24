@@ -112,18 +112,60 @@ fn read_private_reads_and_warns_when_a_key_cannot_be_made_private(#[fixture(unic
     let read = InstanceKeys::read_private(&host, &dir, &mut |text| warnings.push(text)).unwrap();
 
     assert_eq!(texts(&read), texts(&keys));
-    for name in ["client", "host"] {
-        let path = dir.join(name).display().to_string();
-        let [warning] = warnings
-            .iter()
-            .filter(|w| w.contains(&path))
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or_else(|w: Vec<_>| panic!("one warning names {path}, not {}: {warnings:?}", w.len()));
-        assert!(warning.contains("OpenSSH"), "{warning}");
-        assert!(warning.contains("the test made this make_private fail"), "{warning}");
-    }
+    let [client, host_key] = warning_for_each_key(&dir, &warnings);
+    assert!(client.contains("the test made this make_private fail"), "{client}");
+    assert!(
+        client.contains("OpenSSH refuses a key others can read") && client.contains("`devvm ssh`"),
+        "{client}"
+    );
+    assert!(host_key.contains("the test made this make_private fail"), "{host_key}");
+    assert!(
+        host_key.contains("others may read it") && !host_key.contains("OpenSSH"),
+        "OpenSSH on the host never reads the host key: {host_key}"
+    );
+}
+
+/// The one warning that names each key of `dir`, the client key first.
+fn warning_for_each_key<'a>(dir: &Path, warnings: &'a [String]) -> [&'a String; 2] {
     assert_eq!(warnings.len(), 2, "{warnings:?}");
+    ["client", "host"].map(|name| {
+        let path = dir.join(name).display().to_string();
+        let named: Vec<_> = warnings.iter().filter(|w| w.contains(&path)).collect();
+        assert_eq!(named.len(), 1, "one warning names {path}: {warnings:?}");
+        named[0]
+    })
+}
+
+/// A link at the name of a private key is not looked through: what it leads to is not devvm's, and so the key's
+/// protection is not known, which the warning says instead of that the key is not private.
+#[skuld::test]
+fn read_private_warns_that_the_protection_of_a_key_that_is_a_link_cannot_be_checked(
+    #[fixture(unicode_home)] home: &Path,
+    #[fixture(symlinks)] _group: &Group,
+) {
+    let dir = home.join("keys");
+    let keys = InstanceKeys::generate().unwrap();
+    keys.write(&TestHost, &dir).unwrap();
+    for name in ["client", "host"] {
+        let target = home.join(format!("{name}-target"));
+        std::fs::rename(dir.join(name), &target).unwrap();
+        symlink(&target, &dir.join(name));
+    }
+
+    let mut warnings = Vec::new();
+    let read = InstanceKeys::read_private(&TestHost, &dir, &mut |text| warnings.push(text)).unwrap();
+
+    assert_eq!(texts(&read), texts(&keys));
+    let [client, host_key] = warning_for_each_key(&dir, &warnings);
+    for warning in [client, host_key] {
+        assert!(
+            warning.starts_with("cannot check the protection of the ") && warning.contains("is a link"),
+            "{warning}"
+        );
+        assert!(!warning.contains("not private"), "the state is not known: {warning}");
+    }
+    assert!(client.contains("if others can read it, OpenSSH refuses it"), "{client}");
+    assert!(!host_key.contains("OpenSSH"), "{host_key}");
 }
 
 #[skuld::test]

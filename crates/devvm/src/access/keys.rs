@@ -6,7 +6,7 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::host::{Host, is_absent, symlink_metadata_if_present};
+use crate::host::{Host, MakePrivateError, is_absent, symlink_metadata_if_present};
 use crate::store::lock::{FileLock, Mode};
 use crate::{Error, ErrorKind, Result};
 
@@ -87,6 +87,28 @@ fn write_public(path: &Path, text: &str) -> std::io::Result<()> {
     let mut file = std::fs::File::create_new(path)?;
     file.write_all(text.as_bytes())?;
     file.sync_all()
+}
+
+/// The warning for a private key `make_private` failed on. OpenSSH on the host reads only the client key
+/// (`read_by_openssh`); the host key goes into the guest.
+fn private_key_warning(path: &Path, read_by_openssh: bool, error: &MakePrivateError) -> String {
+    let key = if read_by_openssh { "key" } else { "host key" };
+    let path = path.display();
+    let (MakePrivateError::Check(source) | MakePrivateError::Change(source)) = error;
+    match (error, read_by_openssh) {
+        (MakePrivateError::Check(_), true) => format!(
+            "cannot check the protection of the {key} {path} ({source}); if others can read it, OpenSSH refuses \
+             it, and `devvm ssh` and the ssh entry fail"
+        ),
+        (MakePrivateError::Check(_), false) => format!("cannot check the protection of the {key} {path} ({source})"),
+        (MakePrivateError::Change(_), true) => format!(
+            "cannot make the {key} {path} private ({source}); OpenSSH refuses a key others can read, so \
+             `devvm ssh` and the ssh entry fail"
+        ),
+        (MakePrivateError::Change(_), false) => {
+            format!("cannot make the {key} {path} private ({source}); others may read it")
+        }
+    }
 }
 
 impl InstanceKeys {
@@ -171,20 +193,15 @@ impl InstanceKeys {
         Ok(warnings)
     }
 
-    /// [`read`](InstanceKeys::read), and makes each of the two private key files the user's alone
-    /// ([`Host::make_private`]) if it is not: keys written before they were created private, which OpenSSH refuses,
-    /// are repaired where they are read. A key that is not private and cannot be made so is a warning to `warn` naming
-    /// the key, not an error: devvm's own SSH client reads it as it is.
+    /// [`read`](InstanceKeys::read), and makes each private key file the user's alone ([`Host::make_private`]) if it is
+    /// not, since OpenSSH refuses a key others can read. One that cannot be checked or made private, a link included,
+    /// is a warning to `warn` naming the key, not an error: devvm's own SSH client reads it as it is.
     pub(crate) fn read_private(host: &dyn Host, dir: &Path, warn: &mut dyn FnMut(String)) -> Result<InstanceKeys> {
         let keys = InstanceKeys::read(dir)?;
-        for name in [CLIENT, HOST] {
+        for (name, read_by_openssh) in [(CLIENT, true), (HOST, false)] {
             let path = dir.join(name);
             if let Err(e) = host.make_private(&path) {
-                warn(format!(
-                    "cannot make the key {} private to the current user ({e}); OpenSSH refuses it: `devvm ssh` and \
-                     anything that uses the ssh entry",
-                    path.display()
-                ));
+                warn(private_key_warning(&path, read_by_openssh, &e));
             }
         }
         Ok(keys)
