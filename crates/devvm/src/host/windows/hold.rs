@@ -269,39 +269,45 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
     }
 }
 
+/// [`Host::share_open_file_with`](crate::host::Host::share_open_file_with), and what [`Hold::share_with`] does for the
+/// held file: duplicates the handle of `file` into `process` with access 0 and not inheritable. What `file` was opened
+/// with (its share mode) belongs to the file object, so the duplicate keeps it, and `process` cannot write or delete
+/// the file.
+pub(super) fn share_open_file(file: &File, process: ProcessId) -> std::io::Result<()> {
+    // SAFETY: plain `OpenProcess`; no pointers.
+    let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, process.pid()) };
+    if raw.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a new handle that nothing else owns.
+    let target = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+    let mut duplicate: HANDLE = std::ptr::null_mut();
+    // SAFETY: both processes' handles and the source file handle are open for the call; `duplicate` is a valid
+    // place for the new handle's value, which belongs to `target`'s process and is not used here.
+    let duplicated = unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            file.as_raw_handle() as HANDLE,
+            target.as_raw_handle() as HANDLE,
+            &mut duplicate,
+            0,
+            0,
+            0,
+        )
+    };
+    if duplicated == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 impl Hold for WindowsHold {
     fn file(&self) -> &File {
         &self.file
     }
 
-    /// Duplicates the file's handle into `process` with access 0 and not inheritable: the hold belongs to the file
-    /// object, so the duplicate keeps it, and `process` cannot write or delete the file.
     fn share_with(&self, process: ProcessId) -> std::io::Result<()> {
-        // SAFETY: plain `OpenProcess`; no pointers.
-        let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, process.pid()) };
-        if raw.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: `raw` is a new handle that nothing else owns.
-        let target = unsafe { OwnedHandle::from_raw_handle(raw as _) };
-        let mut duplicate: HANDLE = std::ptr::null_mut();
-        // SAFETY: both processes' handles and the source file handle are open for the call; `duplicate` is a valid
-        // place for the new handle's value, which belongs to `target`'s process and is not used here.
-        let duplicated = unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                self.file.as_raw_handle() as HANDLE,
-                target.as_raw_handle() as HANDLE,
-                &mut duplicate,
-                0,
-                0,
-                0,
-            )
-        };
-        if duplicated == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(())
+        share_open_file(&self.file, process)
     }
 
     fn id(&self) -> std::io::Result<FileId> {

@@ -5,13 +5,18 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256 as Sha2};
 
-use super::{LazyInstall, ManifestEntry, QemuInstall, Source, Verify, configured, manifest_entry, run_version};
+use super::{
+    LazyInstall, ManifestEntry, QemuInstall, Source, Verify, configured, install_name, is_install_name, manifest_entry,
+    run_version,
+};
 use crate::backend::qemu::args::ArchFiles;
 use crate::config::Config;
-use crate::host::{self, SystemDirs};
+use crate::host::{self, Host, OtherHost, SystemDirs};
 use crate::progress::{Event, Outcome as TaskOutcome};
 use crate::store::fetch::{Fetcher, Response, Resume, Transport};
+use crate::store::lock::{FileLock, Mode};
 use crate::test_support::fixtures::{MemoryProgress, UNICODE_DIR, unicode_home};
+use crate::test_support::host::TestHost;
 use crate::test_support::qemu::write_config;
 use crate::{Arch, Dirs, ErrorKind, Result, Sha256};
 
@@ -19,7 +24,7 @@ const VERSION: &str = "11.1.2";
 const URL: &str = "https://example.test/qemu.zip";
 
 /// Every file a sidecar zip must hold, with a marker as content.
-fn files() -> Vec<(String, Vec<u8>)> {
+pub(crate) fn files() -> Vec<(String, Vec<u8>)> {
     let suffix = std::env::consts::EXE_SUFFIX;
     let mut files: Vec<(String, Vec<u8>)> = ["qemu-img", "qemu-system-x86_64", "qemu-system-aarch64"]
         .iter()
@@ -38,7 +43,7 @@ fn files() -> Vec<(String, Vec<u8>)> {
     files
 }
 
-fn zip_of(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+pub(crate) fn zip_of(files: &[(String, Vec<u8>)]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for (name, bytes) in files {
         writer
@@ -100,17 +105,28 @@ fn prints(version: &'static str) -> Verify {
     Arc::new(move |_, _| Ok(format!("QEMU emulator version {version}")))
 }
 
-struct World {
-    dirs: Dirs,
+pub(crate) struct World {
+    pub(crate) dirs: Dirs,
     transport: Arc<Counting>,
     asked: Arc<Mutex<Vec<PathBuf>>>,
-    progress: Arc<MemoryProgress>,
+    pub(crate) progress: Arc<MemoryProgress>,
     fetcher: Arc<Fetcher>,
     entry: ManifestEntry,
-    source: Source,
+    pub(crate) source: Source,
 }
 
-fn world(home: &Path, zip: Vec<u8>) -> World {
+/// A world over the same cache as `world(home, zip_of(&files()))` whose manifest pins another build: the zip holds one
+/// more file, so its hash and the name of its install differ.
+pub(crate) fn world_pinning_another_build(home: &Path) -> World {
+    let mut other = files();
+    other.push(("share/another-build.txt".to_owned(), b"another build".to_vec()));
+    let zip = zip_of(&other);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let verify = verified(&asked);
+    world_with(home, zip.clone(), sha_of(&zip), asked, verify)
+}
+
+pub(crate) fn world(home: &Path, zip: Vec<u8>) -> World {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let verify = verified(&asked);
     world_with(home, zip.clone(), sha_of(&zip), asked, verify)
@@ -133,6 +149,7 @@ fn world_with(home: &Path, served: Vec<u8>, pinned: Sha256, asked: Arc<Mutex<Vec
         progress.clone(),
         Ok(entry.clone()),
         verify,
+        &TestHost,
     );
     World {
         dirs,
@@ -155,6 +172,19 @@ impl World {
             self.progress.clone(),
             Ok(self.entry.clone()),
             verify,
+            &TestHost,
+        )
+    }
+
+    /// A new source over the same cache, on `host`.
+    fn source_on(&self, host: &'static dyn Host) -> Source {
+        Source::new(
+            self.dirs.clone(),
+            self.fetcher.clone(),
+            self.progress.clone(),
+            Ok(self.entry.clone()),
+            verified(&self.asked),
+            host,
         )
     }
 
@@ -172,7 +202,7 @@ impl World {
     }
 }
 
-fn entries(dir: &Path) -> Vec<String> {
+pub(crate) fn entries(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = match std::fs::read_dir(dir) {
         Ok(read) => read
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -184,7 +214,7 @@ fn entries(dir: &Path) -> Vec<String> {
 }
 
 /// What is published under the QEMU cache: everything that is not an extraction directory or the lock.
-fn visible(dir: &Path) -> Vec<String> {
+pub(crate) fn visible(dir: &Path) -> Vec<String> {
     entries(dir).into_iter().filter(|name| !name.starts_with('.')).collect()
 }
 
@@ -491,6 +521,153 @@ fn a_stale_extraction_directory_is_removed_by_the_next_resolve(#[fixture(unicode
     assert!(!stale.exists(), "{:?}", entries(&world.dirs.qemu()));
 }
 
+/// A published install of an older build, as an earlier devvm left it: `bin/` and `share/` under `<version>-<12 hex>`.
+pub(crate) fn old_install(qemu: &Path, name: &str) -> PathBuf {
+    let root = qemu.join(name);
+    for (file, bytes) in files() {
+        let path = root.join(&file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    root
+}
+
+#[skuld::test]
+fn installing_a_build_removes_the_installs_of_older_builds(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    old_install(&qemu, "10.0.0-0123456789ab");
+    old_install(&qemu, "11.1.2-aaaaaaaaaaaa");
+
+    let install = world.source.resolve().unwrap();
+
+    assert_eq!(visible(&qemu).len(), 1, "{:?}", entries(&qemu));
+    assert!(install.tool("qemu-img").is_file(), "the pinned install stays");
+    let all = entries(&qemu);
+    assert!(!all.iter().any(|name| name.starts_with(".extract-")), "{all:?}");
+}
+
+#[skuld::test]
+fn a_resolve_that_finds_the_pinned_install_removes_the_installs_of_older_builds(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let install = world.source.resolve().unwrap();
+    let qemu = world.dirs.qemu();
+    old_install(&qemu, "10.0.0-0123456789ab");
+
+    world.source.resolve().unwrap();
+
+    assert_eq!(visible(&qemu).len(), 1, "{:?}", entries(&qemu));
+    assert!(install.tool("qemu-img").is_file());
+    assert_eq!(world.transport.gets(), 1);
+}
+
+#[skuld::test]
+fn only_a_directory_named_like_an_install_is_removed(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    std::fs::create_dir_all(&qemu).unwrap();
+    // Names devvm never gives an install, and an install-shaped name that is a file.
+    let kept_dirs = [
+        "notes",
+        "10.0.0",
+        "10.0.0-0123456789a",
+        "10.0.0-0123456789ABC",
+        "10.0.0-0123456789AB",
+        "-0123456789ab",
+    ];
+    for name in kept_dirs {
+        old_install(&qemu, name);
+    }
+    std::fs::write(qemu.join("9.9.9-0123456789ab"), b"a file").unwrap();
+
+    world.source.resolve().unwrap();
+
+    for name in kept_dirs {
+        assert!(
+            qemu.join(name).join("bin").is_dir(),
+            "{name} was touched: {:?}",
+            entries(&qemu)
+        );
+    }
+    assert!(qemu.join("9.9.9-0123456789ab").is_file());
+}
+
+#[skuld::test]
+fn a_configured_qemu_removes_no_install(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let old = old_install(&qemu, "10.0.0-0123456789ab");
+    let own = home.join("own").join("bin");
+    make_tools(&own);
+    make_firmware(&own.join("share"));
+
+    world.source_configured(own.clone()).resolve().unwrap();
+
+    assert!(old.join("bin").is_dir(), "{:?}", entries(&qemu));
+    assert!(own.is_dir());
+}
+
+#[skuld::test]
+fn a_host_that_cannot_tell_an_install_is_in_use_removes_none(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let old = old_install(&qemu, "10.0.0-0123456789ab");
+    let source = world.source_on(&OtherHost);
+
+    source.resolve().unwrap();
+    source.resolve().unwrap();
+
+    assert!(old.join("bin").is_dir(), "{:?}", entries(&qemu));
+    assert_eq!(visible(&qemu).len(), 2, "{:?}", entries(&qemu));
+}
+
+#[skuld::test]
+fn a_busy_extraction_lock_does_not_delay_a_resolve_whose_install_is_present(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    world.source.resolve().unwrap();
+    let qemu = world.dirs.qemu();
+    let old = old_install(&qemu, "10.0.0-0123456789ab");
+    let mut extracting = FileLock::open(&qemu.join(".extract.lock")).unwrap();
+    assert!(extracting.try_lock(Mode::Exclusive).unwrap());
+
+    let install = world.source.resolve().unwrap();
+
+    assert!(install.tool("qemu-img").is_file());
+    assert!(
+        old.join("bin").is_dir(),
+        "nothing is removed while another devvm holds the lock"
+    );
+    assert!(world.progress.warnings().is_empty(), "{:?}", world.progress.warnings());
+    extracting.unlock().unwrap();
+
+    world.source.resolve().unwrap();
+    assert!(!old.exists(), "{:?}", entries(&qemu));
+}
+
+#[skuld::test]
+fn a_leftover_extraction_alone_does_not_make_a_resolve_take_the_lock(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    world.source.resolve().unwrap();
+    let qemu = world.dirs.qemu();
+    let leftover = qemu.join(".extract-leftover");
+    std::fs::create_dir_all(&leftover).unwrap();
+    let mut extracting = FileLock::open(&qemu.join(".extract.lock")).unwrap();
+    assert!(extracting.try_lock(Mode::Exclusive).unwrap());
+
+    world.source.resolve().unwrap();
+
+    assert!(leftover.is_dir(), "it is swept when an extraction next runs");
+}
+
+#[skuld::test]
+fn every_name_an_install_is_given_is_recognised_as_one() {
+    let sha = sha_of(b"a zip");
+    for version in ["11.1.2", "11.1.2-rc1", "v11_1+build.5", "2026"] {
+        let name = install_name(version, &sha);
+        assert!(is_install_name(&name), "{name}");
+    }
+}
+
 #[skuld::test]
 fn a_killed_extraction_leaves_no_visible_entry_and_the_next_call_succeeds(#[fixture(unicode_home)] home: &Path) {
     let world = world(home, zip_of(&files()));
@@ -554,7 +731,7 @@ pub(crate) fn extract_and_wait(args: &[String]) {
         let _ = std::io::stdin().read_to_end(&mut sink);
         Ok(format!("QEMU emulator version {VERSION}"))
     });
-    Source::new(dirs, fetcher, progress, Ok(entry), verify)
+    Source::new(dirs, fetcher, progress, Ok(entry), verify, &TestHost)
         .resolve()
         .unwrap();
 }
@@ -718,6 +895,7 @@ fn install_at(bin: &str) -> QemuInstall {
         share: PathBuf::from("share"),
         version: VERSION.to_owned(),
         zip_sha256: None,
+        held: None,
     }
 }
 
@@ -818,6 +996,7 @@ fn an_unknown_triple_fails_at_get_naming_it_and_downloads_nothing(#[fixture(unic
         world.progress.clone(),
         manifest_entry("riscv64-unknown-plan9"),
         verified(&world.asked),
+        &TestHost,
     );
     let lazy = LazyInstall::from_source(source);
 
@@ -876,6 +1055,7 @@ fn the_version_check_runs_a_tool_with_exactly_qemus_environment_in_an_empty_dire
         share: home.join("share"),
         version: VERSION.to_owned(),
         zip_sha256: None,
+        held: None,
     };
     std::fs::copy(std::env::current_exe().unwrap(), install.tool("qemu-img")).unwrap();
 

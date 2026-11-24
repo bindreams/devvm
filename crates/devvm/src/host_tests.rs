@@ -994,6 +994,18 @@ fn a_hold_off_windows_cannot_be_shared_with_a_process(#[fixture(unicode_home)] h
     assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
 }
 
+/// The same for an open file that is held without being a hold.
+#[skuld::test]
+fn an_open_file_off_windows_cannot_be_shared_with_a_process(#[fixture(unicode_home)] home: &Path) {
+    let path = home.join("x.file");
+    std::fs::write(&path, b"x").unwrap();
+    let file = OtherHost.open_held_read(&path).unwrap();
+    let error = OtherHost
+        .share_open_file_with(&file, cosca::identity::ProcessId::current())
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+}
+
 /// A sweep and a record's cleanup can race for one claim: the loser finds the file gone.
 #[skuld::test]
 fn deleting_a_hold_whose_file_is_already_unlinked_is_fine(#[fixture(unicode_home)] home: &Path) {
