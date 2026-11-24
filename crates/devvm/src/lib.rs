@@ -78,6 +78,7 @@ mod test_helpers {
 
     const HELPERS: &[(&str, HelperFn)] = &[
         ("hold-lock", crate::store::lock::lock_tests::hold_lock),
+        ("hold-instance", crate::instance::dir::dir_tests::hold_instance),
         ("sleeper", crate::contain::contain_tests::sleeper),
         ("fake-vm", crate::test_support::fake_vm::fake_vm),
         ("fake-launcher", crate::backend::fake::fake_launcher),
