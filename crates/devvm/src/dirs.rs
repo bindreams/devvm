@@ -86,6 +86,18 @@ impl Dirs {
         }
     }
 
+    /// The environment variables that make [`Dirs::from_lookup`] resolve the layout of [`Dirs::under`]`(root)`, with the
+    /// directory each names, for tests that point a process at a root.
+    pub fn env_under(root: &Path) -> [(&'static str, PathBuf); 5] {
+        [
+            ("XDG_CONFIG_HOME", root.join("config")),
+            ("XDG_DATA_HOME", root.join("data")),
+            ("XDG_CACHE_HOME", root.join("cache")),
+            ("XDG_STATE_HOME", root.join("state")),
+            ("XDG_RUNTIME_DIR", root.join("run")),
+        ]
+    }
+
     /// Runtime state of running machines (their control sockets): short, and the user's alone.
     pub fn run(&self) -> Result<&Path> {
         self.run.as_deref().map_err(Error::clone)

@@ -634,14 +634,8 @@ fn list_cannot_tell_for_a_recorded_machine_when_the_build_has_no_backend(#[fixtu
 /// The five XDG directories under `home`, an unreadable `config.yaml` in them, and a dead process's leftover to reap.
 /// Returns the leftover.
 fn broken_config_and_a_leftover(env: &skuld::EnvGuard, home: &Path) -> PathBuf {
-    for (variable, directory) in [
-        ("XDG_CONFIG_HOME", "config"),
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_CACHE_HOME", "cache"),
-        ("XDG_STATE_HOME", "state"),
-        ("XDG_RUNTIME_DIR", "run"),
-    ] {
-        env.set(variable, home.join(directory).to_str().unwrap());
+    for (variable, directory) in Dirs::env_under(home) {
+        env.set(variable, directory.to_str().unwrap());
     }
     let dirs = Dirs::from_env().unwrap();
     std::fs::create_dir_all(&dirs.config).unwrap();
