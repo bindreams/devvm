@@ -174,29 +174,34 @@ fn git_check(host: &dyn Host, progress: &dyn Progress) -> Check {
     tool_check("git", command)
 }
 
-/// Runs `command` and says what it printed first, on stdout or else on stderr (`ssh -V` writes there).
+/// Runs `command`. On success: its first non-blank line, stdout else stderr (`ssh -V` writes to stderr). On non-zero
+/// exit: an error with the first non-blank line, stderr else stdout.
 pub(super) fn tool_check(program: &str, mut command: Command) -> Check {
-    let outcome = (|| {
-        let output = command
-            .output()
-            .map_err(|e| format!("cannot run `{program}` (is it installed and on PATH?): {e}"))?;
-        if !output.status.success() {
-            let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy()).collect();
-            return Err(format!("`{program} {}` failed ({})", args.join(" "), output.status));
-        }
-        let text = [&output.stdout, &output.stderr]
-            .into_iter()
-            .map(|bytes| String::from_utf8_lossy(bytes))
-            .find_map(|text| {
-                text.lines()
-                    .next()
-                    .map(|line| line.trim().to_owned())
-                    .filter(|line| !line.is_empty())
-            });
-        Ok(text.unwrap_or_else(|| "found".to_owned()))
-    })();
     Check {
         name: program.to_owned(),
-        outcome,
+        outcome: tool_outcome(program, &mut command),
     }
+}
+
+fn tool_outcome(program: &str, command: &mut Command) -> std::result::Result<String, String> {
+    let output = command
+        .output()
+        .map_err(|e| format!("cannot run `{program}` (is it installed and on PATH?): {e}"))?;
+    let first_line = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+    };
+    let (stdout, stderr) = (first_line(&output.stdout), first_line(&output.stderr));
+    if !output.status.success() {
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy()).collect();
+        let failed = format!("`{program} {}` failed ({})", args.join(" "), output.status);
+        return Err(match stderr.or(stdout) {
+            Some(said) => format!("{failed}: {said}"),
+            None => failed,
+        });
+    }
+    Ok(stdout.or(stderr).unwrap_or_else(|| "found".to_owned()))
 }

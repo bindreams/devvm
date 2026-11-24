@@ -219,13 +219,14 @@ fn long_help(command: &str) -> String {
 }
 
 #[skuld::test]
-fn help_states_the_copy_login_profile_and_snapshot_contracts() {
+fn help_states_the_copy_login_profile_snapshot_and_doctor_contracts() {
     let table = [
         ("cp", vec!["differ only in case", "1970 to 2106", ".devvm-partial-"]),
         ("run", vec!["startup files", "mixed"]),
         ("ssh", vec!["startup files"]),
         ("up", vec!["mixed"]),
         ("build", vec!["mixed"]),
+        ("doctor", vec!["accelerator", "disk space", "ssh", "git", "QEMU"]),
     ];
     for (command, phrases) in table {
         let help = long_help(command);

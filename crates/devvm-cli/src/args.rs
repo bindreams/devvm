@@ -134,7 +134,7 @@ pub enum Cmd {
         #[arg(long, value_parser = parse_arch)]
         arch: Option<Arch>,
     },
-    /// Check this host: accelerator, QEMU, disk space.
+    /// Check this host: accelerator, disk space, ssh, git, QEMU.
     Doctor,
 }
 
