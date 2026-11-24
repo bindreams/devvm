@@ -393,21 +393,30 @@ fn a_response_head_stall_is_reported_as_a_stall_naming_the_url_once() {
 }
 
 #[skuld::test]
-fn a_refused_connection_says_why_in_the_message() {
+fn a_connection_closed_without_an_answer_says_why_in_the_message() {
     use std::error::Error as _;
+    use std::io::Read as _;
 
     use super::Transport;
 
-    // Bound and never listening: the port stays ours for the whole test, and a connection to it is refused.
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let port = socket.local_addr().unwrap().port();
-    let url = format!("http://127.0.0.1:{port}/disk.img");
+    // Accepts one connection, reads the request head and closes without answering.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/disk.img", listener.local_addr().unwrap().port());
+    let server = std::thread::spawn(move || {
+        let (mut connection, _) = listener.accept().unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") {
+            connection.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+    });
     let error = HttpTransport::new()
         .unwrap()
         .get(&url, None)
         .err()
-        .expect("nothing listens on the port");
+        .expect("the server closes the connection");
+    server.join().unwrap();
     let mut cause = error.source().expect("the request error is the source");
     while let Some(next) = cause.source() {
         cause = next;
