@@ -106,13 +106,22 @@ fn round_trip(path: &Path) -> Result<(), String> {
     }
 }
 
+/// `dir` with `name` as the one name below it. `Path::join` takes `C:z` for a path of its own (drive `C:`, relative to the
+/// current directory there), which would create a file next to the test's working directory.
+fn child(dir: &Path, name: &str) -> PathBuf {
+    let mut path = dir.as_os_str().to_owned();
+    path.push(std::path::MAIN_SEPARATOR_STR);
+    path.push(name);
+    PathBuf::from(path)
+}
+
 /// What the file system does with the name `name`: `Ok` when a file made under it is listed under exactly that name and
 /// keeps what is written to it, `Err` with what happened otherwise (the create failed, or Windows stored another name
 /// or none, or the name is a device).
 fn stored(dir: &Path, name: &str) -> Result<(), String> {
     let dir = dir.join("probe");
     std::fs::create_dir(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-    let outcome = match std::fs::File::create(dir.join(name)) {
+    let outcome = match std::fs::File::create(child(&dir, name)) {
         Err(e) => Err(format!("create failed: {e}")),
         Ok(file) => {
             drop(file);
@@ -121,7 +130,7 @@ fn stored(dir: &Path, name: &str) -> Result<(), String> {
                 .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
                 .collect();
             match listed.iter().any(|listed| listed == name) {
-                true => round_trip(&dir.join(name)),
+                true => round_trip(&child(&dir, name)),
                 false => Err(format!("listed as {listed:?}")),
             }
         }
