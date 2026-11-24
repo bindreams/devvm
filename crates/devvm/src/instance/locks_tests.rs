@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use super::is_there;
+use super::{Wait, is_there};
 use crate::ErrorKind;
 use crate::host::{self, Comparison};
 use crate::instance::locks::{Locks, Probe};
@@ -257,14 +257,14 @@ fn op_wait_that_wakes_on_a_replaced_file_takes_the_file_at_the_name(#[fixture(un
             let locks = locks(home);
             let id = InstanceId::random();
             drop(locks.acquire_owner_new(&id).unwrap());
-            let holder = locks.op_exclusive(&id, "holder", &NullProgress).unwrap();
+            let holder = locks.op_exclusive(&id, "holder", &NullProgress, &|| None).unwrap();
             let (progress, messages) = ChannelProgress::new();
             std::thread::scope(|scope| {
                 let waiter = scope.spawn(|| {
                     if shared {
-                        locks.op_shared(&id, "the instance", &*progress)
+                        locks.op_shared(&id, "the instance", &*progress, &|| None)
                     } else {
-                        locks.op_exclusive(&id, "the instance", &*progress)
+                        locks.op_exclusive(&id, "the instance", &*progress, &|| None)
                     }
                 });
                 assert_eq!(messages.recv().unwrap(), "waiting for the instance");
@@ -312,8 +312,20 @@ fn a_link_at_a_lock_name_is_an_error_naming_the_file_held_or_free_target_alike(
         named(locks.try_owner_recreating(&id).map(drop).unwrap_err(), &owner);
         named(locks.try_owner(&id).map(drop).unwrap_err(), &owner);
         named(locks.try_op_exclusive(&id).map(drop).unwrap_err(), &op);
-        named(locks.op_shared(&id, "x", &NullProgress).map(drop).unwrap_err(), &op);
-        named(locks.op_exclusive(&id, "x", &NullProgress).map(drop).unwrap_err(), &op);
+        named(
+            locks
+                .op_shared(&id, "x", &NullProgress, &|| None)
+                .map(drop)
+                .unwrap_err(),
+            &op,
+        );
+        named(
+            locks
+                .op_exclusive(&id, "x", &NullProgress, &|| None)
+                .map(drop)
+                .unwrap_err(),
+            &op,
+        );
     };
     // Held by another open in this process: the link is still the answer, and no take waits for the target.
     let held: Vec<FileLock> = targets
@@ -334,10 +346,14 @@ fn op_exclusive_waits_for_the_holder_and_says_so_first(#[fixture(unicode_home)] 
     let locks = locks(home);
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
-    let holder = locks.op_exclusive(&id, "holder", &NullProgress).unwrap();
+    let holder = locks.op_exclusive(&id, "holder", &NullProgress, &|| None).unwrap();
     let (progress, messages) = ChannelProgress::new();
     std::thread::scope(|scope| {
-        let waiter = scope.spawn(|| locks.op_exclusive(&id, "the busy instance", &*progress).unwrap());
+        let waiter = scope.spawn(|| {
+            locks
+                .op_exclusive(&id, "the busy instance", &*progress, &|| None)
+                .unwrap()
+        });
         assert_eq!(messages.recv().unwrap(), "waiting for the busy instance");
         assert!(!waiter.is_finished());
         drop(holder);
@@ -351,7 +367,7 @@ fn an_op_wait_after_a_wait_for_instances_dir_still_says_what_it_waits_for(#[fixt
     let locks = &locks;
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
-    let holder = locks.op_exclusive(&id, "holder", &NullProgress).unwrap();
+    let holder = locks.op_exclusive(&id, "holder", &NullProgress, &|| None).unwrap();
     let (progress, messages) = ChannelProgress::new();
     let (held, dir_held) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
@@ -372,8 +388,11 @@ fn an_op_wait_after_a_wait_for_instances_dir_still_says_what_it_waits_for(#[fixt
                 .op_with(
                     &id,
                     Mode::Exclusive,
-                    "the instance",
-                    &*progress,
+                    Wait {
+                        what: "the instance",
+                        progress: &*progress,
+                        holder: &|| None,
+                    },
                     &mut || waiting.send(()).unwrap(),
                     &mut || {},
                 )
@@ -404,8 +423,11 @@ fn a_wait_after_a_restart_says_what_it_waits_for_and_runs_before_wait(#[fixture(
         .op_with(
             &id,
             Mode::Exclusive,
-            "the instance",
-            &*progress,
+            Wait {
+                what: "the instance",
+                progress: &*progress,
+                holder: &|| None,
+            },
             // The blocker goes as the wait starts, so the lock is won on the retry.
             &mut || {
                 waits += 1;
@@ -434,14 +456,14 @@ fn op_wait_that_wakes_on_an_unlinked_file_is_not_found(#[fixture(unicode_home)] 
         let locks = locks(home);
         let id = InstanceId::random();
         drop(locks.acquire_owner_new(&id).unwrap());
-        let holder = locks.op_exclusive(&id, "holder", &NullProgress).unwrap();
+        let holder = locks.op_exclusive(&id, "holder", &NullProgress, &|| None).unwrap();
         let (progress, messages) = ChannelProgress::new();
         std::thread::scope(|scope| {
             let waiter = scope.spawn(|| {
                 if shared {
-                    locks.op_shared(&id, "the instance", &*progress).map(drop)
+                    locks.op_shared(&id, "the instance", &*progress, &|| None).map(drop)
                 } else {
-                    locks.op_exclusive(&id, "the instance", &*progress).map(drop)
+                    locks.op_exclusive(&id, "the instance", &*progress, &|| None).map(drop)
                 }
             });
             assert_eq!(messages.recv().unwrap(), "waiting for the instance");
@@ -460,11 +482,14 @@ fn op_on_a_missing_instance_is_not_found(#[fixture(unicode_home)] home: &Path) {
     let locks = locks(home);
     let id = InstanceId::random();
     assert_eq!(
-        locks.op_exclusive(&id, "x", &NullProgress).unwrap_err().kind(),
+        locks
+            .op_exclusive(&id, "x", &NullProgress, &|| None)
+            .unwrap_err()
+            .kind(),
         ErrorKind::NotFound
     );
     assert_eq!(
-        locks.op_shared(&id, "x", &NullProgress).unwrap_err().kind(),
+        locks.op_shared(&id, "x", &NullProgress, &|| None).unwrap_err().kind(),
         ErrorKind::NotFound
     );
 }
@@ -474,8 +499,8 @@ fn op_shared_holders_coexist_and_exclude_exclusive(#[fixture(unicode_home)] home
     let locks = locks(home);
     let id = InstanceId::random();
     drop(locks.acquire_owner_new(&id).unwrap());
-    let first = locks.op_shared(&id, "a", &NullProgress).unwrap();
-    let second = locks.op_shared(&id, "b", &NullProgress).unwrap();
+    let first = locks.op_shared(&id, "a", &NullProgress, &|| None).unwrap();
+    let second = locks.op_shared(&id, "b", &NullProgress, &|| None).unwrap();
     assert!(matches!(locks.try_op_exclusive(&id).unwrap(), Probe::Held));
     drop(first);
     assert!(matches!(locks.try_op_exclusive(&id).unwrap(), Probe::Held));
@@ -821,8 +846,14 @@ fn every_entry_point_checks_the_volume_of_an_existing_instances_dir(#[fixture(un
     let errors = [
         locks.try_owner(&id).map(drop).unwrap_err(),
         locks.try_op_exclusive(&id).map(drop).unwrap_err(),
-        locks.op_shared(&id, "x", &NullProgress).map(drop).unwrap_err(),
-        locks.op_exclusive(&id, "x", &NullProgress).map(drop).unwrap_err(),
+        locks
+            .op_shared(&id, "x", &NullProgress, &|| None)
+            .map(drop)
+            .unwrap_err(),
+        locks
+            .op_exclusive(&id, "x", &NullProgress, &|| None)
+            .map(drop)
+            .unwrap_err(),
         locks.reading(home, || ()).unwrap_err(),
         locks.excluding_readers(&mut || {}, || ()).unwrap_err(),
         locks.remove(&id).unwrap_err(),
@@ -939,9 +970,19 @@ fn an_op_take_compares_the_file_at_the_name_under_a_shared_hold_of_instances_dir
     for mode in [Mode::Shared, Mode::Exclusive] {
         let mut held = None;
         let lock = locks
-            .op_with(&id, mode, "x", &NullProgress, &mut || {}, &mut || {
-                held = Some(instances_dir_is_held_shared(&home.join("locks")));
-            })
+            .op_with(
+                &id,
+                mode,
+                Wait {
+                    what: "x",
+                    progress: &NullProgress,
+                    holder: &|| None,
+                },
+                &mut || {},
+                &mut || {
+                    held = Some(instances_dir_is_held_shared(&home.join("locks")));
+                },
+            )
             .unwrap();
         assert_eq!(held, Some(true), "{mode:?}");
         drop(lock);
@@ -986,9 +1027,9 @@ fn a_lock_file_that_is_there_is_not_gone_when_instances_dir_is_missing(#[fixture
     for shared in [false, true] {
         std::fs::remove_file(&dir_path).unwrap();
         let lock = if shared {
-            locks.op_shared(&id, "x", &NullProgress)
+            locks.op_shared(&id, "x", &NullProgress, &|| None)
         } else {
-            locks.op_exclusive(&id, "x", &NullProgress)
+            locks.op_exclusive(&id, "x", &NullProgress, &|| None)
         };
         drop(lock.expect("the op file is there: the instance is not gone"));
         assert!(dir_path.is_file(), "instances.dir is put back");

@@ -1,14 +1,17 @@
-//! `record.json` (what an instance is) and `owner.json` (who keeps it alive): the files an instance directory holds.
+//! `record.json` (what an instance is), `owner.json` (who keeps it alive) and `holder.json` (who holds its op lock): the
+//! files an instance directory holds.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::SystemTime;
 
+use cosca::identity::ProcessIdRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::MachineRecord;
-use crate::host::{self, Host, remove_if_present};
+use crate::contain::cosca_error;
+use crate::host::{self, Host, remove_if_present, remove_tree};
 use crate::instance::name::InstanceName;
 use crate::random;
 use crate::recipe::hash::LayerKey;
@@ -394,6 +397,108 @@ pub(crate) fn read_marker(dir: &Path) -> Result<MarkerRead> {
         Ok(None) => MarkerRead::Absent,
         Err(why) => MarkerRead::Corrupt(why),
     })
+}
+
+// The holder of the op lock ===========================================================================================
+
+/// `holder.json`: the devvm command that holds an instance's exclusive op lock (`start`, `up`, `stop`, `rm`, `reboot`),
+/// so a command that waits behind it can name it.
+///
+/// It is a record and not a question to the OS because std's file lock is `LockFileEx` on Windows, and no Windows call
+/// names the holder of a lock. The holder writes it once it holds the lock and removes it before releasing the lock, so
+/// a reader may see it written late or not at all, never half-written (see [`write_file`]); a reader names the process
+/// only if it still runs (a crashed holder leaves its record behind).
+///
+/// Only the exclusive holder is recorded: a wait behind `run`, `ssh` or `cp` (shared holders), or behind the reaper,
+/// keeps the text without a holder. A record whose removal failed and whose process still runs would be named by a
+/// wait behind such a holder; the failed removal is a warning.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Holder {
+    pub process: ProcessIdRecord,
+    /// What the process was started as: [`command_text`] of its argv.
+    pub command: String,
+}
+
+pub(crate) const HOLDER_FILE: &str = "holder.json";
+
+/// The most characters of a command that [`command_text`] keeps.
+pub(crate) const COMMAND_CHARS: usize = 100;
+
+#[derive(Serialize, Deserialize)]
+struct WireHolder {
+    schema: u64,
+    process: ProcessIdRecord,
+    command: String,
+}
+
+impl Holder {
+    /// This process, as its own argv names it.
+    pub(crate) fn current() -> Result<Holder> {
+        let id = cosca::identity::ProcessId::current();
+        let process = id
+            .to_record()
+            .map_err(|e| cosca_error(&format!("cannot record process {}", id.pid()), e))?;
+        Ok(Holder {
+            process,
+            command: command_text(std::env::args_os()),
+        })
+    }
+}
+
+/// The file stem of `argv[0]` followed by the other arguments, on one line of at most [`COMMAND_CHARS`] characters:
+/// control characters become spaces and what does not fit is cut, ending in `...`.
+pub(crate) fn command_text(argv: impl IntoIterator<Item = std::ffi::OsString>) -> String {
+    let mut argv = argv.into_iter();
+    let program = argv
+        .next()
+        .and_then(|first| {
+            Path::new(&first)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    let mut text = program;
+    for arg in argv {
+        text.push(' ');
+        text.push_str(&arg.to_string_lossy());
+    }
+    let mut chars = text.chars().map(|c| if c.is_control() { ' ' } else { c });
+    let mut line: String = chars.by_ref().take(COMMAND_CHARS).collect();
+    if chars.next().is_some() {
+        line.push_str("...");
+    }
+    line
+}
+
+fn holder_parse(text: &str) -> std::result::Result<Holder, String> {
+    let wire = serde_json::from_str::<WireHolder>(text).map_err(|e| e.to_string())?;
+    Ok(Holder {
+        process: wire.process,
+        command: wire.command,
+    })
+}
+
+/// The holder recorded in `dir`: `None` when there is no record or it is unusable (torn, hand-edited), neither of which
+/// names anyone. A record from a newer devvm is `Err(Store)`.
+pub(crate) fn read_holder(dir: &Path) -> Result<Option<Holder>> {
+    Ok(read_file(dir, HOLDER_FILE, holder_parse)?.unwrap_or(None))
+}
+
+/// Replaces `holder.json` atomically.
+pub(crate) fn write_holder(dir: &Path, holder: &Holder) -> Result<()> {
+    let wire = WireHolder {
+        schema: SCHEMA,
+        process: holder.process.clone(),
+        command: holder.command.clone(),
+    };
+    let text = serde_json::to_string(&wire).map_err(|e| Error::new(ErrorKind::Internal, e.to_string()))?;
+    write_file(host::current(), dir, HOLDER_FILE, &text)
+}
+
+/// Removes `holder.json`; one that is not there is as good as removed.
+pub(crate) fn remove_holder(dir: &Path) -> Result<()> {
+    let path = dir.join(HOLDER_FILE);
+    remove_tree(&path).map_err(|e| Error::io(ErrorKind::Io, format!("cannot remove {}", path.display()), e))
 }
 
 /// Replaces `owner.json` atomically.

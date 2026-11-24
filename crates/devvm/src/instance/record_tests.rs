@@ -6,7 +6,8 @@ use cosca::identity::{Platform, ProcessIdRecord};
 use crate::backend::{Endpoint, MachineRecord, SshEndpoint};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{
-    HOSTNAME_LEN, InstanceId, InstanceRecord, Marker, MarkerRead, Owner, RecordRead, read_marker, write_marker,
+    COMMAND_CHARS, HOLDER_FILE, HOSTNAME_LEN, Holder, InstanceId, InstanceRecord, Marker, MarkerRead, Owner,
+    RecordRead, command_text, read_holder, read_marker, remove_holder, write_holder, write_marker,
 };
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
@@ -358,4 +359,50 @@ fn instance_ids_are_random_and_round_trip_as_text() {
         "000102030405060708090A0B0C0D0E0F".parse::<InstanceId>().is_err(),
         "ids are lowercase"
     );
+}
+
+#[skuld::test]
+fn a_holder_round_trips_and_goes_when_removed(#[fixture(unicode_home)] home: &Path) {
+    assert!(read_holder(home).unwrap().is_none());
+    let holder = Holder {
+        process: machine().process,
+        command: "devvm up --name foo".to_owned(),
+    };
+    write_holder(home, &holder).unwrap();
+    assert_eq!(read_holder(home).unwrap(), Some(holder));
+    remove_holder(home).unwrap();
+    assert!(read_holder(home).unwrap().is_none());
+    remove_holder(home).expect("a record that is not there is as good as removed");
+}
+
+#[skuld::test]
+fn a_torn_holder_reads_as_none_and_one_from_a_newer_devvm_is_an_error(#[fixture(unicode_home)] home: &Path) {
+    for torn in ["", "{ torn", r#"{"schema":1,"command":"devvm"}"#, r#"{"schema":0}"#] {
+        std::fs::write(home.join(HOLDER_FILE), torn).unwrap();
+        assert!(read_holder(home).unwrap().is_none(), "{torn:?}");
+    }
+    std::fs::write(home.join(HOLDER_FILE), r#"{"schema":2}"#).unwrap();
+    assert_eq!(read_holder(home).unwrap_err().kind(), ErrorKind::Store);
+}
+
+#[skuld::test]
+fn the_command_is_the_stem_of_argv0_and_the_arguments() {
+    let argv0 = Path::new("bin").join("devvm.exe");
+    let args = [argv0.into_os_string(), "rm".into(), "foo".into()];
+    assert_eq!(command_text(args), "devvm rm foo");
+    assert_eq!(command_text(["devvm".into()]), "devvm");
+}
+
+#[skuld::test]
+fn a_long_command_is_cut_to_one_line() {
+    let args = [
+        "devvm".into(),
+        "a\nb\rc\td".into(),
+        "x".repeat(2 * COMMAND_CHARS).into(),
+    ];
+    let text = command_text(args);
+    assert!(text.starts_with("devvm a b c d xxx"), "{text}");
+    assert!(text.ends_with("..."), "{text}");
+    assert_eq!(text.chars().count(), COMMAND_CHARS + 3);
+    assert!(!text.contains(char::is_control), "{text:?}");
 }
