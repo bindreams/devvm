@@ -284,10 +284,11 @@ pub(crate) trait Host: Send + Sync {
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
 }
 
-/// Creates `path` with `options` and writes `bytes`, which are on disk when it returns; the file is returned. A file
-/// whose write failed is removed, so a half-written secret is never left behind.
+/// Creates `path` with `options` and writes `bytes`, which are on disk when it returns; the file is returned, open for
+/// appending: a write lands at the end, wherever the file was cut. A file whose write failed is removed, so a
+/// half-written secret is never left behind.
 fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
-    fill_new(options.write(true).create_new(true).open(path)?, path, bytes)
+    fill_new(options.append(true).create_new(true).open(path)?, path, bytes)
 }
 
 /// Writes `bytes` to `file`, open for writing and just created at `path`, and syncs them; the file is removed when that

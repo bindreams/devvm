@@ -192,6 +192,26 @@ fn write_private_returns_the_file_it_made_open_after_its_bytes(#[fixture(unicode
     assert_eq!(std::fs::read(&path).unwrap(), b"first second");
 }
 
+#[skuld::test]
+fn write_private_returns_a_file_that_appends_after_it_is_cut_from_outside(#[fixture(unicode_home)] home: &Path) {
+    use std::io::Write;
+
+    let path = home.join("private log");
+    let mut file = current().write_private(&path, b"first").unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"second").unwrap();
+    drop(file);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"second",
+        "a record after a cut lands at the new end, not behind a hole"
+    );
+}
+
 /// Writes a private file into a directory that hands `BUILTIN\Users` read to what is created in it, as a directory
 /// under `C:\Users` does. OpenSSH for Windows ignores a private key whose DACL lets anyone else read it.
 #[cfg(windows)]
