@@ -68,7 +68,7 @@ impl Remote {
                     .handle
                     .channel_open_session()
                     .await
-                    .map_err(|_| inner.connection_ended("opening the SFTP subsystem"))?;
+                    .map_err(|e| inner.channel_not_opened("opening the SFTP subsystem", &e))?;
                 channel
                     .request_subsystem(true, "sftp")
                     .await

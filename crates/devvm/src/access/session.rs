@@ -499,6 +499,13 @@ impl Inner {
             .unwrap_or_else(|| "the connection ended".to_owned());
         self.ctx.lost(awaiting, &reason)
     }
+
+    /// The error for a channel that `cause` kept from opening, whether the server refused it or the connection ended:
+    /// nothing of the operation `awaiting` has reached the guest ([`is_not_started`]).
+    pub(super) fn channel_not_opened(&self, awaiting: &str, cause: &russh::Error) -> Error {
+        let why = self.transport_end().unwrap_or_else(|| cause.to_string());
+        not_started(self.ctx.lost(awaiting, &format!("the channel could not be opened: {why}")))
+    }
 }
 
 /// The TCP connection to the guest's forwarded port. `russh` sets TCP_NODELAY only in the `client::connect` that makes

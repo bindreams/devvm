@@ -138,9 +138,10 @@ impl Sftp {
                 .guarded("opening the SFTP subsystem", true, Remote::connect(guard.clone()))
                 .await
         })?;
-        // Nothing of an operation has reached the guest before the subsystem is open.
+        // Only a connection that ended during the open is one a new connection helps; the VM exiting or the boot bound
+        // passing is not.
         let remote = remote.map_err(|e| {
-            if e.kind() == ErrorKind::ConnectionLost {
+            if e.kind() == ErrorKind::ConnectionLost && inner.transport_end().is_some() {
                 not_started(e)
             } else {
                 e

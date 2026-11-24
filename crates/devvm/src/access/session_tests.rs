@@ -761,6 +761,43 @@ fn only_an_error_marked_as_not_started_is_not_started() {
     assert_eq!(marked.kind(), ErrorKind::ConnectionLost, "the error keeps its kind");
 }
 
+#[skuld::test]
+fn a_channel_the_server_refuses_is_not_started_and_names_the_refusal(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    rig.sshd.refuse_channel_opens(1);
+
+    let error = session.exec_collect("echo refused").unwrap_err();
+
+    assert!(is_not_started(&error), "{error}");
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("channel could not be opened"), "{error}");
+    assert!(!error.message().contains("the connection ended"), "{error}");
+    assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0), "the connection lives");
+}
+
+#[skuld::test]
+fn a_vm_exit_while_the_sftp_subsystem_opens_is_not_marked_as_not_started(#[fixture(unicode_home)] home: &Path) {
+    let rig = Rig::new(home);
+    let (fire, wait) = mpsc::channel::<()>();
+    let vm = VmExit::when(move || wait.recv().map_err(|e| e.to_string())).unwrap();
+    let session = rig.connect_with(vm, None).unwrap();
+    std::thread::scope(|scope| {
+        // The server stops answering once it runs `freeze`, so the open cannot finish before the exit ends it.
+        let frozen = scope.spawn(|| session.exec_collect("freeze"));
+        rig.sshd.wait_for_commands(1);
+        fire.send(()).unwrap();
+        let error = session.sftp().err().expect("the VM exited");
+        assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+        assert!(error.message().contains("VM process exited"), "{error}");
+        assert!(
+            !is_not_started(&error),
+            "a new connection does not help a VM that exited: {error}"
+        );
+        frozen.join().unwrap().unwrap_err();
+    });
+}
+
 // Host output =========================================================================================================
 
 struct RefusesWrites;

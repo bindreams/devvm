@@ -6,7 +6,7 @@ use russh::client::Msg;
 use russh::{Channel, ChannelMsg, Sig};
 use tokio::sync::mpsc;
 
-use crate::access::session::{Inner, not_started};
+use crate::access::session::Inner;
 use crate::exit::ExitStatus;
 use crate::{Error, ErrorKind, Result};
 
@@ -158,7 +158,7 @@ async fn run(
         .handle
         .channel_open_session()
         .await
-        .map_err(|_| not_started(inner.connection_ended(awaiting)))?;
+        .map_err(|e| inner.channel_not_opened(awaiting, &e))?;
     let channel = slot.insert(opened);
     let result = pump(inner, channel, command, awaiting, events, status).await;
     *slot = None;
