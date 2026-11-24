@@ -77,26 +77,12 @@ impl FileLog {
             )
         })?;
         let warnings = prune(dir, clock.now(), alive);
-        let path = loop {
-            let name = format!(
-                "devvm-{}-{}-{}.log",
-                stamp(clock.now(), "%Y%m%dT%H%M%SZ"),
-                std::process::id(),
-                hex::encode(random::bytes::<2>())
-            );
-            let path = dir.join(name);
-            let header = format!(
-                "{} INFO devvm {}\n",
-                stamp(clock.now(), TIME),
-                env!("CARGO_PKG_VERSION")
-            );
-            match host::current().write_private(&path, header.as_bytes()) {
-                Ok(()) => break path,
-                // Another run drew the same name: draw again.
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(cannot_write(&path, e)),
-            }
-        };
+        let header = format!(
+            "{} INFO devvm {}\n",
+            stamp(clock.now(), TIME),
+            env!("CARGO_PKG_VERSION")
+        );
+        let path = create_named(dir, &*clock, "log", header.as_bytes()).map_err(|(path, e)| cannot_write(&path, e))?;
         let open = || {
             OpenOptions::new()
                 .append(true)
@@ -158,6 +144,84 @@ impl FileLog {
         // The run goes on; `describe` tells at its end.
         if let Err(e) = state.out.write_all(self.record_line(kind, text).as_bytes()) {
             let _ = self.first_error.set(e.to_string());
+        }
+    }
+}
+
+/// Copies `source` to `devvm-<UTC time>-<pid>-<4 hex>.serial.log` in `dir`, which is made if it is not there, after
+/// removing the logs in it that are older than 14 days and whose process is not running, as [`FileLog::create`] does.
+/// What goes wrong in that removal is told to `warn`. The copy is the user's alone and is streamed. A `source` that
+/// cannot be read makes no file, and a copy that fails half way is removed. Returns the copy's path.
+#[allow(
+    dead_code,
+    reason = "called by the error path of a failed VM, which is added after it"
+)]
+pub(crate) fn keep_copy(
+    dir: &Path,
+    clock: &dyn Clock,
+    source: &Path,
+    warn: &mut dyn FnMut(&str),
+) -> std::io::Result<PathBuf> {
+    keep_copy_with(dir, clock, source, warn, &process_is_alive)
+}
+
+/// [`keep_copy`], with `alive` telling whether the process of a pid is running.
+pub(crate) fn keep_copy_with(
+    dir: &Path,
+    clock: &dyn Clock,
+    source: &Path,
+    warn: &mut dyn FnMut(&str),
+    alive: &dyn Fn(u32) -> bool,
+) -> std::io::Result<PathBuf> {
+    let mut from = File::open(source).map_err(|e| said(e, format_args!("cannot read {}", source.display())))?;
+    std::fs::create_dir_all(dir).map_err(|e| said(e, format_args!("cannot create {}", dir.display())))?;
+    for warning in prune(dir, clock.now(), alive) {
+        warn(&warning);
+    }
+    let path = create_named(dir, clock, "serial.log", b"")
+        .map_err(|(path, e)| said(e, format_args!("cannot write {}", path.display())))?;
+    let copied = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .and_then(|mut to| std::io::copy(&mut from, &mut to));
+    if let Err(e) = copied {
+        if let Err(removed) = remove_if_present(&path) {
+            warn(&format!("cannot remove the partial copy {}: {removed}", path.display()));
+        }
+        return Err(said(
+            e,
+            format_args!("cannot copy {} to {}", source.display(), path.display()),
+        ));
+    }
+    Ok(path)
+}
+
+/// `e` under the same kind, with `what` before its text.
+fn said(e: std::io::Error, what: std::fmt::Arguments<'_>) -> std::io::Error {
+    std::io::Error::new(e.kind(), format!("{what}: {e}"))
+}
+
+/// Makes `devvm-<UTC time>-<pid>-<4 hex>.<extension>` in `dir`, the user's alone, holding `first`. The name is drawn
+/// again while another run has drawn it. A failure comes with the path it could not write.
+fn create_named(
+    dir: &Path,
+    clock: &dyn Clock,
+    extension: &str,
+    first: &[u8],
+) -> std::result::Result<PathBuf, (PathBuf, std::io::Error)> {
+    loop {
+        let name = format!(
+            "devvm-{}-{}-{}.{extension}",
+            stamp(clock.now(), "%Y%m%dT%H%M%SZ"),
+            std::process::id(),
+            hex::encode(random::bytes::<2>())
+        );
+        let path = dir.join(name);
+        match host::current().write_private(&path, first) {
+            Ok(()) => return Ok(path),
+            // Another run drew the same name: draw again.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err((path, e)),
         }
     }
 }
