@@ -1,6 +1,7 @@
 //! The file name a download is stored under, derived from its URL and safe on every OS.
 
-/// Longest name kept; the full path to a download stays well under Windows' limit.
+/// Longest name kept. With the 64-digit cache directory, a download's path is the downloads directory plus at most 166
+/// characters.
 const MAX_LEN: usize = 100;
 
 const FALLBACK: &str = "artifact";

@@ -2,8 +2,9 @@
 //!
 //! On disk, under the downloads directory:
 //!
-//! - `<hash>/<file-name>`: a verified artifact, `<hash>` being the pinned digest in hex (sha256 or sha512). It exists
-//!   only after verification and is published by rename;
+//! - `<hash>/<file-name>`: a verified artifact, `<hash>` being the first 64 hex digits of the pinned digest (all of a
+//!   sha256, half of a sha512, so a path stays short enough for `qemu-img`). It exists only after verification and is
+//!   published by rename; a sha512 entry is checked against the whole digest on every later use;
 //! - `<hash>.part` and `<hash>.part.json` (url and validator): a download in progress, kept across interruptions;
 //! - `<hash>.lock`: one OS lock per artifact, held for the whole fetch.
 
@@ -43,6 +44,18 @@ pub(crate) mod http_tests;
 pub struct Artifact {
     pub url: String,
     pub hash: ContentHash,
+}
+
+/// How many hex digits of the pinned digest name an artifact's files.
+const KEY_DIGITS: usize = 64;
+
+impl Artifact {
+    /// The name its files carry in the downloads directory: the first [`KEY_DIGITS`] hex digits of its digest.
+    pub(crate) fn cache_key(&self) -> String {
+        let mut hex = self.hash.to_string();
+        hex.truncate(KEY_DIGITS);
+        hex
+    }
 }
 
 /// Where to continue an interrupted download.
@@ -167,16 +180,16 @@ impl Fetcher {
     /// Where the verified file for `artifact` lives once fetched: `<downloads>/<hash>/<file-name>`.
     pub fn entry_path(&self, artifact: &Artifact) -> PathBuf {
         self.downloads
-            .join(artifact.hash.to_string())
+            .join(artifact.cache_key())
             .join(name::file_name(&artifact.url))
     }
 
     fn part_path(&self, artifact: &Artifact) -> PathBuf {
-        self.downloads.join(format!("{}.part", artifact.hash))
+        self.downloads.join(format!("{}.part", artifact.cache_key()))
     }
 
     fn sidecar_path(&self, artifact: &Artifact) -> PathBuf {
-        self.downloads.join(format!("{}.part.json", artifact.hash))
+        self.downloads.join(format!("{}.part.json", artifact.cache_key()))
     }
 
     /// Returns the verified file, downloading it first if needed.
@@ -187,7 +200,7 @@ impl Fetcher {
     pub fn fetch(&self, artifact: &Artifact) -> Result<PathBuf> {
         std::fs::create_dir_all(&self.downloads)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", self.downloads.display()), e))?;
-        let mut lock = FileLock::open(&self.downloads.join(format!("{}.lock", artifact.hash)))?;
+        let mut lock = FileLock::open(&self.downloads.join(format!("{}.lock", artifact.cache_key())))?;
         lock.lock(
             Mode::Exclusive,
             &format!("another devvm process to finish downloading {}", artifact.url),
@@ -195,6 +208,7 @@ impl Fetcher {
         )?;
         let entry = self.entry_path(artifact);
         if entry.is_file() {
+            self.check_entry(artifact, &entry)?;
             // A crash between publishing and the cleanup in `verify_and_publish` leaves these behind.
             remove_if_present(&self.sidecar_path(artifact))?;
             remove_if_present(&self.sidecar_temp_path(artifact))?;
@@ -202,6 +216,27 @@ impl Fetcher {
         }
         self.download(artifact, &entry)?;
         Ok(entry)
+    }
+
+    /// A key that holds the whole digest names the entry's content; a shorter one is a prefix, so the entry is hashed
+    /// against the pin.
+    fn check_entry(&self, artifact: &Artifact, entry: &Path) -> Result<()> {
+        if artifact.hash.to_string().len() == KEY_DIGITS {
+            return Ok(());
+        }
+        let actual = Hasher::of_file(&artifact.hash, entry)?.finish();
+        if actual != artifact.hash {
+            return Err(Error::new(
+                ErrorKind::Checksum,
+                format!(
+                    "{} has {} {actual}, expected {}",
+                    entry.display(),
+                    artifact.hash.algorithm(),
+                    artifact.hash
+                ),
+            ));
+        }
+        Ok(())
     }
 
     // Download --------------------------------------------------------------------------------------------------------
@@ -393,7 +428,7 @@ impl Fetcher {
     }
 
     fn sidecar_temp_path(&self, artifact: &Artifact) -> PathBuf {
-        self.downloads.join(format!("{}.part.json.tmp", artifact.hash))
+        self.downloads.join(format!("{}.part.json.tmp", artifact.cache_key()))
     }
 
     fn write_sidecar(&self, artifact: &Artifact, validator: Option<String>) -> Result<()> {

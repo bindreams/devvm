@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256 as Sha2, Sha512 as Sha2_512};
 use crate::progress::{Event, Level, Outcome, Total};
 use crate::store::fetch::{Artifact, ContentRange, Fetcher, PartOpener, PartWriter, Response, Resume, Transport};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
-use crate::{Dirs, ErrorKind, Result, Sha256, Sha512};
+use crate::{ContentHash, Dirs, ErrorKind, Result, Sha256, Sha512};
 
 const URL: &str = "https://example.test/files/disk.img";
 const ETAG: &str = "\"v1\"";
@@ -184,11 +184,11 @@ fn listing(dir: &Path) -> Vec<String> {
 }
 
 fn part(setup: &Setup, artifact: &Artifact) -> PathBuf {
-    setup.downloads.join(format!("{}.part", artifact.hash))
+    setup.downloads.join(format!("{}.part", artifact.cache_key()))
 }
 
 fn sidecar(setup: &Setup, artifact: &Artifact) -> PathBuf {
-    setup.downloads.join(format!("{}.part.json", artifact.hash))
+    setup.downloads.join(format!("{}.part.json", artifact.cache_key()))
 }
 
 // Happy path ==========================================================================================================
@@ -206,7 +206,7 @@ fn fetch_verifies_publishes_and_reuses(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(std::fs::read(&path).unwrap(), data);
     assert_eq!(
         listing(&setup.downloads),
-        vec![artifact.hash.to_string(), format!("{}.lock", artifact.hash)]
+        vec![artifact.cache_key(), format!("{}.lock", artifact.cache_key())]
     );
 
     let again = setup.fetcher.fetch(&artifact).unwrap();
@@ -226,12 +226,58 @@ fn a_sha512_artifact_is_verified_published_and_reused(#[fixture(unicode_home)] h
     assert_eq!(std::fs::read(&path).unwrap(), data);
     assert_eq!(
         listing(&setup.downloads),
-        vec![artifact.hash.to_string(), format!("{}.lock", artifact.hash)]
+        vec![artifact.cache_key(), format!("{}.lock", artifact.cache_key())]
     );
     assert_eq!(artifact.hash.to_string().len(), 128);
+    assert_eq!(artifact.cache_key(), artifact.hash.to_string()[..64]);
+    assert_eq!(path.parent().unwrap(), setup.downloads.join(artifact.cache_key()));
 
     setup.fetcher.fetch(&artifact).unwrap();
     assert_eq!(transport.requests().len(), 1, "a verified entry needs no request");
+}
+
+/// A sha512 pin that shares the first 64 digits of `of`'s and differs after them.
+fn sharing_the_cache_key(of: &Artifact) -> Artifact {
+    let ContentHash::Sha512(sha512) = of.hash else {
+        panic!("a sha512 pin")
+    };
+    let mut bytes = *sha512.as_bytes();
+    bytes[63] ^= 1;
+    Artifact {
+        url: of.url.clone(),
+        hash: Sha512::from_bytes(bytes).into(),
+    }
+}
+
+#[skuld::test]
+fn a_sha512_pin_whose_first_digits_match_a_cached_entry_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let data = bytes(10_000, 3);
+    let transport = Script::serving(data.clone());
+    let setup = setup(home, transport.clone());
+    let cached = sha512_artifact(&data);
+    let entry = setup.fetcher.fetch(&cached).unwrap();
+
+    let other = sharing_the_cache_key(&cached);
+    assert_eq!(other.cache_key(), cached.cache_key());
+    let error = setup.fetcher.fetch(&other).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Checksum, "{error}");
+    assert!(error.message().contains(&other.hash.to_string()), "{error}");
+    assert!(error.message().contains(&cached.hash.to_string()), "{error}");
+    assert_eq!(transport.requests().len(), 1, "nothing was downloaded for the refused pin");
+    assert_eq!(std::fs::read(entry).unwrap(), data, "the entry is left as it was");
+}
+
+#[skuld::test]
+fn a_wrong_file_in_a_sha512_entry_directory_is_refused(#[fixture(unicode_home)] home: &Path) {
+    let setup = setup(home, Script::serving(Vec::new()));
+    let wanted = sha512_artifact(&bytes(10_000, 4));
+    let entry = setup.fetcher.entry_path(&wanted);
+    std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    std::fs::write(&entry, bytes(10_000, 5)).unwrap();
+
+    let error = setup.fetcher.fetch(&wanted).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Checksum, "{error}");
+    assert!(error.message().contains(&entry.display().to_string()), "{error}");
 }
 
 #[skuld::test]
@@ -495,11 +541,11 @@ fn a_cached_entry_clears_a_stale_sidecar(#[fixture(unicode_home)] home: &Path) {
     setup.fetcher.fetch(&wanted).unwrap();
     // A crash between publishing and deleting the sidecar leaves these behind.
     std::fs::write(sidecar(&setup, &wanted), b"{}").unwrap();
-    std::fs::write(setup.downloads.join(format!("{}.part.json.tmp", wanted.hash)), b"{}").unwrap();
+    std::fs::write(setup.downloads.join(format!("{}.part.json.tmp", wanted.cache_key())), b"{}").unwrap();
     setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(
         listing(&setup.downloads),
-        vec![wanted.hash.to_string(), format!("{}.lock", wanted.hash)]
+        vec![wanted.cache_key(), format!("{}.lock", wanted.cache_key())]
     );
 }
 
@@ -789,7 +835,7 @@ fn disk_full_is_a_clear_error_and_publishes_nothing(#[fixture(unicode_home)] hom
 
         let error = fetcher.fetch(&wanted).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::DiskFull, "{kind:?}: {error}");
-        let part = downloads.join(format!("{}.part", wanted.hash));
+        let part = downloads.join(format!("{}.part", wanted.cache_key()));
         assert!(error.message().contains(&part.display().to_string()), "{error}");
         assert!(error.message().ends_with("run again to resume"), "{error}");
         assert_eq!(
@@ -853,7 +899,7 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(unicode_home)] h
             Arc::new(MemoryProgress::default()),
         );
         let entry = fetcher.entry_path(&wanted);
-        let dir = downloads.join(wanted.hash.to_string());
+        let dir = downloads.join(wanted.cache_key());
         assert_eq!(entry.parent().unwrap(), dir, "{url}");
         let name = entry.file_name().unwrap().to_string_lossy().into_owned();
         assert!(!name.is_empty() && name.len() <= 100, "{url}: {name}");
