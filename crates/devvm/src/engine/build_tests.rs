@@ -533,6 +533,26 @@ fn a_blank_line_ends_in_a_carriage_return_and_line_feed_like_in_a_line_feed() {
 }
 
 #[skuld::test]
+fn a_doubled_carriage_return_before_a_line_feed_ends_one_blank_line() {
+    assert_eq!(lines_reported(&[b"\r\r\nb\n"]), ["", "b"], "at the start");
+    assert_eq!(lines_reported(&[b"a\n\r\r\nb\n"]), ["a", "", "b"], "after a line feed");
+    assert_eq!(lines_reported(&[b"a\r\n\r\r\nb\n"]), ["a", "", "b"], "after a carriage return and line feed");
+    assert_eq!(
+        lines_reported(&[b"\r", b"\r", b"\n", b"b\n"]),
+        ["", "b"],
+        "wherever the writes split them"
+    );
+
+    // After a chunk was flushed, the line end is the part's, as it is without the flush.
+    let text = long_line(LINE_CHUNK + 1);
+    let (first, rest) = text.split_at(LINE_CHUNK);
+    assert_eq!(
+        lines_reported(&[text.as_bytes(), b"\r", b"\r", b"\n", b"next\n"]),
+        [first, rest, "next"]
+    );
+}
+
+#[skuld::test]
 fn a_carriage_return_after_a_line_end_is_a_redraw_when_text_follows_it() {
     assert_eq!(lines_reported(&[b"a\r\n\r", b"10%\r100%\r\n"]), ["a", "10%", "100%"]);
     assert_eq!(
@@ -593,26 +613,62 @@ fn a_flushed_part_of_a_line_leaves_the_line_end_and_the_redraw_after_it_as_they_
     );
 }
 
+/// Characters of 2, 3 and 4 bytes.
+const WIDE: [&str; 3] = ["é", "€", "😀"];
+
+/// The first `cut` bytes of `c` end the first chunk; the rest of `c` and then `after` follow.
+fn cut_by_the_chunk(c: &str, cut: usize, after: &[u8]) -> Vec<u8> {
+    let mut input = "a".repeat(LINE_CHUNK - cut).into_bytes();
+    input.extend_from_slice(c.as_bytes());
+    input.extend_from_slice(after);
+    input
+}
+
 #[skuld::test]
 fn a_chunk_never_splits_a_character() {
-    // `é` is two bytes: the first falls on the last byte of the chunk.
-    let mut text = "a".repeat(LINE_CHUNK - 1).into_bytes();
-    text.extend_from_slice("é".as_bytes());
-    text.extend_from_slice(b"tail\n");
-
-    let reported = lines_reported(&[&text]);
-
-    assert_eq!(reported.concat(), format!("{}étail", "a".repeat(LINE_CHUNK - 1)));
-    assert!(!reported.concat().contains('\u{fffd}'), "{reported:?}");
+    for c in WIDE {
+        for cut in 1..c.len() {
+            let input = cut_by_the_chunk(c, cut, b"tail\n");
+            let text = format!("{}{c}tail", "a".repeat(LINE_CHUNK - cut));
+            let first = "a".repeat(LINE_CHUNK - cut);
+            let reported = lines_reported(&[&input]);
+            assert_eq!(reported, [first.as_str(), &format!("{c}tail")], "{c:?} cut after {cut} bytes");
+            // Writes that split the character anywhere, at its ends included.
+            let start = LINE_CHUNK - cut;
+            for split in start..=start + c.len() {
+                let reported = lines_reported(&[&input[..split], &input[split..]]);
+                assert_eq!(reported.concat(), text, "{c:?} cut after {cut} bytes, split at {split}");
+                assert_eq!(reported[0], first, "{c:?} cut after {cut} bytes, split at {split}");
+            }
+        }
+    }
 
     // An invalid byte earlier in the chunk does not hide the cut character.
-    text[0] = 0xff;
-    let reported = lines_reported(&[&text]);
+    let mut input = cut_by_the_chunk("é", 1, b"tail\n");
+    input[0] = 0xff;
+    let reported = lines_reported(&[&input]);
     assert_eq!(
         reported.concat().matches('\u{fffd}').count(),
         1,
         "only the invalid byte is replaced: {reported:?}"
     );
+}
+
+#[skuld::test]
+fn a_stream_that_ends_after_a_cut_character_loses_nothing() {
+    for c in WIDE {
+        for cut in 1..c.len() {
+            // The byte after the cut is no continuation, so the kept bytes go out at the stream's end, as lossy text.
+            let mut input = cut_by_the_chunk(&c[..0], cut, &c.as_bytes()[..cut]);
+            input.push(b'x');
+            let reported = lines_reported(&[&input]);
+            assert_eq!(
+                reported,
+                ["a".repeat(LINE_CHUNK - cut), "\u{fffd}x".to_owned()],
+                "{c:?} cut after {cut} bytes"
+            );
+        }
+    }
 }
 
 #[skuld::test]
