@@ -520,6 +520,31 @@ fn a_carriage_return_with_nothing_pending_reports_no_line() {
     );
 }
 
+#[skuld::test]
+fn a_blank_line_ends_in_a_carriage_return_and_line_feed_like_in_a_line_feed() {
+    assert_eq!(lines_reported(&[b"a\r\n\r\nb\r\n"]), ["a", "", "b"]);
+    assert_eq!(lines_reported(&[b"\r\nb\r\n"]), ["", "b"]);
+    assert_eq!(
+        lines_reported(&[b"a\r\n\r", b"\nb\r\n"]),
+        ["a", "", "b"],
+        "wherever the writes split them"
+    );
+    assert_eq!(lines_reported(&[b"a\r\n", b"\r", b"\n", b"b\n"]), ["a", "", "b"]);
+}
+
+#[skuld::test]
+fn a_carriage_return_after_a_line_end_is_a_redraw_when_text_follows_it() {
+    assert_eq!(
+        lines_reported(&[b"a\r\n\r", b"10%\r100%\r\n"]),
+        ["a", "10%", "100%"]
+    );
+    assert_eq!(
+        lines_reported(&[b"a\r\n\r"]),
+        ["a"],
+        "a lone carriage return at the end reports nothing"
+    );
+}
+
 /// The guests of the QEMU backend: a Windows recipe's guest is the real one, whose shells are the real ones.
 fn qemu_guests(home: &Path) -> Arc<dyn Guests> {
     let fetcher = Arc::new(Fetcher::new(

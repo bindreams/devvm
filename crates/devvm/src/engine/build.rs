@@ -510,8 +510,19 @@ struct Lines<'a> {
     progress: &'a dyn Progress,
     tail: &'a Tail,
     pending: Vec<u8>,
-    /// The last byte written was `\r`, so a `\n` that follows is the other half of its line end.
-    after_cr: bool,
+    carriage: Carriage,
+}
+
+/// What the last byte written says about the `\r` before a `\n`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Carriage {
+    /// The last byte was not a `\r`.
+    None,
+    /// The last byte was a `\r` that ended a line, so a `\n` that follows is the other half of its line end.
+    EndedLine,
+    /// The last byte was a `\r` with no line to end: a `\n` that follows ends an empty line (`\r\n`), and any other
+    /// byte makes it the start of a redraw.
+    Bare,
 }
 
 impl<'a> Lines<'a> {
@@ -520,7 +531,7 @@ impl<'a> Lines<'a> {
             progress,
             tail,
             pending: Vec::new(),
-            after_cr: false,
+            carriage: Carriage::None,
         }
     }
 
@@ -534,17 +545,26 @@ impl<'a> Lines<'a> {
 impl Write for Lines<'_> {
     fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
         for &byte in chunk {
-            match byte {
-                b'\n' if self.after_cr => {}
-                b'\r' | b'\n' => {
-                    if byte == b'\n' || !self.pending.is_empty() {
-                        self.report(&self.pending);
-                    }
+            match (byte, self.carriage) {
+                (b'\n', Carriage::EndedLine) => self.carriage = Carriage::None,
+                (b'\n', _) => {
+                    self.report(&self.pending);
                     self.pending.clear();
+                    self.carriage = Carriage::None;
                 }
-                _ => self.pending.push(byte),
+                // After a `\r` that ended a line, this one is the first half of `\r\r\n`: still that line's end.
+                (b'\r', Carriage::EndedLine) => {}
+                (b'\r', _) if self.pending.is_empty() => self.carriage = Carriage::Bare,
+                (b'\r', _) => {
+                    self.report(&self.pending);
+                    self.pending.clear();
+                    self.carriage = Carriage::EndedLine;
+                }
+                _ => {
+                    self.pending.push(byte);
+                    self.carriage = Carriage::None;
+                }
             }
-            self.after_cr = byte == b'\r';
         }
         Ok(chunk.len())
     }
