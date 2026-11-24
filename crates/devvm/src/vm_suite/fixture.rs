@@ -18,6 +18,7 @@ use crate::backend::qemu::sidecar::QemuInstall;
 use crate::config::Config;
 use crate::engine::engine_tests::engine_with_bound;
 use crate::engine::{DEFAULT_BOOT_BOUND, Engine, LaunchHooks, LaunchStep};
+use crate::error::last_lines;
 use crate::host;
 use crate::progress::Progress;
 use crate::recipe::Recipe;
@@ -324,6 +325,16 @@ impl Drop for Up {
     fn drop(&mut self) {
         if let Some(instance) = self.0.take() {
             let name = instance.name().to_owned();
+            if std::thread::panicking() {
+                // The guest's console is gone with the instance.
+                let log = instance.dir().serial_log();
+                eprintln!("serial log of instance {name}: {}", log.display());
+                match std::fs::read(&log) {
+                    Ok(bytes) => eprintln!("{}", last_lines(&String::from_utf8_lossy(&bytes))),
+                    Err(e) if host::is_absent(&e) => eprintln!("(no serial log)"),
+                    Err(e) => eprintln!("(cannot be read: {e})"),
+                }
+            }
             if let Err(e) = instance.remove() {
                 eprintln!("cannot remove instance {name}: {e}");
             }
