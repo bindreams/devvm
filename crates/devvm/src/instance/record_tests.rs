@@ -6,7 +6,8 @@ use cosca::identity::{Platform, ProcessIdRecord};
 use crate::backend::{Endpoint, MachineRecord, SshEndpoint};
 use crate::instance::name::InstanceName;
 use crate::instance::record::{
-    HOSTNAME_LEN, InstanceId, InstanceRecord, Marker, MarkerRead, Owner, RecordRead, read_marker, write_marker,
+    HOSTNAME_LEN, InstanceId, InstanceRecord, Marker, MarkerRead, Owner, RecordRead, check_schema, read_marker,
+    write_marker,
 };
 use crate::recipe::hash::LayerKey;
 use crate::store::layers::{Generation, LayerRef};
@@ -256,6 +257,24 @@ fn a_newer_schema_is_a_store_error(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(error.kind(), ErrorKind::Store);
     assert!(error.message().contains("newer devvm"), "{}", error.message());
     assert!(error.message().contains("upgrade"), "{}", error.message());
+}
+
+#[skuld::test]
+fn an_older_schema_is_refused_naming_it_and_the_schema_the_build_reads() {
+    let path = Path::new("record.json");
+    let Ok(Err(why)) = check_schema(path, 3, 5) else {
+        panic!("an older schema is a corrupt record, not a store error")
+    };
+    assert!(why.contains("schema 3"), "{why}");
+    assert!(why.contains("schema 5"), "{why}");
+}
+
+#[skuld::test]
+fn a_newer_schema_is_refused_as_a_store_error_and_the_build_schema_is_read() {
+    let path = Path::new("record.json");
+    let error = check_schema(path, 6, 5).expect_err("a newer schema is refused");
+    assert_eq!(error.kind(), ErrorKind::Store);
+    assert!(matches!(check_schema(path, 5, 5), Ok(Ok(()))));
 }
 
 #[skuld::test]

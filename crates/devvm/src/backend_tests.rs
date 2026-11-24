@@ -61,15 +61,6 @@ fn machine_record_json_is_stable() {
 }
 
 #[skuld::test]
-fn a_machine_record_without_no_reboot_parses_as_a_machine_that_reboots() {
-    let without = GOLDEN.replace(r#","no_reboot":false"#, "");
-    assert_ne!(without, GOLDEN);
-    let parsed = serde_json::from_str::<MachineRecord>(&without).unwrap();
-    assert!(!parsed.no_reboot);
-    assert_eq!(parsed, sample());
-}
-
-#[skuld::test]
 fn a_machine_record_keeps_no_reboot() {
     let record = MachineRecord {
         no_reboot: true,
@@ -78,19 +69,6 @@ fn a_machine_record_keeps_no_reboot() {
     let json = serde_json::to_string(&record).unwrap();
     assert!(json.contains(r#""no_reboot":true"#), "{json}");
     assert_eq!(serde_json::from_str::<MachineRecord>(&json).unwrap(), record);
-}
-
-#[skuld::test]
-fn a_machine_record_without_leftovers_parses_with_none() {
-    let without = GOLDEN.replace(
-        r#","leftovers":["/run/user/1000/devvm-ab.sock","/run/user/1000/devvm-ab.sock.lock","/run/user/1000/devvm-ab.sock.hold"],"claim":{"path":"/run/user/1000/devvm-ab.sock.hold","id":"1a:ff"}"#,
-        "",
-    );
-    assert_ne!(without, GOLDEN);
-    let parsed = serde_json::from_str::<MachineRecord>(&without).unwrap();
-    assert!(parsed.leftovers.is_empty());
-    assert_eq!(parsed.claim, None);
-    assert_eq!(parsed.serial_log, sample().serial_log);
 }
 
 /// The files of a launch under `dir`: a socket, a session lock and the hold that is the claim, which nobody holds now.

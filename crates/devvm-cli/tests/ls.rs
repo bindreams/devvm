@@ -162,7 +162,8 @@ fn seed_a_machine(home: &Home, name: &str) {
     "qmp": "",
     "ssh": [],
     "serial_log": "serial.log",
-    "leftovers": []
+    "leftovers": [],
+    "no_reboot": false
   }"#,
     );
     std::fs::write(path, record).unwrap();
