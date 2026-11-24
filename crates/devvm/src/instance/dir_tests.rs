@@ -1,12 +1,22 @@
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 
 use crate::backend::MachineRecord;
 use crate::contain::refused_record;
-use crate::instance::registry::registry_tests::{create, fixture};
-use crate::progress::{Event, Level};
+use crate::host;
+use crate::instance::dir::InstanceDir;
+use crate::instance::locks::{Locks, Probe};
+use crate::instance::name::InstanceName;
+use crate::instance::record::{HOLDER_FILE, Holder, program_name, read_holder, write_holder};
+use crate::instance::registry::registry_tests::{Fixture, create, fixture};
+use crate::progress::{Event, Level, Progress};
 use crate::store::layers::Reachability;
-use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::fixtures::{ChannelProgress, MemoryProgress, unicode_home};
+use crate::test_support::helper;
 use crate::test_support::qemu::{Sock, backend_in, socket_run};
 use crate::test_support::stub_backend::{Attach, StubBackend};
 
@@ -49,6 +59,20 @@ fn destroy_never_fails_because_other_devvm_readers_run(#[fixture(unicode_home)] 
             reader.join().unwrap();
         }
     });
+}
+
+#[skuld::test]
+fn destroy_after_a_try_op_exclusive_take_never_fails(#[fixture(unicode_home)] home: &Path) {
+    // The take writes `holder.json` right before the rename, as the reaper's and image cleanup's path does.
+    const ROUNDS: usize = 200;
+    let fx = fixture(home);
+    for round in 0..ROUNDS {
+        let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+        let op = dir.try_op_exclusive().unwrap().expect("nobody holds the lock");
+        if let Err(e) = dir.destroy(op) {
+            panic!("round {round}: {}", e.message());
+        }
+    }
 }
 
 #[skuld::test]
@@ -317,4 +341,379 @@ fn a_failure_of_the_backend_that_is_not_an_unreadable_record_passes_through_find
     let error = dir.find_machine(&*backend, &machine).err().unwrap();
     assert_eq!(error.kind(), crate::ErrorKind::Io, "{error}");
     assert_eq!(error.message(), refused.message(), "no step is added");
+}
+
+// The holder of the exclusive op lock =================================================================================
+
+/// A handle on the instance `dir` that reports to `progress`: another devvm command on the same instance.
+fn another_command(fx: &Fixture, dir: &InstanceDir, progress: Arc<dyn Progress>) -> InstanceDir {
+    InstanceDir::new(
+        *dir.id(),
+        dir.name().clone(),
+        dir.path().to_owned(),
+        fx.registry.locks().clone(),
+        progress,
+    )
+}
+
+/// What this test binary calls itself in `waiting for <program> (PID <pid>) on instance <name>`: the name of its
+/// executable.
+fn this_program() -> String {
+    program_name(&std::env::current_exe().unwrap()).expect("the test binary has a file name")
+}
+
+fn named_holder(message: &str, pid: u32, instance: &str) {
+    assert_eq!(
+        message,
+        format!("waiting for {} (PID {pid}) on instance {instance}", this_program())
+    );
+}
+
+/// Runs `wait` on `waiter` and returns the first `waiting for ...` it says (a debug note is not one), `None` if it ends
+/// without saying it. `release` runs once that is known and must free the lock the wait is for. The caller asserts on
+/// the message afterwards: an assertion inside would leave the lock held and the waiter blocked, and the test hanging
+/// instead of failing.
+///
+/// `waiter` goes into the waiting thread, so its sink is dropped when the wait ends and `messages` then closes.
+fn first_message_of_a_wait(
+    waiter: InstanceDir,
+    messages: Receiver<String>,
+    wait: impl FnOnce(&InstanceDir) -> crate::Result<()> + Send,
+    release: impl FnOnce(),
+) -> Option<String> {
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(move || wait(&waiter));
+        let message = messages.iter().find(|text| text.starts_with("waiting for "));
+        release();
+        waiting.join().unwrap().unwrap();
+        message
+    })
+}
+
+#[skuld::test]
+fn a_wait_behind_the_exclusive_holder_names_its_program_and_pid(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = dir.op_exclusive().unwrap();
+    let (progress, messages) = ChannelProgress::new();
+    let waiter = another_command(&fx, &dir, progress);
+
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    named_holder(&message.expect("the wait said nothing"), std::process::id(), "foo");
+}
+
+#[skuld::test]
+fn a_shared_wait_behind_the_exclusive_holder_names_it_too(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = dir.op_exclusive().unwrap();
+    let (progress, messages) = ChannelProgress::new();
+    let waiter = another_command(&fx, &dir, progress);
+
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_shared().map(drop), || drop(holder));
+
+    named_holder(&message.expect("the wait said nothing"), std::process::id(), "foo");
+}
+
+#[skuld::test]
+fn a_wait_behind_a_record_of_a_dead_process_names_no_one(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = dir.op_exclusive().unwrap();
+    // The identity of this process with another start token: it names no process that exists.
+    let mut record = read_holder(dir.path()).unwrap().expect("the holder is recorded");
+    record.process.token = record.process.token.wrapping_add(1);
+    write_holder(dir.path(), &record).unwrap();
+    let (progress, messages) = ChannelProgress::new();
+    let waiter = another_command(&fx, &dir, progress);
+
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    assert_eq!(
+        message.as_deref(),
+        Some("waiting for another devvm command on instance foo")
+    );
+}
+
+#[skuld::test]
+fn a_wait_behind_a_holder_without_a_record_keeps_the_text(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = dir.op_exclusive().unwrap();
+    std::fs::remove_file(dir.path().join(HOLDER_FILE)).unwrap();
+    let (progress, messages) = ChannelProgress::new();
+    let waiter = another_command(&fx, &dir, progress);
+
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    assert_eq!(
+        message.as_deref(),
+        Some("waiting for another devvm command on instance foo")
+    );
+}
+
+#[skuld::test]
+fn releasing_the_op_lock_removes_the_holder_record(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+
+    let holder = dir.op_exclusive().unwrap();
+    let record = read_holder(dir.path()).unwrap().expect("the holder is recorded");
+    assert_eq!(record.process.pid, std::process::id());
+    drop(holder);
+
+    assert!(read_holder(dir.path()).unwrap().is_none());
+}
+
+#[skuld::test]
+fn a_failed_holder_write_warns_and_the_lock_is_still_taken(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    // A directory at the name of the record: the write cannot replace it.
+    std::fs::create_dir(dir.path().join(HOLDER_FILE)).unwrap();
+
+    let holder = dir.op_exclusive().expect("the command goes on without its record");
+
+    assert!(matches!(
+        fx.registry.locks().try_op_exclusive(dir.id()).unwrap(),
+        Probe::Held
+    ));
+    let warnings = fx.progress.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("foo") && warnings[0].contains(HOLDER_FILE),
+        "{warnings:?}"
+    );
+    drop(holder);
+}
+
+#[skuld::test]
+fn destroying_an_instance_under_its_op_lock_does_not_fail_when_the_record_goes_with_it(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let op = dir.op_exclusive().unwrap();
+    assert!(read_holder(dir.path()).unwrap().is_some());
+
+    dir.destroy(op).unwrap();
+
+    assert!(!fx.env.dirs.instances().join("foo").exists());
+    assert!(fx.progress.messages().is_empty(), "{:?}", fx.progress.messages());
+}
+
+#[skuld::test]
+fn a_holder_of_a_removed_instance_leaves_the_record_of_a_new_instance_of_the_name(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = fixture(home);
+    let old = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = old.op_exclusive().unwrap();
+    // `rm` by another command, then a new instance with the same name and a holder of its own.
+    std::fs::remove_dir_all(old.path()).unwrap();
+    let new = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let new_holder = new.op_exclusive().unwrap();
+    assert!(read_holder(new.path()).unwrap().is_some());
+
+    drop(holder);
+
+    assert!(
+        read_holder(new.path()).unwrap().is_some(),
+        "the old holder removed the new one's record"
+    );
+    assert!(
+        fx.progress.warnings().is_empty(),
+        "there is nothing of the old holder's to remove: {:?}",
+        fx.progress.warnings()
+    );
+    drop(new_holder);
+}
+
+#[skuld::test]
+fn a_holder_whose_instance_record_cannot_be_checked_warns_naming_the_instance(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = dir.op_exclusive().unwrap();
+    std::fs::write(dir.path().join("record.json"), "{ torn").unwrap();
+
+    drop(holder);
+
+    let warnings = fx.progress.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with("instance foo: "), "{warnings:?}");
+    assert!(
+        read_holder(dir.path()).unwrap().is_some(),
+        "the record could not be shown to be this instance's, so it stays"
+    );
+}
+
+#[skuld::test]
+fn a_wait_behind_a_try_op_exclusive_holder_names_it(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = dir.try_op_exclusive().unwrap().expect("nobody holds the lock");
+    let (progress, messages) = ChannelProgress::new();
+    let waiter = another_command(&fx, &dir, progress);
+
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    named_holder(&message.expect("the wait said nothing"), std::process::id(), "foo");
+}
+
+#[skuld::test]
+fn a_wait_behind_a_shared_holder_keeps_the_text(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    // A record that names this live process, left by an exclusive holder that could not remove it.
+    write_holder(dir.path(), &Holder::current().unwrap()).unwrap();
+    let holder = dir.op_shared().unwrap();
+    let (progress, messages) = ChannelProgress::new();
+    let waiter = another_command(&fx, &dir, progress);
+
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    assert_eq!(
+        message.as_deref(),
+        Some("waiting for another devvm command on instance foo")
+    );
+}
+
+#[skuld::test]
+fn a_shared_holder_removes_a_stale_holder_record_and_a_missing_one_is_no_warning(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    write_holder(dir.path(), &Holder::current().unwrap()).unwrap();
+
+    let first = dir.op_shared().unwrap();
+    assert!(
+        read_holder(dir.path()).unwrap().is_none(),
+        "no exclusive holder exists under a shared lock"
+    );
+    // Several shared holders do this at once: the one that finds the file gone is silent.
+    let second = dir.op_shared().unwrap();
+
+    assert!(fx.progress.warnings().is_empty(), "{:?}", fx.progress.warnings());
+    drop((first, second));
+}
+
+#[skuld::test]
+fn try_op_exclusive_replaces_a_stale_holder_record(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let mut stale = Holder::current().unwrap();
+    stale.program = "left-behind".to_owned();
+    write_holder(dir.path(), &stale).unwrap();
+
+    let holder = dir.try_op_exclusive().unwrap().expect("nobody holds the lock");
+
+    let record = read_holder(dir.path()).unwrap().expect("the holder is recorded");
+    assert_eq!(record.program, this_program(), "the stale record is replaced");
+    drop(holder);
+}
+
+#[skuld::test]
+fn a_holder_record_of_a_newer_schema_leaves_the_text_and_the_wait(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let holder = dir.op_exclusive().unwrap();
+    std::fs::write(dir.path().join(HOLDER_FILE), r#"{"schema":2}"#).unwrap();
+    let (progress, messages) = ChannelProgress::new();
+    let waiter = another_command(&fx, &dir, progress);
+
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    assert_eq!(
+        message.as_deref(),
+        Some("waiting for another devvm command on instance foo")
+    );
+}
+
+#[skuld::test]
+fn recording_the_holder_of_a_removed_instance_writes_nothing_and_does_not_warn(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let old = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    std::fs::remove_dir_all(old.path()).unwrap();
+
+    old.record_holder();
+
+    assert!(!old.path().exists(), "the removed instance's directory was written to");
+    assert!(fx.progress.warnings().is_empty(), "{:?}", fx.progress.warnings());
+}
+
+#[skuld::test]
+fn recording_the_holder_of_a_replaced_instance_leaves_the_new_one_alone(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let old = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    std::fs::remove_dir_all(old.path()).unwrap();
+    let new = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+
+    old.record_holder();
+
+    assert!(
+        read_holder(new.path()).unwrap().is_none(),
+        "the old holder wrote into the new instance"
+    );
+    assert!(fx.progress.warnings().is_empty(), "{:?}", fx.progress.warnings());
+}
+
+/// Helper process: takes the exclusive op lock of an instance as a devvm command does, prints `held`, then blocks until
+/// stdin closes. `args` are the lock directory, the instance directory, the instance id and the instance name.
+pub fn hold_instance(args: &[String]) {
+    let [locks, path, id, name] = args else {
+        panic!("hold-instance takes the lock directory, instance directory, id and name: {args:?}");
+    };
+    let dir = InstanceDir::new(
+        id.parse().unwrap(),
+        InstanceName::parse(name).unwrap(),
+        PathBuf::from(path),
+        Arc::new(Locks::new(PathBuf::from(locks), host::current())),
+        Arc::new(MemoryProgress::default()),
+    );
+    let _op = dir.op_exclusive().unwrap();
+    println!("held");
+    let mut sink = Vec::new();
+    std::io::stdin().read_to_end(&mut sink).unwrap();
+}
+
+// Holder in another process: the helper's own devvm command writes the record.
+#[skuld::test]
+fn a_wait_behind_a_holder_in_another_process_names_that_pid(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let dir = create(&fx, Some("foo")).make_ownerless(&mut || Ok(())).unwrap();
+    let op_file = fx.registry.locks().op_path(dir.id());
+    let locks_dir = op_file.parent().unwrap();
+    let mut child = helper::command(
+        "hold-instance",
+        &[
+            locks_dir.to_str().unwrap(),
+            dir.path().to_str().unwrap(),
+            &dir.id().to_string(),
+            &dir.name().to_string(),
+        ],
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .spawn()
+    .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "held");
+    let (progress, messages) = ChannelProgress::new();
+    let waiter = another_command(&fx, &dir, progress);
+
+    // The OS releases a dead holder's lock asynchronously.
+    let message = first_message_of_a_wait(
+        waiter,
+        messages,
+        |w| w.op_exclusive().map(drop),
+        || {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        },
+    );
+
+    named_holder(&message.expect("the wait said nothing"), child.id(), "foo");
 }
