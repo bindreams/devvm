@@ -338,18 +338,17 @@ fn verdict(number: usize, end: End, serial: &Serial) -> Result<Launched> {
         exit.as_ref().filter(|_| !powered_off).map(|exit| ended(number, exit))
     };
     let source = host.first().cloned();
-    let (kind, mut message, joined) = match account {
-        Some(account) => (ErrorKind::Unavailable, account, &host[..]),
+    let (error, joined) = match account {
+        Some(account) => (Error::new(ErrorKind::Unavailable, account), &host[..]),
         None => match host.split_first() {
             None => return Ok(Launched::Restarted),
             Some(_) if host.len() == 1 => return Err(host.remove(0)),
-            Some((first, rest)) => (first.kind(), first.message().to_owned(), rest),
+            Some((first, rest)) => (first.clone(), rest),
         },
     };
-    for error in joined {
-        message.push_str(&format!("; {error}"));
-    }
-    let error = Error::new(kind, message);
+    let error = joined.iter().fold(error, |error, other| {
+        error.with_step(other.embedded()).or_serial_log_of(other)
+    });
     let error = match &exit {
         Some(Exit::Exited(exited)) if !exited.status.success() => with_qemu_output(error, &exited.output),
         _ => error,
@@ -689,7 +688,7 @@ impl<'a> Build<'a> {
                     )
                 })
                 .collect(),
-            Err(read) => format!("\nthe logs on the answer disk cannot be read: {}", read.message()),
+            Err(read) => format!("\nthe logs on the answer disk cannot be read: {}", read.body()),
         };
         error.with_appended(&logs)
     }
