@@ -74,7 +74,7 @@ impl Cause<'_> {
         let (kind, headline) = match &self {
             Cause::Signal(name) => (ErrorKind::Io, with_stderr(format!("it was killed by signal {name}"))),
             Cause::UndocumentedExit(code) => (ErrorKind::Io, with_stderr(format!("it exited with exit code {code}"))),
-            Cause::OutputLost(loss) => (loss.kind(), format!("the output was lost ({loss})")),
+            Cause::OutputLost(loss) => (loss.kind(), format!("the output was lost ({})", loss.embedded())),
             Cause::DoneWithExit1 => (
                 ErrorKind::Io,
                 "its status is `done` but its exit code 1 is not 0 or 2".to_owned(),
@@ -103,17 +103,21 @@ impl Cause<'_> {
             facts.push(format!("stderr: {stderr}"));
         }
         if let (Some(loss), false) = (&output.loss, loss_led) {
-            facts.push(loss.to_string());
+            facts.push(loss.embedded());
         }
         let facts = if facts.is_empty() {
             String::new()
         } else {
             format!(": {}", facts.join("; "))
         };
-        Error::new(
+        let error = Error::new(
             kind,
             format!("cloud-init did not finish a normal first boot: {headline} (`{CLOUD_INIT_STATUS}`{facts})"),
-        )
+        );
+        match &output.loss {
+            Some(loss) => error.or_serial_log_of(loss),
+            None => error,
+        }
     }
 }
 
