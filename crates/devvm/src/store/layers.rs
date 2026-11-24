@@ -33,6 +33,10 @@ use meta::MetaRead;
 #[path = "layers_tests.rs"]
 pub(crate) mod layers_tests;
 
+#[cfg(all(test, windows))]
+#[path = "layers_windows_tests.rs"]
+mod layers_windows_tests;
+
 #[cfg(test)]
 #[path = "layers/cross_tests.rs"]
 pub(crate) mod cross_tests;
@@ -540,15 +544,16 @@ impl LayerStore {
 /// `YYYY-MM-DD` in UTC.
 pub(crate) fn date_text(time: SystemTime) -> String {
     match jiff::Timestamp::try_from(time) {
-        Ok(timestamp) => timestamp.to_zoned(jiff::tz::TimeZone::UTC).date().to_string(),
+        Ok(timestamp) => timestamp.to_zoned_datetime(jiff::tz::TimeZone::UTC).date().to_string(),
         Err(_) => "an unrepresentable date".to_owned(),
     }
 }
 
-/// The instant an RFC 3339 timestamp names; the error text is the one a corrupt record reports.
+/// The instant an RFC 3339 timestamp names. A timestamp the platform's `SystemTime` cannot hold (`Timestamp::MIN` on
+/// Windows) is refused with the same text as one that is no timestamp.
 pub(crate) fn time_parse(text: &str) -> std::result::Result<SystemTime, String> {
     text.parse::<jiff::Timestamp>()
-        .map(SystemTime::from)
+        .and_then(SystemTime::try_from)
         .map_err(|e| format!("bad time `{text}`: {e}"))
 }
 
