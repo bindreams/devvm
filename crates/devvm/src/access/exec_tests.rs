@@ -4,13 +4,13 @@ use std::time::Duration;
 
 use futures::FutureExt;
 
-use super::{Event, run_exec};
-use crate::ErrorKind;
+use super::{Event, ExecEnd, run_exec};
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
 use crate::exit::{ExitStatus, ExitWidth, Report, status_json};
 use crate::progress::NullProgress;
 use crate::test_support::fixtures::unicode_home;
 use crate::test_support::sshd::Rig;
+use crate::{Error, ErrorKind};
 
 /// A keepalive that cannot fire during a test: the stalled server answers nothing, and a connection the keepalive had
 /// ended would fail the close at once instead of leaving it waiting.
@@ -103,4 +103,20 @@ fn the_status_file_carries_it_signed(#[fixture(unicode_home)] home: &Path) {
         r#"{"guest":{"code":-1073741819}}"#
     );
     assert_eq!(ExitWidth::Full32.exit_code(&status), -1_073_741_819);
+}
+
+#[skuld::test]
+fn a_closed_host_output_names_what_was_lost_before_it() {
+    let lost = Error::new(ErrorKind::ConnectionLost, "the VM process exited");
+    let broken = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the reader is gone");
+    match ExecEnd::host_output_closed(broken, Some(ExitStatus::Code(7)), Some(lost)) {
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            assert_eq!(status, Some(ExitStatus::Code(7)));
+            let text = error.to_string();
+            assert!(text.contains("the reader is gone"), "{text}");
+            assert!(text.contains("the VM process exited"), "{text}");
+        }
+        other => panic!("{other:?}"),
+    }
 }

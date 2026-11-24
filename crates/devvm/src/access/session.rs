@@ -682,6 +682,7 @@ impl SshSession {
     ) -> Result<ExecEnd> {
         let (sender, mut receiver) = mpsc::channel(EVENT_BUFFER);
         let mut lost = None;
+        let mut status = None;
         let inner = self.inner.clone();
         let command = command.to_owned();
         runtime::spawn(run_exec(inner, command, sender))?;
@@ -696,21 +697,16 @@ impl SshSession {
                     return match (result, flushed, lost) {
                         (Ok(status), Ok(()), None) => Ok(ExecEnd::Finished(status)),
                         (Ok(status), Ok(()), Some(lost)) => Ok(ExecEnd::FinishedWithLoss { status, lost }),
-                        (Ok(status), Err(error), lost) => Ok(ExecEnd::HostOutputClosed {
-                            error: match lost {
-                                None => error,
-                                Some(lost) => {
-                                    let text = format!("{error}; the command's output was lost as well ({lost})");
-                                    std::io::Error::new(error.kind(), text)
-                                }
-                            },
-                            status: Some(status),
-                        }),
+                        (Ok(status), Err(error), lost) => Ok(ExecEnd::host_output_closed(error, Some(status), lost)),
                         (Err(e), Err(error), _) => {
                             Err(e.together_with(format!("flushing the host output failed ({error})")))
                         }
                         (Err(e), Ok(()), _) => Err(e),
                     };
+                }
+                Some(Event::Status(arrived)) => {
+                    status = Some(arrived);
+                    continue;
                 }
                 Some(Event::Lost(error)) => {
                     lost.get_or_insert(error);
@@ -731,7 +727,7 @@ impl SshSession {
                 let _ = other.flush();
                 // Dropping the receiver tells the task to close the channel.
                 drop(receiver);
-                return Ok(ExecEnd::HostOutputClosed { error: e, status: None });
+                return Ok(ExecEnd::host_output_closed(e, status, lost));
             }
         }
     }

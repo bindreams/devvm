@@ -23,21 +23,41 @@ pub(crate) enum ExecEnd {
     /// refusal to run the command) or what ended the wait (the VM exited, the boot bound passed); `lost` says what.
     /// The status stands: the error that follows an exit status does not take it back.
     FinishedWithLoss { status: ExitStatus, lost: Error },
-    /// The host side of the output closed. The channel was closed, so the guest process loses its output pipe and
-    /// ends by its own failed write (SIGPIPE); devvm does not wait for a status that may never come. The caller decides
-    /// what that means.
+    /// The host side of the output closed. `exec` returns at once, and dropping its receiver makes the task close the
+    /// channel, so the guest process loses its output pipe and ends by its own failed write (SIGPIPE); devvm does not
+    /// wait for a status that may never come. The caller decides what that means.
     HostOutputClosed {
         /// The failed write or flush.
         error: std::io::Error,
-        /// The command's status, when it had already ended and only the final flush failed.
+        /// The command's status, when it had arrived before the failure.
         status: Option<ExitStatus>,
     },
+}
+
+impl ExecEnd {
+    /// [`ExecEnd::HostOutputClosed`] for `error`, which also names `lost`, what could not be carried before it.
+    pub(super) fn host_output_closed(
+        error: std::io::Error,
+        status: Option<ExitStatus>,
+        lost: Option<Error>,
+    ) -> ExecEnd {
+        let error = match lost {
+            None => error,
+            Some(lost) => {
+                let text = format!("{error}; the command's output was lost as well ({lost})");
+                std::io::Error::new(error.kind(), text)
+            }
+        };
+        ExecEnd::HostOutputClosed { error, status }
+    }
 }
 
 /// What the task running the command tells the thread that called `exec`.
 pub(super) enum Event {
     Out(Vec<u8>),
     Err(Vec<u8>),
+    /// The command's status, sent as it arrives and so before any output that follows it on the wire.
+    Status(ExitStatus),
     /// Something that happened after the command's status had arrived; it does not change that status.
     Lost(Error),
     End(Result<ExitStatus>),
@@ -179,19 +199,18 @@ async fn pump(
                 // SSH carries the status as 32 unsigned bits; a Windows status such as 0xC0000005 is the same bits as
                 // the negative code the guest's own tools report. How many bits a status has is the guest's contract: a
                 // Linux server's is 0..=255, and this does not check it.
-                *status = Some(ExitStatus::Code(exit_status as i32));
-                continue;
+                Event::Status(status.insert(ExitStatus::Code(exit_status as i32)).clone())
             }
             ChannelMsg::ExitSignal {
                 signal_name: signal,
                 core_dumped,
                 ..
             } => {
-                *status = Some(ExitStatus::Signal {
+                let signalled = ExitStatus::Signal {
                     name: signal_name(&signal),
                     core_dumped,
-                });
-                continue;
+                };
+                Event::Status(status.insert(signalled).clone())
             }
             ChannelMsg::Failure => {
                 let lost = Error::new(

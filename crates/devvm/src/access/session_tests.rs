@@ -797,6 +797,24 @@ fn a_closed_host_output_closes_the_channel_of_a_command_that_went_quiet(#[fixtur
     rig.sshd.wait_for_channel_close();
 }
 
+#[skuld::test]
+fn a_write_that_fails_after_the_exit_status_arrived_keeps_the_status(#[fixture(unicode_home)] home: &Path) {
+    // The marker follows the status on the wire, so the status has been read when the sink refuses the marker.
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    let mut stderr = Vec::new();
+    let end = session
+        .exec("status-then-marker", &mut RefusesWrites, &mut stderr)
+        .unwrap();
+    match end {
+        ExecEnd::HostOutputClosed { error, status } => {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            assert_eq!(status, Some(ExitStatus::Code(7)), "the command's result is not lost");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A sink that drops every connection of `sshd` when it receives output.
 struct DropsConnections<'a>(&'a TestSshd);
 
