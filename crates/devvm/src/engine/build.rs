@@ -368,9 +368,9 @@ impl StepRun<'_> {
         self.execute(vm, &self.guest.flush_command(), "the guest's flush", ErrorKind::Io)
     }
 
-    /// Runs `command`, reporting its output on the progress channel line by line. A status other than 0 fails the
-    /// build with an error of `kind`, as does a command that cannot be run; both name the step and `what` ran, and end
-    /// with the last lines the command printed.
+    /// Runs `command`, reporting its output on the progress channel line by line (a very long line in parts, see
+    /// [`Lines`]). A status other than 0 fails the build with an error of `kind`, as does a command that cannot be
+    /// run; both name the step and `what` ran, and end with the last lines the command printed.
     fn execute(&self, vm: &Vm, command: &Command, what: &str, kind: ErrorKind) -> StepResult<()> {
         let progress = self.engine.progress.as_ref();
         let tail = Tail::default();
@@ -512,7 +512,8 @@ impl Tail {
 const LINE_CHUNK: usize = 64 * 1024;
 
 /// A writer that reports each complete line as step output and keeps it in a [`Tail`]; the rest goes out when it is
-/// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress).
+/// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress). A line longer than [`LINE_CHUNK`] is
+/// reported in parts of up to that size, as it grows.
 struct Lines<'a> {
     progress: &'a dyn Progress,
     tail: &'a Tail,
