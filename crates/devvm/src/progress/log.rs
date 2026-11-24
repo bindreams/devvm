@@ -1,7 +1,7 @@
 //! The log file: every event of one run, for reading afterwards.
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -90,15 +90,10 @@ impl FileLog {
             stamp(clock.now(), TIME),
             env!("CARGO_PKG_VERSION")
         );
-        let path =
+        let (path, out) =
             create_named(dir, &*clock, RUN_LOG, header.as_bytes()).map_err(|(path, e)| cannot_write(&path, e))?;
-        let open = || {
-            OpenOptions::new()
-                .append(true)
-                .open(&path)
-                .map_err(|e| cannot_write(&path, e))
-        };
-        let (out, tail) = (open()?, open()?);
+        // One file, made private: a second open of the name could find another file under it.
+        let tail = out.try_clone().map_err(|e| cannot_write(&path, e))?;
         let log = FileLog {
             path,
             clock,
@@ -187,12 +182,10 @@ pub(crate) fn keep_copy_with(
     for warning in prune(dir, clock.now(), alive) {
         warn(&warning);
     }
-    let path = create_named(dir, clock, SERIAL_COPY, b"")
+    let (path, mut to) = create_named(dir, clock, SERIAL_COPY, b"")
         .map_err(|(path, e)| failed(format_args!("cannot write {}", path.display()), e))?;
-    let copied = OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .and_then(|mut to| std::io::copy(&mut from, &mut to));
+    let copied = std::io::copy(&mut from, &mut to);
+    drop(to);
     if let Err(e) = copied {
         if let Err(removed) = remove_if_present(&path) {
             warn(&format!("cannot remove the partial copy {}: {removed}", path.display()));
@@ -212,7 +205,7 @@ fn create_named(
     clock: &dyn Clock,
     suffix: &str,
     first: &[u8],
-) -> std::result::Result<PathBuf, (PathBuf, std::io::Error)> {
+) -> std::result::Result<(PathBuf, File), (PathBuf, std::io::Error)> {
     loop {
         let name = format!(
             "devvm-{}-{}-{}{suffix}",
@@ -222,7 +215,7 @@ fn create_named(
         );
         let path = dir.join(name);
         match host::current().write_private(&path, first) {
-            Ok(()) => return Ok(path),
+            Ok(file) => return Ok((path, file)),
             // Another run drew the same name: draw again.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err((path, e)),

@@ -149,7 +149,7 @@ impl<M: FileModes> Host for M {
     }
 
     /// Mode `0600` is set when the file is created, so there is no moment with wider permissions.
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         create_new_with(self.private_options(), path, bytes)
     }
 
