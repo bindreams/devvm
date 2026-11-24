@@ -502,6 +502,10 @@ impl RecordingHost {
     /// The open files given to a process by `share_open_file_with`, in call order: each file's identity (read from the
     /// open file, as `file_id_of_open` gives it) and the PID of the process it went to. Nothing is given: a test that
     /// needs the duplicate itself uses the real host.
+    #[cfg_attr(
+        not(windows),
+        allow(dead_code, reason = "only the launch tests use it, and only Windows can launch a frozen process")
+    )]
     pub fn shared_files(&self) -> Vec<(FileId, u32)> {
         self.shared_files.lock().unwrap().clone()
     }
