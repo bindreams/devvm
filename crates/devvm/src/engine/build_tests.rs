@@ -616,6 +616,25 @@ fn a_chunk_never_splits_a_character() {
 }
 
 #[skuld::test]
+fn invalid_utf8_after_an_escape_is_reported_in_chunks_without_a_line_end() {
+    // Each invalid byte reports as a 3-byte U+FFFD, so a part rebuilt from its lossy text would outgrow the chunk.
+    let parts = 16;
+    let mut input = b"a\x1b[".to_vec();
+    input.resize(parts * LINE_CHUNK + 1, 0xff);
+
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    lines.write_all(&input).unwrap();
+    assert_eq!(progress.messages().len(), parts, "a part is out for each full chunk");
+    drop(lines);
+
+    let reported = progress.messages();
+    assert_eq!(reported.len(), parts + 1);
+    assert!(reported[1..parts].iter().all(|part| part.len() == 3 * LINE_CHUNK));
+}
+
+#[skuld::test]
 fn a_long_line_below_the_bound_is_one_entry_in_the_tail() {
     // A linker command line, as rustc prints it after an error.
     let command = format!("  = note: \"cc\" {}", long_line(30_000));

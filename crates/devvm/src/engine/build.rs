@@ -504,11 +504,11 @@ impl Tail {
     }
 }
 
-/// The most bytes of one line that [`Lines`] holds back: 64 KiB. It protects the host's memory against a stream with
-/// no line end, and costs a line longer than this its being reported in parts (each its own output event and its own
-/// slot of the [`Tail`]). Twice the 32,767 characters Windows allows a command line, it keeps whole the lines tools
-/// print: a linker command, a base64 blob, minified JSON. The [`Tail`]'s `TAIL_LINES` slots hold at most
-/// 20 x 64 KiB = 1.25 MiB, and each writer at most one chunk more.
+/// The most bytes of one line that [`Lines`] holds back: 64 KiB, far above the lines tools print for people. It
+/// protects the host's memory against a stream with no line end. A line longer than this is reported in parts, each
+/// its own output event and its own slot of the [`Tail`], and an escape sequence that straddles a cut leaves its
+/// remainder as text. A stored part is lossy text, up to three bytes per input byte, so the [`Tail`]'s `TAIL_LINES`
+/// slots hold at most 20 x 192 KiB = 3.75 MiB, and each writer at most one chunk more.
 const LINE_CHUNK: usize = 64 * 1024;
 
 /// A writer that reports each complete line as step output and keeps it in a [`Tail`]; the rest goes out when it is
@@ -591,6 +591,7 @@ impl Write for Lines<'_> {
                 _ => {
                     // A byte past the chunk is what makes it a part: a line of exactly a chunk stays one line. A part
                     // is never empty, so the line end after it reports nothing extra.
+                    debug_assert!(self.pending.len() <= LINE_CHUNK);
                     if self.pending.len() == LINE_CHUNK {
                         self.flush_part();
                     }
