@@ -348,8 +348,8 @@ impl Vm {
 
     /// Runs `attempt` on `session`. A cached session may have ended unseen, so an `attempt` that fails before anything
     /// of it reached the guest ([`is_not_started`]) is run once more on a new connection, which replaces the cached
-    /// one. Any other failure is the result: a command that was sent is never run again. `op` is the lock `reached`
-    /// returned.
+    /// one. Any other failure is the result: a command that was sent is never run again. When the new connection cannot
+    /// be made, the result is the first failure, with that one named after it. `op` is the lock `reached` returned.
     fn on_session<T>(
         &self,
         op: &OpShared,
@@ -357,18 +357,26 @@ impl Vm {
         mut attempt: impl FnMut(&SshSession) -> Result<T>,
     ) -> Result<T> {
         match attempt(session) {
-            Err(e) if is_not_started(&e) => attempt(&self.reconnect(op)?),
+            Err(first) if is_not_started(&first) => match self.reconnect(op, session) {
+                Ok(fresh) => attempt(&fresh),
+                Err(failed) => Err(first.together_with(format_args!("connecting again failed ({failed})"))),
+            },
             result => result,
         }
     }
 
-    /// A new connection to the guest, which becomes the cached one. A failure leaves no cached session.
-    fn reconnect(&self, op: &OpShared) -> Result<SshSession> {
+    /// The cached session in place of `failed`, which an operation found unable to serve it: one that another
+    /// operation put there already if it is alive, otherwise a new connection to the guest. A failure leaves no cached
+    /// session.
+    fn reconnect(&self, op: &OpShared, failed: &SshSession) -> Result<SshSession> {
+        let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(current) = slot.as_ref().filter(|s| !s.is_same(failed) && s.is_alive()) {
+            return Ok(current.clone());
+        }
+        *slot = None;
         let instance = self.instance();
         let dir = instance.dir();
         let record = read_record(&instance.engine, dir, op)?;
-        let mut slot = self.session.lock().unwrap_or_else(PoisonError::into_inner);
-        *slot = None;
         Ok(slot.insert(ops::reach(&instance.engine, dir, &record, op)?.1).clone())
     }
 

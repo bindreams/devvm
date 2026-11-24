@@ -694,6 +694,11 @@ impl SshSession {
         self.inner.transport_end().is_none() && self.inner.vm.verdict().is_none()
     }
 
+    /// Whether `other` is this very connection (a clone of it).
+    pub(crate) fn is_same(&self, other: &SshSession) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Ends the boot phase: from now on the boot bound no longer ends a wait, one already in flight included.
     pub(crate) fn finish_boot(&self) {
         self.inner.boot.finish();

@@ -8,7 +8,7 @@ use crate::engine::engine_tests::{
 };
 use crate::engine::keys::read_target;
 use crate::instance::expiry::expiry_tests::running_expiring;
-use crate::instance::record::{MarkerRead, Owner, read_marker};
+use crate::instance::record::{MarkerRead, Owner, RECORD_FILE, read_marker};
 use crate::recipe::Resources;
 use crate::store::layers::layers_tests::{days, names, t0};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
@@ -353,6 +353,65 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_a_copy(#[f
 
     assert!(home.is_ok(), "the SFTP subsystem opened on a new connection: {home:?}");
     assert_eq!(fx.server.connections() - before, 1);
+}
+
+#[skuld::test]
+fn a_failed_reconnect_returns_the_original_failure_with_its_serial_log_and_the_reconnect_failure(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.refuse_channel_opens(1);
+    // The machine is gone from the record, so a new connection cannot be made.
+    let dir = vm.instance().dir();
+    dir.update(&dir.op_exclusive().unwrap(), &mut |record| record.machine = None)
+        .unwrap();
+
+    let error = vm.run(&Command::new(["echo", "after"])).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(error.message().contains("channel could not be opened"), "{error}");
+    assert!(error.message().contains("serial log"), "{error}");
+    assert!(error.message().contains("is not running"), "{error}");
+}
+
+#[skuld::test]
+fn two_operations_that_failed_on_the_same_stale_session_share_one_new_connection(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    let (_, stale, op) = vm.reached().unwrap();
+    let before = fx.server.connections();
+
+    let first = vm.reconnect(&op, &stale).unwrap();
+    let second = vm.reconnect(&op, &stale).unwrap();
+
+    assert_eq!(fx.server.connections() - before, 1, "the second reuses the first's");
+    assert!(second.is_same(&first));
+    assert!(!first.is_same(&stale));
+}
+
+#[skuld::test]
+fn a_failed_reconnect_leaves_no_cached_session(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    let (_, stale, op) = vm.reached().unwrap();
+    let dir = vm.instance().dir();
+    // A record that cannot be read: the reconnect fails before a connection is tried.
+    let file = dir.path().join(RECORD_FILE);
+    let record = std::fs::read(&file).unwrap();
+    std::fs::write(&file, b"not json").unwrap();
+
+    let failed = vm.reconnect(&op, &stale);
+
+    std::fs::write(&file, record).unwrap();
+    assert!(failed.is_err(), "the record is unreadable");
+    assert!(vm.session.lock().unwrap().is_none());
 }
 
 #[skuld::test]
