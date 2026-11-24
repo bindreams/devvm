@@ -122,8 +122,8 @@ What a recipe file takes (an unknown key is an error):
   - `ubuntu-24.04`, the embedded recipe;
   - another recipe file, `../base.devvm.yaml`, relative to this file;
   - `{ iso, edition, product-key }`, a Windows ISO (see [Windows ISOs](#windows-isos));
-  - `{ url, sha256 }`, a Linux cloud image with cloud-init (qcow2 or another format `qemu-img` converts); `amd64:` and
-    `arm64:` each take one.
+  - `{ url, sha256 }` or `{ url, sha512 }` (exactly one of the two), a Linux cloud image with cloud-init (qcow2 or
+    another format `qemu-img` converts); `amd64:` and `arm64:` each take one.
 - `name:` names the recipe; the default is the file name without `.devvm.yaml`.
 - `resources:` takes `cpus`, `memory` and `disk`, as `8GiB` or a byte count.
 - `steps:` run in order. A step is exactly one of:

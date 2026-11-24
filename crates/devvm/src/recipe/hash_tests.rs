@@ -8,10 +8,14 @@ use crate::recipe::hash::{
 };
 use crate::recipe::{CopyFrom, ProductKey, Recipe, Setting, Shell, Step, UacMode};
 use crate::test_support::fixtures::unicode_home;
-use crate::{Arch, ErrorKind, RunAs, Sha256};
+use crate::{Arch, ErrorKind, RunAs, Sha256, Sha512};
 
 fn sha(byte: u8) -> Sha256 {
     Sha256::from_bytes([byte; 32])
+}
+
+fn sha512(byte: u8) -> Sha512 {
+    Sha512::from_bytes([byte; 64])
 }
 
 fn entry(path: &str, mode: u32, content: EntryContent) -> ManifestEntry {
@@ -166,6 +170,10 @@ fn every_key_input_changes_the_key() {
         variants.push((name, chain));
     };
     vary("source sha256", &|c| c.content = RootContent::Sha256(sha(2)));
+    vary("source sha512 vs equal sha256", &|c| {
+        c.content = RootContent::Sha512(sha512(1));
+    });
+    vary("source sha512", &|c| c.content = RootContent::Sha512(sha512(2)));
     vary("oci digest vs equal sha256", &|c| {
         c.content = RootContent::OciDigest(sha(1).to_string());
     });

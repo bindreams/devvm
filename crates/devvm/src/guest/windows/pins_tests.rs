@@ -26,7 +26,7 @@ fn a_pin_is_an_artifact_the_fetcher_takes() {
     for pin in ALL {
         let artifact = pin.artifact();
         assert_eq!(artifact.url, pin.url);
-        assert_eq!(hex::encode(artifact.sha256.as_bytes()), pin.sha256);
+        assert_eq!(artifact.hash.to_string(), pin.sha256);
     }
 }
 

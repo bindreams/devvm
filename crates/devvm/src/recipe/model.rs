@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::ProductKey;
-use crate::{Arch, RunAs, Sha256};
+use crate::{Arch, ContentHash, RunAs};
 
 /// A value that may differ per architecture.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -36,7 +36,7 @@ impl<T> PerArch<T> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pin {
     pub url: String,
-    pub sha256: Sha256,
+    pub hash: ContentHash,
 }
 
 /// What a recipe starts from.

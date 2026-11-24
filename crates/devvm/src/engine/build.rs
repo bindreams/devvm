@@ -17,7 +17,7 @@ use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain
 use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
 use crate::vm::{Image, Vm};
-use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, StartOptions, random};
+use crate::{Arch, BuildOptions, Command, ContentHash, Error, ErrorKind, Result, StartOptions, random};
 
 #[cfg(test)]
 #[path = "build_tests.rs"]
@@ -226,10 +226,11 @@ fn root_of(source: &Source, arch: Arch, iso_root: &KeyIso) -> Result<(BuildRoot,
                     format!("the disk image has no pin for {}", arch.as_str()),
                 )
             })?;
-            Ok((
-                BuildRoot::Pinned(RootContent::Sha256(pin.sha256)),
-                format!("disk image {}", pin.url),
-            ))
+            let content = match pin.hash {
+                ContentHash::Sha256(sha256) => RootContent::Sha256(sha256),
+                ContentHash::Sha512(sha512) => RootContent::Sha512(sha512),
+            };
+            Ok((BuildRoot::Pinned(content), format!("disk image {}", pin.url)))
         }
         Source::Oci { reference, digest } => Ok((
             BuildRoot::Pinned(RootContent::OciDigest(digest.clone())),

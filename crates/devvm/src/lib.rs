@@ -38,7 +38,7 @@ pub use error::{Error, ErrorKind, Result};
 pub use exit::{ExitStatus, Output};
 pub use host::{Unavailable, host_exit_width};
 pub use instance::info::{InstanceInfo, InstanceState};
-pub use types::{Arch, BuildOptions, Command, GuestKind, Network, RunAs, Sha256, StartOptions};
+pub use types::{Arch, BuildOptions, Command, ContentHash, GuestKind, Network, RunAs, Sha256, Sha512, StartOptions};
 pub use vm::{Guest, Image, Instance, Vm, availability};
 
 /// The target triple this crate was compiled for, e.g. `x86_64-pc-windows-msvc`.

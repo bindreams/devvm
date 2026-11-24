@@ -2,9 +2,10 @@
 //!
 //! On disk, under the downloads directory:
 //!
-//! - `<sha256>/<file-name>`: a verified artifact. It exists only after verification and is published by rename;
-//! - `<sha256>.part` and `<sha256>.part.json` (url and validator): a download in progress, kept across interruptions;
-//! - `<sha256>.lock`: one OS lock per artifact, held for the whole fetch.
+//! - `<hash>/<file-name>`: a verified artifact, `<hash>` being the pinned digest in hex (sha256 or sha512). It exists
+//!   only after verification and is published by rename;
+//! - `<hash>.part` and `<hash>.part.json` (url and validator): a download in progress, kept across interruptions;
+//! - `<hash>.lock`: one OS lock per artifact, held for the whole fetch.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -12,12 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256 as Sha2};
+use sha2::{Digest, Sha256 as Sha2, Sha512 as Sha2_512};
 
 use crate::error::text_with_sources;
 use crate::progress::{Progress, Total, human_bytes};
 use crate::store::lock::{FileLock, Mode};
-use crate::{Error, ErrorKind, Result, Sha256};
+use crate::{ContentHash, Error, ErrorKind, Result, Sha256, Sha512};
 
 /// A full disk keeps the part file, so the next run continues from it.
 const FULL_DISK_HINT: &str = "free some space and run again to resume";
@@ -41,7 +42,7 @@ pub(crate) mod http_tests;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Artifact {
     pub url: String,
-    pub sha256: Sha256,
+    pub hash: ContentHash,
 }
 
 /// Where to continue an interrupted download.
@@ -163,19 +164,19 @@ impl Fetcher {
         }
     }
 
-    /// Where the verified file for `artifact` lives once fetched: `<downloads>/<sha256>/<file-name>`.
+    /// Where the verified file for `artifact` lives once fetched: `<downloads>/<hash>/<file-name>`.
     pub fn entry_path(&self, artifact: &Artifact) -> PathBuf {
         self.downloads
-            .join(artifact.sha256.to_string())
+            .join(artifact.hash.to_string())
             .join(name::file_name(&artifact.url))
     }
 
     fn part_path(&self, artifact: &Artifact) -> PathBuf {
-        self.downloads.join(format!("{}.part", artifact.sha256))
+        self.downloads.join(format!("{}.part", artifact.hash))
     }
 
     fn sidecar_path(&self, artifact: &Artifact) -> PathBuf {
-        self.downloads.join(format!("{}.part.json", artifact.sha256))
+        self.downloads.join(format!("{}.part.json", artifact.hash))
     }
 
     /// Returns the verified file, downloading it first if needed.
@@ -186,7 +187,7 @@ impl Fetcher {
     pub fn fetch(&self, artifact: &Artifact) -> Result<PathBuf> {
         std::fs::create_dir_all(&self.downloads)
             .map_err(|e| Error::io(ErrorKind::Io, format!("cannot create {}", self.downloads.display()), e))?;
-        let mut lock = FileLock::open(&self.downloads.join(format!("{}.lock", artifact.sha256)))?;
+        let mut lock = FileLock::open(&self.downloads.join(format!("{}.lock", artifact.hash)))?;
         lock.lock(
             Mode::Exclusive,
             &format!("another devvm process to finish downloading {}", artifact.url),
@@ -210,7 +211,13 @@ impl Fetcher {
         let (plan, total) = match self.plan(artifact, &part)? {
             Plan::Complete => {
                 let have = file_len(&part)?;
-                return self.verify_and_publish(artifact, &part, entry, hash_file(&part)?, have);
+                return self.verify_and_publish(
+                    artifact,
+                    &part,
+                    entry,
+                    Hasher::of_file(&artifact.hash, &part)?.finish(),
+                    have,
+                );
             }
             Plan::Append { response, from } => {
                 let total = total_size(&response, from);
@@ -223,8 +230,8 @@ impl Fetcher {
         };
 
         let (mut response, from, mut hasher, fresh) = match plan {
-            Plan::Append { response, from } => (response, from, hash_file_state(&part)?, false),
-            Plan::Fresh { response } => (response, 0, Sha2::new(), true),
+            Plan::Append { response, from } => (response, from, Hasher::of_file(&artifact.hash, &part)?, false),
+            Plan::Fresh { response } => (response, 0, Hasher::new(&artifact.hash), true),
             Plan::Complete => unreachable!("handled above"),
         };
 
@@ -287,8 +294,7 @@ impl Fetcher {
                 ),
             ));
         }
-        let digest: [u8; 32] = hasher.finalize().into();
-        self.verify_and_publish(artifact, &part, entry, digest, done)?;
+        self.verify_and_publish(artifact, &part, entry, hasher.finish(), done)?;
         task.finish();
         Ok(())
     }
@@ -387,7 +393,7 @@ impl Fetcher {
     }
 
     fn sidecar_temp_path(&self, artifact: &Artifact) -> PathBuf {
-        self.downloads.join(format!("{}.part.json.tmp", artifact.sha256))
+        self.downloads.join(format!("{}.part.json.tmp", artifact.hash))
     }
 
     fn write_sidecar(&self, artifact: &Artifact, validator: Option<String>) -> Result<()> {
@@ -408,18 +414,19 @@ impl Fetcher {
         artifact: &Artifact,
         part: &Path,
         entry: &Path,
-        digest: [u8; 32],
+        actual: ContentHash,
         size: u64,
     ) -> Result<()> {
-        let actual = Sha256::from_bytes(digest);
-        if actual != artifact.sha256 {
+        if actual != artifact.hash {
             remove_if_present(part)?;
             remove_if_present(&self.sidecar_path(artifact))?;
             return Err(Error::new(
                 ErrorKind::Checksum,
                 format!(
-                    "{} ({size} bytes) has sha256 {actual}, expected {}; the partial file was deleted",
-                    artifact.url, artifact.sha256
+                    "{} ({size} bytes) has {} {actual}, expected {}; the partial file was deleted",
+                    artifact.url,
+                    artifact.hash.algorithm(),
+                    artifact.hash
                 ),
             ));
         }
@@ -474,16 +481,49 @@ fn remove_if_present(path: &Path) -> Result<()> {
     }
 }
 
-/// A hasher primed with the bytes already in `path`.
-fn hash_file_state(path: &Path) -> Result<Sha2> {
-    let fail = |e| Error::io(ErrorKind::Io, format!("cannot read {}", path.display()), e);
-    hash_reader(File::open(path).map_err(fail)?, path, &mut |_| {})
+/// The running hash of a download, in the algorithm its artifact is pinned by.
+enum Hasher {
+    Sha256(Sha2),
+    Sha512(Sha2_512),
 }
 
-/// The SHA-256 state after all the bytes `file` holds from where it is; `path` names it in errors, and `done` is told
+impl Hasher {
+    fn new(pinned: &ContentHash) -> Hasher {
+        match pinned {
+            ContentHash::Sha256(_) => Hasher::Sha256(Sha2::new()),
+            ContentHash::Sha512(_) => Hasher::Sha512(Sha2_512::new()),
+        }
+    }
+
+    /// A hasher primed with the bytes already in `path`.
+    fn of_file(pinned: &ContentHash, path: &Path) -> Result<Hasher> {
+        let fail = |e| Error::io(ErrorKind::Io, format!("cannot read {}", path.display()), e);
+        let file = File::open(path).map_err(fail)?;
+        Ok(match pinned {
+            ContentHash::Sha256(_) => Hasher::Sha256(hash_reader(file, path, &mut |_| {})?),
+            ContentHash::Sha512(_) => Hasher::Sha512(hash_reader(file, path, &mut |_| {})?),
+        })
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        match self {
+            Hasher::Sha256(hasher) => hasher.update(bytes),
+            Hasher::Sha512(hasher) => hasher.update(bytes),
+        }
+    }
+
+    fn finish(self) -> ContentHash {
+        match self {
+            Hasher::Sha256(hasher) => Sha256::from_bytes(hasher.finalize().into()).into(),
+            Hasher::Sha512(hasher) => Sha512::from_bytes(hasher.finalize().into()).into(),
+        }
+    }
+}
+
+/// The state of `D` after all the bytes `file` holds from where it is; `path` names it in errors, and `done` is told
 /// how many bytes were hashed after each read.
-pub(crate) fn hash_reader(mut file: impl Read, path: &Path, done: &mut dyn FnMut(u64)) -> Result<Sha2> {
-    let mut hasher = Sha2::new();
+pub(crate) fn hash_reader<D: Digest>(mut file: impl Read, path: &Path, done: &mut dyn FnMut(u64)) -> Result<D> {
+    let mut hasher = D::new();
     let fail = |e| Error::io(ErrorKind::Io, format!("cannot read {}", path.display()), e);
     let mut buffer = vec![0u8; 64 * 1024];
     let mut total = 0u64;
@@ -503,5 +543,7 @@ pub(crate) fn hash_reader(mut file: impl Read, path: &Path, done: &mut dyn FnMut
 
 /// The SHA-256 of the file at `path`.
 pub(crate) fn hash_file(path: &Path) -> Result<[u8; 32]> {
-    Ok(hash_file_state(path)?.finalize().into())
+    let fail = |e| Error::io(ErrorKind::Io, format!("cannot read {}", path.display()), e);
+    let hasher: Sha2 = hash_reader(File::open(path).map_err(fail)?, path, &mut |_| {})?;
+    Ok(hasher.finalize().into())
 }
