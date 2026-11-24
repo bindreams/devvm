@@ -126,9 +126,8 @@ fn assert_no_leftovers(target: &dyn ContractTarget, before: &HashSet<PathBuf>, a
 }
 
 /// When the test ends, including on a failed assertion, ends the machine's process by its recorded identity if it still
-/// runs, and removes the machine's leftovers outside its directory. Failures are reported on stderr.
-///
-/// A machine that was not released is killed by its own drop, but its leftovers would stay: the guard removes them.
+/// runs, and removes the machine's leftovers outside its directory (a machine's own drop kills it but leaves them).
+/// Failures are reported on stderr.
 pub(crate) struct KillsOnDrop<'a>(pub(crate) &'a MachineRecord);
 
 impl Drop for KillsOnDrop<'_> {
