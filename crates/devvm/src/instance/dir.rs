@@ -128,7 +128,7 @@ impl InstanceDir {
         &self.name
     }
 
-    /// The instance directory (`disk.img`, `serial.log`, `record.json`, `owner.json`).
+    /// The instance directory (`disk.img`, `serial.log`, `record.json`, `owner.json`, `holder.json`).
     pub(crate) fn path(&self) -> &std::path::Path {
         &self.path
     }
@@ -237,8 +237,8 @@ impl InstanceDir {
         }
     }
 
-    /// Waits for the exclusive op lock (`start`, `stop`, `rm`) and records this process as its holder. `NotFound` if the
-    /// instance went away meanwhile.
+    /// Waits for the exclusive op lock (`start`, `stop`, `reboot`, `rm`) and records this process as its holder.
+    /// `NotFound` if the instance went away meanwhile.
     pub(crate) fn op_exclusive(&self) -> Result<OpExclusive> {
         let lock = self
             .locks

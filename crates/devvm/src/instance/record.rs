@@ -22,7 +22,7 @@ use crate::{Arch, Error, ErrorKind, GuestKind, Network, Result};
 #[path = "record_tests.rs"]
 mod record_tests;
 
-/// The schema of `record.json` and `owner.json` this devvm writes and reads.
+/// The schema of `record.json`, `owner.json` and `holder.json` this devvm writes and reads.
 pub(crate) const SCHEMA: u64 = 1;
 
 pub(crate) const RECORD_FILE: &str = "record.json";

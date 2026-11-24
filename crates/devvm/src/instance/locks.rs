@@ -2,14 +2,16 @@
 //!
 //! - `instance-<id>.owner`: held (exclusive) by whoever keeps the instance alive. The reaper may act on an instance
 //!   only after taking it.
-//! - `instance-<id>.op`: taken exclusive by `start`, `stop` and `rm`, shared by `run`, `ssh` and `cp`.
+//! - `instance-<id>.op`: taken exclusive by `start`, `stop`, `reboot` and `rm`, shared by `run`, `ssh` and `cp`. An
+//!   exclusive holder records itself in the instance directory's `holder.json` (see `record::Holder`), so a wait behind
+//!   it can name it.
 //!
 //! - `build-<32 hex>.lock`: held (exclusive) for the whole of one `Engine::build`, which names itself by the hex. The
 //!   build's lock file is unlinked by its guard and by `build_dir::sweep`, so it is taken and unlinked as an instance's
 //!   lock files are, and no instance's id is read from it.
 //! - `instances.dir`: a leaf lock around the files inside instance directories and around the lock files. Whoever reads
-//!   `record.json` or `owner.json`, opens a lock file or checks that a lock is still on the file at its name holds it
-//!   shared; whoever renames an instance directory (`rm`, placing a new instance, quarantine) or unlinks lock files
+//!   `record.json`, `owner.json` or `holder.json`, opens a lock file or checks that a lock is still on the file at its
+//!   name holds it shared; whoever renames an instance directory (`rm`, placing a new instance, quarantine) or unlinks lock files
 //!   holds it exclusive. Windows refuses to rename a directory while any file inside is open, so without it a reader
 //!   makes `rm` fail; and it refuses to open a file that is being unlinked with "access denied" instead of "not
 //!   found". An unlink must therefore free the name at once, with handles open: POSIX delete semantics, which
