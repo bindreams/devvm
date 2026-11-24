@@ -207,8 +207,8 @@ fn a_disk_image_root_is_keyed_by_the_algorithm_its_pin_names() {
             .content()
     };
     let (short, long) = (Sha256::from_bytes([1; 32]), Sha512::from_bytes([2; 64]));
-    assert_eq!(content(short.into()), RootContent::Sha256(short));
-    assert_eq!(content(long.into()), RootContent::Sha512(long));
+    assert_eq!(content(short.into()), RootContent::Pinned(short.into()));
+    assert_eq!(content(long.into()), RootContent::Pinned(long.into()));
 }
 
 #[skuld::test]

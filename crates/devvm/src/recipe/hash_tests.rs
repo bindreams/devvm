@@ -74,7 +74,7 @@ impl Chain {
             disk: Some(40 << 30),
             guest_semantics: 1,
             step_semantics: STEP_SEMANTICS_VERSION,
-            content: RootContent::Sha256(sha(1)),
+            content: RootContent::Pinned(sha(1).into()),
             base_definition: [7; 32],
             run: run("make", Some(Shell::Bash), RunAs::User, Some("/src")),
             copy: copy("~/proj", false),
@@ -169,11 +169,11 @@ fn every_key_input_changes_the_key() {
         change(&mut chain);
         variants.push((name, chain));
     };
-    vary("source sha256", &|c| c.content = RootContent::Sha256(sha(2)));
+    vary("source sha256", &|c| c.content = RootContent::Pinned(sha(2).into()));
     vary("source sha512 vs equal sha256", &|c| {
-        c.content = RootContent::Sha512(sha512(1));
+        c.content = RootContent::Pinned(sha512(1).into());
     });
-    vary("source sha512", &|c| c.content = RootContent::Sha512(sha512(2)));
+    vary("source sha512", &|c| c.content = RootContent::Pinned(sha512(2).into()));
     vary("oci digest vs equal sha256", &|c| {
         c.content = RootContent::OciDigest(sha(1).to_string());
     });
@@ -301,7 +301,7 @@ fn root_and_step_keys_each_see_their_own_inputs() {
             ..base.clone()
         },
         Chain {
-            content: RootContent::Sha256(sha(5)),
+            content: RootContent::Pinned(sha(5).into()),
             ..base.clone()
         },
     ] {
@@ -313,7 +313,7 @@ fn root_and_step_keys_each_see_their_own_inputs() {
     assert_eq!(step_key(&ctx, &root, &base.run, None).unwrap(), base.run_key());
     // A different parent gives a different step key.
     let other_parent = Chain {
-        content: RootContent::Sha256(sha(5)),
+        content: RootContent::Pinned(sha(5).into()),
         ..base.clone()
     }
     .root();
@@ -457,7 +457,7 @@ fn keys_of(text: &str, origin: &Path) -> Vec<LayerKey> {
         disk: flat.resources.disk,
         guest_semantics_version: 1,
     };
-    let content = RootContent::Sha256(SHA_TEXT.parse().unwrap());
+    let content = RootContent::Pinned(SHA_TEXT.parse::<Sha256>().unwrap().into());
     let manifests: Vec<Option<CopyManifest>> = flat
         .steps
         .iter()
@@ -542,7 +542,7 @@ fn keys_are_send_and_sync() {
 #[skuld::test]
 fn golden_key_for_a_fixed_recipe() {
     assert_eq!(
-        golden_keys(RootContent::Sha256(sha(0xab))),
+        golden_keys(RootContent::Pinned(sha(0xab).into())),
         [
             "00ba9f166afd810916d41e029a00b0bc",
             "94fcfa3c50b8d2a6d1d56b01aadebbcf",
@@ -556,7 +556,7 @@ fn golden_key_for_a_fixed_recipe() {
 #[skuld::test]
 fn golden_key_for_a_fixed_recipe_on_a_sha512_root() {
     assert_eq!(
-        golden_keys(RootContent::Sha512(sha512(0xab))),
+        golden_keys(RootContent::Pinned(sha512(0xab).into())),
         [
             "b7a95e841753008037e74063fccd7c00",
             "6fabaaab4c6f2dba9d4263010ec9a3c2",

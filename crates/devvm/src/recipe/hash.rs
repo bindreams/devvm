@@ -10,7 +10,7 @@ use std::str::FromStr;
 use sha2::{Digest, Sha256 as Sha2};
 
 use super::{Flattened, ProductKey, Setting, Shell, Step, UacMode};
-use crate::{Arch, Error, ErrorKind, Result, RunAs, Sha256, Sha512};
+use crate::{Arch, ContentHash, Error, ErrorKind, Result, RunAs, Sha256};
 
 #[cfg(test)]
 #[path = "hash_tests.rs"]
@@ -77,10 +77,8 @@ pub struct KeyContext {
 /// What a root layer is made from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RootContent {
-    /// The sha256 of a disk image or of an ISO's content.
-    Sha256(Sha256),
-    /// The sha512 of a disk image.
-    Sha512(Sha512),
+    /// The pinned digest of a disk image, in the algorithm the pin names.
+    Pinned(ContentHash),
     /// An OCI image digest; hashed in lowercase, so case variants share a key.
     OciDigest(String),
     /// A Windows ISO: the sha256 of its content, the image installed from it (its index in the ISO and its name) and the
@@ -234,8 +232,8 @@ pub(crate) fn root_key_with(
     let mut framer = Framer::new("root");
     framer.context(ctx, step_semantics);
     match content {
-        RootContent::Sha256(sha) => framer.tag(1).bytes(sha.as_bytes()),
-        RootContent::Sha512(sha) => framer.tag(4).bytes(sha.as_bytes()),
+        RootContent::Pinned(ContentHash::Sha256(sha)) => framer.tag(1).bytes(sha.as_bytes()),
+        RootContent::Pinned(ContentHash::Sha512(sha)) => framer.tag(4).bytes(sha.as_bytes()),
         RootContent::OciDigest(digest) => framer.tag(2).str(&digest.to_ascii_lowercase()),
         RootContent::Iso {
             sha256,
