@@ -25,7 +25,8 @@ pub struct FlatStep {
     pub step: Step,
     /// The directory of the recipe that declared the step.
     pub origin_dir: PathBuf,
-    /// `name:` of the recipe that declared the step.
+    /// The name of the recipe that declared the step: its `name:`, else its file name without `.devvm.yaml` (for an
+    /// embedded base, its embedded name).
     pub recipe: String,
     /// 0-based position in that recipe's own `steps`.
     pub position: usize,
