@@ -34,9 +34,9 @@ pub(crate) struct OpExclusive {
     id: InstanceId,
 }
 
-/// Proof of the shared op lock of one instance (`run`, `ssh`, `cp`). It cannot change or remove anything, with one
-/// repair: reading the keys makes a private key file that is not the user's alone so
-/// ([`InstanceKeys::read_private`](crate::access::keys::InstanceKeys::read_private)), and leaves one that is.
+/// Proof of the shared op lock of one instance (`run`, `ssh`, `cp`). It cannot change or remove anything, except that
+/// reading the keys makes a key file private
+/// ([`InstanceKeys::read_private`](crate::access::keys::InstanceKeys::read_private)).
 pub(crate) struct OpShared {
     _lock: FileLock,
 }

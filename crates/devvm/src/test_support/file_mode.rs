@@ -10,7 +10,7 @@ mod imp;
 pub use imp::{mode, set_mode};
 
 /// Replaces the file `path` by a copy that others can read: mode `0644` where there are modes, and what the directory
-/// hands down on Windows. What a file made before devvm created its private files private looks like.
+/// hands down on Windows.
 pub fn loosen(path: &std::path::Path) {
     let text = std::fs::read(path).unwrap();
     std::fs::remove_file(path).unwrap();

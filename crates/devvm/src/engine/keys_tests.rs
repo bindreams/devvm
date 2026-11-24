@@ -91,8 +91,8 @@ fn an_empty_keys_directory_is_filled_not_refused(#[fixture(unicode_home)] home: 
     assert_eq!(InstanceKeys::read(&keys_dir).unwrap().host_public, keys.host_public);
 }
 
-/// The instance's keys as a devvm that did not yet make its private files private left them. The instance directory
-/// hands `Authenticated Users` write down on Windows, so a new file there is readable by others.
+/// The instance's keys with loose permissions. On Windows the instance directory hands `Authenticated Users` write
+/// down, so a new file there is readable by others.
 fn loose_keys(dir: &InstanceDir) {
     #[cfg(windows)]
     crate::test_support::private_files::let_other_accounts_write_below(dir.path());

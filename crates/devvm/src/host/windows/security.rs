@@ -101,7 +101,7 @@ impl Descriptor {
 
     /// Whether the object `handle` names has the DACL this descriptor has: both protected or both not, and the same
     /// entries in the same order. A null DACL, which grants everyone everything, is never the same. The handle must be
-    /// open with `READ_CONTROL`; nothing is written.
+    /// open with `READ_CONTROL`.
     pub(crate) fn is_the_dacl_of(&self, handle: &File) -> io::Result<bool> {
         let object = ObjectDacl::of(handle)?;
         // SAFETY: both descriptors are live, and nothing changes them meanwhile.
