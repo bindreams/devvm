@@ -94,6 +94,37 @@ fn a_configured_qemu_path_that_is_accepted_passes_and_names_its_hash(#[fixture(u
     assert!(transport.asked().is_empty());
 }
 
+/// A configured QEMU whose system emulator is a file that `make_unreadable` makes unreadable: only its hash cannot be
+/// had, so the brief and the full line both pass, and the full one says the hash is unavailable.
+pub(super) fn brief_and_full_agree_on_an_emulator_that_cannot_be_read(
+    home: &Path,
+    make_unreadable: impl FnOnce(&Path),
+) {
+    let dirs = Dirs::under(home);
+    let bin = home.join("qemu").join("bin");
+    make_tools(&bin);
+    make_firmware(&bin.join("share"));
+    let system = bin.join(format!(
+        "{}{}",
+        ArchFiles::of(Arch::host()).system,
+        std::env::consts::EXE_SUFFIX
+    ));
+    make_unreadable(&system);
+    configure(&dirs, &bin);
+    let (install, _) = install_over(&dirs, Ok(pinned()));
+
+    let brief = qemu_check(&install, Detail::Brief);
+    let full = qemu_check(&install, Detail::Full);
+
+    assert!(brief.outcome.is_ok(), "{brief:?}");
+    let full = full.outcome.expect("the hash is information, not a verdict");
+    assert!(full.contains("unavailable"), "{full}");
+    assert!(
+        full.contains(&system.display().to_string()),
+        "the hash failure names the file: {full}"
+    );
+}
+
 #[skuld::test]
 fn a_brief_qemu_check_passes_without_a_hash(#[fixture(unicode_home)] home: &Path) {
     let dirs = Dirs::under(home);

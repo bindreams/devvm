@@ -10,6 +10,14 @@ use crate::{Arch, Result, Sha256};
 #[path = "checks_tests.rs"]
 mod checks_tests;
 
+#[cfg(all(test, unix))]
+#[path = "checks_unix_tests.rs"]
+mod checks_unix_tests;
+
+#[cfg(all(test, windows))]
+#[path = "checks_windows_tests.rs"]
+mod checks_windows_tests;
+
 /// Whether QEMU can be had: the line that `doctor` prints and `availability` reports. It passes when the manifest has a
 /// build for this target, which a launch downloads if it is not cached, or when the configured `qemu.path` is accepted
 /// by the check a launch applies (`LazyInstall::get`). Nothing is downloaded, and no cache is looked at. Only
