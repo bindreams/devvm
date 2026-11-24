@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use sha2::{Digest, Sha256 as Sha2};
+use sha2::{Digest, Sha256 as Sha2, Sha512 as Sha2_512};
 
 use crate::progress::{Event, Level, Outcome, Total};
 use crate::store::fetch::{Artifact, ContentRange, Fetcher, PartOpener, PartWriter, Response, Resume, Transport};
 use crate::test_support::fixtures::{MemoryProgress, WINDOWS_DEVICE_NAMES, unicode_home};
-use crate::{Dirs, ErrorKind, Result, Sha256};
+use crate::{Dirs, ErrorKind, Result, Sha256, Sha512};
 
 const URL: &str = "https://example.test/files/disk.img";
 const ETAG: &str = "\"v1\"";
@@ -26,7 +26,14 @@ fn sha_of(data: &[u8]) -> Sha256 {
 fn artifact(data: &[u8]) -> Artifact {
     Artifact {
         url: URL.to_owned(),
-        sha256: sha_of(data),
+        hash: sha_of(data).into(),
+    }
+}
+
+fn sha512_artifact(data: &[u8]) -> Artifact {
+    Artifact {
+        url: URL.to_owned(),
+        hash: Sha512::from_bytes(Sha2_512::digest(data).into()).into(),
     }
 }
 
@@ -176,14 +183,6 @@ fn listing(dir: &Path) -> Vec<String> {
     crate::store::layers::layers_tests::names(dir)
 }
 
-fn part(setup: &Setup, artifact: &Artifact) -> PathBuf {
-    setup.downloads.join(format!("{}.part", artifact.sha256))
-}
-
-fn sidecar(setup: &Setup, artifact: &Artifact) -> PathBuf {
-    setup.downloads.join(format!("{}.part.json", artifact.sha256))
-}
-
 // Happy path ==========================================================================================================
 
 #[skuld::test]
@@ -199,12 +198,158 @@ fn fetch_verifies_publishes_and_reuses(#[fixture(unicode_home)] home: &Path) {
     assert_eq!(std::fs::read(&path).unwrap(), data);
     assert_eq!(
         listing(&setup.downloads),
-        vec![artifact.sha256.to_string(), format!("{}.lock", artifact.sha256)]
+        vec![artifact.cache_key(), format!("{}.lock", artifact.cache_key())]
     );
 
     let again = setup.fetcher.fetch(&artifact).unwrap();
     assert_eq!(again, path);
     assert_eq!(transport.requests().len(), 1, "a verified entry needs no request");
+}
+
+#[skuld::test]
+fn a_sha512_artifact_is_verified_published_and_reused(#[fixture(unicode_home)] home: &Path) {
+    let data = bytes(300_000, 1);
+    let transport = Script::serving(data.clone());
+    let setup = setup(home, transport.clone());
+    let artifact = sha512_artifact(&data);
+
+    let path = setup.fetcher.fetch(&artifact).unwrap();
+    assert_eq!(path, setup.fetcher.entry_path(&artifact));
+    assert_eq!(std::fs::read(&path).unwrap(), data);
+    assert_eq!(
+        listing(&setup.downloads),
+        vec![artifact.cache_key(), format!("{}.lock", artifact.cache_key())]
+    );
+    assert_eq!(path.parent().unwrap(), setup.downloads.join(artifact.cache_key()));
+
+    setup.fetcher.fetch(&artifact).unwrap();
+    assert_eq!(transport.requests().len(), 1, "a verified entry needs no request");
+}
+
+/// Existing caches are found by these names: a sha256 pin's key is its digest, and a sha512 pin's must not move.
+#[skuld::test]
+fn cache_keys_are_pinned() {
+    let key = |hash: crate::ContentHash| {
+        Artifact {
+            url: URL.to_owned(),
+            hash,
+        }
+        .cache_key()
+    };
+    assert_eq!(key(Sha256::from_bytes([0xab; 32]).into()), "ab".repeat(32));
+    assert_eq!(
+        key(Sha512::from_bytes([0xab; 64]).into()),
+        "1e20f81c54c8d41f77fdb0c098cd4b74a26d36827ac16ea94e16fc1a251e66af"
+    );
+}
+
+#[skuld::test]
+fn a_sha512_pin_that_differs_from_a_cached_one_only_in_its_second_half_is_checked_on_its_own(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let data = bytes(10_000, 1);
+    let transport = Script::serving(data.clone());
+    let setup = setup(home, transport.clone());
+    let cached = sha512_artifact(&data);
+    setup.fetcher.fetch(&cached).unwrap();
+
+    // The same first 64 hex digits and URL, a different second half.
+    let mut digest = Sha2_512::digest(&data);
+    digest[63] ^= 1;
+    let typo = Artifact {
+        url: URL.to_owned(),
+        hash: Sha512::from_bytes(digest.into()).into(),
+    };
+    assert_eq!(typo.hash.to_string()[..64], cached.hash.to_string()[..64]);
+    assert_ne!(setup.fetcher.entry_path(&typo), setup.fetcher.entry_path(&cached));
+
+    let error = setup.fetcher.fetch(&typo).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Checksum);
+    assert_eq!(transport.requests().len(), 2, "the second pin is downloaded");
+    assert!(
+        setup.fetcher.entry_path(&cached).is_file(),
+        "the first pin's entry stays"
+    );
+    assert!(!setup.fetcher.entry_path(&typo).exists());
+}
+
+#[skuld::test]
+fn a_sha512_pin_does_not_share_an_entry_with_the_sha256_pin_its_first_half_equals(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let data = bytes(10_000, 1);
+    let transport = Script::serving(data.clone());
+    let setup = setup(home, transport.clone());
+    let cached = artifact(&data);
+    setup.fetcher.fetch(&cached).unwrap();
+
+    // A sha512 pin whose first 64 hex digits are the cached sha256 pin.
+    let mut digest = Sha2_512::digest(&data);
+    digest[..32].copy_from_slice(&Sha2::digest(&data));
+    let sha512 = Artifact {
+        url: URL.to_owned(),
+        hash: Sha512::from_bytes(digest.into()).into(),
+    };
+    assert_eq!(sha512.hash.to_string()[..64], cached.hash.to_string());
+    assert_ne!(setup.fetcher.entry_path(&sha512), setup.fetcher.entry_path(&cached));
+
+    let error = setup.fetcher.fetch(&sha512).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Checksum);
+    assert_eq!(transport.requests().len(), 2, "the sha512 pin is downloaded");
+    assert!(
+        setup.fetcher.entry_path(&cached).is_file(),
+        "the sha256 pin's entry stays"
+    );
+}
+
+#[skuld::test]
+fn a_wrong_sha512_is_a_checksum_error_naming_the_algorithm_and_both_digests(#[fixture(unicode_home)] home: &Path) {
+    let served = bytes(10_000, 1);
+    let setup = setup(home, Script::serving(served.clone()));
+    let wanted = sha512_artifact(&bytes(10_000, 2));
+
+    let error = setup.fetcher.fetch(&wanted).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Checksum);
+    assert!(error.message().contains("sha512"), "{error}");
+    assert!(error.message().contains(&wanted.hash.to_string()), "{error}");
+    assert!(
+        error.message().contains(&sha512_artifact(&served).hash.to_string()),
+        "{error}"
+    );
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
+    assert!(!setup.fetcher.entry_path(&wanted).exists());
+}
+
+#[skuld::test]
+fn a_sha512_download_resumes_from_its_part_and_verifies_the_whole(#[fixture(unicode_home)] home: &Path) {
+    let data = bytes(2_000_000, 6);
+    let handler_data = data.clone();
+    let transport = Script::new(move |n, resume| match n {
+        0 => Ok(response(200, handler_data[..700_000].to_vec(), Some(2_000_000), true)),
+        _ => Ok(serve(&handler_data, resume)),
+    });
+    let setup = setup(home, transport);
+    let wanted = sha512_artifact(&data);
+
+    setup.fetcher.fetch(&wanted).unwrap_err();
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        700_000
+    );
+
+    let path = setup.fetcher.fetch(&wanted).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), data);
+}
+
+#[skuld::test]
+fn a_complete_sha512_part_is_verified_and_published(#[fixture(unicode_home)] home: &Path) {
+    let data = bytes(5_000, 9);
+    let setup = setup(home, Script::serving(data.clone()));
+    let wanted = sha512_artifact(&data);
+    seed_part(&setup, &wanted, &data, data.len(), URL);
+
+    let path = setup.fetcher.fetch(&wanted).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), data);
 }
 
 // Failures that end in a deleted partial ==============================================================================
@@ -219,9 +364,9 @@ fn wrong_sha256_deletes_the_partial_and_reports_url_expected_and_actual(#[fixtur
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
     assert!(error.message().contains(URL), "{error}");
-    assert!(error.message().contains(&wanted.sha256.to_string()), "{error}");
+    assert!(error.message().contains(&wanted.hash.to_string()), "{error}");
     assert!(error.message().contains(&sha_of(&served).to_string()), "{error}");
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
     assert!(!setup.fetcher.entry_path(&wanted).exists());
 }
 
@@ -236,7 +381,7 @@ fn truncated_artifact_is_a_checksum_error_and_leaves_no_entry(#[fixture(unicode_
 
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
     assert!(!setup.fetcher.entry_path(&wanted).exists());
 }
 
@@ -260,11 +405,14 @@ fn remote_change_between_attempts_is_a_checksum_error_with_no_partial(#[fixture(
     let wanted = artifact(&original);
 
     assert_eq!(setup.fetcher.fetch(&wanted).unwrap_err().kind(), ErrorKind::Download);
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 40_000);
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        40_000
+    );
 
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
     assert_eq!(
         transport.requests()[1],
         Some(Resume {
@@ -289,7 +437,7 @@ fn server_ignoring_if_range_and_sending_206_of_new_content_is_caught_by_the_hash
     assert_eq!(setup.fetcher.fetch(&wanted).unwrap_err().kind(), ErrorKind::Download);
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
 }
 
 // Interruptions keep the partial ======================================================================================
@@ -321,8 +469,11 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unico
         error.message().contains(URL) && error.message().contains("700000"),
         "{error}"
     );
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 700_000);
-    assert!(sidecar(&setup, &wanted).is_file());
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        700_000
+    );
+    assert!(setup.fetcher.sidecar_path(&wanted).is_file());
 
     let path = setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), data);
@@ -360,7 +511,7 @@ fn body_cut_off_midway_keeps_the_part_and_the_next_fetch_resumes(#[fixture(unico
         resuming < first_advance,
         "\"resuming\" is said before the first position: {resumed:?}"
     );
-    assert!(!part(&setup, &wanted).exists() && !sidecar(&setup, &wanted).exists());
+    assert!(!setup.fetcher.part_path(&wanted).exists() && !setup.fetcher.sidecar_path(&wanted).exists());
 }
 
 #[skuld::test]
@@ -375,7 +526,10 @@ fn connection_dropped_mid_body_is_an_interruption_not_a_checksum_error(#[fixture
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download);
     assert!(error.message().contains("10000 of 60000"), "{error}");
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 10_000);
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        10_000
+    );
 }
 
 #[skuld::test]
@@ -410,7 +564,10 @@ fn unexpected_status_on_resume_keeps_the_part(#[fixture(unicode_home)] home: &Pa
     let error = setup.fetcher.fetch(&wanted).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download);
     assert!(error.message().contains("503"), "{error}");
-    assert_eq!(std::fs::metadata(part(&setup, &wanted)).unwrap().len(), 30_000);
+    assert_eq!(
+        std::fs::metadata(setup.fetcher.part_path(&wanted)).unwrap().len(),
+        30_000
+    );
 }
 
 #[skuld::test]
@@ -420,12 +577,12 @@ fn a_cached_entry_clears_a_stale_sidecar(#[fixture(unicode_home)] home: &Path) {
     let setup = setup(home, Script::serving(data.clone()));
     setup.fetcher.fetch(&wanted).unwrap();
     // A crash between publishing and deleting the sidecar leaves these behind.
-    std::fs::write(sidecar(&setup, &wanted), b"{}").unwrap();
-    std::fs::write(setup.downloads.join(format!("{}.part.json.tmp", wanted.sha256)), b"{}").unwrap();
+    std::fs::write(setup.fetcher.sidecar_path(&wanted), b"{}").unwrap();
+    std::fs::write(setup.fetcher.sidecar_temp_path(&wanted), b"{}").unwrap();
     setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(
         listing(&setup.downloads),
-        vec![wanted.sha256.to_string(), format!("{}.lock", wanted.sha256)]
+        vec![wanted.cache_key(), format!("{}.lock", wanted.cache_key())]
     );
 }
 
@@ -434,9 +591,9 @@ fn a_cached_entry_clears_a_stale_sidecar(#[fixture(unicode_home)] home: &Path) {
 /// Leaves `have` bytes of `data` as a part from `URL`, as an interrupted run would.
 fn seed_part(setup: &Setup, artifact: &Artifact, data: &[u8], have: usize, url: &str) {
     std::fs::create_dir_all(&setup.downloads).unwrap();
-    std::fs::write(part(setup, artifact), &data[..have]).unwrap();
+    std::fs::write(setup.fetcher.part_path(artifact), &data[..have]).unwrap();
     let json = format!("{{\"url\":\"{url}\",\"validator\":\"{}\"}}", ETAG.replace('"', "\\\""));
-    std::fs::write(sidecar(setup, artifact), json).unwrap();
+    std::fs::write(setup.fetcher.sidecar_path(artifact), json).unwrap();
 }
 
 #[skuld::test]
@@ -538,7 +695,7 @@ fn a_part_without_a_sidecar_is_restarted_and_says_why(#[fixture(unicode_home)] h
     let setup = setup(home, Script::serving(data.clone()));
     let wanted = artifact(&data);
     seed_part(&setup, &wanted, &data, 2_000, URL);
-    std::fs::remove_file(sidecar(&setup, &wanted)).unwrap();
+    std::fs::remove_file(setup.fetcher.sidecar_path(&wanted)).unwrap();
 
     setup.fetcher.fetch(&wanted).unwrap();
     let [message] = abandonments(&setup).try_into().unwrap();
@@ -551,7 +708,7 @@ fn an_unreadable_sidecar_is_restarted_and_says_why(#[fixture(unicode_home)] home
     let setup = setup(home, Script::serving(data.clone()));
     let wanted = artifact(&data);
     seed_part(&setup, &wanted, &data, 2_000, URL);
-    std::fs::write(sidecar(&setup, &wanted), b"{ torn").unwrap();
+    std::fs::write(setup.fetcher.sidecar_path(&wanted), b"{ torn").unwrap();
 
     setup.fetcher.fetch(&wanted).unwrap();
     let [message] = abandonments(&setup).try_into().unwrap();
@@ -715,7 +872,7 @@ fn disk_full_is_a_clear_error_and_publishes_nothing(#[fixture(unicode_home)] hom
 
         let error = fetcher.fetch(&wanted).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::DiskFull, "{kind:?}: {error}");
-        let part = downloads.join(format!("{}.part", wanted.sha256));
+        let part = fetcher.part_path(&wanted);
         assert!(error.message().contains(&part.display().to_string()), "{error}");
         assert!(error.message().ends_with("run again to resume"), "{error}");
         assert_eq!(
@@ -766,7 +923,7 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(unicode_home)] h
     for url in urls {
         let wanted = Artifact {
             url: url.clone(),
-            sha256: sha_of(b"x"),
+            hash: sha_of(b"x").into(),
         };
         let fetcher = Fetcher::new(
             downloads.clone(),
@@ -774,7 +931,7 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(unicode_home)] h
             Arc::new(MemoryProgress::default()),
         );
         let entry = fetcher.entry_path(&wanted);
-        let dir = downloads.join(wanted.sha256.to_string());
+        let dir = downloads.join(wanted.cache_key());
         assert_eq!(entry.parent().unwrap(), dir, "{url}");
         let name = entry.file_name().unwrap().to_string_lossy().into_owned();
         assert!(!name.is_empty() && name.len() <= 100, "{url}: {name}");
@@ -790,7 +947,7 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(unicode_home)] h
     let name = |url: &str| {
         let wanted = Artifact {
             url: url.to_owned(),
-            sha256: sha_of(b"x"),
+            hash: sha_of(b"x").into(),
         };
         Fetcher::new(
             downloads.clone(),
@@ -917,4 +1074,51 @@ fn failed_restart_keeps_the_old_validator_with_the_old_part(#[fixture(unicode_ho
         .fetch(&wanted)
         .unwrap_or_else(|e| panic!("the remote is healthy, yet: {e}"));
     assert_eq!(std::fs::read(entry).unwrap(), good);
+}
+
+/// A body whose read fails with an error that has a cause beneath it, as `reqwest`'s does.
+struct CausedBody;
+
+#[derive(Debug)]
+struct Cause(&'static str, Option<Box<dyn std::error::Error + Send + Sync>>);
+
+impl std::fmt::Display for Cause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Cause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.1.as_deref().map(|source| source as _)
+    }
+}
+
+impl Read for CausedBody {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        let reset = Cause("connection reset by peer", None);
+        Err(std::io::Error::other(Cause(
+            "error decoding response body",
+            Some(Box::new(reset)),
+        )))
+    }
+}
+
+#[skuld::test]
+fn a_body_that_fails_says_why_in_the_message(#[fixture(unicode_home)] home: &Path) {
+    let transport = Script::new(|_, _| {
+        Ok(Response {
+            body: Box::new(CausedBody),
+            ..response(200, Vec::new(), None, false)
+        })
+    });
+    let setup = setup(home, transport);
+    let error = setup.fetcher.fetch(&artifact(b"x")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Download);
+    assert!(
+        error
+            .message()
+            .contains("error decoding response body: connection reset by peer"),
+        "{error}"
+    );
 }

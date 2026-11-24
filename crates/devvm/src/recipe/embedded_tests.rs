@@ -22,7 +22,7 @@ fn embedded_ubuntu_resolves_a_different_pin_per_arch() {
     let (amd64, arm64) = pins();
     assert!(amd64.url.ends_with("-amd64.img"), "{}", amd64.url);
     assert!(arm64.url.ends_with("-arm64.img"), "{}", arm64.url);
-    assert_ne!(amd64.sha256, arm64.sha256);
+    assert_ne!(amd64.hash, arm64.hash);
 }
 
 #[skuld::test]

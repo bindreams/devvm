@@ -484,7 +484,7 @@ fn context() -> KeyContext {
 }
 
 fn key(manifest: &CopyManifest) -> LayerKey {
-    let root = root_key(&context(), &RootContent::Sha256(sha256(b"root")), &[0; 32]);
+    let root = root_key(&context(), &RootContent::Pinned(sha256(b"root").into()), &[0; 32]);
     let step = Step::Copy {
         from: CopyFrom::GitTracked,
         to: "~/proj".into(),

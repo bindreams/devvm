@@ -4,11 +4,8 @@ use super::ContentRange;
 use super::http::{parse_content_range, read_head, stall_message};
 
 #[skuld::test]
-fn stall_error_text_names_url_and_seconds() {
-    assert_eq!(
-        stall_message("https://h/disk.img", Duration::from_secs(60)),
-        "no data from https://h/disk.img for 60s"
-    );
+fn stall_error_text_names_seconds() {
+    assert_eq!(stall_message(Duration::from_secs(60)), "no data for 60s");
 }
 
 #[skuld::test]
@@ -73,7 +70,7 @@ fn data(len: usize) -> Vec<u8> {
 fn artifact_for(server: &TestServer, data: &[u8]) -> Artifact {
     Artifact {
         url: server.url("/files/disk.img"),
-        sha256: Sha256::from_bytes(Sha2::digest(data).into()),
+        hash: Sha256::from_bytes(Sha2::digest(data).into()).into(),
     }
 }
 
@@ -82,7 +79,7 @@ fn artifact_for(server: &TestServer, data: &[u8]) -> Artifact {
 pub fn fetch_artifact(args: &[String]) {
     let artifact = Artifact {
         url: args[1].clone(),
-        sha256: args[2].parse().unwrap(),
+        hash: args[2].parse::<Sha256>().unwrap().into(),
     };
     let transport = Arc::new(HttpTransport::new().unwrap());
     let fetcher = Fetcher::new(args[0].clone().into(), transport, stderr_progress());
@@ -100,7 +97,7 @@ impl Child2 {
     fn start(downloads: &Path, artifact: &Artifact) -> Child2 {
         let mut child = helper::command(
             "fetch-artifact",
-            &[downloads.to_str().unwrap(), &artifact.url, &artifact.sha256.to_string()],
+            &[downloads.to_str().unwrap(), &artifact.url, &artifact.hash.to_string()],
         )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -156,7 +153,7 @@ fn http_transport_resumes_with_range_and_if_range(#[fixture(unicode_home)] home:
 
     let error = fetcher.fetch(&artifact).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Download, "{error}");
-    let part = downloads.join(format!("{}.part", artifact.sha256));
+    let part = fetcher.part_path(&artifact);
     let kept = std::fs::metadata(&part).unwrap().len();
     assert!(kept > 0 && kept <= 81_920, "{kept}");
 
@@ -218,15 +215,15 @@ fn ctrl_c_mid_download_resumes(#[fixture(unicode_home)] home: &Path) {
     a.child.kill().unwrap();
     a.child.wait().unwrap();
 
-    let part = downloads.join(format!("{}.part", artifact.sha256));
-    let kept = std::fs::metadata(&part).unwrap().len();
-    assert!(kept >= (3 * MIB) as u64, "{kept}");
-
     let fetcher = Fetcher::new(
         downloads.clone(),
         Arc::new(HttpTransport::new().unwrap()),
         Arc::new(NullProgress),
     );
+    let part = fetcher.part_path(&artifact);
+    let kept = std::fs::metadata(&part).unwrap().len();
+    assert!(kept >= (3 * MIB) as u64, "{kept}");
+
     // The dead downloader's lock died with it: this fetch does not wait.
     let path = fetcher.fetch(&artifact).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), body);
@@ -258,13 +255,9 @@ fn a_stall_mid_body_is_reported_as_a_stall_and_keeps_the_part(#[fixture(unicode_
     paused_rx.recv().unwrap();
     drop(release_tx);
     assert_eq!(error.kind(), ErrorKind::Download, "{error}");
-    assert!(
-        error
-            .message()
-            .contains(&format!("no data from {} for 1s", artifact.url)),
-        "{error}"
-    );
-    let part = downloads.join(format!("{}.part", artifact.sha256));
+    assert!(error.message().contains("no data for 1s"), "{error}");
+    assert_eq!(error.message().matches(&artifact.url).count(), 1, "{error}");
+    let part = fetcher.part_path(&artifact);
     assert!(std::fs::metadata(part).unwrap().len() > 0);
 }
 
@@ -328,4 +321,47 @@ fn malformed_length_and_range_headers_are_named_in_warnings() {
     let head = read_head(&headers(&[("content-length", "10"), ("content-range", "bytes 0-9/10")]));
     assert_eq!(head.content_length, Some(10));
     assert!(head.warnings.is_empty());
+}
+
+#[skuld::test]
+fn a_response_head_stall_is_reported_as_a_stall_naming_the_url_once() {
+    use super::Transport;
+
+    // Listening and never accepting: the connection completes in the backlog and no response ever comes.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/disk.img", listener.local_addr().unwrap().port());
+    let error = HttpTransport::with_stall(Duration::from_secs(1))
+        .unwrap()
+        .get(&url, None)
+        .err()
+        .expect("nothing answers");
+    assert_eq!(error.message(), format!("cannot fetch {url}: no data for 1s"));
+    assert_eq!(error.message().matches(&url).count(), 1, "{error}");
+}
+
+#[skuld::test]
+fn a_refused_connection_says_why_in_the_message() {
+    use std::error::Error as _;
+
+    use super::Transport;
+
+    // Bound and never listening: the port stays ours for the whole test, and a connection to it is refused.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = socket.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{port}/disk.img");
+    let error = HttpTransport::new()
+        .unwrap()
+        .get(&url, None)
+        .err()
+        .expect("nothing listens on the port");
+    let mut cause = error.source().expect("the request error is the source");
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    assert!(
+        error.message().starts_with(&format!("cannot fetch {url}: ")) && error.message().contains(&cause.to_string()),
+        "{error}"
+    );
+    assert_eq!(error.message().matches(&url).count(), 1, "{error}");
 }

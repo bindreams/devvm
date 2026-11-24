@@ -7,7 +7,7 @@ use serde::de::Error as _;
 
 use super::ProductKey;
 use super::model::{CopyFrom, PerArch, Pin, Recipe, Resources, Setting, Shell, Source, Step, UacMode};
-use crate::{Error, ErrorKind, Result, RunAs, Sha256};
+use crate::{ContentHash, Error, ErrorKind, Result, RunAs, Sha256, Sha512};
 
 #[cfg(test)]
 #[path = "file_tests.rs"]
@@ -61,7 +61,33 @@ impl<'de> Deserialize<'de> for Size {
 #[serde(deny_unknown_fields)]
 struct RawPin {
     url: String,
-    sha256: Sha256,
+    #[serde(default, deserialize_with = "sha256_given")]
+    sha256: Option<Sha256>,
+    #[serde(default, deserialize_with = "sha512_given")]
+    sha512: Option<Sha512>,
+}
+
+/// `Some` of the value of a key that is written; a key written with nothing after it is an error, not an absent key.
+fn given<'de, T, D>(key: &str, deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    T: serde::de::DeserializeOwned,
+    D: serde::Deserializer<'de>,
+{
+    let value = yaml_serde::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Err(D::Error::custom(format!("`{key}` has no value")));
+    }
+    yaml_serde::from_value(value)
+        .map(Some)
+        .map_err(|e| D::Error::custom(format!("`{key}`: {e}")))
+}
+
+fn sha256_given<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<Sha256>, D::Error> {
+    given("sha256", deserializer)
+}
+
+fn sha512_given<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<Sha512>, D::Error> {
+    given("sha512", deserializer)
 }
 
 #[derive(Deserialize)]
@@ -108,13 +134,13 @@ impl<'de> Deserialize<'de> for RawFrom {
                     yaml_serde::from_value(value).map(RawFrom::Iso).map_err(wrong)
                 } else if has("oci") || has("digest") {
                     yaml_serde::from_value(value).map(RawFrom::Oci).map_err(wrong)
-                } else if has("url") || has("sha256") {
+                } else if has("url") || has("sha256") || has("sha512") {
                     yaml_serde::from_value(value).map(RawFrom::Pin).map_err(wrong)
                 } else if has("amd64") || has("arm64") {
                     yaml_serde::from_value(value).map(RawFrom::PerArch).map_err(wrong)
                 } else {
                     Err(D::Error::custom(
-                        "invalid `from`: expected one of `iso`, `oci` with `digest`, `url` with `sha256`, or `amd64` / `arm64`",
+                        "invalid `from`: expected one of `iso`, `oci` with `digest`, `url` with `sha256` or `sha512`, or `amd64` / `arm64`",
                     ))
                 }
             }
@@ -169,11 +195,18 @@ fn invalid(origin: &Path, detail: impl std::fmt::Display) -> Error {
     )
 }
 
-fn pin(raw: RawPin) -> Pin {
-    Pin {
-        url: raw.url,
-        sha256: raw.sha256,
-    }
+fn pin(raw: RawPin, origin: &Path) -> Result<Pin> {
+    let hash = match (raw.sha256, raw.sha512) {
+        (Some(sha256), None) => ContentHash::Sha256(sha256),
+        (None, Some(sha512)) => ContentHash::Sha512(sha512),
+        _ => {
+            return Err(invalid(
+                origin,
+                format!("`url: {}` needs exactly one of `sha256` or `sha512`", raw.url),
+            ));
+        }
+    };
+    Ok(Pin { url: raw.url, hash })
 }
 
 /// `dir/name` without the `.` components a recipe wrote (`./windows.iso`) or a bare relative recipe path supplies.
@@ -226,10 +259,10 @@ fn source(raw: RawFrom, dir: &Path, origin: &Path) -> Result<Source> {
                 digest: format!("sha256:{parsed}"),
             }
         }
-        RawFrom::Pin(raw) => Source::DiskImage(PerArch::any(pin(raw))),
+        RawFrom::Pin(raw) => Source::DiskImage(PerArch::any(pin(raw, origin)?)),
         RawFrom::PerArch(raw) => Source::DiskImage(PerArch {
-            amd64: raw.amd64.map(pin),
-            arm64: raw.arm64.map(pin),
+            amd64: raw.amd64.map(|raw| pin(raw, origin)).transpose()?,
+            arm64: raw.arm64.map(|raw| pin(raw, origin)).transpose()?,
         }),
     })
 }

@@ -2,7 +2,8 @@
 
 use crate::host::names::is_device_name;
 
-/// Longest name kept; the full path to a download stays well under Windows' limit.
+/// Longest name kept. With the 64-digit cache directory, a download's path is the downloads directory plus at most 166
+/// characters.
 const MAX_LEN: usize = 100;
 
 const FALLBACK: &str = "artifact";
