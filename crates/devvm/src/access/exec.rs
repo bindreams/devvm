@@ -52,6 +52,24 @@ impl ExecEnd {
     }
 }
 
+/// Takes the status and the loss of what the task has queued in `events` and `exec` has not read, without waiting for
+/// more: the task may have seen the command end before a write to the host failed. Output is dropped.
+pub(super) fn take_queued(
+    events: &mut mpsc::Receiver<Event>,
+    status: &mut Option<ExitStatus>,
+    lost: &mut Option<Error>,
+) {
+    while let Ok(event) = events.try_recv() {
+        match event {
+            Event::Status(arrived) | Event::End(Ok(arrived)) => *status = Some(arrived),
+            Event::Lost(error) => {
+                lost.get_or_insert(error);
+            }
+            Event::Out(_) | Event::Err(_) | Event::End(Err(_)) => {}
+        }
+    }
+}
+
 /// What the task running the command tells the thread that called `exec`.
 pub(super) enum Event {
     Out(Vec<u8>),

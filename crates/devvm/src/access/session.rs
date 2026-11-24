@@ -29,7 +29,7 @@ use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) use crate::access::exec::ExecEnd;
-use crate::access::exec::{Event, run_exec};
+use crate::access::exec::{Event, run_exec, take_queued};
 use crate::access::sftp::Sftp;
 
 pub(super) mod watched;
@@ -749,6 +749,8 @@ impl SshSession {
                 // the result.
                 let other: &mut dyn std::io::Write = if to_stderr { &mut *out } else { &mut *err };
                 let _ = other.flush();
+                // The command may have ended with its status still queued.
+                take_queued(&mut receiver, &mut status, &mut lost);
                 // Dropping the receiver tells the task to close the channel.
                 drop(receiver);
                 return Ok(ExecEnd::host_output_closed(e, status, lost));

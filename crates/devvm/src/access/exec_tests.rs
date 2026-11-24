@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use futures::FutureExt;
 
-use super::{Event, ExecEnd, run_exec};
+use super::{Event, ExecEnd, run_exec, take_queued};
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
 use crate::exit::{ExitStatus, ExitWidth, Report, status_json};
 use crate::progress::NullProgress;
@@ -103,6 +103,50 @@ fn the_status_file_carries_it_signed(#[fixture(unicode_home)] home: &Path) {
         r#"{"guest":{"code":-1073741819}}"#
     );
     assert_eq!(ExitWidth::Full32.exit_code(&status), -1_073_741_819);
+}
+
+#[skuld::test]
+fn a_failed_write_takes_the_status_the_task_already_queued() {
+    let (events, mut queued) = tokio::sync::mpsc::channel(8);
+    events.try_send(Event::Out(b"1\n".to_vec())).unwrap();
+    events.try_send(Event::Out(b"2\n".to_vec())).unwrap();
+    events.try_send(Event::Status(ExitStatus::Code(7))).unwrap();
+    events.try_send(Event::End(Ok(ExitStatus::Code(7)))).unwrap();
+    let (mut status, mut lost) = (None, None);
+
+    take_queued(&mut queued, &mut status, &mut lost);
+
+    assert_eq!(status, Some(ExitStatus::Code(7)));
+    assert!(lost.is_none());
+}
+
+#[skuld::test]
+fn a_failed_write_takes_the_loss_the_task_already_queued_and_not_a_failed_end() {
+    let (events, mut queued) = tokio::sync::mpsc::channel(8);
+    events.try_send(Event::Status(ExitStatus::Code(7))).unwrap();
+    events
+        .try_send(Event::Lost(Error::new(ErrorKind::ConnectionLost, "the VM process exited")))
+        .unwrap();
+    events
+        .try_send(Event::End(Err(Error::new(ErrorKind::ConnectionLost, "ignored"))))
+        .unwrap();
+    let (mut status, mut lost) = (None, None);
+
+    take_queued(&mut queued, &mut status, &mut lost);
+
+    assert_eq!(status, Some(ExitStatus::Code(7)));
+    assert!(lost.expect("the loss").message().contains("VM process exited"));
+}
+
+#[skuld::test]
+fn a_failed_write_with_no_status_queued_has_none() {
+    let (events, mut queued) = tokio::sync::mpsc::channel(8);
+    events.try_send(Event::Out(b"1\n".to_vec())).unwrap();
+    let (mut status, mut lost) = (None, None);
+
+    take_queued(&mut queued, &mut status, &mut lost);
+
+    assert_eq!(status, None);
 }
 
 #[skuld::test]
