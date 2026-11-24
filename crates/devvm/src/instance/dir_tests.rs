@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 
 use crate::backend::MachineRecord;
 use crate::contain::refused_record;
@@ -354,6 +355,26 @@ fn named_holder(message: &str, pid: u32, instance: &str) {
     );
 }
 
+/// Runs `wait` on `waiter` and returns the first thing it says, `None` if it ends without saying anything. `release`
+/// runs once that is known and must free the lock the wait is for. The caller asserts on the message afterwards: an
+/// assertion inside would leave the lock held and the waiter blocked, and the test hanging instead of failing.
+///
+/// `waiter` goes into the waiting thread, so its sink is dropped when the wait ends and `messages` then closes.
+fn first_message_of_a_wait(
+    waiter: InstanceDir,
+    messages: Receiver<String>,
+    wait: impl FnOnce(&InstanceDir) -> crate::Result<()> + Send,
+    release: impl FnOnce(),
+) -> Option<String> {
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(move || wait(&waiter));
+        let message = messages.recv().ok();
+        release();
+        waiting.join().unwrap().unwrap();
+        message
+    })
+}
+
 #[skuld::test]
 fn a_wait_behind_the_exclusive_holder_names_its_program_and_pid(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
@@ -362,12 +383,9 @@ fn a_wait_behind_the_exclusive_holder_names_its_program_and_pid(#[fixture(unicod
     let (progress, messages) = ChannelProgress::new();
     let waiter = another_command(&fx, &dir, progress);
 
-    std::thread::scope(|scope| {
-        let waiting = scope.spawn(|| waiter.op_exclusive().map(drop));
-        named_holder(&messages.recv().unwrap(), std::process::id(), "foo");
-        drop(holder);
-        waiting.join().unwrap().unwrap();
-    });
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    named_holder(&message.expect("the wait said nothing"), std::process::id(), "foo");
 }
 
 #[skuld::test]
@@ -378,12 +396,9 @@ fn a_shared_wait_behind_the_exclusive_holder_names_it_too(#[fixture(unicode_home
     let (progress, messages) = ChannelProgress::new();
     let waiter = another_command(&fx, &dir, progress);
 
-    std::thread::scope(|scope| {
-        let waiting = scope.spawn(|| waiter.op_shared().map(drop));
-        named_holder(&messages.recv().unwrap(), std::process::id(), "foo");
-        drop(holder);
-        waiting.join().unwrap().unwrap();
-    });
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_shared().map(drop), || drop(holder));
+
+    named_holder(&message.expect("the wait said nothing"), std::process::id(), "foo");
 }
 
 #[skuld::test]
@@ -398,15 +413,12 @@ fn a_wait_behind_a_record_of_a_dead_process_names_no_one(#[fixture(unicode_home)
     let (progress, messages) = ChannelProgress::new();
     let waiter = another_command(&fx, &dir, progress);
 
-    std::thread::scope(|scope| {
-        let waiting = scope.spawn(|| waiter.op_exclusive().map(drop));
-        assert_eq!(
-            messages.recv().unwrap(),
-            "waiting for another devvm command on instance foo"
-        );
-        drop(holder);
-        waiting.join().unwrap().unwrap();
-    });
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    assert_eq!(
+        message.as_deref(),
+        Some("waiting for another devvm command on instance foo")
+    );
 }
 
 #[skuld::test]
@@ -418,15 +430,12 @@ fn a_wait_behind_a_holder_without_a_record_keeps_the_text(#[fixture(unicode_home
     let (progress, messages) = ChannelProgress::new();
     let waiter = another_command(&fx, &dir, progress);
 
-    std::thread::scope(|scope| {
-        let waiting = scope.spawn(|| waiter.op_exclusive().map(drop));
-        assert_eq!(
-            messages.recv().unwrap(),
-            "waiting for another devvm command on instance foo"
-        );
-        drop(holder);
-        waiting.join().unwrap().unwrap();
-    });
+    let message = first_message_of_a_wait(waiter, messages, |w| w.op_exclusive().map(drop), || drop(holder));
+
+    assert_eq!(
+        message.as_deref(),
+        Some("waiting for another devvm command on instance foo")
+    );
 }
 
 #[skuld::test]
@@ -501,8 +510,8 @@ fn a_holder_of_a_removed_instance_leaves_the_record_of_a_new_instance_of_the_nam
     drop(new_holder);
 }
 
-/// Spawns a process: it runs in CI only. A helper process holds the op lock without a record of its own, and the
-/// record names it, as a devvm command in another process would.
+/// Spawns the `hold-lock` helper process, which holds the op lock; the record written for it names it, as a record
+/// written by a devvm command in another process would.
 #[skuld::test]
 fn a_wait_behind_a_holder_in_another_process_names_that_pid(#[fixture(unicode_home)] home: &Path) {
     let fx = fixture(home);
@@ -529,15 +538,19 @@ fn a_wait_behind_a_holder_in_another_process_names_that_pid(#[fixture(unicode_ho
     let (progress, messages) = ChannelProgress::new();
     let waiter = another_command(&fx, &dir, progress);
 
-    std::thread::scope(|scope| {
-        let waiting = scope.spawn(|| waiter.op_exclusive().map(drop));
-        assert_eq!(
-            messages.recv().unwrap(),
-            format!("waiting for hold-lock (PID {}) on instance foo", child.id())
-        );
-        child.kill().unwrap();
-        child.wait().unwrap();
-        // The OS releases a dead holder's lock asynchronously; the waiter's blocking take is the event awaited.
-        waiting.join().unwrap().unwrap();
-    });
+    // The OS releases a dead holder's lock asynchronously; the waiter's blocking take is the event awaited.
+    let message = first_message_of_a_wait(
+        waiter,
+        messages,
+        |w| w.op_exclusive().map(drop),
+        || {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        },
+    );
+
+    assert_eq!(
+        message,
+        Some(format!("waiting for hold-lock (PID {}) on instance foo", child.id()))
+    );
 }
