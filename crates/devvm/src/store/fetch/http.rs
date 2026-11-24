@@ -73,6 +73,10 @@ pub(super) fn stall_message(stall: Duration) -> String {
     format!("no data for {}s", stall.as_secs())
 }
 
+/// The text of a connect that timed out. It names no duration: `hyper-util` gives each address of the host a share of
+/// the connect bound, so the wait can be shorter than the stall.
+const CONNECT_TIMEOUT_MESSAGE: &str = "the connection timed out";
+
 /// Parses `bytes 100-199/1000`, `bytes 100-199/*` and `bytes */1000`.
 pub(super) fn parse_content_range(value: &str) -> Option<ContentRange> {
     let rest = value.trim().strip_prefix("bytes")?.trim_start();
@@ -103,20 +107,32 @@ fn is_stall(e: &reqwest::Error) -> bool {
     e.is_timeout() && !comes_from_below(e)
 }
 
+/// Whether the connection attempt timed out on a bound devvm set, which is not the whole stall.
+pub(super) fn connect_timed_out(e: &(dyn std::error::Error + 'static)) -> bool {
+    first_io_error(e).is_some_and(holds_elapsed)
+}
+
 /// Whether an `io::Error` the operating system or the network stack made is in the chain of `e`. The timeouts devvm
 /// sets are `reqwest`'s own marker error and, for the connect, an `io::Error` of kind `TimedOut` that holds tokio's
 /// `Elapsed`; every other `io::Error` is from below.
 pub(super) fn comes_from_below(e: &(dyn std::error::Error + 'static)) -> bool {
+    first_io_error(e).is_some_and(|io| !holds_elapsed(io))
+}
+
+fn first_io_error<'a>(e: &'a (dyn std::error::Error + 'static)) -> Option<&'a std::io::Error> {
     let mut next = Some(e);
     while let Some(layer) = next {
         if let Some(io) = layer.downcast_ref::<std::io::Error>() {
-            return !io
-                .get_ref()
-                .is_some_and(|inner| inner.is::<tokio::time::error::Elapsed>());
+            return Some(io);
         }
         next = layer.source();
     }
-    false
+    None
+}
+
+fn holds_elapsed(io: &std::io::Error) -> bool {
+    io.get_ref()
+        .is_some_and(|inner| inner.is::<tokio::time::error::Elapsed>())
 }
 
 impl Read for Body {
@@ -208,7 +224,9 @@ impl Transport for HttpTransport {
         }
         let response = request.send().map_err(|e| {
             let e = e.without_url();
-            let why = if is_stall(&e) {
+            let why = if connect_timed_out(&e) {
+                CONNECT_TIMEOUT_MESSAGE.to_owned()
+            } else if is_stall(&e) {
                 stall_message(self.stall)
             } else {
                 text_with_sources(&e)

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use super::ContentRange;
 use super::fetch_tests::Cause;
-use super::http::{comes_from_below, parse_content_range, read_head, stall_message};
+use super::http::{comes_from_below, connect_timed_out, parse_content_range, read_head, stall_message};
 
 #[skuld::test]
 fn stall_error_text_names_seconds() {
@@ -84,6 +84,25 @@ fn content_range_headers_parse() {
     ] {
         assert_eq!(parse_content_range(bad), None, "{bad:?}");
     }
+}
+
+#[skuld::test]
+fn only_the_connect_phase_timeout_is_a_connect_timeout() {
+    use std::io::{Error, ErrorKind};
+
+    // `hyper-util` gives each address a share of the connect bound, so this expiry is not the whole stall.
+    let connect = Error::new(ErrorKind::TimedOut, elapsed());
+    assert!(connect_timed_out(&under_layers(connect)));
+    for other in [
+        Error::from(ErrorKind::TimedOut),
+        Error::from_raw_os_error(1),
+        Error::new(ErrorKind::TimedOut, "connection timed out"),
+    ] {
+        let text = other.to_string();
+        assert!(!connect_timed_out(&under_layers(other)), "{text}");
+    }
+    // `reqwest`'s own marker has no `io::Error`: it is the response head or a body read, where the bound is the stall.
+    assert!(!connect_timed_out(&under_layers(std::fmt::Error)));
 }
 
 // Over real HTTP ======================================================================================================
