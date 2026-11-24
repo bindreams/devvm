@@ -4,11 +4,8 @@ use super::ContentRange;
 use super::http::{parse_content_range, read_head, stall_message};
 
 #[skuld::test]
-fn stall_error_text_names_url_and_seconds() {
-    assert_eq!(
-        stall_message("https://h/disk.img", Duration::from_secs(60)),
-        "no data from https://h/disk.img for 60s"
-    );
+fn stall_error_text_names_seconds() {
+    assert_eq!(stall_message(Duration::from_secs(60)), "no data for 60s");
 }
 
 #[skuld::test]
@@ -258,12 +255,8 @@ fn a_stall_mid_body_is_reported_as_a_stall_and_keeps_the_part(#[fixture(unicode_
     paused_rx.recv().unwrap();
     drop(release_tx);
     assert_eq!(error.kind(), ErrorKind::Download, "{error}");
-    assert!(
-        error
-            .message()
-            .contains(&format!("no data from {} for 1s", artifact.url)),
-        "{error}"
-    );
+    assert!(error.message().contains("no data for 1s"), "{error}");
+    assert_eq!(error.message().matches(&artifact.url).count(), 1, "{error}");
     let part = downloads.join(format!("{}.part", artifact.hash));
     assert!(std::fs::metadata(part).unwrap().len() > 0);
 }
@@ -328,6 +321,22 @@ fn malformed_length_and_range_headers_are_named_in_warnings() {
     let head = read_head(&headers(&[("content-length", "10"), ("content-range", "bytes 0-9/10")]));
     assert_eq!(head.content_length, Some(10));
     assert!(head.warnings.is_empty());
+}
+
+#[skuld::test]
+fn a_response_head_stall_is_reported_as_a_stall_naming_the_url_once() {
+    use super::Transport;
+
+    // Listening and never accepting: the connection completes in the backlog and no response ever comes.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/disk.img", listener.local_addr().unwrap().port());
+    let error = HttpTransport::with_stall(Duration::from_secs(1))
+        .unwrap()
+        .get(&url, None)
+        .err()
+        .expect("nothing answers");
+    assert_eq!(error.message(), format!("cannot fetch {url}: no data for 1s"));
+    assert_eq!(error.message().matches(&url).count(), 1, "{error}");
 }
 
 #[skuld::test]
