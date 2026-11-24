@@ -40,6 +40,13 @@ fn marked(line: &[u8], cut: bool) -> String {
     format!("...{}", String::from_utf8_lossy(&line[whole..]))
 }
 
+/// Drops the start of `line` that is more than `keep` bytes long; `cut` is set if anything was dropped.
+fn keep_end(line: &mut Vec<u8>, keep: usize, cut: &mut bool) {
+    let excess = line.len().saturating_sub(keep);
+    line.drain(..excess);
+    *cut |= excess > 0;
+}
+
 /// The last [`TAIL_LINES`](crate::error::TAIL_LINES) lines of the file at `path`, read in one pass.
 fn tail_of_file(path: &Path) -> io::Result<String> {
     tail_of(BufReader::new(std::fs::File::open(path)?))
@@ -69,21 +76,22 @@ fn tail_of(mut file: impl BufRead) -> io::Result<String> {
         };
         open = true;
         line.extend_from_slice(part);
-        let excess = line.len().saturating_sub(TAIL_LINE_BYTES);
-        line.drain(..excess);
-        cut |= excess > 0;
+        // One byte more than the cap, for the `` that may end the line: the line is cut by what it holds without it.
+        keep_end(&mut line, TAIL_LINE_BYTES + 1, &mut cut);
         let used = ended.unwrap_or(chunk.len());
         file.consume(used);
         if ended.is_some() {
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
+            keep_end(&mut line, TAIL_LINE_BYTES, &mut cut);
             lines.push(marked(&std::mem::take(&mut line), cut));
             cut = false;
             open = false;
         }
     }
     if open {
+        keep_end(&mut line, TAIL_LINE_BYTES, &mut cut);
         lines.push(marked(&line, cut));
     }
     Ok(lines.text())

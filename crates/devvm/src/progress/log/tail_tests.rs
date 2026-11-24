@@ -38,17 +38,11 @@ fn with_log_tail_of_a_file_with_one_huge_unterminated_line_keeps_the_end(#[fixtu
     bytes.extend_from_slice(b" the end");
     std::fs::write(&log, bytes).unwrap();
     let error = failed().with_log_tail("the serial log", &log);
-    let message = error.message();
-    assert!(
-        message.starts_with("the guest finished early\nthe end of the serial log:\nfirst\n"),
-        "{}",
-        message.len()
-    );
-    assert!(message.ends_with("xxx the end"), "{}", message.len());
-    assert!(
-        message.len() < 64 << 10,
-        "the huge line is cut: {} bytes",
-        message.len()
+    // The cap keeps the end of the line: 8 KiB, the last 8 bytes of which are the text after the x's.
+    let kept = format!("...{}{}", "x".repeat(TAIL_LINE_BYTES - " the end".len()), " the end");
+    assert_eq!(
+        error.message(),
+        format!("the guest finished early\nthe end of the serial log:\nfirst\n{kept}")
     );
 }
 
@@ -122,5 +116,56 @@ fn with_log_tail_says_so_when_the_file_cannot_be_read(#[fixture(unicode_home)] h
     assert!(
         message.starts_with("the guest finished early\nthe end of the serial log:\n(cannot be read: "),
         "{message}"
+    );
+}
+
+/// `bytes` read in chunks of `chunk` bytes, as a file is.
+fn tail_in_chunks(bytes: &[u8], chunk: usize) -> String {
+    tail_of(std::io::BufReader::with_capacity(chunk, std::io::Cursor::new(bytes))).unwrap()
+}
+
+#[skuld::test]
+fn a_line_of_exactly_the_cap_is_kept_whole_whatever_ends_it() {
+    let line = "x".repeat(TAIL_LINE_BYTES);
+    for end in ["", "\n", "\r\n"] {
+        let text = tail_of(std::io::Cursor::new(format!("{line}{end}"))).unwrap();
+        assert!(text == line, "ended by {end:?}: {text:.20} ({} bytes)", text.len());
+    }
+}
+
+#[skuld::test]
+fn a_line_one_byte_over_the_cap_is_cut_and_marked_whatever_ends_it() {
+    let kept = format!("...{}", "x".repeat(TAIL_LINE_BYTES));
+    let line = "x".repeat(TAIL_LINE_BYTES + 1);
+    for end in ["", "\n", "\r\n"] {
+        let text = tail_of(std::io::Cursor::new(format!("{line}{end}"))).unwrap();
+        assert!(text == kept, "ended by {end:?}: {text:.20} ({} bytes)", text.len());
+    }
+}
+
+#[skuld::test]
+fn a_crlf_split_between_two_chunks_ends_the_line_without_the_cr() {
+    assert_eq!(tail_in_chunks(b"ab\r\ncd\r\n", 3), "ab\ncd");
+    // A line of exactly the cap, with its `\r` the last byte of one chunk and its `\n` the first of the next.
+    let line = "x".repeat(TAIL_LINE_BYTES);
+    let text = tail_in_chunks(format!("{line}\r\nnext\r\n").as_bytes(), TAIL_LINE_BYTES + 1);
+    assert!(text == format!("{line}\nnext"), "{text:.20} ({} bytes)", text.len());
+}
+
+#[skuld::test]
+fn a_line_after_a_cut_one_is_not_marked() {
+    let long = "x".repeat(3 * TAIL_LINE_BYTES);
+    let text = tail_in_chunks(format!("{long}\nshort\nlast").as_bytes(), 1000);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].starts_with("...x"), "{:.20}", lines[0]);
+    assert_eq!(&lines[1..], ["short", "last"]);
+}
+
+#[skuld::test]
+fn bytes_that_are_not_utf8_are_replaced() {
+    assert_eq!(
+        tail_of(std::io::Cursor::new(b"ok \xff\xfe end\r\n".to_vec())).unwrap(),
+        "ok \u{fffd}\u{fffd} end"
     );
 }
