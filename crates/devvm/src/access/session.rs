@@ -513,21 +513,25 @@ impl Inner {
         self.ctx.lost(awaiting, &reason)
     }
 
-    /// The error for a channel that `cause` kept from opening: a lost connection if the connection has ended, otherwise
-    /// the server's refusal on a connection that lives, which the caller can tell apart. Nothing of the operation
-    /// `awaiting` has reached the guest in either case ([`is_not_started`]).
+    /// The error for a channel that `cause` kept from opening: the server's refusal on a connection that lives, which
+    /// the caller can tell apart, or a lost connection. Nothing of the operation `awaiting` has reached the guest in
+    /// either case ([`is_not_started`]).
+    ///
+    /// Decided by `cause`, not by [`Self::transport_end`]: in russh 0.65.1 the session task closes the handle's
+    /// receiver (`client/mod.rs:1359-1366`) before `handler.disconnected` records the end, so a send fails with
+    /// `SendError` (`client/mod.rs:844-855`) or a dropped reply with `Disconnect` (`client/mod.rs:768-771`) while
+    /// `transport_end` is still `None`. Only the server's answer, `ChannelOpenFailure` (`client/mod.rs:765-767`),
+    /// leaves the task running.
     pub(super) fn channel_not_opened(&self, awaiting: &str, cause: &russh::Error) -> Error {
-        not_started(match self.transport_end() {
-            Some(why) => self
-                .ctx
-                .lost(awaiting, &format!("the channel could not be opened: {why}")),
-            None => Error::new(
+        not_started(match cause {
+            russh::Error::ChannelOpenFailure(_) => Error::new(
                 ErrorKind::Io,
                 format!(
                     "{awaiting}: the channel could not be opened while the connection is up ({cause}) (serial log: {})",
                     self.ctx.serial_log.display()
                 ),
             ),
+            _ => self.connection_ended(&format!("{awaiting}: the channel could not be opened")),
         })
     }
 }

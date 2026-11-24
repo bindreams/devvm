@@ -799,6 +799,25 @@ fn a_channel_that_cannot_open_on_an_ended_connection_is_a_lost_connection_and_no
 }
 
 #[skuld::test]
+fn a_channel_open_that_fails_by_the_session_task_ending_is_a_lost_connection_before_the_end_is_recorded(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    // The task closes the handle's receiver before the handler records the end: a send error or a dropped reply is
+    // read while the connection still looks up.
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    assert!(session.is_alive(), "no end is recorded yet");
+
+    for cause in [russh::Error::SendError, russh::Error::Disconnect] {
+        let error = session.inner.channel_not_opened("opening a channel", &cause);
+
+        assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{cause}: {error}");
+        assert!(is_not_started(&error), "{cause}: {error}");
+        assert!(!error.message().contains("while the connection is up"), "{cause}: {error}");
+    }
+}
+
+#[skuld::test]
 fn a_vm_exit_while_the_sftp_subsystem_opens_is_not_marked_as_not_started(#[fixture(unicode_home)] home: &Path) {
     let rig = Rig::new(home);
     let (fire, wait) = mpsc::channel::<()>();
