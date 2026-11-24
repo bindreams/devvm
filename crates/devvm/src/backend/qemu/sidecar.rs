@@ -201,9 +201,7 @@ impl Source {
     }
 
     fn entry(&self) -> Result<&ManifestEntry> {
-        self.entry
-            .as_ref()
-            .map_err(|e| Error::new(e.kind(), e.message().to_owned()))
+        self.entry.as_ref().map_err(Error::clone)
     }
 
     /// `<qemu>/<version>-<12 hex of the zip sha256>`.

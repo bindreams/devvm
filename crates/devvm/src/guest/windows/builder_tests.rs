@@ -419,6 +419,44 @@ fn a_failing_exit_quotes_what_qemu_printed_or_says_it_printed_nothing() {
     );
 }
 
+#[skuld::test]
+fn text_added_to_an_error_by_the_builder_keeps_its_source_and_serial_log() {
+    let failed = || {
+        crate::Error::new(ErrorKind::Unavailable, "the VM process exited")
+            .with_source(std::io::Error::other("the cause"))
+            .with_serial_log("/x/serial.log")
+    };
+
+    let quiet = super::with_qemu_output(failed(), "");
+    assert_eq!(quiet.serial_log(), Some(Path::new("/x/serial.log")));
+    assert!(
+        quiet.message().ends_with(
+            "
+serial log: /x/serial.log"
+        ),
+        "{quiet}"
+    );
+    assert!(std::error::Error::source(&quiet).is_some(), "the source stays");
+    assert_eq!(
+        quiet.body(),
+        format!(
+            "the VM process exited
+QEMU's output:
+{}",
+            crate::backend::PRINTED_NOTHING
+        )
+    );
+
+    let loud = super::with_qemu_output(failed(), "qemu: out of memory");
+    assert!(
+        loud.message().ends_with(
+            "qemu: out of memory
+serial log: /x/serial.log"
+        ),
+        "{loud}"
+    );
+}
+
 // The clock of a bound ================================================================================================
 
 const MINUTE: Duration = Duration::from_secs(60);
