@@ -1,5 +1,6 @@
 //! What the tests ask Windows about a process they did not write.
 
+use super::Children;
 use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, LPARAM, STILL_ACTIVE, UNICODE_STRING};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -113,9 +114,9 @@ pub fn windows_of(pid: u32) -> usize {
 
 /// The running processes that have `pid` as their parent, each described: image name, PID, command line, and when it
 /// was created relative to `pid`'s process. A console program has a `conhost.exe` child; a detached one has none. The
-/// parent is whatever the process list says, which a reused PID can make a process that never started the child: a child
-/// created before its parent is that.
-pub fn children_of(pid: u32) -> Vec<String> {
+/// parent is whatever the process list says, and a reused PID makes a process that never started the child its parent:
+/// one created before its parent is left out of the children and listed apart.
+pub fn children_of(pid: u32) -> Children {
     // SAFETY: a snapshot of the process list.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     assert!(
@@ -126,7 +127,7 @@ pub fn children_of(pid: u32) -> Vec<String> {
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
     let parent_created = Watch::new(pid).and_then(|parent| parent.created());
-    let mut children = Vec::new();
+    let mut found = Children::default();
     // SAFETY: `snapshot` is open and `entry` is valid.
     let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
     while more {
@@ -137,17 +138,23 @@ pub fn children_of(pid: u32) -> Vec<String> {
                 .position(|&unit| unit == 0)
                 .unwrap_or(entry.szExeFile.len());
             let image = String::from_utf16_lossy(&entry.szExeFile[..image_len]);
-            children.push(describe_child(&image, entry.th32ProcessID, parent_created));
+            let (text, older_than_parent) = describe_child(&image, entry.th32ProcessID, parent_created);
+            if older_than_parent {
+                found.older_than_parent.push(text);
+            } else {
+                found.children.push(text);
+            }
         }
         // SAFETY: as above.
         more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
     }
     // SAFETY: closed once.
     unsafe { CloseHandle(snapshot) };
-    children
+    found
 }
 
-fn describe_child(image: &str, pid: u32, parent_created: Option<u64>) -> String {
+/// The description of a process, and whether it was created before its parent.
+fn describe_child(image: &str, pid: u32, parent_created: Option<u64>) -> (String, bool) {
     let child = Watch::new(pid);
     let created = child.as_ref().and_then(Watch::created);
     let when = match (created, parent_created) {
@@ -161,5 +168,9 @@ fn describe_child(image: &str, pid: u32, parent_created: Option<u64>) -> String 
         .as_ref()
         .and_then(Watch::command_line)
         .unwrap_or_else(|| "unreadable".to_owned());
-    format!("{image} (pid {pid}, {when}, command line: {command_line})")
+    let older_than_parent = matches!((created, parent_created), (Some(child), Some(parent)) if child < parent);
+    (
+        format!("{image} (pid {pid}, {when}, command line: {command_line})"),
+        older_than_parent,
+    )
 }

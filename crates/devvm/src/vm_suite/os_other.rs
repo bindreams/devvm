@@ -1,6 +1,8 @@
 //! What the tests ask the OS about a process they did not write. The VM tests need WHPX, so they fail on this host before
 //! they ask; these answers only keep the suite compiling.
 
+use super::Children;
+
 pub struct Watch;
 
 impl Watch {
@@ -17,6 +19,6 @@ pub fn windows_of(_pid: u32) -> usize {
     0
 }
 
-pub fn children_of(_pid: u32) -> Vec<String> {
-    Vec::new()
+pub fn children_of(_pid: u32) -> Children {
+    Children::default()
 }
