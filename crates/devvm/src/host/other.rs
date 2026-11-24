@@ -10,9 +10,8 @@ use super::{Entry, FileId};
 
 pub(crate) struct OtherHost;
 
-/// Sets the modification time of the file or directory `path`, whatever its date, through a read-only handle: the one
-/// way `std` reaches a directory. It is what [`crate::host::set_modified`] is on a platform that is neither Unix nor
-/// Windows.
+/// Sets the modification time of the file or directory `path` through a read-only handle: the one way `std` reaches a
+/// directory. No supported platform selects this function and nothing tests it; the build only type-checks it.
 pub(crate) fn set_modified(path: &Path, time: SystemTime) -> std::io::Result<()> {
     File::open(path)?.set_modified(time)
 }

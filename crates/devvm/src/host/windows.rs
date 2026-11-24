@@ -73,7 +73,7 @@ pub(crate) fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
     Ok(head.encode_utf16().chain(rest.iter().copied()).chain(Some(0)).collect())
 }
 
-/// Sets the modification time of the file or directory `path`, whatever its date. Opened for `FILE_WRITE_ATTRIBUTES`
+/// Sets the modification time of the file or directory `path`. Opened for `FILE_WRITE_ATTRIBUTES`
 /// alone: the read-only attribute, or an ACL that denies writing the contents, does not stop it. A directory opens only
 /// with backup semantics.
 pub(crate) fn set_modified(path: &Path, time: SystemTime) -> std::io::Result<()> {

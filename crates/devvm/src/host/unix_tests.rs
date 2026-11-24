@@ -138,8 +138,8 @@ fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_hom
     }
 }
 
-/// A file or directory its owner cannot read (`chmod 200`, `chmod 300`) takes a time: it is set by path, which asks for
-/// ownership and opens nothing. Mode bits do not bind root, so the test refuses to run as root.
+/// A file or directory its owner cannot read (`chmod 200`, `chmod 300`) takes a time. Mode bits do not bind root, so the
+/// test refuses to run as root.
 #[skuld::test]
 fn set_mtime_sets_the_time_of_what_its_owner_cannot_read(#[fixture(unicode_home)] home: &Path) {
     // SAFETY: `geteuid` reads a process attribute.

@@ -112,9 +112,8 @@ impl FileModes for UnixHost {
     }
 }
 
-/// Sets the modification time of the file or directory `path` (through a link), whatever its date, and leaves the access
-/// time alone. It goes by path through `utimensat`, which asks for ownership and opens nothing: a file or directory its
-/// owner cannot read takes it, and a FIFO does not block it.
+/// Sets the modification time of `path` (through a link) and leaves the access time alone. It needs ownership only and
+/// opens nothing, so a file or directory its owner cannot read takes it, and a FIFO does not block it.
 pub(crate) fn set_modified(path: &Path, time: SystemTime) -> std::io::Result<()> {
     let modified = match time.duration_since(UNIX_EPOCH) {
         Ok(after) => Timespec::try_from(after),
