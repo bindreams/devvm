@@ -263,7 +263,11 @@ fn a_sha512_pin_whose_first_digits_match_a_cached_entry_is_refused(#[fixture(uni
     assert_eq!(error.kind(), ErrorKind::Checksum, "{error}");
     assert!(error.message().contains(&other.hash.to_string()), "{error}");
     assert!(error.message().contains(&cached.hash.to_string()), "{error}");
-    assert_eq!(transport.requests().len(), 1, "nothing was downloaded for the refused pin");
+    assert_eq!(
+        transport.requests().len(),
+        1,
+        "nothing was downloaded for the refused pin"
+    );
     assert_eq!(std::fs::read(entry).unwrap(), data, "the entry is left as it was");
 }
 
@@ -541,7 +545,11 @@ fn a_cached_entry_clears_a_stale_sidecar(#[fixture(unicode_home)] home: &Path) {
     setup.fetcher.fetch(&wanted).unwrap();
     // A crash between publishing and deleting the sidecar leaves these behind.
     std::fs::write(sidecar(&setup, &wanted), b"{}").unwrap();
-    std::fs::write(setup.downloads.join(format!("{}.part.json.tmp", wanted.cache_key())), b"{}").unwrap();
+    std::fs::write(
+        setup.downloads.join(format!("{}.part.json.tmp", wanted.cache_key())),
+        b"{}",
+    )
+    .unwrap();
     setup.fetcher.fetch(&wanted).unwrap();
     assert_eq!(
         listing(&setup.downloads),
