@@ -504,7 +504,10 @@ impl RecordingHost {
     /// needs the duplicate itself uses the real host.
     #[cfg_attr(
         not(windows),
-        allow(dead_code, reason = "only the launch tests use it, and only Windows can launch a frozen process")
+        allow(
+            dead_code,
+            reason = "only the launch tests use it, and only Windows can launch a frozen process"
+        )
     )]
     pub fn shared_files(&self) -> Vec<(FileId, u32)> {
         self.shared_files.lock().unwrap().clone()

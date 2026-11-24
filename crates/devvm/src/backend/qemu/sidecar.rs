@@ -144,7 +144,12 @@ impl QemuInstall {
         let tool = self.tool(name);
         let mut command = cosca::Command::new();
         // Naming the executable gives the child only the handles listed for it, as `VmProcess::spawn_frozen` does.
-        command.arg(&tool).executable(&tool).env_clear().envs(environment).contain();
+        command
+            .arg(&tool)
+            .executable(&tool)
+            .env_clear()
+            .envs(environment)
+            .contain();
         host.detach(&mut command)?;
         configure(&mut command);
         command.output().map_err(|source| {
