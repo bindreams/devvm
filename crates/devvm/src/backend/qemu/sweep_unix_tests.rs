@@ -39,14 +39,12 @@ fn a_claim_file_that_is_a_symlink_is_not_opened_through_by_the_sweep() {
 #[cfg(target_os = "linux")]
 #[skuld::test]
 fn a_run_dir_whose_path_is_not_utf8_is_swept() {
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
-
     use super::sweep_tests::Machine;
     use crate::host;
+    use crate::test_support::fixtures::non_unicode_name;
 
     let parent = crate::test_support::qemu::scratch_run();
-    let run = parent.path().join(OsStr::from_bytes(b"r\xff"));
+    let run = parent.path().join(non_unicode_name());
     host::current().create_runtime_dir(&run).unwrap();
     drop(crate::store::lock::FileLock::open(&run.join("runtime.lock")).unwrap());
     let mut machine = Machine::new(&run, STEM_A);

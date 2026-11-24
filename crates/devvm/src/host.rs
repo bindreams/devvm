@@ -1,5 +1,6 @@
 //! What differs between host operating systems, behind one trait. The implementation is chosen here and only here, by
-//! the `cfg`s on the module declarations and on [`Current`] below; no code under `host/` selects one.
+//! the `cfg`s on the module declarations, on [`Current`] and on [`set_modified`] below; no code under `host/` selects
+//! one.
 //! (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
 use std::ffi::{OsStr, OsString};
@@ -38,7 +39,8 @@ pub(crate) mod watch;
 pub(crate) mod windows;
 
 pub(crate) use entry::{
-    Entry, is_a_link, is_absent, look_failed, nearest_existing_dir, refused_as_link, symlink_metadata_if_present,
+    Entry, failed, is_a_link, is_absent, look_failed, nearest_existing_dir, refused_as_link,
+    symlink_metadata_if_present,
 };
 pub(crate) use file_id::{Comparison, FileId};
 #[cfg_attr(
@@ -95,6 +97,13 @@ pub(crate) use other::OtherHost;
 use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) use other::set_modified;
+#[cfg(unix)]
+pub(crate) use unix::set_modified;
+#[cfg(windows)]
+pub(crate) use windows::set_modified;
 
 /// How a hypervisor is reached on this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,12 +193,14 @@ pub(crate) trait Host: Send + Sync {
     /// The Windows and System32 directories from the OS (never from the environment); `None` off Windows.
     fn system_dirs(&self) -> Option<SystemDirs>;
 
-    /// Creates `path` with `bytes`; fails with `AlreadyExists` instead of replacing a file. On a volume that keeps
+    /// Creates `path` with `bytes`, synced, and returns the file open for writing after them; fails with `AlreadyExists`
+    /// instead of replacing a file. A caller that writes on goes through the returned file, not through `path` again:
+    /// the name may have been replaced by then. On a volume that keeps
     /// permissions, only the current user can read it, from the moment it exists: Unix creates it with mode `0600`,
     /// Windows with a protected DACL granting only the user, so a directory ACL that lets others read does not reach it.
     /// A volume without permissions (FAT32, exFAT) cannot restrict it. On Windows the file names no owner, so a network
     /// share that refuses a named owner still accepts it.
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File>;
 
     /// Restricts the existing file `path` the way [`write_private`](Host::write_private) restricts a new one: the
     /// current user alone can read it, whatever it had before (a Unix mode with a group or other bit becomes `0600`; on
@@ -212,8 +223,8 @@ pub(crate) trait Host: Send + Sync {
     /// Adds execute where read is set; does nothing on Windows.
     fn set_executable(&self, path: &Path) -> std::io::Result<()>;
 
-    /// Sets the modification time of the file or directory `path` to `seconds` since 1970. It needs no write access to
-    /// the contents, so a file that is read-only to its owner takes it.
+    /// Sets the modification time of the file or directory `path` to `seconds` since 1970 ([`set_modified`] takes any
+    /// date). It needs no write access to the contents, so a file that is read-only to its owner takes it.
     fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()>;
 
     /// Why `name`, a file name taken from a guest, cannot be one file name in a directory on this host (a Windows
@@ -332,20 +343,21 @@ pub(crate) trait Host: Send + Sync {
     fn open_entry(&self, root: &Path, rel: &str) -> std::io::Result<Entry>;
 }
 
-/// Creates `path` with `options` and writes `bytes`, which are on disk when it returns. A file whose write failed is
-/// removed, so a half-written secret is never left behind.
-fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    fill_new(options.write(true).create_new(true).open(path)?, path, bytes)
+/// Creates `path` with `options` and writes `bytes`, which are on disk when it returns; the file is returned, open for
+/// appending: a write lands at the end, wherever the file was cut. A file whose write failed is removed, so a
+/// half-written secret is never left behind.
+fn create_new_with(mut options: OpenOptions, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
+    fill_new(options.append(true).create_new(true).open(path)?, path, bytes)
 }
 
 /// Writes `bytes` to `file`, open for writing and just created at `path`, and syncs them; the file is removed when that
 /// fails, as in [`create_new_with`].
-fn fill_new(mut file: File, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+fn fill_new(mut file: File, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
     if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
         drop(file);
         return Err(after_failed_write(path, e, || std::fs::remove_file(path)));
     }
-    Ok(())
+    Ok(file)
 }
 
 /// Removes the file `path`; one that is not there is as good as removed.

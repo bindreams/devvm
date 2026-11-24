@@ -6,12 +6,16 @@ use crate::recipe::hash::{
     CopyManifest, EntryContent, KeyContext, LayerKey, ManifestEntry, RootContent, STEP_SEMANTICS_VERSION, chain_keys,
     root_key, root_key_with, step_key, step_key_with,
 };
-use crate::recipe::{CopyFrom, ProductKey, Recipe, Setting, Shell, Step, UacMode};
+use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Setting, Shell, Step, UacMode};
 use crate::test_support::fixtures::unicode_home;
-use crate::{Arch, ErrorKind, RunAs, Sha256};
+use crate::{Arch, ErrorKind, RunAs, Sha256, Sha512};
 
 fn sha(byte: u8) -> Sha256 {
     Sha256::from_bytes([byte; 32])
+}
+
+fn sha512(byte: u8) -> Sha512 {
+    Sha512::from_bytes([byte; 64])
 }
 
 fn entry(path: &str, mode: u32, content: EntryContent) -> ManifestEntry {
@@ -70,7 +74,7 @@ impl Chain {
             disk: Some(40 << 30),
             guest_semantics: 1,
             step_semantics: STEP_SEMANTICS_VERSION,
-            content: RootContent::Sha256(sha(1)),
+            content: RootContent::Pinned(sha(1).into()),
             base_definition: [7; 32],
             run: run("make", Some(Shell::Bash), RunAs::User, Some("/src")),
             copy: copy("~/proj", false),
@@ -165,7 +169,11 @@ fn every_key_input_changes_the_key() {
         change(&mut chain);
         variants.push((name, chain));
     };
-    vary("source sha256", &|c| c.content = RootContent::Sha256(sha(2)));
+    vary("source sha256", &|c| c.content = RootContent::Pinned(sha(2).into()));
+    vary("source sha512 vs equal sha256", &|c| {
+        c.content = RootContent::Pinned(sha512(1).into());
+    });
+    vary("source sha512", &|c| c.content = RootContent::Pinned(sha512(2).into()));
     vary("oci digest vs equal sha256", &|c| {
         c.content = RootContent::OciDigest(sha(1).to_string());
     });
@@ -293,7 +301,7 @@ fn root_and_step_keys_each_see_their_own_inputs() {
             ..base.clone()
         },
         Chain {
-            content: RootContent::Sha256(sha(5)),
+            content: RootContent::Pinned(sha(5).into()),
             ..base.clone()
         },
     ] {
@@ -305,7 +313,7 @@ fn root_and_step_keys_each_see_their_own_inputs() {
     assert_eq!(step_key(&ctx, &root, &base.run, None).unwrap(), base.run_key());
     // A different parent gives a different step key.
     let other_parent = Chain {
-        content: RootContent::Sha256(sha(5)),
+        content: RootContent::Pinned(sha(5).into()),
         ..base.clone()
     }
     .root();
@@ -443,13 +451,16 @@ fn manifest_rejects_duplicates_and_inconsistent_modes() {
 const SHA_TEXT: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
 fn keys_of(text: &str, origin: &Path) -> Vec<LayerKey> {
-    let flat = Recipe::parse(text, origin).unwrap().flatten().unwrap();
+    keys_of_flat(&Recipe::parse(text, origin).unwrap().flatten().unwrap())
+}
+
+fn keys_of_flat(flat: &Flattened) -> Vec<LayerKey> {
     let ctx = KeyContext {
         arch: Arch::Amd64,
         disk: flat.resources.disk,
         guest_semantics_version: 1,
     };
-    let content = RootContent::Sha256(SHA_TEXT.parse().unwrap());
+    let content = RootContent::Pinned(SHA_TEXT.parse::<Sha256>().unwrap().into());
     let manifests: Vec<Option<CopyManifest>> = flat
         .steps
         .iter()
@@ -458,7 +469,26 @@ fn keys_of(text: &str, origin: &Path) -> Vec<LayerKey> {
             _ => None,
         })
         .collect();
-    chain_keys(&flat, &ctx, &content, &[5; 32], &manifests).unwrap()
+    chain_keys(flat, &ctx, &content, &[5; 32], &manifests).unwrap()
+}
+
+#[skuld::test]
+fn layer_keys_ignore_which_recipe_declared_a_step(#[fixture(unicode_home)] home: &Path) {
+    let steps = "  - run: one\n  - run: two\n  - run: three\n";
+    let whole = home.join("whole.devvm.yaml");
+    std::fs::write(&whole, format!("from: ubuntu-24.04\nsteps:\n{steps}")).unwrap();
+    std::fs::write(
+        home.join("base.devvm.yaml"),
+        "from: ubuntu-24.04\nsteps:\n  - run: one\n  - run: two\n",
+    )
+    .unwrap();
+    let top = home.join("top.devvm.yaml");
+    std::fs::write(&top, "from: base.devvm.yaml\nsteps:\n  - run: three\n").unwrap();
+
+    let whole = Recipe::from_file(&whole).unwrap().flatten().unwrap();
+    let split = Recipe::from_file(&top).unwrap().flatten().unwrap();
+    assert_ne!(whole.steps[2].recipe, split.steps[2].recipe);
+    assert_eq!(keys_of_flat(&whole), keys_of_flat(&split));
 }
 
 const PLAIN: &str = "from: ubuntu-24.04\nresources: { disk: 40GiB }\nsteps:\n  - run: |\n      echo a\n      echo b\n  - copy: { from: git-tracked, to: ~/p }\n    # trailing comment\n";
@@ -533,6 +563,32 @@ fn keys_are_send_and_sync() {
 /// hashed input is a new key scheme (bump `DOMAIN`) and an edit here.
 #[skuld::test]
 fn golden_key_for_a_fixed_recipe() {
+    assert_eq!(
+        golden_keys(RootContent::Pinned(sha(0xab).into())),
+        [
+            "00ba9f166afd810916d41e029a00b0bc",
+            "94fcfa3c50b8d2a6d1d56b01aadebbcf",
+            "d3f8588161c25c87b0330d97a274d72a",
+            "4e7a141cfd7a26229edb4a98c341bb62",
+        ]
+    );
+}
+
+/// The same recipe from a sha512-pinned root: the root's key bytes (tag 4, then the 64 digest bytes) are pinned too.
+#[skuld::test]
+fn golden_key_for_a_fixed_recipe_on_a_sha512_root() {
+    assert_eq!(
+        golden_keys(RootContent::Pinned(sha512(0xab).into())),
+        [
+            "b7a95e841753008037e74063fccd7c00",
+            "6fabaaab4c6f2dba9d4263010ec9a3c2",
+            "235c14e3b492229aca3ee706a9f038e8",
+            "8fcac1e24967583761765c268242b992",
+        ]
+    );
+}
+
+fn golden_keys(content: RootContent) -> Vec<String> {
     let text = "from: ubuntu-24.04\nresources: { disk: 40GiB }\nsteps:\n  - run: echo hello\n    shell: bash\n    elevated: true\n    cwd: /srv\n  - copy: { from: git-tracked, to: ~/proj, read-only: true }\n  - set: { uac: auto-approve }\n";
     let flat = Recipe::parse(text, Path::new("golden.devvm.yaml"))
         .unwrap()
@@ -543,21 +599,11 @@ fn golden_key_for_a_fixed_recipe() {
         disk: flat.resources.disk,
         guest_semantics_version: 3,
     };
-    let content = RootContent::Sha256(sha(0xab));
     let manifest = manifest(vec![
         file("src/main.rs", 0o100644, 0x01),
         file("run.sh", 0o100755, 0x02),
         entry("link", 0o120000, EntryContent::SymlinkTarget("src/main.rs".into())),
     ]);
     let keys = chain_keys(&flat, &ctx, &content, &[0xcd; 32], &[None, Some(manifest), None]).unwrap();
-    let keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
-    assert_eq!(
-        keys,
-        [
-            "00ba9f166afd810916d41e029a00b0bc",
-            "94fcfa3c50b8d2a6d1d56b01aadebbcf",
-            "d3f8588161c25c87b0330d97a274d72a",
-            "4e7a141cfd7a26229edb4a98c341bb62",
-        ]
-    );
+    keys.iter().map(ToString::to_string).collect()
 }

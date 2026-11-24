@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::ErrorKind;
 use crate::test_support::file_mode::set_mode;
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::root::refuse_root;
 
 use super::present;
 
@@ -10,12 +11,7 @@ use super::present;
 /// root, so the test refuses to run as root.
 #[skuld::test]
 fn a_generation_directory_that_cannot_be_looked_at_is_an_error_not_gone(#[fixture(unicode_home)] home: &Path) {
-    // SAFETY: `geteuid` reads a process attribute.
-    assert_ne!(
-        unsafe { libc::geteuid() },
-        0,
-        "directory modes do not bind root: run this test as another user"
-    );
+    refuse_root("directory modes do not bind root");
     let parent = home.join("locked");
     let dir = parent.join("gen");
     std::fs::create_dir_all(&dir).unwrap();

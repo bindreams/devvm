@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::access::keys::InstanceKeys;
 use crate::backend::Backend;
 use crate::backend::fake::{FakeBackend, FakeStorage};
-use crate::engine::build::{Lines, Tail, guest_destination, root_of};
+use crate::engine::build::{LINE_CHUNK, Lines, Tail, guest_destination, root_of};
 use crate::engine::engine_tests::{engine_with, is_there, memory};
 use crate::engine::{Engine, ListFilter};
 use crate::guest::fake::{FakeGuests, ServedGuests};
@@ -73,16 +73,28 @@ fn fixture_over(home: &Path, backend: FakeBackend) -> Fixture {
 /// A recipe file at `dir/r.devvm.yaml` that starts from the embedded Ubuntu base. `top` is more top-level keys, and
 /// each of `steps` is one step's YAML.
 pub(super) fn recipe_in(dir: &Path, top: &str, steps: &[&str]) -> Recipe {
+    Recipe::parse(&recipe_text("ubuntu-24.04", top, steps), &dir.join("r.devvm.yaml")).unwrap()
+}
+
+/// The text of a recipe that starts from `from`, with `top` more top-level keys and `steps` as its step list.
+fn recipe_text(from: &str, top: &str, steps: &[&str]) -> String {
     let steps: String = steps.iter().map(|step| format!("  - {step}\n")).collect();
-    Recipe::parse(
-        &format!("from: ubuntu-24.04\n{top}steps:\n{steps}"),
-        &dir.join("r.devvm.yaml"),
-    )
-    .unwrap()
+    format!("from: {from}\n{top}steps:\n{steps}")
 }
 
 pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
     recipe_in(home, "", steps)
+}
+
+/// The recipe `top` (`dir/top.devvm.yaml`) whose parent is `dir/base.devvm.yaml`; each of `base_steps` and `top_steps`
+/// is one step's YAML.
+pub(super) fn chained_recipe(dir: &Path, base_steps: &[&str], top_steps: &[&str]) -> Recipe {
+    std::fs::write(dir.join("base.devvm.yaml"), recipe_text("ubuntu-24.04", "", base_steps)).unwrap();
+    Recipe::parse(
+        &recipe_text("base.devvm.yaml", "", top_steps),
+        &dir.join("top.devvm.yaml"),
+    )
+    .unwrap()
 }
 
 /// The keys of the layers `recipe` builds, root first, when it has no `copy` step.
@@ -188,6 +200,27 @@ fn iso_root(
     root_of(&source, Arch::host(), &|iso, edition, product_key| {
         crate::iso::key_iso(&TestHost, memo, iso, edition, product_key, &MemoryProgress::default())
     })
+}
+
+#[skuld::test]
+fn a_disk_image_root_is_keyed_by_the_algorithm_its_pin_names() {
+    use crate::recipe::hash::RootContent;
+    use crate::recipe::{PerArch, Pin, Source};
+    use crate::{ContentHash, Sha256, Sha512};
+
+    let content = |hash: ContentHash| {
+        let source = Source::DiskImage(PerArch::any(Pin {
+            url: "https://h/a.img".to_owned(),
+            hash,
+        }));
+        root_of(&source, Arch::host(), &|_, _, _| unreachable!("no ISO here"))
+            .unwrap()
+            .0
+            .content()
+    };
+    let (short, long) = (Sha256::from_bytes([1; 32]), Sha512::from_bytes([2; 64]));
+    assert_eq!(content(short.into()), RootContent::Pinned(short.into()));
+    assert_eq!(content(long.into()), RootContent::Pinned(long.into()));
 }
 
 #[skuld::test]
@@ -410,10 +443,25 @@ fn a_refused_set_step_fails_before_any_base_is_built_or_keyed(#[fixture(unicode_
     let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
-    assert!(error.message().contains("step 3 of 3"), "{error}");
+    assert!(error.message().contains("r: step 3 of 3"), "{error}");
     assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 0, "a base was built");
     assert!(fx.server.commands().is_empty(), "a guest ran a command");
     assert!(!is_there(&fx.dirs.builds()), "a build directory was made");
+}
+
+#[skuld::test]
+fn a_refused_step_of_the_parent_recipe_names_the_parent(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = chained_recipe(
+        home,
+        &["run: echo one", "set: { uac: auto-approve }", "run: echo three"],
+        &["run: echo four"],
+    );
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
+    assert!(error.message().contains("base: step 2 of 3"), "{error}");
 }
 
 #[skuld::test]
@@ -518,6 +566,209 @@ fn a_carriage_return_with_nothing_pending_reports_no_line() {
         ["x"],
         "wherever the writes split them"
     );
+}
+
+#[skuld::test]
+fn a_blank_line_ends_in_a_carriage_return_and_line_feed_like_in_a_line_feed() {
+    assert_eq!(lines_reported(&[b"a\r\n\r\nb\r\n"]), ["a", "", "b"]);
+    assert_eq!(lines_reported(&[b"\r\nb\r\n"]), ["", "b"]);
+    assert_eq!(
+        lines_reported(&[b"a\r\n\r", b"\nb\r\n"]),
+        ["a", "", "b"],
+        "wherever the writes split them"
+    );
+    assert_eq!(lines_reported(&[b"a\r\n", b"\r", b"\n", b"b\n"]), ["a", "", "b"]);
+}
+
+#[skuld::test]
+fn a_doubled_carriage_return_before_a_line_feed_ends_one_blank_line() {
+    assert_eq!(lines_reported(&[b"\r\r\nb\n"]), ["", "b"], "at the start");
+    assert_eq!(lines_reported(&[b"a\n\r\r\nb\n"]), ["a", "", "b"], "after a line feed");
+    assert_eq!(
+        lines_reported(&[b"a\r\n\r\r\nb\n"]),
+        ["a", "", "b"],
+        "after a carriage return and line feed"
+    );
+    assert_eq!(
+        lines_reported(&[b"\r", b"\r", b"\n", b"b\n"]),
+        ["", "b"],
+        "wherever the writes split them"
+    );
+
+    // After a chunk was flushed, the line end is the part's, as it is without the flush.
+    let text = long_line(LINE_CHUNK + 1);
+    let (first, rest) = text.split_at(LINE_CHUNK);
+    assert_eq!(
+        lines_reported(&[text.as_bytes(), b"\r", b"\r", b"\n", b"next\n"]),
+        [first, rest, "next"]
+    );
+}
+
+#[skuld::test]
+fn a_carriage_return_after_a_line_end_is_a_redraw_when_text_follows_it() {
+    assert_eq!(lines_reported(&[b"a\r\n\r", b"10%\r100%\r\n"]), ["a", "10%", "100%"]);
+    assert_eq!(
+        lines_reported(&[b"a\r\n\r"]),
+        ["a"],
+        "a lone carriage return at the end reports nothing"
+    );
+}
+
+fn long_line(len: usize) -> String {
+    (0..len).map(|n| char::from(b'a' + (n % 26) as u8)).collect()
+}
+
+#[skuld::test]
+fn a_line_without_a_line_end_is_reported_in_chunks_as_it_grows() {
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    let text = long_line(2 * LINE_CHUNK + 5);
+
+    lines.write_all(text.as_bytes()).unwrap();
+    assert_eq!(progress.messages().len(), 2, "two full chunks are out before the end");
+    drop(lines);
+
+    let reported = progress.messages();
+    assert_eq!(reported.len(), 3);
+    assert_eq!(reported.concat(), text);
+    assert!(reported[..2].iter().all(|line| line.len() == LINE_CHUNK));
+}
+
+#[skuld::test]
+fn a_line_of_exactly_a_chunk_is_one_line() {
+    let text = long_line(LINE_CHUNK);
+    for end in [&b"\n"[..], b"\r", b"\r\n"] {
+        assert_eq!(
+            lines_reported(&[text.as_bytes(), end, b"next\n"]),
+            [text.clone(), "next".to_owned()],
+            "{end:?}"
+        );
+    }
+}
+
+#[skuld::test]
+fn a_flushed_part_of_a_line_leaves_the_line_end_and_the_redraw_after_it_as_they_were() {
+    let text = long_line(LINE_CHUNK + 3);
+    let (first, rest) = text.split_at(LINE_CHUNK);
+    for end in [&b"\n"[..], b"\r\n", b"\r"] {
+        let mut input = text.clone().into_bytes();
+        input.extend_from_slice(end);
+        input.extend_from_slice(b"next\n");
+        assert_eq!(lines_reported(&[&input]), [first, rest, "next"], "{end:?}");
+    }
+    // The line end arrives in writes of its own after the flush.
+    assert_eq!(
+        lines_reported(&[text.as_bytes(), b"\r", b"\n", b"next\n"]),
+        [first, rest, "next"]
+    );
+}
+
+/// Characters of 2, 3 and 4 bytes.
+const WIDE: [&str; 3] = ["é", "€", "😀"];
+
+/// The first `cut` bytes of `c` end the first chunk; the rest of `c` and then `after` follow.
+fn cut_by_the_chunk(c: &str, cut: usize, after: &[u8]) -> Vec<u8> {
+    let mut input = "a".repeat(LINE_CHUNK - cut).into_bytes();
+    input.extend_from_slice(c.as_bytes());
+    input.extend_from_slice(after);
+    input
+}
+
+#[skuld::test]
+fn a_chunk_never_splits_a_character() {
+    for c in WIDE {
+        for cut in 1..c.len() {
+            let input = cut_by_the_chunk(c, cut, b"tail\n");
+            let text = format!("{}{c}tail", "a".repeat(LINE_CHUNK - cut));
+            let first = "a".repeat(LINE_CHUNK - cut);
+            let reported = lines_reported(&[&input]);
+            assert_eq!(
+                reported,
+                [first.as_str(), &format!("{c}tail")],
+                "{c:?} cut after {cut} bytes"
+            );
+            // Writes that split the character anywhere, at its ends included.
+            let start = LINE_CHUNK - cut;
+            for split in start..=start + c.len() {
+                let reported = lines_reported(&[&input[..split], &input[split..]]);
+                assert_eq!(reported.concat(), text, "{c:?} cut after {cut} bytes, split at {split}");
+                assert_eq!(reported[0], first, "{c:?} cut after {cut} bytes, split at {split}");
+            }
+        }
+    }
+
+    // An invalid byte earlier in the chunk does not hide the cut character.
+    let mut input = cut_by_the_chunk("é", 1, b"tail\n");
+    input[0] = 0xff;
+    let reported = lines_reported(&[&input]);
+    assert_eq!(
+        reported.concat().matches('\u{fffd}').count(),
+        1,
+        "only the invalid byte is replaced: {reported:?}"
+    );
+}
+
+#[skuld::test]
+fn a_stream_that_ends_after_a_cut_character_loses_nothing() {
+    for c in WIDE {
+        for cut in 1..c.len() {
+            // The byte after the cut is no continuation, so the kept bytes go out at the stream's end, as lossy text.
+            let mut input = cut_by_the_chunk(&c[..0], cut, &c.as_bytes()[..cut]);
+            input.push(b'x');
+            let reported = lines_reported(&[&input]);
+            assert_eq!(
+                reported,
+                ["a".repeat(LINE_CHUNK - cut), "\u{fffd}x".to_owned()],
+                "{c:?} cut after {cut} bytes"
+            );
+        }
+    }
+}
+
+#[skuld::test]
+fn invalid_utf8_after_an_escape_is_reported_in_chunks_without_a_line_end() {
+    // Each invalid byte reports as a 3-byte U+FFFD, so a part rebuilt from its lossy text would outgrow the chunk.
+    let parts = 16;
+    let mut input = b"a\x1b[".to_vec();
+    input.resize(parts * LINE_CHUNK + 1, 0xff);
+
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    lines.write_all(&input).unwrap();
+    assert_eq!(progress.messages().len(), parts, "a part is out for each full chunk");
+    drop(lines);
+
+    let reported = progress.messages();
+    assert_eq!(reported.len(), parts + 1);
+    assert!(reported[1..parts].iter().all(|part| part.len() == 3 * LINE_CHUNK));
+}
+
+#[skuld::test]
+fn a_long_line_below_the_bound_is_one_entry_in_the_tail() {
+    // A linker command line, as rustc prints it after an error.
+    let command = format!("  = note: \"cc\" {}", long_line(30_000));
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    lines
+        .write_all(format!("error: linking failed\n{command}\n").as_bytes())
+        .unwrap();
+    drop(lines);
+
+    assert_eq!(tail.text(), format!("error: linking failed\n{command}"));
+    assert_eq!(progress.messages(), ["error: linking failed", command.as_str()]);
+}
+
+#[skuld::test]
+fn a_stream_of_unterminated_output_keeps_a_bounded_tail() {
+    let progress = MemoryProgress::default();
+    let tail = Tail::default();
+    let mut lines = Lines::new(&progress, &tail);
+    lines.write_all(long_line(50 * LINE_CHUNK).as_bytes()).unwrap();
+    drop(lines);
+    assert_eq!(tail.text().lines().count(), crate::error::TAIL_LINES);
 }
 
 /// The guests of the QEMU backend: a Windows recipe's guest is the real one, whose shells are the real ones.

@@ -55,6 +55,37 @@ fn child_inherits_parent_steps_in_order(#[fixture(unicode_home)] home: &Path) {
 }
 
 #[skuld::test]
+fn flatten_names_each_step_by_its_own_recipe_and_position(#[fixture(unicode_home)] home: &Path) {
+    write(
+        home,
+        "bäse ü.devvm.yaml",
+        "from: ubuntu-24.04\nsteps:\n  - run: one\n  - run: two\n  - run: three\n",
+    );
+    write(home, "mid.devvm.yaml", "from: bäse ü.devvm.yaml\n");
+    let top = write(
+        home,
+        "top.devvm.yaml",
+        "name: top one\nfrom: mid.devvm.yaml\nsteps:\n  - run: four\n  - run: five\n",
+    );
+    let flat = Recipe::from_file(&top).unwrap().flatten().unwrap();
+    let named: Vec<(&str, usize, usize)> = flat
+        .steps
+        .iter()
+        .map(|step| (step.recipe.as_str(), step.position, step.count))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("bäse ü", 0, 3),
+            ("bäse ü", 1, 3),
+            ("bäse ü", 2, 3),
+            ("top one", 0, 2),
+            ("top one", 1, 2),
+        ]
+    );
+}
+
+#[skuld::test]
 fn leaf_resources_override_per_field(#[fixture(unicode_home)] home: &Path) {
     write(
         home,

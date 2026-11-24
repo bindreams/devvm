@@ -78,6 +78,12 @@ devvm rm dev
   home. `devvm cp --help` lists the names it cannot carry.
 - `ls` lists the instances created from the current directory; `ls --all` lists every one.
 - `stop` keeps the disk; `start` boots it again. The guest's `/tmp` is empty after a restart: keep files under `~`.
+- A command that waits for another process on the same instance says
+  `waiting for <program> (PID <pid>) on instance <name>`, where `<program>` is the name of the holder's executable.
+  Only a holder of the exclusive lock is named (`start`, `stop`, `reboot`, `rm`, and devvm's own cleanup of abandoned
+  instances and dead VMs); a holder of `run`, `ssh` or `cp` is not, nor is the one moving an unreadable instance to
+  quarantine, and the wait says `another devvm command`. The wait names the holder at the moment it began: a holder
+  that has not yet written its record is not named, and the name stays on screen after that holder finishes.
 
 ### Output
 
@@ -86,7 +92,8 @@ devvm rm dev
 - On a terminal, stderr shows progress bars and a task tree. Windows Terminal and the Windows console get bars; mintty
   (Git Bash's own window) and any stream that is not a terminal get one concise line per event.
 - A failed step shows its last 20 lines in the error. `-v` (or `DEVVM_VERBOSE=1`) also shows step output and debug
-  notes as they happen.
+  notes as they happen. A single line of step output longer than 64 KiB is shown and logged in parts, and an escape
+  sequence cut by a part boundary can leave stray characters.
 - `NO_COLOR` turns colour off. With colour, `pass`, `fail` and `warning:` are coloured, and so is the `devvm-error:`
   prefix of the final error line; piped, that line is plain text.
 - Every run writes a log with all the detail to `logs` in the state directory (`~/.local/state/devvm/logs` unless
@@ -122,8 +129,8 @@ What a recipe file takes (an unknown key is an error):
   - `ubuntu-24.04`, the embedded recipe;
   - another recipe file, `../base.devvm.yaml`, relative to this file;
   - `{ iso, edition, product-key }`, a Windows ISO (see [Windows ISOs](#windows-isos));
-  - `{ url, sha256 }`, a Linux cloud image with cloud-init (qcow2 or another format `qemu-img` converts); `amd64:` and
-    `arm64:` each take one.
+  - `{ url, sha256 }` or `{ url, sha512 }` (exactly one of the two), a Linux cloud image with cloud-init (qcow2 or
+    another format `qemu-img` converts); `amd64:` and `arm64:` each take one.
 - `name:` names the recipe; the default is the file name without `.devvm.yaml`.
 - `resources:` takes `cpus`, `memory` and `disk`, as `8GiB` or a byte count.
 - `steps:` run in order. A step is exactly one of:

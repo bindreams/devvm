@@ -1,5 +1,6 @@
 use crate::ErrorKind;
 use crate::instance::name::InstanceName;
+use crate::test_support::fixtures::WINDOWS_DEVICE_NAMES;
 
 #[skuld::test]
 fn valid_names_parse() {
@@ -30,14 +31,6 @@ fn invalid_names_are_rejected() {
         "a/b",
         r"a\b",
         "a*",
-        "con",
-        "CON",
-        "com1",
-        "COM9",
-        "lpt9",
-        "nul",
-        "aux",
-        "prn",
         too_long.as_str(),
         "ж",
         "a\0b",
@@ -49,6 +42,21 @@ fn invalid_names_are_rejected() {
     for text in invalid {
         let error = InstanceName::parse(text).expect_err(text);
         assert_eq!(error.kind(), ErrorKind::InvalidName, "{text:?}");
+    }
+}
+
+#[skuld::test]
+fn every_windows_device_name_is_refused() {
+    // `CONIN$` and `CONOUT$` are devices, but `$` is no instance name character.
+    let devices = WINDOWS_DEVICE_NAMES
+        .into_iter()
+        .filter(|device| device.bytes().all(|b| b.is_ascii_alphanumeric()));
+    for device in devices {
+        for text in [device.to_ascii_lowercase(), device.to_owned()] {
+            let error = InstanceName::parse(&text).expect_err(&text);
+            assert_eq!(error.kind(), ErrorKind::InvalidName, "{text}");
+            assert!(error.message().contains("device name"), "{text}: {error}");
+        }
     }
 }
 

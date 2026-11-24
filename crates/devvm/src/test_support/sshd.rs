@@ -126,6 +126,9 @@ impl ProbeReply {
 /// The text of a Windows guest's readiness probe that selects its replies.
 use crate::guest::windows::ready::READY_PROBE;
 
+/// A channel of a connection: the connection's index and the channel's number on it.
+type ChannelKey = (usize, ChannelId);
+
 struct Trusted {
     host: PrivateKey,
     client: PublicKey,
@@ -138,12 +141,14 @@ pub(crate) struct State {
     bad: PrivateKey,
     pub(crate) options: SshdOptions,
     connections: AtomicUsize,
-    closed: Mutex<HashSet<ChannelId>>,
+    /// The channels a client has closed. A channel number is a connection's own, so it is kept with the connection.
+    closed: Mutex<HashSet<ChannelKey>>,
+    /// Fired when a channel closes and when an `exec` arrives: what [`TestSshd::wait_for_close_of`] re-checks.
     closed_notify: Notify,
     /// How many `exec` commands the server has received.
     started: AtomicUsize,
-    /// Every `exec` command the server has received, in order.
-    commands: Mutex<Vec<String>>,
+    /// Every `exec` command the server has received, in order, with the channel it came on.
+    commands: Mutex<Vec<(String, ChannelKey)>>,
     started_notify: Notify,
     /// How many commands dispatched to `script` have returned.
     returned: AtomicUsize,
@@ -171,6 +176,8 @@ pub(crate) struct State {
     /// Every `open` request: the path and the flags it came with.
     pub(crate) opened: Mutex<Vec<(String, russh_sftp::protocol::OpenFlags)>>,
     pub(crate) kill: Notify,
+    /// How many more channel opens the server refuses.
+    refuse_channels: AtomicUsize,
     /// Fired to end every connection with a reset (`RST`) instead of an orderly close.
     reset: Notify,
     /// How many requests are held (see [`SshdOptions::hold_realpath`] and the `stall-on-data` script).
@@ -244,6 +251,7 @@ impl TestSshd {
             transferred: AtomicU64::new(0),
             opened: Mutex::default(),
             kill: Notify::new(),
+            refuse_channels: AtomicUsize::new(0),
             reset: Notify::new(),
             held: AtomicUsize::new(0),
             held_notify: Notify::new(),
@@ -304,16 +312,41 @@ impl TestSshd {
         self.state.connections.load(Ordering::SeqCst)
     }
 
-    /// Blocks until a client has closed a channel, which is what a command that is not waited for observes.
-    pub fn wait_for_channel_close(&self) {
+    /// Blocks until a client has closed the channel `command` was run on. `command` is the text the client sent; it may be waited for before the command arrives, and a text
+    /// that is never sent makes this wait for ever. Panics when, at one of its checks, the server has received that
+    /// text on more than one channel: the channel meant would be ambiguous. A second send that arrives after the wait
+    /// has returned goes unseen.
+    pub fn wait_for_close_of(&self, command: &str) {
         wait_until(&self.state.closed_notify, || {
-            !self.state.closed.lock().unwrap().is_empty()
+            let channels: Vec<ChannelKey> = self
+                .state
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(sent, _)| sent == command)
+                .map(|(_, key)| *key)
+                .collect();
+            assert!(
+                channels.len() <= 1,
+                "the server received {command:?} {} times: which channel to wait for is ambiguous",
+                channels.len()
+            );
+            channels
+                .first()
+                .is_some_and(|key| self.state.closed.lock().unwrap().contains(key))
         });
     }
 
     /// Every `exec` command the server has received, in order, as the client sent it.
     pub fn commands(&self) -> Vec<String> {
-        self.state.commands.lock().unwrap().clone()
+        self.state
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(command, _)| command.clone())
+            .collect()
     }
 
     /// Blocks until the server has received `count` `exec` commands in total: the commands are then in flight on the
@@ -341,6 +374,11 @@ impl TestSshd {
     /// (the `stall-on-data` script).
     pub fn wait_for_held_request(&self) {
         wait_until(&self.state.held_notify, || self.state.held.load(Ordering::SeqCst) > 0);
+    }
+
+    /// Refuses the next `count` channel opens, on any connection; the connections stay up.
+    pub fn refuse_channel_opens(&self, count: usize) {
+        self.state.refuse_channels.store(count, Ordering::SeqCst);
     }
 
     /// Drops every open connection without a word.
@@ -550,13 +588,28 @@ impl Handler for Connection {
         reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        let refuse = &self.state.refuse_channels;
+        let mut left = refuse.load(Ordering::SeqCst);
+        let refused = loop {
+            if left == 0 {
+                break false;
+            }
+            match refuse.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break true,
+                Err(now) => left = now,
+            }
+        };
+        if refused {
+            // A reply dropped unanswered sends `AdministrativelyProhibited`.
+            return Ok(());
+        }
         self.channels.insert(channel.id(), channel);
         reply.accept().await;
         Ok(())
     }
 
     async fn channel_close(&mut self, channel: ChannelId, _session: &mut Session) -> Result<(), Self::Error> {
-        self.state.closed.lock().unwrap().insert(channel);
+        self.state.closed.lock().unwrap().insert((self.index, channel));
         self.state.closed_notify.notify_waiters();
         Ok(())
     }
@@ -631,10 +684,16 @@ impl Handler for Connection {
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
         let command = String::from_utf8_lossy(data).into_owned();
-        self.state.commands.lock().unwrap().push(command.clone());
+        self.state
+            .commands
+            .lock()
+            .unwrap()
+            .push((command.clone(), (self.index, channel)));
         self.state.started.fetch_add(1, Ordering::SeqCst);
         self.state.started_notify.notify_waiters();
+        self.state.closed_notify.notify_waiters();
         let handle = session.handle();
+        let connection = self.index;
         let words: Vec<&str> = command.split_whitespace().collect();
         match words.as_slice() {
             // Stops this connection's loop: nothing is read or written from now on.
@@ -653,7 +712,7 @@ impl Handler for Connection {
                 let state = self.state.clone();
                 runtime::spawn(async move {
                     let _returned = ScriptReturn(state.clone());
-                    script(state, handle, channel, command).await;
+                    script(state, handle, (connection, channel), command).await;
                 })
                 .expect("the SSH runtime is running");
             }
@@ -753,7 +812,8 @@ async fn finish(handle: &russh::server::Handle, channel: ChannelId, status: u32)
     let _ = handle.close(channel).await;
 }
 
-async fn script(state: Arc<State>, handle: russh::server::Handle, channel: ChannelId, command: String) {
+async fn script(state: Arc<State>, handle: russh::server::Handle, key: ChannelKey, command: String) {
+    let (_, channel) = key;
     // A shell runs its script: one of the commands above if it is one, else it succeeds, as a shell whose script this
     // server cannot run.
     let (command, shell) = match command.split_once(char::is_whitespace) {
@@ -817,8 +877,7 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, channel: Chann
         ["write-forever"] => {
             let chunk = vec![b'y'; 1024];
             loop {
-                if state.closed.lock().unwrap().contains(&channel) || handle.data(channel, chunk.clone()).await.is_err()
-                {
+                if state.closed.lock().unwrap().contains(&key) || handle.data(channel, chunk.clone()).await.is_err() {
                     return;
                 }
             }

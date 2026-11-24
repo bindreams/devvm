@@ -61,7 +61,7 @@ pub(crate) fn write_cidata_image(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
-    .and_then(|()| host.write_private(into, &image));
+    .and_then(|()| host.write_private(into, &image).map(drop));
     written.map_err(|e| {
         Error::io(
             ErrorKind::Io,
@@ -106,14 +106,10 @@ const FATFS_NAME_MESSAGES: [&str; 3] = [
     "File name contains unsupported characters",
 ];
 
-/// Whether `error`, from creating a file, is about the name: an existing entry of that name, or one of
-/// [`FATFS_NAME_MESSAGES`]. Anything else (a full directory, a full volume) is not the name's fault.
+/// Whether `error`, from creating a file, is about the name; a full directory or volume is not. `fatfs` reopens an
+/// existing file and retries short names until one is free, so `create_file` never answers `AlreadyExists`.
 fn is_name_rejection(error: &std::io::Error) -> bool {
-    match error.kind() {
-        std::io::ErrorKind::AlreadyExists => true,
-        std::io::ErrorKind::Other => FATFS_NAME_MESSAGES.contains(&error.to_string().as_str()),
-        _ => false,
-    }
+    error.kind() == std::io::ErrorKind::Other && FATFS_NAME_MESSAGES.contains(&error.to_string().as_str())
 }
 
 fn build_failed(error: std::io::Error) -> Error {

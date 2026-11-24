@@ -1,13 +1,9 @@
 use super::file_name;
-
-const DEVICES: [&str; 24] = [
-    "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
+use crate::test_support::fixtures::WINDOWS_DEVICE_NAMES;
 
 #[skuld::test]
 fn windows_device_names_never_become_file_names() {
-    for device in DEVICES {
+    for device in WINDOWS_DEVICE_NAMES {
         let encoded = device.replace('$', "%24");
         for url in [
             format!("https://h/{encoded}"),

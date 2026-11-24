@@ -633,12 +633,11 @@ fn a_relative_qemu_path_is_unavailable_naming_the_setting(#[fixture(unicode_home
     let relative = PathBuf::from("tools").join("qemu").join("bin");
     let source = world.source_configured(relative.clone());
 
-    for error in [source.resolve().unwrap_err(), source.existing().unwrap_err()] {
-        assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
-        assert!(error.message().contains("qemu.path"), "{error}");
-        assert!(error.message().contains(&relative.display().to_string()), "{error}");
-        assert!(!error.message().contains("  "), "a run of spaces in {error}");
-    }
+    let error = source.resolve().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "{error}");
+    assert!(error.message().contains("qemu.path"), "{error}");
+    assert!(error.message().contains(&relative.display().to_string()), "{error}");
+    assert!(!error.message().contains("  "), "a run of spaces in {error}");
     assert_eq!(world.transport.gets(), 0);
 }
 
@@ -761,16 +760,14 @@ fn tool_appends_the_platform_suffix() {
 }
 
 #[skuld::test]
-fn lazy_install_downloads_nothing_until_get_and_existing_never_downloads(#[fixture(unicode_home)] home: &Path) {
+fn lazy_install_downloads_nothing_until_get(#[fixture(unicode_home)] home: &Path) {
     let world = world(home, zip_of(&files()));
     let lazy = world.lazy(verified(&world.asked));
 
-    assert!(lazy.existing().unwrap().is_none(), "nothing is installed yet");
-    assert_eq!(world.transport.gets(), 0, "existing never downloads");
+    assert_eq!(world.transport.gets(), 0, "nothing is downloaded before get");
 
     let first = lazy.get().unwrap();
     assert_eq!(world.transport.gets(), 1);
-    assert!(lazy.existing().unwrap().is_some());
     let again = lazy.get().unwrap();
     assert!(Arc::ptr_eq(&first, &again), "resolved once");
     assert_eq!(world.transport.gets(), 1);
@@ -825,7 +822,6 @@ fn an_unknown_triple_fails_at_get_naming_it_and_downloads_nothing(#[fixture(unic
     let error = lazy.get().unwrap_err();
     assert!(error.message().contains("riscv64-unknown-plan9"), "{error}");
     assert_eq!(world.transport.gets(), 0);
-    assert!(lazy.existing().is_err());
 }
 
 #[skuld::test]

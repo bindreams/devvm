@@ -22,6 +22,31 @@ fn lookup<'a>(vars: &'a [(&'a str, OsString)]) -> impl Fn(&str) -> Option<OsStri
 }
 
 #[skuld::test]
+fn the_variables_of_a_root_resolve_to_the_directories_below_it(#[fixture(unicode_home)] home: &Path) {
+    let vars = Dirs::env_under(home).map(|(name, dir)| (name, dir.into_os_string()));
+
+    let resolved = Dirs::from_lookup(None, &lookup(&vars), &run_default).unwrap();
+
+    let under = Dirs::under(home);
+    assert_eq!(resolved.config, under.config);
+    assert_eq!(resolved.data, under.data);
+    assert_eq!(resolved.cache, under.cache);
+    assert_eq!(resolved.state, under.state);
+    assert_eq!(resolved.run().unwrap(), under.run().unwrap());
+}
+
+#[skuld::test]
+fn the_variables_of_a_relative_root_panic_naming_it() {
+    let outcome = std::panic::catch_unwind(|| Dirs::env_under(Path::new("relative/root")));
+
+    let payload = outcome.expect_err("a relative root has no variables: from_lookup would ignore them");
+    let message = payload
+        .downcast_ref::<String>()
+        .expect("the panic carries a formatted message");
+    assert!(message.contains("relative/root"), "the panic names the root: {message}");
+}
+
+#[skuld::test]
 fn xdg_overrides_are_honored_for_all_four(#[fixture(unicode_home)] home: &Path) {
     let base = home.join("x y");
     let vars = [

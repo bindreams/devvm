@@ -5,6 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File, Metadata, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
@@ -153,7 +154,7 @@ impl<M: FileModes> Host for M {
     }
 
     /// Mode `0600` is set when the file is created, so there is no moment with wider permissions.
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         create_new_with(self.private_options(), path, bytes)
     }
 
@@ -169,9 +170,8 @@ impl<M: FileModes> Host for M {
         FileModes::set_executable(self, path)
     }
 
-    /// By path through `utimensat`, which asks for no write access to the file.
     fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
-        filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(i64::from(seconds), 0))
+        super::set_modified(path, UNIX_EPOCH + Duration::from_secs(u64::from(seconds)))
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {

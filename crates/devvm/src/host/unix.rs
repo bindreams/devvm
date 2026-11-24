@@ -3,7 +3,9 @@
 use std::fs::{DirBuilder, File, FileType, Metadata, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use rustix::fs::{AtFlags, CWD, Timespec, Timestamps, UTIME_OMIT, utimensat};
 use rustix::io::Errno;
 
 use super::entry;
@@ -130,6 +132,24 @@ impl FileModes for UnixHost {
     }
 }
 
+/// Sets the modification time of `path` (through a link) and leaves the access time alone. It needs ownership only and
+/// opens nothing, so a file or directory its owner cannot read takes it, and a FIFO does not block it.
+pub(crate) fn set_modified(path: &Path, time: SystemTime) -> std::io::Result<()> {
+    let modified = match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => Timespec::try_from(after),
+        Err(before) => Timespec::try_from(before.duration()).map(|ago| -ago),
+    }
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "time out of range"))?;
+    let times = Timestamps {
+        last_access: Timespec {
+            tv_sec: 0,
+            tv_nsec: UTIME_OMIT,
+        },
+        last_modification: modified,
+    };
+    utimensat(CWD, path, &times, AtFlags::empty()).map_err(std::io::Error::from)
+}
+
 /// Opens `path` for reading, but not a link and not a pipe's other end: a link that appeared since the file was looked
 /// at fails the open, and a FIFO opens without waiting for a writer.
 fn open_regular(path: &Path) -> std::io::Result<File> {
@@ -188,7 +208,7 @@ fn publish_with(from: &Path, to: &Path, rename: impl FnOnce(&Path, &Path) -> Res
     target_os = "watchos"
 ))]
 fn rename_without_replacing(from: &Path, to: &Path) -> Result<(), Errno> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    use rustix::fs::{RenameFlags, renameat_with};
     renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE)
 }
 

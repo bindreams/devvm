@@ -15,7 +15,7 @@ use super::plan::{Beyond, Item, Kind, Present, base_name, check_listing, join, p
 use super::typed::Typed;
 use super::{Failed, Moved, NO_REQUEST_LIMIT_SECS, POSIX_RENAME, local_error, partial_name, pump};
 use crate::access::session::watched::Watched;
-use crate::access::session::{Inner, Transport};
+use crate::access::session::{Inner, Transport, Watch, not_started};
 use crate::guest::GuestOs;
 use crate::{Error, ErrorKind, Result};
 
@@ -52,7 +52,7 @@ impl Remote {
         tokio::select! {
             biased;
             remote = started => remote,
-            reason = channel_end.ended() => Err(channel_failure(&inner, "starting the SFTP subsystem", &reason)),
+            reason = channel_end.ended() => Err(not_started(channel_failure(&inner, "starting the SFTP subsystem", &reason))),
         }
     }
 
@@ -68,7 +68,7 @@ impl Remote {
                     .handle
                     .channel_open_session()
                     .await
-                    .map_err(|_| inner.connection_ended("opening the SFTP subsystem"))?;
+                    .map_err(|e| inner.channel_not_opened("opening the SFTP subsystem", &e))?;
                 channel
                     .request_subsystem(true, "sftp")
                     .await
@@ -95,7 +95,7 @@ impl Remote {
     pub(super) async fn guarded<T>(&self, awaiting: &str, operation: impl Future<Output = Result<T>>) -> Result<T> {
         tokio::select! {
             biased;
-            result = self.inner.guarded(awaiting, true, operation) => result,
+            result = self.inner.guarded(awaiting, Watch::Transport, operation) => result,
             reason = self.channel_end.ended() => Err(channel_failure(&self.inner, awaiting, &reason)),
         }
     }

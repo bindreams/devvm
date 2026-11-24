@@ -1,12 +1,15 @@
+use std::fs::{File, FileTimes};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rustix::io::Errno;
 
-use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with};
+use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with, set_modified};
 use crate::host::{Entry, Host, MakePrivateError, MakePrivateOutcome};
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::root::refuse_root;
 
 #[skuld::test]
 fn only_a_missing_rename_is_told_from_a_refusal_of_this_one() {
@@ -117,12 +120,7 @@ fn a_fifo_in_the_middle_of_a_path_makes_what_is_below_it_absent(#[fixture(unicod
 /// does. Mode bits do not bind root, so the test refuses to run as root.
 #[skuld::test]
 fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_home)] home: &Path) {
-    // SAFETY: `geteuid` reads a process attribute.
-    assert_ne!(
-        unsafe { libc::geteuid() },
-        0,
-        "directory modes do not bind root: run this test as another user"
-    );
+    refuse_root("directory modes do not bind root");
     for mode in [0o300, 0o100] {
         let name = format!("d{mode:o}");
         let directory = home.join(&name);
@@ -134,6 +132,79 @@ fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_hom
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(found, Ok(Entry::File(_))), "{name}: {found:?}");
     }
+}
+
+/// A file or directory its owner cannot read (`chmod 200`, `chmod 300`) takes a time. Mode bits do not bind root, so the
+/// test refuses to run as root.
+#[skuld::test]
+fn set_mtime_sets_the_time_of_what_its_owner_cannot_read(#[fixture(unicode_home)] home: &Path) {
+    // SAFETY: `geteuid` reads a process attribute.
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "modes do not bind root: run this test as another user"
+    );
+    let file = home.join("write-only.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let directory = home.join("write-only-dir");
+    std::fs::create_dir(&directory).unwrap();
+    for (path, mode) in [(&file, 0o200), (&directory, 0o300)] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        let set = UnixHost.set_mtime(path, 1_000_000_000);
+        let since = std::fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        // The temporary directory cannot be removed with the modes left as they are.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        set.unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(since.as_secs(), 1_000_000_000, "{}", path.display());
+    }
+}
+
+/// Seconds since 1970 of a file's access time or modification time, which `stat` reads without touching either.
+fn seconds(time: std::io::Result<SystemTime>) -> u64 {
+    time.unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// The access time stays what it was: only the modification time is set.
+#[skuld::test]
+fn set_modified_leaves_the_access_time_alone(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("read.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let accessed = UNIX_EPOCH + Duration::from_secs(500_000_000);
+    File::open(&file)
+        .unwrap()
+        .set_times(FileTimes::new().set_accessed(accessed))
+        .unwrap();
+    set_modified(&file, UNIX_EPOCH + Duration::from_secs(1_000_000_000)).unwrap();
+    let metadata = std::fs::metadata(&file).unwrap();
+    assert_eq!(seconds(metadata.accessed()), 500_000_000);
+    assert_eq!(seconds(metadata.modified()), 1_000_000_000);
+}
+
+/// A link is followed: the time lands on what it points at, and the link keeps its own.
+#[skuld::test]
+fn set_modified_sets_the_time_of_the_target_of_a_link(#[fixture(unicode_home)] home: &Path) {
+    let (target, link) = (home.join("target.txt"), home.join("link.txt"));
+    std::fs::write(&target, b"x").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let link_time = seconds(std::fs::symlink_metadata(&link).unwrap().modified());
+    set_modified(&link, UNIX_EPOCH + Duration::from_secs(1_000_000_000)).unwrap();
+    assert_eq!(seconds(std::fs::metadata(&target).unwrap().modified()), 1_000_000_000);
+    assert_eq!(seconds(std::fs::symlink_metadata(&link).unwrap().modified()), link_time);
+}
+
+/// A FIFO takes a time without waiting for a peer. A regression that opens the FIFO blocks in `open` with no one on the
+/// other end, so this test hangs instead of failing: a hang here is the failure, and nothing caps it.
+#[skuld::test]
+fn set_modified_sets_the_time_of_a_fifo_without_blocking(#[fixture(unicode_home)] home: &Path) {
+    let fifo = home.join("pipe");
+    make_fifo(&fifo);
+    set_modified(&fifo, UNIX_EPOCH + Duration::from_secs(1_000_000_000)).unwrap();
+    assert_eq!(seconds(std::fs::metadata(&fifo).unwrap().modified()), 1_000_000_000);
 }
 
 // Private files -------------------------------------------------------------------------------------------------------
@@ -261,12 +332,7 @@ fn a_symlink_at_the_runtime_dir_path_is_refused_by_the_check_that_makes_nothing(
 /// the test refuses to run as root.
 #[skuld::test]
 fn a_runtime_dir_behind_an_unsearchable_parent_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
-    // SAFETY: `geteuid` reads a process attribute.
-    assert_ne!(
-        unsafe { libc::geteuid() },
-        0,
-        "directory modes do not bind root: run this test as another user"
-    );
+    refuse_root("directory modes do not bind root");
     let parent = home.join("locked");
     std::fs::create_dir(&parent).unwrap();
     let dir = parent.join("run");

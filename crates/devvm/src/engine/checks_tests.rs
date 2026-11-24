@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 
 use super::{host_checks, iso_check, iso_checks, tool_check};
@@ -11,6 +12,7 @@ use crate::guest::fake::FakeGuests;
 use crate::host::Host;
 use crate::iso::{IsoMemo, Known, key_iso};
 use crate::test_support::fixtures::{MemoryProgress, iso_fixture, unicode_home};
+use crate::test_support::helper;
 use crate::test_support::host::{NO_ACCELERATOR, NoAccelHost, RecordingHost, TestHost};
 use crate::{Dirs, Unavailable};
 
@@ -117,7 +119,7 @@ fn availability_does_not_ask_the_backend_once_the_accelerator_has_failed(#[fixtu
 }
 
 #[skuld::test]
-fn the_host_checks_name_the_accelerator_and_the_free_space_of_the_data_and_cache_directories(
+fn the_host_checks_name_the_accelerator_and_the_free_space_of_the_data_cache_and_state_directories(
     #[fixture(unicode_home)] home: &Path,
 ) {
     let host = RecordingHost::new();
@@ -180,6 +182,99 @@ fn a_tool_that_runs_passes_with_what_it_printed_and_one_that_does_not_exist_fail
     assert!(why.contains("devvm-no-such-tool-4f1c"), "{why}");
 }
 
+/// The test binary as a tool that prints `stdout` and `stderr` and ends with `code`.
+fn tool_saying(stdout: &str, stderr: &str, code: i32) -> Command {
+    helper::command("wrap-says", &[stdout, stderr, &code.to_string()])
+}
+
+#[skuld::test]
+fn a_tool_that_prints_only_on_stderr_passes_with_its_first_line() {
+    let ssh = tool_check("ssh", tool_saying("", "OpenSSH_9.6\nmore", 0));
+
+    assert_eq!(ssh.outcome, Ok("OpenSSH_9.6".to_owned()));
+}
+
+#[skuld::test]
+fn a_tool_that_prints_on_both_streams_passes_with_the_first_line_of_stdout() {
+    let tool = tool_check("tool", tool_saying("\n  v1 \nv2", "note", 0));
+
+    assert_eq!(tool.outcome, Ok("v1".to_owned()));
+}
+
+#[skuld::test]
+fn a_tool_that_prints_nothing_passes_as_found() {
+    assert_eq!(
+        tool_check("tool", tool_saying("", "", 0)).outcome,
+        Ok("found".to_owned())
+    );
+}
+
+#[skuld::test]
+fn a_tool_that_exits_non_zero_fails_with_the_first_line_it_said_on_stderr() {
+    let why = tool_check("tool", tool_saying("on stdout", "usage: tool\nsecond line", 2))
+        .outcome
+        .expect_err("the tool exits with 2");
+
+    // The message echoes the arguments, which hold the helper's text: assert on its tail.
+    assert!(why.starts_with("`tool "), "{why}");
+    assert!(why.contains(" failed ("), "{why}");
+    assert!(why.ends_with("): usage: tool"), "{why}");
+}
+
+#[skuld::test]
+fn a_tool_that_exits_non_zero_names_the_first_line_that_is_not_blank() {
+    let why = tool_check(
+        "tool",
+        tool_saying(
+            "",
+            "
+ 
+usage: tool
+second line",
+            2,
+        ),
+    )
+    .outcome
+    .expect_err("the tool exits with 2");
+
+    assert!(why.ends_with("): usage: tool"), "{why}");
+}
+
+#[skuld::test]
+fn a_tool_that_exits_non_zero_with_only_stdout_fails_with_the_first_line_of_stdout() {
+    let why = tool_check(
+        "tool",
+        tool_saying(
+            "not found
+second line",
+            "",
+            2,
+        ),
+    )
+    .outcome
+    .expect_err("the tool exits with 2");
+
+    assert!(why.ends_with("): not found"), "{why}");
+}
+
+#[skuld::test]
+fn a_tool_that_exits_non_zero_without_a_word_fails_on_its_status_alone() {
+    let why = tool_check("tool", tool_saying("", "", 3))
+        .outcome
+        .expect_err("the tool exits with 3");
+
+    assert!(why.contains("failed"), "{why}");
+    assert!(why.ends_with(')'), "{why}");
+    assert!(!why.contains("): "), "{why}");
+}
+
+#[skuld::test]
+fn a_tool_that_succeeds_with_only_blank_stdout_passes_with_the_first_line_of_stderr() {
+    let tool = tool_check("tool", tool_saying("  \n\t\n", "\nnote\nmore", 0));
+
+    assert_eq!(tool.outcome, Ok("note".to_owned()));
+}
+
 #[skuld::test]
 fn the_engine_lists_the_host_checks_then_the_tools_then_the_backends(#[fixture(unicode_home)] home: &Path) {
     let engine = engine_checking(home, &TestHost, Some(vec![passing("qemu")]));
@@ -224,12 +319,7 @@ fn the_iso_line_rehashes_each_known_iso_and_names_a_changed_one(#[fixture(unicod
     let mut bytes = std::fs::read(&changed).unwrap();
     *bytes.last_mut().unwrap() ^= 0xff;
     std::fs::write(&changed, bytes).unwrap();
-    std::fs::File::options()
-        .write(true)
-        .open(&changed)
-        .unwrap()
-        .set_modified(mtime)
-        .unwrap();
+    crate::host::set_modified(&changed, mtime).unwrap();
 
     let checks = iso_checks(&memo, &TestHost, &progress);
     assert_eq!(checks.len(), 2);

@@ -1,5 +1,6 @@
 //! The crate's error type: a stable kind, a message, and an optional source.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::Path;
 
@@ -142,11 +143,15 @@ impl Error {
 
     /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, after its message.
     pub(crate) fn with_tail(mut self, what: &str, text: &str) -> Error {
-        let tail = last_lines(text);
+        self.append_tail(what, &last_lines(text));
+        self
+    }
+
+    /// `tail`, already the last lines of `what`, after the message; nothing when it is empty.
+    pub(crate) fn append_tail(&mut self, what: &str, tail: &str) {
         if !tail.is_empty() {
             self.message = format!("{}\nthe end of {what}:\n{tail}", self.message);
         }
-        self
     }
 
     pub fn kind(&self) -> ErrorKind {
@@ -170,10 +175,47 @@ impl std::error::Error for Error {
     }
 }
 
+/// The text of `error` followed by the text of each error beneath it, `: ` between them, so a message carries the cause
+/// (DNS, refused, TLS) and not only the top layer. A source whose text an earlier layer already says is left out.
+pub(crate) fn text_with_sources(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut next = error.source();
+    while let Some(source) = next {
+        let said = source.to_string();
+        if !text.contains(&said) {
+            text.push_str(": ");
+            text.push_str(&said);
+        }
+        next = source.source();
+    }
+    text
+}
+
 pub(crate) const TAIL_LINES: usize = 20;
 
 /// The last [`TAIL_LINES`] lines of `text`, with the line ends of a Windows file taken off.
 pub(crate) fn last_lines(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
+    let mut lines = LastLines::default();
+    for line in text.lines() {
+        lines.push(line.to_owned());
+    }
+    lines.text()
+}
+
+/// The last [`TAIL_LINES`] lines pushed.
+#[derive(Default)]
+pub(crate) struct LastLines(VecDeque<String>);
+
+impl LastLines {
+    pub(crate) fn push(&mut self, line: String) {
+        if self.0.len() == TAIL_LINES {
+            self.0.pop_front();
+        }
+        self.0.push_back(line);
+    }
+
+    /// The lines joined by `\n`, with no trailing newline.
+    pub(crate) fn text(&self) -> String {
+        self.0.iter().map(String::as_str).collect::<Vec<_>>().join("\n")
+    }
 }

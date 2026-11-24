@@ -7,7 +7,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
@@ -74,6 +74,17 @@ pub(crate) fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
         _ => ("", &units),
     };
     Ok(head.encode_utf16().chain(rest.iter().copied()).chain(Some(0)).collect())
+}
+
+/// Sets the modification time of the file or directory `path`. Opened for `FILE_WRITE_ATTRIBUTES`
+/// alone: the read-only attribute, or an ACL that denies writing the contents, does not stop it. A directory opens only
+/// with backup semantics.
+pub(crate) fn set_modified(path: &Path, time: SystemTime) -> std::io::Result<()> {
+    OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?
+        .set_modified(time)
 }
 
 /// A directory path from a `Get*DirectoryW` call, which returns the length it needs when the buffer is too small.
@@ -171,7 +182,7 @@ impl Host for WindowsHost {
     }
 
     /// See [`private_file::create_new`].
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> std::io::Result<File> {
         fill_new(private_file::create_new(path)?, path, bytes)
     }
 
@@ -187,14 +198,8 @@ impl Host for WindowsHost {
         Ok(())
     }
 
-    /// Opened for `FILE_WRITE_ATTRIBUTES` alone: the read-only attribute, or an ACL that denies writing the contents,
-    /// does not stop it. A directory opens only with backup semantics.
     fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()> {
-        OpenOptions::new()
-            .access_mode(FILE_WRITE_ATTRIBUTES)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-            .open(path)?
-            .set_modified(UNIX_EPOCH + Duration::from_secs(u64::from(seconds)))
+        set_modified(path, UNIX_EPOCH + Duration::from_secs(u64::from(seconds)))
     }
 
     fn file_name_problem(&self, name: &str) -> Option<String> {

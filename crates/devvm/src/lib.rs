@@ -38,7 +38,7 @@ pub use error::{Error, ErrorKind, Result};
 pub use exit::{ExitStatus, Output};
 pub use host::{Unavailable, host_exit_width};
 pub use instance::info::{InstanceInfo, InstanceState};
-pub use types::{Arch, BuildOptions, Command, GuestKind, Network, RunAs, Sha256, StartOptions};
+pub use types::{Arch, BuildOptions, Command, ContentHash, GuestKind, Network, RunAs, Sha256, Sha512, StartOptions};
 pub use vm::{Guest, Image, Instance, Vm, availability};
 
 /// The target triple this crate was compiled for, e.g. `x86_64-pc-windows-msvc`.
@@ -78,6 +78,7 @@ mod test_helpers {
 
     const HELPERS: &[(&str, HelperFn)] = &[
         ("hold-lock", crate::store::lock::lock_tests::hold_lock),
+        ("hold-instance", crate::instance::dir::dir_tests::hold_instance),
         ("sleeper", crate::contain::contain_tests::sleeper),
         ("fake-vm", crate::test_support::fake_vm::fake_vm),
         ("fake-launcher", crate::backend::fake::fake_launcher),
@@ -103,6 +104,7 @@ mod test_helpers {
         ("snapshot-git-env", crate::copy::copy_tests::snapshot_with_git_variables),
         ("wrap-argv", crate::test_support::wrapped_programs::argv_echo),
         ("wrap-exit", crate::test_support::wrapped_programs::exit_with),
+        ("wrap-says", crate::test_support::wrapped_programs::says),
         ("wrap-bytes", crate::test_support::wrapped_programs::write_bytes),
     ];
 

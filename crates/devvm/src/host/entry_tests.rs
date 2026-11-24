@@ -1,7 +1,9 @@
 use std::io::Read;
 use std::path::Path;
 
-use super::{Entry, look_failed, nearest_existing, nearest_existing_dir, refused_as_link, symlink_metadata_if_present};
+use super::{
+    Entry, failed, look_failed, nearest_existing, nearest_existing_dir, refused_as_link, symlink_metadata_if_present,
+};
 use crate::host::current;
 use crate::test_groups::{Group, symlinks};
 use crate::test_support::fixtures::unicode_home;
@@ -105,6 +107,21 @@ fn a_failed_look_says_so_and_keeps_the_original_error_with_its_os_code() {
     assert_eq!(error.kind(), kind);
     assert_eq!(error.to_string(), format!("cannot look at /x/y: {text}"));
     let source = std::error::Error::source(error.get_ref().expect("the look is the error's payload"))
+        .and_then(|s| s.downcast_ref::<std::io::Error>())
+        .expect("the original is the source");
+    assert_eq!(source.raw_os_error(), Some(5));
+}
+
+#[skuld::test]
+fn a_failure_with_context_keeps_the_kind_the_source_and_its_os_code() {
+    let original = std::io::Error::from_raw_os_error(5);
+    let (kind, text) = (original.kind(), original.to_string());
+
+    let error = failed(format_args!("cannot write {}", "/x/y"), original);
+
+    assert_eq!(error.kind(), kind);
+    assert_eq!(error.to_string(), format!("cannot write /x/y: {text}"));
+    let source = std::error::Error::source(error.get_ref().expect("the context is the error's payload"))
         .and_then(|s| s.downcast_ref::<std::io::Error>())
         .expect("the original is the source");
     assert_eq!(source.raw_os_error(), Some(5));

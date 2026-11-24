@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::OtherHost;
 use super::{Comparison, FileId, HoldOutcome, Host, MakePrivateError, MakePrivateOutcome, current, host_exit_width};
@@ -181,6 +182,37 @@ fn write_private_is_create_new_and_owner_only(#[fixture(unicode_home)] home: &Pa
     );
 }
 
+#[skuld::test]
+fn write_private_returns_the_file_it_made_open_after_its_bytes(#[fixture(unicode_home)] home: &Path) {
+    use std::io::Write;
+
+    let path = home.join("private log");
+    let mut file = current().write_private(&path, b"first ").unwrap();
+    file.write_all(b"second").unwrap();
+    drop(file);
+    assert_eq!(std::fs::read(&path).unwrap(), b"first second");
+}
+
+#[skuld::test]
+fn write_private_returns_a_file_that_appends_after_it_is_cut_from_outside(#[fixture(unicode_home)] home: &Path) {
+    use std::io::Write;
+
+    let path = home.join("private log");
+    let mut file = current().write_private(&path, b"first").unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"second").unwrap();
+    drop(file);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"second",
+        "a record after a cut lands at the new end, not behind a hole"
+    );
+}
+
 /// Writes a private file into a directory that hands `BUILTIN\Users` read to what is created in it, as a directory
 /// under `C:\Users` does. OpenSSH for Windows ignores a private key whose DACL lets anyone else read it.
 #[cfg(windows)]
@@ -328,6 +360,41 @@ fn set_mtime_sets_the_time_of_a_directory_and_of_a_read_only_file(#[fixture(unic
         let mut permissions = std::fs::metadata(&file).unwrap().permissions();
         permissions.set_readonly(false);
         std::fs::set_permissions(&file, permissions).unwrap();
+    }
+}
+
+/// The whole second a time falls in, counted from 1970 and rounded down: what is kept on every file system, whatever
+/// finer resolution it has.
+fn whole_seconds(time: SystemTime) -> i64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => after.as_secs() as i64,
+        Err(before) => {
+            let ago = before.duration();
+            -(ago.as_secs() as i64) - i64::from(ago.subsec_nanos() > 0)
+        }
+    }
+}
+
+/// A date before 1970, a whole second or with a fraction, and a date after it with a fraction, each land in the second
+/// they fall in. `SystemTime` cannot hold a time before 1601 on Windows, so none is tried.
+#[skuld::test]
+fn set_modified_sets_dates_before_1970_and_dates_with_a_fraction(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("dated.txt");
+    std::fs::write(&file, b"x").unwrap();
+    for (before, secs, nanos) in [
+        (true, 86_400, 0),
+        (true, 86_400, 250_000_000),
+        (true, 631_152_000, 0),
+        (false, 1_000_000_000, 750_000_000),
+    ] {
+        let time = if before {
+            UNIX_EPOCH - Duration::new(secs, nanos)
+        } else {
+            UNIX_EPOCH + Duration::new(secs, nanos)
+        };
+        crate::host::set_modified(&file, time).unwrap();
+        let stored = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(whole_seconds(stored), whole_seconds(time), "{time:?}");
     }
 }
 

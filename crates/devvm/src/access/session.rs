@@ -29,7 +29,7 @@ use crate::progress::Progress;
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) use crate::access::exec::ExecEnd;
-use crate::access::exec::{Event, run_exec};
+use crate::access::exec::{Arrived, EVENT_BUFFER, relay, run_exec};
 use crate::access::sftp::Sftp;
 
 pub(super) mod watched;
@@ -41,9 +41,6 @@ mod session_tests;
 /// The pause between two connection attempts of a booting guest, and between two readiness probes of a Windows one. It
 /// paces the loop; it never ends it.
 pub(crate) const RETRY_PAUSE: Duration = Duration::from_millis(200);
-
-/// Chunks of guest output the executing task may hold ahead of a slow host writer.
-const EVENT_BUFFER: usize = 16;
 
 // Parameters ==========================================================================================================
 
@@ -379,6 +376,44 @@ impl Context {
     }
 }
 
+/// The source of an error for an operation that failed before anything of it reached the guest: its channel could not
+/// be opened. Running it again, on another connection, repeats nothing.
+#[derive(Debug)]
+struct NotStarted;
+
+impl std::fmt::Display for NotStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("nothing of the operation reached the guest")
+    }
+}
+
+impl std::error::Error for NotStarted {}
+
+/// `error`, marked as one of an operation that had not started (see [`is_not_started`]).
+pub(super) fn not_started(error: Error) -> Error {
+    error.with_source(NotStarted)
+}
+
+/// Whether `error` is of an operation that failed before anything of it reached the guest. Only such an operation may
+/// be run again on a new connection: a command that was sent may have run.
+pub(crate) fn is_not_started(error: &Error) -> bool {
+    std::error::Error::source(error).is_some_and(|source| source.is::<NotStarted>())
+}
+
+/// What ends a [`Inner::guarded`] operation besides the VM exiting and the boot bound passing, neither of which marks
+/// its error as one of an operation that had not started.
+#[derive(Clone, Copy)]
+pub(super) enum Watch {
+    /// Nothing else: the operation sees the end of the connection itself (a channel that closes), as a race here could
+    /// report a lost connection for a command that has finished.
+    VmAndBoot,
+    /// The connection ending.
+    Transport,
+    /// The connection ending, before anything of the operation reached the guest: its error is marked with
+    /// [`not_started`].
+    TransportBeforeStart,
+}
+
 /// Why one connection attempt failed.
 enum Failure {
     Tcp(std::io::Error),
@@ -436,22 +471,18 @@ pub(crate) struct SshSession {
 }
 
 impl Inner {
-    /// Runs `operation`, ending it early when the VM process exits, when a booting guest passes its boot bound and,
-    /// if `watch_transport`, when the connection ends. `awaiting` names the operation in those errors.
-    ///
-    /// An `operation` that sees the end of the connection itself (a channel that closes) passes `false`: this race
-    /// could otherwise report a lost connection for a command that has finished.
+    /// Runs `operation`, ending it early when the VM process exits, when a booting guest passes its boot bound and, as
+    /// `watch` says, when the connection ends. `awaiting` names the operation in those errors.
     pub(super) async fn guarded<T>(
         &self,
         awaiting: &str,
-        watch_transport: bool,
+        watch: Watch,
         operation: impl Future<Output = Result<T>>,
     ) -> Result<T> {
         let transport_ended = async {
-            if watch_transport {
-                self.transport.ended().await
-            } else {
-                std::future::pending().await
+            match watch {
+                Watch::VmAndBoot => std::future::pending().await,
+                Watch::Transport | Watch::TransportBeforeStart => self.transport.ended().await,
             }
         };
         tokio::select! {
@@ -459,7 +490,13 @@ impl Inner {
             result = operation => result,
             end = self.vm.gone() => Err(self.ctx.vm_ended(awaiting, &end)),
             bound = self.boot.passed() => Err(self.ctx.bound_passed(awaiting, bound.limit)),
-            reason = transport_ended => Err(self.ctx.lost(awaiting, &reason)),
+            reason = transport_ended => {
+                let lost = self.ctx.lost(awaiting, &reason);
+                Err(match watch {
+                    Watch::TransportBeforeStart => not_started(lost),
+                    _ => lost,
+                })
+            }
         }
     }
 
@@ -474,6 +511,28 @@ impl Inner {
             .transport_end()
             .unwrap_or_else(|| "the connection ended".to_owned());
         self.ctx.lost(awaiting, &reason)
+    }
+
+    /// The error for a channel that `cause` kept from opening: the server's refusal on a connection that lives, which
+    /// the caller can tell apart, or a lost connection. Nothing of the operation `awaiting` has reached the guest in
+    /// either case ([`is_not_started`]).
+    ///
+    /// Decided by `cause`, not by [`Self::transport_end`]: in russh 0.65.1 the session task closes the handle's
+    /// receiver (`client/mod.rs:1359-1366`) before `handler.disconnected` records the end, so a send fails with
+    /// `SendError` (`client/mod.rs:844-855`) or a dropped reply with `Disconnect` (`client/mod.rs:768-771`) while
+    /// `transport_end` is still `None`. Only the server's answer, `ChannelOpenFailure` (`client/mod.rs:765-767`),
+    /// leaves the task running.
+    pub(super) fn channel_not_opened(&self, awaiting: &str, cause: &russh::Error) -> Error {
+        not_started(match cause {
+            russh::Error::ChannelOpenFailure(_) => Error::new(
+                ErrorKind::Io,
+                format!(
+                    "{awaiting}: the channel could not be opened while the connection is up ({cause}) (serial log: {})",
+                    self.ctx.serial_log.display()
+                ),
+            ),
+            _ => self.connection_ended(&format!("{awaiting}: the channel could not be opened")),
+        })
     }
 }
 
@@ -680,60 +739,15 @@ impl SshSession {
         out: &mut dyn std::io::Write,
         err: &mut dyn std::io::Write,
     ) -> Result<ExecEnd> {
-        let (sender, mut receiver) = mpsc::channel(EVENT_BUFFER);
-        let mut lost = None;
-        let inner = self.inner.clone();
-        let command = command.to_owned();
-        runtime::spawn(run_exec(inner, command, sender))?;
-        loop {
-            let (to_stderr, chunk) = match runtime::wait(receiver.recv()) {
-                Some(Event::Out(chunk)) => (false, chunk),
-                Some(Event::Err(chunk)) => (true, chunk),
-                Some(Event::End(result)) => {
-                    // A partial line the host writers still buffer (a prompt) would otherwise be lost.
-                    let flushed_out = out.flush();
-                    let flushed = flushed_out.and(err.flush());
-                    return match (result, flushed, lost) {
-                        (Ok(status), Ok(()), None) => Ok(ExecEnd::Finished(status)),
-                        (Ok(status), Ok(()), Some(lost)) => Ok(ExecEnd::FinishedWithLoss { status, lost }),
-                        (Ok(status), Err(error), lost) => Ok(ExecEnd::HostOutputClosed {
-                            error: match lost {
-                                None => error,
-                                Some(lost) => {
-                                    let text = format!("{error}; the command's output was lost as well ({lost})");
-                                    std::io::Error::new(error.kind(), text)
-                                }
-                            },
-                            status: Some(status),
-                        }),
-                        (Err(e), Err(error), _) => {
-                            Err(e.together_with(format!("flushing the host output failed ({error})")))
-                        }
-                        (Err(e), Ok(()), _) => Err(e),
-                    };
-                }
-                Some(Event::Lost(error)) => {
-                    lost.get_or_insert(error);
-                    continue;
-                }
-                None => {
-                    return Err(Error::new(
-                        ErrorKind::Internal,
-                        "the SSH task for the command ended without a result",
-                    ));
-                }
-            };
-            let sink: &mut dyn std::io::Write = if to_stderr { &mut *err } else { &mut *out };
-            if let Err(e) = sink.write_all(&chunk) {
-                // The other sink may hold a partial line (a prompt); its flush is best effort, the write failure is
-                // the result.
-                let other: &mut dyn std::io::Write = if to_stderr { &mut *out } else { &mut *err };
-                let _ = other.flush();
-                // Dropping the receiver tells the task to close the channel.
-                drop(receiver);
-                return Ok(ExecEnd::HostOutputClosed { error: e, status: None });
-            }
-        }
+        let (sender, receiver) = mpsc::channel(EVENT_BUFFER);
+        let arrived = Arc::new(Arrived::default());
+        runtime::spawn(run_exec(
+            self.inner.clone(),
+            command.to_owned(),
+            sender,
+            arrived.clone(),
+        ))?;
+        relay(receiver, &arrived, out, err)
     }
 
     /// [`SshSession::exec`] into memory: the sinks are `Vec`s, so the host output never closes. What is lost after the

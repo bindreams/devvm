@@ -27,7 +27,7 @@ fn image(seed: u8) -> Vec<u8> {
 fn pin_for(server: &TestServer, data: &[u8]) -> Pin {
     Pin {
         url: server.url("/ubuntu.img"),
-        sha256: Sha256::from_bytes(Sha2::digest(data).into()),
+        hash: Sha256::from_bytes(Sha2::digest(data).into()).into(),
     }
 }
 

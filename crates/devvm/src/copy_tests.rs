@@ -484,7 +484,7 @@ fn context() -> KeyContext {
 }
 
 fn key(manifest: &CopyManifest) -> LayerKey {
-    let root = root_key(&context(), &RootContent::Sha256(sha256(b"root")), &[0; 32]);
+    let root = root_key(&context(), &RootContent::Pinned(sha256(b"root").into()), &[0; 32]);
     let step = Step::Copy {
         from: CopyFrom::GitTracked,
         to: "~/proj".into(),
@@ -501,13 +501,11 @@ fn manifest_changes_with_a_rename_or_a_chmod_and_not_with_mtime(#[fixture(unicod
     add_all(&repo);
     let before = take(&repo, false, &home.join("1")).unwrap();
 
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(repo.join("a.txt"))
-        .unwrap();
-    file.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
-        .unwrap();
-    drop(file);
+    crate::host::set_modified(
+        &repo.join("a.txt"),
+        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000),
+    )
+    .unwrap();
     let touched = take(&repo, false, &home.join("2")).unwrap();
     assert_eq!(key(&touched.snapshot.manifest), key(&before.snapshot.manifest));
     assert_eq!(

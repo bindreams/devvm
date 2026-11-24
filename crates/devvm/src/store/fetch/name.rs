@@ -1,6 +1,9 @@
 //! The file name a download is stored under, derived from its URL and safe on every OS.
 
-/// Longest name kept; the full path to a download stays well under Windows' limit.
+use crate::host::names::is_device_name;
+
+/// Longest name kept. With the 64-digit cache directory, a download's path is the downloads directory plus at most 166
+/// characters.
 const MAX_LEN: usize = 100;
 
 const FALLBACK: &str = "artifact";
@@ -43,22 +46,4 @@ pub fn file_name(url: &str) -> String {
     } else {
         name.to_owned()
     }
-}
-
-/// Windows treats `CON.txt` like `CON`: only the part before the first dot decides.
-fn is_device_name(name: &str) -> bool {
-    let stem = name
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .trim_end_matches(' ')
-        .to_ascii_uppercase();
-    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
-        return true;
-    }
-    let numbered = |prefix: &str| {
-        stem.strip_prefix(prefix)
-            .is_some_and(|rest| matches!(rest, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
-    };
-    numbered("COM") || numbered("LPT")
 }

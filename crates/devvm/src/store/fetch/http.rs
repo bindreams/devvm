@@ -9,6 +9,7 @@ use reqwest::header::{
 };
 
 use super::{ContentRange, Response, Resume, Transport};
+use crate::error::text_with_sources;
 use crate::lazy::Lazy;
 use crate::{Error, ErrorKind, Result};
 
@@ -35,7 +36,11 @@ impl HttpTransport {
             .user_agent(concat!("devvm/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| {
-                Error::new(ErrorKind::Internal, format!("cannot build the HTTP client: {e}")).with_source(e)
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("cannot build the HTTP client: {}", text_with_sources(&e)),
+                )
+                .with_source(e)
             })?;
         Ok(HttpTransport { client, stall })
     }
@@ -63,9 +68,9 @@ impl Transport for LazyHttp {
     }
 }
 
-/// The text of a stall: what was awaited and for how long.
-pub(super) fn stall_message(url: &str, stall: Duration) -> String {
-    format!("no data from {url} for {}s", stall.as_secs())
+/// The text of a stall, for a message that already names the URL.
+pub(super) fn stall_message(stall: Duration) -> String {
+    format!("no data for {}s", stall.as_secs())
 }
 
 /// Parses `bytes 100-199/1000`, `bytes 100-199/*` and `bytes */1000`.
@@ -89,7 +94,6 @@ pub(super) fn parse_content_range(value: &str) -> Option<ContentRange> {
 
 struct Body {
     inner: reqwest::blocking::Response,
-    url: String,
     stall: Duration,
 }
 
@@ -106,7 +110,7 @@ impl Read for Body {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read(buf).map_err(|e| {
             if is_stall(&e) {
-                std::io::Error::new(std::io::ErrorKind::TimedOut, stall_message(&self.url, self.stall))
+                std::io::Error::new(std::io::ErrorKind::TimedOut, stall_message(self.stall))
             } else {
                 e
             }
@@ -186,10 +190,11 @@ impl Transport for HttpTransport {
             }
         }
         let response = request.send().map_err(|e| {
+            let e = e.without_url();
             let why = if e.is_timeout() {
-                stall_message(url, self.stall)
+                stall_message(self.stall)
             } else {
-                e.to_string()
+                text_with_sources(&e)
             };
             Error::new(ErrorKind::Download, format!("cannot fetch {url}: {why}")).with_source(e)
         })?;
@@ -199,7 +204,6 @@ impl Transport for HttpTransport {
         let body: Box<dyn Read + Send> = if status.is_success() && status != StatusCode::NO_CONTENT {
             Box::new(Body {
                 inner: response,
-                url: url.to_owned(),
                 stall: self.stall,
             })
         } else {
