@@ -305,6 +305,20 @@ fn a_name_fatfs_rejects_is_refused_by_name_with_fatfs_s_reason(#[fixture(unicode
     }
 }
 
+/// Long names whose short names share a prefix take `~1` to `~4`, then a checksum form; all are written as asked.
+#[skuld::test]
+fn long_names_that_share_a_prefix_beyond_the_numbered_short_names_are_written_as_asked(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let image = home.join("seed.img");
+    let names: Vec<String> = (0..30).map(|n| format!("abcdefghij-{n}")).collect();
+    let files: Vec<SeedFile> = names.iter().map(|name| file(name, name.as_bytes())).collect();
+    write_cidata_image(&TestHost, &files, MediaKind::Disk, true, 0, &image).unwrap();
+    for name in &names {
+        assert_eq!(read_image_file(&image, name), name.as_bytes(), "{name}");
+    }
+}
+
 #[skuld::test]
 fn a_failure_that_is_not_the_name_does_not_blame_the_name(#[fixture(unicode_home)] home: &Path) {
     // Every name is fine; the root directory of the 1 MiB image runs out of entries, which fatfs reports as "No space
@@ -442,13 +456,17 @@ fn the_image_is_fat12_whatever_the_contents() {
 }
 
 /// The limit is tight: one byte more than [`LARGEST_FAT12_CONTENTS`], at the size the formula gives, does not format as
-/// FAT12 (`fatfs` either fails or picks another type).
+/// FAT12: `fatfs` either fails to select a FAT type or picks another one.
 #[skuld::test]
 fn one_byte_beyond_the_fat12_limit_does_not_format_as_fat12() {
     let size = unchecked_image_size(LARGEST_FAT12_CONTENTS + 1) as u64;
     let mut disk = Cursor::new(vec![0u8; size as usize]);
-    if fatfs::format_volume(&mut disk, format_options(size)).is_ok() {
-        assert_ne!(type_of(disk.into_inner()), fatfs::FatType::Fat12);
+    match fatfs::format_volume(&mut disk, format_options(size)) {
+        Ok(()) => assert_ne!(type_of(disk.into_inner()), fatfs::FatType::Fat12),
+        Err(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::Other, "{error}");
+            assert_eq!(error.to_string(), "Cannot select FAT type - unfortunate disk size");
+        }
     }
 }
 

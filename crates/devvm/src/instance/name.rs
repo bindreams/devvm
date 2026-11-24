@@ -2,15 +2,13 @@
 
 use std::fmt;
 
+use crate::host::names::is_device_name;
 use crate::random;
 use crate::{Error, ErrorKind, Result};
 
 #[cfg(test)]
 #[path = "name_tests.rs"]
 mod name_tests;
-
-/// Windows device names that cannot be file names; `com1` to `com9` and `lpt1` to `lpt9` follow the same rule.
-const RESERVED: [&str; 4] = ["con", "prn", "aux", "nul"];
 
 /// A validated instance name: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`, not a Windows device name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -51,20 +49,6 @@ impl InstanceName {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
-}
-
-fn is_device_name(name: &str) -> bool {
-    if RESERVED.contains(&name) {
-        return true;
-    }
-    for prefix in ["com", "lpt"] {
-        if let Some(digit) = name.strip_prefix(prefix)
-            && matches!(digit.as_bytes(), [b'1'..=b'9'])
-        {
-            return true;
-        }
-    }
-    false
 }
 
 impl fmt::Display for InstanceName {

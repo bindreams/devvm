@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256 as Sha2};
 
 use crate::progress::{Event, Level, Outcome, Total};
 use crate::store::fetch::{Artifact, ContentRange, Fetcher, PartOpener, PartWriter, Response, Resume, Transport};
-use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::fixtures::{MemoryProgress, WINDOWS_DEVICE_NAMES, unicode_home};
 use crate::{Dirs, ErrorKind, Result, Sha256};
 
 const URL: &str = "https://example.test/files/disk.img";
@@ -729,15 +729,10 @@ fn disk_full_is_a_clear_error_and_publishes_nothing(#[fixture(unicode_home)] hom
 
 // File names ==========================================================================================================
 
-const WINDOWS_DEVICES: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
-    "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
-
 #[skuld::test]
 fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(unicode_home)] home: &Path) {
     let hundred_dots = format!("{}.", "a".repeat(99));
-    let devices = WINDOWS_DEVICES.iter().flat_map(|device| {
+    let devices = WINDOWS_DEVICE_NAMES.iter().flat_map(|device| {
         [
             format!("https://h/{device}"),
             format!("https://h/{}.img", device.to_ascii_lowercase()),
@@ -790,7 +785,7 @@ fn hostile_url_segments_stay_inside_the_downloads_dir(#[fixture(unicode_home)] h
         );
         assert!(!name.starts_with('.') && !name.ends_with('.'), "{url}: {name}");
         let stem = name.split('.').next().unwrap().to_ascii_uppercase();
-        assert!(!WINDOWS_DEVICES.contains(&stem.as_str()), "{url}: {name}");
+        assert!(!WINDOWS_DEVICE_NAMES.contains(&stem.as_str()), "{url}: {name}");
     }
     let name = |url: &str| {
         let wanted = Artifact {

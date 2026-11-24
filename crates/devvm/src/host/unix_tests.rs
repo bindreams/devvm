@@ -7,6 +7,7 @@ use rustix::io::Errno;
 use super::{UnixHost, lacks_a_rename_that_refuses_to_replace, lacks_hard_links, publish_with};
 use crate::host::{Entry, Host};
 use crate::test_support::fixtures::unicode_home;
+use crate::test_support::root::refuse_root;
 
 #[skuld::test]
 fn only_a_missing_rename_is_told_from_a_refusal_of_this_one() {
@@ -117,12 +118,7 @@ fn a_fifo_in_the_middle_of_a_path_makes_what_is_below_it_absent(#[fixture(unicod
 /// does. Mode bits do not bind root, so the test refuses to run as root.
 #[skuld::test]
 fn a_directory_that_can_be_searched_but_not_read_is_walked(#[fixture(unicode_home)] home: &Path) {
-    // SAFETY: `geteuid` reads a process attribute.
-    assert_ne!(
-        unsafe { libc::geteuid() },
-        0,
-        "directory modes do not bind root: run this test as another user"
-    );
+    refuse_root("directory modes do not bind root");
     for mode in [0o300, 0o100] {
         let name = format!("d{mode:o}");
         let directory = home.join(&name);
@@ -169,12 +165,7 @@ fn a_symlink_at_the_runtime_dir_path_is_refused_by_the_check_that_makes_nothing(
 /// the test refuses to run as root.
 #[skuld::test]
 fn a_runtime_dir_behind_an_unsearchable_parent_is_refused_naming_it(#[fixture(unicode_home)] home: &Path) {
-    // SAFETY: `geteuid` reads a process attribute.
-    assert_ne!(
-        unsafe { libc::geteuid() },
-        0,
-        "directory modes do not bind root: run this test as another user"
-    );
+    refuse_root("directory modes do not bind root");
     let parent = home.join("locked");
     std::fs::create_dir(&parent).unwrap();
     let dir = parent.join("run");
