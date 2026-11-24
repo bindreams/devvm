@@ -375,7 +375,7 @@ fn a_failed_reconnect_returns_the_original_failure_with_its_serial_log_and_the_r
 
     let error = vm.run(&Command::new(["echo", "after"])).unwrap_err();
 
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
     assert!(error.message().contains("channel could not be opened"), "{error}");
     assert!(error.message().contains("serial log"), "{error}");
     assert!(error.message().contains("is not running"), "{error}");

@@ -516,14 +516,19 @@ impl Inner {
         self.ctx.lost(awaiting, &reason)
     }
 
-    /// The error for a channel that `cause` kept from opening, whether the server refused it or the connection ended:
-    /// nothing of the operation `awaiting` has reached the guest ([`is_not_started`]).
+    /// The error for a channel that `cause` kept from opening: a lost connection if the connection has ended, otherwise
+    /// the server's refusal on a connection that lives, which the caller can tell apart. Nothing of the operation
+    /// `awaiting` has reached the guest in either case ([`is_not_started`]).
     pub(super) fn channel_not_opened(&self, awaiting: &str, cause: &russh::Error) -> Error {
-        let why = self.transport_end().unwrap_or_else(|| cause.to_string());
-        not_started(
-            self.ctx
+        not_started(match self.transport_end() {
+            Some(why) => self
+                .ctx
                 .lost(awaiting, &format!("the channel could not be opened: {why}")),
-        )
+            None => Error::new(
+                ErrorKind::Io,
+                format!("{awaiting}: the channel could not be opened while the connection is up ({cause})"),
+            ),
+        })
     }
 }
 

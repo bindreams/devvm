@@ -771,7 +771,7 @@ fn a_channel_the_server_refuses_is_not_started_and_names_the_refusal(#[fixture(u
     let error = session.exec_collect("echo refused").unwrap_err();
 
     assert!(is_not_started(&error), "{error}");
-    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert_eq!(error.kind(), ErrorKind::Io, "the connection lives: {error}");
     assert!(error.message().contains("channel could not be opened"), "{error}");
     assert!(!error.message().contains("the connection ended"), "{error}");
     assert_eq!(
@@ -779,6 +779,23 @@ fn a_channel_the_server_refuses_is_not_started_and_names_the_refusal(#[fixture(u
         ExitStatus::Code(0),
         "the connection lives"
     );
+}
+
+#[skuld::test]
+fn a_channel_that_cannot_open_on_an_ended_connection_is_a_lost_connection_and_not_started(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let rig = Rig::new(home);
+    let session = rig.connect();
+    rig.sshd.drop_connections();
+    while session.is_alive() {
+        std::thread::yield_now();
+    }
+
+    let error = session.exec_collect("echo never").unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert!(is_not_started(&error), "{error}");
 }
 
 #[skuld::test]
