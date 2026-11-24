@@ -93,7 +93,11 @@ impl Dirs {
     ///
     /// If `root` is not absolute: `from_lookup` ignores a relative value.
     pub fn env_under(root: &Path) -> [(&'static str, PathBuf); 5] {
-        assert!(root.is_absolute(), "the root of the variables is not absolute: {}", root.display());
+        assert!(
+            root.is_absolute(),
+            "the root of the variables is not absolute: {}",
+            root.display()
+        );
         [
             ("XDG_CONFIG_HOME", root.join("config")),
             ("XDG_DATA_HOME", root.join("data")),
