@@ -1,21 +1,24 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 
+use crate::access::keys::InstanceKeys;
 use crate::access::{Keepalive, SshSession, VmExit, runtime};
 use crate::backend::{Backend, Machine};
 use crate::engine::engine_tests::{
     EngineFixture, dead_machine, engine_fixture, image_of, image_with, is_there, stub_fixture, write_conf,
 };
-use crate::engine::keys::read_target;
+use crate::engine::keys::{ensure_keys, read_target};
 use crate::instance::expiry::expiry_tests::running_expiring;
 use crate::instance::record::{MarkerRead, Owner, RECORD_FILE, read_marker};
 use crate::recipe::Resources;
 use crate::store::layers::layers_tests::{days, names, t0};
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::host::TestHost;
 use crate::test_support::stub_backend::{Attach, StubBackend};
 use crate::vm::ops::ops_tests::{running_instance, short_bound_instance};
 use crate::vm::{Guest, Handle, ops};
 use crate::{Command, ErrorKind, Image, Instance, InstanceState, ListFilter, StartOptions, Vm, availability};
+use secrecy::ExposeSecret;
 use skuld::env;
 
 fn memory() -> Arc<MemoryProgress> {
@@ -360,9 +363,7 @@ fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_a_copy(#[f
 }
 
 #[skuld::test]
-fn a_failed_reconnect_returns_the_original_failure_with_its_serial_log_and_the_reconnect_failure(
-    #[fixture(unicode_home)] home: &Path,
-) {
+fn a_failed_reconnect_returns_its_own_error_with_the_first_failure_named(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let instance = short_bound_instance(&fx, home);
     let vm = vm_over(reached(&instance), instance);
@@ -375,10 +376,34 @@ fn a_failed_reconnect_returns_the_original_failure_with_its_serial_log_and_the_r
 
     let error = vm.run(&Command::new(["echo", "after"])).unwrap_err();
 
-    assert_eq!(error.kind(), ErrorKind::Io, "{error}");
+    assert_eq!(error.kind(), ErrorKind::Unavailable, "the reconnect's kind: {error}");
+    assert!(error.message().contains("is not running"), "{error}");
     assert!(error.message().contains("channel could not be opened"), "{error}");
     assert!(error.message().contains("serial log"), "{error}");
-    assert!(error.message().contains("is not running"), "{error}");
+}
+
+#[skuld::test]
+fn a_reconnect_that_finds_another_host_key_returns_host_key_with_the_first_failure_named(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let keys = {
+        let dir = instance.dir();
+        ensure_keys(dir, &dir.op_exclusive().unwrap(), &TestHost, &mut |_| {}).unwrap()
+    };
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.refuse_channel_opens(1);
+    // The guest presents another host key from the next connection on; the cached connection is unaffected.
+    let other = InstanceKeys::generate().unwrap();
+    fx.server
+        .install(&keys.client_public, other.host_private.expose_secret());
+
+    let error = vm.run(&Command::new(["echo", "after"])).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::HostKey, "{error}");
+    assert!(error.message().contains("channel could not be opened"), "{error}");
 }
 
 #[skuld::test]

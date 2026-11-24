@@ -526,7 +526,10 @@ impl Inner {
                 .lost(awaiting, &format!("the channel could not be opened: {why}")),
             None => Error::new(
                 ErrorKind::Io,
-                format!("{awaiting}: the channel could not be opened while the connection is up ({cause})"),
+                format!(
+                    "{awaiting}: the channel could not be opened while the connection is up ({cause}) (serial log: {})",
+                    self.ctx.serial_log.display()
+                ),
             ),
         })
     }

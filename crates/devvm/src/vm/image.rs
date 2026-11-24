@@ -349,7 +349,8 @@ impl Vm {
     /// Runs `attempt` on `session`. A cached session may have ended unseen, so an `attempt` that fails before anything
     /// of it reached the guest ([`is_not_started`]) is run once more on a new connection, which replaces the cached
     /// one. Any other failure is the result: a command that was sent is never run again. When the new connection cannot
-    /// be made, the result is the first failure, with that one named after it. `op` is the lock `reached` returned.
+    /// be made, the result is that failure, kind kept, with the first one named after it. `op` is the lock `reached`
+    /// returned.
     fn on_session<T>(
         &self,
         op: &OpShared,
@@ -359,7 +360,7 @@ impl Vm {
         match attempt(session) {
             Err(first) if is_not_started(&first) => match self.reconnect(op) {
                 Ok(fresh) => attempt(&fresh),
-                Err(failed) => Err(first.together_with(format_args!("connecting again failed ({failed})"))),
+                Err(failed) => Err(failed.with_step(format_args!("the first attempt failed: {}", first.message()))),
             },
             result => result,
         }
