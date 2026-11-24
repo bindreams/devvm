@@ -1079,8 +1079,12 @@ fn failed_restart_keeps_the_old_validator_with_the_old_part(#[fixture(unicode_ho
 /// A body whose read fails with an error that has a cause beneath it, as `reqwest`'s does.
 struct CausedBody;
 
+/// An error with a name and, optionally, an error beneath it. `http_tests` builds its error chains from it.
 #[derive(Debug)]
-struct Cause(&'static str, Option<Box<dyn std::error::Error + Send + Sync>>);
+pub(super) struct Cause(
+    pub(super) &'static str,
+    pub(super) Option<Box<dyn std::error::Error + Send + Sync>>,
+);
 
 impl std::fmt::Display for Cause {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
