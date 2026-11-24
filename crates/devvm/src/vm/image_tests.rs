@@ -178,7 +178,11 @@ fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(unicode_home
 
     assert_eq!(error.kind(), ErrorKind::Internal);
     assert!(error.message().contains("not owned"), "{}", error.message());
-    assert_eq!(stub.calls(), ["attach"], "the machine of an instance not owned is not killed");
+    assert_eq!(
+        stub.calls(),
+        ["attach"],
+        "the machine of an instance not owned is not killed"
+    );
     assert_eq!(
         names(&fx.env.dirs.instances()),
         ["foo"],
@@ -378,9 +382,7 @@ fn a_failed_reconnect_returns_the_original_failure_with_its_serial_log_and_the_r
 }
 
 #[skuld::test]
-fn two_operations_that_failed_on_the_same_stale_session_share_one_new_connection(
-    #[fixture(unicode_home)] home: &Path,
-) {
+fn two_operations_that_failed_on_the_same_stale_session_share_one_new_connection(#[fixture(unicode_home)] home: &Path) {
     let fx = engine_fixture(home, memory());
     let instance = short_bound_instance(&fx, home);
     let vm = vm_over(reached(&instance), instance);

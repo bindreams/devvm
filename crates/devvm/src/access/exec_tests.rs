@@ -125,7 +125,10 @@ fn a_failed_write_takes_the_loss_the_task_already_queued_and_not_a_failed_end() 
     let (events, mut queued) = tokio::sync::mpsc::channel(8);
     events.try_send(Event::Status(ExitStatus::Code(7))).unwrap();
     events
-        .try_send(Event::Lost(Error::new(ErrorKind::ConnectionLost, "the VM process exited")))
+        .try_send(Event::Lost(Error::new(
+            ErrorKind::ConnectionLost,
+            "the VM process exited",
+        )))
         .unwrap();
     events
         .try_send(Event::End(Err(Error::new(ErrorKind::ConnectionLost, "ignored"))))

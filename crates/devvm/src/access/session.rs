@@ -504,7 +504,10 @@ impl Inner {
     /// nothing of the operation `awaiting` has reached the guest ([`is_not_started`]).
     pub(super) fn channel_not_opened(&self, awaiting: &str, cause: &russh::Error) -> Error {
         let why = self.transport_end().unwrap_or_else(|| cause.to_string());
-        not_started(self.ctx.lost(awaiting, &format!("the channel could not be opened: {why}")))
+        not_started(
+            self.ctx
+                .lost(awaiting, &format!("the channel could not be opened: {why}")),
+        )
     }
 }
 

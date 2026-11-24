@@ -773,7 +773,11 @@ fn a_channel_the_server_refuses_is_not_started_and_names_the_refusal(#[fixture(u
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("channel could not be opened"), "{error}");
     assert!(!error.message().contains("the connection ended"), "{error}");
-    assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0), "the connection lives");
+    assert_eq!(
+        finished(&session, "exit 0").0,
+        ExitStatus::Code(0),
+        "the connection lives"
+    );
 }
 
 #[skuld::test]
