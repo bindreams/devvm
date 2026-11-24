@@ -2,11 +2,15 @@
 //!
 //! On disk, under the downloads directory:
 //!
-//! - `<hash>/<file-name>`: a verified artifact, `<hash>` being the first 64 hex digits of the pinned digest (all of a
-//!   sha256, half of a sha512, so a path stays short enough for `qemu-img`). It exists only after verification and is
-//!   published by rename, after its content was verified against the whole digest;
-//! - `<hash>.part` and `<hash>.part.json` (url and validator): a download in progress, kept across interruptions;
-//! - `<hash>.lock`: one OS lock per artifact, held for the whole fetch.
+//! - `<key>/<file-name>`: a verified artifact. It exists only after its content was verified against the whole digest,
+//!   and is published by rename;
+//! - `<key>.part` and `<key>.part.json` (url and validator): a download in progress, kept across interruptions;
+//! - `<key>.lock`: one OS lock per artifact, held for the whole fetch.
+//!
+//! `<key>` is 64 hex digits, so a path stays short enough for `qemu-img`, derived from the whole pin: a sha256 pin's key
+//! is its digest, a sha512 pin's is the sha256 of `sha512:` and its digest in lowercase hex. An existing entry is
+//! reused without rehashing, so every bit of the pin, and its algorithm, must decide the key; a key cut from a digest
+//! would serve a sha512 pin with a wrong second half the file its first half names.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -46,15 +50,14 @@ pub struct Artifact {
     pub hash: ContentHash,
 }
 
-/// How many hex digits of the pinned digest name an artifact's files.
-const KEY_DIGITS: usize = 64;
-
 impl Artifact {
-    /// The name its files carry in the downloads directory: the first [`KEY_DIGITS`] hex digits of its digest.
+    /// The name its files carry in the downloads directory: 64 hex digits derived from the whole pin (see the module
+    /// doc).
     pub(crate) fn cache_key(&self) -> String {
-        let mut hex = self.hash.to_string();
-        hex.truncate(KEY_DIGITS);
-        hex
+        match &self.hash {
+            ContentHash::Sha256(sha256) => sha256.to_string(),
+            ContentHash::Sha512(sha512) => hex::encode(Sha2::digest(format!("sha512:{sha512}"))),
+        }
     }
 }
 
@@ -177,7 +180,7 @@ impl Fetcher {
         }
     }
 
-    /// Where the verified file for `artifact` lives once fetched: `<downloads>/<hash>/<file-name>`.
+    /// Where the verified file for `artifact` lives once fetched: `<downloads>/<key>/<file-name>`.
     pub fn entry_path(&self, artifact: &Artifact) -> PathBuf {
         self.downloads
             .join(artifact.cache_key())

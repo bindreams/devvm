@@ -220,12 +220,78 @@ fn a_sha512_artifact_is_verified_published_and_reused(#[fixture(unicode_home)] h
         listing(&setup.downloads),
         vec![artifact.cache_key(), format!("{}.lock", artifact.cache_key())]
     );
-    assert_eq!(artifact.hash.to_string().len(), 128);
-    assert_eq!(artifact.cache_key(), artifact.hash.to_string()[..64]);
     assert_eq!(path.parent().unwrap(), setup.downloads.join(artifact.cache_key()));
 
     setup.fetcher.fetch(&artifact).unwrap();
     assert_eq!(transport.requests().len(), 1, "a verified entry needs no request");
+}
+
+/// Existing caches are found by these names: a sha256 pin's key is its digest, and a sha512 pin's must not move.
+#[skuld::test]
+fn cache_keys_are_pinned() {
+    let key = |hash: crate::ContentHash| {
+        Artifact {
+            url: URL.to_owned(),
+            hash,
+        }
+        .cache_key()
+    };
+    assert_eq!(key(Sha256::from_bytes([0xab; 32]).into()), "ab".repeat(32));
+    assert_eq!(
+        key(Sha512::from_bytes([0xab; 64]).into()),
+        "1e20f81c54c8d41f77fdb0c098cd4b74a26d36827ac16ea94e16fc1a251e66af"
+    );
+}
+
+#[skuld::test]
+fn a_sha512_pin_that_differs_from_a_cached_one_only_in_its_second_half_is_checked_on_its_own(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let data = bytes(10_000, 1);
+    let transport = Script::serving(data.clone());
+    let setup = setup(home, transport.clone());
+    let cached = sha512_artifact(&data);
+    setup.fetcher.fetch(&cached).unwrap();
+
+    // The same first 64 hex digits and URL, a different second half.
+    let mut digest = Sha2_512::digest(&data);
+    digest[63] ^= 1;
+    let typo = Artifact {
+        url: URL.to_owned(),
+        hash: Sha512::from_bytes(digest.into()).into(),
+    };
+    assert_eq!(typo.hash.to_string()[..64], cached.hash.to_string()[..64]);
+    assert_ne!(setup.fetcher.entry_path(&typo), setup.fetcher.entry_path(&cached));
+
+    let error = setup.fetcher.fetch(&typo).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Checksum);
+    assert_eq!(transport.requests().len(), 2, "the second pin is downloaded");
+    assert!(setup.fetcher.entry_path(&cached).is_file(), "the first pin's entry stays");
+    assert!(!setup.fetcher.entry_path(&typo).exists());
+}
+
+#[skuld::test]
+fn a_sha512_pin_does_not_share_an_entry_with_the_sha256_pin_its_first_half_equals(#[fixture(unicode_home)] home: &Path) {
+    let data = bytes(10_000, 1);
+    let transport = Script::serving(data.clone());
+    let setup = setup(home, transport.clone());
+    let cached = artifact(&data);
+    setup.fetcher.fetch(&cached).unwrap();
+
+    // A sha512 pin whose first 64 hex digits are the cached sha256 pin.
+    let mut digest = Sha2_512::digest(&data);
+    digest[..32].copy_from_slice(&Sha2::digest(&data));
+    let sha512 = Artifact {
+        url: URL.to_owned(),
+        hash: Sha512::from_bytes(digest.into()).into(),
+    };
+    assert_eq!(sha512.hash.to_string()[..64], cached.hash.to_string());
+    assert_ne!(setup.fetcher.entry_path(&sha512), setup.fetcher.entry_path(&cached));
+
+    let error = setup.fetcher.fetch(&sha512).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Checksum);
+    assert_eq!(transport.requests().len(), 2, "the sha512 pin is downloaded");
+    assert!(setup.fetcher.entry_path(&cached).is_file(), "the sha256 pin's entry stays");
 }
 
 #[skuld::test]
