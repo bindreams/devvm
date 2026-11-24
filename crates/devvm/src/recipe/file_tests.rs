@@ -128,6 +128,25 @@ fn a_disk_image_pin_names_exactly_one_of_sha256_and_sha512() {
 }
 
 #[skuld::test]
+fn a_digest_key_written_without_a_value_is_an_error_naming_it() {
+    let cases = [
+        ("sha256", format!("from: {{ url: 'https://h/a', sha256: , sha512: {SHA512_A} }}")),
+        ("sha512", format!("from: {{ url: 'https://h/a', sha256: {SHA_A}, sha512: }}")),
+        ("sha256", "from: { url: 'https://h/a', sha256: }".to_owned()),
+        ("sha512", "from: { url: 'https://h/a', sha512: null }".to_owned()),
+        (
+            "sha256",
+            format!("from:\n  amd64: {{ url: 'https://h/a', sha256: , sha512: {SHA512_A} }}\n"),
+        ),
+    ];
+    for (key, text) in cases {
+        let error = parse_err(&text);
+        assert_eq!(error.kind(), ErrorKind::Recipe, "{text}: {error}");
+        assert!(error.message().contains(&format!("`{key}`")), "{text}: {error}");
+    }
+}
+
+#[skuld::test]
 fn a_digest_of_the_wrong_algorithm_is_an_error() {
     let cases = [
         format!("from: {{ url: 'https://h/a', sha512: {SHA_A} }}"),

@@ -61,8 +61,33 @@ impl<'de> Deserialize<'de> for Size {
 #[serde(deny_unknown_fields)]
 struct RawPin {
     url: String,
+    #[serde(default, deserialize_with = "sha256_given")]
     sha256: Option<Sha256>,
+    #[serde(default, deserialize_with = "sha512_given")]
     sha512: Option<Sha512>,
+}
+
+/// `Some` of the value of a key that is written; a key written with nothing after it is an error, not an absent key.
+fn given<'de, T, D>(key: &str, deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    T: serde::de::DeserializeOwned,
+    D: serde::Deserializer<'de>,
+{
+    let value = yaml_serde::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Err(D::Error::custom(format!("`{key}` has no value")));
+    }
+    yaml_serde::from_value(value)
+        .map(Some)
+        .map_err(|e| D::Error::custom(format!("`{key}`: {e}")))
+}
+
+fn sha256_given<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<Sha256>, D::Error> {
+    given("sha256", deserializer)
+}
+
+fn sha512_given<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<Sha512>, D::Error> {
+    given("sha512", deserializer)
 }
 
 #[derive(Deserialize)]
