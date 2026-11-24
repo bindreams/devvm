@@ -197,23 +197,28 @@ impl Vm {
                 }),
                 Some(machine),
             ) => (engine, owned, machine),
-            (instance, machine) => {
-                let why = match (&instance, &machine) {
-                    (None, _) => "this VM was already handed over",
-                    (
-                        Some(Instance {
-                            handle: Handle::Owned(_),
-                            ..
-                        }),
-                        _,
-                    ) => "this VM has no machine running",
-                    (Some(_), _) => "this VM's instance is not owned by this process",
-                };
-                // Nothing was handed over: the drop of `self` still cleans up.
-                self.instance = instance;
+            (
+                Some(
+                    instance @ Instance {
+                        handle: Handle::Owned(_),
+                        ..
+                    },
+                ),
+                machine,
+            ) => {
+                // Nothing was handed over: the drop of `self` still cleans up what this process owns.
+                self.instance = Some(instance);
                 *self.machine.get_mut().unwrap_or_else(PoisonError::into_inner) = machine;
-                return Err(Error::new(ErrorKind::Internal, why));
+                return Err(Error::new(ErrorKind::Internal, "this VM has no machine running"));
             }
+            // An instance this process does not own is not this handle's to destroy.
+            (Some(_), _) => {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "this VM's instance is not owned by this process",
+                ));
+            }
+            (None, _) => return Err(Error::new(ErrorKind::Internal, "this VM was already handed over")),
         };
         let dir = owned.make_ownerless(&mut || {
             machine.release()?;

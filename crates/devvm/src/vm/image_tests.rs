@@ -178,10 +178,11 @@ fn a_vm_whose_instance_is_not_owned_cannot_be_handed_over(#[fixture(unicode_home
 
     assert_eq!(error.kind(), ErrorKind::Internal);
     assert!(error.message().contains("not owned"), "{}", error.message());
+    assert_eq!(stub.calls(), ["attach"], "the machine of an instance not owned is not killed");
     assert_eq!(
-        stub.calls(),
-        ["attach", "kill"],
-        "the refused handover leaves the drop to kill the machine"
+        names(&fx.env.dirs.instances()),
+        ["foo"],
+        "the instance not owned is not destroyed"
     );
 }
 
