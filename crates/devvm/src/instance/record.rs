@@ -410,7 +410,9 @@ pub(crate) fn read_marker(dir: &Path) -> Result<MarkerRead> {
 ///
 /// A wait asks once, when it begins, so a holder not yet recorded is not named and a name outlives its holder.
 ///
-/// Every exclusive holder is recorded. Whoever takes the lock shared removes any record, which cannot be current then.
+/// Every exclusive holder is recorded except quarantine, which takes the lock by id for an instance whose own record
+/// is unreadable, so a holder record cannot be shown to be that instance's. Whoever takes the lock shared removes any
+/// record, which cannot be current then.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Holder {
     pub process: ProcessIdRecord,

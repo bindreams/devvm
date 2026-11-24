@@ -229,7 +229,7 @@ impl InstanceDir {
     }
 
     /// The proof of the exclusive `lock`, just taken, with this process recorded as its holder. Every exclusive take
-    /// ends here, so none can leave the holder unrecorded.
+    /// through an `InstanceDir` ends here; only quarantine takes the lock without one (see [`Holder`]).
     fn exclusive(&self, lock: FileLock) -> OpExclusive {
         let op = OpExclusive {
             id: self.id,
