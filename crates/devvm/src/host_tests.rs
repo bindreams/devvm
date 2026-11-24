@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::OtherHost;
 use super::{Comparison, FileId, HoldOutcome, Host, current, host_exit_width};
@@ -249,6 +250,41 @@ fn set_mtime_sets_the_time_of_a_directory_and_of_a_read_only_file(#[fixture(unic
         let mut permissions = std::fs::metadata(&file).unwrap().permissions();
         permissions.set_readonly(false);
         std::fs::set_permissions(&file, permissions).unwrap();
+    }
+}
+
+/// The whole second a time falls in, counted from 1970 and rounded down: what is kept on every file system, whatever
+/// finer resolution it has.
+fn whole_seconds(time: SystemTime) -> i64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => after.as_secs() as i64,
+        Err(before) => {
+            let ago = before.duration();
+            -(ago.as_secs() as i64) - i64::from(ago.subsec_nanos() > 0)
+        }
+    }
+}
+
+/// A date before 1970, a whole second or with a fraction, and a date after it with a fraction, each land in the second
+/// they fall in. `SystemTime` cannot hold a time before 1601 on Windows, so none is tried.
+#[skuld::test]
+fn set_modified_sets_dates_before_1970_and_dates_with_a_fraction(#[fixture(unicode_home)] home: &Path) {
+    let file = home.join("dated.txt");
+    std::fs::write(&file, b"x").unwrap();
+    for (before, secs, nanos) in [
+        (true, 86_400, 0),
+        (true, 86_400, 250_000_000),
+        (true, 631_152_000, 0),
+        (false, 1_000_000_000, 750_000_000),
+    ] {
+        let time = if before {
+            UNIX_EPOCH - Duration::new(secs, nanos)
+        } else {
+            UNIX_EPOCH + Duration::new(secs, nanos)
+        };
+        crate::host::set_modified(&file, time).unwrap();
+        let stored = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(whole_seconds(stored), whole_seconds(time), "{time:?}");
     }
 }
 

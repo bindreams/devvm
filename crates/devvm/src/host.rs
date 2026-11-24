@@ -1,5 +1,6 @@
 //! What differs between host operating systems, behind one trait. The implementation is chosen here and only here, by
-//! the `cfg`s on the module declarations and on [`Current`] below; no code under `host/` selects one.
+//! the `cfg`s on the module declarations, on [`Current`] and on [`set_modified`] below; no code under `host/` selects
+//! one.
 //! (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
 use std::ffi::{OsStr, OsString};
@@ -58,6 +59,13 @@ pub(crate) use other::OtherHost;
 use unix::UnixHost as Current;
 #[cfg(windows)]
 use windows::WindowsHost as Current;
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) use other::set_modified;
+#[cfg(unix)]
+pub(crate) use unix::set_modified;
+#[cfg(windows)]
+pub(crate) use windows::set_modified;
 
 /// How a hypervisor is reached on this host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,8 +168,8 @@ pub(crate) trait Host: Send + Sync {
     /// Adds execute where read is set; does nothing on Windows.
     fn set_executable(&self, path: &Path) -> std::io::Result<()>;
 
-    /// Sets the modification time of the file or directory `path` to `seconds` since 1970. It needs no write access to
-    /// the contents, so a file that is read-only to its owner takes it.
+    /// Sets the modification time of the file or directory `path` to `seconds` since 1970 ([`set_modified`] takes any
+    /// date). It needs no write access to the contents, so a file that is read-only to its owner takes it.
     fn set_mtime(&self, path: &Path, seconds: u32) -> std::io::Result<()>;
 
     /// Why `name`, a file name taken from a guest, cannot be one file name in a directory on this host (a Windows
