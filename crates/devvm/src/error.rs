@@ -201,24 +201,32 @@ pub(crate) fn last_lines(text: &str) -> String {
 /// A line of a log is kept up to this many bytes, from its end.
 const TAIL_LINE_BYTES: usize = 8 << 10;
 
-/// `line` as the newest of `lines`, which keep the last [`TAIL_LINES`].
-fn keep(lines: &mut VecDeque<Vec<u8>>, line: Vec<u8>) {
-    if lines.len() == TAIL_LINES {
-        lines.pop_front();
+/// The last [`TAIL_LINES`] lines pushed.
+#[derive(Default)]
+pub(crate) struct LastLines(VecDeque<String>);
+
+impl LastLines {
+    pub(crate) fn push(&mut self, line: String) {
+        if self.0.len() == TAIL_LINES {
+            self.0.pop_front();
+        }
+        self.0.push_back(line);
     }
-    lines.push_back(line);
+
+    /// The lines, one to a line.
+    pub(crate) fn text(&self) -> String {
+        self.0.iter().map(String::as_str).collect::<Vec<_>>().join("\n")
+    }
 }
 
-/// `line`, which is the end of a longer one if `cut`: without the bytes of a character whose start was cut off, and
-/// with `...` before it.
-fn marked(line: Vec<u8>, cut: bool) -> Vec<u8> {
+/// `line` as text. It is the end of a longer one if `cut`: without the bytes of a character whose start was cut off,
+/// and with `...` before it.
+fn marked(line: &[u8], cut: bool) -> String {
     if !cut {
-        return line;
+        return String::from_utf8_lossy(line).into_owned();
     }
     let whole = line.iter().position(|&byte| byte & 0xC0 != 0x80).unwrap_or(line.len());
-    let mut marked = b"...".to_vec();
-    marked.extend_from_slice(&line[whole..]);
-    marked
+    format!("...{}", String::from_utf8_lossy(&line[whole..]))
 }
 
 /// The last [`TAIL_LINES`] lines of the file at `path`, read in one pass without holding the file.
@@ -228,7 +236,7 @@ fn tail_of_file(path: &Path) -> io::Result<String> {
 
 /// The last [`TAIL_LINES`] lines `file` has.
 fn tail_of(mut file: impl BufRead) -> io::Result<String> {
-    let mut lines: VecDeque<Vec<u8>> = VecDeque::with_capacity(TAIL_LINES);
+    let mut lines = LastLines::default();
     let mut line: Vec<u8> = Vec::new();
     // Whether the start of `line` was dropped to keep it under the cap.
     let mut cut = false;
@@ -258,17 +266,13 @@ fn tail_of(mut file: impl BufRead) -> io::Result<String> {
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            keep(&mut lines, marked(std::mem::take(&mut line), cut));
+            lines.push(marked(&std::mem::take(&mut line), cut));
             cut = false;
             open = false;
         }
     }
     if open {
-        keep(&mut lines, marked(line, cut));
+        lines.push(marked(&line, cut));
     }
-    let lines: Vec<String> = lines
-        .iter()
-        .map(|line| String::from_utf8_lossy(line).into_owned())
-        .collect();
-    Ok(lines.join("\n"))
+    Ok(lines.text())
 }
