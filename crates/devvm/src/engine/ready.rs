@@ -143,7 +143,7 @@ pub(crate) fn reconnect_after_reset(
     let mut last_failed_read: Option<Error> = None;
     loop {
         let session = connect(engine, target, &vm, bound).map_err(|e| match &last_failed_read {
-            Some(read) => e.together_with(format!("the last read of the boot id failed ({})", read.message())),
+            Some(read) => e.together_with(format!("the last read of the boot id failed ({})", read.body())),
             None => e,
         })?;
         last_failed_read = match read_boot_id(guest, &session) {
@@ -173,17 +173,16 @@ pub(super) fn boot_id_unchanged(
     bound: BootBound,
     last_failed_read: Option<&Error>,
 ) -> Error {
-    let read = last_failed_read.map_or(String::new(), |e| format!("the last read failed: {}; ", e.message()));
+    let read = last_failed_read.map_or(String::new(), |e| format!(" (the last read failed: {})", e.body()));
     Error::new(
         ErrorKind::ConnectionLost,
         format!(
-            "waiting for the boot id of {} to differ from {old_id}: it did not happen within the boot bound of {} \
-             ({read}serial log: {})",
+            "waiting for the boot id of {} to differ from {old_id}: it did not happen within the boot bound of {}{read}",
             target.addr,
             crate::access::session::humanly(bound.limit()),
-            target.serial_log.display()
         ),
     )
+    .with_serial_log(&target.serial_log)
 }
 
 /// The guest's readiness wait on `session`, reporting a boot that finished with problems.

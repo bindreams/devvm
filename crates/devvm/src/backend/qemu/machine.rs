@@ -176,12 +176,12 @@ impl QemuMachine {
         Error::new(
             ErrorKind::ConnectionLost,
             format!(
-                "QEMU exited: {what}; its output ({}):\n{}\nthe serial log is {}",
+                "QEMU exited: {what}; its output ({}):\n{}",
                 self.log.display(),
-                self.output(),
-                self.record.serial_log.display()
+                self.output()
             ),
         )
+        .with_serial_log(&self.record.serial_log)
     }
 
     /// `Unavailable` for a machine launched with `-no-reboot`, which a reset would end.
@@ -212,11 +212,9 @@ impl QemuMachine {
             Ok(VmEnd::Exited) => Ok(()),
             Ok(VmEnd::Paused(state)) => Err(Error::new(
                 ErrorKind::Unavailable,
-                format!(
-                    "the VM stopped ({state}) while it was shutting down; its serial log is {}",
-                    self.record.serial_log.display()
-                ),
-            )),
+                format!("the VM stopped ({state}) while it was shutting down"),
+            )
+            .with_serial_log(&self.record.serial_log)),
             Err(e) if e.kind() == ErrorKind::ConnectionLost => Ok(()),
             Err(e) => Err(e),
         }

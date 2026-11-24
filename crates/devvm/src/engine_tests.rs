@@ -797,10 +797,8 @@ fn a_machine_whose_process_is_gone_has_no_exit_watcher(#[fixture(unicode_home)] 
 
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("the VM process exited"), "{error}");
-    assert!(
-        error.message().contains(&machine.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(machine.serial_log.as_path()), "{error}");
+    assert!(!error.body().contains("serial log"), "{error}");
     assert!(watched(&fx.engine).is_empty());
 }
 

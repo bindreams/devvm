@@ -164,6 +164,8 @@ fn closed_without_status_is_no_exit_status(#[fixture(unicode_home)] home: &Path)
     let session = rig.connect();
     let error = session.exec_collect("close-no-status").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::NoExitStatus);
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
+    assert!(!error.body().contains("serial log"), "{error}");
     // The connection is fine afterwards.
     assert_eq!(finished(&session, "exit 0").0, ExitStatus::Code(0));
 }
@@ -175,10 +177,7 @@ fn mid_command_drop_is_connection_lost(#[fixture(unicode_home)] home: &Path) {
     let error = session.exec_collect("drop-connection").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("drop-connection"), "{error}");
-    assert!(
-        error.message().contains(&rig.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
 
 #[skuld::test]
@@ -224,10 +223,7 @@ fn a_vm_exit_ends_a_running_exec_as_connection_lost(#[fixture(unicode_home)] hom
         let error = running.join().unwrap().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
         assert!(error.message().contains("VM process exited"), "{error}");
-        assert!(
-            error.message().contains(&rig.serial_log.display().to_string()),
-            "{error}"
-        );
+        assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
     });
 }
 
@@ -383,10 +379,7 @@ fn a_connect_without_a_boot_bound_to_a_peer_that_accepts_and_never_speaks_ends_i
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains(&rig.sshd.addr().to_string()), "{error}");
     assert!(error.message().contains("handshake bound"), "{error}");
-    assert!(
-        error.message().contains(&rig.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
 
 #[skuld::test]
@@ -470,10 +463,7 @@ fn a_boot_bound_that_has_passed_ends_a_connect_naming_the_address_and_the_serial
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains("boot bound of 0s"), "{error}");
     assert!(error.message().contains(&rig.sshd.addr().to_string()), "{error}");
-    assert!(
-        error.message().contains(&rig.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
 
 #[skuld::test]
@@ -509,7 +499,7 @@ fn the_boot_bound_ends_a_connect_with_the_failure_it_last_saw() {
     let error = connect.out_of_time(Some(refused), awaiting, bound);
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
     assert!(error.message().contains(&connect.ctx.addr.to_string()), "{error}");
-    assert!(error.message().contains("serial.log"), "{error}");
+    assert_eq!(error.serial_log(), Some(Path::new("serial.log")), "{error}");
     assert!(error.message().contains("within 1m 30s"), "{error}");
     assert!(!error.message().contains("boot bound of"), "{error}");
 }
@@ -584,12 +574,9 @@ fn a_booting_session_ends_a_hung_exec_at_the_boot_bound(#[fixture(unicode_home)]
     arm_boot_bound(&session, Duration::from_millis(200));
     let error = session.exec_collect("hold").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
-    assert!(error.message().contains("boot bound of 200ms ("), "{error}");
+    assert!(error.body().ends_with("boot bound of 200ms"), "{error}");
     assert!(error.message().contains("hold"), "{error}");
-    assert!(
-        error.message().contains(&rig.serial_log.display().to_string()),
-        "{error}"
-    );
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
 }
 
 #[skuld::test]
@@ -599,6 +586,29 @@ fn a_duration_is_told_in_units_a_person_reads() {
     assert_eq!(humanly(Duration::from_millis(200)), "200ms");
     // Too long for a signed duration: still told, not refused.
     assert!(!humanly(Duration::MAX).is_empty());
+}
+
+#[skuld::test]
+fn a_lost_connection_sets_the_serial_log_and_does_not_print_it_in_its_text() {
+    let ctx = Context {
+        addr: "127.0.0.1:22".parse().unwrap(),
+        user: "user".to_owned(),
+        serial_log: std::path::PathBuf::from("/x/serial.log"),
+        host_public: "HOST-PUBLIC".to_owned(),
+    };
+
+    let error = ctx.lost("running a command", "the VM process exited");
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost);
+    assert_eq!(error.serial_log(), Some(Path::new("/x/serial.log")));
+    assert_eq!(error.body(), "running a command: the VM process exited");
+    assert!(
+        error.message().ends_with(
+            "
+serial log: /x/serial.log"
+        ),
+        "{error}"
+    );
 }
 
 /// A connect to `target`, with no VM to watch and no boot bound.
@@ -774,6 +784,8 @@ fn a_channel_the_server_refuses_is_not_started_and_names_the_refusal(#[fixture(u
     assert_eq!(error.kind(), ErrorKind::Io, "the connection lives: {error}");
     assert!(error.message().contains("channel could not be opened"), "{error}");
     assert!(!error.message().contains("the connection ended"), "{error}");
+    assert_eq!(error.serial_log(), Some(rig.serial_log.as_path()), "{error}");
+    assert!(!error.body().contains("serial log"), "{error}");
     assert_eq!(
         finished(&session, "exit 0").0,
         ExitStatus::Code(0),

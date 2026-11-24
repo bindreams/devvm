@@ -161,7 +161,11 @@ fn with_context_with_step_with_tail_and_clone_keep_the_serial_log_as_the_last_li
         .with_serial_log("/x/serial.log");
     let line = "\nserial log: /x/serial.log";
     let cases = [
-        ("with_context", base.clone().with_context(ErrorKind::Io, "reading"), "reading: lost"),
+        (
+            "with_context",
+            base.clone().with_context(ErrorKind::Io, "reading"),
+            "reading: lost",
+        ),
         ("with_step", base.clone().with_step("try again"), "lost; try again"),
         (
             "with_tail",
@@ -173,13 +177,21 @@ fn with_context_with_step_with_tail_and_clone_keep_the_serial_log_as_the_last_li
             base.clone().after_cleanup("the file", Err("locked")),
             "lost; cleaning up failed as well, so the file remains (locked)",
         ),
-        ("together_with", base.clone().together_with("a second failure"), "lost; a second failure as well"),
+        (
+            "together_with",
+            base.clone().together_with("a second failure"),
+            "lost; a second failure as well",
+        ),
         ("clone", base.clone(), "lost"),
     ];
     for (name, error, body) in cases {
         assert_eq!(error.message(), format!("{body}{line}"), "{name}");
         assert_eq!(error.body(), body, "{name}");
-        assert_eq!(error.serial_log(), Some(std::path::Path::new("/x/serial.log")), "{name}");
+        assert_eq!(
+            error.serial_log(),
+            Some(std::path::Path::new("/x/serial.log")),
+            "{name}"
+        );
         assert!(is_marked(&error), "{name}: the source stays");
     }
 }
