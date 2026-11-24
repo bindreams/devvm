@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use cosca::identity::{Liveness, Resolved};
 
 use crate::error::{Error, ErrorKind, Result};
-use crate::host::{self, is_absent, remove_if_present};
+use crate::host::{self, failed, is_absent, remove_if_present};
 use crate::progress::{Event, Level, Outcome, Progress, TaskId, Total, escape_controls};
 use crate::random;
 use crate::store::layers::Clock;
@@ -180,13 +180,13 @@ pub(crate) fn keep_copy_with(
     warn: &mut dyn FnMut(&str),
     alive: &dyn Fn(u32) -> bool,
 ) -> std::io::Result<PathBuf> {
-    let mut from = File::open(source).map_err(|e| said(e, format_args!("cannot read {}", source.display())))?;
-    std::fs::create_dir_all(dir).map_err(|e| said(e, format_args!("cannot create {}", dir.display())))?;
+    let mut from = File::open(source).map_err(|e| failed(format_args!("cannot read {}", source.display()), e))?;
+    std::fs::create_dir_all(dir).map_err(|e| failed(format_args!("cannot create {}", dir.display()), e))?;
     for warning in prune(dir, clock.now(), alive) {
         warn(&warning);
     }
     let path = create_named(dir, clock, SERIAL_COPY, b"")
-        .map_err(|(path, e)| said(e, format_args!("cannot write {}", path.display())))?;
+        .map_err(|(path, e)| failed(format_args!("cannot write {}", path.display()), e))?;
     let copied = OpenOptions::new()
         .append(true)
         .open(&path)
@@ -195,17 +195,12 @@ pub(crate) fn keep_copy_with(
         if let Err(removed) = remove_if_present(&path) {
             warn(&format!("cannot remove the partial copy {}: {removed}", path.display()));
         }
-        return Err(said(
-            e,
+        return Err(failed(
             format_args!("cannot copy {} to {}", source.display(), path.display()),
+            e,
         ));
     }
     Ok(path)
-}
-
-/// `e` under the same kind, with `what` before its text.
-fn said(e: std::io::Error, what: std::fmt::Arguments<'_>) -> std::io::Error {
-    std::io::Error::new(e.kind(), format!("{what}: {e}"))
 }
 
 /// Makes `devvm-<UTC time>-<pid>-<4 hex><suffix>` in `dir`, the user's alone, holding `first`. The name is drawn
