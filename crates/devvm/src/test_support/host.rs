@@ -150,6 +150,11 @@ impl Host for TestHost {
         host::current().open_held_read(path)
     }
 
+    /// Windows's answer on every host, so the tests of what is done with it run everywhere.
+    fn rename_refused_by_open_file(&self) -> Option<i32> {
+        Some(5)
+    }
+
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
         host::current().final_path_of_open(file, opened_by)
     }
@@ -302,6 +307,10 @@ impl Host for NoAccelHost {
 
     fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
         TestHost.open_held_read(path)
+    }
+
+    fn rename_refused_by_open_file(&self) -> Option<i32> {
+        TestHost.rename_refused_by_open_file()
     }
 
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
@@ -650,6 +659,10 @@ impl Host for RecordingHost {
         TestHost.open_held_read(path)
     }
 
+    fn rename_refused_by_open_file(&self) -> Option<i32> {
+        TestHost.rename_refused_by_open_file()
+    }
+
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
         if self.fail_final_path.load(Ordering::SeqCst) {
             return Err(std::io::Error::other("the volume has no DOS path"));
@@ -808,6 +821,10 @@ impl Host for NoGuestReset {
 
     fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
         host::current().open_held_read(path)
+    }
+
+    fn rename_refused_by_open_file(&self) -> Option<i32> {
+        TestHost.rename_refused_by_open_file()
     }
 
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {

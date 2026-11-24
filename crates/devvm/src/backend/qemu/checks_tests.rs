@@ -12,6 +12,7 @@ use crate::backend::qemu::sidecar::{LazyInstall, ManifestEntry, Source, manifest
 use crate::config::Config;
 use crate::store::fetch::Fetcher;
 use crate::test_support::fixtures::{MemoryProgress, unicode_home};
+use crate::test_support::host::TestHost;
 use crate::test_support::qemu::write_config;
 use crate::test_support::transport::RefusingTransport;
 use crate::{Arch, Dirs};
@@ -32,7 +33,7 @@ fn install_over(dirs: &Dirs, entry: crate::Result<ManifestEntry>) -> (LazyInstal
     let progress = Arc::new(MemoryProgress::default());
     let fetcher = Arc::new(Fetcher::new(dirs.downloads(), transport.clone(), progress.clone()));
     let verify = Arc::new(|_: &_, _: &str| panic!("the check never runs a QEMU tool"));
-    let source = Source::new(dirs.clone(), fetcher, progress, entry, verify);
+    let source = Source::new(dirs.clone(), fetcher, progress, entry, verify, &TestHost);
     (LazyInstall::from_source(source), transport)
 }
 

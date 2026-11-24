@@ -244,6 +244,10 @@ impl<M: FileModes> Host for M {
         File::open(path)
     }
 
+    fn rename_refused_by_open_file(&self) -> Option<i32> {
+        None
+    }
+
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
         let canonical = std::fs::canonicalize(opened_by)?;
         let unsupported = |e: &std::io::Error| e.kind() == std::io::ErrorKind::Unsupported;

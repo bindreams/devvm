@@ -11,7 +11,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
-use windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD;
+use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PRIVILEGE_NOT_HELD};
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal, GetACP};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
@@ -312,6 +312,10 @@ impl Host for WindowsHost {
 
     fn open_held_read(&self, path: &Path) -> std::io::Result<File> {
         hold::open_held_read(path)
+    }
+
+    fn rename_refused_by_open_file(&self) -> Option<i32> {
+        Some(ERROR_ACCESS_DENIED as i32)
     }
 
     fn final_path_of_open(&self, file: &File, _opened_by: &Path) -> std::io::Result<PathBuf> {
