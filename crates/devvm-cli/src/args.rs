@@ -166,6 +166,13 @@ the colon, `c:path` names the file `path` in the instance `c`.
 The copied trees must not hold names that differ only in case, names ending in a dot or a space, or Windows device \
 names (`nul`, `con`). devvm does not check.
 
+No permission is carried but the execute bit. A file reaches the guest as 0755 if the host file has any execute bit and \
+as 0644 otherwise, less the guest account's umask. A file copied out gets the host's default mode, plus execute for \
+whoever can read it if the guest file has any execute bit. Directories get default modes, and a file that replaces \
+another takes the new mode. A private file is readable by others on the other side: restrict it again after the copy. \
+A Windows host has no execute bit, so a file copied from it is not executable in a Linux guest: make it executable \
+afterwards with devvm ssh <name> -- chmod +x <file>. A file copied out to a Windows host loses its execute bit.
+
 A file time outside 1970 to 2106 is not kept, and `cp` says so; for a file in the guest the range is 1970 to 2038, \
 because SFTP version 3 carries 32 bits.
 

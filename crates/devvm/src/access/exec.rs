@@ -24,8 +24,10 @@ pub(crate) enum ExecEnd {
     /// refusal to run the command) or what ended the wait (the VM exited, the boot bound passed); `lost` says what.
     /// The status stands: the error that follows an exit status does not take it back.
     FinishedWithLoss { status: ExitStatus, lost: Error },
-    /// The host side of the output closed. `exec` returns at once without waiting for a status; the task closes the
-    /// channel, which ends the guest process by SIGPIPE.
+    /// The host side of the output closed: a write or flush failed. With no `status`, the command may still be running:
+    /// `exec` returns at once without waiting for one, and the task tries to send the channel close, in no order
+    /// against the return, until it is sent or fails, the VM exits or the boot bound passes. devvm does not end the
+    /// command or wait for it. With a `status`, the command had already ended and nothing is left running.
     HostOutputClosed {
         /// The failed write or flush.
         error: std::io::Error,

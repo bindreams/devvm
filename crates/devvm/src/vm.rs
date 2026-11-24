@@ -49,8 +49,14 @@ pub trait Guest {
     ///
     /// Contract: a copied tree has no two names that differ only in case, no name ending in a dot or a space and no
     /// Windows device name. Nothing checks this, and a tree that breaks it may be copied wrongly.
+    ///
+    /// No permission is carried but the execute bit: the guest file is requested as `0755` if the host file has any
+    /// execute bit, else `0644`, and the guest's SFTP server applies the account's umask. A Windows host has none.
     fn copy_in(&self, src: &Path, dest: &str) -> Result<()>;
     /// Copies the guest file, symlink or directory `src` to the host path `dest`. Same contract as [`Guest::copy_in`].
+    ///
+    /// No permission is carried but the execute bit: the host file gets its default mode, plus execute for whoever can
+    /// read it if the guest file has any execute bit; a Windows host adds nothing.
     fn copy_out(&self, src: &str, dest: &Path) -> Result<()>;
 }
 
@@ -213,8 +219,10 @@ impl Instance {
     /// Runs `cmd` in the guest, writing its output to `out` and `err` as it arrives, and returns how it ended.
     ///
     /// Output the guest sent after the command's status that devvm cannot carry is reported on the progress channel;
-    /// the status stands. A writer that fails is an `io` error, and the guest command is stopped, unless the command had
-    /// already ended: the error then names its status.
+    /// the status stands. A writer that fails is an `io` error. When the command had already ended, the error names its
+    /// status and nothing is left running. Otherwise `run_to` returns without ending the command or waiting for it:
+    /// devvm sends an SSH channel close, in no order against the return, and does nothing more to stop the command.
+    /// The op lock is released at the return, so `stop`, `rm` or `reboot` can proceed while the command still runs.
     pub fn run_to(&self, cmd: &Command, out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitStatus> {
         let (guest, session, _op) = self.reached()?;
         ops::run_to(&self.engine, &*guest, &session, cmd, out, err)
