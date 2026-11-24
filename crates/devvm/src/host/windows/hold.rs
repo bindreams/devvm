@@ -24,7 +24,7 @@ use windows_sys::Win32::System::WindowsProgramming::FILE_RENAME_FLAG_POSIX_SEMAN
 use super::create_file::{Failure, open};
 use super::file_id;
 use super::wide;
-use crate::host::{DELETING_DRAW_BYTES, FileId, Hold, HoldOutcome, deleting_name, is_a_link, is_absent};
+use crate::host::{DELETING_DRAW_BYTES, FileId, Hold, HoldOutcome, Sharing, deleting_name, is_a_link, is_absent};
 use crate::random;
 
 /// Marks `file`, open with `DELETE` access, for deletion: `FileDispositionInfoEx` with `FILE_DISPOSITION_FLAG_DELETE`
@@ -234,11 +234,16 @@ pub(super) fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File>
     Ok(file)
 }
 
-/// [`Host::open_held_read`](crate::host::Host::open_held_read): read access and share mode `FILE_SHARE_READ`, so no other
-/// open can write the file, delete it or rename it, whichever handle does. A file that someone has open for writing, or
-/// refuses readers, is `ERROR_SHARING_VIOLATION`.
-pub(super) fn open_held_read(path: &Path) -> std::io::Result<File> {
-    open(path, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, 0, None).map_err(|failure| {
+/// [`Host::open_held_read`](crate::host::Host::open_held_read): read access, and the share mode `sharing` names:
+/// `FILE_SHARE_READ` for [`Sharing::Readers`], so no other open can write the file, delete it or rename it, whichever
+/// handle does; all three sharings for [`Sharing::Everyone`]. A file that someone has open for a use `sharing` does not
+/// allow, or that refuses readers, is `ERROR_SHARING_VIOLATION`.
+pub(super) fn open_held_read(path: &Path, sharing: Sharing) -> std::io::Result<File> {
+    let share = match sharing {
+        Sharing::Readers => FILE_SHARE_READ,
+        Sharing::Everyone => FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    };
+    open(path, FILE_GENERIC_READ, share, OPEN_EXISTING, 0, None).map_err(|failure| {
         if failure.is_sharing_violation() {
             return std::io::Error::new(
                 std::io::ErrorKind::ResourceBusy,
@@ -271,8 +276,8 @@ pub(super) fn existing(path: &Path) -> std::io::Result<HoldOutcome> {
 
 /// [`Host::share_open_file_with`](crate::host::Host::share_open_file_with), and what [`Hold::share_with`] does for the
 /// held file: duplicates the handle of `file` into `process` with access 0 and not inheritable. What `file` was opened
-/// with (its share mode) belongs to the file object, so the duplicate keeps it, and `process` cannot write or delete
-/// the file.
+/// with (its share mode) belongs to the file object, so the duplicate keeps it, and `process` has no write or delete
+/// access through it.
 pub(super) fn share_open_file(file: &File, process: ProcessId) -> std::io::Result<()> {
     // SAFETY: plain `OpenProcess`; no pointers.
     let raw = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, process.pid()) };

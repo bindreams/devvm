@@ -668,7 +668,10 @@ fn a_leftover_extraction_is_left_while_another_devvm_holds_the_lock(#[fixture(un
 
     world.source.resolve().unwrap();
 
-    assert!(leftover.is_dir(), "nothing is removed while another devvm holds the lock");
+    assert!(
+        leftover.is_dir(),
+        "nothing is removed while another devvm holds the lock"
+    );
     extracting.unlock().unwrap();
 
     world.source.resolve().unwrap();

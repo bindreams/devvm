@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::{WindowsHost, user, wide};
 use crate::host::names::windows_run_dir;
-use crate::host::{Entry, HoldOutcome, Host};
+use crate::host::{Entry, HoldOutcome, Host, Sharing};
 use crate::test_support::file_security::{Security, set_protected_dacl};
 use crate::test_support::fixtures::unicode_home;
 
@@ -418,7 +418,7 @@ fn a_file_held_for_reading_cannot_be_written_deleted_or_renamed_onto_or_away(#[f
     std::fs::write(&path, b"windows").unwrap();
     let other = home.join("b.iso");
     std::fs::write(&other, b"somewhere else").unwrap();
-    let held = WindowsHost.open_held_read(&path).unwrap();
+    let held = WindowsHost.open_held_read(&path, Sharing::Readers).unwrap();
 
     assert!(OpenOptions::new().write(true).open(&path).is_err(), "written in place");
     assert!(std::fs::write(&path, b"patched").is_err(), "truncated in place");
@@ -445,7 +445,7 @@ fn a_file_open_for_writing_cannot_be_held_and_the_error_says_why(#[fixture(unico
     let path = home.join("a.iso");
     std::fs::write(&path, b"windows").unwrap();
     let _writer = OpenOptions::new().write(true).open(&path).unwrap();
-    let error = WindowsHost.open_held_read(&path).unwrap_err();
+    let error = WindowsHost.open_held_read(&path, Sharing::Readers).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::ResourceBusy, "{error}");
     assert!(error.to_string().contains("open for writing"), "{error}");
 }

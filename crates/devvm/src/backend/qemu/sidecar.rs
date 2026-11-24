@@ -10,8 +10,8 @@
 //! - `.extract.lock`: one OS lock around extraction, publication and removal.
 //!
 //! An install is in use while a process holds a file inside it open: the [`QemuInstall`] a resolve returns keeps one
-//! open ([`HELD_TOOL`], read-only, without delete sharing) for as long as the value lives, and Windows refuses to rename
-//! a directory with such a file in it. A launch gives QEMU a duplicate of that handle
+//! open ([`HELD_TOOL`], read-only, every sharing allowed) for as long as the value lives, and Windows refuses to rename a
+//! directory with a file open in it, whatever the file shares. A launch gives QEMU a duplicate of that handle
 //! ([`Host::share_open_file_with`]), which QEMU keeps until it exits, so the install stays held for as long as any
 //! process that resolved it lives and any QEMU started from it runs, whether or not the devvm that started it has
 //! exited. Removal renames, so an install in use is never touched. No record of which install a machine runs is kept,
@@ -29,7 +29,7 @@ use serde::Deserialize;
 
 use super::args::ArchFiles;
 use crate::config::Config;
-use crate::host::{Host, SystemDirs};
+use crate::host::{Host, Sharing, SystemDirs};
 use crate::lazy::Lazy;
 use crate::progress::{Progress, Total};
 use crate::store::fetch::{Artifact, Fetcher};
@@ -59,8 +59,9 @@ const ARCHIVE_FIRMWARE: &[&str] = &[
 ];
 /// The tools run with `--version` before an extraction is published.
 const VERSIONED_TOOLS: &[&str] = &["qemu-img", "qemu-system-x86_64"];
-/// The file of an install that a [`QemuInstall`] keeps open. Every install has it, and it is held with read sharing
-/// only, which lets QEMU and `qemu-img` start from the install.
+/// The file of an install that a [`QemuInstall`] keeps open. Every install has it, and it is held with every sharing
+/// allowed ([`Sharing::Everyone`]): that it is open is all that protects the install, and nothing that has it open can
+/// make the launch fail or stop QEMU and `qemu-img` from starting from the install.
 const HELD_TOOL: &str = "qemu-img";
 /// The characters of the zip's sha256 an install's directory name carries.
 const INSTALL_HASH_LEN: usize = 12;
@@ -256,7 +257,7 @@ impl Source {
         let tool = root
             .join("bin")
             .join(format!("{HELD_TOOL}{}", std::env::consts::EXE_SUFFIX));
-        match self.host.open_held_read(&tool) {
+        match self.host.open_held_read(&tool, Sharing::Everyone) {
             Ok(file) => Ok(Some(self.install_at(root, entry, Some(Arc::new(file))))),
             Err(e) if crate::host::is_absent(&e) => Ok(None),
             Err(e) => Err(Error::io(ErrorKind::Io, format!("cannot open {}", tool.display()), e)),

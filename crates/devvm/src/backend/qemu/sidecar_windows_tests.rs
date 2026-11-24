@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::sidecar_tests::{World, entries, files, old_install, visible, world, zip_of};
 use crate::contain::Lifetime;
-use crate::host;
+use crate::host::{self, Sharing};
 use crate::test_support::fake_vm;
 use crate::test_support::fixtures::unicode_home;
 
@@ -23,7 +23,9 @@ fn renaming_a_directory_with_a_held_file_fails_with_the_code_the_host_names(#[fi
     let dir = home.join("held");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin").join("tool"), b"tool").unwrap();
-    let held = host::current().open_held_read(&dir.join("bin").join("tool")).unwrap();
+    let held = host::current()
+        .open_held_read(&dir.join("bin").join("tool"), Sharing::Readers)
+        .unwrap();
 
     let refused = std::fs::rename(&dir, home.join("moved")).unwrap_err();
 
@@ -34,6 +36,61 @@ fn renaming_a_directory_with_a_held_file_fails_with_the_code_the_host_names(#[fi
     );
     drop(held);
     std::fs::rename(&dir, home.join("moved")).unwrap();
+}
+
+/// A file inside a directory, open for reading with every sharing there is, still stops the directory's rename: what
+/// protects an install is that a file in it is open, not what the handle denies others.
+#[skuld::test]
+fn renaming_a_directory_with_a_file_open_that_shares_everything_fails_with_the_code_the_host_names(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
+    let dir = home.join("shared");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(dir.join("bin").join("tool"), b"tool").unwrap();
+    let open = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_ALL)
+        .open(dir.join("bin").join("tool"))
+        .unwrap();
+
+    let refused = std::fs::rename(&dir, home.join("moved")).unwrap_err();
+
+    let code = refused.raw_os_error().expect("an operating system error");
+    assert!(
+        host::current().rename_refused_by_open_file().contains(&code),
+        "{refused:?}"
+    );
+    drop(open);
+    std::fs::rename(&dir, home.join("moved")).unwrap();
+}
+
+/// A program that has the install's `qemu-img.exe` open for writing and deleting (a scanner, right after an
+/// extraction) does not make a launch fail: the hold asks nothing of the file but that it is open.
+#[skuld::test]
+fn an_install_whose_tool_another_program_has_open_for_writing_is_still_held(#[fixture(unicode_home)] home: &Path) {
+    const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
+    let world = world(home, zip_of(&files()));
+    let tool = world.source.resolve().unwrap().tool("qemu-img");
+    let scanner = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_ALL)
+        .open(&tool)
+        .unwrap();
+
+    let install = world.source.resolve().unwrap();
+
+    assert!(install.held.is_some());
+    drop(scanner);
+    let moved = home.join("moved");
+    let refused = std::fs::rename(install.bin.parent().unwrap(), &moved).unwrap_err();
+    assert!(
+        host::current()
+            .rename_refused_by_open_file()
+            .contains(&refused.raw_os_error().expect("an operating system error")),
+        "the hold keeps the install from being renamed: {refused:?}"
+    );
 }
 
 /// `dir` open as the system opens a process's working directory for `SetCurrentDirectory`: `FILE_TRAVERSE` and share

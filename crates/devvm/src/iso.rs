@@ -8,7 +8,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::host::{Host, is_absent};
+use crate::host::{Host, Sharing, is_absent};
 use crate::progress::Progress;
 use crate::recipe::{GenericKey, ProductKey};
 use crate::text::escape_controls;
@@ -57,7 +57,7 @@ impl HeldIso {
     /// Opens and holds the ISO at `path`; a missing one is `NotFound`, and one that another program is writing is an
     /// error naming the ISO and why.
     pub(crate) fn open(host: &dyn Host, path: &Path) -> Result<HeldIso> {
-        let file = host.open_held_read(path).map_err(|e| {
+        let file = host.open_held_read(path, Sharing::Readers).map_err(|e| {
             if is_absent(&e) {
                 Error::new(
                     ErrorKind::NotFound,
