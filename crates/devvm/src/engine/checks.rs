@@ -4,10 +4,14 @@
 //! states its own, so no QEMU name appears here.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
+use std::time::Duration;
+
+use cosca::Process;
 
 use super::Engine;
+use crate::access::session::humanly;
 use crate::backend::{Check, Detail};
 use crate::copy::Git;
 use crate::host::Host;
@@ -159,44 +163,120 @@ fn iso_line(memo: &IsoMemo, host: &dyn Host, path: &Path, sha256: Sha256, progre
     }
 }
 
-/// `ssh -V`, run as devvm runs `ssh`.
+/// How long `ssh -V` and `git --version` may run. A tool that does not end is an external event that may never happen,
+/// so the bound is the failure shown to the person reading `doctor`, never a statement about the tool.
+const TOOL_BOUND: Duration = Duration::from_secs(30);
+
+/// `ssh -V`: the `ssh` that `devvm ssh` runs, here without a console window.
 fn ssh_check(host: &dyn Host) -> Check {
     let mut command = Command::new("ssh");
     command.arg("-V").stdin(Stdio::null());
     host.quiet(&mut command);
-    tool_check("ssh", command)
+    tool_check("ssh", command, TOOL_BOUND)
 }
 
 /// `git --version`, run as a snapshot runs `git`: in the same scrubbed environment.
 fn git_check(host: &dyn Host, progress: &dyn Progress) -> Check {
     let mut command = Git::from_process(host, progress).command(Path::new("."));
     command.arg("--version").stdin(Stdio::null());
-    tool_check("git", command)
+    tool_check("git", command, TOOL_BOUND)
 }
 
-/// Runs `command` and says what it printed first, on stdout or else on stderr (`ssh -V` writes there).
-pub(super) fn tool_check(program: &str, mut command: Command) -> Check {
-    let outcome = (|| {
-        let output = command
-            .output()
-            .map_err(|e| format!("cannot run `{program}` (is it installed and on PATH?): {e}"))?;
-        if !output.status.success() {
-            let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy()).collect();
-            return Err(format!("`{program} {}` failed ({})", args.join(" "), output.status));
-        }
-        let text = [&output.stdout, &output.stderr]
-            .into_iter()
-            .map(|bytes| String::from_utf8_lossy(bytes))
-            .find_map(|text| {
-                text.lines()
-                    .next()
-                    .map(|line| line.trim().to_owned())
-                    .filter(|line| !line.is_empty())
-            });
-        Ok(text.unwrap_or_else(|| "found".to_owned()))
-    })();
+/// Runs `command` and says what it printed first, on stdout or else on stderr (`ssh -V` writes there). A tool that has
+/// not ended after `bound` is stopped, and the line says so.
+pub(super) fn tool_check(program: &str, mut command: Command, bound: Duration) -> Check {
     Check {
         name: program.to_owned(),
-        outcome,
+        outcome: tool_outcome(program, &mut command, bound),
+    }
+}
+
+fn tool_outcome(program: &str, command: &mut Command, bound: Duration) -> std::result::Result<String, String> {
+    let output = match run_within(program, command, bound)? {
+        RunOutcome::Ended(output) => output,
+        RunOutcome::Overran => {
+            return Err(format!(
+                "`{}` had not ended after {}; stopped it",
+                invocation(program, command),
+                humanly(bound)
+            ));
+        }
+    };
+    let first_line = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .next()
+            .map(|line| line.trim().to_owned())
+            .filter(|line| !line.is_empty())
+    };
+    let (stdout, stderr) = (first_line(&output.stdout), first_line(&output.stderr));
+    if !output.status.success() {
+        let failed = format!("`{}` failed ({})", invocation(program, command), output.status);
+        return Err(match stderr.or(stdout) {
+            Some(said) => format!("{failed}: {said}"),
+            None => failed,
+        });
+    }
+    Ok(stdout.or(stderr).unwrap_or_else(|| "found".to_owned()))
+}
+
+/// `program` and the arguments `command` was given.
+fn invocation(program: &str, command: &Command) -> String {
+    let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy()).collect();
+    format!("{program} {}", args.join(" "))
+}
+
+/// How [`run_within`] ended.
+enum RunOutcome {
+    Ended(Output),
+    /// The tool had not ended when the bound did, and was killed.
+    Overran,
+}
+
+/// Runs `command` to its end with its output captured, or kills it once `bound` has passed. `Err` is the line to show
+/// when the tool could not be run, watched or stopped. The output is read while the tool runs, so a tool that prints
+/// more than a pipe holds still ends.
+fn run_within(program: &str, command: &mut Command, bound: Duration) -> std::result::Result<RunOutcome, String> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot run `{program}` (is it installed and on PATH?): {e}"))?;
+    let watch = match Process::open_pid(child.id()) {
+        Ok(watch) => watch,
+        Err(e) => {
+            // Without a handle the tool cannot be bounded: it is not left running.
+            let stopped = child.kill().and_then(|()| child.wait().map(|_| ()));
+            return Err(match stopped {
+                Ok(()) => format!("cannot watch `{program}`: {e}"),
+                Err(stop) => format!("cannot watch `{program}`: {e}; and could not stop it: {stop}"),
+            });
+        }
+    };
+    let reader = std::thread::spawn(move || child.wait_with_output());
+    // `None`: the tool is already gone, so there is nothing to wait for.
+    if let Some(watch) = watch {
+        match watch.wait_timeout(bound) {
+            Ok(true) => {}
+            Ok(false) => {
+                return match watch.kill() {
+                    Ok(()) => Ok(RunOutcome::Overran),
+                    Err(e) => Err(format!(
+                        "`{program}` had not ended after {}, and could not be stopped: {e}",
+                        humanly(bound)
+                    )),
+                };
+            }
+            Err(e) => {
+                // A tool that cannot be waited for is not left running either.
+                let _ = watch.kill();
+                return Err(format!("cannot wait for `{program}`: {e}"));
+            }
+        }
+    }
+    match reader.join() {
+        Ok(Ok(output)) => Ok(RunOutcome::Ended(output)),
+        Ok(Err(e)) => Err(format!("cannot read what `{program}` printed: {e}")),
+        Err(_) => Err(format!("cannot read what `{program}` printed: the reader panicked")),
     }
 }

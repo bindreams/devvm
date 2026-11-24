@@ -1,5 +1,6 @@
-//! The programs a wrapped command runs in the tests of the Windows guest's wrapper: the test binary in a helper mode
-//! (`test_support::helper`), which the script finds by its full path or under a name a test gives it.
+//! The programs a command runs in the tests that need one that answers as told (the Windows guest's wrapper, `doctor`'s
+//! tool lines): the test binary in a helper mode (`test_support::helper`), which a script finds by its full path or
+//! under a name a test gives it.
 
 use std::io::Write;
 
@@ -26,6 +27,17 @@ pub fn argv_echo(args: &[String]) {
 pub fn exit_with(args: &[String]) {
     let code: u32 = args[0].parse().unwrap();
     std::process::exit(code as i32);
+}
+
+/// Helper `wrap-says`: the first argument to stdout and the second to stderr, as given (no newline is added), then ends
+/// with the code the third gives.
+pub fn says(args: &[String]) {
+    let (mut out, mut err) = (std::io::stdout().lock(), std::io::stderr().lock());
+    out.write_all(args[0].as_bytes()).unwrap();
+    err.write_all(args[1].as_bytes()).unwrap();
+    out.flush().unwrap();
+    err.flush().unwrap();
+    std::process::exit(args[2].parse().unwrap());
 }
 
 /// Helper `wrap-bytes`: every byte value to stdout and the same reversed to stderr (`all256`), or text with every line

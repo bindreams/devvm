@@ -103,6 +103,7 @@ mod test_helpers {
         ("snapshot-git-env", crate::copy::copy_tests::snapshot_with_git_variables),
         ("wrap-argv", crate::test_support::wrapped_programs::argv_echo),
         ("wrap-exit", crate::test_support::wrapped_programs::exit_with),
+        ("wrap-says", crate::test_support::wrapped_programs::says),
         ("wrap-bytes", crate::test_support::wrapped_programs::write_bytes),
     ];
 
