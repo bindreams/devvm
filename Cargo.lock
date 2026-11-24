@@ -2597,6 +2597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94be3d86c71b9ed220a675c405e35c7a02565a009bf8da2e9cc13a700320a5c5"
 dependencies = [
  "aes",
+ "aws-lc-rs",
  "bitflags 2.13.2",
  "block-padding",
  "byteorder",
@@ -2637,7 +2638,6 @@ dependencies = [
  "polyval",
  "rand",
  "rand_core",
- "ring",
  "russh-cryptovec",
  "russh-util",
  "salsa20",
