@@ -315,6 +315,69 @@ fn a_vm_whose_session_died_connects_again_for_its_next_operation(#[fixture(unico
     assert_eq!(fx.server.connections() - before, 1);
 }
 
+#[skuld::test]
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_and_runs_the_command_once(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    // The connection looks alive to the client, as one that ended unseen does; the server takes no new channel on it.
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+
+    let output = vm.run(&Command::new(["echo", "after"])).unwrap();
+
+    assert_eq!(
+        output.stdout,
+        b"after
+"
+    );
+    assert_eq!(fx.server.connections() - before, 1);
+    let sent = fx.server.commands().iter().filter(|c| c.contains("after")).count();
+    assert_eq!(sent, 1, "the command was sent once");
+}
+
+#[skuld::test]
+fn a_vm_whose_cached_session_cannot_open_a_channel_connects_again_for_a_copy(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    vm.run(&Command::new(["echo", "before"])).unwrap();
+    fx.server.refuse_channel_opens(1);
+    let before = fx.server.connections();
+
+    let home = vm.with_sftp(|sftp| sftp.home());
+
+    assert!(home.is_ok(), "the SFTP subsystem opened on a new connection: {home:?}");
+    assert_eq!(fx.server.connections() - before, 1);
+}
+
+#[skuld::test]
+fn a_command_whose_connection_was_lost_after_it_was_sent_is_not_run_again(#[fixture(unicode_home)] home: &Path) {
+    let fx = engine_fixture(home, memory());
+    let instance = short_bound_instance(&fx, home);
+    let vm = vm_over(reached(&instance), instance);
+    let before = fx.server.connections();
+
+    let error = vm.run(&Command::new(["drop-connection"])).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ConnectionLost, "{error}");
+    assert_eq!(
+        fx.server.connections() - before,
+        0,
+        "no new connection for a sent command"
+    );
+    let sent = fx
+        .server
+        .commands()
+        .iter()
+        .filter(|c| c.contains("drop-connection"))
+        .count();
+    assert_eq!(sent, 1, "the command was sent once");
+}
+
 /// A new connection to `instance` whose VM watcher ends with the verdict `unwatched` once `end` is sent to.
 fn session_with_a_watcher_to_end(
     instance: &Instance,

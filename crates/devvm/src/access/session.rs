@@ -379,6 +379,30 @@ impl Context {
     }
 }
 
+/// The source of an error for an operation that failed before anything of it reached the guest: its channel could not
+/// be opened. Running it again, on another connection, repeats nothing.
+#[derive(Debug)]
+struct NotStarted;
+
+impl std::fmt::Display for NotStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("nothing of the operation reached the guest")
+    }
+}
+
+impl std::error::Error for NotStarted {}
+
+/// `error`, marked as one of an operation that had not started (see [`is_not_started`]).
+pub(super) fn not_started(error: Error) -> Error {
+    error.with_source(NotStarted)
+}
+
+/// Whether `error` is of an operation that failed before anything of it reached the guest. Only such an operation may
+/// be run again on a new connection: a command that was sent may have run.
+pub(crate) fn is_not_started(error: &Error) -> bool {
+    std::error::Error::source(error).is_some_and(|source| source.is::<NotStarted>())
+}
+
 /// Why one connection attempt failed.
 enum Failure {
     Tcp(std::io::Error),

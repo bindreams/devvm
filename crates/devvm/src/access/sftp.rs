@@ -49,7 +49,7 @@ use self::remote::Remote;
 use self::typed::Typed;
 use crate::access::paths::{check_guest_path, expand_guest_path};
 use crate::access::runtime;
-use crate::access::session::Inner;
+use crate::access::session::{Inner, not_started};
 use crate::guest::GuestOs;
 use crate::host::Host;
 use crate::progress::Progress;
@@ -137,7 +137,15 @@ impl Sftp {
             guard
                 .guarded("opening the SFTP subsystem", true, Remote::connect(guard.clone()))
                 .await
-        })??;
+        })?;
+        // Nothing of an operation has reached the guest before the subsystem is open.
+        let remote = remote.map_err(|e| {
+            if e.kind() == ErrorKind::ConnectionLost {
+                not_started(e)
+            } else {
+                e
+            }
+        })?;
         Ok(Sftp { remote })
     }
 

@@ -7,9 +7,10 @@ use std::time::Duration;
 use russh::keys::{HashAlg, PrivateKey, PublicKey};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::ErrorKind;
 use crate::access::keys::InstanceKeys;
-use crate::access::session::{BootGate, ClientHandler, Connect, Context, Failure, Transport, connect_tcp, humanly};
+use crate::access::session::{
+    BootGate, ClientHandler, Connect, Context, Failure, Transport, connect_tcp, humanly, is_not_started, not_started,
+};
 use crate::access::{BootBound, ExecEnd, Keepalive, SshSession, SshTarget, VmExit};
 use crate::contain::VmProcess;
 use crate::contain::contain_tests::Sleeper;
@@ -18,6 +19,7 @@ use crate::progress::NullProgress;
 use crate::test_support::callers::in_every_caller_context;
 use crate::test_support::fixtures::{ChannelProgress, unicode_home};
 use crate::test_support::sshd::{FAST_KEEPALIVE as FAST, Rig, TestSshd};
+use crate::{Error, ErrorKind};
 
 fn finished(session: &SshSession, command: &str) -> (ExitStatus, Vec<u8>, Vec<u8>) {
     let output = session.exec_collect(command).unwrap();
@@ -747,6 +749,16 @@ fn the_boot_gate_follows_changes_while_a_wait_is_in_flight() {
             armed.elapsed()
         );
     });
+}
+
+#[skuld::test]
+fn only_an_error_marked_as_not_started_is_not_started() {
+    let lost = Error::new(ErrorKind::ConnectionLost, "the connection ended");
+
+    assert!(!is_not_started(&lost));
+    let marked = not_started(lost);
+    assert!(is_not_started(&marked));
+    assert_eq!(marked.kind(), ErrorKind::ConnectionLost, "the error keeps its kind");
 }
 
 // Host output =========================================================================================================
