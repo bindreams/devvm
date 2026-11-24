@@ -200,6 +200,32 @@ fn manifest_has_the_windows_entry_and_rejects_an_unknown_triple() {
 }
 
 #[skuld::test]
+fn a_manifest_entry_that_failed_is_told_whole_each_time(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let failed = crate::Error::new(ErrorKind::Unavailable, "no build for this host")
+        .with_source(std::io::Error::other("the cause"))
+        .with_serial_log("serial.log");
+    let source = Source::new(
+        world.dirs.clone(),
+        world.fetcher.clone(),
+        world.progress.clone(),
+        Err(failed),
+        verified(&world.asked),
+    );
+
+    let error = source.entry().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(
+        error.message(),
+        "no build for this host
+serial log: serial.log"
+    );
+    assert_eq!(error.serial_log(), Some(Path::new("serial.log")));
+    assert_eq!(std::error::Error::source(&error).unwrap().to_string(), "the cause");
+}
+
+#[skuld::test]
 fn resolve_downloads_extracts_and_publishes_once(#[fixture(unicode_home)] home: &Path) {
     let zip = zip_of(&files());
     let world = world(home, zip.clone());

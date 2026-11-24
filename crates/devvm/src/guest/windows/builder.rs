@@ -691,7 +691,7 @@ impl<'a> Build<'a> {
                 .collect(),
             Err(read) => format!("\nthe logs on the answer disk cannot be read: {}", read.message()),
         };
-        Error::new(error.kind(), format!("{}{logs}", error.message()))
+        error.with_appended(&logs)
     }
 }
 
@@ -709,10 +709,7 @@ fn after_kill<T>(outcome: Result<T>, killed: Result<()>) -> Result<T> {
 /// printed nothing.
 fn with_qemu_output(error: Error, output: &str) -> Error {
     if output.trim().is_empty() {
-        return Error::new(
-            error.kind(),
-            format!("{}\nQEMU's output:\n{PRINTED_NOTHING}", error.message()),
-        );
+        return error.with_appended(&format!("\nQEMU's output:\n{PRINTED_NOTHING}"));
     }
     error.with_tail("QEMU's output", output)
 }
