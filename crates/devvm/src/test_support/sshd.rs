@@ -315,13 +315,21 @@ impl TestSshd {
         wait_until(&self.state.closed_notify, || {
             let closed = self.state.closed.lock().unwrap();
             let commands = self.state.commands.lock().unwrap();
-            commands.iter().any(|(sent, key)| sent == command && closed.contains(key))
+            commands
+                .iter()
+                .any(|(sent, key)| sent == command && closed.contains(key))
         });
     }
 
     /// Every `exec` command the server has received, in order, as the client sent it.
     pub fn commands(&self) -> Vec<String> {
-        self.state.commands.lock().unwrap().iter().map(|(command, _)| command.clone()).collect()
+        self.state
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(command, _)| command.clone())
+            .collect()
     }
 
     /// Blocks until the server has received `count` `exec` commands in total: the commands are then in flight on the
@@ -832,8 +840,7 @@ async fn script(state: Arc<State>, handle: russh::server::Handle, key: ChannelKe
         ["write-forever"] => {
             let chunk = vec![b'y'; 1024];
             loop {
-                if state.closed.lock().unwrap().contains(&key) || handle.data(channel, chunk.clone()).await.is_err()
-                {
+                if state.closed.lock().unwrap().contains(&key) || handle.data(channel, chunk.clone()).await.is_err() {
                     return;
                 }
             }
