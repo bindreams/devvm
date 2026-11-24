@@ -73,12 +73,13 @@ fn fixture_over(home: &Path, backend: FakeBackend) -> Fixture {
 /// A recipe file at `dir/r.devvm.yaml` that starts from the embedded Ubuntu base. `top` is more top-level keys, and
 /// each of `steps` is one step's YAML.
 pub(super) fn recipe_in(dir: &Path, top: &str, steps: &[&str]) -> Recipe {
+    Recipe::parse(&recipe_text("ubuntu-24.04", top, steps), &dir.join("r.devvm.yaml")).unwrap()
+}
+
+/// The text of a recipe that starts from `from`, with `top` more top-level keys and `steps` as its step list.
+fn recipe_text(from: &str, top: &str, steps: &[&str]) -> String {
     let steps: String = steps.iter().map(|step| format!("  - {step}\n")).collect();
-    Recipe::parse(
-        &format!("from: ubuntu-24.04\n{top}steps:\n{steps}"),
-        &dir.join("r.devvm.yaml"),
-    )
-    .unwrap()
+    format!("from: {from}\n{top}steps:\n{steps}")
 }
 
 pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
@@ -88,14 +89,9 @@ pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
 /// The recipe `top` (`dir/top.devvm.yaml`) whose parent is `dir/base.devvm.yaml`; each of `base_steps` and `top_steps`
 /// is one step's YAML.
 pub(super) fn chained_recipe(dir: &Path, base_steps: &[&str], top_steps: &[&str]) -> Recipe {
-    let steps = |steps: &[&str]| -> String { steps.iter().map(|step| format!("  - {step}\n")).collect() };
-    std::fs::write(
-        dir.join("base.devvm.yaml"),
-        format!("from: ubuntu-24.04\nsteps:\n{}", steps(base_steps)),
-    )
-    .unwrap();
+    std::fs::write(dir.join("base.devvm.yaml"), recipe_text("ubuntu-24.04", "", base_steps)).unwrap();
     Recipe::parse(
-        &format!("from: base.devvm.yaml\nsteps:\n{}", steps(top_steps)),
+        &recipe_text("base.devvm.yaml", "", top_steps),
         &dir.join("top.devvm.yaml"),
     )
     .unwrap()
