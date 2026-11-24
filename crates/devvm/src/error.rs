@@ -1,7 +1,11 @@
 //! The crate's error type: a stable kind, a message, and an optional source.
 
+use std::collections::VecDeque;
 use std::fmt;
+use std::io::{self, BufRead, BufReader};
 use std::path::Path;
+
+use crate::host::is_absent;
 
 #[cfg(test)]
 #[path = "error_tests.rs"]
@@ -142,9 +146,25 @@ impl Error {
 
     /// This error with the last [`TAIL_LINES`] lines of `text`, which `what` names, after its message.
     pub(crate) fn with_tail(mut self, what: &str, text: &str) -> Error {
-        let tail = last_lines(text);
+        self.append_tail(what, &last_lines(text));
+        self
+    }
+
+    fn append_tail(&mut self, what: &str, tail: &str) {
         if !tail.is_empty() {
             self.message = format!("{}\nthe end of {what}:\n{tail}", self.message);
+        }
+    }
+
+    /// This error with the last [`TAIL_LINES`] lines of the file at `path`, which `what` names, after its message, as
+    /// [`Error::with_tail`] does: the file may be gone, with its directory, when the error is read. A missing file
+    /// ([`is_absent`]) or an empty one adds nothing; a file that cannot be read adds `(cannot be read: <error>)`. The
+    /// file is streamed, and a line longer than [`TAIL_LINE_BYTES`] keeps its end.
+    pub(crate) fn with_log_tail(mut self, what: &str, path: &Path) -> Error {
+        match tail_of_file(path) {
+            Ok(tail) => self.append_tail(what, &tail),
+            Err(e) if is_absent(&e) => {}
+            Err(e) => self.append_tail(what, &format!("(cannot be read: {e})")),
         }
         self
     }
@@ -176,4 +196,54 @@ pub(crate) const TAIL_LINES: usize = 20;
 pub(crate) fn last_lines(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
+}
+
+/// A line of a log is kept up to this many bytes, from its end.
+const TAIL_LINE_BYTES: usize = 8 << 10;
+
+/// `line` as the newest of `lines`, which keep the last [`TAIL_LINES`].
+fn keep(lines: &mut VecDeque<Vec<u8>>, line: Vec<u8>) {
+    if lines.len() == TAIL_LINES {
+        lines.pop_front();
+    }
+    lines.push_back(line);
+}
+
+/// The last [`TAIL_LINES`] lines of the file at `path`, read in one pass without holding the file.
+fn tail_of_file(path: &Path) -> io::Result<String> {
+    let mut file = BufReader::new(std::fs::File::open(path)?);
+    let mut lines: VecDeque<Vec<u8>> = VecDeque::with_capacity(TAIL_LINES);
+    let mut line: Vec<u8> = Vec::new();
+    // Whether bytes of a line that has not ended were seen.
+    let mut open = false;
+    loop {
+        let chunk = file.fill_buf()?;
+        if chunk.is_empty() {
+            break;
+        }
+        let (part, ended) = match chunk.iter().position(|&byte| byte == b'\n') {
+            Some(at) => (&chunk[..at], Some(at + 1)),
+            None => (chunk, None),
+        };
+        open = true;
+        line.extend_from_slice(part);
+        line.drain(..line.len().saturating_sub(TAIL_LINE_BYTES));
+        let used = ended.unwrap_or(chunk.len());
+        file.consume(used);
+        if ended.is_some() {
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            keep(&mut lines, std::mem::take(&mut line));
+            open = false;
+        }
+    }
+    if open {
+        keep(&mut lines, line);
+    }
+    let lines: Vec<String> = lines
+        .iter()
+        .map(|line| String::from_utf8_lossy(line).into_owned())
+        .collect();
+    Ok(lines.join("\n"))
 }

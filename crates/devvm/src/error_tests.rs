@@ -1,6 +1,8 @@
 use std::error::Error as _;
+use std::path::Path;
 
 use crate::error::{Error, ErrorKind};
+use crate::test_support::fixtures::unicode_home;
 
 #[skuld::test]
 fn kind_strings_are_the_wire_names() {
@@ -124,4 +126,72 @@ fn with_tail_of_empty_text_adds_nothing_and_keeps_the_source() {
     assert_eq!(error.message(), "cannot: cause");
     let error = error.with_tail("a log", "x");
     assert!(error.source().is_some(), "the source stays");
+}
+
+fn failed() -> Error {
+    Error::new(ErrorKind::Unavailable, "the guest finished early")
+}
+
+#[skuld::test]
+fn with_log_tail_appends_the_last_lines_of_a_file(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    let text: Vec<String> = (1..=45).map(|n| format!("line {n}")).collect();
+    // A Windows guest's file ends its lines with CRLF; the last one is unterminated.
+    std::fs::write(&log, text.join("\r\n")).unwrap();
+    let error = failed()
+        .with_source(std::io::Error::other("cause"))
+        .with_log_tail("the serial log", &log);
+    let tail: Vec<String> = (26..=45).map(|n| format!("line {n}")).collect();
+    assert_eq!(
+        error.message(),
+        format!(
+            "the guest finished early\nthe end of the serial log:\n{}",
+            tail.join("\n")
+        )
+    );
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert!(error.source().is_some(), "the source stays");
+}
+
+#[skuld::test]
+fn with_log_tail_of_a_file_with_one_huge_unterminated_line_keeps_the_end(#[fixture(unicode_home)] home: &Path) {
+    let log = home.join("serial.log");
+    let mut bytes = b"first\n".to_vec();
+    bytes.extend(std::iter::repeat_n(b'x', 5 << 20));
+    bytes.extend_from_slice(b" the end");
+    std::fs::write(&log, bytes).unwrap();
+    let error = failed().with_log_tail("the serial log", &log);
+    let message = error.message();
+    assert!(
+        message.starts_with("the guest finished early\nthe end of the serial log:\nfirst\n"),
+        "{}",
+        message.len()
+    );
+    assert!(message.ends_with("xxx the end"), "{}", message.len());
+    assert!(
+        message.len() < 64 << 10,
+        "the huge line is cut: {} bytes",
+        message.len()
+    );
+}
+
+#[skuld::test]
+fn with_log_tail_adds_nothing_for_a_missing_file(#[fixture(unicode_home)] home: &Path) {
+    let error = failed().with_log_tail("the serial log", &home.join("absent.log"));
+    assert_eq!(error.message(), "the guest finished early");
+    let empty = home.join("empty.log");
+    std::fs::write(&empty, "").unwrap();
+    let error = failed().with_log_tail("the serial log", &empty);
+    assert_eq!(error.message(), "the guest finished early");
+}
+
+#[skuld::test]
+fn with_log_tail_says_so_when_the_file_cannot_be_read(#[fixture(unicode_home)] home: &Path) {
+    // A directory is not a file that can be read, on any host.
+    let error = failed().with_log_tail("the serial log", home);
+    let message = error.message();
+    assert!(
+        message.starts_with("the guest finished early\nthe end of the serial log:\n(cannot be read: "),
+        "{message}"
+    );
 }
