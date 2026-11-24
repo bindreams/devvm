@@ -1,9 +1,8 @@
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
-use std::time::Duration;
 
-use super::{TOOL_BOUND, host_checks, iso_check, iso_checks, tool_check};
+use super::{host_checks, iso_check, iso_checks, tool_check};
 use crate::backend::fake::FakeBackend;
 use crate::backend::{Backend, Check, Detail};
 use crate::copy::heap_tests::sha256_of;
@@ -170,7 +169,7 @@ fn a_host_without_an_accelerator_fails_the_accelerator_line_with_what_is_missing
 fn a_tool_that_runs_passes_with_what_it_printed_and_one_that_does_not_exist_fails() {
     let mut version = std::process::Command::new("git");
     version.arg("--version");
-    let git = tool_check("git", version, TOOL_BOUND);
+    let git = tool_check("git", version);
     assert_eq!(git.name, "git");
     let printed = git.outcome.expect("the tests need git");
     assert!(printed.starts_with("git version"), "{printed}");
@@ -178,7 +177,6 @@ fn a_tool_that_runs_passes_with_what_it_printed_and_one_that_does_not_exist_fail
     let absent = tool_check(
         "devvm-no-such-tool-4f1c",
         std::process::Command::new("devvm-no-such-tool-4f1c"),
-        TOOL_BOUND,
     );
     let why = absent.outcome.expect_err("there is no such tool");
     assert!(why.contains("devvm-no-such-tool-4f1c"), "{why}");
@@ -191,14 +189,14 @@ fn tool_saying(stdout: &str, stderr: &str, code: i32) -> Command {
 
 #[skuld::test]
 fn a_tool_that_prints_only_on_stderr_passes_with_its_first_line() {
-    let ssh = tool_check("ssh", tool_saying("", "OpenSSH_9.6\nmore", 0), TOOL_BOUND);
+    let ssh = tool_check("ssh", tool_saying("", "OpenSSH_9.6\nmore", 0));
 
     assert_eq!(ssh.outcome, Ok("OpenSSH_9.6".to_owned()));
 }
 
 #[skuld::test]
 fn a_tool_that_prints_on_both_streams_passes_with_the_first_line_of_stdout() {
-    let tool = tool_check("tool", tool_saying("\n  v1 \nv2", "note", 0), TOOL_BOUND);
+    let tool = tool_check("tool", tool_saying("\n  v1 \nv2", "note", 0));
 
     assert_eq!(tool.outcome, Ok("v1".to_owned()));
 }
@@ -206,20 +204,16 @@ fn a_tool_that_prints_on_both_streams_passes_with_the_first_line_of_stdout() {
 #[skuld::test]
 fn a_tool_that_prints_nothing_passes_as_found() {
     assert_eq!(
-        tool_check("tool", tool_saying("", "", 0), TOOL_BOUND).outcome,
+        tool_check("tool", tool_saying("", "", 0)).outcome,
         Ok("found".to_owned())
     );
 }
 
 #[skuld::test]
 fn a_tool_that_exits_non_zero_fails_with_the_first_line_it_said_on_stderr() {
-    let why = tool_check(
-        "tool",
-        tool_saying("on stdout", "usage: tool\nsecond line", 2),
-        TOOL_BOUND,
-    )
-    .outcome
-    .expect_err("the tool exits with 2");
+    let why = tool_check("tool", tool_saying("on stdout", "usage: tool\nsecond line", 2))
+        .outcome
+        .expect_err("the tool exits with 2");
 
     assert!(why.contains("`tool "), "{why}");
     assert!(why.contains("failed"), "{why}");
@@ -229,27 +223,12 @@ fn a_tool_that_exits_non_zero_fails_with_the_first_line_it_said_on_stderr() {
 
 #[skuld::test]
 fn a_tool_that_exits_non_zero_without_a_word_fails_on_its_status_alone() {
-    let why = tool_check("tool", tool_saying("", "", 3), TOOL_BOUND)
+    let why = tool_check("tool", tool_saying("", "", 3))
         .outcome
         .expect_err("the tool exits with 3");
 
     assert!(why.contains("failed"), "{why}");
     assert!(why.ends_with(')'), "{why}");
-}
-
-#[skuld::test]
-fn a_tool_that_does_not_end_within_the_bound_fails_naming_the_tool_and_the_bound() {
-    // Reads its input to the end, and the input stays open until the check is over.
-    let mut sleeper = helper::command("sleeper", &[]);
-    sleeper.stdin(Stdio::piped());
-
-    let why = tool_check("sleeper", sleeper, Duration::from_millis(100))
-        .outcome
-        .expect_err("the tool does not end");
-
-    assert!(why.contains("`sleeper"), "{why}");
-    assert!(why.contains("100ms"), "{why}");
-    assert!(!why.contains("failed"), "the bound says nothing about the tool: {why}");
 }
 
 #[skuld::test]
