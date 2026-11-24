@@ -155,9 +155,21 @@ fn a_digest_key_written_without_a_value_is_an_error_naming_it() {
 #[skuld::test]
 fn a_digest_of_the_wrong_algorithm_is_an_error_naming_the_key_and_the_length() {
     let cases = [
-        (format!("from: {{ url: 'https://h/a', sha512: {SHA_A} }}"), "`sha512`", "128 hex digits"),
-        (format!("from: {{ url: 'https://h/a', sha256: {SHA512_A} }}"), "`sha256`", "64 hex digits"),
-        ("from: { url: 'https://h/a', sha512: abc }".to_owned(), "`sha512`", "128 hex digits"),
+        (
+            format!("from: {{ url: 'https://h/a', sha512: {SHA_A} }}"),
+            "`sha512`",
+            "128 hex digits",
+        ),
+        (
+            format!("from: {{ url: 'https://h/a', sha256: {SHA512_A} }}"),
+            "`sha256`",
+            "64 hex digits",
+        ),
+        (
+            "from: { url: 'https://h/a', sha512: abc }".to_owned(),
+            "`sha512`",
+            "128 hex digits",
+        ),
     ];
     for (text, key, digits) in cases {
         let error = parse_err(&text);

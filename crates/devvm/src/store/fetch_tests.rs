@@ -266,12 +266,17 @@ fn a_sha512_pin_that_differs_from_a_cached_one_only_in_its_second_half_is_checke
     let error = setup.fetcher.fetch(&typo).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
     assert_eq!(transport.requests().len(), 2, "the second pin is downloaded");
-    assert!(setup.fetcher.entry_path(&cached).is_file(), "the first pin's entry stays");
+    assert!(
+        setup.fetcher.entry_path(&cached).is_file(),
+        "the first pin's entry stays"
+    );
     assert!(!setup.fetcher.entry_path(&typo).exists());
 }
 
 #[skuld::test]
-fn a_sha512_pin_does_not_share_an_entry_with_the_sha256_pin_its_first_half_equals(#[fixture(unicode_home)] home: &Path) {
+fn a_sha512_pin_does_not_share_an_entry_with_the_sha256_pin_its_first_half_equals(
+    #[fixture(unicode_home)] home: &Path,
+) {
     let data = bytes(10_000, 1);
     let transport = Script::serving(data.clone());
     let setup = setup(home, transport.clone());
@@ -291,7 +296,10 @@ fn a_sha512_pin_does_not_share_an_entry_with_the_sha256_pin_its_first_half_equal
     let error = setup.fetcher.fetch(&sha512).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Checksum);
     assert_eq!(transport.requests().len(), 2, "the sha512 pin is downloaded");
-    assert!(setup.fetcher.entry_path(&cached).is_file(), "the sha256 pin's entry stays");
+    assert!(
+        setup.fetcher.entry_path(&cached).is_file(),
+        "the sha256 pin's entry stays"
+    );
 }
 
 #[skuld::test]
