@@ -1,6 +1,8 @@
+use std::fs::OpenOptions;
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
-use super::sidecar_tests::{World, entries, files, visible, world, zip_of};
+use super::sidecar_tests::{World, entries, files, old_install, visible, world, zip_of};
 use crate::contain::Lifetime;
 use crate::host;
 use crate::test_support::fake_vm;
@@ -25,13 +27,66 @@ fn renaming_a_directory_with_a_held_file_fails_with_the_code_the_host_names(#[fi
 
     let refused = std::fs::rename(&dir, home.join("moved")).unwrap_err();
 
-    assert_eq!(
-        refused.raw_os_error(),
-        host::current().rename_refused_by_open_file(),
+    let code = refused.raw_os_error().expect("an operating system error");
+    assert!(
+        host::current().rename_refused_by_open_file().contains(&code),
         "{refused:?}"
     );
     drop(held);
     std::fs::rename(&dir, home.join("moved")).unwrap();
+}
+
+/// `dir` open as the system opens a process's working directory for `SetCurrentDirectory`: `FILE_TRAVERSE` and share
+/// mode read and write. Held without making this process's working directory the directory.
+fn open_as_working_directory(dir: &Path) -> std::fs::File {
+    const FILE_TRAVERSE: u32 = 0x20;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    OpenOptions::new()
+        .access_mode(FILE_TRAVERSE | SYNCHRONIZE)
+        .share_mode(FILE_SHARE_READ_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(dir)
+        .unwrap()
+}
+
+/// Measured on Windows 11 (build 26100) on 2026-11-24: the rename of a directory that is open as a working directory
+/// fails with `ERROR_SHARING_VIOLATION` (32), where one with a file open inside fails with `ERROR_ACCESS_DENIED` (5).
+#[skuld::test]
+fn renaming_a_directory_held_as_a_working_directory_fails_with_a_code_the_host_names(
+    #[fixture(unicode_home)] home: &Path,
+) {
+    let dir = home.join("cwd");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    let open = open_as_working_directory(&dir);
+
+    let refused = std::fs::rename(&dir, home.join("moved")).unwrap_err();
+
+    let code = refused.raw_os_error().expect("an operating system error");
+    assert!(
+        host::current().rename_refused_by_open_file().contains(&code),
+        "{refused:?}"
+    );
+    drop(open);
+    std::fs::rename(&dir, home.join("moved")).unwrap();
+}
+
+/// A terminal whose working directory is a superseded install keeps it: removal leaves it as it was, and says nothing.
+#[skuld::test]
+fn an_install_that_is_a_working_directory_is_kept_without_a_warning(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let qemu = world.dirs.qemu();
+    let old = old_install(&qemu, "10.0.0-0123456789ab");
+    let open = open_as_working_directory(&old);
+
+    world.source.resolve().unwrap();
+
+    assert!(old.join("bin").is_dir(), "{:?}", entries(&qemu));
+    assert!(world.progress.warnings().is_empty(), "{:?}", world.progress.warnings());
+    drop(open);
+    world.source.resolve().unwrap();
+    assert!(!old.exists(), "{:?}", entries(&qemu));
 }
 
 /// Two devvm builds with different QEMU pins share one cache. Each has resolved its install and not yet launched from

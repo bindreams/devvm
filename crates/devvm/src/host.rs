@@ -258,11 +258,12 @@ pub(crate) trait Host: Send + Sync {
     /// Windows) fails `Unsupported`.
     fn share_open_file_with(&self, file: &File, process: ProcessId) -> std::io::Result<()>;
 
-    /// The OS error code that renaming a directory fails with while a file inside it is open without delete sharing
-    /// ([`Host::open_held_read`] opens one), or `None` on a host where an open file does not stop the rename. Where
-    /// there is none, no directory can be shown to be in use, and devvm removes none on that ground. Windows: 5
-    /// (`ERROR_ACCESS_DENIED`).
-    fn rename_refused_by_open_file(&self) -> Option<i32>;
+    /// The OS error codes that renaming a directory fails with while it is in use: a file inside it is open without
+    /// delete sharing ([`Host::open_held_read`] opens one), or the directory itself is open as a working directory.
+    /// Empty on a host where an open file does not stop the rename: no directory can be shown to be in use there, and
+    /// devvm removes none on that ground. Windows: 5 (`ERROR_ACCESS_DENIED`) for a file inside, 32
+    /// (`ERROR_SHARING_VIOLATION`) for the directory itself.
+    fn rename_refused_by_open_file(&self) -> &'static [i32];
 
     /// The path of `file`, opened by [`Host::open_held_read`] at `opened_by`, with no link in it: a program that opens
     /// the file by name opens this file, where `opened_by` can be pointed elsewhere by re-making a junction or a

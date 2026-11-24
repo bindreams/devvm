@@ -11,7 +11,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use cosca::identity::ProcessId;
 
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PRIVILEGE_NOT_HELD};
+use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PRIVILEGE_NOT_HELD, ERROR_SHARING_VIOLATION};
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal, GetACP};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES, MoveFileExW};
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
@@ -318,8 +318,8 @@ impl Host for WindowsHost {
         hold::share_open_file(file, process)
     }
 
-    fn rename_refused_by_open_file(&self) -> Option<i32> {
-        Some(ERROR_ACCESS_DENIED as i32)
+    fn rename_refused_by_open_file(&self) -> &'static [i32] {
+        &[ERROR_ACCESS_DENIED as i32, ERROR_SHARING_VIOLATION as i32]
     }
 
     fn final_path_of_open(&self, file: &File, _opened_by: &Path) -> std::io::Result<PathBuf> {

@@ -155,8 +155,8 @@ impl Host for TestHost {
     }
 
     /// Windows's answer on every host, so the tests of what is done with it run everywhere.
-    fn rename_refused_by_open_file(&self) -> Option<i32> {
-        Some(5)
+    fn rename_refused_by_open_file(&self) -> &'static [i32] {
+        &[5, 32]
     }
 
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {
@@ -317,7 +317,7 @@ impl Host for NoAccelHost {
         TestHost.share_open_file_with(file, process)
     }
 
-    fn rename_refused_by_open_file(&self) -> Option<i32> {
+    fn rename_refused_by_open_file(&self) -> &'static [i32] {
         TestHost.rename_refused_by_open_file()
     }
 
@@ -671,7 +671,7 @@ impl Host for RecordingHost {
         TestHost.share_open_file_with(file, process)
     }
 
-    fn rename_refused_by_open_file(&self) -> Option<i32> {
+    fn rename_refused_by_open_file(&self) -> &'static [i32] {
         TestHost.rename_refused_by_open_file()
     }
 
@@ -839,7 +839,7 @@ impl Host for NoGuestReset {
         TestHost.share_open_file_with(file, process)
     }
 
-    fn rename_refused_by_open_file(&self) -> Option<i32> {
+    fn rename_refused_by_open_file(&self) -> &'static [i32] {
         TestHost.rename_refused_by_open_file()
     }
 

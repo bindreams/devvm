@@ -251,8 +251,8 @@ impl<M: FileModes> Host for M {
         ))
     }
 
-    fn rename_refused_by_open_file(&self) -> Option<i32> {
-        None
+    fn rename_refused_by_open_file(&self) -> &'static [i32] {
+        &[]
     }
 
     fn final_path_of_open(&self, file: &File, opened_by: &Path) -> std::io::Result<PathBuf> {

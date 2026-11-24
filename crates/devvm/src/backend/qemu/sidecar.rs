@@ -407,7 +407,7 @@ impl Source {
                 return surplus;
             }
         };
-        let tells_in_use = self.host.rename_refused_by_open_file().is_some();
+        let tells_in_use = !self.host.rename_refused_by_open_file().is_empty();
         for entry in listing {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -434,8 +434,9 @@ impl Source {
     /// Removes every published install but `keep`, with the extraction lock held.
     ///
     /// An install is first renamed to an `.extract-` name, which nothing resolves. The rename is the test for "in use":
-    /// it is refused with the host's code ([`Host::rename_refused_by_open_file`]) while a file is held open under the
-    /// directory, and the install stays as it was, silently. Any other failure is a warning. Once renamed, the install
+    /// it is refused with one of the host's codes ([`Host::rename_refused_by_open_file`]) while a file is held open
+    /// under the directory or the directory is open itself (a working directory), and the install stays as it was,
+    /// silently. Any other failure is a warning. Once renamed, the install
     /// is gone as far as every devvm is concerned, and what the delete cannot remove is swept by the next sweep. A
     /// failure on one install does not stop the others.
     fn prune_superseded(&self, qemu: &Path, keep: &Path) {
@@ -450,7 +451,7 @@ impl Source {
             };
             match std::fs::rename(&path, &removing) {
                 Ok(()) => {}
-                Err(e) if in_use.is_some() && e.raw_os_error() == in_use => continue,
+                Err(e) if e.raw_os_error().is_some_and(|code| in_use.contains(&code)) => continue,
                 Err(e) => {
                     self.progress
                         .warn(&format!("cannot move {} aside to remove it: {e}", path.display()));
