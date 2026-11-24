@@ -265,6 +265,14 @@ fn a_tool_that_exits_non_zero_without_a_word_fails_on_its_status_alone() {
 
     assert!(why.contains("failed"), "{why}");
     assert!(why.ends_with(')'), "{why}");
+    assert!(!why.contains("): "), "{why}");
+}
+
+#[skuld::test]
+fn a_tool_that_succeeds_with_only_blank_stdout_passes_with_the_first_line_of_stderr() {
+    let tool = tool_check("tool", tool_saying("  \n\t\n", "\nnote\nmore", 0));
+
+    assert_eq!(tool.outcome, Ok("note".to_owned()));
 }
 
 #[skuld::test]
