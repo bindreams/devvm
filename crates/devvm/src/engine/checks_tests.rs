@@ -215,10 +215,10 @@ fn a_tool_that_exits_non_zero_fails_with_the_first_line_it_said_on_stderr() {
         .outcome
         .expect_err("the tool exits with 2");
 
-    assert!(why.contains("`tool "), "{why}");
-    assert!(why.contains("failed"), "{why}");
-    assert!(why.contains("usage: tool"), "{why}");
-    assert!(!why.contains("second line"), "{why}");
+    // The failure text echoes the command's arguments, which carry the helper's text: only its tail says what the tool said.
+    assert!(why.starts_with("`tool "), "{why}");
+    assert!(why.contains(" failed ("), "{why}");
+    assert!(why.ends_with("): usage: tool"), "{why}");
 }
 
 #[skuld::test]
