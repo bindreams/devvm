@@ -85,6 +85,22 @@ pub(super) fn recipe(home: &Path, steps: &[&str]) -> Recipe {
     recipe_in(home, "", steps)
 }
 
+/// The recipe `top` (`dir/top.devvm.yaml`) whose parent is `dir/base.devvm.yaml`; each of `base_steps` and `top_steps`
+/// is one step's YAML.
+pub(super) fn chained_recipe(dir: &Path, base_steps: &[&str], top_steps: &[&str]) -> Recipe {
+    let steps = |steps: &[&str]| -> String { steps.iter().map(|step| format!("  - {step}\n")).collect() };
+    std::fs::write(
+        dir.join("base.devvm.yaml"),
+        format!("from: ubuntu-24.04\nsteps:\n{}", steps(base_steps)),
+    )
+    .unwrap();
+    Recipe::parse(
+        &format!("from: base.devvm.yaml\nsteps:\n{}", steps(top_steps)),
+        &dir.join("top.devvm.yaml"),
+    )
+    .unwrap()
+}
+
 /// The keys of the layers `recipe` builds, root first, when it has no `copy` step.
 pub(super) fn keys_of(recipe: &Recipe) -> Vec<LayerKey> {
     let flat = recipe.flatten().unwrap();
@@ -431,10 +447,25 @@ fn a_refused_set_step_fails_before_any_base_is_built_or_keyed(#[fixture(unicode_
     let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
 
     assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
-    assert!(error.message().contains("step 3 of 3"), "{error}");
+    assert!(error.message().contains("r: step 3 of 3"), "{error}");
     assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 0, "a base was built");
     assert!(fx.server.commands().is_empty(), "a guest ran a command");
     assert!(!is_there(&fx.dirs.builds()), "a build directory was made");
+}
+
+#[skuld::test]
+fn a_refused_step_of_the_parent_recipe_names_the_parent(#[fixture(unicode_home)] home: &Path) {
+    let fx = fixture(home);
+    let recipe = chained_recipe(
+        home,
+        &["run: echo one", "set: { uac: auto-approve }", "run: echo three"],
+        &["run: echo four"],
+    );
+
+    let error = fx.engine.build(&recipe, &BuildOptions::default()).err().unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Recipe, "{error}");
+    assert!(error.message().contains("base: step 2 of 3"), "{error}");
 }
 
 #[skuld::test]

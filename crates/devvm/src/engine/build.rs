@@ -14,7 +14,7 @@ use crate::guest::{BuildCtx, GuestOs};
 use crate::iso::{IsoMemo, IsoRoot, key_iso};
 use crate::progress::{Progress, Total, strip_ansi};
 use crate::recipe::hash::{CopyManifest, KeyContext, LayerKey, RootContent, chain_keys};
-use crate::recipe::{CopyFrom, Flattened, ProductKey, Recipe, Source, Step};
+use crate::recipe::{CopyFrom, FlatStep, Flattened, ProductKey, Recipe, Source, Step};
 use crate::store::layers::{BuildRequest, Built, ChainLease, LayerStore, Staging};
 use crate::vm::{Image, Vm};
 use crate::{Arch, BuildOptions, Command, Error, ErrorKind, Result, StartOptions, random};
@@ -124,8 +124,7 @@ impl Engine {
     fn snapshots(&self, flat: &Flattened, into: &std::path::Path) -> Result<Vec<Option<Snapshot>>> {
         flat.steps
             .iter()
-            .enumerate()
-            .map(|(index, flat_step)| match &flat_step.step {
+            .map(|flat_step| match &flat_step.step {
                 Step::Copy {
                     from: CopyFrom::GitTracked,
                     read_only,
@@ -138,14 +137,7 @@ impl Engine {
                     self.progress.as_ref(),
                 )
                 .map(Some)
-                .map_err(|error| {
-                    in_step(
-                        error,
-                        index,
-                        flat.steps.len(),
-                        &format!("snapshotting the files of copy to {to}"),
-                    )
-                }),
+                .map_err(|error| in_step(error, flat_step, &format!("snapshotting the files of copy to {to}"))),
                 Step::Run { .. } | Step::Set(_) => Ok(None),
             })
             .collect()
@@ -157,10 +149,10 @@ impl Engine {
 /// refuses (a script its shell cannot carry, a line over the guest's limit). It is the one check of the commands the
 /// recipe holds, made before anything is built or keyed, and it builds each command as the step will run it.
 fn refuse_unavailable_commands(flat: &Flattened, guest: &dyn GuestOs) -> Result<()> {
-    for (index, flat_step) in flat.steps.iter().enumerate() {
+    for flat_step in &flat.steps {
         step_command(guest, &flat_step.step, UNKNOWN_COPY_PATHS)
             .and_then(|command| guest.wrap(&command))
-            .map_err(|error| in_step(error, index, flat.steps.len(), &describe(&flat_step.step)))?;
+            .map_err(|error| in_step(error, flat_step, &describe(&flat_step.step)))?;
     }
     Ok(())
 }
@@ -295,11 +287,8 @@ impl StepRun<'_> {
         let chain = store.lease_chain(&parent.tip().layer_ref(), &guard).during(lease)?;
         drop(guard);
         let image = Image::from_chain(engine.clone(), chain, self.flat, self.arch);
-        let step = &self.flat.steps[self.index].step;
-        let task = engine.progress.task(
-            format!("step {} of {}", self.index + 1, self.flat.steps.len()),
-            Total::Unknown,
-        );
+        let step = &self.flat_step().step;
+        let task = engine.progress.task(step_label(self.flat_step()), Total::Unknown);
         task.status(describe(step));
         let vm = image
             .start(&StartOptions::default())
@@ -392,24 +381,33 @@ impl StepRun<'_> {
         })
     }
 
+    fn flat_step(&self) -> &FlatStep {
+        &self.flat.steps[self.index]
+    }
+
     fn step_of(&self, what: &str) -> String {
-        step_of(self.index, self.flat.steps.len(), what)
+        step_of(self.flat_step(), what)
     }
 
     fn in_step(&self, error: Error, what: &str) -> Error {
-        in_step(error, self.index, self.flat.steps.len(), what)
+        in_step(error, self.flat_step(), what)
     }
 }
 
-/// `step N of M (what)` for the step at `index` of `total`.
-fn step_of(index: usize, total: usize, what: &str) -> String {
-    format!("step {} of {total} ({what})", index + 1)
+/// `<recipe>: step N of M`, the step's place in the recipe that declares it.
+fn step_label(step: &FlatStep) -> String {
+    format!("{}: step {} of {}", step.recipe, step.position + 1, step.count)
 }
 
-/// `error` with `step N of M (what)` in front of its message, for the step at `index` of `total`.
-fn in_step(error: Error, index: usize, total: usize, what: &str) -> Error {
+/// `<recipe>: step N of M (what)`.
+fn step_of(step: &FlatStep, what: &str) -> String {
+    format!("{} ({what})", step_label(step))
+}
+
+/// `error` with `<recipe>: step N of M (what)` in front of its message.
+fn in_step(error: Error, step: &FlatStep, what: &str) -> Error {
     let kind = error.kind();
-    error.with_context(kind, step_of(index, total, what))
+    error.with_context(kind, step_of(step, what))
 }
 
 type StepResult<T> = std::result::Result<T, StepFailure>;
@@ -431,7 +429,8 @@ enum StepFailure {
 }
 
 impl StepFailure {
-    /// The error in the words of `step`: `step N of M (what): <error>`, or `step N of M (what) ended with <status>`.
+    /// The error in the words of `step`: `<recipe>: step N of M (what): <error>`, or
+    /// `<recipe>: step N of M (what) ended with <status>`.
     fn into_error(self, step: &StepRun<'_>) -> Error {
         match self {
             StepFailure::Failed { what, error } => step.in_step(error, &what),
