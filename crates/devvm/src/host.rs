@@ -1,5 +1,6 @@
 //! What differs between host operating systems, behind one trait. The implementation is chosen here and only here, by
-//! the `cfg`s on the module declarations and on [`Current`] below; no code under `host/` selects one.
+//! the `cfg`s on the module declarations, on [`Current`] and on [`set_modified`] below; no code under `host/` selects
+//! one.
 //! (`backend/qemu/uds.rs` only names the AF_UNIX stream type each OS has.)
 
 use std::ffi::{OsStr, OsString};
