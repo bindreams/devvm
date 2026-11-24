@@ -263,19 +263,35 @@ impl Source {
 
     /// The install at `root`, holding its `bin` directory open; `None` when the install is not there or has lost its
     /// [`REQUIRED_TOOL`]. Opening `bin` by its published path is the check that the install exists, and from then on
-    /// the open directory keeps it. Another program that has `bin` open without sharing it fails the call.
+    /// the open directory keeps it. `bin` is opened only once the tool is seen, so an install that has no tool, which
+    /// another devvm may be moving aside, is never held; the tool is looked for again once `bin` is held, and the hold
+    /// is dropped if it is gone. Another program that has `bin` open without sharing it fails the call.
     fn holding(&self, root: &Path, entry: &ManifestEntry) -> Result<Option<QemuInstall>> {
-        let bin = root.join("bin");
-        let held = match self.host.open_held_read(&bin, HeldKind::Directory) {
+        let bare = self.install_at(root, entry, None);
+        let tool = bare.tool(REQUIRED_TOOL);
+        let has_tool = || -> Result<bool> {
+            crate::host::symlink_metadata_if_present(&tool)
+                .map(|present| present.is_some())
+                .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", tool.display()), e))
+        };
+        if !has_tool()? {
+            return Ok(None);
+        }
+        let held = match self.host.open_held_read(&bare.bin, HeldKind::Directory) {
             Ok(file) => file,
             Err(e) if crate::host::is_absent(&e) => return Ok(None),
-            Err(e) => return Err(Error::io(ErrorKind::Io, format!("cannot hold {}", bin.display()), e)),
+            Err(e) => {
+                return Err(Error::io(
+                    ErrorKind::Io,
+                    format!("cannot hold {}", bare.bin.display()),
+                    e,
+                ));
+            }
         };
-        let install = self.install_at(root, entry, Some(Arc::new(held)));
-        let tool = install.tool(REQUIRED_TOOL);
-        let present = crate::host::symlink_metadata_if_present(&tool)
-            .map_err(|e| Error::io(ErrorKind::Io, format!("cannot look at {}", tool.display()), e))?;
-        Ok(present.map(|_| install))
+        Ok(has_tool()?.then(|| QemuInstall {
+            held: Some(Arc::new(held)),
+            ..bare
+        }))
     }
 
     /// The install, downloading and extracting it first if it is not in the cache.

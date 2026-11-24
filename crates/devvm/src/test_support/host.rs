@@ -369,6 +369,8 @@ pub struct RecordingHost {
     fail_final_path: AtomicBool,
     /// The paths given to `hold_new`, in call order, failed calls included.
     holds_made: Mutex<Vec<PathBuf>>,
+    /// The paths given to `open_held_read`, in call order, failed calls included.
+    held_opened: Mutex<Vec<PathBuf>>,
     directory_calls: Mutex<Vec<DirectoryCall>>,
     fail_sync_dir_of: Mutex<Option<PathBuf>>,
     /// Every open file given to a process by `share_open_file_with`, as the file's identity and the process's PID, in
@@ -470,6 +472,11 @@ impl RecordingHost {
     /// The paths given to `hold_new`, in call order.
     pub fn holds_made(&self) -> Vec<PathBuf> {
         self.holds_made.lock().unwrap().clone()
+    }
+
+    /// The paths given to `open_held_read`, in call order.
+    pub fn held_opened(&self) -> Vec<PathBuf> {
+        self.held_opened.lock().unwrap().clone()
     }
 
     /// A host that cannot tell a directory is in use, as one where an open file does not stop a rename: it names no
@@ -713,6 +720,7 @@ impl Host for RecordingHost {
     }
 
     fn open_held_read(&self, path: &Path, kind: HeldKind) -> std::io::Result<File> {
+        self.held_opened.lock().unwrap().push(path.to_owned());
         TestHost.open_held_read(path, kind)
     }
 

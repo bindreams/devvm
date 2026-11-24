@@ -590,6 +590,19 @@ fn recording_host() -> &'static RecordingHost {
     Box::leak(Box::new(RecordingHost::new()))
 }
 
+#[skuld::test]
+fn an_install_without_its_tool_is_not_opened(#[fixture(unicode_home)] home: &Path) {
+    let world = world(home, zip_of(&files()));
+    let host = recording_host();
+    let source = world.source_on(host);
+    let published = source.published(&world.entry);
+    std::fs::create_dir_all(published.join("bin")).unwrap();
+
+    assert!(source.existing().unwrap().is_none());
+
+    assert_eq!(host.held_opened(), Vec::<PathBuf>::new());
+}
+
 /// A host that cannot tell an install is in use, and otherwise acts as the machine does: it can open a directory.
 fn host_without_in_use_codes() -> &'static RecordingHost {
     Box::leak(Box::new(RecordingHost::without_in_use_codes()))
