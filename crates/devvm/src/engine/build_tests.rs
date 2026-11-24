@@ -562,7 +562,6 @@ fn a_carriage_return_after_a_line_end_is_a_redraw_when_text_follows_it() {
     );
 }
 
-/// `len` bytes of text with no line end.
 fn long_line(len: usize) -> String {
     (0..len).map(|n| char::from(b'a' + (n % 26) as u8)).collect()
 }

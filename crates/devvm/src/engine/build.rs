@@ -513,7 +513,7 @@ const LINE_CHUNK: usize = 64 * 1024;
 
 /// A writer that reports each complete line as step output and keeps it in a [`Tail`]; the rest goes out when it is
 /// dropped. A line ends at `\n`, `\r` or `\r\n` (a tool redrawing its progress). A line longer than [`LINE_CHUNK`] is
-/// reported in parts of up to that size, as it grows.
+/// reported in parts.
 struct Lines<'a> {
     progress: &'a dyn Progress,
     tail: &'a Tail,
@@ -524,7 +524,6 @@ struct Lines<'a> {
 /// What the last byte written says about the `\r` before a `\n`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Carriage {
-    /// The last byte was not a `\r`.
     None,
     /// The last byte was a `\r` that ended a line, so a `\n` that follows is the other half of its line end.
     EndedLine,
