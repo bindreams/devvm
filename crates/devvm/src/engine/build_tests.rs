@@ -41,7 +41,7 @@ pub(super) fn fixture(home: &Path) -> Fixture {
     fixture_over(home, FakeBackend::new(&TestHost))
 }
 
-fn fixture_over(home: &Path, backend: FakeBackend) -> Fixture {
+pub(super) fn fixture_over(home: &Path, backend: FakeBackend) -> Fixture {
     let dirs = Dirs::under(home);
     let server = Arc::new(TestSshd::start(SshdOptions {
         client_public: InstanceKeys::generate().unwrap().client_public,

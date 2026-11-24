@@ -99,7 +99,8 @@ devvm rm dev
 - Every run writes a log with all the detail to `logs` in the state directory (`~/.local/state/devvm/logs` unless
   `XDG_STATE_HOME` says otherwise, on every OS). A failed command prints `log: <path>` before its error line, with
   `(incomplete: <error>)` after it when a write to the log failed. Only the user can read a log, and logs older than 14
-  days are removed when a new one is made, unless their command is still running.
+  days are removed when a new one is made, unless their command is still running. The serial log of a guest whose start
+  or command failed is copied beside them as `devvm-...serial.log`, named in the error, and removed on the same terms.
 - A Ctrl-C or a crash (a panic) can leave the last frame of the progress bars on screen above the error line.
 
 ### A project in a recipe

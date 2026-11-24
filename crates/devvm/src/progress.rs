@@ -13,6 +13,7 @@ mod log;
 pub use crate::text::escape_controls;
 pub use lines::{LineProgress, Look, VERBOSE_VAR, verbose_from_env};
 pub use log::FileLog;
+pub(crate) use log::keep_copy;
 
 #[cfg(test)]
 #[path = "progress_tests.rs"]
